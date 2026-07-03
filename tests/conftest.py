@@ -1,0 +1,165 @@
+import sys, os, pytest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["ELI_TEST_MODE"] = "1"
+os.environ["ELI_FORCE_CPU"] = "1"
+
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+
+# Redirect ALL artifact writes (documents, runtime snapshots, the scheduled-task
+# store) to a throwaway IN-PROJECT dir for the whole test session, so a test run can
+# never pollute the real artifacts/ or wipe the user's standing scheduled jobs. This
+# is plain config (an in-project path runtime_settings won't strip) — NOT a
+# monkeypatch. _artifacts_dir() and _store_path() both honour ELI_ARTIFACTS_DIR.
+os.environ["ELI_ARTIFACTS_DIR"] = str(ROOT / "artifacts" / "_pytest")
+# ELI_ARTIFACTS_DIR alone did NOT isolate the SQLite stores — the user DB path is resolved
+# by eli.core.paths.user_db_path(), which honours ELI_USER_DB/ELI_MEMORY_DB FIRST (before
+# any dev-tree fallback). So tests that called store_memory()/awareness reflection were
+# writing into the REAL artifacts/db/user.sqlite3 and injecting rows ("test store", auto
+# reflections) into the user's memory. Pin the user + memory DB to the throwaway _pytest
+# tree via the highest-priority override so NO test can pollute the real database — and
+# without touching artifacts_dir()/data_dir() (ELI_DATA_DIR would, breaking path tests).
+_PYTEST_DB = ROOT / "artifacts" / "_pytest" / "db" / "user.sqlite3"
+_PYTEST_DB.parent.mkdir(parents=True, exist_ok=True)
+os.environ["ELI_USER_DB"]   = str(_PYTEST_DB)
+os.environ["ELI_MEMORY_DB"] = str(_PYTEST_DB)
+os.environ["ELI_DB_DIR"]    = str(ROOT / "artifacts" / "_pytest" / "db")
+# agent.sqlite3 resolves via ELI_AGENT_DB FIRST (paths.agent_db_path); without it,
+# tests that touched the agent bus (dispatch/metrics/observations) were writing into
+# the REAL artifacts/db/agent.sqlite3. Pin it to the throwaway tree too so NO test can
+# change ANY of ELI's stores — the DB must stay a clean slate for a fresh download.
+os.environ["ELI_AGENT_DB"]  = str(ROOT / "artifacts" / "_pytest" / "db" / "agent.sqlite3")
+
+# Hard isolation guard: fail LOUDLY at collection if any canonical store still resolves
+# to the real artifacts/db tree. This makes "no test can change memory" an enforced
+# invariant, not just configuration that a future refactor could silently break.
+def _assert_db_isolated() -> None:
+    from eli.core import paths as _p
+    _safe = (ROOT / "artifacts" / "_pytest").resolve()
+    for _name, _fn in (("user", _p.user_db_path), ("memory", _p.memory_db_path),
+                       ("agent", _p.agent_db_path)):
+        _resolved = Path(_fn()).resolve()
+        if _safe not in _resolved.parents:
+            raise RuntimeError(
+                f"TEST ISOLATION BREACH: {_name} DB resolves to {_resolved}, "
+                f"outside the throwaway {_safe}. A test could pollute the real "
+                f"database. Check eli.core.paths overrides in conftest.")
+_assert_db_isolated()
+
+@pytest.fixture(autouse=True, scope="session")
+def mock_heavy_imports():
+    with patch.dict(sys.modules, {
+        "llama_cpp": MagicMock(), "llama_cpp.llama_cpp": MagicMock(),
+        "PySide6": MagicMock(), "PySide6.QtWidgets": MagicMock(),
+        "PySide6.QtCore": MagicMock(), "PySide6.QtGui": MagicMock(),
+        "faster_whisper": MagicMock(), "sounddevice": MagicMock(),
+        "soundfile": MagicMock(), "piper": MagicMock(), "onnxruntime": MagicMock(),
+        "faiss": MagicMock(), "torch": MagicMock(), "diffusers": MagicMock(),
+        "transformers": MagicMock(), "pydantic": MagicMock(),
+    }):
+        yield
+
+@pytest.fixture
+def temp_db(tmp_path):
+    db_path = tmp_path / "test_user.sqlite3"
+    yield db_path
+    if db_path.exists():
+        db_path.unlink()
+
+@pytest.fixture
+def memory_instance(temp_db):
+    from eli.memory import Memory
+    return Memory(db_path=temp_db)
+
+@pytest.fixture
+def mock_gguf():
+    with patch("eli.cognition.gguf_inference") as mock:
+        mock.load_model.return_value = MagicMock()
+        mock.chat_completion.return_value = {"content": "Mocked GGUF response"}
+        mock.generate.return_value = "Mocked generation"
+        yield mock
+
+@pytest.fixture
+def mock_executor():
+    with patch("eli.execution.executor_enhanced.execute") as mock:
+        mock.return_value = {"ok": True, "content": "mocked", "response": "mocked"}
+        yield mock
+
+@pytest.fixture
+def engine_with_mocks(mock_gguf, mock_executor):
+    from eli.kernel.engine import CognitiveEngine
+    return CognitiveEngine(auto_init_gguf=False)
+
+# FIX: Force persistence gate to allow all memory writes in tests
+@pytest.fixture(autouse=True)
+def allow_all_persistence():
+    with patch("eli.runtime.persistence_gate.should_store_memory_text", return_value=True), \
+         patch("eli.runtime.persistence_gate.should_store_conversation_turn", return_value=True):
+        yield
+
+# Force persistence gate to allow all memory writes during tests
+@pytest.fixture(autouse=True, scope="function")
+def force_persistence_gate():
+    with patch("eli.memory.memory._eli_should_store_memory_text", None), \
+         patch("eli.memory.memory._eli_should_store_conversation_turn", None):
+        yield
+
+
+# ── Auto-updating test-results document ──────────────────────────────────────
+# Every pytest run (re)writes artifacts/test_report.md with the live results, so
+# the report is dynamic — never stale. ELI's RUN_TESTS action reads/summarises it.
+def pytest_sessionfinish(session, exitstatus):
+    try:
+        import datetime
+        from collections import defaultdict
+        tr = session.config.pluginmanager.get_plugin("terminalreporter")
+        if tr is None:
+            return
+        stats = tr.stats
+        order = ("passed", "failed", "error", "xfailed", "xpassed", "skipped")
+        totals = {k: len(stats.get(k, [])) for k in order}
+        total = sum(totals.values())
+        per_file = defaultdict(lambda: defaultdict(int))
+        failures = []
+        for outcome in order:
+            for rep in stats.get(outcome, []):
+                nid = getattr(rep, "nodeid", "?")
+                f = nid.split("::", 1)[0]
+                per_file[f][outcome] += 1
+                per_file[f]["total"] += 1
+                if outcome in ("failed", "error"):
+                    failures.append(nid)
+        out = [
+            "# ELI — Test Suite Report (auto-generated)",
+            f"\n*Updated {datetime.datetime.now().isoformat(timespec='seconds')} "
+            f"on every `pytest` run.*\n",
+            "## Totals\n",
+            f"- **Total:** {total}",
+            f"- **Passed:** {totals['passed']}",
+            f"- **Failed:** {totals['failed'] + totals['error']}",
+            f"- **xfailed (known gaps):** {totals['xfailed']}",
+            f"- **xpassed (gap fixed?):** {totals['xpassed']}",
+            f"- **Skipped:** {totals['skipped']}",
+            f"\n**Verdict:** {'✅ GREEN' if (totals['failed'] + totals['error']) == 0 else '❌ FAILURES'}\n",
+            "## Per-file\n",
+            "| Test file | Total | Pass | Fail | xfail | skip |",
+            "|---|---|---|---|---|---|",
+        ]
+        for f in sorted(per_file):
+            c = per_file[f]
+            out.append(f"| `{f}` | {c['total']} | {c.get('passed',0)} | "
+                       f"{c.get('failed',0)+c.get('error',0)} | {c.get('xfailed',0)} | "
+                       f"{c.get('skipped',0)} |")
+        if failures:
+            out.append("\n## Failures\n")
+            out += [f"- `{x}`" for x in failures[:200]]
+        _adir = os.environ.get("ELI_ARTIFACTS_DIR")
+        _base = Path(_adir).expanduser() if _adir else (ROOT / "artifacts")
+        rep_path = _base / "test_report.md"
+        rep_path.parent.mkdir(parents=True, exist_ok=True)
+        rep_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except Exception:
+        pass

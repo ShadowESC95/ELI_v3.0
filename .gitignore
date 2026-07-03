@@ -1,0 +1,163 @@
+# ── Not for the repo (local only) ───────────────────────────────────────────
+WHAT_ELI_IS.md
+blueprints/
+
+# ── Python / build artefacts ────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.coverage
+.coverage
+coverage.xml
+*.tar.gz
+*.zip
+*.broken
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Large local archives / scratch (NEVER commit — GitHub rejects >100MB) ────
+eli.zip
+/sd
+*.wav
+
+# ── Virtual environment ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── TTS voice model files (large binaries) ───────────────────────────────────
+*.onnx
+tts_piper/piper/*.onnx.json
+
+# ── Training data / outputs ───────────────────────────────────────────────────
+training/
+
+# ── Model files (large binaries — distribute separately) ─────────────────────
+models/*.gguf
+models/**/*.gguf
+*.gguf
+# Safetensors / HuggingFace weights and training artefacts
+*.safetensors
+*.pt
+*.pth
+*.bin
+models/eli-lora-adapter*/
+models/eli-merged*/
+models/hf/
+models/embeddings/
+models/lora/
+models/lora_outputs*/
+models/training_data/
+models/whisper/
+models/.goutputstream*
+
+# ── Runtime artefacts & user data ────────────────────────────────────────────
+artifacts/
+eli/artifacts/
+.code_monitor_state.json
+
+# ── Generated / auto-updated files ──────────────────────────────────────────
+eli/capability_inventory.generated.json
+capability_inventory.generated.json
+eli/capability_manifest.json
+eli/cognition/persona.auto.txt
+capability_manifest.json
+.capability_snapshot.json
+.code_monitor_state.json
+config/user_id
+# Legacy and scratch artefacts
+.artifacts_legacy_*/
+Pasted\ text.txt
+
+# ── Secrets / environment ────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+
+# ── IDE & editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+
+# ── Backup files created during development ──────────────────────────────────
+*.bak
+*.bak_*
+
+# ── Examination / diagnostic outputs ─────────────────────────────────────────
+eli_artifacts_*/
+*_examination_report_*.txt
+core_modules_examination_*.txt
+eli_diag_output.txt
+eli_memory_audit_results.txt
+ops/reports/
+# One-shot diagnostic helper scripts (developer tooling, not source)
+eli_diag.sh
+examine_core_modules.sh
+examine_eli_safe.sh
+eli_memory_audit.py
+patch_gpu_dynamic.py
+test_eli_integration.py
+test_eli_wiring.sh
+test_eli_wiring_sh
+
+# ── Test / CI ─────────────────────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+
+# ── Image engine outputs & logs ──────────────────────────────────────────────
+eli/tools/image_engine/logs/
+eli/tools/image_engine/outputs/
+eli/tools/image_engine/projects/
+
+# ── Package index options file (local tooling) ───────────────────────────────
+\[package-index-options\]
+
+# ── Agent tooling / local assistant state ────────────────────────────────────
+.claude/
+
+# ── Audit & analysis scratch (not source) ────────────────────────────────────
+eli_audit_uploads/
+*_full_analysis.md
+
+# ── User runtime data (notes ELI writes) ─────────────────────────────────────
+eli_notebook/
+.pytest_artifacts/
+
+# ── Per-user runtime config (never ship personal settings) ───────────────────
+config/settings.json
+config/api_users.json
+config/plugins_state.json
+config/pomodoro.json
+config/quick_actions.json
+models/wakeword/
+models/voice_profile/
+
+# Downloaded model caches (whisper, etc.) — large binaries, never commit
+eli/models/
+
+# personal launcher with absolute paths — generated per-machine by scripts/eli_one_click_setup.sh
+eli-mkxi.desktop
+dxdiag.txt
+note_*.md
+
+# Audit chain HMAC key — secret, never commit
+config/.audit_hmac_key
+
+# Local self-signed TLS certs for LAN HTTPS (never commit the private key)
+config/certs/
+*.key
+*.crt
+*.pem
+
+# junk / local scratch
+sys/
+tools/eval/benchmarks/*.sh
+tools/eval/benchmarks/build_h2h_full.py

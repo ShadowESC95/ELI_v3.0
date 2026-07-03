@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+
+try:
+    from eli.plugins.base.base import Plugin
+except Exception:
+    class Plugin:
+        actions: Dict[str, Any] = {}
+
+        def execute(self, action: str, args: Dict[str, Any] | None = None) -> Dict[str, Any]:
+            args = args or {}
+            key = str(action or "").strip()
+            handler = self.actions.get(key) or self.actions.get(key.upper()) or self.actions.get(key.lower())
+            if not handler:
+                return {
+                    "ok": False,
+                    "action": action,
+                    "error": f"Unsupported plugin action: {action}",
+                    "content": f"Unsupported plugin action: {action}",
+                    "response": f"Unsupported plugin action: {action}",
+                }
+            return handler(args)
+
+
+PLUGIN_ID = "web"
+ACTIONS = ["WEB_SEARCH"]
+
+
+class WebSearchPlugin(Plugin):
+    name = "web"
+    description = "DuckDuckGo web search plugin"
+
+    def __init__(self):
+        # Include both canonical and manager-normalised aliases.
+        # manager.execute("web", "WEB_SEARCH", args) may pass "web_search".
+        self.actions = {
+            "WEB_SEARCH": self.web_search,
+            "web_search": self.web_search,
+            "search": self.web_search,
+            "web": self.web_search,
+        }
+
+    def web_search(self, args: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        args = args or {}
+        query = (
+            args.get("query")
+            or args.get("q")
+            or args.get("text")
+            or args.get("search")
+            or ""
+        )
+        query = str(query).strip()
+
+        if not query:
+            msg = "No web search query provided."
+            return {
+                "ok": False,
+                "action": "WEB_SEARCH",
+                "error": msg,
+                "content": msg,
+                "response": msg,
+            }
+
+        max_results = args.get("max_results", args.get("limit", 5))
+        try:
+            max_results = int(max_results)
+        except Exception:
+            max_results = 5
+        max_results = max(1, min(max_results, 10))
+
+        try:
+            results = _web_search_results(query, max_results=max_results)
+        except Exception as exc:
+            msg = f"Web search failed: {exc}"
+            return {
+                "ok": False,
+                "action": "WEB_SEARCH",
+                "query": query,
+                "error": msg,
+                "content": msg,
+                "response": msg,
+            }
+
+        if not results:
+            msg = f"No web results found for: {query}"
+            return {
+                "ok": True,
+                "action": "WEB_SEARCH",
+                "query": query,
+                "results": [],
+                "content": msg,
+                "response": msg,
+            }
+
+        lines = [f"Web results for: {query}"]
+        for i, item in enumerate(results, 1):
+            title = item.get("title") or item.get("name") or "Untitled"
+            href = item.get("href") or item.get("url") or ""
+            body = item.get("body") or item.get("snippet") or ""
+            if href and body:
+                lines.append(f"{i}. {title}\n   {href}\n   {body}")
+            elif href:
+                lines.append(f"{i}. {title}\n   {href}")
+            else:
+                lines.append(f"{i}. {title}")
+
+        msg = "\n".join(lines)
+        return {
+            "ok": True,
+            "action": "WEB_SEARCH",
+            "query": query,
+            "results": results,
+            "content": msg,
+            "response": msg,
+        }
+
+
+def _duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    """
+    Supports both newer and older duckduckgo-search package layouts.
+    """
+    try:
+        from duckduckgo_search import DDGS
+    except Exception as first_exc:
+        try:
+            from ddgs import DDGS
+        except Exception:
+            raise first_exc
+
+    out: List[Dict[str, Any]] = []
+
+    with DDGS() as ddgs:
+        for item in ddgs.text(query, max_results=max_results):
+            out.append(dict(item))
+
+    return out
+
+
+def _searxng_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    """Query a configured SearXNG instance via its JSON API.
+
+    Returns [] when no instance is configured or the request fails, so the
+    caller falls back to DuckDuckGo. Instance URL comes from the ELI_SEARXNG_URL
+    env var or the `searxng_url` setting (e.g. "http://localhost:8888").
+    """
+    import os
+    import json as _json
+    import urllib.parse
+    import urllib.request
+
+    base = (os.environ.get("ELI_SEARXNG_URL") or "").strip()
+    if not base:
+        try:
+            from eli.core.config import get as _cfg_get
+            base = str(_cfg_get("searxng_url", "") or "").strip()
+        except Exception:
+            base = ""
+    if not base:
+        return []
+
+    url = base.rstrip("/") + "/search?" + urllib.parse.urlencode(
+        {"q": query, "format": "json"}
+    )
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "ELI-AI-Assistant/1.0 (local; educational)"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = _json.loads(r.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for item in (data.get("results") or [])[:max_results]:
+        href = item.get("url") or item.get("href") or ""
+        title = item.get("title") or ""
+        body = item.get("content") or item.get("snippet") or ""
+        if title or href:
+            out.append({"title": title, "href": href, "body": body})
+    return out
+
+
+def _duckduckgo_html_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    """Stdlib-only DuckDuckGo HTML scrape — NO pip package required, so web search
+    works on a fresh install without `duckduckgo_search`/`ddgs`. Network-gated via
+    netguard (offline → OfflineError propagates; caller is already gated)."""
+    import re as _re
+    import html as _html
+    import urllib.parse as _up
+    import urllib.request as _ur
+    try:
+        from eli.core.netguard import guarded_urlopen as _open
+    except Exception:
+        _open = lambda req, timeout=10: _ur.urlopen(req, timeout=timeout)
+
+    url = "https://html.duckduckgo.com/html/?q=" + _up.quote(query)
+    req = _ur.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    })
+    with _open(req, timeout=10) as r:
+        page = r.read().decode("utf-8", errors="replace")
+
+    def _strip(s: str) -> str:
+        return _html.unescape(_re.sub(r"<[^>]+>", "", s or "")).strip()
+
+    # Pull the snippet that follows each result title. DDG renders it as
+    # <a class="result__snippet">…</a> (sometimes a <div>). Without it the
+    # result is just a bare title/URL and the model has nothing to ground on —
+    # which is exactly how an "album release date" query came back with no real
+    # info and the model then guessed. Index snippet positions so each title is
+    # paired with the snippet that comes right after it.
+    _snips = [(mm.start(), _strip(mm.group(1)))
+              for mm in _re.finditer(
+                  r'<(?:a|div)[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div)>',
+                  page, _re.S)]
+
+    out: List[Dict[str, Any]] = []
+    for m in _re.finditer(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', page, _re.S):
+        href = _html.unescape(m.group(1))
+        title = _strip(m.group(2))
+        # DDG wraps real URLs in a redirect: //duckduckgo.com/l/?uddg=<encoded>
+        _mu = _re.search(r"uddg=([^&]+)", href)
+        if _mu:
+            href = _up.unquote(_mu.group(1))
+        # First snippet appearing after this title in the page.
+        body = ""
+        for _pos, _txt in _snips:
+            if _pos > m.start() and _txt:
+                body = _txt
+                break
+        if title and href:
+            out.append({"title": title, "href": href, "body": body})
+        if len(out) >= max_results:
+            break
+    return out
+
+
+def _web_search_results(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    """Canonical web-search entry point: SearXNG (if configured) → DuckDuckGo
+    package → stdlib DuckDuckGo HTML scrape (no dependency).
+
+    SearXNG is preferred (self-hosted, not rate-limited, privacy-aligned).
+    DuckDuckGo via the ddgs package is the fallback when SearXNG is absent or
+    returns nothing.
+    """
+    try:
+        results = _searxng_search(query, max_results=max_results)
+    except Exception:
+        results = []
+    if results:
+        return results
+    # Package-based DDG (if installed)
+    try:
+        results = _duckduckgo_search(query, max_results=max_results)
+        if results:
+            return results
+    except Exception:
+        pass
+    # Stdlib HTML fallback — no pip dependency, so search works out of the box.
+    try:
+        return _duckduckgo_html_search(query, max_results=max_results)
+    except Exception:
+        return []
+
+
+def execute(action: str, args: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    plugin = WebSearchPlugin()
+    normalized = str(action or "").strip()
+    return plugin.execute(normalized, args or {})
+
+
+def get_plugin() -> WebSearchPlugin:
+    return WebSearchPlugin()

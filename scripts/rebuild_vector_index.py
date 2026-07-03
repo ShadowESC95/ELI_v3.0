@@ -1,0 +1,1 @@
+../eli/scripts/rebuild_vector_index.py

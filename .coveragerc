@@ -1,0 +1,42 @@
+# Coverage configuration — combined across the three test lanes.
+# Full, honest coverage is measured across THREE lanes and combined:
+#   1. mocked unit suite      (breadth + core logic)
+#   2. web-server clean lane  (real FastAPI, --noconftest)
+#   3. live engine clean lane (real GGUF model, --noconftest)
+# See scripts/coverage_full.sh and docs/COVERAGE.md.
+# NOTE: coverage's parser does NOT strip inline comments after a value — keep
+# comments on their own lines.
+#
+# The `omit` list excludes ONLY code that genuinely cannot run in headless CI.
+# After the offscreen-Qt lane (lane 4) the GUI *tab* widgets ARE testable and are
+# now IN the denominator; the sole GUI exclusion is the main window
+# (eli_pro_audio_gui_MKI.py), which blocks on device/display init and cannot be
+# constructed headless. Code that is merely untested (image_engine, the analyze_*
+# parsers, executor handlers) is deliberately KEPT in the count — excluding it would
+# inflate the number dishonestly. Every exclusion here is justified in docs/COVERAGE.md.
+
+[run]
+parallel = True
+source = eli,api
+branch = False
+omit =
+    */tests/*
+    */__pycache__/*
+    */build/*
+    */.venv/*
+    */__main__.py
+    */gui/eli_pro_audio_gui_MKI.py
+
+[report]
+show_missing = True
+skip_covered = False
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @(abc\.)?abstractmethod
+
+[html]
+directory = artifacts/coverage_html

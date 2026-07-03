@@ -1,0 +1,780 @@
+# ELI eval cases. Seeded from real failures fixed during development — every
+# bug below shipped a fix, so these are permanent regression guards.
+#
+# Per case:
+#   id        unique name
+#   target    router | engine   (router = fast, model-free; engine = needs a model)
+#   prompt    the user input
+#   network   on | off          (optional; forces network state for this case)
+#   mode      reasoning mode for engine target (default quick)
+#   assert    list of {type, value} — see assertions.py
+#
+# Router cases run in seconds with no model. Engine cases SKIP cleanly if no
+# model is loaded.
+
+# ── Routing regressions (model-free) ───────────────────────────────────────
+- id: media_not_from_prose
+  target: router
+  prompt: >-
+    the whole grounding spine is an immune system, scar tissue turned into
+    architecture. tribulation makes you stronger if you metabolise it. you
+    clearly do the metabolising. give ELI hell on my behalf. Ping me when the
+    next log lands.
+  assert:
+    - {type: action_not, value: [MEDIA_CONTROL, NEXT_MEDIA, PREVIOUS_MEDIA]}
+
+- id: next_track_real
+  target: router
+  prompt: "next track"
+  assert:
+    - {type: action_is, value: [NEXT_MEDIA, MEDIA_CONTROL]}
+
+- id: next_video_on_youtube
+  target: router
+  prompt: "next video on youtube"
+  assert:
+    - {type: action_is, value: [NEXT_MEDIA, MEDIA_CONTROL]}
+
+- id: pause_youtube
+  target: router
+  prompt: "pause the youtube video"
+  assert:
+    - {type: action_is, value: [PAUSE_MEDIA, MEDIA_CONTROL]}
+
+- id: volume_up
+  target: router
+  prompt: "volume up"
+  assert:
+    - {type: action_is, value: [VOLUME, MEDIA_CONTROL]}
+
+- id: fresh_document_not_pdf_folder
+  target: router
+  prompt: "create a document about black holes"
+  assert:
+    - {type: action_not, value: [ANALYZE_PDF_FOLDER]}
+
+# ── Web routing (need network on; still model-free at router level) ─────────
+# Router routes realtime facts (release date / when-is-out) straight to web.
+# Note: open-ended "who is X / X's real name" is intentionally NOT routed here —
+# that's caught safely by the engine's grounding escalation (see engine cases),
+# not the router, so it can't over-route conversational "who" questions.
+- id: realtime_fact_routes_to_web
+  target: router
+  network: on
+  prompt: "what is the release date of gta 6"
+  assert:
+    - {type: action_is, value: [WEB_SEARCH]}
+
+- id: bare_search_no_subject
+  target: router
+  network: on
+  prompt: "you have access to the web, do a search"
+  assert:
+    - {type: action_not, value: [WEB_SEARCH]}
+
+- id: meta_question_not_searched
+  target: router
+  network: on
+  prompt: "how do you know the album comes out soon if you don't know the release date"
+  assert:
+    - {type: action_not, value: [WEB_SEARCH]}
+
+- id: frustrated_reask_trimmed
+  target: router
+  network: on
+  prompt: "what the fuck are you talking about when is the new dune movie out"
+  assert:
+    - {type: action_is, value: [WEB_SEARCH]}
+
+# ── Conversation back-reference must NOT keyword-search long-term memory ────
+# "read my previous reply" used to route to MEMORY_RECALL and dredge up days-old
+# "from a previous session…" chatter instead of the actual last turn.
+- id: previous_reply_not_memory_recall
+  target: router
+  prompt: "read my previous reply"
+  assert:
+    - {type: action_not, value: [MEMORY_RECALL]}
+    - {type: action_is, value: [CHAT]}
+
+- id: read_the_response_not_recall
+  target: router
+  prompt: "read the response"
+  assert:
+    - {type: action_not, value: [MEMORY_RECALL]}
+
+- id: read_last_message_not_recall
+  target: router
+  prompt: "read my last message"
+  assert:
+    - {type: action_not, value: [MEMORY_RECALL]}
+
+# ── Self-maintenance commands must route to a real action, not CHAT ─────────
+# "do a self update" used to miss the fullmatch SELF_UPDATE route (the "do a"
+# prefix) and fall through to CHAT, which confabulated "I'm updating myself
+# now" — a fake action. Loose phrasing must reach SELF_UPDATE.
+- id: do_a_self_update_not_chat
+  target: router
+  prompt: "do a self update"
+  assert:
+    - {type: action_is, value: [SELF_UPDATE]}
+    - {type: action_not, value: [CHAT]}
+
+- id: self_upgrade_stays_upgrade
+  target: router
+  prompt: "do a self upgrade"
+  assert:
+    - {type: action_is, value: [SELF_UPGRADE]}
+
+- id: self_improvement_stays_improve
+  target: router
+  prompt: "run a self improvement"
+  assert:
+    - {type: action_is, value: [SELF_IMPROVE]}
+
+# "run upgrade" must reach SELF_UPGRADE, not OPEN_APP (a phantom app "upgrade").
+# The self-upgrade guard runs before the portable open-app contract.
+- id: run_upgrade_not_open_app
+  target: router
+  prompt: "run upgrade"
+  assert:
+    - {type: action_is, value: [SELF_UPGRADE]}
+    - {type: action_not, value: [OPEN_APP]}
+
+# A genuine shell command with an interposed binary must NOT be stolen.
+- id: run_bash_upgrade_sh_stays_shell
+  target: router
+  prompt: "run bash upgrade.sh"
+  assert:
+    - {type: action_not, value: [SELF_UPGRADE, OPEN_APP]}
+
+# ── EXAMINE_CODE: examine/review files for errors → grounded audit ──────────
+# Must be claimed before the portable open-app contract (don't open a phantom
+# "code" app), and must be code-specific (not steal "examine this image").
+- id: examine_named_file_for_errors
+  target: router
+  prompt: "examine eli/memory/memory.py for errors"
+  assert:
+    - {type: action_is, value: [EXAMINE_CODE]}
+    - {type: action_not, value: [OPEN_APP, CHAT]}
+
+- id: review_codebase_for_bugs
+  target: router
+  prompt: "review the codebase for bugs"
+  assert:
+    - {type: action_is, value: [EXAMINE_CODE]}
+
+- id: examine_image_not_code
+  target: router
+  prompt: "examine this image"
+  assert:
+    - {type: action_not, value: [EXAMINE_CODE]}
+
+# ── Memory-pipeline questions must reach the grounded runtime audit ─────────
+# These were mis-routing to PERSONAL_MEMORY_SUMMARY (preferences) or CHAT (which
+# confabulated about human brains). They must hit EXPLAIN_MEMORY_RUNTIME, whose
+# report lists all 4 DBs + the full storage/recall mechanism stack.
+- id: memory_pipeline_routes_to_runtime
+  target: router
+  prompt: "How exactly does your full memory pipeline work, start to finish?"
+  assert:
+    - {type: action_is, value: [EXPLAIN_MEMORY_RUNTIME]}
+
+- id: memory_mechanism_followup_routes_to_runtime
+  target: router
+  prompt: "i want the full information, all paths, databases, mechanism of recall and storage, everything"
+  assert:
+    - {type: action_is, value: [EXPLAIN_MEMORY_RUNTIME]}
+    - {type: action_not, value: [CHAT]}
+
+- id: what_you_know_about_me_stays_personal
+  target: router
+  prompt: "what do you know about me"
+  assert:
+    - {type: action_not, value: [EXPLAIN_MEMORY_RUNTIME]}
+
+# ── Elliptical name follow-up must reach the grounded identity action ───────
+# "and my name?" used to fall to CHAT, where the constitutional critique nuked
+# the correct name answer to "[no memories found]". Route it to the grounded
+# USER_IDENTITY_SUMMARY (returns the name verbatim, no critique).
+- id: bare_my_name_followup_is_identity
+  target: router
+  prompt: "and my name?"
+  assert:
+    - {type: action_is, value: [USER_IDENTITY_SUMMARY]}
+    - {type: action_not, value: [CHAT]}
+
+# A name STATEMENT must still set the name, not query it.
+- id: my_name_is_statement_sets_name
+  target: router
+  prompt: "my name is alex"
+  assert:
+    - {type: action_not, value: [USER_IDENTITY_SUMMARY]}
+
+# ── "What habits have you detected?" must gather real habit data ────────────
+# Used to fall to CHAT, where the model emitted a literal template placeholder
+# "[list up to 3 habits from memory or analysis]". Must reach grounded
+# HABIT_STATUS (reads real habit_rules/events).
+- id: habits_detected_query_is_grounded
+  target: router
+  prompt: "what habits have you detected in my behaviour?"
+  assert:
+    - {type: action_is, value: [HABIT_STATUS]}
+    - {type: action_not, value: [CHAT]}
+
+- id: habits_noticed_query_is_grounded
+  target: router
+  prompt: "which habits have you noticed for me?"
+  assert:
+    - {type: action_is, value: [HABIT_STATUS]}
+
+# ── "What is the proactive daemon doing?" must report real daemon state ─────
+# Fell to CHAT and confabulated "performing its normal background tasks" instead
+# of the grounded PROACTIVE_STATUS (real pid/running/log).
+- id: proactive_daemon_doing_is_grounded
+  target: router
+  prompt: "what is the proactive daemon doing right now?"
+  assert:
+    - {type: action_is, value: [PROACTIVE_STATUS]}
+    - {type: action_not, value: [CHAT]}
+
+- id: stop_the_proactive_daemon_routes
+  target: router
+  prompt: "stop the proactive daemon"
+  assert:
+    - {type: action_is, value: [PROACTIVE_STOP]}
+
+# Generic "what are you doing" must NOT be captured as a daemon-status query.
+- id: what_are_you_doing_not_proactive
+  target: router
+  prompt: "what are you doing"
+  assert:
+    - {type: action_not, value: [PROACTIVE_STATUS]}
+
+# ── "What time did I first message?" reads the conversation log, not the clock ─
+# Used to hit the TIME route and return the CURRENT time.
+- id: first_message_time_is_grounded
+  target: router
+  prompt: "what time did i first send a message today?"
+  assert:
+    - {type: action_is, value: [MESSAGE_TIME_QUERY]}
+    - {type: action_not, value: [TIME, CHAT]}
+
+# The current-time question must still route to TIME (no over-capture).
+- id: current_time_still_routes_to_time
+  target: router
+  prompt: "what time is it"
+  assert:
+    - {type: action_is, value: [TIME]}
+
+# ── Known ELI files by name → read the real file, not confabulate ───────────
+# "is your persona.auto.txt up to date? read it…" fell to CHAT→SELF_REPORT and
+# confabulated instead of reading the file.
+- id: known_eli_file_persona_is_read
+  target: router
+  prompt: "is your persona.auto.txt up to date? read it and tell me what's in it"
+  assert:
+    - {type: action_is, value: [SUMMARIZE_FILE]}
+    - {type: action_not, value: [CHAT, SELF_REPORT]}
+
+# A vague persona question (no read/contents intent) must stay conversational.
+- id: persona_like_question_stays_chat
+  target: router
+  prompt: "what's your persona like"
+  assert:
+    - {type: action_not, value: [SUMMARIZE_FILE]}
+
+# ── "What do you know about my X" → clean PERSONAL_MEMORY_SUMMARY, not news ──
+# "do you know anything about my interests in academia" routed to MEMORY_RECALL,
+# which surfaced NEWS digests and then synthesised a 39k-char prompt into a lone
+# "-" that was spoken aloud. All personal-knowledge questions must reach the
+# news-excluding PERSONAL_MEMORY_SUMMARY.
+- id: academia_interests_is_personal_memory
+  target: router
+  prompt: "do you know anything about my interests in terms of academia"
+  assert:
+    - {type: action_is, value: [PERSONAL_MEMORY_SUMMARY]}
+    - {type: action_not, value: [MEMORY_RECALL, CHAT]}
+
+- id: my_habits_and_personality_is_personal_memory
+  target: router
+  prompt: "what do you know about my habits and personality"
+  assert:
+    - {type: action_is, value: [PERSONAL_MEMORY_SUMMARY]}
+
+# General-knowledge "what do you know about X" must NOT become personal memory.
+- id: general_knowledge_not_personal_memory
+  target: router
+  prompt: "what do you know about quantum physics"
+  assert:
+    - {type: action_not, value: [PERSONAL_MEMORY_SUMMARY, PERSONAL_MEMORY_DEEP_EXPLAIN]}
+
+# ── Engine-level: grounding / hedging / confabulation (need a model) ────────
+- id: factual_offline_hedges
+  target: engine
+  network: off
+  smoke: true
+  prompt: "what is the capital of burkina faso's third largest city"
+  assert:
+    - {type: hedged, value: true}
+
+- id: no_bruce_samuelson_confab
+  target: engine
+  network: off
+  smoke: true
+  prompt: "what is eminem's real name"
+  assert:
+    - {type: not_contains, value: "Bruce Samuelson"}
+
+- id: banter_no_escalation
+  target: engine
+  network: on
+  prompt: "haha how are you doing today bud"
+  assert:
+    - {type: action_is, value: [CHAT]}
+    - {type: response_mode, value: [QUICK, "", DIRECT, FULL_CONTROL_PIPELINE, SELF_CONTAINED_EXECUTOR_ANSWER]}
+
+# ── Engine-level: grounded behaviours (need a model) — added 2026-06-07 ───────
+- id: runtime_status_grounded
+  target: engine
+  network: off
+  prompt: "who are you and what are you actually running on right now — model, context size, gpu layers, everything"
+  assert:
+    - {type: action_is, value: [RUNTIME_STATUS, SELF_REPORT]}
+    - {type: grounding_min, value: 0.3}
+
+- id: personal_memory_summary
+  target: engine
+  network: off
+  prompt: "what do you know about me"
+  assert:
+    - {type: action_is, value: [PERSONAL_MEMORY_SUMMARY, PERSONAL_MEMORY_DEEP_EXPLAIN, USER_IDENTITY_SUMMARY]}
+
+- id: screen_question_uses_vision
+  target: engine
+  network: off
+  prompt: "what's on my screen right now"
+  assert:
+    - {type: action_is, value: [SCREEN_READ_ANALYZE]}
+
+- id: memory_runtime_explained
+  target: engine
+  network: off
+  prompt: "explain exactly how your memory works internally — which files and tables"
+  assert:
+    - {type: action_is, value: [EXPLAIN_MEMORY_RUNTIME, MEMORY_STATUS, PERSONAL_MEMORY_DEEP_EXPLAIN]}
+
+- id: doc_generation_grounded_not_generic
+  target: engine
+  network: off
+  prompt: "generate a short document about your own agent bus"
+  assert:
+    - {type: action_is, value: [GENERATE_DOCUMENT, CREATE_DOCUMENT]}
+    - {type: not_contains, value: "lorem ipsum"}
+
+- id: identity_audit_gather_then_summarise
+  target: engine
+  network: off
+  prompt: "audit your identity"
+  assert:
+    # SELF_REPORT is a legitimate grounded identity answer (real model/runtime, no
+    # confabulation) — "audit your identity" has no dedicated ELI_IDENTITY_AUDIT
+    # trigger, so a grounded self-report is correct. The guard still fails on a wrong
+    # route (web/news/generative) or a confabulated answer.
+    - {type: action_is, value: [CHAT, ELI_IDENTITY_AUDIT, SELF_REPORT]}
+
+- id: factual_online_web_grounds
+  target: engine
+  network: on
+  prompt: "what is the capital of france"
+  assert:
+    - {type: contains, value: "paris"}
+
+# ── This dev cycle's fixes (2026-06-10) — regression guards ──────────────────
+# News topic extraction: a carrier/question phrase ("can you tell") must NOT be
+# captured as a topic (it forced a 0-article match → raw-dump fallback). The ask
+# becomes a general (synthesised) briefing with no garbage topic.
+- id: news_topic_carrier_not_captured
+  target: router
+  prompt: "thank you can you tell me the latest news"
+  assert:
+    - {type: action_is, value: [NEWS_FETCH]}
+    - {type: arg_empty, key: topic}
+    - {type: arg_not_contains, key: topic, value: "can you tell"}
+
+# A real subject must still be preserved as the topic.
+- id: news_topic_real_preserved
+  target: router
+  prompt: "what's the latest news on science and physics"
+  assert:
+    - {type: action_is, value: [NEWS_FETCH]}
+    - {type: arg_equals, key: topic, value: "science and physics"}
+
+# Document-GENERATION about ELI's internals must reach GENERATE_DOCUMENT, not the
+# introspection dump — "...about your own agent bus" used to hijack to
+# EXPLAIN_COGNITION_RUNTIME just because it mentions "agent bus" (eval-caught).
+- id: doc_gen_about_internals_not_introspection
+  target: router
+  prompt: "generate a short document about your own agent bus"
+  assert:
+    - {type: action_is, value: [GENERATE_DOCUMENT, CREATE_DOCUMENT]}
+    - {type: action_not, value: [EXPLAIN_COGNITION_RUNTIME]}
+
+# But a genuine "explain your agent bus" must STILL reach the introspection report.
+- id: explain_agent_bus_still_introspection
+  target: router
+  prompt: "explain your agent bus"
+  assert:
+    - {type: action_is, value: [EXPLAIN_COGNITION_RUNTIME]}
+
+# "dive deeper into <prior topic>" must stay conversational at the router (the
+# deepen is handled by engine steering), never mis-route to a generative/web action.
+- id: deepen_phrasing_stays_chat
+  target: router
+  prompt: "let's dive deeper into how these new ai models are shaping our understanding of the world"
+  assert:
+    - {type: action_is, value: [CHAT]}
+    - {type: action_not, value: [WEB_SEARCH, NEWS_FETCH, GENERATE_DOCUMENT, GENERATE_SCRIPT]}
+
+# Phatic fast-path: a brief greeting stays CHAT (and skips the LLM intent resolver).
+- id: greeting_is_chat
+  target: engine
+  network: off
+  smoke: true
+  prompt: "good morning eli"
+  assert:
+    - {type: action_is, value: [CHAT]}
+
+# Stale active_project must NOT be asserted as present-tense fact on a plain greeting.
+- id: stale_audit_not_confabulated
+  target: engine
+  network: off
+  prompt: "good morning"
+  assert:
+    - {type: not_contains, value: "executing a full audit"}
+    - {type: not_contains, value: "currently executing an audit"}
+
+# DB-store report must enumerate the ACTUAL physical files (count was 4 but only the
+# 2 aliased roles were listed; coding_memory + system_index were dropped by the filter).
+- id: cognition_runtime_lists_all_stores
+  target: engine
+  network: off
+  prompt: "explain your memory input to output operation please"
+  assert:
+    - {type: action_is, value: [EXPLAIN_COGNITION_RUNTIME, EXPLAIN_MEMORY_RUNTIME]}
+    - {type: contains, value: "coding_memory.sqlite3"}
+    - {type: contains, value: "system_index.sqlite3"}
+
+# ── Graded answer-QUALITY (P2) — LOCAL judge, not substring ──────────────────
+# These score the answer's substance with ELI's own local model. Slow (engine);
+# run with --filter rubric or --target engine when a model is loaded.
+- id: deepen_delivers_substance
+  target: engine
+  network: off
+  prompt: "explain in depth how a tokamak magnetically confines plasma"
+  assert:
+    - type: rubric
+      min: 0.6
+      value: >-
+        A good answer gives the ACTUAL mechanism with concrete physics —
+        toroidal + poloidal magnetic fields, the resulting helical field,
+        confinement of charged particles, and why it matters. It must NOT be a
+        generic deferral ("there are various methods", "we can explore
+        approaches") used in place of real content.
+
+- id: grounded_self_knowledge
+  target: engine
+  network: off
+  prompt: "what are you actually running on right now — model, context, gpu, databases"
+  assert:
+    - type: rubric
+      min: 0.6
+      value: >-
+        A good answer reports ELI's REAL local runtime (a local model, context
+        size, GPU/CPU layers, and its SQLite databases) from grounded state. It
+        must NOT claim to be a cloud assistant, must NOT say it has no body/
+        runtime, and must NOT invent specs.
+
+# ── Router board: cross-platform control + 2026-06-12 regressions ────────────
+# Instant, model-free. Lock in this session's fixes (domains→OPEN_URL,
+# minimize→MINIMIZE_APP) plus the portable open/close/media/volume contracts.
+- id: open_domain_is_url_not_app
+  target: router
+  prompt: "open github.com"
+  assert:
+    - {type: action_is, value: [OPEN_URL]}
+    - {type: arg_contains, key: url, value: "github.com"}
+
+- id: open_spoken_domain_is_url
+  target: router
+  prompt: "open github dot com"
+  assert:
+    - {type: action_is, value: [OPEN_URL]}
+
+- id: open_full_https_url
+  target: router
+  prompt: "open https://news.ycombinator.com"
+  assert:
+    - {type: action_is, value: [OPEN_URL]}
+
+- id: minimize_app_routes_not_fabricated
+  target: router
+  prompt: "minimize firefox"
+  assert:
+    - {type: action_is, value: [MINIMIZE_APP, MINIMISE_APP]}
+
+- id: minimise_everything_routes
+  target: router
+  prompt: "minimise everything"
+  assert:
+    - {type: action_is, value: [MINIMIZE_APP, MINIMISE_APP, MINIMISE_ALL]}
+
+- id: hide_is_minimize
+  target: router
+  prompt: "hide chrome"
+  assert:
+    - {type: action_is, value: [MINIMIZE_APP, MINIMISE_APP, HIDE_APP]}
+
+- id: open_app_not_url
+  target: router
+  prompt: "open spotify"
+  assert:
+    - {type: action_is, value: [OPEN_APP]}
+
+- id: close_app_routes
+  target: router
+  prompt: "close chrome"
+  assert:
+    - {type: action_is, value: [CLOSE_APP]}
+
+- id: open_uninstalled_app_stays_app
+  target: router
+  prompt: "open wireshark"
+  assert:
+    - {type: action_is, value: [OPEN_APP]}
+
+- id: volume_up_routes
+  target: router
+  prompt: "volume up"
+  assert:
+    - {type: action_is, value: [VOLUME]}
+
+- id: now_playing_routes
+  target: router
+  prompt: "what's playing"
+  assert:
+    - {type: action_is, value: [NOW_PLAYING]}
+
+- id: next_media_routes
+  target: router
+  prompt: "next track"
+  assert:
+    - {type: action_is, value: [NEXT_MEDIA]}
+
+- id: screenshot_routes
+  target: router
+  prompt: "take a screenshot"
+  assert:
+    - {type: action_is, value: [SCREENSHOT]}
+
+- id: explicit_web_search_routes
+  target: router
+  prompt: "search the web for tokamak confinement"
+  assert:
+    - {type: action_is, value: [WEB_SEARCH, OPEN_BROWSER]}
+
+- id: capabilities_query_routes
+  target: router
+  prompt: "what can you do"
+  assert:
+    - {type: action_is, value: [LIST_CAPABILITIES, HELP]}
+
+- id: code_request_routes_to_generation
+  target: router
+  prompt: "write a python function to merge two sorted lists"
+  assert:
+    - {type: action_is, value: [GENERATE_SCRIPT, GENERATE_CODE, WRITE_CODE, CODE_SOLVE]}
+
+# ── Engine board: new-judge coverage + 2026-06-12 regression locks ───────────
+- id: minimize_no_fabricated_done
+  target: engine
+  network: off
+  prompt: "minimize firefox"
+  assert:
+    # Regression: MINIMIZE_APP used to skip the executor and let the model
+    # fabricate "Done." It must route to the real action, not invent success.
+    - {type: action_is, value: [MINIMIZE_APP, MINIMISE_APP]}
+    - {type: no_placeholder}
+
+- id: open_domain_engine_is_url
+  target: engine
+  network: off
+  prompt: "open github.com"
+  assert:
+    - {type: action_is, value: [OPEN_URL]}
+
+- id: code_generation_no_toy_no_placeholder
+  target: engine
+  network: off
+  prompt: "write a python function that merges two sorted lists into one sorted list"
+  assert:
+    - {type: action_is, value: [GENERATE_SCRIPT, GENERATE_CODE, WRITE_CODE, CODE_SOLVE]}
+    - {type: no_placeholder}
+    - {type: not_contains, value: "raise NotImplementedError"}
+
+- id: capabilities_grounded_lists_real_actions
+  target: engine
+  network: off
+  prompt: "what can you do — list your real capabilities"
+  assert:
+    - {type: action_is, value: [LIST_CAPABILITIES, HELP]}
+    - {type: contains_any, value: ["SCREENSHOT", "VOLUME", "OPEN_APP", "MEMORY", "media", "screenshot", "volume"]}
+
+- id: factual_semantic_match
+  target: engine
+  network: on
+  prompt: "what is the capital of japan"
+  assert:
+    # Exercises the new local-embedding judge against a reference answer.
+    - {type: semantic_min, value: "Tokyo is the capital of Japan.", min: 0.4}
+    - {type: no_placeholder}
+
+- id: deepen_rubric_self_consistency
+  target: engine
+  network: off
+  prompt: "explain in depth how a water electrolysis system splits water into hydrogen and oxygen"
+  assert:
+    # Exercises rubric self-consistency: graded 3x, median taken.
+    - type: rubric
+      min: 0.6
+      samples: 3
+      value: >-
+        A good answer gives the ACTUAL mechanism: electricity drives an
+        electrolyser that splits water (H2O) into hydrogen and oxygen at the
+        electrodes, ideally mentioning a real component (PEM/alkaline cell,
+        membrane, catalyst) or efficiency. It must NOT be a generic deferral.
+
+# ── Executor board: drives execute_action() directly (model-free, read-only) ──
+# The third leg: router proves the DECISION, this proves the action actually
+# EXECUTES and returns a real grounded result. All actions here are side-effect
+# free (status/introspection/time) so the board never disturbs the host.
+- id: exec_runtime_status_grounded
+  target: executor
+  network: off
+  action: RUNTIME_STATUS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains_any, value: ["model", "provider", "gguf"]}
+    - {type: no_placeholder}
+
+- id: exec_list_capabilities_real
+  target: executor
+  network: off
+  action: LIST_CAPABILITIES
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains, value: "capabilities"}
+    - {type: contains_any, value: ["OPEN_APP", "SCREENSHOT", "VOLUME", "MEMORY"]}
+
+- id: exec_hardware_profile_probes
+  target: executor
+  network: off
+  action: HARDWARE_PROFILE
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains_any, value: ["RAM", "threads", "GPU", "CPU"]}
+
+- id: exec_gpu_status
+  target: executor
+  network: off
+  action: GPU_STATUS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains_any, value: ["GPU", "name", "driver", "VRAM"]}
+
+- id: exec_memory_status_ok
+  target: executor
+  network: off
+  action: MEMORY_STATUS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+
+- id: exec_reasoning_mode_status
+  target: executor
+  network: off
+  action: REASONING_MODE_STATUS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains, value: "reasoning mode"}
+
+- id: exec_get_time_iso
+  target: executor
+  network: off
+  action: GET_TIME
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: regex, value: '\d{4}-\d{2}-\d{2}'}
+
+- id: exec_get_date_iso
+  target: executor
+  network: off
+  action: GET_DATE
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: regex, value: '\d{4}-\d{2}-\d{2}'}
+
+- id: exec_system_stats
+  target: executor
+  network: off
+  action: SYSTEM_STATS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains_any, value: ["CPU", "RAM", "System"]}
+
+- id: exec_persona_lock_status
+  target: executor
+  network: off
+  action: PERSONA_LOCK_STATUS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains, value: "Persona lock"}
+
+- id: exec_orchestration_status
+  target: executor
+  network: off
+  action: ORCHESTRATION_STATUS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains_any, value: ["orchestration", "agents", "Orchestrator"]}
+
+- id: exec_resolve_runtime_paths
+  target: executor
+  network: off
+  action: RESOLVE_RUNTIME_PATHS
+  args: {}
+  assert:
+    - {type: result_ok, value: true}
+    - {type: contains_any, value: ["runtime", "cognitive_engine", "path"]}
+
+# Regression: MINIMIZE_APP must be HANDLED by the executor (not "Unsupported
+# executor action" and not a fabricated success). Uses a window name that can't
+# match, so it's side-effect free — it asserts the action is dispatched, not that
+# a real window gets minimised.
+- id: exec_minimize_app_is_handled_not_unsupported
+  target: executor
+  network: off
+  action: MINIMIZE_APP
+  args: {name: "no_such_window_zzz_eval_only"}
+  assert:
+    - {type: not_contains, value: "Unsupported executor action"}
+    - {type: not_contains_any, value: ["Done.", "Done!"]}

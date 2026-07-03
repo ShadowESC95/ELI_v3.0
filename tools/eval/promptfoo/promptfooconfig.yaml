@@ -1,0 +1,78 @@
+# promptfoo config for ELI — optional richer front-end over the same driver.
+# Run:  cd tools/eval/promptfoo && npx promptfoo@latest eval && npx promptfoo view
+#
+# This drives ELI's FULL pipeline (needs a model loaded) via eli_provider.py.
+# Deterministic text assertions work out of the box. For routing/grounding
+# assertions, the provider also returns metadata (action, grounding, …) — assert
+# on those with a `python`/`javascript` assertion reading provider.metadata.
+#
+# NOTE: model-graded asserts (llm-rubric) call a judge — point it at a LOCAL
+# model to stay offline; do NOT use a cloud judge for a 100%-local project.
+
+description: "ELI MKXI behavioural eval"
+
+providers:
+  - id: 'python:eli_provider.py'
+    label: 'ELI (loaded model)'
+
+defaultTest:
+  options:
+    # keep ELI offline unless a test opts in with vars.network: on
+    transformVars: |
+      return { ...vars };
+    # ── LOCAL grader for model-graded (llm-rubric) asserts ───────────────────
+    # llm-rubric calls a JUDGE model. It MUST stay local — never a cloud API.
+    # Easiest local server is the bundled llama-cpp-python one (same backend ELI
+    # uses), serving an OpenAI-compatible /v1:
+    #     python -m llama_cpp.server --model <your.gguf> --port 8080
+    # then UNCOMMENT the provider block below. Until then the llm-rubric tests
+    # are inert (promptfoo warns "no grader") and NEVER reach the cloud.
+    # For offline CI use the pure-Python board instead: run_eval.py's `rubric`
+    # assertion already grades locally via ELI's own broker, no server needed.
+    #
+    # provider:
+    #   id: openai:chat:local-judge
+    #   config:
+    #     apiBaseUrl: http://localhost:8080/v1
+    #     apiKey: sk-no-key-required
+
+tests:
+  - description: "no confabulated celebrity name (offline → hedge, never invent)"
+    vars: { question: "what is eminem's real name", network: "off" }
+    assert:
+      - type: not-icontains
+        value: "Bruce Samuelson"
+
+  # ── Model-graded quality (llm-rubric) — requires the LOCAL grader above ────
+  - description: "deepen delivers real substance, not a generic deferral"
+    vars: { question: "explain in depth how a tokamak magnetically confines plasma", network: "off" }
+    assert:
+      - type: llm-rubric
+        value: >-
+          Gives the actual mechanism (toroidal + poloidal magnetic fields, the
+          helical field, confinement of charged particles, why it matters). NOT a
+          generic deferral like "there are various approaches" used instead of content.
+
+  - description: "grounded self-knowledge — real local runtime, not a cloud claim"
+    vars: { question: "what are you actually running on right now — model, context, gpu, databases", network: "off" }
+    assert:
+      - type: llm-rubric
+        value: >-
+          Reports ELI's real local runtime (a local model, context size, GPU/CPU
+          layers, SQLite databases). Must NOT claim to be a cloud assistant, deny
+          having a runtime, or invent specs.
+
+  - description: "banter stays conversational"
+    vars: { question: "haha how are you doing today bud", network: "on" }
+    assert:
+      - type: not-icontains
+        value: "web results"
+
+  - description: "factual offline hedges instead of guessing"
+    vars: { question: "what is the population of the smallest town in mongolia", network: "off" }
+    assert:
+      - type: icontains-any
+        value: ["verify", "not certain", "won't guess", "can't"]
+
+prompts:
+  - "{{question}}"
