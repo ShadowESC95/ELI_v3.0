@@ -31,6 +31,24 @@ The frame that follows every proposal: *what does being local let ELI do here th
 agent can't?* If the answer is "nothing," it's an Adopt (table stakes). If the answer is "a
 lot," it's a Pioneer (the moat).
 
+## 1.5 The moat, concretely — v3-local vs the cloud, capability by capability
+
+The strategic point in one table. Where the last column is full, that's where v3 should push
+hardest — it's defensible *by construction*.
+
+| Capability | What the cloud offers | What ELI-local can do | Why the cloud structurally can't |
+|-----------|----------------------|----------------------|----------------------------------|
+| **Personalisation** | aggregated, opt-in, rented | a model of *you*, learned from your corrections, kept forever | per-user continual learning is a privacy + cost nightmare at scale |
+| **Memory** | your chats on their servers | your whole autobiographical corpus, local, yours to delete | they can't hold everyone's life privately; you can hold one |
+| **Embodiment** | screenshots you upload | live gaze + screen + OS control loop | no persistent, trusted access to *your* machine |
+| **Grounding** | plausible guesses | *verifiable* checks against real system state | they don't have the machine to verify against |
+| **Self-improvement** | one model for everyone | an adapter that learns *your* preferences privately | can't fine-tune per user, per correction, at scale |
+| **Sovereignty** | "trust our policy" | a *provable* "nothing left the machine" | their business model is holding your data |
+| **Privacy-critical data** | you won't upload it | meetings, finances, health — processed locally | you'll never give it to them; you already give it to your own PC |
+
+Everything with a strong right-hand column is a **Pioneer** below. That's not coincidence —
+it's the strategy.
+
 ## 2. Current capability inventory (what v3 inherits)
 
 From the manual, v2 already ships — genuinely, end-to-end — all of the following. v3 does not
@@ -318,6 +336,19 @@ Not upgrades — *new organs*, each strongly enabled by being local:
 - **[Pioneer] Explainable action replay.** Because every action is a logged Plan (§3.1), ELI can
   *replay and explain* any past action ("why did you delete that?") from the ledger — an auditable
   agent, which is a genuine trust differentiator.
+- **[Pioneer] Accessibility / assistive mode.** ELI already has gaze + voice + full OS control —
+  three-quarters of a genuinely good **hands-free computer for motor-impaired users.** Combine
+  gaze-dwell selection + duplex voice + anticipatory embodiment into a first-class assistive mode.
+  This is socially valuable, technically *right in ELI's wheelhouse*, and almost nobody does it well
+  locally/privately. A real differentiator with a real user base.
+- **[Bet] "Ask my computer anything."** Local RAG over your *entire* filesystem — code, docs, notes,
+  downloads, emails-on-disk — indexed privately, queryable in plain English with citations to the
+  actual file. The second-brain (above) generalised to everything you own. The vector + KG substrate
+  already exists; this is scope + indexing, not new science.
+- **[Bet] Portable "you" (digital-twin export).** Your sovereign model (memory + adapter + prefs)
+  as an *encrypted, exportable bundle* — move to a new machine, or archive a snapshot of "who ELI
+  knew you to be" at a point in time. Continuity and ownership as a first-class, user-controlled
+  artifact — the literal opposite of cloud lock-in.
 
 ---
 
@@ -378,6 +409,33 @@ measurably more *yours* than it was yesterday.
 | **v3.4 — Sees ahead** | Continuous screen → desktop world model (§9), anticipatory embodiment (§10) | pioneering; uses the gaze loop you already own |
 | **New organs** | Meeting intelligence, second-brain (§II.5) | high pull, mostly reuse existing parts |
 | **Opportunistic** | Mamba/distilled models (§18), diffusion (§13), voice duplex (§8) | near-free when the open models land |
+
+## 22.5 Milestone deliverables (concrete exit-criteria per phase)
+
+Each phase ships something usable and is *gated* — you don't start the next until the last one's
+exit-criteria are green. This is the anti-sprawl mechanism made concrete.
+
+- **v3.0 — Foundation (ship this alone).**
+  *Deliverables:* the `Plan` type + planner/effector for one action family (app/window control) at
+  ≥85% coverage; the MCP tool registry with 10 migrated tools; the model-router live with ≥2 warm
+  models. *Exit:* a plain command round-trips through plan→approve→effect→ledger; median simple-turn
+  latency down measurably; zero unlogged actions.
+- **v3.1 — Knows me.** *Deliverables:* the learned user-model background pass feeding the persona;
+  the temporal KG + nightly consolidation. *Exit:* a blind A/B where you can tell v3's briefing from
+  v2's; the recall eval holds or improves.
+- **v3.2 — Acts well.** *Deliverables:* verify-then-act on the top 5 grounded actions; repo-scale
+  coding context; the fused deep-research + Report Builder pipeline. *Exit:* self-check catches a
+  measurable share of would-be-wrong answers; a real overnight feature-build lands as a reviewable
+  diff + passing tests.
+- **v3.3 — Gets better.** *Deliverables:* the closed autonomy loop; RLVR-from-corrections into a
+  preference adapter; eval-gated self-tuning. *Exit:* proposal-acceptance rate trends *up* over a
+  few weeks; a kept self-tuning change with a logged metric delta and a rollback.
+- **v3.4 — Sees ahead.** *Deliverables:* continuous screen understanding; the first desktop
+  world-model prediction behind a confirm. *Exit:* one genuinely useful anticipatory offer fires
+  correctly more often than it annoys (measured accept-vs-dismiss).
+
+Ship v3.0 to *someone real* before v3.1. That single act — a user other than you — moves the
+project further than any feature.
 
 ## 23. De-risking (the honest failure modes)
 
