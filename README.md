@@ -40,6 +40,7 @@ itself to the hardware you've got, from a laptop to a multi-GPU tower.
 - [Tested on & known limitations](#tested-on--known-limitations)
 - [Security](#security)
 - [Project status & contributing](#project-status--contributing)
+- [Licensing & purchasing](#licensing--purchasing)
 - [License](#license) · [Contact](#contact)
 
 ---
@@ -555,12 +556,71 @@ useful to people. So far, it very much is.
   **[CONTRIBUTING.md](CONTRIBUTING.md)** first. Because ELI is source-available, contributions
   include a short **inbound license grant** so the whole project stays under one consistent license.
 - **Security issue?** See **[SECURITY.md](SECURITY.md)** — report it privately, not in a public issue.
-- **Want to support development?** ELI is free to use; if it's useful to you, you can chip in at
-  **[ko-fi.com/shadowesc95](https://ko-fi.com/shadowesc95)**. Entirely optional — it just helps keep
-  the project moving.
+- **Want to support development?** Source evaluation is free under PolyForm Internal Use; paid licenses
+  fund ongoing work. Optional tip jar:
+  **[ko-fi.com/shadowesc95](https://ko-fi.com/shadowesc95)**.
 
 Forks for **redistribution** are not permitted by the [license](LICENSE) — contribute improvements
 back here instead of publishing your own copy.
+
+## Licensing & purchasing
+
+ELI v3 is a **paid, proprietary product**. The GitHub repo is **source-available** so you can
+evaluate and modify it for yourself — not so anyone can redistribute or resell it.
+
+### Free / trial (this repository)
+
+| | |
+|---|---|
+| **License** | [PolyForm Internal Use 1.0.0](LICENSE) |
+| **You may** | Download, run from source, and **modify for your own machine** |
+| **You may not** | Redistribute, publish forks, host for others, or sell ELI (or a derivative) |
+| **License key** | Not required for source evaluation |
+| **Best for** | Developers evaluating ELI, personal tinkering, contributing back via PR |
+
+This is **not** a retail product build. It does not include commercial-use rights beyond PolyForm
+Internal Use, paid support, or guaranteed update channels.
+
+### Paid (Commercial EULA)
+
+When you **purchase** ELI v3, you accept the **[Commercial EULA](COMMERCIAL_EULA.md)** (final
+wording shown at checkout). Paid customers receive:
+
+| | |
+|---|---|
+| **Grant** | Licensed installer/build for your tier (Personal / Pro / Enterprise) |
+| **Use** | Full product use on the machines or seats in your order |
+| **Modify** | Yes — for **your own** licensed deployment; still **no redistribution** |
+| **Updates & support** | Per tier (e.g. 12 months updates + email support on Pro) |
+| **License key** | **Required** — activates your build (see below) |
+
+**Buying a license:** retail opens with v3 releases on
+[GitHub Releases](https://github.com/ShadowESC95/Eli_v3/releases). Until then — Pro, Enterprise, or
+bulk licensing: **[jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)**.
+
+### License key & activation
+
+Paid builds use **optional-but-standard activation** so licenses stay tied to paying customers:
+
+1. Purchase → receive a **license key** (receipt / email / account).
+2. First run or installer → **enter the key** (or `eli --activate-key …` from the CLI).
+3. Key binds to your **licensed machine(s)** per tier; ELI stays **local-first** — activation does
+   not upload your chats, memories, or documents.
+4. **Trial** builds may run time- or feature-limited without a key; **source** builds from this repo
+   do not include a commercial key.
+
+Details: **[COMMERCIAL_EULA.md](COMMERCIAL_EULA.md)** §4.
+
+### Quick comparison
+
+| | Free (GitHub source) | Paid (Commercial EULA) |
+|---|---|---|
+| Install from source | ✅ | ✅ (plus supported installer) |
+| Modify privately | ✅ | ✅ |
+| Redistribute / resell | ❌ | ❌ |
+| Commercial business use | PolyForm limits — contact for paid | ✅ per tier |
+| License key | — | ✅ |
+| Supported updates | community / git pull | ✅ per purchase |
 
 ## License
 
@@ -573,9 +633,9 @@ ELI v3 is **source-available, not open-source**, under the
 | Use it for your own internal / personal purposes | **Host it as a service** for others |
 | Keep your own private modifications | **Sell** it or any modified version |
 
-All commercial and distribution rights are reserved by the copyright holder. For anything beyond
-that — redistribution, hosting, or a commercial license — please get in touch. Provided "as is",
-without warranty.
+All commercial and distribution rights are reserved by the copyright holder. **Paid use** is governed
+by the **[Commercial EULA](COMMERCIAL_EULA.md)**. For redistribution, hosting, or enterprise
+licensing beyond these terms — please get in touch. Provided "as is", without warranty.
 
 **Seeing ELI redistributed, hosted, or sold somewhere?** That is not permitted under the license.
 Please report it — with a link — to [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com);
@@ -593,5 +653,5 @@ Questions, feedback, or interested in a license/services beyond the terms above?
 - **GitHub:** [@ShadowESC95](https://github.com/ShadowESC95) ·
   [open an issue](https://github.com/ShadowESC95/Eli_v3/issues)
 
-For commercial licensing, redistribution rights, or hosting beyond the
-[license](LICENSE), please reach out by email.
+For **purchasing**, **commercial licensing**, redistribution rights, or hosting beyond the
+[license](LICENSE), see **[Licensing & purchasing](#licensing--purchasing)** or email directly.
