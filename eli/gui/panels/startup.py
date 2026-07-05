@@ -472,7 +472,7 @@ class StartupModelSelectionDialog(QDialog):
 class _ModelDownloadThread(QThread):
     """Runs a curated GGUF download off the UI thread. Routed through netguard
     (offline-by-default preserved; the download opens a scoped allow window)."""
-    progress = pyqtSignal(int, int)        # downloaded_bytes, total_bytes
+    progress = pyqtSignal(int, int)        # percent_milli (0-1000), done_mib
     finished_result = pyqtSignal(dict)     # download_model() result dict
 
     def __init__(self, entry: Dict[str, Any], parent=None):
@@ -482,9 +482,14 @@ class _ModelDownloadThread(QThread):
     def run(self):
         try:
             from eli.core.model_download import download_model
+            def _emit_progress(done: int, total: int) -> None:
+                pct = int(min(1000, round(1000 * done / total))) if total > 0 else 0
+                done_mib = min(int(done // (1024 * 1024)), 2_000_000)
+                self.progress.emit(pct, done_mib)
+
             res = download_model(
                 self._entry,
-                progress_cb=lambda d, t: self.progress.emit(int(d), int(t)),
+                progress_cb=_emit_progress,
             )
         except Exception as exc:  # never let a worker crash take down the wizard
             res = {"ok": False, "error": f"Download crashed: {exc}"}
@@ -570,6 +575,13 @@ class FirstBootWizard(QDialog):
         self.setMinimumWidth(660)
         self.setMinimumHeight(440)
         self.setStyleSheet(_WIZARD_QSS)
+        try:
+            from eli.gui.branding import load_app_icon
+            _icon = load_app_icon()
+            if _icon is not None:
+                self.setWindowIcon(_icon)
+        except Exception:
+            pass
 
         self._selected_path: str = ""
         self._selected_provider: str = "bundled_gguf"
@@ -611,6 +623,21 @@ class FirstBootWizard(QDialog):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(14, 14, 14, 14)
+        try:
+            from eli.gui.branding import resolve_app_icon_path
+            from eli.gui.panels._qt import QPixmap
+            _ip = resolve_app_icon_path()
+            if _ip is not None:
+                _logo = QLabel()
+                _pix = QPixmap(str(_ip)).scaled(
+                    96, 96, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                _logo.setPixmap(_pix)
+                _logo.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                v.addWidget(_logo)
+        except Exception:
+            pass
         title = QLabel("Welcome to ELI v3")
         title.setStyleSheet("font-size:18px;font-weight:bold;color:#88c0d0;")
         v.addWidget(title)
@@ -912,14 +939,19 @@ class FirstBootWizard(QDialog):
         self._dl_thread.finished_result.connect(self._on_dl_done)
         self._dl_thread.start()
 
-    def _on_dl_progress(self, done: int, total: int):
-        mb = done / (1024 * 1024)
-        if total > 0:
-            self._dl_progress.setRange(0, total)
-            self._dl_progress.setValue(done)
-            self._dl_status.setText(f"Downloading … {mb:.0f} MB / {total/(1024*1024):.0f} MB")
+    def _on_dl_progress(self, pct_milli: int, done_mib: int):
+        gib_done = done_mib / 1024.0
+        if pct_milli > 0:
+            self._dl_progress.setRange(0, 1000)
+            self._dl_progress.setValue(min(pct_milli, 1000))
+            if pct_milli >= 1000:
+                self._dl_status.setText(f"Downloading … {gib_done:.2f} GiB (finishing)")
+            else:
+                est_total_gib = gib_done * 1000.0 / max(pct_milli, 1)
+                self._dl_status.setText(
+                    f"Downloading … {gib_done:.2f} / ~{est_total_gib:.2f} GiB")
         else:
-            self._dl_status.setText(f"Downloading … {mb:.0f} MB")
+            self._dl_status.setText(f"Downloading … {gib_done:.2f} GiB")
 
     def _on_dl_done(self, res: Dict[str, Any]):
         self._dl_btn.setEnabled(True)

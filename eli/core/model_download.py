@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -313,7 +314,7 @@ def remote_size_bytes(key_or_entry: Any, timeout: float = 30.0) -> int:
         with netguard.allow_network(f"size check: {entry.get('filename') or url}"):
             req = urllib.request.Request(
                 url, method="HEAD",
-                headers={"User-Agent": "ELI-MKXI/2.0 (size-check)"},
+                headers={"User-Agent": "ELI-v2.0/2.0 (size-check)"},
             )
             with netguard.guarded_urlopen(req, timeout=timeout) as resp:
                 clen = resp.headers.get("Content-Length")
@@ -397,7 +398,7 @@ def download_model(
     part_path = dest_dir / (filename + ".part")
     resume_from = part_path.stat().st_size if part_path.exists() else 0
 
-    headers = {"User-Agent": "ELI-MKXI/2.0 (model-download)"}
+    headers = {"User-Agent": "ELI-v2.0/2.0 (model-download)"}
     if resume_from > 0:
         headers["Range"] = f"bytes={resume_from}-"
 
@@ -414,9 +415,22 @@ def download_model(
                     resume_from = 0
                     mode = "wb"
                 total = 0
-                clen = resp.headers.get("Content-Length")
-                if clen and str(clen).isdigit():
-                    total = int(clen) + (resume_from if status == 206 else 0)
+                crange = resp.headers.get("Content-Range") or ""
+                m = re.match(r"bytes \d+-\d+/(\d+)", str(crange))
+                if m:
+                    total = int(m.group(1))
+                else:
+                    clen = resp.headers.get("Content-Length")
+                    if clen and str(clen).isdigit():
+                        chunk_len = int(clen)
+                        if status == 206:
+                            total = resume_from + chunk_len
+                        else:
+                            total = chunk_len
+                # Stale catalog / odd servers: grow total once we know we're past it.
+                est_bytes = int(float(entry.get("size_gb") or 0) * 1e9)
+                if total <= 0 and est_bytes > 0:
+                    total = est_bytes
                 downloaded = resume_from
                 if progress_cb:
                     try:
@@ -430,6 +444,8 @@ def download_model(
                             break
                         out.write(chunk)
                         downloaded += len(chunk)
+                        if total > 0 and downloaded > total:
+                            total = downloaded
                         if progress_cb:
                             try:
                                 progress_cb(downloaded, total)
