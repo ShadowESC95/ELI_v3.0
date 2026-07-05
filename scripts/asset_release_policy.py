@@ -6,10 +6,13 @@ from pathlib import Path
 DEFAULT_ASSET_REPO = "ShadowESC95/Eli_v3"
 DEFAULT_ASSET_TAG = "local-assets-v3.0"
 
-# Voices excluded from public restore/upload (NC-SA or uncleared — see models/MODEL_LICENSES.md).
+# Voices excluded from public restore/upload (NC-SA, uncleared Lessac, Cori review).
 EXCLUDED_VOICE_BASENAMES = frozenset({
     "en_US-ryan-high",
-    "en_US-ryan-medium",  # same upstream family; exclude for consistency
+    "en_US-ryan-medium",
+    "en_US-lessac-high",
+    "en_US-lessac-medium",
+    "en_GB-cori-high",
 })
 
 

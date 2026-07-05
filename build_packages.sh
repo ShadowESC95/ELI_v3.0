@@ -129,7 +129,7 @@ ELI v2 — Windows portable (${2:-lean})
 2. Run install.bat  (or: powershell -ExecutionPolicy Bypass -File install.ps1)
 3. Run eli.bat
 
-Model pack: GitHub release tag local-assets-v2.1 or python scripts/restore_github_asset_files.py
+Model pack: GitHub release tag local-assets-v3.0 or python scripts/restore_github_asset_files.py
 EOF
 }
 
