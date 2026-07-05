@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rewrite stale absolute ELI paths in runtime artifacts to repo-relative form.
 
-Safe to run after moving/renaming the project folder (e.g. v2 → Eli_v3).
+Safe to run after moving/renaming the project folder (e.g. v2 → ELI_v3.0).
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def scrub_file(path: Path, root: Path) -> bool:
             return False
         new_raw = raw
         import re
-        for marker in ("ELI_MKXI-main_MAY_NEWEST", "ELI_MKXI", "Eli_v3", "ELI_v2.0"):
+        for marker in ("ELI_MKXI-main_MAY_NEWEST", "ELI_MKXI", "Eli_v3", "ELI_v3.0", "ELI_v2.0"):
             if marker in new_raw:
                 new_raw = re.sub(
                     rf"(?:/[\w.-]+)*{re.escape(marker)}(?:/[\w./-]*)?",

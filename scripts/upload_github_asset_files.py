@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from github_asset_manifest import ROOT, build_manifest
 
 
-DEFAULT_REPO = "ShadowESC95/Eli_v3"
+DEFAULT_REPO = "ShadowESC95/ELI_v3.0"
 DEFAULT_TAG = "local-assets-v3.0"
 DEFAULT_CHUNK_BYTES = 1_900_000_000
 

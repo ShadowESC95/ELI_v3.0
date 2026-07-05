@@ -4,14 +4,14 @@ from eli.core.portable_paths import make_portable_path_value, project_root, reso
 
 
 def test_strip_v2_absolute_path():
-    root = Path("/home/user/Desktop/Eli_v3")
+    root = Path("/home/user/Desktop/ELI_v3.0")
     raw = "/home/user/Desktop/ELI_MKXI-main_MAY_NEWEST/models/foo.gguf"
     assert make_portable_path_value(raw, root) == "models/foo.gguf"
 
 
 def test_strip_v3_absolute_path():
-    root = Path("/home/user/Desktop/Eli_v3")
-    raw = "/home/user/Desktop/Eli_v3/artifacts/db/user.sqlite3"
+    root = Path("/home/user/Desktop/ELI_v3.0")
+    raw = "/home/user/Desktop/ELI_v3.0/artifacts/db/user.sqlite3"
     assert make_portable_path_value(raw, root) == "artifacts/db/user.sqlite3"
 
 

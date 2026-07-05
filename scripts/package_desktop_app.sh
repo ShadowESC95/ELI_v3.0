@@ -10,12 +10,12 @@ with open('pyproject.toml','rb') as f:
     print(tomllib.load(f)['project']['version'])
 PY
 )"
-APP_NAME="Eli_v3"
+APP_NAME="ELI_v3.0"
 OUT_DIR="$ROOT/dist/app_packages"
 WORK_DIR="$ROOT/build/app-package"
 WITH_ASSETS=0
 SKIP_WHEEL=0
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_v3.0}"
 TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
 
 usage() {
@@ -31,7 +31,7 @@ Options:
   -h, --help              Show help.
 
 Output:
-  dist/app_packages/Eli_v3-${VERSION}-linux-portable.tar.gz
+  dist/app_packages/ELI_v3.0-${VERSION}-linux-portable.tar.gz
 EOF_USAGE
 }
 
@@ -115,7 +115,7 @@ bash "\$APP_ROOT/scripts/eli_one_click_setup.sh" "\$@"
 INSTALL_EOF
 chmod +x "$STAGING/INSTALL_ELI.sh"
 
-cat > "$STAGING/packaging/desktop/Eli_v3.desktop.template" <<'DESKTOP_EOF'
+cat > "$STAGING/packaging/desktop/ELI_v3.0.desktop.template" <<'DESKTOP_EOF'
 [Desktop Entry]
 Name=ELI Pro
 GenericName=Local AI Assistant
@@ -137,7 +137,7 @@ APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$DESKTOP_DIR"
 sed "s#__APP_ROOT__#$APP_ROOT#g" \
-  "$APP_ROOT/packaging/desktop/Eli_v3.desktop.template" \
+  "$APP_ROOT/packaging/desktop/ELI_v3.0.desktop.template" \
   > "$DESKTOP_DIR/eli.desktop"
 rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop"
 chmod +x "$DESKTOP_DIR/eli.desktop"
@@ -177,7 +177,7 @@ Terminal command:
   INSTALL_ELI.sh installs ~/.local/bin/eli by default.
   If your shell cached an older eli: hash -r
 
-v3 is in development: https://github.com/ShadowESC95/Eli_v3
+v3 is in development: https://github.com/ShadowESC95/ELI_v3.0
 README_EOF
 
 PACKAGE="$OUT_DIR/${APP_NAME}-${VERSION}-linux-portable.tar.gz"

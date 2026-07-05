@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DEFAULT_ASSET_REPO = "ShadowESC95/Eli_v3"
+DEFAULT_ASSET_REPO = "ShadowESC95/ELI_v3.0"
 DEFAULT_ASSET_TAG = "local-assets-v3.0"
 
 # Voices excluded from public restore/upload (NC-SA, uncleared Lessac, Cori review).

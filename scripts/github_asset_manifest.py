@@ -126,7 +126,7 @@ def build_manifest(include_hashes: bool = False) -> Dict[str, Any]:
     return {
         "schema": "eli_github_asset_manifest_v1",
         "project_root": str(ROOT),
-        "repo_hint": "ShadowESC95/Eli_v3",
+        "repo_hint": "ShadowESC95/ELI_v3.0",
         "total_ignored_files": len(rows),
         "total_ignored_bytes": total_bytes,
         "recommended_upload_bytes": upload_bytes,

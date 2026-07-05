@@ -266,8 +266,8 @@ the boundary with a single network toggle.
 build → offers to download a model sized to your hardware:
 
 ```bash
-git clone https://github.com/ShadowESC95/Eli_v3.git
-cd Eli_v3
+git clone https://github.com/ShadowESC95/ELI_v3.0.git
+cd ELI_v3.0
 bash install.sh                 # interactive: report → plan → install → pick model(s)
 ./scripts/eli_launch.sh         # launch the desktop app (first run shows a quick setup)
 ```
@@ -554,7 +554,7 @@ I work on ELI most weeks and keep shipping. I'm the one who decides what goes in
 releases — but bug reports and ideas are genuinely welcome, and I'll keep it moving as long as it's
 useful to people. So far, it very much is.
 
-- **Found a bug or have an idea?** [Open an issue](https://github.com/ShadowESC95/Eli_v3/issues).
+- **Found a bug or have an idea?** [Open an issue](https://github.com/ShadowESC95/ELI_v3.0/issues).
 - **Want to contribute code?** Pull requests are welcome — please read
   **[CONTRIBUTING.md](CONTRIBUTING.md)** first. Because ELI is source-available, contributions
   include a short **inbound license grant** so the whole project stays under one consistent license.
@@ -598,7 +598,7 @@ wording shown at checkout). Paid customers receive:
 | **License key** | **Required** — activates your build (see below) |
 
 **Buying a license:** retail opens with v3 releases on
-[GitHub Releases](https://github.com/ShadowESC95/Eli_v3/releases). Until then — Pro, Enterprise, or
+[GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases). Until then — Pro, Enterprise, or
 bulk licensing: **[jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)**.
 
 ### License key & activation
@@ -658,7 +658,7 @@ Questions, feedback, or interested in a license/services beyond the terms above?
 
 - **Email:** [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)
 - **GitHub:** [@ShadowESC95](https://github.com/ShadowESC95) ·
-  [open an issue](https://github.com/ShadowESC95/Eli_v3/issues)
+  [open an issue](https://github.com/ShadowESC95/ELI_v3.0/issues)
 
 For **purchasing**, **commercial licensing**, redistribution rights, or hosting beyond the
 [license](LICENSE), see **[Licensing & purchasing](#licensing--purchasing)** or email directly.
