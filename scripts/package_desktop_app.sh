@@ -126,6 +126,14 @@ bash "\$APP_ROOT/scripts/eli_one_click_setup.sh" "\$@"
 INSTALL_EOF
 chmod +x "$STAGING/INSTALL_ELI.sh"
 
+cat > "$STAGING/ELI_Setup.sh" <<'SETUP_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$APP_ROOT/INSTALL_ELI.sh" "$@"
+SETUP_EOF
+chmod +x "$STAGING/ELI_Setup.sh"
+
 cat > "$STAGING/packaging/desktop/ELI_v3.0.desktop.template" <<'DESKTOP_EOF'
 [Desktop Entry]
 Name=ELI Pro
@@ -163,7 +171,11 @@ Hardware (honest):
   Best tested: Linux x86_64 + NVIDIA GPU.
   Windows/macOS/AMD builds exist; expect rough edges — feedback welcome.
 
-Quick start:
+Quick start (easiest):
+  chmod +x ELI_Setup.sh && ./ELI_Setup.sh
+  # or AppImage from GitHub Releases (double-click after chmod +x)
+
+Classic:
   1. ./INSTALL_ELI.sh
   2. ./RUN_ELI.sh --with-github-assets    # optional model/voice pack
   3. ./RUN_ELI.sh                         # launch ELI
