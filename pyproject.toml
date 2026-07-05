@@ -163,4 +163,6 @@ exclude = ["tests*", "ops*", "build*"]
     "tools/image_engine/config/*.json",
     "plugins/registry/*.json",
     "cognition/persona*.txt",
+    "licensing/keys/*.pub",
+    "licensing/keys/*.md",
 ]

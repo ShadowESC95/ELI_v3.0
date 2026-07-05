@@ -611,6 +611,10 @@ Paid builds use **optional-but-standard activation** so licenses stay tied to pa
 
 Details: **[COMMERCIAL_EULA.md](COMMERCIAL_EULA.md)** §4.
 
+**Implementation:** runtime code in [`eli/licensing/`](eli/licensing/), config template in
+[`config/licensing/`](config/licensing/), author/customer scripts in
+[`scripts/licensing/`](scripts/licensing/).
+
 ### Quick comparison
 
 | | Free (GitHub source) | Paid (Commercial EULA) |

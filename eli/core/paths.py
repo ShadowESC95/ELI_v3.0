@@ -254,6 +254,14 @@ def notes_dir() -> Path:
     return data_dir() / "notes"
 
 
+def license_dir() -> Path:
+    """Commercial license activation directory (activation.json)."""
+    override = os.environ.get("ELI_LICENSE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return config_dir() / "licensing"
+
+
 # ── Database paths ──
 
 def user_db_path() -> Path:
@@ -326,7 +334,7 @@ def ensure_dirs():
         models_dir(), plugins_dir(), voices_dir(),
         conversations_dir(), proactive_dir(), documents_dir(),
         scripts_dir(), notes_dir(), notebook_dir(),
-        db_dir(),
+        license_dir(), db_dir(),
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)

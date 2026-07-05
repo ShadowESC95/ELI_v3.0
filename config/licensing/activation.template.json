@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "activated_at": "",
+  "license_id": "",
+  "tier": "",
+  "seats": 1,
+  "expires_at": null,
+  "customer_ref": null,
+  "key_fingerprint": "",
+  "machines": [],
+  "last_validated_at": null,
+  "source": "offline"
+}
