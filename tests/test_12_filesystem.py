@@ -52,9 +52,8 @@ def test_pyproject_toml_valid():
 
 
 def test_capability_manifest_valid_json():
-    path = os.path.join(ELI_ROOT, "capability_manifest.json")
-    if not os.path.isfile(path):
-        pytest.skip("capability_manifest.json not present")
+    path = os.path.join(PROJECT_ROOT, "capability_manifest.json")
+    assert os.path.isfile(path), "capability_manifest.json must ship in the repo root"
     with open(path) as f:
         data = json.load(f)
     assert data is not None
