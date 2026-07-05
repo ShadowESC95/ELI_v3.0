@@ -1,37 +1,50 @@
 # Commercial licensing — ELI v3 (paid product)
 
 ELI v3 is **not open source**. The repo `LICENSE` (PolyForm Internal Use 1.0.0) governs
-what people can do with the **source on GitHub**:
+**GitHub source evaluation**. **Paid customers** accept the [Commercial EULA](../COMMERCIAL_EULA.md)
+and a tier supplement under [docs/eula/](eula/).
 
-| Allowed (PolyForm Internal) | Not allowed without a separate deal |
+## Quick map
+
+| Role | Doc / tool |
 |---|---|
-| Download, run, modify for **your own** internal/personal use | Redistribute, sublicense, or sell the software |
-| Private evaluation and development | Host as a multi-tenant service for others |
-| | Ship a fork or rebranded build |
+| **Buyer** | [docs/STORE.md](STORE.md) · [COMMERCIAL_EULA.md](../COMMERCIAL_EULA.md) |
+| **Activate** | `eli --activate-key 'ELIV3-…'` · [config/licensing/README.md](../config/licensing/README.md) |
+| **You (issue keys)** | [scripts/licensing/README.md](../scripts/licensing/README.md) |
+| **Tier limits** | [config/licensing/tier_policy.json](../config/licensing/tier_policy.json) |
 
-**You (the copyright holder) already retain all commercial rights.** PolyForm Internal
-does *not* stop you from selling ELI — it stops *everyone else* from selling or sharing it.
+## Should you change the license for a paid product?
 
-## What to use for paying customers
+**No — not the public repo license.** Keep PolyForm Internal on GitHub:
 
-Do **not** switch the public repo to MIT/Apache/GPL if v3 stays a paid product — that
-would grant redistribution rights you do not want.
+- Evaluators can clone and hack locally
+- Nobody else can redistribute or resell
+- **You** retain all commercial rights (already stated in LICENSE)
 
-Recommended stack:
+**Paid sales use a separate grant:**
 
-1. **GitHub / eval:** keep `LICENSE` = PolyForm Internal Use (current).
-2. **Paid buyers:** issue a separate **Commercial License Agreement (EULA)** per tier
-   (personal / pro / enterprise) — seat count, updates, support window, no redistribution.
-3. **Runtime enforcement:** `eli/licensing/` (activation keys, machine binding) — already
-   wired for v3; keys are signed offline, verified at startup.
-4. **Deliverable:** ship binaries/portable packages + license file + key — not necessarily
-   the full private source unless the tier includes it.
+1. **Commercial EULA** at purchase (master terms)
+2. **Tier supplement** (Personal / Pro / Enterprise / Trial) — seats, commercial use, support
+3. **Signed license key** — enforced by `eli/licensing/` at runtime on retail builds
 
-## Optional later
+Do **not** switch to MIT/Apache/GPL for v3 if it stays proprietary.
 
-- **PolyForm Noncommercial** — if you want a stricter public license (no commercial use
-  by third parties at all, even “internal business” edge cases).
-- **Dual licensing page** — “PolyForm Internal for eval; contact for commercial license.”
-- **Trademark** — “ELI” branding on paid builds; PolyForm does not cover trademarks.
+## Author workflow (manual store today)
 
-Questions / commercial terms: jaybridgeman0095@gmail.com
+```bash
+# One-time (private key stays OFF git)
+python3 scripts/licensing/generate_signing_keypair.py --out-dir ~/eli-license-signing
+cp ~/eli-license-signing/product_signing.pub eli/licensing/keys/product_signing.pub
+
+# Per order
+export ELI_LICENSE_SIGNING_KEY=~/eli-license-signing/product_signing.pem
+python3 scripts/licensing/fulfill_order.py --tier pro --customer-ref ORDER-123 --email-to buyer@example.com
+```
+
+## Retail builds
+
+Set `ELI_RETAIL_BUILD=1` or `"retail_build": true` in settings — activation required before GUI/CLI runs.
+
+Dev checkout: no key required unless `ELI_REQUIRE_LICENSE=1`.
+
+Questions: jaybridgeman0095@gmail.com

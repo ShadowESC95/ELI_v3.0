@@ -596,8 +596,8 @@ wording shown at checkout). Paid customers receive:
 | **Updates & support** | Per tier (e.g. 12 months updates + email support on Pro) |
 | **License key** | **Required** — activates your build (see below) |
 
-**Buying a license:** retail opens with v3 releases when announced to licensees. Until then — Pro, Enterprise, or
-bulk licensing: **[jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)**.
+**Buying a license:** see **[docs/STORE.md](docs/STORE.md)** (Ko-fi / email until automated checkout).
+Pro, Enterprise, or bulk: **[jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)**.
 
 ### License key & activation
 

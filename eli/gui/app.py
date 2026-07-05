@@ -304,6 +304,17 @@ def _save_config(cfg: dict):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    # ── Commercial license gate (retail / ELI_REQUIRE_LICENSE builds) ────────
+    try:
+        from eli.licensing.launch_gate import ensure_license_or_exit
+        ensure_license_or_exit(allow_gui_prompt=True)
+    except Exception as exc:
+        from eli.licensing.activation import LicenseRequiredError
+        if isinstance(exc, LicenseRequiredError):
+            print(exc, file=sys.stderr)
+            sys.exit(1)
+        raise
+
     # ── First-run/boot DB + machine-inventory bootstrap (idempotent) ─────────
     # The `eli`/`eli-gui` console scripts enter here directly (bypassing
     # eli.__main__), so ensure the full schema + app index exist even when ELI
