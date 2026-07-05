@@ -304,9 +304,12 @@ python -m eli.core.model_download --auto      # one best-fit for your VRAM
 | `falcon-h1-34b` | Falcon-H1-34B-Instruct | ~18.9 GB | 24 GB GPU / CPU |
 
 You can also drop **any `.gguf`** into `models/`, or point ELI at your own catalog
-(`ELI_MODEL_CATALOG`). The tiny **embedder** (memory/RAG) installs automatically; vision is an
-optional extra. Want ELI to *speak in its own voice* out of the box? Fine-tune your own model —
-see **[`docs/TRAINING_YOUR_OWN_MODEL.md`](docs/TRAINING_YOUR_OWN_MODEL.md)**.
+(`ELI_MODEL_CATALOG`). The tiny **embedder** (memory/RAG) installs automatically to
+`models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf` (~80 MiB); vision is an optional extra.
+Default TTS is **`en_US-amy-medium`** (Piper + whisper STT, auto-fetched on install).
+Asset restore skips `en_US-ryan-*`, `en_US-lessac-*`, and `en_GB-cori-high` — see
+**[models/MODEL_LICENSES.md](models/MODEL_LICENSES.md)**. Want ELI to *speak in its own voice*
+out of the box? Fine-tune your own model — see **[`docs/TRAINING_YOUR_OWN_MODEL.md`](docs/TRAINING_YOUR_OWN_MODEL.md)**.
 
 ## Optional: a remote view over your own network
 
