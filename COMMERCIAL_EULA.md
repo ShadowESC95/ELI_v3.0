@@ -121,9 +121,9 @@ remain in effect.
 
 ## 10. Purchasing & contact
 
-**Retail / license keys:** announced to licensees when v3 sales open.
+**Store & fulfillment:** [docs/STORE.md](docs/STORE.md) · Ko-fi: [ko-fi.com/shadowesc95](https://ko-fi.com/shadowesc95)
 
-Until the store is live:
+Until automated checkout is live, keys are issued manually after payment.
 
 - **Commercial license, Pro/Enterprise, or redistribution:** [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)
 - **Violations (unauthorised resale/forks):** report with a link to the same address

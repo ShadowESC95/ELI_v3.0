@@ -1,47 +1,53 @@
-# ELI v3 license issuance (author tooling)
+# ELI v3 — licensing scripts (author / sales only)
 
-**Customers** activate with `scripts/licensing/activate_license.sh` or `eli --activate-key`.
+**Customers:** activate with `eli --activate-key 'ELIV3-…'` — see [config/licensing/README.md](../../config/licensing/README.md).
 
-**You (author)** generate signing keys once, then issue keys per sale.
+**Store workflow:** [docs/STORE.md](../../docs/STORE.md)
 
-## 1. Generate signing keypair (once, offline)
+## 1. Generate signing keypair (once)
 
 ```bash
 python3 scripts/licensing/generate_signing_keypair.py --out-dir ~/eli-license-signing
-```
-
-Copy the public key into the product tree (safe to commit):
-
-```bash
 cp ~/eli-license-signing/product_signing.pub eli/licensing/keys/product_signing.pub
 ```
 
 Keep `~/eli-license-signing/product_signing.pem` **private** — never commit it.
 
-## 2. Issue a customer key
+## 2. Issue a key (quick)
 
 ```bash
 export ELI_LICENSE_SIGNING_KEY=~/eli-license-signing/product_signing.pem
-
-python3 scripts/licensing/issue_license_key.py --tier personal --seats 1
-python3 scripts/licensing/issue_license_key.py --tier pro --seats 3 --expires 2027-12-31
+python3 scripts/licensing/issue_license_key.py --tier pro --customer-ref manual-test
 ```
 
-Paste the printed `ELIV3-…` key into the customer receipt / email.
+Seats and trial expiry default from [tier_policy.json](../../config/licensing/tier_policy.json).
 
-## 3. Customer activation
+## 3. Fulfill an order (recommended)
+
+Generates key + email template for the buyer:
 
 ```bash
+export ELI_LICENSE_SIGNING_KEY=~/eli-license-signing/product_signing.pem
+python3 scripts/licensing/fulfill_order.py \
+  --tier pro \
+  --customer-ref ko-fi-12345 \
+  --email-to buyer@example.com
+```
+
+## 4. Customer activates
+
+```bash
+bash scripts/licensing/activate_license.sh 'ELIV3-...'
+# or
 eli --activate-key 'ELIV3-...'
 eli --license-status
 ```
 
-Retail installers set `ELI_RETAIL_BUILD=1` so activation is required before launch.
+## CLI module
 
-## Layout
-
-| Path | Purpose |
-|---|---|
-| `eli/licensing/` | Runtime verification + storage |
-| `config/licensing/` | Docs + activation JSON template |
-| `scripts/licensing/` | Author + customer shell helpers |
+```bash
+python3 -m eli.licensing.cli status
+python3 -m eli.licensing.cli activate 'ELIV3-...'
+python3 -m eli.licensing.cli deactivate --machine-only
+eli-license status
+```

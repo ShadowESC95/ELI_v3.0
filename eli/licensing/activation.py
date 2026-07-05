@@ -44,6 +44,12 @@ def activation_required() -> bool:
     if os.environ.get("ELI_RETAIL_BUILD", "").strip().lower() in {"1", "true", "yes", "on"}:
         return True
     try:
+        from eli.core.runtime_settings import load_settings
+        if load_settings().get("retail_build") is True:
+            return True
+    except Exception:
+        pass
+    try:
         from eli.core.paths import is_frozen, _is_dev_mode
 
         if is_frozen():
@@ -219,16 +225,5 @@ class LicenseRequiredError(RuntimeError):
 
 
 def assert_launch_allowed() -> None:
-    status = validate_activation()
-    if status.active:
-        return
-    if not status.required:
-        return
-    raise LicenseRequiredError(
-        "ELI v3 license activation required.\n"
-        f"  Reason: {status.message}\n"
-        "  Activate:  eli --activate-key YOUR-KEY\n"
-        "  Status:    eli --license-status\n"
-        "  Purchase:  jaybridgeman0095@gmail.com\n"
-        "  Docs:      COMMERCIAL_EULA.md"
-    )
+    from eli.licensing.launch_gate import ensure_license_or_exit
+    ensure_license_or_exit(allow_gui_prompt=True)

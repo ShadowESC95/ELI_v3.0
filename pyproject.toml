@@ -142,6 +142,7 @@ Repository = "https://github.com/ShadowESC95/ELI_v3.0"
 eli = "eli.gui.app:main"
 "eli-v3" = "eli.gui.app:main"
 eli-cli = "eli.gui.app:main"
+eli-license = "eli.licensing.cli:main"
 
 [project.gui-scripts]
 eli-gui = "eli.gui.app:main"

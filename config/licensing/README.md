@@ -43,6 +43,6 @@ python3 -m eli.licensing.cli deactivate --machine-only
 
 ## Issuing keys (author only)
 
-See `scripts/licensing/README.md` and `eli/licensing/keys/README.md`.
+See `scripts/licensing/README.md`, `docs/STORE.md`, and `eli/licensing/keys/README.md`.
 
 Template: [activation.template.json](activation.template.json)
