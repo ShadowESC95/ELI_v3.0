@@ -134,8 +134,7 @@ training = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ShadowESC95/ELI_v3.0"
-Repository = "https://github.com/ShadowESC95/ELI_v3.0"
+Support = "mailto:jaybridgeman0095@gmail.com"
 
 [project.scripts]
 eli = "eli.gui.app:main"

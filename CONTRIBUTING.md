@@ -6,8 +6,8 @@ work.
 
 ## How you can help
 
-- **Report bugs** or suggest improvements via
-  [issues](https://github.com/ShadowESC95/ELI_v3.0/issues).
+- **Report bugs** or suggest improvements via email:
+  [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com).
 - **Submit fixes or features** via pull request.
 - You may **use and modify** ELI for your own purposes under the license, but you
   may **not redistribute** it. Contributing improvements back here — rather than

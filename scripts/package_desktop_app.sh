@@ -177,7 +177,7 @@ Terminal command:
   INSTALL_ELI.sh installs ~/.local/bin/eli by default.
   If your shell cached an older eli: hash -r
 
-v3 is in development: https://github.com/ShadowESC95/ELI_v3.0
+v3 is private development — contact jaybridgeman0095@gmail.com for access.
 README_EOF
 
 PACKAGE="$OUT_DIR/${APP_NAME}-${VERSION}-linux-portable.tar.gz"
