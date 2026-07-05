@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Keep commit authorship clean — drop Co-authored-by trailers.
+set -euo pipefail
+msg_file="${1:?}"
+tmp="$(mktemp)"
+grep -viE '^co-authored-by:' "$msg_file" > "$tmp" || true
+sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" 2>/dev/null || sed -i '' -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" 2>/dev/null || true
+mv "$tmp" "$msg_file"

@@ -179,9 +179,9 @@ for target in "${TARGETS[@]}"; do
             if ! ls "$DIST"/eli_mkxi-*.whl >/dev/null 2>&1; then
                 build_python_artifacts
             fi
-            STAGING="$PROJECT_ROOT/build/win-portable/Eli_v3-${VERSION}-windows-portable"
+            STAGING="$PROJECT_ROOT/build/win-portable/ELI_v3.0-${VERSION}-windows-portable"
             _stage_windows_common "$STAGING" "lean"
-            ZIP="$DIST/Eli_v3-${VERSION}-windows-portable.zip"
+            ZIP="$DIST/ELI_v3.0-${VERSION}-windows-portable.zip"
             rm -f "$ZIP"
             ( cd "$(dirname "$STAGING")" && zip -r -q "$ZIP" "$(basename "$STAGING")" )
             echo "[windows-lean] Portable zip: $ZIP"
@@ -196,12 +196,12 @@ for target in "${TARGETS[@]}"; do
                 if ! find "$DIST/wheelhouse" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null | grep -q .; then
                     build_windows_wheelhouse
                 fi
-                STAGING="$PROJECT_ROOT/build/win-portable/Eli_v3-${VERSION}-windows-portable-full"
+                STAGING="$PROJECT_ROOT/build/win-portable/ELI_v3.0-${VERSION}-windows-portable-full"
                 _stage_windows_common "$STAGING" "full offline"
                 if [ -d "$DIST/wheelhouse" ]; then
                     cp -r "$DIST/wheelhouse" "$STAGING/wheelhouse"
                 fi
-                ZIP="$DIST/Eli_v3-${VERSION}-windows-portable-full.zip"
+                ZIP="$DIST/ELI_v3.0-${VERSION}-windows-portable-full.zip"
                 rm -f "$ZIP"
                 ( cd "$(dirname "$STAGING")" && zip -r -q "$ZIP" "$(basename "$STAGING")" )
                 echo "[windows] Full portable zip: $ZIP"
@@ -226,13 +226,13 @@ fi
 echo "[finalise] Computing SHA-256 checksums…"
 ( cd "$DIST" && sha256sum eli_mkxi-*.whl 2>/dev/null \
                           eli_mkxi-*.tar.gz 2>/dev/null \
-                          Eli_v3-*.dmg 2>/dev/null \
-                          Eli_v3-*.AppImage 2>/dev/null \
-                          Eli_v3-*-Setup.exe 2>/dev/null \
+                          ELI_v3.0-*.dmg 2>/dev/null \
+                          ELI_v3.0-*.AppImage 2>/dev/null \
+                          ELI_v3.0-*-Setup.exe 2>/dev/null \
                           eli-mkxi_*_amd64.deb 2>/dev/null \
-                          Eli_v3-*-windows-portable*.zip 2>/dev/null \
-                          Eli_v3-*-linux-portable.tar.gz 2>/dev/null \
-                          Eli_v3-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
+                          ELI_v3.0-*-windows-portable*.zip 2>/dev/null \
+                          ELI_v3.0-*-linux-portable.tar.gz 2>/dev/null \
+                          ELI_v3.0-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
 
 cat > "$DIST/RELEASE_NOTES.md" <<EOF
 # ELI v2 ${VERSION}
@@ -251,9 +251,9 @@ $(cat "$DIST/SHA256SUMS.txt" 2>/dev/null || echo "(checksum file missing)")
 ## Install quick reference
 - **pip / wheel**: \`pip install dist/eli_mkxi-${VERSION}-py3-none-any.whl[full]\`
 - **Debian/Ubuntu**: \`sudo dpkg -i dist/eli-mkxi_${VERSION}_amd64.deb && sudo apt -f install\`
-- **Linux portable**: extract \`dist/Eli_v3-${VERSION}-linux-portable.tar.gz\`, run \`./INSTALL_ELI.sh\`
-- **Windows lean**: extract \`dist/Eli_v3-${VERSION}-windows-portable.zip\`, run \`install.bat\`
-- **Windows full offline**: extract \`dist/Eli_v3-${VERSION}-windows-portable-full.zip\`, run \`install.bat\`
+- **Linux portable**: extract \`dist/ELI_v3.0-${VERSION}-linux-portable.tar.gz\`, run \`./INSTALL_ELI.sh\`
+- **Windows lean**: extract \`dist/ELI_v3.0-${VERSION}-windows-portable.zip\`, run \`install.bat\`
+- **Windows full offline**: extract \`dist/ELI_v3.0-${VERSION}-windows-portable-full.zip\`, run \`install.bat\`
 - **macOS**: build on a Mac host with \`bash build_packages.sh macos\`
 
 EOF

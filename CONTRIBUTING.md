@@ -7,7 +7,7 @@ work.
 ## How you can help
 
 - **Report bugs** or suggest improvements via
-  [issues](https://github.com/ShadowESC95/Eli_v3/issues).
+  [issues](https://github.com/ShadowESC95/ELI_v3.0/issues).
 - **Submit fixes or features** via pull request.
 - You may **use and modify** ELI for your own purposes under the license, but you
   may **not redistribute** it. Contributing improvements back here — rather than

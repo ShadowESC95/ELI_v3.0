@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_v3.0}"
 TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
 TITLE="${ELI_ASSET_RELEASE_TITLE:-ELI v3 local assets}"
 ASSET_DIR="$ROOT/dist/github_assets/upload"

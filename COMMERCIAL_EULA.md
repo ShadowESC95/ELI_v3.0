@@ -121,7 +121,7 @@ remain in effect.
 
 ## 10. Purchasing & contact
 
-**Retail / license keys:** announced on this repository and [GitHub Releases](https://github.com/ShadowESC95/Eli_v3/releases) when v3 sales open.
+**Retail / license keys:** announced on this repository and [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases) when v3 sales open.
 
 Until the store is live:
 

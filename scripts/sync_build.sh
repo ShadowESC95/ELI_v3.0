@@ -13,7 +13,7 @@ with open("pyproject.toml", "rb") as f:
     print(tomllib.load(f)["project"]["version"])
 PY
 )"
-APP_NAME="Eli_v3"
+APP_NAME="ELI_v3.0"
 BUILD_TARGET="$PROJECT_ROOT/build/app-package/${APP_NAME}-${VERSION}-linux-portable"
 
 DRY_RUN=0
