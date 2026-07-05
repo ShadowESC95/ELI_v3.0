@@ -44,6 +44,7 @@ dependencies = [
     "faiss-cpu>=1.7",
     "comtypes>=1.2; sys_platform == 'win32'",
     "pycaw; sys_platform == 'win32'",
+    "tomli>=2.0.1; python_version<'3.11'",
 ]
 
 [project.optional-dependencies]
@@ -134,11 +135,12 @@ training = [
 ]
 
 [project.urls]
-Support = "mailto:jaybridgeman0095@gmail.com"
+Homepage = "https://github.com/ShadowESC95/ELI_v3.0"
+Repository = "https://github.com/ShadowESC95/ELI_v3.0"
 
 [project.scripts]
 eli = "eli.gui.app:main"
-eli-v3 = "eli.gui.app:main"
+"eli-v3" = "eli.gui.app:main"
 eli-cli = "eli.gui.app:main"
 
 [project.gui-scripts]
