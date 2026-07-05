@@ -16,7 +16,7 @@ WORK_DIR="$ROOT/build/app-package"
 WITH_ASSETS=0
 SKIP_WHEEL=0
 REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
-TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
+TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v2.1}"
 
 usage() {
   cat <<EOF_USAGE
@@ -85,8 +85,12 @@ else
 fi
 
 mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper"
-if ls "$ROOT"/dist/eli_v3-*.whl >/dev/null 2>&1; then
-  cp "$ROOT"/dist/eli_v3-*.whl "$STAGING/dist/"
+# License docs live under models/ but models/** is excluded from the lean archive — copy explicitly
+for _lic in MODEL_LICENSES.md README.txt; do
+  [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
+done
+if ls "$ROOT"/dist/eli_mkxi-*.whl >/dev/null 2>&1; then
+  cp "$ROOT"/dist/eli_mkxi-*.whl "$STAGING/dist/"
 fi
 
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -120,7 +124,7 @@ Exec=__APP_ROOT__/RUN_ELI.sh
 Icon=__APP_ROOT__/blueprints/eli_logo2.png
 Type=Application
 Categories=Utility;
-Keywords=ai;assistant;llm;local;eli;
+Keywords=ai;assistant;llm;local;eli;mkxi;
 StartupNotify=true
 Terminal=false
 StartupWMClass=ELI
@@ -135,36 +139,45 @@ mkdir -p "$DESKTOP_DIR"
 sed "s#__APP_ROOT__#$APP_ROOT#g" \
   "$APP_ROOT/packaging/desktop/Eli_v3.desktop.template" \
   > "$DESKTOP_DIR/eli.desktop"
-rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop" "$DESKTOP_DIR/eli-mkxi.desktop"
+rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop"
 chmod +x "$DESKTOP_DIR/eli.desktop"
 echo "$DESKTOP_DIR/eli.desktop"
 DESKTOP_INSTALL_EOF
 chmod +x "$STAGING/packaging/desktop/install_desktop_launcher.sh"
 
 cat > "$STAGING/README_INSTALL.txt" <<README_EOF
-ELI Pro portable desktop package
+ELI v2.0 — portable download-and-run package
 
-Run:
-  ./INSTALL_ELI.sh
-  eli
+Hardware (honest):
+  Best tested: Linux x86_64 + NVIDIA GPU.
+  Windows/macOS/AMD builds exist; expect rough edges — feedback welcome.
+
+Quick start:
+  1. ./INSTALL_ELI.sh
+  2. ./RUN_ELI.sh --with-github-assets    # optional model/voice pack
+  3. ./RUN_ELI.sh                         # launch ELI
+
+Daily use:
   ./RUN_ELI.sh
+  eli    (after INSTALL_ELI.sh installs ~/.local/bin/eli)
 
-Restore model/voice assets from GitHub release:
+Model/voice pack (separate download — tag: local-assets-v2.1):
   gh auth login
   ./RUN_ELI.sh --with-github-assets
-
-Manual restore:
-  .venv/bin/python scripts/restore_github_asset_files.py --repo $REPO --tag $TAG
+  # or: .venv/bin/python scripts/restore_github_asset_files.py --repo $REPO --tag $TAG
+  # NC-SA voices (en_US-ryan-*) are skipped automatically — see models/MODEL_LICENSES.md
 
 Desktop launcher:
   ./packaging/desktop/install_desktop_launcher.sh
 
-Terminal command:
-  ./INSTALL_ELI.sh installs ~/.local/bin/eli by default.
-  If your shell has cached an older eli command, run: hash -r
-  To remove an old system ELI package: sudo bash scripts/purge_legacy_eli.sh --yes
+Data folders (auto-created on first run):
+  artifacts/db/  artifacts/runtime/  config/
 
-This package intentionally excludes .venv, runtime/private artifacts, caches, and heavy model/voice assets unless built with --with-assets.
+Terminal command:
+  INSTALL_ELI.sh installs ~/.local/bin/eli by default.
+  If your shell cached an older eli: hash -r
+
+v3 is in development: https://github.com/ShadowESC95/Eli_v3
 README_EOF
 
 PACKAGE="$OUT_DIR/${APP_NAME}-${VERSION}-linux-portable.tar.gz"
