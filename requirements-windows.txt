@@ -1,4 +1,4 @@
-# ELI MKXI — Windows requirements
+# ELI v3 — Windows requirements
 # Run with Python 3.11+: pip install -r requirements-windows.txt
 # NOTE: llama-cpp-python requires Visual C++ build tools or use a pre-built wheel:
 #   pip install llama-cpp-python --prefer-binary
@@ -86,6 +86,11 @@ pandas>=2.0
 matplotlib>=3.7
 huggingface-hub>=0.20
 pyflakes>=3.0
+
+# ── Smart home / MQTT (LAN broker + mDNS discovery) ──
+paho-mqtt>=2.0
+zeroconf>=0.131
+bleak>=0.21
 
 # ── Optional feature deps (web search/automation, calendar, notifications) ──
 # Match pyproject [full] so requirements installs are equivalent. All degrade

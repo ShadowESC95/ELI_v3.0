@@ -1,4 +1,4 @@
-# Contributing to ELI v2.0
+# Contributing to ELI v3
 
 Thanks for your interest! One thing to know up front: **ELI is source-available,
 not open-source** (see [LICENSE](LICENSE)), and that shapes how contributions
@@ -7,7 +7,7 @@ work.
 ## How you can help
 
 - **Report bugs** or suggest improvements via
-  [issues](https://github.com/ShadowESC95/ELI_v2.0/issues).
+  [issues](https://github.com/ShadowESC95/Eli_v3/issues).
 - **Submit fixes or features** via pull request.
 - You may **use and modify** ELI for your own purposes under the license, but you
   may **not redistribute** it. Contributing improvements back here — rather than
@@ -26,10 +26,10 @@ author), you agree that:**
 2. You grant **Jason Fitzgibbon Bridgeman** (the copyright holder) a perpetual,
    worldwide, irrevocable, royalty-free license to **use, modify, sublicense, and
    relicense** your contribution — including for commercial purposes — as part of
-   ELI v2.0, under the project's current license and any future license the
+   ELI v3, under the project's current license and any future license the
    holder may choose (including commercial / dual licensing).
 3. You retain your own copyright in your contribution; you are simply granting the
-   license above so the project can stay singly-stewarded and commercially viable.
+   license above so I can keep the whole project under one license and keep steering it.
 4. Contributions are provided "as is", without warranty.
 
 If you can't agree to these terms, please open an issue to discuss rather than

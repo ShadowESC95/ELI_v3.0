@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_MKXI_v2.0_PRO}"
-TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v2.0}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
+TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
 DOWNLOAD_DIR="$ROOT/dist/github_assets/download"
 KEEP_ARCHIVES=0
 

@@ -12,6 +12,45 @@ log = logging.getLogger(__name__)
 
 from eli.core.paths import get_paths
 
+_PATH_LIKE_KEYS = frozenset({
+    "model_path", "user_db", "agent_db", "memory_db", "db_path",
+    "last_write_db", "path", "file", "folder", "root",
+})
+
+
+def _portable_path(value: str) -> str:
+    if not value:
+        return value
+    try:
+        from eli.core.portable_paths import make_portable_path_value, project_root
+        return str(make_portable_path_value(value, project_root()))
+    except Exception:
+        return value
+
+
+def _resolve_path(value: str) -> str:
+    if not value:
+        return value
+    try:
+        from eli.core.portable_paths import resolve_path_value, project_root
+        return str(resolve_path_value(value, project_root()))
+    except Exception:
+        return value
+
+
+def _portable_dict(obj):
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and k in _PATH_LIKE_KEYS and isinstance(v, str):
+                out[k] = _portable_path(v)
+            else:
+                out[k] = _portable_dict(v)
+        return out
+    if isinstance(obj, list):
+        return [_portable_dict(x) for x in obj]
+    return obj
+
 
 @dataclass
 class IdentityState:
@@ -98,9 +137,10 @@ def _coerce_identity(d: Dict[str, Any]) -> IdentityState:
 
 
 def _coerce_runtime(d: Dict[str, Any]) -> RuntimeState:
+    snap = _portable_dict(dict(d.get("snapshot", {}) or {}))
     return RuntimeState(
         provider=str(d.get("provider", "") or ""),
-        model_path=str(d.get("model_path", "") or ""),
+        model_path=_portable_path(str(d.get("model_path", "") or "")),
         model_name=str(d.get("model_name", "") or ""),
         n_ctx=int(d.get("n_ctx", 0) or 0),
         n_threads=int(d.get("n_threads", 0) or 0),
@@ -108,17 +148,18 @@ def _coerce_runtime(d: Dict[str, Any]) -> RuntimeState:
         batch_size=int(d.get("batch_size", 0) or 0),
         loaded=bool(d.get("loaded", False)),
         last_error=str(d.get("last_error", "") or ""),
-        snapshot=dict(d.get("snapshot", {}) or {}),
+        snapshot=snap,
         updated_at=float(d.get("updated_at", time.time()) or time.time()),
     )
 
 
 def _coerce_memory(d: Dict[str, Any]) -> MemoryState:
+    stats = _portable_dict(dict(d.get("stats", {}) or {}))
     return MemoryState(
-        user_db=str(d.get("user_db", "") or ""),
-        agent_db=str(d.get("agent_db", "") or ""),
-        memory_db=str(d.get("memory_db", "") or ""),
-        stats=dict(d.get("stats", {}) or {}),
+        user_db=_portable_path(str(d.get("user_db", "") or "")),
+        agent_db=_portable_path(str(d.get("agent_db", "") or "")),
+        memory_db=_portable_path(str(d.get("memory_db", "") or "")),
+        stats=stats,
         updated_at=float(d.get("updated_at", time.time()) or time.time()),
     )
 
@@ -188,7 +229,8 @@ def save_world_model(model: Optional[WorldModel] = None) -> Path:
         m = model or load_world_model()
         m.updated_at = time.time()
         p = _world_model_path()
-        p.write_text(json.dumps(m.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        payload = _portable_dict(m.to_dict())
+        p.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return p
 
 
@@ -209,11 +251,11 @@ def set_preferred_name(name: str, confidence: float = 1.0) -> None:
 
 
 def merge_runtime_snapshot(snapshot: Dict[str, Any]) -> None:
-    snap = dict(snapshot or {})
+    snap = _portable_dict(dict(snapshot or {}))
     with _LOCK:
         wm = get_world_model()
         wm.runtime.provider = str(snap.get("provider", wm.runtime.provider) or wm.runtime.provider)
-        wm.runtime.model_path = str(snap.get("model_path", wm.runtime.model_path) or wm.runtime.model_path)
+        wm.runtime.model_path = _portable_path(str(snap.get("model_path", wm.runtime.model_path) or wm.runtime.model_path))
         wm.runtime.model_name = str(snap.get("model_name", wm.runtime.model_name) or wm.runtime.model_name)
         wm.runtime.n_ctx = int(snap.get("n_ctx", wm.runtime.n_ctx) or wm.runtime.n_ctx or 0)
         wm.runtime.n_threads = int(snap.get("n_threads", wm.runtime.n_threads) or wm.runtime.n_threads or 0)
@@ -227,12 +269,12 @@ def merge_runtime_snapshot(snapshot: Dict[str, Any]) -> None:
 
 
 def merge_memory_snapshot(snapshot: Dict[str, Any]) -> None:
-    snap = dict(snapshot or {})
+    snap = _portable_dict(dict(snapshot or {}))
     with _LOCK:
         wm = get_world_model()
-        wm.memory.user_db = str(snap.get("user_db", wm.memory.user_db) or wm.memory.user_db)
-        wm.memory.agent_db = str(snap.get("agent_db", wm.memory.agent_db) or wm.memory.agent_db)
-        wm.memory.memory_db = str(snap.get("memory_db", wm.memory.memory_db) or wm.memory.memory_db)
+        wm.memory.user_db = _portable_path(str(snap.get("user_db", wm.memory.user_db) or wm.memory.user_db))
+        wm.memory.agent_db = _portable_path(str(snap.get("agent_db", wm.memory.agent_db) or wm.memory.agent_db))
+        wm.memory.memory_db = _portable_path(str(snap.get("memory_db", wm.memory.memory_db) or wm.memory.memory_db))
         wm.memory.stats = snap
         wm.memory.updated_at = time.time()
         save_world_model(wm)

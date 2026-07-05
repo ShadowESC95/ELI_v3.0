@@ -1,5 +1,5 @@
 @echo off
-REM ELI MKXI — Windows launcher
+REM ELI v3 — Windows launcher
 setlocal
 set SCRIPT_DIR=%~dp0
 set VENV=%SCRIPT_DIR%.venv

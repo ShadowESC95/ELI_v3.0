@@ -144,7 +144,7 @@ models/voice_profile/
 eli/models/
 
 # personal launcher with absolute paths — generated per-machine by scripts/eli_one_click_setup.sh
-eli-mkxi.desktop
+eli-v3.desktop
 dxdiag.txt
 note_*.md
 
@@ -157,7 +157,14 @@ config/certs/
 *.crt
 *.pem
 
-# junk / local scratch
+# credentials / local state — NEVER commit
+config/api_token
+# dev junk / personal-data carriers
 sys/
 tools/eval/benchmarks/*.sh
 tools/eval/benchmarks/build_h2h_full.py
+eli/eli_examination_report_*.txt
+eli/.claude/
+
+# training build cache (never commit)
+models/unsloth_compiled_cache/

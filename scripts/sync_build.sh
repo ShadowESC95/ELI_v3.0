@@ -7,7 +7,14 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_TARGET="$PROJECT_ROOT/build/app-package/ELI_MKXI_v2.0_PRO-2.0.0-linux-portable"
+VERSION="$(cd "$PROJECT_ROOT" && python3 - <<'PY'
+import tomllib
+with open("pyproject.toml", "rb") as f:
+    print(tomllib.load(f)["project"]["version"])
+PY
+)"
+APP_NAME="Eli_v3"
+BUILD_TARGET="$PROJECT_ROOT/build/app-package/${APP_NAME}-${VERSION}-linux-portable"
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -16,6 +23,7 @@ fi
 
 if [[ ! -d "$BUILD_TARGET/eli" ]]; then
     echo "[sync_build] Build target not found: $BUILD_TARGET/eli"
+    echo "[sync_build] Run scripts/package_desktop_app.sh first."
     exit 1
 fi
 

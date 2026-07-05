@@ -9,8 +9,8 @@ WITH_GITHUB_ASSETS=0
 INSTALL_DESKTOP=1
 INSTALL_COMMAND=1
 ASSET_MODE="direct"
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_MKXI_v2.0_PRO}"
-TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v2.0}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
+TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
 COMMAND_NAME="${ELI_COMMAND_NAME:-eli}"
 BIN_DIR="${ELI_BIN_DIR:-$HOME/.local/bin}"
 
@@ -122,7 +122,7 @@ EOF
   # User-level override for the legacy system package entry at /usr/share/applications/eli.desktop.
   # This keeps old package files intact while making app menus launch this checkout.
   write_desktop_entry "$DESKTOP_DIR/eli.desktop" "ELI Pro"
-  rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop"
+  rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop" "$DESKTOP_DIR/eli-mkxi.desktop"
   chmod +x "$DESKTOP_DIR/eli.desktop"
   echo "[setup] Desktop launcher installed: $DESKTOP_DIR/eli.desktop"
   echo "[setup] Legacy ELI app-menu override installed as ELI Pro"

@@ -12,8 +12,8 @@ from typing import Any, Dict, List
 from github_asset_manifest import ROOT, build_manifest
 
 
-DEFAULT_REPO = "ShadowESC95/ELI_MKXI_v2.0_PRO"
-DEFAULT_TAG = "local-assets-v2.0"
+DEFAULT_REPO = "ShadowESC95/Eli_v3"
+DEFAULT_TAG = "local-assets-v3.0"
 DEFAULT_CHUNK_BYTES = 1_900_000_000
 
 
@@ -36,7 +36,7 @@ def _ensure_release(repo: str, tag: str) -> None:
     _run([
         "gh", "release", "create", tag,
         "--repo", repo,
-        "--title", "ELI MKXI v2.0 PRO local model and voice assets",
+        "--title", "ELI v3 local model and voice assets",
         "--notes",
         "Large local assets uploaded as direct files/chunks. Restore with scripts/restore_github_asset_files.py.",
     ])

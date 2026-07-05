@@ -1,4 +1,4 @@
-"""Headless terminal REPL for ELI v2.0.
+"""Headless terminal REPL for ELI v3.
 
 Invoked via:
     python -m eli --headless
@@ -18,7 +18,7 @@ from typing import Optional
 
 _BANNER = """
 ╔══════════════════════════════════════╗
-║  ELI v2.0  —  Headless Terminal Mode ║
+║  ELI v3  —  Headless Terminal Mode ║
 ║  Type your message and press Enter.  ║
 ║  Commands: /quit  /reset  /status    ║
 ╚══════════════════════════════════════╝

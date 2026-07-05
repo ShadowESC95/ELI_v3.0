@@ -2,7 +2,7 @@
 
 #!/usr/bin/env python3
 """
-ELI MKXI — desktop GUI.
+ELI v3 — desktop GUI.
 
 Runs whatever local GGUF model is configured (model-agnostic). Dockable
 multi-panel interface: chat, memory, proactive suggestions, IDE, document
@@ -2361,7 +2361,6 @@ class EliMainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str)
     chat_response_signal = pyqtSignal(str)
-    proactive_update_signal = pyqtSignal(dict)
     self_improve_failures_signal = pyqtSignal(str)
     self_improve_improvements_signal = pyqtSignal(str)
 
@@ -2440,7 +2439,6 @@ class EliMainWindow(QMainWindow):
         self.log_signal.connect(self._append_log)
         self.status_signal.connect(self._update_status, Qt.ConnectionType.QueuedConnection)
         self.chat_response_signal.connect(self._append_chat_response, Qt.ConnectionType.QueuedConnection)
-        self.proactive_update_signal.connect(self._update_proactive, Qt.ConnectionType.QueuedConnection)
         self.stt_transcript.connect(self._on_stt_transcript)
         self.self_improve_failures_signal.connect(self._update_failures_display, Qt.ConnectionType.QueuedConnection)
         self.self_improve_improvements_signal.connect(self._update_improvements_display, Qt.ConnectionType.QueuedConnection)
@@ -8329,7 +8327,7 @@ _register()
             os.environ["ELI_API_HOST"] = host
             os.environ["ELI_API_TOKEN"] = token
             os.environ.pop("ELI_API_ALLOW_TOKENLESS", None)  # LAN must require the token
-            url = f"http://{self._eli_server_lan_ip()}:{port}/?token={token}"
+            url = f"http://{self._eli_server_lan_ip()}:{port}/#token={token}"
         else:
             host = "127.0.0.1"
             os.environ["ELI_API_HOST"] = host
@@ -8388,7 +8386,7 @@ _register()
         lan = os.environ.get("ELI_API_HOST", "") == "0.0.0.0"
         if running and lan:
             port = int(os.environ.get("ELI_API_PORT", "8081"))
-            self._srv_url.setText(f"http://{self._eli_server_lan_ip()}:{port}/?token={token}")
+            self._srv_url.setText(f"http://{self._eli_server_lan_ip()}:{port}/#token={token}")
             try:
                 self._srv_status.setText("● Token rotated — re-open the new link on each phone")
                 self._srv_status.setStyleSheet("font-size:12px;font-weight:700;color:#ebcb8b;")
@@ -11144,9 +11142,6 @@ _register()
         self.chat_display.setTextCursor(cursor)
         self.chat_display.ensureCursorVisible()
 
-    def _update_proactive(self, data: dict):
-        pass
-
     def closeEvent(self, event):
         if getattr(self, "_eli_shutdown_started", False):
             try:
@@ -11241,7 +11236,7 @@ def main():
                 update_kwargs = {"first_run_complete": True}
                 if _wiz_path:
                     update_kwargs.update({
-                        "provider": "custom_gguf",
+                        "provider": _wiz_provider if _wiz_provider in ("bundled_gguf", "custom_gguf") else "custom_gguf",
                         "model_path": _wiz_path,
                         "custom_model_path": _wiz_path,
                         "gguf_model_path": _wiz_path,

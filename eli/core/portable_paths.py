@@ -124,9 +124,21 @@ def make_portable_path_value(value: Any, root: str | Path | None = None) -> Any:
         return norm[len(root_s) + 1:]
 
     # Strip Linux/macOS absolute project prefixes from any user's machine.
-    m = re.search(r"[/\\](?:home|Users)[/\\][^/\\]+[/\\](?:Desktop|Documents|Downloads)?[/\\]?ELI_MKXI[/\\](.+)$", s)
+    # Match any ELI/Eli checkout folder name (v2, v3, staging, etc.).
+    m = re.search(
+        r"[/\\](?:home|Users)[/\\][^/\\]+[/\\](?:Desktop|Documents|Downloads)?[/\\]?"
+        r"(?:Eli|ELI)[^/\\]*[/\\](.+)$",
+        s,
+        flags=re.I,
+    )
     if m:
         return m.group(1).replace("\\", "/")
+
+    # Fallback: if the path embeds a standard ELI repo layout, keep from that root.
+    for marker in ("models/", "artifacts/", "config/", "eli/", "voices/", "plugins/"):
+        pos = norm.find(marker)
+        if pos > 0:
+            return norm[pos:]
 
     # Strip temporary staging prefix.
     m = re.search(r"[/\\]ELI_MKXI_github_stage[/\\](.+)$", s)

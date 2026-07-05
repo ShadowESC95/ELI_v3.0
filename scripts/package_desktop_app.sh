@@ -10,13 +10,13 @@ with open('pyproject.toml','rb') as f:
     print(tomllib.load(f)['project']['version'])
 PY
 )"
-APP_NAME="ELI_MKXI_v2.0_PRO"
+APP_NAME="Eli_v3"
 OUT_DIR="$ROOT/dist/app_packages"
 WORK_DIR="$ROOT/build/app-package"
 WITH_ASSETS=0
 SKIP_WHEEL=0
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_MKXI_v2.0_PRO}"
-TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v2.0}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
+TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
 
 usage() {
   cat <<EOF_USAGE
@@ -31,7 +31,7 @@ Options:
   -h, --help              Show help.
 
 Output:
-  dist/app_packages/ELI_MKXI_v2.0_PRO-${VERSION}-linux-portable.tar.gz
+  dist/app_packages/Eli_v3-${VERSION}-linux-portable.tar.gz
 EOF_USAGE
 }
 
@@ -85,8 +85,8 @@ else
 fi
 
 mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper"
-if ls "$ROOT"/dist/eli_mkxi-*.whl >/dev/null 2>&1; then
-  cp "$ROOT"/dist/eli_mkxi-*.whl "$STAGING/dist/"
+if ls "$ROOT"/dist/eli_v3-*.whl >/dev/null 2>&1; then
+  cp "$ROOT"/dist/eli_v3-*.whl "$STAGING/dist/"
 fi
 
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -111,7 +111,7 @@ bash "\$APP_ROOT/scripts/eli_one_click_setup.sh" "\$@"
 INSTALL_EOF
 chmod +x "$STAGING/INSTALL_ELI.sh"
 
-cat > "$STAGING/packaging/desktop/ELI_MKXI_v2_PRO.desktop.template" <<'DESKTOP_EOF'
+cat > "$STAGING/packaging/desktop/Eli_v3.desktop.template" <<'DESKTOP_EOF'
 [Desktop Entry]
 Name=ELI Pro
 GenericName=Local AI Assistant
@@ -120,7 +120,7 @@ Exec=__APP_ROOT__/RUN_ELI.sh
 Icon=__APP_ROOT__/blueprints/eli_logo2.png
 Type=Application
 Categories=Utility;
-Keywords=ai;assistant;llm;local;eli;mkxi;
+Keywords=ai;assistant;llm;local;eli;
 StartupNotify=true
 Terminal=false
 StartupWMClass=ELI
@@ -133,9 +133,9 @@ APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$DESKTOP_DIR"
 sed "s#__APP_ROOT__#$APP_ROOT#g" \
-  "$APP_ROOT/packaging/desktop/ELI_MKXI_v2_PRO.desktop.template" \
+  "$APP_ROOT/packaging/desktop/Eli_v3.desktop.template" \
   > "$DESKTOP_DIR/eli.desktop"
-rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop"
+rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop" "$DESKTOP_DIR/eli-mkxi.desktop"
 chmod +x "$DESKTOP_DIR/eli.desktop"
 echo "$DESKTOP_DIR/eli.desktop"
 DESKTOP_INSTALL_EOF

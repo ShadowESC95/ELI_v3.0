@@ -3092,6 +3092,7 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
     is_spotify = "spotify" in t or (player and "spotify" in (player or "").lower())
     is_youtube = "youtube" in t or t in ("yt",)
     is_yt_web  = is_youtube and bool(_re.search(r"\bweb(?:site)?\b", t))
+    is_yt_browser = is_yt_web or bool(_re.search(r"youtube\.com", t, _re.I))
 
     if is_spotify and not is_youtube:
         import time as _time
@@ -3136,8 +3137,8 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
                 "search_only": True, "target": "spotify",
                 "content": msg, "response": msg}
 
-    # ── 2. "youtube web/website" → browser only (never mpv) ──────────────────
-    if is_yt_web:
+    # ── 2. "youtube web/website/.com" → browser only (never mpv) ─────────────
+    if is_yt_browser:
         watch = _yt_mix_url(_yt_resolve_watch_url(query))
         url = watch or f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
         _open_in_browser(url)
@@ -8311,6 +8312,15 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             from eli.perception.gaze_engine import start_gaze_engine, needs_calibration
             camera = str(args.get("camera", "auto") or "auto").strip()
             result = start_gaze_engine(camera=camera)
+            # "enable gaze clicking / dwell click" also switches on dwell-click (accessibility:
+            # rest your gaze on a target ~1s to click it — no mouse or voice needed).
+            _dwell_on = bool(args.get("dwell"))
+            if _dwell_on:
+                try:
+                    from eli.core.runtime_settings import update_settings as _us_dwell
+                    _us_dwell(gaze_dwell_click=True)
+                except Exception:
+                    pass
             if result.get("already_running"):
                 msg = "Gaze engine is already running."
             elif result.get("ok"):
@@ -8318,6 +8328,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 msg = f"Gaze engine started{cal_note}."
             else:
                 msg = f"Gaze engine failed to start: {result.get('error', 'unknown error')}"
+            if _dwell_on and result.get("ok"):
+                msg += " Dwell-click is on — hold your gaze on a target for ~1s to click it."
             result.setdefault("content", msg)
             result.setdefault("response", msg)
             result["action"] = a
@@ -10424,6 +10436,25 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             srv = get_server()
             device = (args.get("device") or args.get("name") or "").strip()
             raw = (args.get("command") or args.get("action") or args.get("state") or "").strip().lower()
+            # Bluetooth verbs (connect/disconnect/pair/use_for_audio) — resolve the spoken name
+            # against discovered/registered Bluetooth devices and drive the OS BT stack. Handled
+            # HERE, before the on/off mapping below ("on" is a substring of "c-on-nect").
+            _btc = raw.replace(" ", "_").replace("-", "_")
+            if args.get("bt") or _btc in ("connect", "disconnect", "pair", "trust", "use_for_audio"):
+                from eli.runtime.device_server import bluetooth_control_by_name
+                _r = bluetooth_control_by_name(device, _btc or "connect")
+                _nm = _r.get("device_name") or device or "the device"
+                if _r.get("ok"):
+                    _say = {
+                        "use_for_audio": f"Audio is now playing through {_nm}.",
+                        "connect": f"Connected to {_nm}.",
+                        "disconnect": f"Disconnected {_nm}.",
+                        "pair": f"Paired with {_nm}.",
+                        "trust": f"Trusted {_nm}.",
+                    }.get(_btc, f"{_nm}: {_btc}.")
+                    return {"ok": True, "action": a, "content": _say, "response": _say}
+                _e = _r.get("error") or "I couldn't do that with Bluetooth."
+                return {"ok": False, "action": a, "error": _e, "content": _e, "response": _e}
             cmd = "on" if "on" in raw else "off" if "off" in raw else raw
             if not device:
                 msg = "Which device or room? For example: 'turn on the desk lamp'."
@@ -11354,10 +11385,17 @@ def proactive_status() -> Dict[str, Any]:
     alive = False
     if pid:
         try:
-            os.kill(pid, 0)
-            alive = True
+            import psutil as _psutil
+            alive = _psutil.pid_exists(int(pid))
         except Exception:
-            alive = False
+            # psutil missing — the signal-0 probe is POSIX-only. On Windows os.kill with
+            # ANY signal calls TerminateProcess, so os.kill(pid, 0) would KILL the process.
+            if os.name != "nt":
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except Exception:
+                    alive = False
     # In-process daemon: the GUI runs it as a THREAD (no separate PID), so the PID check
     # above misses it and falsely reports STOPPED (observed: agent_bus daemon_running=False
     # while '[PROACTIVE] Daemon started'). Also honour the live in-process signals — the

@@ -4,7 +4,6 @@ include .env.example .env.full.example .env.mkxi
 include requirements*.txt
 include eli.sh eli.bat
 include install.sh install.bat install.ps1
-include eli-mkxi.desktop
 
 recursive-include eli *.py *.json *.yaml *.yml *.txt *.toml *.md
 recursive-include eli/cognition persona*.txt

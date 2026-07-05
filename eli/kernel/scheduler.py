@@ -28,7 +28,7 @@ class KernelScheduler:
     def __post_init__(self) -> None:
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, int(self.max_workers)),
-            thread_name_prefix="eli-mkxi-scheduler",
+            thread_name_prefix="eli-v3-scheduler",
         )
 
     def submit(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future:

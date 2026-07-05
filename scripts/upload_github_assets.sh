@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_MKXI_v2.0_PRO}"
-TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v2.0}"
-TITLE="${ELI_ASSET_RELEASE_TITLE:-ELI MKXI v2.0 PRO local assets}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/Eli_v3}"
+TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
+TITLE="${ELI_ASSET_RELEASE_TITLE:-ELI v3 local assets}"
 ASSET_DIR="$ROOT/dist/github_assets/upload"
 
 usage() {

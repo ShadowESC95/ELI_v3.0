@@ -1,4 +1,4 @@
-"""ELI MKXI — Advanced Settings dialog panel."""
+"""ELI v3 — Advanced Settings dialog panel."""
 from __future__ import annotations
 
 import threading

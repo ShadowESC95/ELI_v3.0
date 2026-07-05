@@ -111,7 +111,7 @@ def _eli_latest_screenshot() -> str | None:
         from eli.utils import platform_compat as _pf
         dirs.append(str(_pf.user_pictures_dir()))
     except Exception:
-        pass
+        _SWLOG.debug("suppressed exception", exc_info=True)
     dirs += [
         os.path.expanduser("~/Pictures"),
         os.path.expanduser("~/Pictures/Screenshots"),
@@ -1021,6 +1021,47 @@ def _route_plugin_bridge_prepass(raw: str, low: str):
     if re.match(r"^(?:list\s+notes|show\s+notes|show\s+my\s+notes|notes\s+list)$", low):
         return _mk("LIST_NOTES", {}, 0.98, matched_by="plugin.prepass.notes_list")
 
+    # Bluetooth voice control — connect/pair/disconnect a device, or route audio to it.
+    # ("connect my headphones", "pair the speaker", "disconnect my earbuds",
+    #  "play through the kitchen speaker", "use my headphones for audio")
+    _BT_WORDS = (r"headphones?|headset|earbuds?|earphones?|buds|airpods|speakers?|soundbar|"
+                 r"bluetooth|smart\s*watch|earpiece|dongle")
+    if not re.search(r"\b(wi-?fi|internet|network|vpn|server|hotspot|ethernet|the\s+call)\b", low):
+        # Route audio to a device: "play/route/send audio through|to the <speaker/headphones>".
+        _bt_audio = re.search(
+            r"\b(?:play|route|send|switch|output|put)\s+(?:the\s+)?"
+            r"(?:audio|sound|music|it|everything)?\s*(?:through|to|on|via|out\s+of)\s+"
+            r"(?:my\s+|the\s+)?(.+)$", low)
+        # Explicit form: "use my headphones for audio/output".
+        _bt_audio2 = re.search(
+            r"\buse\s+(?:my\s+|the\s+)?(.+?)\s+(?:for|as)\s+(?:the\s+)?"
+            r"(?:audio|sound|output|speaker|playback)\b", low)
+        _excl_media = re.search(r"\b(spotify|youtube|netflix|playlist|song|track|video|album|podcast|radio)\b", low)
+        if not _excl_media and _bt_audio and re.search(_BT_WORDS, _bt_audio.group(1)):
+            _dev = _bt_audio.group(1).strip(" .!?")
+            return _mk("SMART_HOME", {"device": _dev, "command": "use_for_audio", "bt": True},
+                       0.95, matched_by="bluetooth.audio", entities={"device": _dev})
+        if not _excl_media and _bt_audio2:
+            _dev = _bt_audio2.group(1).strip(" .!?")
+            if _dev:
+                return _mk("SMART_HOME", {"device": _dev, "command": "use_for_audio", "bt": True},
+                           0.95, matched_by="bluetooth.audio", entities={"device": _dev})
+        # Connect / pair — only when a BT device word (or "bluetooth") is present.
+        _bt_conn = re.search(r"\b(connect|pair|reconnect)\s+(?:to\s+)?(?:my\s+|the\s+)?(.+)$", low)
+        if _bt_conn and (re.search(_BT_WORDS, _bt_conn.group(2)) or "bluetooth" in low):
+            _dev = re.sub(r"\b(over|via|by|using|through)\s+bluetooth\b", "", _bt_conn.group(2)).strip(" .!?")
+            _cmd = "pair" if _bt_conn.group(1).startswith("pair") else "connect"
+            if _dev:
+                return _mk("SMART_HOME", {"device": _dev, "command": _cmd, "bt": True},
+                           0.95, matched_by="bluetooth.connect", entities={"device": _dev})
+        # Disconnect — same guard.
+        _bt_disc = re.search(r"\bdisconnect\s+(?:from\s+)?(?:my\s+|the\s+)?(.+)$", low)
+        if _bt_disc and (re.search(_BT_WORDS, _bt_disc.group(1)) or "bluetooth" in low):
+            _dev = re.sub(r"\b(over|via|by|using|from)\s+bluetooth\b", "", _bt_disc.group(1)).strip(" .!?")
+            if _dev:
+                return _mk("SMART_HOME", {"device": _dev, "command": "disconnect", "bt": True},
+                           0.95, matched_by="bluetooth.disconnect", entities={"device": _dev})
+
     # Smart-home plugin.
     _smart_m = re.match(
         r"^(?:smart\s+home|home\s+automation)\s+(.+)$",
@@ -1641,6 +1682,17 @@ def route(text: str) -> Dict[str, Any]:
         low,
     ):
         return _mk("GAZE_STATUS", {}, 0.95, matched_by="gaze.status.preempt")
+
+    # Dwell-click (accessibility): "enable gaze clicking" / "turn on dwell click" starts the
+    # gaze engine AND switches on look-and-hold clicking — hands-free AND voice-free. Checked
+    # first (higher priority) so "gaze clicking" doesn't fall through to plain gaze-enable.
+    if re.search(
+        r"\b(enable|start|turn\s+on|activate|switch\s+on)\s+(the\s+)?"
+        r"(dwell[\s-]?click(ing)?|gaze[\s-]?click(ing)?|eye[\s-]?click(ing)?|click(ing)?\s+by\s+(gaze|eye|looking))\b"
+        r"|\b(dwell[\s-]?click(ing)?|gaze[\s-]?click(ing)?)\s+(on|enable)\b",
+        low,
+    ):
+        return _mk("GAZE_ENABLE", {"dwell": True}, 0.97, matched_by="gaze.dwell.enable.preempt")
 
     if re.search(
         r"\b(enable|start|turn\s+on|activate|switch\s+on)\s+(the\s+)?(gaze|gaze\s+engine|gaze\s+track(er|ing))\b"
@@ -2708,11 +2760,13 @@ def route(text: str) -> Dict[str, Any]:
 
     # "play X by Y" / "play X from Z" / "play some jazz" / "play movie soundtrack"
     _play_specific_m = re.match(
-        r"^play\s+(?:me\s+|some\s+)?(.+?)(?:\s+on\s+(\w+))?$", raw, re.I
+        r"^play\s+(?:me\s+|some\s+)?(.+?)(?:\s+on\s+([\w.]+))?$", raw, re.I
     )
     if _play_specific_m:
         query = _play_specific_m.group(1).strip()
         target = (_play_specific_m.group(2) or "").strip() or None
+        if target and re.search(r"youtube\.com", target, re.I):
+            target = "youtube website"
         # Only route as specific if it's not a bare "play" or "play media"
         if query and query.lower() not in ("media", "music", "audio", ""):
             return _mk("PLAY_MEDIA", {"query": query, "target": target}, 0.92,
@@ -3735,6 +3789,14 @@ def route(text: str) -> Dict[str, Any]:
         if target_low in generic_ide:
             return _mk("OPEN_IDE", {"name": "ide"}, 0.99, matched_by="open.ide.literal_preempt")
 
+        if target_low in WEBSITE_ALIASES:
+            return _mk(
+                "OPEN_URL",
+                {"url": WEBSITE_ALIASES[target_low]},
+                0.99,
+                matched_by="open.website.literal_preempt",
+            )
+
         canonical = app_aliases.get(target_low, target)
         return _mk("OPEN_APP", {"name": canonical}, 0.99, matched_by="open.app.literal_preempt")
     m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
@@ -3761,6 +3823,14 @@ def route(text: str) -> Dict[str, Any]:
 
         if target_low in generic_ide:
             return _mk("OPEN_IDE", {"name": "ide"}, 0.99, matched_by="open.ide.literal_preempt")
+
+        if target_low in WEBSITE_ALIASES:
+            return _mk(
+                "OPEN_URL",
+                {"url": WEBSITE_ALIASES[target_low]},
+                0.99,
+                matched_by="open.website.literal_preempt",
+            )
 
         canonical = app_aliases.get(target_low, target)
         return _mk("OPEN_APP", {"name": canonical}, 0.99, matched_by="open.app.literal_preempt")
@@ -4332,7 +4402,7 @@ def _eli_mqc_clean_query(q: str) -> str:
     # Without this, "logic by diabolic on spotify" → query="logic by diabolic on spotify"
     # instead of the expected "logic by diabolic".
     q = _eli_mqc_re.sub(
-        r"\s+on\s+(spotify|youtube|yt|mpv|soundcloud|apple\s+music|tidal|deezer)\s*$",
+        r"\s+on\s+(spotify|youtube|yt|youtube\.com|mpv|soundcloud|apple\s+music|tidal|deezer)\s*$",
         "",
         q,
         flags=_eli_mqc_re.I,
@@ -4475,7 +4545,7 @@ def _eli_voice_contract_wrap_callable(fn):
         _wrapped.__doc__ = getattr(fn, "__doc__", None)
         _wrapped._eli_voice_contract_wrapped = True
     except Exception:
-        pass
+        _SWLOG.debug("suppressed exception", exc_info=True)
     return _wrapped
 
 _eli_voice_contract_route_names = (
@@ -4503,7 +4573,7 @@ for _obj in list(globals().values()):
                 if callable(_method):
                     setattr(_obj, _name, _eli_voice_contract_wrap_callable(_method))
             except Exception:
-                pass
+                _SWLOG.debug("suppressed exception", exc_info=True)
 
 # portable_runtime_contract_v3_router_hook
 
@@ -4522,7 +4592,7 @@ def _eli_lrf_mk(action, args=None, confidence=0.99, matched_by="eli.live_route_s
             try:
                 return mk(action, args or {}, confidence, matched_by=matched_by)
             except TypeError:
-                pass
+                _SWLOG.debug("suppressed exception", exc_info=True)
     return {
         "action": action,
         "args": args or {},
@@ -4633,7 +4703,7 @@ def _eli_pm_mk(action, args=None, confidence=0.99, matched_by="eli.personal_memo
             try:
                 return mk(action, args or {}, confidence, matched_by=matched_by)
             except TypeError:
-                pass
+                _SWLOG.debug("suppressed exception", exc_info=True)
     return {
         "action": action,
         "args": args or {},
@@ -6000,6 +6070,10 @@ def _eli_media_contract_post(raw, result):
         if m:
             return _play(m.group(2), m.group(1), "media.play_query_on_target_contract")
 
+        m = re.match(r"^play\s+(.+?)\s+on\s+youtube\.com\s*$", text)
+        if m:
+            return _play("youtube website", m.group(1), "media.play_on_youtube_dot_com_contract")
+
         m = re.match(r"^play\s+(.+\s+by\s+.+)$", text)
         if m:
             return _play("spotify", m.group(1), "media.play_song_by_artist_contract")
@@ -6032,6 +6106,13 @@ def _eli_media_contract_post(raw, result):
                 or name in {"browser", "youtube"}
             )
             if known:
+                if verb in {"open", "launch", "start"} and name in WEBSITE_ALIASES:
+                    return _mk(
+                        "OPEN_URL",
+                        {"url": WEBSITE_ALIASES[name]},
+                        0.98,
+                        matched_by="app.wake_prefix_contract.web_alias",
+                    )
                 action = "CLOSE_APP" if verb in {"close", "quit", "kill", "exit"} else "OPEN_APP"
                 return _mk(action, {"name": name}, 0.98, matched_by="app.wake_prefix_contract")
 
@@ -6099,7 +6180,7 @@ def _eli_phase38_media_query_cleaner_post(result):
                 args["query"] = cleaned
                 result.setdefault("meta", {})["query_cleaned_by"] = "eli.final_media_query_cleaner"
     except Exception:
-        pass
+        _SWLOG.debug("suppressed exception", exc_info=True)
     return result
 
 
@@ -6211,7 +6292,7 @@ def _eli_phase38_tiny_fragment_post(raw, result):
                                 matched_by="pending_remediation.no_intercept",
                             )
                 except Exception:
-                    pass
+                    _SWLOG.debug("suppressed exception", exc_info=True)
 
                 grid_text = str(raw or "").strip().lower().replace("×", "x")
                 grid_text = _re.sub(r"\btree\b", "3", grid_text)
@@ -6248,7 +6329,7 @@ def _eli_phase38_tiny_fragment_post(raw, result):
                 )
 
     except Exception:
-        pass
+        _SWLOG.debug("suppressed exception", exc_info=True)
 
     return result
 
@@ -6271,7 +6352,7 @@ def _eli_phase38_voice_portable_persona_lower_dispatch(raw, *args, **kwargs):
             if portable is not None:
                 return portable
         except Exception:
-            pass
+            _SWLOG.debug("suppressed exception", exc_info=True)
 
     voice = globals().get("_eli_voice_contract_route")
     if callable(voice):
@@ -6280,7 +6361,7 @@ def _eli_phase38_voice_portable_persona_lower_dispatch(raw, *args, **kwargs):
             if shortcut is not None:
                 return shortcut
         except Exception:
-            pass
+            _SWLOG.debug("suppressed exception", exc_info=True)
 
     persona = _eli_phase38_persona_override_contract(raw)
     if persona is not None:
@@ -6301,7 +6382,7 @@ def _eli_phase38_lower_contract_dispatch(raw, *args, **kwargs):
             if out is not None:
                 return out
         except Exception:
-            pass
+            _SWLOG.debug("suppressed exception", exc_info=True)
 
     return _eli_phase38_voice_portable_persona_lower_dispatch(raw, *args, **kwargs)
 
@@ -6314,7 +6395,7 @@ def _eli_phase38_personal_memory_guard_dispatch(raw, *args, **kwargs):
             if out is not None:
                 return out
         except Exception:
-            pass
+            _SWLOG.debug("suppressed exception", exc_info=True)
 
     return _eli_phase38_lower_contract_dispatch(raw, *args, **kwargs)
 
@@ -6327,7 +6408,7 @@ def _eli_phase38_self_improvement_dispatch(raw, *args, **kwargs):
             if guarded:
                 return guarded
         except Exception:
-            pass
+            _SWLOG.debug("suppressed exception", exc_info=True)
 
     return _eli_phase38_personal_memory_guard_dispatch(raw, *args, **kwargs)
 
@@ -6340,7 +6421,7 @@ def _eli_phase38_runtime_cognition_failure_dispatch(raw, *args, **kwargs):
             if guarded:
                 return guarded
         except Exception:
-            pass
+            _SWLOG.debug("suppressed exception", exc_info=True)
 
     return _eli_phase38_self_improvement_dispatch(raw, *args, **kwargs)
 
@@ -6773,7 +6854,7 @@ try:
                         if out:
                             return out
                     except Exception:
-                        pass
+                        _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_self_improvement_guard(text, *_a, **_k):
@@ -6784,7 +6865,7 @@ try:
                         if out:
                             return out
                     except Exception:
-                        pass
+                        _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_personal_memory_pre_route(text, *_a, **_k):
@@ -6795,7 +6876,7 @@ try:
                         if out is not None:
                             return out
                     except Exception:
-                        pass
+                        _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_lrf_pre_route(text, *_a, **_k):
@@ -6806,7 +6887,7 @@ try:
                         if out is not None:
                             return out
                     except Exception:
-                        pass
+                        _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_portable_route(text, *_a, **_k):
@@ -6825,7 +6906,7 @@ try:
                         if out is not None:
                             return out
                     except Exception:
-                        pass
+                        _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_persona_override(text, *_a, **_k):
@@ -6889,7 +6970,7 @@ try:
                             "meta": {"matched_by": "pending_habit.yes_intercept"},
                         }
                 except Exception:
-                    pass
+                    _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_pending_code_fix_confirm(text, *_a, **_k):
@@ -6928,7 +7009,7 @@ try:
                             "meta": {"matched_by": "pending_code_fix.yes_intercept"},
                         }
                 except Exception:
-                    pass
+                    _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_pending_remediation_confirm(text, *_a, **_k):
@@ -6968,7 +7049,7 @@ try:
                             "meta": {"matched_by": "pending_remediation.install_download_intercept"},
                         }
                 except Exception:
-                    pass
+                    _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
             def _stage_pending_proposal_confirm(text, *_a, **_k):

@@ -1753,7 +1753,7 @@ def _mw_rs_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
+        "You are ELI, the local assistant inside the ELI v3 project. "
         "You are answering from live runtime telemetry evidence. "
         "Do not invent runtime facts. "
         "Do not expose JSON packets, internal report fields, repair reasons, raw candidate metadata, or validation machinery. "
@@ -1996,7 +1996,7 @@ def _mw_mem_runtime_strict_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
+        "You are ELI, the local assistant inside the ELI v3 project. "
         "You are answering a question about how your own memory system works internally. "
         "Use ONLY the evidence below; do not invent file paths, table names, or function names. "
         "Do not expose JSON packets, internal report fields, repair reasons, or validation machinery. "
@@ -2139,7 +2139,7 @@ def _mw_recent_memory_processing_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
+        "You are ELI, the local assistant inside the ELI v3 project. "
         "You are answering a question about recent durable memory-processing evidence. "
         "Use ONLY the evidence below. Do not invent recent processing, emotional activity, "
         "mathematical work, project work, or hidden background actions unless the evidence states it. "
@@ -2302,7 +2302,7 @@ def _mw_self_report_recent_updates_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v2.0 project. "
+        "You are ELI, the local assistant inside the ELI v3 project. "
         "You are answering a self-report question about what updates, checks, or recent "
         "operational work are actually evidenced. Use ONLY the grounded report below. "
         "Do not invent Git commits, status changes, capability changes, runtime changes, "
@@ -9698,6 +9698,32 @@ Answer:"""
         except Exception:
             pass
 
+        # Relational facts — the people/pets the user mentions in passing ("my dog Shadow",
+        # "Shadow (my dog)", "my wife is Jane"). ELI stored the user's OWN name but never these,
+        # so "what's my dog's name?" had nothing to recall even after the user had said it.
+        # Store each as a recallable identity memory (and pin it, like the name path).
+        try:
+            from eli.runtime.relational_facts import extract_relational_facts as _erf
+            _rel_facts = _erf(user_input)
+            for _rf in _rel_facts:
+                _rf_text = f"User's {_rf['relation']} is named {_rf['name']}."
+                try:
+                    self.memory.store_memory(
+                        _rf_text,
+                        tags=["user", "relation", _rf["relation"]],
+                        source="runtime_relational_extractor",
+                        kind="identity",
+                        importance=0.82,
+                    )
+                    if self._working_memory:
+                        self._working_memory.pin(_rf_text, source="relation", importance=0.82)
+                except Exception:
+                    pass
+            if _rel_facts:
+                log.debug(f"[COGNITIVE] Relational facts stored: {_rel_facts}")
+        except Exception:
+            pass
+
         # Detect in-session ELI acronym corrections ("ELI = X", "ELI stands for X")
         # and pin them to working memory so the LLM uses the corrected name for the
         # rest of the session without waiting for a source-file edit.
@@ -10013,12 +10039,32 @@ Answer:"""
         # topic just after news, answer it as a substantive grounded discussion (CHAT), not a
         # mis-guessed command. CHAT/NEWS_FETCH left alone (already conversational / re-fetch).
         try:
-            if str(action or "").upper() not in ("CHAT", "NEWS_FETCH"):
+            _act_up = str(action or "").upper()
+            if _act_up not in ("CHAT", "NEWS_FETCH"):
                 from eli.runtime.action_commitment import extract_deepen_topic as _edt_direct
                 _deepen_topic = _edt_direct(user_input)
                 _lca_direct = getattr(self, "_last_command_action", None) or {}
                 _was_news_direct = str(_lca_direct.get("action") or "").upper() in (
                     "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
+                # ACCEPTING a news follow-up offer: right after a briefing ELI asks "want to dive
+                # deeper into X or Y?"; the user's reply ("running local llms please", "the first
+                # one") carries NO explicit deepen verb, so extract_deepen_topic misses it and the
+                # LLM resolver mis-routes it to a canned how-to / code dump (the observed bug). If
+                # we're right after news and the reply is SHORT and NOT a hard OS command, read it
+                # as the picked topic → grounded discussion. Gated tight: worst case a short
+                # question becomes a conversational answer (better than a misroute), never a
+                # hijacked hard action.
+                if (not _deepen_topic) and _was_news_direct:
+                    _hard = {
+                        "OPEN_APP", "CLOSE_APP", "FOCUS_APP", "SWITCH_WINDOW", "PLAY_MEDIA",
+                        "PLAY_SPECIFIC", "MEDIA_CONTROL", "VOLUME_CONTROL", "MUTE", "CREATE_FILE",
+                        "CREATE_FOLDER", "DELETE_FILE", "SCREENSHOT", "TYPE_TEXT", "MOUSE_CONTROL",
+                        "KEY_PRESS", "SET_ALARM", "SET_TIMER", "SHELL_EXEC", "OPEN_URL",
+                        "GAZE_CLICK", "START_POMODORO", "ADD_EVENT", "SEARCH_NOTES",
+                    }
+                    _wc = len(str(user_input or "").split())
+                    if _act_up not in _hard and 1 <= _wc <= 7:
+                        _deepen_topic = str(user_input or "").strip().rstrip("?.!,;: ").strip()
                 if _deepen_topic and _was_news_direct:
                     log.debug(f"[COGNITIVE] news topic-deepen: {action}→CHAT "
                               f"(topic='{_deepen_topic}')")

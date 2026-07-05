@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ELI MKXI — master release builder.
+# ELI v3 — master release builder.
 #
 # Drives the per-platform builders under packaging/<platform>/ and emits
 # checksums + RELEASE_NOTES.md alongside the artifacts in dist/.
@@ -32,7 +32,7 @@ else
 fi
 
 echo "================================================="
-echo "  ELI MKXI release builder — version ${VERSION}"
+echo "  ELI v3 release builder — version ${VERSION}"
 echo "  Targets: ${TARGETS[*]}"
 echo "================================================="
 
@@ -147,13 +147,13 @@ for target in "${TARGETS[@]}"; do
             echo ""
             if [ "$(uname -s)" = "Darwin" ] || [ "$(uname -s)" = "Linux" ]; then
                 echo "[windows] Producing portable zip on $(uname -s)…"
-                if ! ls "$DIST"/eli_mkxi-*.whl >/dev/null 2>&1; then
+                if ! ls "$DIST"/eli_v3-*.whl >/dev/null 2>&1; then
                     build_python_artifacts
                 fi
                 if ! find "$DIST/wheelhouse" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null | grep -q .; then
                     build_windows_wheelhouse
                 fi
-                STAGING="$PROJECT_ROOT/build/win-portable/eli-mkxi-${VERSION}-windows"
+                STAGING="$PROJECT_ROOT/build/win-portable/eli-v3-${VERSION}-windows"
                 rm -rf "$STAGING"
                 mkdir -p "$STAGING/dist"
                 cp -r "$PROJECT_ROOT/eli"     "$STAGING/"
@@ -171,13 +171,13 @@ for target in "${TARGETS[@]}"; do
                 cp    "$PROJECT_ROOT/requirements-windows.txt" "$STAGING/requirements-windows.txt"
                 cp    "$PROJECT_ROOT/requirements-windows.txt" "$STAGING/requirements.txt"
                 cp -r "$PROJECT_ROOT/packaging/windows" "$STAGING/installers"
-                if ls "$DIST"/eli_mkxi-*.whl >/dev/null 2>&1; then
-                    cp "$DIST"/eli_mkxi-*.whl "$STAGING/dist/"
+                if ls "$DIST"/eli_v3-*.whl >/dev/null 2>&1; then
+                    cp "$DIST"/eli_v3-*.whl "$STAGING/dist/"
                 fi
                 if [ -d "$DIST/wheelhouse" ]; then
                     cp -r "$DIST/wheelhouse" "$STAGING/wheelhouse"
                 fi
-                ZIP="$DIST/eli-mkxi-${VERSION}-windows-portable.zip"
+                ZIP="$DIST/eli-v3-${VERSION}-windows-portable.zip"
                 rm -f "$ZIP"
                 ( cd "$(dirname "$STAGING")" && zip -r -q "$ZIP" "$(basename "$STAGING")" )
                 echo "[windows] Portable zip: $ZIP"
@@ -200,18 +200,18 @@ if [ -d "$DIST/wheelhouse" ]; then
 fi
 
 echo "[finalise] Computing SHA-256 checksums…"
-( cd "$DIST" && sha256sum eli_mkxi-*.whl 2>/dev/null \
-                          eli_mkxi-*.tar.gz 2>/dev/null \
-                          ELI_MKXI-*.dmg 2>/dev/null \
-                          ELI_MKXI-*.AppImage 2>/dev/null \
-                          ELI_MKXI-*-Setup.exe 2>/dev/null \
-                          eli-mkxi_*_amd64.deb 2>/dev/null \
-                          eli-mkxi-*-windows-portable.zip 2>/dev/null \
-                          eli-mkxi-*-portable.tar.gz 2>/dev/null \
-                          ELI_MKXI-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
+( cd "$DIST" && sha256sum eli_v3-*.whl 2>/dev/null \
+                          eli_v3-*.tar.gz 2>/dev/null \
+                          Eli_v3-*.dmg 2>/dev/null \
+                          Eli_v3-*.AppImage 2>/dev/null \
+                          Eli_v3-*-Setup.exe 2>/dev/null \
+                          eli-v3_*_amd64.deb 2>/dev/null \
+                          eli-v3-*-windows-portable.zip 2>/dev/null \
+                          eli-v3-*-portable.tar.gz 2>/dev/null \
+                          Eli_v3-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
 
 cat > "$DIST/RELEASE_NOTES.md" <<EOF
-# ELI MKXI ${VERSION}
+# ELI v3 ${VERSION}
 
 Built on: $(date -u +"%Y-%m-%d %H:%M UTC")
 Host: $(uname -s) $(uname -r) ($(uname -m))
@@ -225,11 +225,11 @@ $(cat "$DIST/SHA256SUMS.txt" 2>/dev/null || echo "(checksum file missing)")
 \`\`\`
 
 ## Install quick reference
-- **pip / wheel**: \`pip install dist/eli_mkxi-${VERSION}-py3-none-any.whl[full]\`
-- **Debian/Ubuntu**: \`sudo dpkg -i dist/eli-mkxi_${VERSION}_amd64.deb && sudo apt -f install\`
-- **Linux AppImage**: \`chmod +x dist/ELI_MKXI-${VERSION}-x86_64.AppImage && ./dist/ELI_MKXI-${VERSION}-x86_64.AppImage\`
-- **macOS**: open \`dist/ELI_MKXI-${VERSION}.dmg\`, drag ELI MKXI.app to Applications
-- **Windows installer**: run \`dist/ELI_MKXI-${VERSION}-Setup.exe\` (Inno/NSIS) or extract the portable zip and run \`install.bat\`
+- **pip / wheel**: \`pip install dist/eli_v3-${VERSION}-py3-none-any.whl[full]\`
+- **Debian/Ubuntu**: \`sudo dpkg -i dist/eli-v3_${VERSION}_amd64.deb && sudo apt -f install\`
+- **Linux AppImage**: \`chmod +x dist/Eli_v3-${VERSION}-x86_64.AppImage && ./dist/Eli_v3-${VERSION}-x86_64.AppImage\`
+- **macOS**: open \`dist/Eli_v3-${VERSION}.dmg\`, drag ELI.app to Applications
+- **Windows installer**: run \`dist/Eli_v3-${VERSION}-Setup.exe\` (Inno/NSIS) or extract the portable zip and run \`install.bat\`
 
 EOF
 
