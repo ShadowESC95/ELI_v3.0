@@ -45,7 +45,7 @@ chmod +x "$ROOT/scripts/eli_launch.sh" "$ROOT/scripts/eli_serve.sh" 2>/dev/null 
 
 # Optional icon — use one if present, otherwise fall back to a stock icon name.
 ICON="utilities-terminal"
-for c in "$ROOT/blueprints/eli_logo2.png" "$ROOT/blueprints/Eli_Icon.png" "$ROOT/eli/gui/assets/eli.png"; do
+for c in "$ROOT/packaging/desktop/Eli_Icon.png" "$ROOT/blueprints/Eli_Icon.png" "$ROOT/blueprints/eli_logo2.png"; do
     [ -f "$c" ] && { ICON="$c"; break; }
 done
 
