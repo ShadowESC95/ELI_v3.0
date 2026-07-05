@@ -91,6 +91,11 @@ else
 fi
 
 mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper"
+if [ -f "$ROOT/packaging/desktop/Eli_Icon.png" ]; then
+  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/packaging/desktop/"
+  mkdir -p "$STAGING/blueprints"
+  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/blueprints/"
+fi
 # License docs live under models/ but models/** is excluded from the lean archive — copy explicitly
 for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
