@@ -52,11 +52,14 @@ def scrub_file(path: Path, root: Path) -> bool:
         if "/ELI_MKXI" not in raw and "/Eli_v" not in raw:
             return False
         new_raw = raw
-        for old in (
-            "/home/jay/Desktop/Eli_v3",
-            "/home/jay/Desktop/Eli_v3",
-        ):
-            new_raw = new_raw.replace(old, str(root))
+        import re
+        for marker in ("ELI_MKXI-main_MAY_NEWEST", "ELI_MKXI", "Eli_v3", "ELI_v2.0"):
+            if marker in new_raw:
+                new_raw = re.sub(
+                    rf"(?:/[\w.-]+)*{re.escape(marker)}(?:/[\w./-]*)?",
+                    str(root),
+                    new_raw,
+                )
         if new_raw != raw:
             path.write_text(new_raw, encoding="utf-8")
             return True
