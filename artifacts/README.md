@@ -1,28 +1,22 @@
 # Runtime data (not in git)
 
-This folder is **gitignored** on purpose. ELI creates it automatically on install
-or first launch — you do not check it into GitHub.
+Created automatically on `install.sh`, first `eli` launch, or `python -m eli.core.init_data`.
 
-## Created by
-
-- `bash install.sh` → `python -m eli.core.init_data`
-- First `eli` run → `bootstrap_once()` in `eli/__main__.py`
-- `python -m eli.core.paths` (calls `ensure_dirs()`)
-
-## Typical layout (dev checkout)
+Fresh clones also get **schema-only DB templates** from `config/templates/db/` (copied
+by `install.sh` when `artifacts/db/` is empty). No personal data is written until you use ELI.
 
 ```
 artifacts/
-  db/              user.sqlite3, agent.sqlite3, …
+  db/              user.sqlite3, agent.sqlite3, system_index.sqlite3, coding_memory.sqlite3
   vectors/         FAISS index
   runtime/         world model, snapshots, user profiles
   conversations/   chat logs
-  logs/            startup / runtime logs
-  cache/           transient runtime cache
+  logs/
 ```
 
 **Dev mode:** `<project>/artifacts/`  
-**Installed:** `~/.local/share/eli/` (Linux), `%LOCALAPPDATA%/eli/` (Windows), etc.
+**Installed:** `~/.local/share/eli/` (Linux), etc.
 
-Fresh clone? Run `install.sh` or start `eli` once — folders and DB schemas appear
-empty (blank slate, no personal data until you use ELI).
+Factory reset (GUI Advanced → Clear Memory, or `python tools/clear_memory.py`) wipes
+all learned state, resets `persona.auto.txt`, clears identity from settings, and
+rebuilds the full DB architecture via `init_all_data`.
