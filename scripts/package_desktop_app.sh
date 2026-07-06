@@ -129,19 +129,20 @@ exec "$APP_ROOT/scripts/eli_startup.sh" "$@"
 RUN_EOF
 chmod +x "$STAGING/RUN_ELI.sh"
 
-cat > "$STAGING/INSTALL_ELI.sh" <<INSTALL_EOF
+cat > "$STAGING/INSTALL_ELI.sh" <<'INSTALL_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-APP_ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-bash "\$APP_ROOT/scripts/eli_one_click_setup.sh" "\$@"
+APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$APP_ROOT/scripts/eli_setup.sh" "$@"
 INSTALL_EOF
 chmod +x "$STAGING/INSTALL_ELI.sh"
 
 cat > "$STAGING/ELI_Setup.sh" <<'SETUP_EOF'
 #!/usr/bin/env bash
+# Double-click friendly name — same as scripts/eli_setup.sh (grandparent setup).
 set -euo pipefail
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$APP_ROOT/INSTALL_ELI.sh" "$@"
+exec "$APP_ROOT/scripts/eli_setup.sh" "$@"
 SETUP_EOF
 chmod +x "$STAGING/ELI_Setup.sh"
 
@@ -176,30 +177,33 @@ DESKTOP_INSTALL_EOF
 chmod +x "$STAGING/packaging/desktop/install_desktop_launcher.sh"
 
 cat > "$STAGING/README_INSTALL.txt" <<README_EOF
-ELI v2.0 — portable download-and-run package
+ELI v3.0 — portable download-and-run package
 
 Hardware (honest):
   Best tested: Linux x86_64 + NVIDIA GPU.
-  Windows/macOS/AMD builds exist; expect rough edges — feedback welcome.
+  AMD: ROCm or Vulkan GPU offload attempted automatically; CPU fallback if neither builds.
+  Windows/macOS builds exist; feedback welcome.
 
-Quick start (easiest):
+Quick start (easiest — one click):
   chmod +x ELI_Setup.sh && ./ELI_Setup.sh
-  # or AppImage from GitHub Releases (double-click after chmod +x)
+  # guided setup: deps + full GGUF catalog picker + voice + app menu icons
 
 Classic:
-  1. ./INSTALL_ELI.sh
-  2. ./RUN_ELI.sh --with-github-assets    # optional model/voice pack
-  3. ./RUN_ELI.sh                         # launch ELI
+  1. ./INSTALL_ELI.sh    (same as ELI_Setup.sh)
+  2. ./RUN_ELI.sh
 
 Daily use:
   ./RUN_ELI.sh
-  eli    (after INSTALL_ELI.sh installs ~/.local/bin/eli)
+  eli    (after setup installs ~/.local/bin/eli)
 
-Model/voice pack (separate download — tag: local-assets-v3.0):
+Chat models (7 in catalog — pick any at setup):
+  qwen2.5-3b, qwen2.5-7b, qwen3-8b, falcon3-10b, phi-4, qwen3.6-35b-a3b, falcon-h1-34b
+  Always installed: nomic embedder (~85 MB) + voice (whisper + piper)
+  Re-pick later: .venv/bin/python -m eli.core.model_download --choose
+
+Model/voice pack (optional GitHub assets — tag: local-assets-v3.0):
   gh auth login
   ./RUN_ELI.sh --with-github-assets
-  # or: .venv/bin/python scripts/restore_github_asset_files.py --repo $REPO --tag $TAG
-  # Ryan (NC-SA), Lessac (uncleared), and Cori are skipped — see models/MODEL_LICENSES.md
 
 Desktop launcher:
   ./packaging/desktop/install_desktop_launcher.sh
@@ -207,11 +211,7 @@ Desktop launcher:
 Data folders (auto-created on first run):
   artifacts/db/  artifacts/runtime/  config/
 
-Terminal command:
-  INSTALL_ELI.sh installs ~/.local/bin/eli by default.
-  If your shell cached an older eli: hash -r
-
-v3 is private development — contact jaybridgeman0095@gmail.com for access.
+Linux AppImage: see GitHub Releases — ELI_v3.0-*-x86_64.AppImage
 README_EOF
 
 PACKAGE="$OUT_DIR/${APP_NAME}-${VERSION}-linux-portable.tar.gz"
