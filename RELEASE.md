@@ -6,7 +6,7 @@
 
 ```bash
 bash scripts/package_desktop_app.sh
-# Output: dist/app_packages/ELI_v3-3.0.6-linux-portable.tar.gz
+# Output: dist/app_packages/ELI_v3-3.0.7-linux-portable.tar.gz
 ```
 
 Optional full bundle (local models — very large):
@@ -18,16 +18,16 @@ bash scripts/package_desktop_app.sh --with-assets
 ## 2. Publish GitHub Release
 
 1. [New release](https://github.com/ShadowESC95/ELI_v3.0/releases/new)
-2. Tag: `v3.0.6` (semver matches `pyproject.toml`)
+2. Tag: `v3.0.7` (semver matches `pyproject.toml`)
 3. Attach:
-   - `ELI_v3-3.0.6-linux-portable.tar.gz`
+   - `ELI_v3-3.0.7-linux-portable.tar.gz`
    - `.sha256` sidecar
 
 ## 3. What users do
 
 ```bash
-tar -xzf ELI_v3-3.0.6-linux-portable.tar.gz
-cd ELI_v3-3.0.6-linux-portable
+tar -xzf ELI_v3-3.0.7-linux-portable.tar.gz
+cd ELI_v3-3.0.7-linux-portable
 ./INSTALL_ELI.sh
 ./RUN_ELI.sh
 ```
