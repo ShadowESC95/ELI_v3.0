@@ -1,0 +1,63 @@
+{
+  "_note": "EXAMPLE ONLY — copy fields into tier_policy.json when checkout goes live. Do not load this file at runtime.",
+  "_pricing_status": "stub",
+  "store": {
+    "provider_example": "lemonsqueezy",
+    "webhook_url_example": "https://your-server.example/webhooks/eli-license",
+    "fulfillment_command_example": "python3 scripts/licensing/fulfill_order.py --tier {tier} --customer-ref {order_id} --email-to {email}",
+    "currency": "USD"
+  },
+  "tiers": {
+    "trial": {
+      "label": "Trial",
+      "seats_default": 1,
+      "duration_days_default": 14,
+      "commercial_use": false,
+      "updates_months": 0,
+      "support": "community",
+      "eula": "docs/eula/TRIAL.md",
+      "price_hint_usd": 0,
+      "checkout_product_id_example": null,
+      "summary": "Time-limited evaluation of a paid build — not for redistribution."
+    },
+    "personal": {
+      "label": "Personal",
+      "seats_default": 1,
+      "duration_days_default": null,
+      "commercial_use": false,
+      "updates_months": 12,
+      "support": "email",
+      "eula": "docs/eula/PERSONAL.md",
+      "price_hint_usd": 49,
+      "checkout_product_id_example": "ls_personal_REPLACE_ME",
+      "checkout_url_example": "https://your-store.lemonsqueezy.com/checkout/buy/PERSONAL_SKU",
+      "summary": "One machine, individual use — hobbyist or personal assistant."
+    },
+    "pro": {
+      "label": "Pro",
+      "seats_default": 3,
+      "duration_days_default": null,
+      "commercial_use": true,
+      "updates_months": 12,
+      "support": "email_priority",
+      "eula": "docs/eula/PRO.md",
+      "price_hint_usd": 149,
+      "checkout_product_id_example": "ls_pro_REPLACE_ME",
+      "checkout_url_example": "https://your-store.lemonsqueezy.com/checkout/buy/PRO_SKU",
+      "summary": "Up to 3 machines, commercial use — freelancers and small teams."
+    },
+    "enterprise": {
+      "label": "Enterprise",
+      "seats_default": 10,
+      "duration_days_default": null,
+      "commercial_use": true,
+      "updates_months": 12,
+      "support": "sla_optional",
+      "eula": "docs/eula/ENTERPRISE.md",
+      "price_hint_usd": null,
+      "checkout_product_id_example": null,
+      "checkout_url_example": null,
+      "summary": "Custom seats, SLA, invoicing — contact sales."
+    }
+  }
+}

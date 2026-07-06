@@ -42,11 +42,16 @@ eli --license-status
 
 ### One-time signing key setup
 
+**Production** (before first paid sale):
+
 ```bash
 python3 scripts/licensing/generate_signing_keypair.py --out-dir ~/eli-license-signing
 cp ~/eli-license-signing/product_signing.pub eli/licensing/keys/product_signing.pub
-git add eli/licensing/keys/product_signing.pub && git commit -m "chore: rotate license verification key"
+git add eli/licensing/keys/product_signing.pub && git commit -m "chore: add license verification key"
 ```
+
+**Dev stubs** (no commit of private key): see [examples/licensing/README.md](../../examples/licensing/README.md) and
+`eli/licensing/keys/product_signing.example.pub`.
 
 ## Phase 2 — Storefront (when ready)
 

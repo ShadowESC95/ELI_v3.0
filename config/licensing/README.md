@@ -45,4 +45,6 @@ python3 -m eli.licensing.cli deactivate --machine-only
 
 See `scripts/licensing/README.md`, `docs/STORE.md`, and `eli/licensing/keys/README.md`.
 
+**Stubs:** [tier_policy.example.json](tier_policy.example.json) · [examples/licensing/README.md](../../examples/licensing/README.md)
+
 Template: [activation.template.json](activation.template.json)
