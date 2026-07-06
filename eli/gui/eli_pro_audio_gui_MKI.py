@@ -235,7 +235,7 @@ class CentralMemoryAdapter:
 # ============================================================
 
 APP_NAME = "ELI Pro"
-APP_VERSION = "7.0.7"
+APP_VERSION = "7.0.8"
 
 PROJECT_ROOT = _BOOT_PROJECT_ROOT
 
@@ -3383,9 +3383,11 @@ class EliMainWindow(QMainWindow):
         # wake_on=True → wake word required → direct chat disabled
         _os.environ["ELI_STT_ALLOW_DIRECT_CHAT"] = "0" if wake_on else "1"
         self.wake_word_btn.setText("Wake: ON" if wake_on else "Wake: OFF")
-        log.debug(
-            f"[WAKE] {'ON — say \"computer\" before commands' if wake_on else 'OFF — all speech dispatched (≥2 words)'}",
+        _wake_msg = (
+            'ON — say "computer" before commands' if wake_on
+            else 'OFF — all speech dispatched (≥2 words)'
         )
+        log.debug(f"[WAKE] {_wake_msg}")
         # Keep settings-page checkbox in sync
         if hasattr(self, "allow_direct_chat_checkbox"):
             self.allow_direct_chat_checkbox.blockSignals(True)

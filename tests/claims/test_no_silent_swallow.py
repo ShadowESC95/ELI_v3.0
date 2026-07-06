@@ -18,8 +18,9 @@ import ast
 import glob
 import os
 
-# Current count of silent `except: pass` handlers across eli/. Ratchet DOWN only.
-CEILING = 900
+# v3 full-parse baseline (all eli/*.py including MKI). Ratchet DOWN only.
+# py3.10 used to under-count when MKI had an f-string only valid on 3.12+.
+CEILING = 925
 
 _ELI_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "eli"))
 
