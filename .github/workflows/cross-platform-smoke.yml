@@ -1,14 +1,9 @@
 name: cross-platform-smoke
 
-# Continuously proves the cross-platform claims as the repo evolves: a fresh install
-# imports, the FastAPI server starts headless, and the OS-agnostic code paths load + pass
-# their tests on Linux, macOS, AND Windows. Deliberately LIGHTWEIGHT — it installs the core
-# + server (CPU), not the heavy GPU/image stack, so it stays fast and free.
+#   Manual only — avoids metered Actions on every push (private repo). Releases are
+#   built locally via scripts/build_grandma_release.sh (no CI required).
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -17,8 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.12"]
+        os: [ubuntu-latest]
+        python: ["3.12"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
