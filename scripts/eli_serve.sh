@@ -27,7 +27,8 @@ export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$ROOT/cache}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 HOST="127.0.0.1"
-PORT="${ELI_API_PORT:-8081}"
+# Default port: env wins, else the user's saved api_port setting, else 8081.
+PORT="${ELI_API_PORT:-$("$PY" -c 'from api.server import effective_api_port; print(effective_api_port())' 2>/dev/null || echo 8081)}"
 TOKEN="${ELI_API_TOKEN:-}"
 LAN=0
 HTTPS=0

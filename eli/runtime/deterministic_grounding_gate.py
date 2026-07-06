@@ -30,7 +30,7 @@ IMPORT_TARGETS = [
     "eli.memory.memory",
     "eli.execution.router_enhanced",
     "eli.execution.executor_enhanced",
-    "eli.gui.eli_pro_audio_gui_MKI",
+    "eli.gui.gui_eli_original",
     "eli.core.runtime_settings",
     "eli.core.paths",
     "eli.planning.proactive_daemon",
@@ -137,7 +137,7 @@ def _import_audit() -> str:
 
 
 def _gui_runtime_audit() -> str:
-    path = PROJECT_ROOT / "eli" / "gui" / "eli_pro_audio_gui_MKI.py"
+    path = PROJECT_ROOT / "eli" / "gui" / "gui_eli_original.py"
     lines = ["GUI runtime audit: deterministic file inspection", ""]
     lines.append(f"file: {path}")
     lines.append(f"exists: {path.exists()}")
@@ -217,7 +217,7 @@ def _cognition_report() -> str:
         "eli/cognition/context_synthesiser.py",
         "eli/memory/memory.py",
         "eli/memory/vector_store.py",
-        "eli/gui/eli_pro_audio_gui_MKI.py",
+        "eli/gui/gui_eli_original.py",
     ]
 
     lines = ["Cognition pipeline report: deterministic", ""]
@@ -304,7 +304,7 @@ def _full_runtime_audit_report() -> str:
         "eli/kernel/engine.py",
         "eli/execution/router_enhanced.py",
         "eli/execution/executor_enhanced.py",
-        "eli/gui/eli_pro_audio_gui_MKI.py",
+        "eli/gui/gui_eli_original.py",
     ]
 
     rc, out, err = _run([sys.executable, "-m", "py_compile", *files], timeout=30)
@@ -331,7 +331,7 @@ def _full_runtime_audit_report() -> str:
         "eli/kernel/engine.py",
         "eli/execution/router_enhanced.py",
         "eli/execution/executor_enhanced.py",
-        "eli/gui/eli_pro_audio_gui_MKI.py",
+        "eli/gui/gui_eli_original.py",
     ):
         path = PROJECT_ROOT / rel
         if not path.exists():
@@ -925,7 +925,7 @@ def _eli_cognition_pipeline_v2() -> str:
     return """Cognition pipeline, input to output:
 
 1. GUI / voice capture
-- Text input enters through eli/gui/eli_pro_audio_gui_MKI.py.
+- Text input enters through eli/gui/gui_eli_original.py.
 - Voice input is captured through the STT/audio path, then normalised before it is sent into cognition.
 
 2. Input normalisation
@@ -990,7 +990,7 @@ def _eli_runtime_audit_v2() -> str:
         root / "eli" / "execution" / "executor_enhanced.py",
         root / "eli" / "runtime" / "deterministic_grounding_gate.py",
         root / "eli" / "runtime" / "generated_script_guard.py",
-        root / "eli" / "gui" / "eli_pro_audio_gui_MKI.py",
+        root / "eli" / "gui" / "gui_eli_original.py",
         root / "eli" / "core" / "runtime_settings.py",
     ]
 

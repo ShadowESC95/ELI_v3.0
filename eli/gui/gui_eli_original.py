@@ -32,7 +32,7 @@ from collections import deque
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-# Direct script launches (`python eli/gui/eli_pro_audio_gui_MKI.py`) do not put
+# Direct script launches (`python eli/gui/gui_eli_original.py`) do not put
 # the project root on sys.path. Bootstrap it early so `import eli.*` succeeds.
 _BOOT_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_BOOT_PROJECT_ROOT) not in sys.path:
@@ -2470,10 +2470,10 @@ class EliMainWindow(QMainWindow):
         self.apply_theme()
         # If the launcher pre-loaded a model into this module, wire it directly
         # into model_manager so the GUI doesn't re-load (or load the wrong one).
-        _pre = getattr(__import__('eli.gui.eli_pro_audio_gui_MKI',
+        _pre = getattr(__import__('eli.gui.gui_eli_original',
                                   fromlist=['_PRELOADED_MODEL']),
                        '_PRELOADED_MODEL', None)
-        _pre_path = getattr(__import__('eli.gui.eli_pro_audio_gui_MKI',
+        _pre_path = getattr(__import__('eli.gui.gui_eli_original',
                                        fromlist=['_PRELOADED_MODEL_PATH']),
                             '_PRELOADED_MODEL_PATH', None)
         if _pre is not None:
@@ -8318,7 +8318,8 @@ _register()
         import os, secrets, threading
         if getattr(self, "_srv_thread", None) and self._srv_thread.is_alive():
             return  # already running
-        port = int(os.environ.get("ELI_API_PORT", "8081"))
+        from api.server import effective_api_port
+        port = effective_api_port()  # honours the user's saved api_port setting
         if lan:
             # Stable, persisted token — reused across restarts so an already-paired
             # phone is NOT stranded (a fresh token every start meant its saved URL

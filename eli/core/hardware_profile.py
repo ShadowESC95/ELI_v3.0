@@ -867,7 +867,7 @@ def apply_recommendation(rec: ModelRecommendation) -> Dict[str, Any]:
         save_settings(settings)
 
         # Keep the GUI's hw-profile artifact in sync.
-        # eli_pro_audio_gui_MKI.py reads artifacts/runtime_hardware_profile.json
+        # gui_eli_original.py reads artifacts/runtime_hardware_profile.json
         # (keys: n_ctx, n_gpu_layers, batch_size) as its hw-profile fallback.
         # Without this write the GUI would show stale values from a previous
         # optimizer run, making it look like the profile wasn't updated.

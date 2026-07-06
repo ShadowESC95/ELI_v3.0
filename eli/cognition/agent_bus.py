@@ -2448,7 +2448,7 @@ class FileCodeAgent(_BaseAgent):
                 "memory_init":       "memory/__init__.py",
                 "router":            "execution/router_enhanced.py",
                 "executor":          "execution/executor_enhanced.py",
-                "gui_mki":           "gui/eli_pro_audio_gui_MKI.py",
+                "gui_mki":           "gui/gui_eli_original.py",
                 "core_paths":        "core/paths.py",
                 "proactive":         "planning/proactive_daemon.py",
                 "output_governor":   "cognition/output_governor.py",

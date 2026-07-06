@@ -334,7 +334,7 @@ def main():
     # If the GUI startup picker is enabled, skip the terminal pre-load entirely.
     # StartupModelSelectionDialog owns model selection, hw-tuning, and load.
     if cfg.get("show_startup_model_picker", True) and "--setup" not in sys.argv:
-        import eli.gui.eli_pro_audio_gui_MKI as _gui_mod
+        import eli.gui.gui_eli_original as _gui_mod
         _gui_mod.main()
         return
 
@@ -734,7 +734,7 @@ def main():
     import threading as _thr
     _thr.Thread(target=_prewarm_embed, daemon=True, name="embed-prewarm").start()
 
-    import eli.gui.eli_pro_audio_gui_MKI as _gui_mod
+    import eli.gui.gui_eli_original as _gui_mod
     _gui_mod._PRELOADED_MODEL      = model
     _gui_mod._PRELOADED_MODEL_PATH = str(model_path)
     # Pass the EFFECTIVE params (what actually loaded) — critical so the
