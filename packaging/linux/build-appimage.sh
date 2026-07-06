@@ -53,9 +53,13 @@ if [ ! -f "\$MARKER" ]; then
   {
     echo "=== ELI v3 AppImage setup \$(date -Iseconds) ==="
     rsync -a --exclude=.venv "\$HERE/" "\$INSTALL_ROOT/" 2>&1 || cp -a "\$HERE/." "\$INSTALL_ROOT/"
-    bash "\$INSTALL_ROOT/INSTALL_ELI.sh" --yes >>"\$LOG" 2>&1
-    "\$INSTALL_ROOT/.venv/bin/python" -m eli.core.init_data >>"\$LOG" 2>&1 || true
-    bash "\$INSTALL_ROOT/scripts/install_desktop_apps.sh" >>"\$LOG" 2>&1 || true
+    if [ -x "\$INSTALL_ROOT/ELI_Setup.sh" ]; then
+      bash "\$INSTALL_ROOT/ELI_Setup.sh" >>"\$LOG" 2>&1
+    elif [ -x "\$INSTALL_ROOT/INSTALL_ELI.sh" ]; then
+      bash "\$INSTALL_ROOT/INSTALL_ELI.sh" >>"\$LOG" 2>&1
+    else
+      bash "\$INSTALL_ROOT/install.sh" --yes >>"\$LOG" 2>&1
+    fi
     touch "\$MARKER"
   } || { kill "\$_ZPID" 2>/dev/null || true; _notify "Setup failed. See: \$LOG"; exit 1; }
   kill "\$_ZPID" 2>/dev/null || true; wait "\$_ZPID" 2>/dev/null || true

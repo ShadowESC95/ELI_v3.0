@@ -35,6 +35,7 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --yes|-y) ;;  # accepted for AppImage / INSTALL_ELI.sh compatibility
     --cpu-only) CPU_ONLY=1 ;;
     --skip-torch) SKIP_TORCH=1 ;;
     --with-github-assets) WITH_GITHUB_ASSETS=1 ;;
