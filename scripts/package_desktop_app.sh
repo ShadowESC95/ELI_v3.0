@@ -115,6 +115,16 @@ else
   rmdir "$STAGING/wheelhouse" 2>/dev/null || true
 fi
 
+# Starter model — bundle ONE small GGUF so a fresh install answers immediately with no
+# model download. Set ELI_STARTER_MODEL to a filename in models/ (default: tinyllama).
+STARTER_MODEL="${ELI_STARTER_MODEL:-tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf}"
+if [ -f "$ROOT/models/$STARTER_MODEL" ]; then
+  echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ROOT/models/$STARTER_MODEL" | cut -f1))"
+  mkdir -p "$STAGING/models"; cp "$ROOT/models/$STARTER_MODEL" "$STAGING/models/"
+else
+  echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
+fi
+
 if [ "$WITH_ASSETS" -eq 1 ]; then
   echo "[package] including local model/voice assets; this can be very large"
   [ -d "$ROOT/models" ] && cp -a "$ROOT/models/." "$STAGING/models/"
