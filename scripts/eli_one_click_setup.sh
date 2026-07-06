@@ -87,7 +87,8 @@ case "$ASSET_MODE" in
 esac
 
 echo "[setup] Installing ELI Pro"
-bash "$ROOT/install.sh" "${INSTALL_ARGS[@]}"
+bash "$ROOT/install.sh" "${INSTALL_ARGS[@]}" \
+  || { [ "$CPU_ONLY" -eq 1 ] && exit 1; echo "[setup] Retrying with --cpu-only (pytorch.org may be blocked)…"; bash "$ROOT/install.sh" --cpu-only "${INSTALL_ARGS[@]}"; }
 
 if [ "$WITH_GITHUB_ASSETS" -eq 1 ]; then
   echo "[setup] Restoring GitHub release assets ($ASSET_MODE)"
