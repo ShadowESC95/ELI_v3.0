@@ -1,5 +1,6 @@
 {
-  "_note": "Authoritative tier defaults for key issuance and checkout copy. Prices are indicative until store goes live.",
+  "_note": "Authoritative tier defaults for key issuance and checkout copy.",
+  "_pricing_status": "stub — price_hint_usd are placeholders until store goes live; see tier_policy.example.json for checkout SKU stubs",
   "tiers": {
     "trial": {
       "label": "Trial",

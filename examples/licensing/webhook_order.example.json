@@ -1,0 +1,24 @@
+{
+  "_note": "EXAMPLE webhook body — shape varies by provider. Map fields to fulfill_order.py args.",
+  "provider": "lemonsqueezy",
+  "event": "order_created",
+  "data": {
+    "id": "1234567",
+    "attributes": {
+      "order_number": 1001,
+      "user_email": "buyer@example.com",
+      "status": "paid",
+      "total_usd": 14900,
+      "first_order_item": {
+        "product_id": "ls_pro_REPLACE_ME",
+        "variant_name": "ELI v3 Pro"
+      }
+    }
+  },
+  "eli_fulfillment_mapping": {
+    "tier": "pro",
+    "customer_ref": "lemonsqueezy-1234567",
+    "email_to": "buyer@example.com",
+    "command": "python3 scripts/licensing/fulfill_order.py --tier pro --customer-ref lemonsqueezy-1234567 --email-to buyer@example.com"
+  }
+}
