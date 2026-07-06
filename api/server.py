@@ -900,6 +900,13 @@ _WEB_UI = """<!doctype html>
           '<div class="rrow" style="justify-content:center;margin-top:10px"><button class="cbtn" onclick="copyConnUrl()">&#128203; Copy link</button>'+
           '<button class="cbtn" onclick="loadConnect()">&#10227; Refresh</button></div>'+
           '<div class="rnote" style="margin-top:8px">Make sure the phone is on the <b>same Wi-Fi</b> as this computer.</div></div>';
+        h+='<div class="jhead">Server port</div>'+
+          '<div class="syscard">'+
+          '<div class="rnote" style="margin-bottom:8px">ELI listens on port <b>'+esc(''+(d.port||'8081'))+'</b>. If that clashes with another device or app on your network, set a different one here — it applies the next time you start the server.</div>'+
+          '<div class="rrow" style="gap:8px;align-items:center"><input id="apiport" type="number" min="1024" max="65535" placeholder="8081" value="'+esc(''+(d.saved_port||''))+'" style="width:130px">'+
+          '<button class="cbtn" onclick="saveApiPort()">&#128190; Save port</button>'+
+          '<button class="cbtn" onclick="saveApiPort(0)">Reset to 8081</button></div>'+
+          '<div id="portmsg" class="rnote" style="margin-top:8px"></div></div>';
         if(d.https_available){
           h+='<div class="jhead">Phone microphone (voice)</div>'+
             '<div class="syscard" style="text-align:center">'+
@@ -948,7 +955,15 @@ _WEB_UI = """<!doctype html>
   }
   function copyConnUrl(){const u=($('#conn-url')||{}).textContent||'';
     if(navigator.clipboard)navigator.clipboard.writeText(u).then(()=>{const b=event&&event.target;if(b){const o=b.textContent;b.textContent='Copied \\u2713';setTimeout(()=>b.textContent=o,1400);}}).catch(()=>{});}
-  window.loadConnect=loadConnect; window.copyConnUrl=copyConnUrl;
+  function saveApiPort(reset){
+    const el=$('#apiport'); const msg=$('#portmsg');
+    let p = reset===0 ? 0 : parseInt((el&&el.value||'').trim(),10);
+    if(reset!==0 && (!p || p<1024 || p>65535)){ if(msg)msg.innerHTML='<span style="color:#e0a72e">Enter a port between 1024 and 65535.</span>'; return; }
+    fetch('/v1/connect/port',{method:'POST',headers:H(),body:JSON.stringify({port:p})})
+      .then(r=>r.json()).then(d=>{ if(msg)msg.innerHTML = d.ok ? '<span style="color:#33c07a">'+esc(d.note||'Saved.')+'</span>' : '<span style="color:#e05a5a">'+esc(d.detail||'Could not save.')+'</span>'; })
+      .catch(e=>{ if(msg)msg.innerHTML='<span style="color:#e05a5a">'+esc(''+e)+'</span>'; });
+  }
+  window.loadConnect=loadConnect; window.copyConnUrl=copyConnUrl; window.saveApiPort=saveApiPort;
   function switchTab(t){document.querySelector('nav.tabs button[data-tab="'+t+'"]').click();}
 
   /* theme toggle (persisted; applied pre-paint in <head> to avoid flash) */
@@ -4402,6 +4417,27 @@ def _firewall_hint() -> dict:
     return {"os": osname, "tool": tool, "commands": cmds, "subnet": subnet}
 
 
+def effective_api_port() -> int:
+    """The port the ELI web/API server should listen on. Precedence: explicit ELI_API_PORT
+    env (from --port / launcher) > the user's persisted `api_port` setting > 8081. Single
+    source every launch path consults, so changing the setting moves the server everywhere
+    (useful when 8081 is already taken by another service on the LAN)."""
+    env = os.environ.get("ELI_API_PORT")
+    if env:
+        try:
+            return int(env)
+        except (TypeError, ValueError):
+            pass
+    try:
+        from eli.core import config as _cfg
+        v = _cfg.get("api_port")
+        if v:
+            return int(v)
+    except Exception:
+        pass
+    return 8081
+
+
 def _connect_url() -> dict:
     """Everything the 'Connect a phone' tab needs: the LAN IP, port, the ready-to-open URL
     (token included when set), and whether the server is actually reachable from the LAN."""
@@ -4430,7 +4466,31 @@ def connect_info():
     info["lan_clients_seen"] = bool(_LAN_SEEN["any"])
     info["lan_client_count"] = int(_LAN_SEEN["count"])
     info["firewall"] = _firewall_hint()
+    try:
+        from eli.core import config as _cfg
+        info["saved_port"] = _cfg.get("api_port") or None
+    except Exception:
+        info["saved_port"] = None
     return {"ok": True, **info}
+
+
+class PortSetting(BaseModel):
+    port: int
+
+
+@app.post("/v1/connect/port", tags=["System"], dependencies=[Depends(require_admin)])
+def set_api_port(body: PortSetting):
+    """Persist the port the ELI server listens on. Takes effect on next start — change it
+    when 8081 clashes with another service on your LAN. Port 0 resets to the 8081 default."""
+    p = int(body.port)
+    from eli.core import config as _cfg
+    if p == 0:
+        (_cfg.delete("api_port") if hasattr(_cfg, "delete") else _cfg.set("api_port", None))
+        return {"ok": True, "port": None, "note": "Reset to default 8081. Restart the server to apply."}
+    if not (1024 <= p <= 65535):
+        raise HTTPException(status_code=400, detail="port must be between 1024 and 65535 (or 0 to reset)")
+    _cfg.set("api_port", p)
+    return {"ok": True, "port": p, "note": f"Saved. Restart the ELI server for it to listen on :{p}."}
 
 @app.get("/v1/connect/qr.svg", tags=["System"], dependencies=[Depends(_require_token)])
 def connect_qr(kind: str = "connect"):
@@ -4866,7 +4926,7 @@ def main():
 
     # Precedence: explicit flag > --lan > env default. --lan means 0.0.0.0 unless --host given.
     host = args.host or ("0.0.0.0" if args.lan else os.environ.get("ELI_API_HOST", "127.0.0.1"))
-    port = args.port or int(os.environ.get("ELI_API_PORT", "8081"))
+    port = args.port or effective_api_port()  # --port > env > saved api_port setting > 8081
     reload = args.reload or os.environ.get("ELI_API_RELOAD", "0").strip().lower() in ("1", "true", "yes", "on")
     if args.token:
         os.environ["ELI_API_TOKEN"] = args.token
