@@ -7,6 +7,8 @@
 #   --lan        expose to your local network so a phone/tablet browser can reach it.
 #                Binds 0.0.0.0 AND requires an access token (auto-generated, printed
 #                below with the exact URL to open on the device).
+#   --https      also serve HTTPS on port 8443 — required for phone microphone
+#                (browsers block getUserMedia on plain http://LAN-IP).
 #   --port N     listen port (default 8081, or $ELI_API_PORT)
 #   --token X    use a specific token instead of a generated one
 set -euo pipefail
@@ -15,19 +17,34 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$ROOT/.venv/bin/python"
 [ -x "$PY" ] || { echo "[eli-serve] .venv not found — run install.sh first."; exit 1; }
 
+# Pin runtime paths to THIS install root so a portable copy stays self-contained,
+# regardless of the shell's working directory.
+export ELI_PROJECT_ROOT="$ROOT"
+export ELI_DATA_DIR="${ELI_DATA_DIR:-$ROOT/artifacts}"
+export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$ROOT/config}"
+export ELI_MODELS_DIR="${ELI_MODELS_DIR:-$ROOT/models}"
+export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$ROOT/cache}"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
 HOST="127.0.0.1"
 PORT="${ELI_API_PORT:-8081}"
 TOKEN="${ELI_API_TOKEN:-}"
 LAN=0
+HTTPS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --lan)        LAN=1 ;;
+    --https)      HTTPS=1 ;;
     --port)       PORT="$2"; shift ;;
     --port=*)     PORT="${1#*=}" ;;
     --token)      TOKEN="$2"; shift ;;
     --token=*)    TOKEN="${1#*=}" ;;
-    -h|--help)    sed -n '2,11p' "$0"; exit 0 ;;
+    -h|--help)
+      sed -n '2,13p' "$0"
+      echo "  --https      enable HTTPS voice port (phone mic over LAN)"
+      exit 0
+      ;;
     *) echo "[eli-serve] unknown arg: $1 (try --help)"; exit 2 ;;
   esac
   shift
@@ -45,6 +62,14 @@ if [ "$LAN" -eq 1 ]; then
   echo "     http://$LANIP:$PORT/#token=$TOKEN"
   echo ""
   echo "   The page stores the token; afterwards just http://$LANIP:$PORT/ works."
+  if [ "$HTTPS" -eq 1 ]; then
+    echo ""
+    echo "   Phone microphone (voice) — open the HTTPS URL instead:"
+    echo "     https://$LANIP:8443/#token=$TOKEN"
+    echo "   (accept the one-time self-signed cert warning on the phone)"
+  else
+    echo "   Tip: add --https to enable the phone microphone (voice)."
+  fi
   echo "   Inference runs on THIS machine — nothing leaves it to any cloud."
   echo "======================================================================"
 else
@@ -53,5 +78,28 @@ fi
 
 export ELI_API_HOST="$HOST" ELI_API_PORT="$PORT"
 [ -n "$TOKEN" ] && export ELI_API_TOKEN="$TOKEN"
+[ "$HTTPS" -eq 1 ] && export ELI_API_HTTPS=1
 cd "$ROOT"
-exec "$PY" -m api.server
+
+# Web mic + TTS need whisper/piper on disk; offline mode blocks huggingface.co mid-request.
+_need_voice=0
+if ! "$PY" -c "from eli.perception.local_whisper_stt import whisper_cache_ready; import sys; sys.exit(0 if whisper_cache_ready() else 1)" 2>/dev/null; then
+  _need_voice=1
+fi
+if ! "$PY" -c "from eli.runtime.voice_assets import piper_voice_ready; import sys; sys.exit(0 if piper_voice_ready() else 1)" 2>/dev/null; then
+  _need_voice=1
+fi
+if [ "$_need_voice" -eq 1 ]; then
+  echo "[eli-serve] Voice models not cached — fetching once (brief network via netguard)…"
+  if ! "$PY" -m eli.runtime.voice_assets; then
+    echo "[eli-serve] WARN: Voice may fail until you run: $PY -m eli.runtime.voice_assets"
+  fi
+fi
+
+SERVER_ARGS=()
+[ "$LAN" -eq 1 ] && SERVER_ARGS+=(--lan)
+[ "$HTTPS" -eq 1 ] && SERVER_ARGS+=(--https)
+[ -n "$TOKEN" ] && SERVER_ARGS+=(--token "$TOKEN")
+SERVER_ARGS+=(--port "$PORT")
+
+exec "$PY" -m api.server "${SERVER_ARGS[@]}"
