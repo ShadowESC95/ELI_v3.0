@@ -104,20 +104,25 @@ if ls "$ROOT"/dist/eli_mkxi-*.whl >/dev/null 2>&1; then
   cp "$ROOT"/dist/eli_mkxi-*.whl "$STAGING/dist/"
 fi
 
-echo "[package] bundling CPU torch fallback wheel (optional; needs network during build)"
+# We bundle a real ~1.7GB starter model (Qwen2.5-3B) below, so bundling the 766MB torch
+# wheel too would push a single release asset over GitHub's 2GB cap. Torch is OPT-IN
+# (ELI_BUNDLE_TORCH=1); by default it's fetched at install time (small, quick).
 mkdir -p "$STAGING/wheelhouse"
-if "$PYTHON" -m pip download torch -d "$STAGING/wheelhouse" \
-    --platform manylinux2014_x86_64 --python-version 312 --implementation cp \
-    --abi cp312 --only-binary=:all: --no-deps -q 2>/dev/null; then
+if [ "${ELI_BUNDLE_TORCH:-0}" = "1" ]; then
+  echo "[package] bundling CPU torch fallback wheel…"
+  "$PYTHON" -m pip download torch -d "$STAGING/wheelhouse" \
+      --platform manylinux2014_x86_64 --python-version 312 --implementation cp \
+      --abi cp312 --only-binary=:all: --no-deps -q 2>/dev/null || true
+fi
+if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
   echo "[package] wheelhouse: $(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l) wheel(s)"
 else
-  echo "[package] wheelhouse: skipped (no network or pip download failed)"
   rmdir "$STAGING/wheelhouse" 2>/dev/null || true
 fi
 
 # Starter model — bundle ONE small GGUF so a fresh install answers immediately with no
 # model download. Set ELI_STARTER_MODEL to a filename in models/ (default: tinyllama).
-STARTER_MODEL="${ELI_STARTER_MODEL:-tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf}"
+STARTER_MODEL="${ELI_STARTER_MODEL:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
 if [ -f "$ROOT/models/$STARTER_MODEL" ]; then
   echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ROOT/models/$STARTER_MODEL" | cut -f1))"
   mkdir -p "$STAGING/models"; cp "$ROOT/models/$STARTER_MODEL" "$STAGING/models/"
