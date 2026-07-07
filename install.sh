@@ -361,9 +361,9 @@ fi
 # Install ELI v3 wheel (or editable from source checkout)
 echo "[..] Installing ELI v3..."
 WHEEL=""
-shopt -s nullglob 2>/dev/null || true
-for _w in "$SCRIPT_DIR"/dist/eli_v3-*.whl; do WHEEL="$_w"; break; done
-shopt -u nullglob 2>/dev/null || true
+# Pick the HIGHEST version wheel (sort -V), not the first — a plain glob returns the
+# oldest first, which would install a stale version if several wheels are present.
+WHEEL="$(ls "$SCRIPT_DIR"/dist/eli_v3-*.whl 2>/dev/null | sort -V | tail -1)"
 if [ -n "$WHEEL" ]; then
     "$PIP" install "${WHEEL}[full]" --quiet
 else
@@ -381,7 +381,7 @@ else
 fi
 
 echo "[..] Installing dependencies from $(basename "$REQ")$([ "$REQ" = "$SCRIPT_DIR/requirements.lock.txt" ] && echo ' (frozen, reproducible)')..."
-"$PIP" install -r "$REQ" --quiet --ignore-installed
+"$PIP" install "${_PIP_LINKS[@]}" -r "$REQ" --quiet --ignore-installed
 
 # Make launchers executable
 chmod +x "$SCRIPT_DIR/eli.sh" 2>/dev/null || true

@@ -100,8 +100,8 @@ fi
 for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
 done
-if ls "$ROOT"/dist/eli_v3-*.whl >/dev/null 2>&1; then
-  cp "$ROOT"/dist/eli_v3-*.whl "$STAGING/dist/"
+if ls "$ROOT"/dist/eli_v3-"${VERSION}"-*.whl >/dev/null 2>&1; then
+  cp "$ROOT"/dist/eli_v3-"${VERSION}"-*.whl "$STAGING/dist/"
 fi
 
 # We bundle a real ~1.7GB starter model (Qwen2.5-3B) below, so bundling the 766MB torch
