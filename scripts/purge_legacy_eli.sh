@@ -20,7 +20,7 @@ This removes only the legacy system install paths:
   /etc/eli
   /usr/share/applications/eli.desktop
 
-It does not remove the current ELI Pro checkout or ~/.local/share/applications/eli.desktop.
+It does not remove the current ELI v3.0 checkout or ~/.local/share/applications/eli.desktop.
 EOF_USAGE
 }
 
@@ -100,4 +100,4 @@ fi
 if [ "$found" -eq 0 ]; then
   echo "[legacy-purge] no legacy files were present."
 fi
-echo "[legacy-purge] complete. ELI Pro user launcher is left untouched."
+echo "[legacy-purge] complete. ELI v3.0 user launcher is left untouched."
