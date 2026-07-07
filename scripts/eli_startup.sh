@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ELI Pro startup entrypoint.
+# ELI v3.0 startup entrypoint.
 # Installs when needed, optionally restores GitHub model/voice assets, then launches ELI.
 set -euo pipefail
 

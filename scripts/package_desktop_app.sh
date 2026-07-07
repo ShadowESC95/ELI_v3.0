@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a portable desktop application package for ELI Pro.
+# Build a portable desktop application package for ELI v3.0.
 # Default package excludes heavyweight model/voice assets; restore them from GitHub release after install.
 set -euo pipefail
 
@@ -163,14 +163,14 @@ chmod +x "$STAGING/ELI_Setup.sh"
 
 cat > "$STAGING/packaging/desktop/ELI_v3.0.desktop.template" <<'DESKTOP_EOF'
 [Desktop Entry]
-Name=ELI Pro
+Name=ELI v3.0
 GenericName=Local AI Assistant
 Comment=Local AI cognitive runtime and assistant
 Exec=__APP_ROOT__/RUN_ELI.sh
 Icon=__APP_ROOT__/packaging/desktop/Eli_Icon.png
 Type=Application
 Categories=Utility;
-Keywords=ai;assistant;llm;local;eli;mkxi;
+Keywords=ai;assistant;llm;local;eli;
 StartupNotify=true
 Terminal=false
 StartupWMClass=ELI

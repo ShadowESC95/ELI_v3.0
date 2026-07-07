@@ -69,7 +69,7 @@ fi
 
 cat > "$TARGET" <<EOF_LAUNCHER
 #!/usr/bin/env bash
-# ELI Pro terminal launcher.
+# ELI v3.0 terminal launcher.
 set -euo pipefail
 APP_ROOT="$ROOT"
 exec "\$APP_ROOT/scripts/eli_startup.sh" "\$@"

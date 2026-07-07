@@ -41,9 +41,9 @@ export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$ROOT/cache}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 stage 1 "Welcome"
-echo "  ELI Pro runs entirely on your computer — private, local, no cloud account."
+echo "  ELI v3.0 runs entirely on your computer — private, local, no cloud account."
 echo "  This setup prepares everything automatically. It is safe to run more than once."
-zenity_info "Welcome to ELI Pro setup.\n\nWe will install what ELI needs, let you pick chat models, add app-menu icons, then open ELI."
+zenity_info "Welcome to ELI v3.0 setup.\n\nWe will install what ELI needs, let you pick chat models, add app-menu icons, then open ELI."
 
 stage 2 "Python check"
 if ! command -v python3 >/dev/null 2>&1; then
@@ -120,11 +120,11 @@ echo "  ${GRN}OK${R}  Desktop launchers installed."
 stage 8 "Finish — open setup wizard"
 echo
 echo "${B}${GRN}╔══════════════════════════════════════════════╗${R}"
-echo "${B}${GRN}║  ELI Pro setup complete — launching wizard    ║${R}"
+echo "${B}${GRN}║  ELI v3.0 setup complete — launching wizard    ║${R}"
 echo "${B}${GRN}╚══════════════════════════════════════════════╝${R}"
 echo
 echo "  Next: the setup window confirms everything and opens ELI."
-echo "  Later: use the ${B}ELI Pro${R} icon in your app menu."
+echo "  Later: use the ${B}ELI v3.0${R} icon in your app menu."
 
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
   exec "$PY" -m eli.setup --run-remaining --launch

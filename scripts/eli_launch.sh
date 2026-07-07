@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ELI unified launcher — one entry point for every way to run ELI.
 #
-#   ./scripts/eli_launch.sh                 full ELI Pro DESKTOP app (GUI)  [default]
+#   ./scripts/eli_launch.sh                 full ELI v3.0 DESKTOP app (GUI)  [default]
 #   ./scripts/eli_launch.sh gui             same
 #   ./scripts/eli_launch.sh serve [flags]   API + web-app SERVER (flags -> eli_serve.sh,
 #                                           e.g. `serve --lan` for phone/tablet access)
@@ -19,6 +19,9 @@ MODE="${1:-gui}"
 
 case "$MODE" in
   gui|desktop|app)
+    # Feedback for the ~20s first load (model warm-up) so the icon doesn't look dead.
+    command -v notify-send >/dev/null 2>&1 && \
+      notify-send "ELI v3.0" "Starting the desktop app… first load can take ~20s." 2>/dev/null || true
     cd "$ROOT"; exec "$PY" -m eli "$@" ;;
   serve|server|web)
     exec "$ROOT/scripts/eli_serve.sh" "$@" ;;

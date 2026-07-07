@@ -87,7 +87,7 @@ case "$ASSET_MODE" in
     ;;
 esac
 
-echo "[setup] Installing ELI Pro"
+echo "[setup] Installing ELI v3.0"
 bash "$ROOT/install.sh" "${INSTALL_ARGS[@]}" \
   || { [ "$CPU_ONLY" -eq 1 ] && exit 1; echo "[setup] Retrying with --cpu-only (pytorch.org may be blocked)…"; bash "$ROOT/install.sh" --cpu-only "${INSTALL_ARGS[@]}"; }
 
@@ -123,11 +123,11 @@ EOF
   }
   # User-level override for the legacy system package entry at /usr/share/applications/eli.desktop.
   # This keeps old package files intact while making app menus launch this checkout.
-  write_desktop_entry "$DESKTOP_DIR/eli.desktop" "ELI Pro"
+  write_desktop_entry "$DESKTOP_DIR/eli.desktop" "ELI v3.0"
   rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop" "$DESKTOP_DIR/eli-mkxi.desktop"
   chmod +x "$DESKTOP_DIR/eli.desktop"
   echo "[setup] Desktop launcher installed: $DESKTOP_DIR/eli.desktop"
-  echo "[setup] Legacy ELI app-menu override installed as ELI Pro"
+  echo "[setup] Legacy ELI app-menu override installed as ELI v3.0"
 fi
 
 if [ "$INSTALL_COMMAND" -eq 1 ]; then
