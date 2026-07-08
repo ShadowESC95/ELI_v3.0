@@ -729,7 +729,7 @@ _WEB_UI = """<!doctype html>
   #devices,#system,#settings-tab,#connect-tab{ padding:18px; }
 </style></head><body>
   <aside class="sidebar">
-    <div class="brand"><img class="logo" src="/icon.png?size=160" alt="ELI" width="52" height="52"><small>v2</small></div>
+    <div class="brand"><img class="logo" src="/icon.png?size=160" alt="ELI" width="52" height="52"><small>v3</small></div>
     <nav class="tabs">
       <button data-tab="overview" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Overview</span></button>
       <button data-tab="chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12z"/></svg><span>Chat</span></button>
