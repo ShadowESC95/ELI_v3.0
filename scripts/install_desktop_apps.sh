@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[ -x "$ROOT/.venv/bin/python" ] || { echo "[eli] .venv not found — run install.sh first."; exit 1; }
+if [ ! -x "$ROOT/.venv/bin/python" ]; then echo "[eli] note: .venv not found — installing launchers anyway (run install.sh to finish setup)."; fi
 
 OS="$(uname -s)"
 chmod +x "$ROOT/scripts/eli_launch.sh" "$ROOT/scripts/eli_serve.sh" 2>/dev/null || true
@@ -50,6 +50,45 @@ chmod +x "$ROOT/scripts/eli_launch.sh" "$ROOT/scripts/eli_serve.sh" \
          "$ROOT/scripts/eli_term.sh" "$ROOT/scripts/eli_uninstall.sh" 2>/dev/null || true
 TERM_RUN="$ROOT/scripts/eli_term.sh"   # opens a real terminal (GNOME/Wayland ignore Terminal=true)
 
+# Guard wrapper in ~/.local/bin (OUTSIDE the install) so the icons fail LOUDLY — with a
+# visible dialog — if the install is later moved/deleted or its scripts go missing,
+# instead of silently doing nothing (the failure mode that kept biting).
+BIN="$HOME/.local/bin"; mkdir -p "$BIN"; GUARD="$BIN/eli-run"
+cat > "$GUARD" <<'GUARD_EOF'
+#!/usr/bin/env bash
+# ELI launcher guard. Args: <install_root> <gui|serve|setup|uninstall>
+R="$1"; A="$2"
+_err(){ command -v zenity >/dev/null 2>&1 && zenity --error --title="ELI" --width=420 --text="$1" 2>/dev/null \
+    || { command -v notify-send >/dev/null 2>&1 && notify-send "ELI" "$1" 2>/dev/null; } \
+    || { printf '%s
+' "$1"; sleep 6; }; }
+[ -n "$R" ] && [ -d "$R" ] || { _err "ELI install not found at:
+$R
+
+Re-run ELI Setup, or reinstall the latest release."; exit 1; }
+T="$R/scripts/eli_term.sh"
+case "$A" in
+  gui)       S="$R/scripts/eli_launch.sh";    RUN=(gui) ;;
+  serve)     S="$R/scripts/eli_serve.sh";     RUN=(--lan --https) ;;
+  setup)     S="$R/scripts/eli_setup.sh";     RUN=() ;;
+  uninstall) S="$R/scripts/eli_uninstall.sh"; RUN=() ;;
+  *) _err "Unknown ELI action: $A"; exit 2 ;;
+esac
+if [ "$A" = "gui" ]; then
+  [ -x "$S" ] || { _err "ELI is damaged (missing launcher) at:
+$R
+
+Reinstall the latest release."; exit 1; }
+  exec "$S" "${RUN[@]}"
+fi
+{ [ -x "$T" ] && [ -x "$S" ]; } || { _err "ELI is damaged (missing scripts) at:
+$R
+
+Re-run ELI Setup, or reinstall the latest release."; exit 1; }
+exec "$T" "$S" "${RUN[@]}"
+GUARD_EOF
+chmod +x "$GUARD"
+
 # Optional icon — use one if present, otherwise fall back to a stock icon name.
 ICON="utilities-terminal"
 for c in "$ROOT/packaging/desktop/Eli_Icon.png" "$ROOT/blueprints/Eli_Icon.png" "$ROOT/blueprints/eli_logo2.png"; do
@@ -61,7 +100,7 @@ cat > "$APPS/eli-v3.desktop" <<EOF
 Type=Application
 Name=ELI v3.0
 Comment=Local, private AI assistant (desktop GUI)
-Exec=$ROOT/scripts/eli_launch.sh gui
+Exec=$GUARD "$ROOT" gui
 Path=$ROOT
 Icon=$ICON
 Terminal=false
@@ -74,7 +113,7 @@ cat > "$APPS/eli-server.desktop" <<EOF
 Type=Application
 Name=ELI Server (Web App)
 Comment=Self-hosted ELI web app — open from any device on your network (LAN + token)
-Exec=$TERM_RUN $ROOT/scripts/eli_serve.sh --lan
+Exec=$GUARD "$ROOT" serve
 Path=$ROOT
 Icon=$ICON
 Terminal=false
@@ -88,7 +127,7 @@ Type=Application
 Name=ELI Uninstall
 GenericName=Remove ELI
 Comment=Remove ELI's menu icons and the 'eli' command; optionally delete this install
-Exec=$TERM_RUN $ROOT/scripts/eli_uninstall.sh
+Exec=$GUARD "$ROOT" uninstall
 Path=$ROOT
 Icon=$ICON
 Terminal=false
