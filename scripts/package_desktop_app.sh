@@ -78,10 +78,8 @@ STAGING="$WORK_DIR/${APP_NAME}-${VERSION}-linux-portable"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
-if [ "$SKIP_WHEEL" -eq 0 ]; then
-  echo "[package] building wheel ($PYTHON)"
-  (cd "$ROOT" && "$PYTHON" -m build --wheel --no-isolation)
-fi
+# NOTE: the wheel is built LATER, from the clean git-archive staging tree (not this dirty
+# working tree), so the shipped binary always matches the shipped source.
 
 echo "[package] exporting committed source from HEAD"
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -100,8 +98,11 @@ fi
 for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
 done
-if ls "$ROOT"/dist/eli_v3-"${VERSION}"-*.whl >/dev/null 2>&1; then
-  cp "$ROOT"/dist/eli_v3-"${VERSION}"-*.whl "$STAGING/dist/"
+if [ "$SKIP_WHEEL" -eq 0 ]; then
+  echo "[package] building wheel from clean staging tree ($PYTHON)"
+  ( cd "$STAGING" && "$PYTHON" -m build --wheel --no-isolation ) \
+    || { echo "[package] wheel build failed" >&2; exit 1; }
+  find "$STAGING/dist" -maxdepth 1 -name 'eli_v3-*.whl' ! -name "eli_v3-${VERSION}-*.whl" -delete 2>/dev/null || true
 fi
 
 # We bundle a real ~1.7GB starter model (Qwen2.5-3B) below, so bundling the 766MB torch

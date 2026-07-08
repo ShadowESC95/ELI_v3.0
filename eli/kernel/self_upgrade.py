@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from eli.core.paths import project_root as _project_root
 PROJECT_ROOT = _project_root()
 _DEFAULT_RELEASE_REPO = os.environ.get("ELI_RELEASE_REPO", "ShadowESC95/ELI_v3.0")
-_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.15")
+_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.16")
 
 
 def _run(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 120) -> Dict[str, Any]:
