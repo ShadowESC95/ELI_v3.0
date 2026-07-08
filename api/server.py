@@ -1244,7 +1244,32 @@ _WEB_UI = """<!doctype html>
     Promise.all([api('/v1/devices/status'), loadDrivers()]).then(([s])=>{
       const st=(s&&s.status)||{};
       api('/v1/devices/rooms').then(d=>{
-        renderDevices(d.rooms||[], st);   // sub-tabbed; broker setup lives in Discover & Setup
+        let rooms=(d&&d.rooms)||[];
+        // Auto-populate DISCOVERED devices as tiles too — "found" should equal "shown".
+        // Merge a live quick scan into a "Discovered" room (only devices not already saved),
+        // rendered by the SAME tile grid. Fully defensive: any hiccup falls back to saved-only.
+        function finish(extra){
+          try{ if(extra&&extra.length) rooms=rooms.concat([{room:'Discovered · tap a tile to name & assign a room',devices:extra}]); }catch(e){}
+          renderDevices(rooms, st);
+        }
+        try{
+          api('/v1/devices/discover?quick=1',{method:'POST',body:JSON.stringify({})}).then(dd=>{
+            let extra=[];
+            try{
+              const found=(dd&&(dd.found||dd.devices||dd.results))||[];
+              const saved=new Set();
+              rooms.forEach(r=>(r.devices||[]).forEach(x=>saved.add(String(x.id||x.name||''))));
+              extra=found.map(f=>{
+                const id=String(f.id||f.address||f.host||f.uuid||f.name||'');
+                const kind=f.kind||f.type||f.transport||(f.address?'bluetooth':'network');
+                return {id, name:f.name||id, display_name:f.display_name||f.name||id, type:kind,
+                        room:'Discovered', online:(f.online!==false), _discovered:true,
+                        address:f.address||f.host||'', kind:kind};
+              }).filter(x=>x.id && !saved.has(x.id));
+            }catch(e){extra=[];}
+            finish(extra);
+          }).catch(()=>finish([]));
+        }catch(e){ finish([]); }
       }).catch(e=>{$('#devices').innerHTML='<div class="err">'+esc(''+e)+'</div>';});
     }).catch(e=>{$('#devices').innerHTML='<div class="err">'+esc(''+e)+'</div>';});
   }
