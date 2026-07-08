@@ -179,3 +179,6 @@ eli/.claude/
 
 # training build cache (never commit)
 models/unsloth_compiled_cache/
+
+# Regenerated each install — built fresh into packages.
+/capability_manifest.json

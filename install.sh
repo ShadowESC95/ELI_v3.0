@@ -364,10 +364,9 @@ WHEEL=""
 # Pick the HIGHEST version wheel (sort -V), not the first — a plain glob returns the
 # oldest first, which would install a stale version if several wheels are present.
 WHEEL="$(ls "$SCRIPT_DIR"/dist/eli_v3-*.whl 2>/dev/null | sort -V | tail -1)"
-if [ -n "$WHEEL" ]; then
-    "$PIP" install "${WHEEL}[full]" --quiet
-else
-    ( cd "$SCRIPT_DIR" && "$PIP" install -e ".[full]" --quiet )
+# Editable install → the tree is the SINGLE runtime authority (no shadowed wheel copy).
+if ! ( cd "$SCRIPT_DIR" && "$PIP" install -e ".[full]" --quiet ); then
+    [ -n "$WHEEL" ] && "$PIP" install "${WHEEL}[full]" --quiet
 fi
 
 # Install remaining runtime requirements. Default = the FROZEN LOCK (exact known-good

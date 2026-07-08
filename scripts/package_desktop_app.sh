@@ -105,6 +105,12 @@ if [ "$SKIP_WHEEL" -eq 0 ]; then
   find "$STAGING/dist" -maxdepth 1 -name 'eli_v3-*.whl' ! -name "eli_v3-${VERSION}-*.whl" -delete 2>/dev/null || true
 fi
 
+# Generate a fresh capability_manifest.json into the package (gitignored, so git-archive
+# carries none) — the installer's offline fallback copy.
+( cd "$STAGING" && PYTHONPATH="$STAGING" "$PYTHON" -c \
+  "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
+  >/dev/null 2>&1 || echo "[package] (manifest pre-gen skipped — installer will regenerate)"
+
 # We bundle a real ~1.7GB starter model (Qwen2.5-3B) below, so bundling the 766MB torch
 # wheel too would push a single release asset over GitHub's 2GB cap. Torch is OPT-IN
 # (ELI_BUNDLE_TORCH=1); by default it's fetched at install time (small, quick).
