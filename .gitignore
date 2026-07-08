@@ -182,3 +182,7 @@ models/unsloth_compiled_cache/
 
 # Regenerated each install — built fresh into packages.
 /capability_manifest.json
+
+# private dev handoff — never publish
+blueprints/NEXT_SESSION.md
+blueprints/NEXT_SESSION.pdf
