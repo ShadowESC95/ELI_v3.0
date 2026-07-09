@@ -220,7 +220,9 @@ plan an outline → draft section by section against that evidence → review an
 Describe a task and it plans it, decomposes it into a dependency graph, writes it, runs it in a
 sandbox, tests it, and repairs its own bugs — remembering fixes for next time. Plus examine-and-fix
 on your existing files (tiered scan → offer → verified, auto-reverting patch), project scaffolding,
-diffs, and a built-in Sim-IDE.
+diffs, and a built-in Sim-IDE. The IDE ships with ELI's own native code editor (line numbers,
+Python syntax highlighting, current-line highlight, auto-indent); on a PyQt6 install with
+`PyQt6-QScintilla` present it upgrades to QScintilla automatically.
 
 ### Scheduling and automation
 Defer any command to a time — "open Spotify at 8pm", "get the news at 7am", "morning report ready

@@ -96,7 +96,9 @@ except ImportError:
     QSCI_AVAILABLE = False
 
 if not QSCI_AVAILABLE:
-    print("⚠️  QScintilla not available. IDE will use basic editor.")
+    print("ℹ️  IDE using ELI's native code editor (line numbers, Python "
+          "highlighting, auto-indent). QScintilla is used instead only when "
+          "ELI runs under PyQt6/PyQt5.")
 
 # --- Central ELI imports ---
 try:
@@ -2367,6 +2369,13 @@ class _GlobalScrollZoom(QObject):
                                     child.setFont(cf)
                         except Exception:
                             pass
+                        # Dark theme's stylesheet pins font sizes; regenerate it
+                        # at the new size so zoom works on BOTH themes.
+                        try:
+                            if hasattr(w, "apply_theme"):
+                                w.apply_theme()
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
             event.accept()
             return True
         except Exception:
@@ -6445,9 +6454,10 @@ class EliMainWindow(QMainWindow):
             self.code_editor.setIndentationsUseTabs(False)
             self.code_editor.setAutoIndent(True)
         else:
-            self.code_editor = QTextEdit()
-            font = QFont("Courier New", 10)
-            self.code_editor.setFont(font)
+            # Native full editor (line numbers, highlighting, auto-indent) —
+            # QScintilla has no PySide6 build, so this IS the shipped editor.
+            from eli.gui.code_editor import PyCodeEditor
+            self.code_editor = PyCodeEditor()
         layout.addWidget(self.code_editor, stretch=7)
         console_group = QGroupBox("Console Output")
         console_layout = QVBoxLayout(console_group)
@@ -7140,6 +7150,7 @@ _register()
         ("Model",       "🧠"),
         ("Runtime",     "⚡"),
         ("Generation",  "✨"),
+        ("Reasoning",   "🧩"),
         ("Identity",    "🎨"),
         ("Audio",       "🎙"),
         ("Application", "🖥"),
@@ -7204,6 +7215,7 @@ _register()
         self._settings_stack.addWidget(self._build_settings_model_page())
         self._settings_stack.addWidget(self._build_settings_runtime_page())
         self._settings_stack.addWidget(self._build_settings_generation_page())
+        self._settings_stack.addWidget(self._build_settings_reasoning_page())
         self._settings_stack.addWidget(self._build_settings_identity_page())
         self._settings_stack.addWidget(self._build_settings_audio_page())
         self._settings_stack.addWidget(self._build_settings_app_page())
@@ -7872,6 +7884,180 @@ _register()
 
         vbox.addStretch()
         return page
+
+    # ── Reasoning-mode presets: every mode fully visible + editable ─────────
+    _REASONING_PAGE_MODES = (
+        ("quick",             "Quick — direct single pass"),
+        ("chain_of_thought",  "Chain of Thought — structured hidden reasoning"),
+        ("self_consistency",  "Self-Consistency — N independent samples, best wins"),
+        ("tree_of_thoughts",  "Tree of Thoughts — propose branches, develop best"),
+        ("constitutional_ai", "Constitutional — generate, critique, revise"),
+    )
+    # Common keys first, in reading order; anything else (mode-specific
+    # per-stage budgets etc.) follows alphabetically so new preset keys
+    # surface automatically without GUI changes.
+    _REASONING_KEY_ORDER = ("max_tokens", "temperature", "top_p", "top_k",
+                            "threshold", "passes", "samples", "branches", "stages")
+    _REASONING_KEY_HELP = {
+        "max_tokens": "Token budget for the visible answer (per sample where the mode runs several)",
+        "temperature": "0 = deterministic · higher = more varied",
+        "top_p": "Nucleus sampling cutoff",
+        "top_k": "Top-k sampling cutoff",
+        "threshold": "Confidence the result must reach before it's accepted",
+        "passes": "Sequential refinement passes",
+        "samples": "Independent samples drawn (self-consistency)",
+        "branches": "Parallel branches proposed (tree of thoughts)",
+        "stages": "Generate/critique/revise stages (constitutional)",
+        "voice": "Algorithm descriptor — appended to the system prompt to shape this mode's behaviour",
+    }
+
+    def _load_mode_presets_for_page(self) -> dict:
+        try:
+            from eli.core.runtime_settings import load_settings as _ls
+            _settings = _ls() or {}
+        except Exception:
+            _settings = {}
+        presets = dict(_settings.get("mode_presets") or {})
+        if not presets:
+            # Pre-first-run: derive from the current base tune so the page is
+            # never empty; saving persists these as the live presets.
+            try:
+                from eli.core.hardware_profile import _derive_mode_presets
+                presets = _derive_mode_presets(
+                    int(_settings.get("n_ctx") or 8192),
+                    int(_settings.get("max_tokens") or 2048),
+                    float(_settings.get("temperature") or 0.7))
+            except Exception:
+                presets = {}
+        return presets
+
+    def _build_settings_reasoning_page(self) -> QWidget:
+        page, vbox = self._settings_page(
+            "Reasoning",
+            "Live parameters for every reasoning mode — budgets, temperature, sampling, "
+            "algorithm. Saved values apply from the next request. Re-derive rebuilds "
+            "hardware-fitted defaults from the current base tune."
+        )
+        self._reasoning_preset_fields = {}
+        presets = self._load_mode_presets_for_page()
+
+        for mode, title in self._REASONING_PAGE_MODES:
+            preset = presets.get(mode) or {}
+            if not preset:
+                continue
+            form = self._section_card(vbox, title.upper())
+            keys = [k for k in self._REASONING_KEY_ORDER if k in preset]
+            keys += sorted(k for k in preset if k not in keys and k != "voice")
+            if "voice" in preset:
+                keys.append("voice")
+            for key in keys:
+                val = preset[key]
+                w = None
+                if isinstance(val, bool):
+                    w = QCheckBox()
+                    w.setChecked(val)
+                elif isinstance(val, int):
+                    w = QSpinBox()
+                    w.setRange(-1, 32768)
+                    w.setValue(int(val))
+                    if "token" in key:
+                        w.setSingleStep(64)
+                elif isinstance(val, float):
+                    w = QDoubleSpinBox()
+                    w.setRange(0.0, 8.0)
+                    w.setDecimals(2)
+                    w.setSingleStep(0.05)
+                    w.setValue(float(val))
+                elif isinstance(val, str):
+                    if len(val) > 60 or key == "voice":
+                        w = QTextEdit()
+                        w.setPlainText(val)
+                        w.setMaximumHeight(64)
+                    else:
+                        w = QLineEdit(val)
+                if w is None:
+                    continue
+                tip = self._REASONING_KEY_HELP.get(key)
+                if tip:
+                    w.setToolTip(tip)
+                form.addRow(self._field_label(key.replace("_", " ")), w)
+                self._reasoning_preset_fields[(mode, key)] = w
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("💾 Save reasoning presets")
+        save_btn.clicked.connect(self._save_reasoning_presets)
+        btn_row.addWidget(save_btn)
+        rederive_btn = QPushButton("↺ Re-derive from hardware tune")
+        rederive_btn.setToolTip(
+            "Recompute every mode's defaults from the current base ctx / max_tokens / "
+            "temperature (does not save until you press Save)")
+        rederive_btn.clicked.connect(self._rederive_reasoning_presets)
+        btn_row.addWidget(rederive_btn)
+        btn_row.addStretch()
+        self._reasoning_presets_status = QLabel("")
+        btn_row.addWidget(self._reasoning_presets_status)
+        vbox.addLayout(btn_row)
+
+        vbox.addStretch()
+        return page
+
+    def _read_reasoning_field(self, w):
+        if isinstance(w, QCheckBox):
+            return bool(w.isChecked())
+        if isinstance(w, QSpinBox):
+            return int(w.value())
+        if isinstance(w, QDoubleSpinBox):
+            return float(w.value())
+        if isinstance(w, QTextEdit):
+            return w.toPlainText()
+        if isinstance(w, QLineEdit):
+            return w.text()
+        return None
+
+    def _save_reasoning_presets(self):
+        try:
+            from eli.core.runtime_settings import load_settings as _ls, save_settings as _ss
+            s = _ls() or {}
+            mp = dict(s.get("mode_presets") or {})
+            for (mode, key), w in self._reasoning_preset_fields.items():
+                val = self._read_reasoning_field(w)
+                if val is None:
+                    continue
+                mp.setdefault(mode, {})[key] = val
+            s["mode_presets"] = mp
+            _ss(s)
+            self._reasoning_presets_status.setText("✓ saved — live from the next request")
+            log.debug("[SETTINGS] reasoning mode presets saved")
+        except Exception as e:
+            self._reasoning_presets_status.setText(f"✗ save failed: {e}")
+            log.debug(f"[SETTINGS] reasoning preset save failed: {e}")
+
+    def _rederive_reasoning_presets(self):
+        try:
+            from eli.core.runtime_settings import load_settings as _ls
+            from eli.core.hardware_profile import _derive_mode_presets
+            s = _ls() or {}
+            derived = _derive_mode_presets(
+                int(s.get("n_ctx") or 8192),
+                int(s.get("max_tokens") or 2048),
+                float(s.get("temperature") or 0.7))
+            for (mode, key), w in self._reasoning_preset_fields.items():
+                val = (derived.get(mode) or {}).get(key)
+                if val is None:
+                    continue
+                if isinstance(w, QCheckBox):
+                    w.setChecked(bool(val))
+                elif isinstance(w, QSpinBox):
+                    w.setValue(int(val))
+                elif isinstance(w, QDoubleSpinBox):
+                    w.setValue(float(val))
+                elif isinstance(w, QTextEdit):
+                    w.setPlainText(str(val))
+                elif isinstance(w, QLineEdit):
+                    w.setText(str(val))
+            self._reasoning_presets_status.setText("↺ re-derived — press Save to apply")
+        except Exception as e:
+            self._reasoning_presets_status.setText(f"✗ re-derive failed: {e}")
 
     def _build_settings_identity_page(self) -> QWidget:
         page, vbox = self._settings_page(
@@ -10935,7 +11121,7 @@ _register()
 
     def apply_theme(self):
         if self.current_theme == "dark":
-            self.setStyleSheet("""
+            _qss = ("""
                 QMainWindow, QWidget {
                     background: #141821;
                     color: #e6ecf5;
@@ -11069,6 +11255,18 @@ _register()
                     border-top: 1px solid #232b38;
                 }
             """)
+            # The stylesheet's px font rules override the QApplication font,
+            # which froze Ctrl+scroll zoom in dark theme (light theme has no
+            # stylesheet, so it zoomed fine). Derive the size from the live
+            # app font so zoom scales BOTH themes; the zoom filter re-applies
+            # the theme after each font change.
+            try:
+                _app_font_pt = int(QApplication.instance().font().pointSize())
+            except Exception:
+                _app_font_pt = 0
+            if _app_font_pt > 0:
+                _qss = _qss.replace("font-size: 11px", f"font-size: {_app_font_pt}pt")
+            self.setStyleSheet(_qss)
         else:
             self.setStyleSheet("")
 
