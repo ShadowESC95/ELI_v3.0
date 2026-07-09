@@ -22,7 +22,7 @@ import os
 # py3.10 used to under-count when MKI had an f-string only valid on 3.12+.
 # Re-baselined for v3.0.8: the LAN-HTTPS/cert + Connect feature work added a handful of
 # best-effort guards; ratchet reset to the current honest count. Do not raise casually.
-CEILING = 929
+CEILING = 683
 
 _ELI_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "eli"))
 
