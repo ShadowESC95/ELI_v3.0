@@ -289,7 +289,9 @@ def test_discover_degrades_without_zeroconf(monkeypatch):
     # SSDP is an independent path, so discovery no longer hard-fails when zeroconf is
     # absent — it degrades: the mDNS leg is reported in errors, the scan still returns ok.
     monkeypatch.setattr(ds, "_ssdp_discover", lambda timeout: [])  # keep it offline/deterministic
-    r = ds.discover(timeout=1.0)
+    # BT leg is orthogonal to the zeroconf degradation under test — exclude it so
+    # real nearby Bluetooth devices can't leak into the deterministic assertion.
+    r = ds.discover(timeout=1.0, fresh=True, include_bluetooth=False)
     assert r["ok"] is True
     assert r["found"] == []
     assert any("zeroconf" in e for e in r.get("errors", []))

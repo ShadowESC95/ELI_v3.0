@@ -1,3 +1,4 @@
+from pathlib import Path
 import importlib
 import pytest
 from eli.learning.training_preflight import preflight_target
@@ -37,10 +38,18 @@ def test_preflight_keeps_phi_ultra_target_scope():
     assert report["guard_plan"]["target"] == "eli_phi_ultra"
 
 
+PHI_BASE = Path(__file__).resolve().parents[1] / "models" / "hf" / "Phi-3-mini-4k-instruct"
+_needs_phi_base = pytest.mark.skipif(
+    not PHI_BASE.exists(),
+    reason="Phi-3 base model not downloaded in this install — these validate the downloaded-base path",
+)
+
+
 @pytest.mark.skipif(
     not _training_deps_available,
     reason="peft/accelerate/datasets not installed — training pipeline unavailable",
 )
+@_needs_phi_base
 def test_preflight_can_train_after_phi_base_download():
     report = preflight_target("eli_phi")
 
@@ -49,6 +58,7 @@ def test_preflight_can_train_after_phi_base_download():
     assert report["problems"] == []
 
 
+@_needs_phi_base
 def test_preflight_report_does_not_leak_weak_base_warning():
     report = preflight_target("eli_phi")
 

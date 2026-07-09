@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from eli.learning.base_model_resolver import resolve_base_model_path
 
 
@@ -32,6 +36,14 @@ def test_rejects_lora_adapter_dir_without_default_fallback(tmp_path):
     assert any(c.get("looks_like_lora_adapter") for c in r["checked"])
 
 
+PHI_BASE = Path(__file__).resolve().parents[1] / "models" / "hf" / "Phi-3-mini-4k-instruct"
+_needs_phi_base = pytest.mark.skipif(
+    not PHI_BASE.exists(),
+    reason="Phi-3 base model not downloaded in this install — these validate the downloaded-base path",
+)
+
+
+@_needs_phi_base
 def test_resolves_downloaded_default_phi_base_when_available():
     r = resolve_base_model_path()
 
