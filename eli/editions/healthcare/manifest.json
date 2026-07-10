@@ -1,0 +1,23 @@
+{
+  "edition": "healthcare",
+  "label": "ELI Healthcare",
+  "status": "scaffold",
+  "summary": "Clinical documentation support, private-by-construction. Not medical advice.",
+  "default_persona": "clinical_scribe",
+  "adds_capability_categories": [
+    "clinical-notes",
+    "phi-redaction",
+    "medical-summary"
+  ],
+  "report_templates": [
+    "Clinical Note",
+    "Discharge Summary",
+    "Lab Report"
+  ],
+  "policy_module": "eli.editions.healthcare.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "pro",
+    "enterprise"
+  ]
+}

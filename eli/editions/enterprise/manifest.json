@@ -1,0 +1,22 @@
+{
+  "edition": "enterprise",
+  "label": "ELI Enterprise",
+  "status": "scaffold",
+  "summary": "All editions bundled + org governance: RBAC, audit ledger, multi-seat admin.",
+  "default_persona": "eli_governed",
+  "adds_capability_categories": [
+    "rbac-admin",
+    "audit-export",
+    "policy-controls",
+    "fleet-config"
+  ],
+  "report_templates": [
+    "Document",
+    "Technical Report"
+  ],
+  "policy_module": "eli.editions.enterprise.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "enterprise"
+  ]
+}

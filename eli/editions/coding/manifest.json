@@ -1,0 +1,24 @@
+{
+  "edition": "coding",
+  "label": "ELI Coding & Development",
+  "status": "scaffold",
+  "summary": "Repo-scale coding agent (plan\u2192verify\u2192repair), test-gen, IDE \u2014 ELI's strongest surface.",
+  "default_persona": "staff_engineer",
+  "adds_capability_categories": [
+    "repo-context",
+    "long-horizon-build",
+    "test-generation",
+    "code-review"
+  ],
+  "report_templates": [
+    "Technical Report",
+    "Simulation Report"
+  ],
+  "policy_module": "eli.editions.coding.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "personal",
+    "pro",
+    "enterprise"
+  ]
+}

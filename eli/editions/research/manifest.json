@@ -1,0 +1,28 @@
+{
+  "edition": "research",
+  "label": "ELI Research",
+  "status": "scaffold",
+  "summary": "Deep-research + academic writing: literature review, citations, evidence discipline.",
+  "default_persona": "research_analyst",
+  "adds_capability_categories": [
+    "deep-research",
+    "citation",
+    "literature-review",
+    "evidence-ledger"
+  ],
+  "report_templates": [
+    "Research Article",
+    "Review Article",
+    "Literature Review",
+    "Research Proposal",
+    "PhD Dissertation",
+    "Peer-Review Paper"
+  ],
+  "policy_module": "eli.editions.research.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "personal",
+    "pro",
+    "enterprise"
+  ]
+}
