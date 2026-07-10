@@ -1,0 +1,20 @@
+{
+  "edition": "general",
+  "label": "ELI General",
+  "status": "scaffold",
+  "summary": "The default assistant \u2014 the full local core with no domain specialisation.",
+  "default_persona": "eli_neutral",
+  "adds_capability_categories": [],
+  "report_templates": [
+    "Document",
+    "Technical Report"
+  ],
+  "policy_module": "eli.editions.base.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "trial",
+    "personal",
+    "pro",
+    "enterprise"
+  ]
+}

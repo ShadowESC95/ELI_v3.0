@@ -1,0 +1,23 @@
+{
+  "edition": "legal",
+  "label": "ELI Legal",
+  "status": "scaffold",
+  "summary": "Contract/clause drafting and review with jurisdiction disclaimers. Not legal advice.",
+  "default_persona": "legal_drafter",
+  "adds_capability_categories": [
+    "contract-drafting",
+    "clause-review",
+    "statute-citation"
+  ],
+  "report_templates": [
+    "Contract",
+    "Legal Memo",
+    "Clause Review"
+  ],
+  "policy_module": "eli.editions.legal.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "pro",
+    "enterprise"
+  ]
+}

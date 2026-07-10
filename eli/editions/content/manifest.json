@@ -1,0 +1,24 @@
+{
+  "edition": "content",
+  "label": "ELI Content Creation",
+  "status": "scaffold",
+  "summary": "Long/short-form writing, marketing and social, tone control, local image generation.",
+  "default_persona": "creative_writer",
+  "adds_capability_categories": [
+    "copywriting",
+    "social-content",
+    "brand-voice",
+    "image-generation"
+  ],
+  "report_templates": [
+    "Article",
+    "Document"
+  ],
+  "policy_module": "eli.editions.content.policy",
+  "requires_core": ">=3.1",
+  "suggested_tiers": [
+    "personal",
+    "pro",
+    "enterprise"
+  ]
+}
