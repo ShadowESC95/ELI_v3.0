@@ -1,7 +1,10 @@
 from pathlib import Path
 
 
-LABS_SOURCE = Path("eli/gui/labs_tab.py")
+# Report Builder was extracted from the labs_tab.py monolith into its own module
+# during the v3 core-modularisation strangler refactor. These tests assert on the
+# report-builder *source*, so they follow it to its new home.
+LABS_SOURCE = Path("eli/gui/labs/report_tab.py")
 
 
 def _source() -> str:
