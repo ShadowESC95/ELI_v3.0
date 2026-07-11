@@ -608,4 +608,109 @@ def _spotify_ctl(command: str, auto_launch: bool = True):
 
     return {"ok": r.get("ok", False), "result": r, "player": player}
 
-__all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_yt_resolve_watch_url', '_yt_mix_url', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl']
+
+
+# ── public transport API ──
+def stop_media(target: str | None = None) -> Dict[str, Any]:
+    """Stop media. Spotify doesn't support MPRIS Stop so uses pause."""
+    if _targets_mpv(target):
+        _mpv_quit()
+        _MEDIA_STATE.update({"source": None, "title": None, "mpv_sock": None})
+        return {"ok": True, "action": "STOP_MEDIA", "content": "⏹ Stopped — YouTube",
+                "response": "⏹ Stopped — YouTube"}
+    p = _resolve_media_target(target) or _get_active_player()
+    # Spotify ignores Stop — use pause instead
+    cmd = "pause" if (p and "spotify" in p.lower()) else "stop"
+    result = _playerctl(cmd, p)
+    result["action"] = "STOP_MEDIA"
+    return result
+
+
+def pause_media(target: str | None = None) -> Dict[str, Any]:
+    """Pause currently playing media."""
+    if _targets_mpv(target):
+        _mpv_ipc(["set_property", "pause", True])
+        return {"ok": True, "action": "PAUSE_MEDIA", "content": "⏸ Paused — YouTube",
+                "response": "⏸ Paused — YouTube"}
+    result = _playerctl("pause", _resolve_media_target(target) or _get_active_player())
+    result["action"] = "PAUSE_MEDIA"
+    return result
+
+
+def next_media() -> Dict[str, Any]:
+    """Skip to next track."""
+    result = _playerctl("next")
+    result["action"] = "NEXT_MEDIA"
+    return result
+
+
+def previous_media(target: str | None = None) -> Dict[str, Any]:
+    """Go to previous track.
+
+    Spotify's MPRIS implementation of 'Previous' behaves like a media key:
+    if playback position > 3s it seeks to 0 (restart current track) instead
+    of going to the previous track. We force position=0 before sending
+    Previous so the command always skips back regardless of current position.
+    """
+    p = _resolve_media_target(target) or _get_active_player()
+    if p and "spotify" in p.lower():
+        try:
+            subprocess.run(
+                ["playerctl", "-p", p, "position", "0"],
+                capture_output=True, timeout=2,
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+    result = _playerctl("previous", p)
+    result["action"] = "PREVIOUS_MEDIA"
+    return result
+
+
+def shuffle_media(target: str | None = None) -> Dict[str, Any]:
+    """Toggle shuffle mode via playerctl."""
+    result = _playerctl("shuffle Toggle", _resolve_media_target(target) or _get_active_player())
+    result["action"] = "SHUFFLE_MEDIA"
+    return result
+
+
+def repeat_media(target: str | None = None) -> Dict[str, Any]:
+    """Cycle repeat mode (None → Track → Playlist) via playerctl."""
+    result = _playerctl("loop Track", _resolve_media_target(target) or _get_active_player())
+    result["action"] = "REPEAT_MEDIA"
+    return result
+
+
+def now_playing() -> Dict[str, Any]:
+    """Report what ELI is currently playing and from where."""
+    src = _MEDIA_STATE.get("source")
+    title = _MEDIA_STATE.get("title") or "a track"
+    if src == "mpv" and _mpv_alive():
+        # prefer mpv's resolved media-title; fall back to the requested query
+        mt = _mpv_ipc(["get_property", "media-title"], want_response=True)
+        if isinstance(mt, str) and mt.strip():
+            title = mt.strip()
+        paused = _mpv_ipc(["get_property", "pause"], want_response=True)
+        head = "⏸ Paused" if paused is True else "▶ Playing"
+        msg = f"{head}: {title} — YouTube audio (headless mpv)."
+        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+    if src == "spotify":
+        head = "▶ Playing" if _spotify_is_playing() else "⏸ Paused"
+        msg = f"{head}: {title} — Spotify."
+        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+    # Fall back to whatever MPRIS player is active.
+    try:
+        p = _get_active_player()
+        if p:
+            import subprocess as _sp3
+            r = _sp3.run(["playerctl", "-p", p, "metadata", "--format",
+                          "{{artist}} — {{title}}"], capture_output=True, text=True, timeout=3)
+            meta = (r.stdout or "").strip()
+            if meta and meta != "—":
+                return {"ok": True, "action": "NOW_PLAYING",
+                        "content": f"▶ {meta} — {p}.", "response": f"▶ {meta} — {p}."}
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    msg = "Nothing is playing right now."
+    return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+
+__all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_yt_resolve_watch_url', '_yt_mix_url', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
