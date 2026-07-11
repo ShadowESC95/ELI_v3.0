@@ -2525,6 +2525,7 @@ _GENERATIVE_EVIDENCE_ACTIONS = {
 # ----------------------------
 
 from eli.execution.effectors.registry import get as _registry_get
+import eli.execution.effectors.datetime_calendar  # noqa: F401  (register handlers)
 
 def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     args = args or {}
@@ -3226,26 +3227,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PROACTIVE_STATUS":
-        try:
-            st = proactive_status()
-            return {"ok": True, "action": a, **st}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PROACTIVE_START":
-        try:
-            st = proactive_start()
-            return {"ok": True, "action": a, **st, "content": "proactive started", "response": "proactive started"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PROACTIVE_STOP":
-        try:
-            st = proactive_stop()
-            return {"ok": True, "action": a, **st, "content": "proactive stopped", "response": "proactive stopped"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- MESSAGE_TIME_QUERY ----
     # Grounded answer to "what time did I first/last send a message (today)" —
@@ -4228,12 +4211,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return clear_chat_history()
 
     # ---- DATE ----
-    if a == "DATE":
-        from datetime import datetime as _dt
-        d = _dt.now().strftime("%A, %Y-%m-%d")
-        return {"ok": True, "action": a, "content": d, "response": d}
-    if a == "GET_DATE":
-        return _execute_impl("DATE", args)
 
     # ---- MEDIA_CONTROL (generic router output) ----
     if a == "MEDIA_CONTROL":
@@ -5440,13 +5417,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- LIST_EVENTS / ADD_EVENT (calendar integration not configured) ----
-    if a == "LIST_EVENTS":
-        msg = "Calendar integration is not configured. Use your calendar app directly or wire a provider first."
-        return {"ok": True, "action": a, "content": msg, "response": msg}
 
-    if a == "ADD_EVENT":
-        msg = "Calendar integration is not configured. Use your calendar app directly or wire a provider first."
-        return {"ok": True, "action": a, "content": msg, "response": msg}
 
     # ---- ANALYZE_PDF ----
     if a == "ANALYZE_PDF":

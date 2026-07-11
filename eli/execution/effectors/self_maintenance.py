@@ -158,3 +158,36 @@ def proactive_stop() -> Dict[str, Any]:
     return {"ok": True, "action": "PROACTIVE_STOP", "pid": pid, "content": msg, "response": msg}
 
 __all__ = ['_self_improvement_log_report', '_proactive_paths', 'proactive_status', 'proactive_start', 'proactive_stop']
+
+
+# ── dispatch handlers (v3 registry) ──
+from eli.execution.effectors.registry import register as _register
+
+
+def _h_proactive_status(a, args):
+    try:
+        st = proactive_status()
+        return {"ok": True, "action": a, **st}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+def _h_proactive_start(a, args):
+    try:
+        st = proactive_start()
+        return {"ok": True, "action": a, **st, "content": "proactive started", "response": "proactive started"}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+def _h_proactive_stop(a, args):
+    try:
+        st = proactive_stop()
+        return {"ok": True, "action": a, **st, "content": "proactive stopped", "response": "proactive stopped"}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+_register("PROACTIVE_STATUS", _h_proactive_status)
+_register("PROACTIVE_START", _h_proactive_start)
+_register("PROACTIVE_STOP", _h_proactive_stop)
