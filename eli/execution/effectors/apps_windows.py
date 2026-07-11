@@ -5,14 +5,22 @@ primitives come from eli.execution.effectors._base.
 """
 from __future__ import annotations
 
+import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from eli.utils.platform_compat import open_file
 from eli.utils.log import get_logger
 log = get_logger(__name__)
+
+# window-tiling helpers reference stdlib modules under prefixed aliases
+_eli_tile_math = math
+_eli_tile_re = re
+_eli_tile_subprocess = subprocess
 
 from eli.execution.effectors._base import _allowed_apps_set, _run  # noqa: F401
 

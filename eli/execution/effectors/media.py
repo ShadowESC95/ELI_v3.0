@@ -27,6 +27,23 @@ _BROWSER_PLAYERS = {"firefox", "Firefox", "chromium", "Chromium", "chrome"}
 _DUCKED_MEDIA = False
 _DUCK_LOCK = threading.Lock()
 _DUCK_TIMER = None
+_MEDIA_STATE: Dict[str, Any] = {"source": None, "title": None, "mpv_sock": None}
+_TARGET_ALIASES: dict = {
+    # streaming services → browser player
+    "netflix":    "browser",
+    "youtube":    "browser",
+    "prime":      "browser",
+    "disney":     "browser",
+    "disneyplus": "browser",
+    "hulu":       "browser",
+    "twitch":     "browser",
+    "brow":       "browser",
+    "browser":    "browser",
+    # explicit players
+    "spotify":    "spotify",
+    "vlc":        "vlc",
+    "mpv":        "mpv",
+}
 
 
 def _get_active_player() -> Optional[str]:
@@ -714,3 +731,39 @@ def now_playing() -> Dict[str, Any]:
     return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
 __all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_yt_resolve_watch_url', '_yt_mix_url', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
+
+
+# ── dispatch handlers (v3 registry) ──
+# Registering here is all it takes to add a media action — no executor edit.
+from eli.execution.effectors.registry import register as _register
+
+
+def _h_play_media(action, args):
+    query = (args.get("query") or args.get("song") or args.get("artist") or "").strip()
+    target = (args.get("target") or "").strip() or None
+    if query:
+        return play_specific(query, target)
+    return play_media(target)
+
+
+def _h_shuffle_media(action, args):
+    target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
+    return shuffle_media(target=target)
+
+
+def _h_repeat_media(action, args):
+    target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
+    return repeat_media(target=target)
+
+
+for _action, _fn in {
+    "PLAY_MEDIA": _h_play_media,
+    "STOP_MEDIA": lambda a, args: stop_media(),
+    "PAUSE_MEDIA": lambda a, args: pause_media(),
+    "NOW_PLAYING": lambda a, args: now_playing(),
+    "NEXT_MEDIA": lambda a, args: next_media(),
+    "PREVIOUS_MEDIA": lambda a, args: previous_media(),
+    "SHUFFLE_MEDIA": _h_shuffle_media,
+    "REPEAT_MEDIA": _h_repeat_media,
+}.items():
+    _register(_action, _fn)
