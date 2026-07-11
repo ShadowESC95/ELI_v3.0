@@ -2524,6 +2524,8 @@ _GENERATIVE_EVIDENCE_ACTIONS = {
 # Dispatcher
 # ----------------------------
 
+from eli.execution.effectors.registry import get as _registry_get
+
 def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     args = args or {}
     # Normalize action for dispatch (accept open_app, OPEN_APP, open-app, etc.)
@@ -2589,6 +2591,11 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             args.setdefault("_evidence", "")
             args.setdefault("_evidence_sources", [])
 
+    # v3 dispatch registry: effectors own their actions; consult before the if-chain.
+    _rh = _registry_get(a)
+    if _rh is not None:
+        return _rh(a, args)
+
     if a == "CHAT":
         msg = args.get("message") or args.get("prompt") or args.get("text") or ""
         model = args.get("model") or None
@@ -2646,35 +2653,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 return {"ok": False, "action": a, "error": str(e2), "content": str(e2), "response": str(e2)}
     
     # --- media control ---
-    if a == "STOP_MEDIA":
-        return stop_media()
-    
-    if a == "PAUSE_MEDIA":
-        return pause_media()
-
-    if a == "NOW_PLAYING":
-        return now_playing()
-
-    if a == "PLAY_MEDIA":
-        query = (args.get("query") or args.get("song") or args.get("artist") or "").strip()
-        target = (args.get("target") or "").strip() or None
-        if query:
-            return play_specific(query, target)
-        return play_media(target)
-    
-    if a == "NEXT_MEDIA":
-        return next_media()
-    
-    if a == "PREVIOUS_MEDIA":
-        return previous_media()
-
-    if a == "SHUFFLE_MEDIA":
-        target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-        return shuffle_media(target=target)
-
-    if a == "REPEAT_MEDIA":
-        target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-        return repeat_media(target=target)
 
     # ---- DISPATCH PATCH: CORE + PROACTIVE ACTIONS ----
     # NOTE: Capabilities can be "registered" without being "implemented".
