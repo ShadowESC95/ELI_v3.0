@@ -70,18 +70,17 @@ from eli.core.paths import get_paths
 import threading
 
 # ── Security gate (lazy singleton) ───────────────────────────────────────────
-_security_manager = None
 
-def _get_security_manager():
-    """Return the module-level SecurityManager singleton (imported lazily)."""
-    global _security_manager
-    if _security_manager is None:
-        try:
-            from eli.runtime.security import SecurityManager
-            _security_manager = SecurityManager()
-        except Exception:
-            _security_manager = None  # degrade gracefully if unavailable
-    return _security_manager
+# ── apps_windows family + _base primitives moved to eli.execution.effectors ──
+from eli.execution.effectors.apps_windows import (  # noqa: F401
+    _eli_open_url_action,
+    _eli_tile_windows,
+    _open_app_with_timeout,
+    open_browser,
+    open_file_system,
+)
+
+
 # --- Memory bridge: route through canonical Memory class (not memory_db) ---
 # memory_db has a different schema (model/dim/vec columns) than Memory (kind/source/confidence/weight).
 # Using Memory directly avoids the "no such column: model" crash.
@@ -343,67 +342,8 @@ from eli.execution.effectors.media import (  # noqa: F401
 
 
 
-def _shell_command_allowed_fallback(cmd: str) -> bool:
-    """Fail-closed allowlist check used when the SecurityManager can't load.
-
-    Mirrors SecurityManager.is_command_allowed so a degraded manager can never
-    become fail-OPEN: with neither ELI Full Control nor ELI_ALLOWED_CMDS set,
-    nothing runs.
-    """
-    if _full_control():
-        return True
-    raw = (os.environ.get("ELI_ALLOWED_CMDS") or "").strip()
-    if not raw:
-        return False  # fail-closed
-    allowed = {p for p in raw.replace(",", " ").split() if p}
-    if "*" in allowed:
-        return True
-    return os.path.normpath(cmd) in allowed or cmd in allowed
 
 
-def _run(argv: List[str], timeout: int = 15) -> Dict[str, Any]:
-    # Security gate: check command against allowlist before executing.
-    # Fail CLOSED — if the SecurityManager can't load, fall back to an inline
-    # allowlist check rather than running unchecked.
-    if argv:
-        sm = _get_security_manager()
-        allowed = sm.is_command_allowed(argv[0]) if sm is not None else _shell_command_allowed_fallback(argv[0])
-        if not allowed:
-            msg = f"Command blocked by security policy: {argv[0]}"
-            return {
-                "ok": False,
-                "returncode": 1,
-                "stdout": "",
-                "stderr": msg,
-                "cmd": argv,
-                "content": msg,
-                "response": msg,
-            }
-    try:
-        p = subprocess.run(argv, timeout=timeout, capture_output=True, text=True, check=False)
-        ok = (p.returncode == 0)
-        msg = "OK" if ok else "Command failed"
-        return {
-            "ok": ok,
-            "returncode": p.returncode,
-            "stdout": p.stdout,
-            "stderr": p.stderr,
-            "cmd": argv,
-            "content": msg,
-            "response": msg,
-        }
-    except Exception as e:
-        msg = "Command error"
-        return {
-            "ok": False,
-            "returncode": 1,
-            "stdout": "",
-            "stderr": repr(e),
-            "cmd": argv,
-            "content": msg,
-            "response": msg,
-            "error": repr(e),
-        }
 
 
 # ----------------------------
@@ -3265,45 +3205,10 @@ def chat_stream(message: str, *, model: Optional[str] = None):
         if text:
             yield text
 
-def open_audio_settings() -> Dict[str, Any]:
-    for cmd in (["pavucontrol"], ["gnome-control-center", "sound"]):
-        r = _run(cmd, timeout=5)
-        if r.get("ok"):
-            msg = "Audio settings opened."
-            return {"ok": True, "action": "OPEN_AUDIO_SETTINGS", "cmd": cmd, "content": msg, "response": msg}
-    msg = "No audio settings app found (pavucontrol / gnome-control-center)."
-    return {"ok": False, "action": "OPEN_AUDIO_SETTINGS", "error": msg, "content": msg, "response": msg}
 
 
-def open_file_system(path: str = "~") -> Dict[str, Any]:
-    try:
-        target = os.path.expanduser(path)
-        open_file(target)
-        msg = f"Opened folder: {target}"
-        return {"ok": True, "action": "OPEN_FILE_SYSTEM", "path": target, "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to open file system."
-        return {"ok": False, "action": "OPEN_FILE_SYSTEM", "error": repr(e), "content": msg, "response": msg}
 
 
-def open_browser(url: str = "https://duckduckgo.com", urls: list = None) -> Dict[str, Any]:
-    """Open one or more URLs in the default browser. Cross-platform via platform_compat
-    (webbrowser on Linux/macOS/Windows, termux-open-url on Android)."""
-    try:
-        from eli.utils.platform_compat import open_url
-        targets = [str(u) for u in (urls or []) if str(u).strip()]
-        if not targets:
-            targets = [str(url)]
-        for target in targets:
-            open_url(target)
-        if len(targets) == 1:
-            msg = f"Opened browser: {targets[0]}"
-            return {"ok": True, "action": "OPEN_BROWSER", "url": targets[0], "content": msg, "response": msg}
-        msg = f"Opened {len(targets)} browser tabs."
-        return {"ok": True, "action": "OPEN_BROWSER", "urls": targets, "content": msg, "response": msg}
-    except Exception as e:
-        msg = f"Failed to open browser: {e}"
-        return {"ok": False, "action": "OPEN_BROWSER", "error": repr(e), "content": msg, "response": msg}
 
 
 def set_user_name(name: str) -> Dict[str, Any]:
@@ -3702,90 +3607,10 @@ def _open_file(path: str) -> None:
 
 
 # --- APP OPENING FUNCTIONS ---
-_APP_ALIASES = {
-    "mail": "thunderbird",
-    "email": "thunderbird",
-    "e-mail": "thunderbird",
-    "thunderbird": "thunderbird",
-    "thunderbirds": "thunderbird",
-    "thunder birds": "thunderbird",
-    "tundra bird": "thunderbird",
-    "tundrabird": "thunderbird",
-    "browser": "firefox",
-    "mozilla": "firefox",
-    "firefox": "firefox",
-}
 
-def _normalize_app(spoken: str) -> str:
-    """Normalize application names using aliases."""
-    s = (spoken or "").strip().lower()
-    s = " ".join(s.split())
-    return _APP_ALIASES.get(s, s)
 
-def _allowed_apps_set():
-    """Return set of allowed apps, or None for no restrictions."""
-    import os
-    
-    # FULL CONTROL MODE: no app restrictions
-    if _full_control():
-        return None
-    
-    raw = (os.environ.get("ELI_ALLOWED_APPS") or "").strip()
-    if not raw:
-        return None  # None => allow common safe apps
-    return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
-def _open_app_with_timeout(argv, timeout=30):
-    # GUI apps shouldn't be waited on. Spawn + return success unless it exits immediately with error.
-    import subprocess
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True
-        )
-        try:
-            out, err = proc.communicate(timeout=0.7)
-            return {"ok": (proc.returncode == 0), "returncode": proc.returncode, "stdout": out, "stderr": err, "argv": argv}
-        except subprocess.TimeoutExpired:
-            return {"ok": True, "spawned": True, "pid": proc.pid, "argv": argv}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "argv": argv}
 
-def _open_app_builtin(app_name: str) -> dict:
-    app = _normalize_app(app_name)
-    if not app:
-        return {"ok": False, "error": "empty app_name"}
-
-    allowed = _allowed_apps_set()
-    if allowed is not None and app not in allowed:
-        return {"ok": False, "error": f"app not allowed: {app} (set ELI_ALLOWED_APPS)"}
-
-    # Allow per-app override command
-    env_key = "ELI_APP_CMD_" + re.sub(r"[^A-Z0-9]+", "_", app.upper())
-    override = (os.environ.get(env_key) or "").strip()
-
-    if override:
-        argv = shlex.split(override)
-    else:
-        # sensible defaults
-        if app == "thunderbird":
-            argv = ["thunderbird"]
-        elif app == "firefox":
-            argv = ["firefox"]
-        elif app == "spotify":
-            SPOTIFY_CMD = os.environ.get("ELI_SPOTIFY_CMD", "").strip() or "spotify"
-            argv = shlex.split(SPOTIFY_CMD) if SPOTIFY_CMD else ["spotify"]
-        else:
-            # last resort: try running by name
-            argv = [app]
-
-    try:
-        return _open_app_with_timeout(argv)
-    except Exception as e:
-        return {"ok": False, "error": str(e), "app": app, "cmd": argv}
 
 
 # --- BUILTIN DOCUMENT FUNCTIONS ---
@@ -10252,105 +10077,6 @@ def _action_post_dispatch(
     return result
 
 
-def _eli_open_url_action(raw_url=None, *, query=None):
-    """
-    Safe URL opener for OPEN_URL.
-
-    Rules:
-    - Accepts http/https URLs.
-    - Accepts bare domains like github.com and normalizes to https://github.com.
-    - Blocks unsupported schemes such as file:, javascript:, data:, ftp:, etc.
-    - Uses xdg-open without shell=True.
-    """
-    from urllib.parse import urlparse, quote_plus
-    import shutil
-    import subprocess
-    import webbrowser
-
-    value = str(raw_url or "").strip()
-
-    if not value and query:
-        value = "https://duckduckgo.com/?q=" + quote_plus(str(query).strip())
-
-    if not value:
-        msg = "No URL was provided."
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    # Allow common bare domains: github.com, openai.com/docs, etc.
-    if "://" not in value:
-        if " " in value or "." not in value:
-            msg = f"Not a valid URL or bare domain: {value!r}"
-            return {
-                "ok": False,
-                "action": "OPEN_URL",
-                "url": value,
-                "error": msg,
-                "content": f"⚡ Could not open URL. {msg}",
-                "response": f"⚡ Could not open URL. {msg}",
-            }
-        value = "https://" + value
-
-    parsed = urlparse(value)
-
-    if parsed.scheme not in {"http", "https"}:
-        msg = f"Blocked unsupported URL scheme: {parsed.scheme!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    if not parsed.netloc:
-        msg = f"URL is missing a domain: {value!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    try:
-        opener = shutil.which("xdg-open")
-        if opener:
-            subprocess.Popen(
-                [opener, value],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        else:
-            webbrowser.open(value, new=2)
-
-        msg = f"Opened URL: {value}"
-        return {
-            "ok": True,
-            "action": "OPEN_URL",
-            "url": value,
-            "content": msg,
-            "response": msg,
-        }
-
-    except Exception as exc:
-        msg = f"Failed to open URL: {exc!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
 
 
 def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
@@ -11767,192 +11493,12 @@ import subprocess as _eli_tile_subprocess
 _ELI_TILE_ORIG_EXECUTE = globals().get("execute")
 _ELI_TILE_ORIG_EXECUTE_ACTION = globals().get("execute_action")
 
-def _eli_tile_run(cmd, timeout=2):
-    try:
-        return _eli_tile_subprocess.run(
-            cmd,
-            text=True,
-            stdout=_eli_tile_subprocess.PIPE,
-            stderr=_eli_tile_subprocess.PIPE,
-            timeout=timeout,
-        )
-    except Exception as e:
-        class _R:
-            returncode = 999
-            stdout = ""
-            stderr = str(e)
-        return _R()
 
-def _eli_tile_current_desktop():
-    p = _eli_tile_run(["wmctrl", "-d"])
-    if p.returncode != 0:
-        return None
-    for line in p.stdout.splitlines():
-        if "*" in line:
-            try:
-                return int(line.split()[0])
-            except Exception:
-                return None
-    return None
 
-def _eli_tile_screen_size():
-    p = _eli_tile_run(["xdotool", "getdisplaygeometry"])
-    if p.returncode == 0:
-        parts = p.stdout.strip().split()
-        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-            return int(parts[0]), int(parts[1])
 
-    p = _eli_tile_run(["xrandr", "--current"])
-    if p.returncode == 0:
-        m = _eli_tile_re.search(r"current\s+(\d+)\s+x\s+(\d+)", p.stdout)
-        if m:
-            return int(m.group(1)), int(m.group(2))
 
-    return 1366, 768
 
-def _eli_tile_xprop(wid):
-    p = _eli_tile_run(["xprop", "-id", wid], timeout=1)
-    return p.stdout if p.returncode == 0 else ""
 
-def _eli_tile_visible_windows():
-    p = _eli_tile_run(["wmctrl", "-lG", "-p"])
-    if p.returncode != 0:
-        return [], p.stderr.strip() or "wmctrl failed"
-
-    curdesk = _eli_tile_current_desktop()
-    wins = []
-
-    for line in p.stdout.splitlines():
-        parts = line.split(None, 8)
-        if len(parts) < 9:
-            continue
-
-        wid, desk_s, pid_s, x_s, y_s, w_s, h_s, host, title = parts
-        try:
-            desk = int(desk_s)
-            x, y, w, h = int(x_s), int(y_s), int(w_s), int(h_s)
-        except Exception:
-            continue
-
-        if curdesk is not None and desk not in {curdesk, -1}:
-            continue
-        if w < 80 or h < 80:
-            continue
-        if not str(title or "").strip():
-            continue
-
-        xp = _eli_tile_xprop(wid)
-        xp_low = xp.lower()
-
-        # Skip hidden/minimized/taskbar-skipped/system surfaces.
-        if "_net_wm_state_hidden" in xp_low:
-            continue
-        if "_net_wm_state_skip_taskbar" in xp_low:
-            continue
-        if "_net_wm_state_skip_pager" in xp_low:
-            continue
-
-        # Keep normal/dialog windows; skip docks, desktops, menus, tooltips, splash, etc.
-        if "_net_wm_window_type" in xp_low:
-            bad_types = (
-                "_net_wm_window_type_desktop",
-                "_net_wm_window_type_dock",
-                "_net_wm_window_type_toolbar",
-                "_net_wm_window_type_menu",
-                "_net_wm_window_type_utility",
-                "_net_wm_window_type_splash",
-                "_net_wm_window_type_dropdown_menu",
-                "_net_wm_window_type_popup_menu",
-                "_net_wm_window_type_tooltip",
-                "_net_wm_window_type_notification",
-            )
-            if any(t in xp_low for t in bad_types):
-                continue
-
-        wins.append({"id": wid, "desk": desk, "x": x, "y": y, "w": w, "h": h, "title": title})
-
-    return wins, ""
-
-def _eli_tile_parse_grid(args, count):
-    args = args or {}
-    grid = args.get("grid")
-    cols = args.get("cols") or args.get("columns")
-    rows = args.get("rows")
-
-    if isinstance(grid, (list, tuple)) and len(grid) >= 2:
-        cols = cols or grid[0]
-        rows = rows or grid[1]
-
-    try:
-        cols = int(cols) if cols else 0
-    except Exception:
-        cols = 0
-    try:
-        rows = int(rows) if rows else 0
-    except Exception:
-        rows = 0
-
-    if cols > 0 and rows > 0:
-        return max(1, min(cols, 8)), max(1, min(rows, 8))
-
-    if count <= 1:
-        return 1, 1
-    cols = int(_eli_tile_math.ceil(_eli_tile_math.sqrt(count)))
-    rows = int(_eli_tile_math.ceil(count / cols))
-    return max(1, cols), max(1, rows)
-
-def _eli_tile_windows(args=None):
-    wins, err = _eli_tile_visible_windows()
-    if err:
-        return {"ok": False, "action": "TILE_WINDOWS", "content": err, "response": err, "error": err}
-
-    count = len(wins)
-    if count == 0:
-        msg = "No visible normal windows found to tile."
-        return {"ok": False, "action": "TILE_WINDOWS", "content": msg, "response": msg, "count": 0}
-
-    cols, rows = _eli_tile_parse_grid(args or {}, count)
-    screen_w, screen_h = _eli_tile_screen_size()
-
-    margin = int((args or {}).get("margin", 10) or 10)
-    top_reserved = int((args or {}).get("top_reserved", 34) or 34)
-
-    usable_x = margin
-    usable_y = top_reserved + margin
-    usable_w = max(300, screen_w - margin * 2)
-    usable_h = max(240, screen_h - top_reserved - margin * 2)
-
-    cell_w = max(180, usable_w // cols)
-    cell_h = max(140, usable_h // rows)
-
-    moved = 0
-    for i, win in enumerate(wins[: cols * rows]):
-        c = i % cols
-        r = i // cols
-        x = usable_x + c * cell_w
-        y = usable_y + r * cell_h
-        w = max(120, cell_w - margin)
-        h = max(100, cell_h - margin)
-
-        wid = win["id"]
-        _eli_tile_run(["wmctrl", "-ir", wid, "-b", "remove,maximized_vert,maximized_horz"], timeout=1)
-        p = _eli_tile_run(["wmctrl", "-ir", wid, "-e", f"0,{x},{y},{w},{h}"], timeout=2)
-        if p.returncode == 0:
-            moved += 1
-
-    msg = f"Tiled {moved} visible window{'s' if moved != 1 else ''} into a {cols}×{rows} grid."
-    if count > cols * rows:
-        msg += f" {count - cols * rows} visible window(s) did not fit in the requested grid."
-
-    return {
-        "ok": moved > 0,
-        "action": "TILE_WINDOWS",
-        "content": msg,
-        "response": msg,
-        "count": moved,
-        "visible_count": count,
-        "grid": [cols, rows],
-    }
 
 def _eli_second_execute(action, args=None, *pargs, **kwargs):
     action_name = str(action or "").upper()
