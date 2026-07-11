@@ -3416,27 +3416,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         path = str(args.get("path") or "~")
         return open_file_system(path)
     
-    if a == "OPEN_COMMUNICATION_HUB":
-        try:
-            # Prefer local mail clients; fall back to Gmail in browser.
-            candidates = [
-                ["thunderbird"],
-                ["evolution"],
-                ["geary"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened Communication Hub: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            url = "https://mail.google.com"
-            open_browser(url)
-            msg = f"Opened Communication Hub: {url}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
     
     if a == "DATA_FABRICATOR":
         try:
@@ -3514,23 +3493,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "OPEN_URL":
-        url = None
-        query = None
-        try:
-            if isinstance(args, dict):
-                url = (
-                    args.get("url")
-                    or args.get("target")
-                    or args.get("value")
-                    or args.get("path")
-                    or args.get("text")
-                )
-                query = args.get("query")
-        except Exception:
-            url = None
-            query = None
-        return _eli_open_url_action(url, query=query)
 
     if a == "OPEN_BROWSER":
         import re as _re2
@@ -3586,14 +3548,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "OPEN_NETWORK_BROWSER":
-        try:
-            url = str((args or {}).get("url") or "https://duckduckgo.com").strip()
-            open_browser(url)
-            msg = f"Opened Network Browser: {url}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     if a == "OPEN_MEDIA_HUB":
         try:

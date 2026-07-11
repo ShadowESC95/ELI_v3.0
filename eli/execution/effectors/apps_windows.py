@@ -437,3 +437,56 @@ def _eli_tile_windows(args=None):
     }
 
 __all__ = ['_APP_ALIASES', 'open_audio_settings', 'open_file_system', 'open_browser', '_normalize_app', '_open_app_with_timeout', '_open_app_builtin', '_eli_open_url_action', '_eli_tile_run', '_eli_tile_current_desktop', '_eli_tile_screen_size', '_eli_tile_xprop', '_eli_tile_visible_windows', '_eli_tile_parse_grid', '_eli_tile_windows']
+
+
+# ── dispatch handlers (v3 registry) ──
+from eli.execution.effectors.registry import register as _register
+
+
+def _h_open_url(a, args):
+    url = None
+    query = None
+    try:
+        if isinstance(args, dict):
+            url = (args.get("url") or args.get("target") or args.get("value")
+                   or args.get("path") or args.get("text"))
+            query = args.get("query")
+    except Exception:
+        url = None
+        query = None
+    return _eli_open_url_action(url, query=query)
+
+
+def _h_open_communication_hub(a, args):
+    try:
+        for cmd in (["thunderbird"], ["evolution"], ["geary"]):
+            try:
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                msg = f"Opened Communication Hub: {' '.join(cmd)}"
+                return {"ok": True, "action": a, "content": msg, "response": msg}
+            except FileNotFoundError:
+                continue
+        url = "https://mail.google.com"
+        open_browser(url)
+        msg = f"Opened Communication Hub: {url}"
+        return {"ok": True, "action": a, "content": msg, "response": msg}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+def _h_open_network_browser(a, args):
+    try:
+        url = str((args or {}).get("url") or "https://duckduckgo.com").strip()
+        open_browser(url)
+        msg = f"Opened Network Browser: {url}"
+        return {"ok": True, "action": a, "content": msg, "response": msg}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+for _action, _fn in {
+    "OPEN_URL": _h_open_url,
+    "OPEN_COMMUNICATION_HUB": _h_open_communication_hub,
+    "OPEN_NETWORK_BROWSER": _h_open_network_browser,
+}.items():
+    _register(_action, _fn)
