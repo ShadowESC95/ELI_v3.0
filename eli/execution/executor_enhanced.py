@@ -1661,22 +1661,6 @@ def _needs_origin_anchor(ans: str) -> bool:
 
 
 # ── Browser/streaming service → MPRIS player alias map ──────────────────────
-_TARGET_ALIASES: dict = {
-    # streaming services → browser player
-    "netflix":    "browser",
-    "youtube":    "browser",
-    "prime":      "browser",
-    "disney":     "browser",
-    "disneyplus": "browser",
-    "hulu":       "browser",
-    "twitch":     "browser",
-    "brow":       "browser",
-    "browser":    "browser",
-    # explicit players
-    "spotify":    "spotify",
-    "vlc":        "vlc",
-    "mpv":        "mpv",
-}
 
 
 
@@ -1729,7 +1713,6 @@ from eli.execution.effectors.media import (  # noqa: F401
 # control socket. playerctl can't see that mpv (no MPRIS), so pause/stop/resume must
 # talk to the socket directly. We also remember the last source + title so ELI can
 # answer "what's playing?" and aim controls at the right player.
-_MEDIA_STATE: Dict[str, Any] = {"source": None, "title": None, "mpv_sock": None}
 
 
 
