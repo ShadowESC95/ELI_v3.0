@@ -167,7 +167,8 @@ def test_open_url_uses_mocked_helper(monkeypatch):
             "response": f"mock opened {raw_url}",
         }
 
-    monkeypatch.setattr(ex, "_eli_open_url_action", fake_open_url)
+    import eli.execution.effectors.apps_windows as aw
+    monkeypatch.setattr(aw, "_eli_open_url_action", fake_open_url)
 
     result = ex.execute("OPEN_URL", {"url": "https://example.com"})
 
