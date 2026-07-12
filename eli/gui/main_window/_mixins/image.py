@@ -455,8 +455,8 @@ class ImageMixin:
         self._focus_generated_image_result(result)
 
         try:
-            if memory_system:
-                memory_system.store(
+            if self.memory_system:
+                self.memory_system.store(
                     f"Generated {len(result.saved_paths)} images from prompt: {result.applied_prompt[:240]}",
                     tags=["image_generation", self.image_style_combo.currentText().strip(), self.image_scene_combo.currentText().strip()],
                     kind="creative",
