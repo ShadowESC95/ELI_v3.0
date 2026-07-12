@@ -288,4 +288,12 @@ def _allowed_apps_set():
         return None  # None => allow common safe apps
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
-__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_allowed_apps_set']
+
+def _run_ok(argv, timeout: int = 5) -> bool:
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_allowed_apps_set']

@@ -340,6 +340,7 @@ from eli.execution.effectors.self_maintenance import (  # noqa: F401
 )
 import eli.execution.effectors.gaze  # noqa: F401
 import eli.execution.effectors.input_control  # noqa: F401
+import eli.execution.effectors.window_control  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -1732,12 +1733,7 @@ from eli.execution.effectors.media import (  # noqa: F401
 
 # ================== END MEDIA CONTROL ==================
 
-def _run_ok(argv, timeout: int = 5) -> bool:
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0
-    except Exception:
-        return False
+from eli.execution.effectors._base import _run_ok  # noqa: F401
 
 
 def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) -> Dict[str, Any]:
@@ -6854,105 +6850,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 "content": "wmctrl not installed; cannot tile windows.",
                 "response": "wmctrl not installed; cannot tile windows."}
 
-    if a == "MINIMISE_ALL":
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-k", "on"])
-            msg = "Showed desktop." if ok else "Failed to minimise all windows."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "super+d"])
-            msg = "Triggered show-desktop shortcut." if ok else "Failed to minimise all windows."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-                "content": "wmctrl or xdotool required to minimise all windows.",
-                "response": "wmctrl or xdotool required to minimise all windows."}
-
-    if a in ("MINIMIZE_APP", "MINIMISE_APP", "HIDE_APP", "MINIMIZE_WINDOW", "MINIMISE_WINDOW"):
-        # Per-app minimise. Delegates to the cross-platform window controller
-        # (Linux wmctrl/xdotool, macOS osascript, Windows ShowWindowAsync,
-        # Android home key). Mirrors the CLOSE_APP branch.
-        from eli.system.portable_app_control import minimize_app
-        name = str(args.get("name") or args.get("target") or args.get("app") or "").strip()
-        return minimize_app(name)
-
-    if a == "RESTORE_WINDOWS":
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-k", "off"])
-            msg = "Restored windows." if ok else "Failed to restore windows."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "wmctrl not installed",
-                "content": "wmctrl required to restore windows.",
-                "response": "wmctrl required to restore windows."}
-
-    if a == "MAXIMISE_WINDOW":
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"])
-            msg = "Maximised current window." if ok else "Failed to maximise window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "super+Up"])
-            msg = "Triggered maximise shortcut." if ok else "Failed to maximise window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-                "content": "wmctrl or xdotool required to maximise.",
-                "response": "wmctrl or xdotool required to maximise."}
-
-    if a == "NEXT_WINDOW":
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "alt+Tab"])
-            msg = "Switched to next window." if ok else "Failed to switch window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "xdotool not installed",
-                "content": "xdotool required to cycle windows.",
-                "response": "xdotool required to cycle windows."}
-
-    if a == "PREVIOUS_WINDOW":
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "alt+shift+Tab"])
-            msg = "Switched to previous window." if ok else "Failed to switch window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "xdotool not installed",
-                "content": "xdotool required to cycle windows.",
-                "response": "xdotool required to cycle windows."}
-
-    if a == "SWITCH_WORKSPACE":
-        direction = str(args.get("direction") or "right").lower()
-        if shutil.which("xdotool"):
-            key = "ctrl+alt+Right" if direction == "right" else "ctrl+alt+Left"
-            ok = _run_ok(["xdotool", "key", key])
-            msg = f"Switched workspace {direction}." if ok else "Failed to switch workspace."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "xdotool not installed",
-                "content": "xdotool required to switch workspaces.",
-                "response": "xdotool required to switch workspaces."}
-
-    if a == "FOCUS_APP":
-        name = str(args.get("name") or args.get("app") or "").strip()
-        if not name:
-            return {"ok": False, "action": a, "error": "missing app name",
-                    "content": "Specify app to focus.", "response": "Specify app to focus."}
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-a", name])
-            msg = f"Focused {name}." if ok else f"Could not focus {name} — window not found."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        if shutil.which("xdotool"):
-            try:
-                proc = subprocess.run(
-                    ["xdotool", "search", "--name", name],
-                    capture_output=True, text=True, timeout=4
-                )
-                ids = [w for w in (proc.stdout or "").split() if w.strip()]
-                if ids:
-                    ok = _run_ok(["xdotool", "windowactivate", ids[0]])
-                    msg = f"Focused {name}." if ok else f"Could not focus {name}."
-                    return {"ok": ok, "action": a, "content": msg, "response": msg}
-            except Exception as e:
-                return {"ok": False, "action": a, "error": str(e),
-                        "content": str(e), "response": str(e)}
-        return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-                "content": "wmctrl or xdotool required to focus apps.",
-                "response": "wmctrl or xdotool required to focus apps."}
-
     # ---- SCREEN_LOCATE — find/click visible UI text via OCR ─────────────
     if a == "SCREEN_LOCATE":
         query = str(args.get("query") or "").strip()
@@ -6984,21 +6881,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e),
                     "content": f"Screen locator failed: {e}",
                     "response": f"Screen locator failed: {e}"}
-
-    # ---- CLOSE_APP ----
-    if a == "CLOSE_APP":
-        name = str(args.get("name") or args.get("app") or "").strip()
-        if not name:
-            return {"ok": False, "action": a, "error": "missing app name", "content": "Specify app to close.", "response": "Specify app to close."}
-        tried = []
-        for cmd in [["wmctrl", "-c", name], ["pkill", "-f", name], ["pkill", name], ["killall", name]]:
-            if shutil.which(cmd[0]):
-                tried.append(cmd[0])
-                if _run_ok(cmd):
-                    msg = f"Closed {name} via {cmd[0]}."
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-        msg = f"Could not close {name}. Tried: {', '.join(tried) or 'no tools found'}."
-        return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
 
     # ---- ANALYZE_IMAGE (metadata + OCR; never confabulate visual content) ----
     if a == "ANALYZE_IMAGE":
