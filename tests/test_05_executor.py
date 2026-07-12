@@ -2,9 +2,9 @@ import pytest
 from unittest.mock import patch, MagicMock
 from eli.execution.executor_enhanced import execute
 
-@patch("eli.execution.executor_enhanced._run")
-def test_executor_open_app(mock_run):
-    mock_run.return_value = {"ok": True}
+@patch("eli.execution.executor_enhanced._open_app_with_timeout")
+def test_executor_open_app(mock_open):
+    mock_open.return_value = {"ok": True, "spawned": True}
     result = execute("OPEN_APP", {"name": "firefox"})
     assert result["ok"] is True
 
