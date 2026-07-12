@@ -75,27 +75,42 @@ def _is_eli_root(path: Path) -> bool:
         return False
 
 
-def _active_root() -> Path:
-    """The install root that relative runtime paths should be anchored to.
-
-    A redistributable/portable copy must be self-contained: `models`, `artifacts`,
-    `config`, etc. should resolve inside the active install root, not inside the
-    user's shell cwd. Launchers set ELI_PROJECT_ROOT to an absolute path; when it
-    points at an ELI tree, trust it. Otherwise fall back to the physical source
-    tree found from this file.
-    """
-    env = os.environ.get("ELI_PROJECT_ROOT", "").strip()
-    if env:
-        p = Path(env).expanduser()
-        if not p.is_absolute():
-            p = Path.cwd() / p
-        p = p.resolve()
-        if _is_eli_root(p):
-            return p
+def _physical_root() -> Path:
     found = _find_project_root()
     if found is not None:
         return found.resolve()
     return Path(__file__).resolve().parents[2]
+
+
+def _env_root() -> Path | None:
+    env = os.environ.get("ELI_PROJECT_ROOT", "").strip()
+    if not env:
+        return None
+    p = Path(env).expanduser()
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    p = p.resolve()
+    return p if _is_eli_root(p) else None
+
+
+def _active_root() -> Path:
+    """The install root that relative runtime paths anchor to.
+
+    Frozen builds: the rthook pins ELI_PROJECT_ROOT to the per-user root and the
+    code lives in a read-only bundle, so trust the env.
+
+    Source checkouts: the physical code location is authoritative. A stale
+    ELI_PROJECT_ROOT pointing at a DIFFERENT checkout (e.g. a v2 tree while
+    running v3) must never redirect this install's data — honor the env only
+    when it matches the physical tree.
+    """
+    phys = _physical_root()
+    env = _env_root()
+    if is_frozen():
+        return env or phys
+    if env is not None and env == phys:
+        return env
+    return phys
 
 
 def resolve_runtime_path(value: str | os.PathLike, *, base: Path | None = None) -> Path:
@@ -419,13 +434,7 @@ def get_models_dir() -> Path:
 _gguf_model_path: str | None = None
 
 def project_root() -> Path:
-    env = os.environ.get("ELI_PROJECT_ROOT")
-    if env:
-        return resolve_runtime_path(env, base=Path.cwd()) if not Path(env).expanduser().is_absolute() else Path(env).expanduser().resolve()
-    found = _find_project_root()
-    if found is not None:
-        return found
-    return Path(__file__).resolve().parents[2]
+    return _active_root()
 
 def models_root() -> Path:
     return models_dir()
