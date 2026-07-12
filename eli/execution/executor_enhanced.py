@@ -339,6 +339,7 @@ from eli.execution.effectors.self_maintenance import (  # noqa: F401
     proactive_stop,
 )
 import eli.execution.effectors.gaze  # noqa: F401
+import eli.execution.effectors.input_control  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -4216,17 +4217,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- KEYBOARD ----
-    if a == "KEYBOARD":
-        try:
-            from eli.perception.os_controller import press_key, type_text
-            if args.get("type"):
-                return type_text(str(args["type"]))
-            elif args.get("key"):
-                return press_key(str(args["key"]))
-            return {"ok": False, "action": a, "error": "No key or text specified", "content": "No key or text specified", "response": "No key or text specified"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     # ---- OCR_IMAGE ----
     if a == "OCR_IMAGE":
         try:
@@ -4473,82 +4463,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- MOUSE_CONTROL ----
-    if a == "MOUSE_CONTROL":
-        try:
-            import subprocess as _sp
-            mouse_action = str(args.get("action") or "move").lower()
-            x = args.get("x")
-            y = args.get("y")
-            button = str(args.get("button") or "left").lower()
-            double = bool(args.get("double", False))
-            direction = str(args.get("direction") or "down").lower()
-            amount = int(args.get("amount", 3))
-            # Try pyautogui
-            try:
-                import pyautogui
-                if mouse_action == "move" and x is not None and y is not None:
-                    pyautogui.moveTo(int(x), int(y), duration=0.2)
-                    msg = f"Mouse moved to ({x}, {y})"
-                elif mouse_action == "click" and x is not None and y is not None:
-                    pyautogui.moveTo(int(x), int(y), duration=0.1)
-                    if double:
-                        pyautogui.doubleClick(button=button)
-                    else:
-                        pyautogui.click(button=button)
-                    msg = f"{'Double-c' if double else 'C'}licked {button} at ({x}, {y})"
-                elif mouse_action == "scroll":
-                    delta = amount if direction == "up" else -amount
-                    pyautogui.scroll(delta)
-                    msg = f"Scrolled {direction} by {amount}"
-                else:
-                    msg = f"Mouse action '{mouse_action}' performed"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except ImportError:
-                log.debug("suppressed exception", exc_info=True)
-            # Fallback: ydotool (Wayland) or xdotool (X11)
-            tool = "ydotool" if shutil.which("ydotool") else ("xdotool" if shutil.which("xdotool") else None)
-            if tool is None:
-                return {"ok": False, "action": a,
-                        "error": "No mouse control tool found. Install: pip install pyautogui  OR  apt install ydotool",
-                        "content": "No mouse tool available.", "response": "No mouse tool available."}
-            if mouse_action == "move" and x is not None:
-                cmd = [tool, "mousemove", "--", str(x), str(y)] if tool == "ydotool" else [tool, "mousemove", str(x), str(y)]
-            elif mouse_action == "click":
-                btn_flag = "0x40002" if button == "right" else "0x40001"
-                cmd = [tool, "click", btn_flag] if tool == "ydotool" else [tool, "click", "--clearmodifiers", "--button", "3" if button == "right" else "1"]
-            elif mouse_action == "scroll":
-                if tool == "xdotool":
-                    btn = "4" if direction == "up" else "5"
-                    cmd = [tool, "click", "--clearmodifiers", "--repeat", str(amount), "--repeat-delay", "50", btn]
-                else:
-                    cmd = [tool, "scroll", "--", "0", str(-amount if direction == "down" else amount)]
-            else:
-                cmd = []
-            if cmd:
-                _sp.run(cmd, check=True)
-            msg = f"Mouse {mouse_action} executed"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     # ---- SET_CLIPBOARD / GET_CLIPBOARD ----
-    if a == "SET_CLIPBOARD":
-        try:
-            from eli.perception.os_controller import set_clipboard
-            txt = str(args.get("text") or "").strip()
-            return set_clipboard(txt)
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "GET_CLIPBOARD":
-        try:
-            from eli.perception.os_controller import get_clipboard
-            txt = get_clipboard() or ""
-            msg = f"Clipboard: {txt[:200]}" if txt else "Clipboard is empty"
-            return {"ok": True, "action": a, "content": msg, "response": msg, "text": txt}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     # ---- LIST_DIR ----
     if a == "LIST_DIR":
         path = str((args or {}).get("path") or "~")
