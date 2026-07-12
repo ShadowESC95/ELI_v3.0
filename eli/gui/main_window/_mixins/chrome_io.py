@@ -749,7 +749,7 @@ class ChromeIoMixin:
         return None
 
     def get_active_backend(self):
-        return self.ollama_manager if self.current_provider() == 'ollama' else model_manager
+        return self.ollama_manager if self.current_provider() == 'ollama' else self.model_manager
 
     def _resolve_dropped_attachments(self, raw_text: str, dropped_paths: list) -> str:
         """Expand [Image:], [File:], [PDF:] tags into inline content for LLM context."""
@@ -804,7 +804,7 @@ class ChromeIoMixin:
     def show_recent_memories(self):
         self.memory_results_display.clear()
         self.memory_results_display.append("<b>Recent Memories:</b><br><br>")
-        results = memory_system.get_recent(limit=20)
+        results = self.memory_system.get_recent(limit=20)
         if results:
             for i, mem in enumerate(results, 1):
                 ts = mem.get('timestamp') or mem.get('ts','')

@@ -231,6 +231,8 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         # Agent wizard state
         self._agent_wizard_state: Optional[dict] = None
         self.ollama_manager = OllamaModelManager()
+        self.model_manager = model_manager
+        self.memory_system = memory_system
         self.active_backend = model_manager
         self.detected_system_info: Dict[str, Any] = {}
         self._startup_model_prompt_done = False

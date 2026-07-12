@@ -1820,7 +1820,7 @@ _register()
                     model_name_display = model_name
                 else:
                     model_path = self.resolve_selected_model_path()
-                    success = model_manager.load_model(
+                    success = self.model_manager.load_model(
                         model_path=model_path,
                         n_ctx=n_ctx,
                         n_threads=n_threads,
@@ -1831,18 +1831,18 @@ _register()
                         use_mmap=use_mmap,
                         use_mlock=use_mlock,
                     )
-                    backend = model_manager
-                    model_name_display = Path(getattr(model_manager, 'model_path', model_path or 'model')).name
+                    backend = self.model_manager
+                    model_name_display = Path(getattr(self.model_manager, 'model_path', model_path or 'model')).name
 
                 if success:
                     self.active_backend = backend
-                    memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
+                    self.memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
                     if provider != "ollama":
                         self.status_signal.emit(
                             f"🟢 Model ready: {model_name_display} "
-                            f"(ctx={int(getattr(model_manager, 'n_ctx', 0) or 0)} "
-                            f"gpu={int(getattr(model_manager, 'n_gpu_layers', 0) or 0)} "
-                            f"batch={int(getattr(model_manager, 'n_batch', 0) or 0)})"
+                            f"(ctx={int(getattr(self.model_manager, 'n_ctx', 0) or 0)} "
+                            f"gpu={int(getattr(self.model_manager, 'n_gpu_layers', 0) or 0)} "
+                            f"batch={int(getattr(self.model_manager, 'n_batch', 0) or 0)})"
                         )
                     else:
                         self.status_signal.emit(f"🟢 Model ready: {model_name_display}")
@@ -1855,18 +1855,18 @@ _register()
                             _ce._gguf_available = True
                             _ce._gguf_load_error = None
                             _loaded_path = str(
-                                getattr(model_manager, "model_path", model_path) or model_path
+                                getattr(self.model_manager, "model_path", model_path) or model_path
                             )
                             _ce._model_path = _loaded_path
-                            _ce._ctx = int(getattr(model_manager, "n_ctx", 0) or 0)
-                            _ce._gpu_layers = int(getattr(model_manager, "n_gpu_layers", 0) or 0)
+                            _ce._ctx = int(getattr(self.model_manager, "n_ctx", 0) or 0)
+                            _ce._gpu_layers = int(getattr(self.model_manager, "n_gpu_layers", 0) or 0)
                         except Exception:
                             pass
                     try:
                         if provider != "ollama":
-                            _requested_gpu = int(getattr(model_manager, "requested_n_gpu_layers", 0) or 0)
-                            _effective_gpu = int(getattr(model_manager, "n_gpu_layers", 0) or 0)
-                            _gpu_supported = getattr(model_manager, "gpu_offload_supported", None)
+                            _requested_gpu = int(getattr(self.model_manager, "requested_n_gpu_layers", 0) or 0)
+                            _effective_gpu = int(getattr(self.model_manager, "n_gpu_layers", 0) or 0)
+                            _gpu_supported = getattr(self.model_manager, "gpu_offload_supported", None)
                             if _requested_gpu > 0 and (_gpu_supported is False or _effective_gpu <= 0):
                                 self.status_signal.emit(
                                     "⚠️ GPU offload unavailable; running CPU-only. "
