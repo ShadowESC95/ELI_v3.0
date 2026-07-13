@@ -346,6 +346,7 @@ import eli.execution.effectors.document_analysis  # noqa: F401
 import eli.execution.effectors.document_creation  # noqa: F401
 import eli.execution.effectors.introspection  # noqa: F401
 import eli.execution.effectors.status_reports  # noqa: F401
+import eli.execution.effectors.voice_input  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -4011,26 +4012,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- DICTATE ----
-    if a == "DICTATE":
-        try:
-            action = str(args.get("action") or "start").lower()
-            if action == "start":
-                # Signal the GUI to enable dictation mode; GUI handles the loop
-                msg = "Dictation mode activated. Speak clearly — I'm listening. Say 'stop dictation' to end."
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "dictate_start": True}
-            elif action == "stop":
-                msg = "Dictation mode stopped."
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "dictate_stop": True}
-            return {"ok": False, "action": a, "error": f"Unknown dictate action: {action}",
-                    "content": f"Unsupported executor action: {action}", "response": f"Unsupported executor action: {action}"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- MOUSE_CONTROL ----
-    # ---- SET_CLIPBOARD / GET_CLIPBOARD ----
-    # ---- LIST_DIR ----
     if a == "LIST_DIR":
         path = str((args or {}).get("path") or "~")
         try:
@@ -4794,44 +4775,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
     # ---- ANALYZE_PDF ----
     # ---- LISTEN_FOR_COMMAND ----
-    if a == "LISTEN_FOR_COMMAND":
-        try:
-            from eli.perception.audio_stt import listen_for_command
-            timeout = float((args or {}).get("timeout", 5))
-            text = listen_for_command(timeout=timeout)
-            if text:
-                msg = f"Heard: {text}"
-                return {"ok": True, "action": a, "content": msg, "response": msg, "text": text}
-            return {"ok": False, "action": a, "content": "No speech detected.", "response": "No speech detected.", "text": ""}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- STT_DIAGNOSTICS ----
-    if a == "STT_DIAGNOSTICS" or a == "VOICE_DIAGNOSTICS":
-        try:
-            from eli.perception.audio_stt import stt_diagnostics
-            from eli.perception.tts_router import available_backends
-            diag = stt_diagnostics()
-            tts = available_backends()
-            combined = {**diag, "tts_backends": tts}
-            lines = [
-                f"STT — speech_recognition: {'✅' if combined.get('speech_recognition_imported') else '❌'}",
-                f"STT — wake word disabled: {combined.get('wake_word_disabled')}",
-                f"STT — direct chat: {combined.get('allow_direct_chat_without_wake')}",
-                f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('piper_model') else '❌'}",
-                f"TTS — espeak-ng: {'✅' if tts.get('espeak_ng') else '❌'}",
-                f"TTS — espeak: {'✅' if tts.get('espeak') else '❌'}",
-            ]
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg, "diagnostics": combined}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- GAZE ENGINE ----
-
-    # ---- ANALYZE_CSV ----
-    # ---- GENERATE_DOCUMENT (alias for CREATE_DOCUMENT) ----
-    # ---- GENERATE_SCRIPT ----
     if a == "GENERATE_SCRIPT":
         desc = (args.get("description") or args.get("text") or args.get("prompt") or "").strip()
         if not desc:
