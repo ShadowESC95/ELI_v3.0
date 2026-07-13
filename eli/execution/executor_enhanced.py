@@ -349,6 +349,7 @@ import eli.execution.effectors.status_reports  # noqa: F401
 import eli.execution.effectors.voice_input  # noqa: F401
 import eli.execution.effectors.coding  # noqa: F401
 import eli.execution.effectors.plugins  # noqa: F401
+import eli.execution.effectors.persona_lock  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -3489,17 +3490,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PERSONA_LOCK_SET":
-        model = args.get("model") or None
-        modelfile = args.get("modelfile_path") or args.get("modelfile") or None
-        return persona_lock_set(model=model, modelfile_path=modelfile)
-
-    if a == "PERSONA_LOCK_STATUS":
-        return persona_lock_status()
-
-    if a == "PERSONA_LOCK_CLEAR":
-        return persona_lock_clear()
-
     if a == "SELF_TEST":
         return self_test()
 
@@ -5564,8 +5554,6 @@ def _action_pre_dispatch(
             force=args.get("force", False),
             reason=args.get("reason", "manual"),
         )
-    if a == "PERSONA_REFRESH":
-        return _eli_persona_refresh(reason=args.get("reason", "manual"))
     if a == "USER_INFO_REPORT":
         return _eli_user_info_report(
             force=args.get("force", False),
