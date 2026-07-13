@@ -17,6 +17,8 @@ import pytest
 
 import eli.execution.executor_enhanced as ex
 
+import eli.execution.effectors._base as gate
+
 
 # --------------------------------------------------------------------------- #
 # _normalize_result — the GUI/voice response-shape contract
@@ -77,49 +79,49 @@ def test_sha256_file_matches_hashlib(tmp_path):
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def no_full_control(monkeypatch):
-    monkeypatch.setattr(ex, "_full_control", lambda: False)
+    monkeypatch.setattr(gate, "_full_control", lambda: False)
 
 
 def test_shell_gate_fails_closed_by_default(no_full_control, monkeypatch):
     monkeypatch.delenv("ELI_ALLOWED_CMDS", raising=False)
     # No Full Control, no allowlist → NOTHING runs.
-    assert ex._shell_command_allowed_fallback("ls") is False
-    assert ex._shell_command_allowed_fallback("rm") is False
+    assert gate._shell_command_allowed_fallback("ls") is False
+    assert gate._shell_command_allowed_fallback("rm") is False
 
 
 def test_shell_gate_honours_allowlist(no_full_control, monkeypatch):
     monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo ls")
-    assert ex._shell_command_allowed_fallback("echo") is True
-    assert ex._shell_command_allowed_fallback("ls") is True
-    assert ex._shell_command_allowed_fallback("rm") is False  # not on the list
+    assert gate._shell_command_allowed_fallback("echo") is True
+    assert gate._shell_command_allowed_fallback("ls") is True
+    assert gate._shell_command_allowed_fallback("rm") is False  # not on the list
 
 
 def test_shell_gate_wildcard(no_full_control, monkeypatch):
     monkeypatch.setenv("ELI_ALLOWED_CMDS", "*")
-    assert ex._shell_command_allowed_fallback("anything") is True
+    assert gate._shell_command_allowed_fallback("anything") is True
 
 
 def test_shell_gate_full_control_bypasses(monkeypatch):
-    monkeypatch.setattr(ex, "_full_control", lambda: True)
+    monkeypatch.setattr(gate, "_full_control", lambda: True)
     monkeypatch.delenv("ELI_ALLOWED_CMDS", raising=False)
-    assert ex._shell_command_allowed_fallback("rm") is True
+    assert gate._shell_command_allowed_fallback("rm") is True
 
 
 # --------------------------------------------------------------------------- #
 # _run — the gate blocks a disallowed command BEFORE it executes
 # --------------------------------------------------------------------------- #
 def test_run_blocks_disallowed_command(no_full_control, monkeypatch):
-    monkeypatch.setattr(ex, "_get_security_manager", lambda: None)  # force fallback gate
+    monkeypatch.setattr(gate, "_get_security_manager", lambda: None)  # force fallback gate
     monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo")
     # 'rm' is not allowlisted → blocked, and crucially never executed.
-    r = ex._run(["rm", "-rf", "/tmp/should-not-happen"])
+    r = gate._run(["rm", "-rf", "/tmp/should-not-happen"])
     assert r["ok"] is False and "blocked by security policy" in r["stderr"]
 
 
 def test_run_executes_allowlisted_command(no_full_control, monkeypatch):
-    monkeypatch.setattr(ex, "_get_security_manager", lambda: None)
+    monkeypatch.setattr(gate, "_get_security_manager", lambda: None)
     monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo")
-    r = ex._run(["echo", "hello-from-test"])
+    r = gate._run(["echo", "hello-from-test"])
     assert r["ok"] is True and "hello-from-test" in r["stdout"]
 
 

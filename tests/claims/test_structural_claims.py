@@ -51,7 +51,9 @@ _TAB_CREATORS = [
     "create_labs_tab", "create_coding_tab", "create_tasks_tab",
     "create_report_builder_tab", "create_eli_world_tab", "create_settings_tab",
 ]
-_GUI_SRC = (H.REPO / "eli" / "gui" / "gui_eli_original.py").read_text(encoding="utf-8")
+# EliMainWindow methods were split into mixins — read the whole main_window package.
+_GUI_SRC = "\n".join(p.read_text(encoding="utf-8")
+                     for p in sorted((H.REPO / "eli" / "gui" / "main_window").rglob("*.py")))
 
 
 @pytest.mark.parametrize("creator", _TAB_CREATORS, ids=_TAB_CREATORS)
