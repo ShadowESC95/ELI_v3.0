@@ -344,6 +344,7 @@ import eli.execution.effectors.window_control  # noqa: F401
 import eli.execution.effectors.content_analysis  # noqa: F401
 import eli.execution.effectors.document_analysis  # noqa: F401
 import eli.execution.effectors.document_creation  # noqa: F401
+import eli.execution.effectors.introspection  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -7425,68 +7426,17 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
         # Structured data stays in report + evidence for grounding/introspection.
         return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep,
                 'evidence': ev, 'content': summary, 'response': summary}
-    if a == 'IMAGE_STATUS':
-        try:
-            from eli.runtime.evidence_ledger import status_evidence
-
-            query = ""
-            if isinstance(args, dict):
-                query = str(args.get("query") or args.get("message") or args.get("text") or "")
-            rep = status_evidence(query or "image status")
-            txt = "Image/status evidence packet:\n" + json.dumps(rep, indent=2, ensure_ascii=False, default=str)
-            return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-        except Exception as _e:
-            msg = f"Image/status evidence failed: {_e!r}"
-            return {'ok': False, 'action': a, 'error': repr(_e), 'content': msg, 'response': msg}
-    if a == 'RUNTIME_AUDIT':
-        rep = _runtime_audit_report(); txt = _format_runtime_audit(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'IMPORT_AUDIT':
-        rep = _import_audit_report(); txt = _format_import_audit(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'DIAGNOSE_WRAPPERS':
-        rep = _diagnose_executor_wrappers()
-        txt = _format_executor_wrappers(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'RESOLVE_RUNTIME_PATHS':
-        rep = _resolve_runtime_paths_report(); txt = _format_runtime_paths(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
     if a == 'GUI_RUNTIME_AUDIT':
         _q = ""
         if isinstance(args, dict):
             _q = str(args.get("question") or args.get("message") or args.get("text") or "")
         rep = _gui_runtime_audit_report(_q); txt = _format_gui_runtime_audit(rep)
         return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'EXPLAIN_ALL_REASONING_MODES':
-        rep = _explain_all_reasoning_modes_report(); txt = _format_all_reasoning_modes(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'EXPLAIN_MEMORY_RUNTIME':
-        rep = _explain_memory_runtime_report(); txt = _format_memory_runtime(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'EXPLAIN_COGNITION_RUNTIME':
-        rep = _explain_cognition_runtime_report(); txt = _format_cognition_runtime(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'RUNTIME_STATUS':
-        rep = _runtime_status_report(); txt = _format_runtime_status(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'GPU_STATUS':
-        rep = _gpu_status_report()
-        return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
     if a == 'SELF_IMPROVEMENT_LOG':
         limit = int((args or {}).get('limit') or 5) if isinstance(args, dict) else 5
         days = int((args or {}).get('days') or 30) if isinstance(args, dict) else 30
         rep = _self_improvement_log_report(limit=limit, days=days)
         return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
-    if a == 'MEMORY_STATUS':
-        rep = _memory_status_report(); txt = _format_memory_status(rep)
-        try:
-            txt += '\n\n' + _get_db_schema_evidence()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'COGNITION_STATUS':
-        rep = _cognition_status_report(); txt = _format_cognition_status(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
     _mem = None  # _mkvi_memory_dispatch removed (was undefined)
     if _mem is not None:
         return _mem
