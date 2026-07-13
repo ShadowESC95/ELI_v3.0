@@ -296,4 +296,59 @@ def _run_ok(argv, timeout: int = 5) -> bool:
     except Exception:
         return False
 
-__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_allowed_apps_set']
+
+def _artifacts_dir() -> Path:
+    env = os.environ.get("ELI_ARTIFACTS_DIR")
+    if env:
+        p = Path(env).expanduser()
+        if p.is_absolute():
+            return p
+        from eli.core.paths import project_root
+        return Path(project_root()) / p
+    from eli.core.paths import project_root
+    return Path(project_root()) / "artifacts"
+
+
+def _save_artifact(content: str, subdir: str, filename: str, fmt: str = "md") -> str:
+    """Save content to artifacts/{subdir}/{filename}.{fmt}. Returns the path."""
+    import re as _re
+
+    root = _artifacts_dir() / subdir
+    root.mkdir(parents=True, exist_ok=True)
+
+    safe = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(". ")[:80] or "output"
+    out_path = root / f"{safe}.{fmt}"
+    if out_path.exists():
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        out_path = root / f"{safe}_{ts}.{fmt}"
+
+    if fmt == "docx":
+        try:
+            from docx import Document
+            from docx.shared import Pt
+            doc = Document()
+            style = doc.styles["Normal"]
+            style.font.name = "Calibri"
+            style.font.size = Pt(11)
+            for block in content.split("\n\n"):
+                block = block.strip()
+                if not block:
+                    continue
+                if block.startswith("### "):
+                    doc.add_heading(block[4:].strip(), level=3)
+                elif block.startswith("## "):
+                    doc.add_heading(block[3:].strip(), level=2)
+                elif block.startswith("# "):
+                    doc.add_heading(block[2:].strip(), level=1)
+                else:
+                    doc.add_paragraph(block)
+            doc.save(str(out_path))
+        except Exception:
+            out_path = out_path.with_suffix(".txt")
+            out_path.write_text(content, encoding="utf-8")
+    else:
+        out_path.write_text(content, encoding="utf-8")
+
+    return str(out_path)
+
+__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_artifacts_dir', '_save_artifact', '_allowed_apps_set']
