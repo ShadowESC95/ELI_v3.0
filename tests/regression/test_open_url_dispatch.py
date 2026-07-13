@@ -26,6 +26,11 @@ def test_open_url_is_executor_dispatch_backed():
                         if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                             actions.add(elt.value.upper())
 
+    if "OPEN_URL" not in actions:
+        importlib.import_module("eli.execution.executor_enhanced")
+        from eli.execution.effectors import registry
+        actions |= registry.registered_actions()
+
     assert "OPEN_URL" in actions
 
 

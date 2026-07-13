@@ -34,9 +34,28 @@ def supported_actions() -> tuple:
 
 
 @lru_cache(maxsize=1)
+def _effector_registered_actions() -> frozenset:
+    import importlib
+    import pkgutil
+    try:
+        from eli.execution import effectors
+        from eli.execution.effectors import registry
+    except Exception:
+        return frozenset()
+    for _finder, _name, _ispkg in pkgutil.iter_modules(effectors.__path__):
+        if _name in ("registry", "_base"):
+            continue
+        try:
+            importlib.import_module(f"eli.execution.effectors.{_name}")
+        except Exception:
+            continue
+    return frozenset(registry.registered_actions())
+
+
 def executor_action_branches() -> frozenset:
     from eli.tools.registry.capability_updater import extract_executor_actions
-    return frozenset(extract_executor_actions(REPO / "eli" / "execution" / "executor_enhanced.py"))
+    if_chain = extract_executor_actions(REPO / "eli" / "execution" / "executor_enhanced.py")
+    return frozenset(if_chain) | _effector_registered_actions()
 
 
 @lru_cache(maxsize=1)

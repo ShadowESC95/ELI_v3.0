@@ -1,7 +1,10 @@
 from pathlib import Path
 
 
-LABS_SOURCE = Path("eli/gui/labs_tab.py")
+# Report Builder was extracted from the labs_tab.py monolith into its own module
+# during the v3 core-modularisation strangler refactor. These tests assert on the
+# report-builder *source*, so they follow it to its new home.
+LABS_SOURCE = Path("eli/gui/labs/report_tab.py")
 
 
 def _source() -> str:
@@ -29,7 +32,9 @@ def test_report_builder_exposes_quality_citation_depth_controls():
     # Report Builder was promoted from a Labs sub-tab to a top-level MAIN tab:
     # the _ReportTab class still lives in labs_tab.py, but the tab is now added by
     # the main window, not the Labs inner tabs.
-    main_gui = Path("eli/gui/gui_eli_original.py").read_text(encoding="utf-8")
+    # EliMainWindow was split into mixins under eli/gui/main_window — read the package.
+    main_gui = "\n".join(p.read_text(encoding="utf-8")
+                         for p in sorted(Path("eli/gui/main_window").rglob("*.py")))
     assert "create_report_builder_tab" in main_gui
     assert "📄 Report Builder" in main_gui
     assert "📄 Report Builder" not in source  # no longer a Labs sub-tab

@@ -70,26 +70,30 @@ from eli.core.paths import get_paths
 import threading
 
 # ── Security gate (lazy singleton) ───────────────────────────────────────────
-_security_manager = None
 
-def _get_security_manager():
-    """Return the module-level SecurityManager singleton (imported lazily)."""
-    global _security_manager
-    if _security_manager is None:
-        try:
-            from eli.runtime.security import SecurityManager
-            _security_manager = SecurityManager()
-        except Exception:
-            _security_manager = None  # degrade gracefully if unavailable
-    return _security_manager
+# ── apps_windows family + _base primitives moved to eli.execution.effectors ──
+from eli.execution.effectors.apps_windows import (  # noqa: F401
+    _eli_open_url_action,
+    _eli_tile_windows,
+    _open_app_with_timeout,
+    open_browser,
+    open_file_system,
+)
+
+
 # --- Memory bridge: route through canonical Memory class (not memory_db) ---
 # memory_db has a different schema (model/dim/vec columns) than Memory (kind/source/confidence/weight).
 # Using Memory directly avoids the "no such column: model" crash.
 
-def _get_canonical_memory():
-    """Lazy import to avoid circular import."""
-    from eli.memory import get_memory
-    return get_memory()
+
+# ── memory_ops family moved to eli.execution.effectors.memory_ops ──
+from eli.execution.effectors.memory_ops import (  # noqa: F401
+    _convlog_append,
+    _get_canonical_memory,
+    memory_recall,
+    memory_store,
+)
+
 
 def add_memory(text, tags=""):
     """Store via canonical Memory.store_memory()."""
@@ -100,33 +104,8 @@ def add_memory(text, tags=""):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-def search_memory(query="", k=5, **kwargs):
-    """Search via canonical Memory.recall_memory(), with conversation fallback."""
-    try:
-        mem = _get_canonical_memory()
-        results = list(mem.recall_memory(query, limit=k))
-        if hasattr(mem, "search_conversations") and len(results) < int(k or 5):
-            conv = mem.search_conversations(query, limit=max(1, int(k or 5) - len(results)))
-            for row in conv:
-                results.append({
-                    "timestamp": row.get("timestamp") or 0,
-                    "text": row.get("content") or "",
-                    "tags": "conversation",
-                    "kind": "conversation",
-                    "role": row.get("role") or "",
-                    "session_id": row.get("session_id") or "",
-                })
-        results = results[: int(k or 5)]
-        return {"ok": True, "results": results, "count": len(results)}
-    except Exception as e:
-        return {"ok": False, "error": str(e), "results": []}
 
 # --- Compatibility shim: some older code expects search_memory_compat() ---
-def search_memory_compat(query: str = "", limit: int = 10, q: str = "", k: int = 0, db_path=None):
-    """Back-compat wrapper around Memory.recall_memory()."""
-    qq = (q or query or "").strip()
-    kk = int(k or limit or 10)
-    return search_memory(query=qq, k=kk)
 
 
 def _browser_user_dir() -> Path:
@@ -137,52 +116,12 @@ def _browser_user_dir() -> Path:
     return (base / "browser").expanduser().resolve()
 
 # === CONVERSATION LOGGING (append-only) ===
-def _repo_root():
-    try:
-        return get_paths().artifacts_dir
-    except Exception:
-        return None
 
-def _convlog_path():
-    try:
-        from datetime import datetime, timezone
-        art = _repo_root()
-        if art is None:
-            return None
-        d = Path(art) / "conversations"
-        d.mkdir(parents=True, exist_ok=True)
-        fn = datetime.now(timezone.utc).strftime("%Y%m%d") + ".jsonl"
-        return d / fn
-    except Exception:
-        return None
 
-def _convlog_append(role: str, text: str, meta: dict | None = None) -> None:
-    try:
-        import json
-        from datetime import datetime, timezone
-
-        path = _convlog_path()
-        if path is None:
-            return
-
-        rec = {
-            "ts_iso": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "ts_unix": float(time.time()),
-            "role": str(role),
-            "text": str(text),
-            "meta": meta or {},
-        }
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        return
 # === END CONVERSATION LOGGING ===
 
 # === MEMORY ===
 
-def _get_memory_path():
-    from eli.core.db_paths import get_user_db_path
-    return get_user_db_path()
 
 
 def _sqlite_init(conn):
@@ -190,84 +129,24 @@ def _sqlite_init(conn):
     return None
 
 
-def memory_store(text, tags=None, kind="note", source="chat", confidence=0.7, ts=None):
-    try:
-        from eli.memory import get_memory
-        mem = get_memory(db_path=_get_memory_path())
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        result = mem.store_memory(
-            text=str(text),
-            tags=tags or [],
-            source=str(source),
-            kind=str(kind),
-            confidence=float(confidence),
-        )
-        return {"ok": True, "path": str(_get_memory_path())}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "path": str(_get_memory_path())}
 
 
-def memory_recall(query, limit=20):
-    try:
-        from eli.memory import get_memory
-        mem = get_memory(db_path=_get_memory_path())
-        results = mem.recall_memory(str(query), limit=int(limit))
-        return {"ok": True, "results": results, "path": str(_get_memory_path())}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "results": [], "path": str(_get_memory_path())}
 
 
-def _ollama_http_post_json(url: str, payload: Dict[str, Any], timeout_s: int = 30):
-    """POST JSON to an Ollama endpoint.
 
-    Returns (ok, status_code, parsed_json_or_None, error_repr_or_None) so
-    callers can distinguish transport failures from HTTP-level failures.
-    """
-    try:
-        resp = requests.post(url, json=payload, timeout=timeout_s)
-        try:
-            data = resp.json()
-        except Exception:
-            data = None
-        return (200 <= resp.status_code < 300, resp.status_code, data, None)
-    except Exception as e:
-        return (False, 0, None, repr(e))
+# ── inference_backends (ollama + default-model) moved to effectors ──
+from eli.execution.effectors.inference_backends import (  # noqa: F401
+    DEFAULT_CHAT_MODEL,
+    OLLAMA_HOST,
+    _ollama_chat_raw,
+    _ollama_model_digest_from_ps,
+    _ollama_ps,
+    _ollama_warm_load,
+    _strip_ollama_artifacts,
+)
 
 
-def _ollama_warm_load(model: str, ollama_host: str) -> bool:
-    """
-    Best-effort warm-load so /api/ps can report digest for lockdown verification.
-    Uses /api/chat (non-stream) with a tiny prompt.
-    Returns True if the request likely caused the model to load (or is already loadable),
-    False otherwise.
-    """
-    try:
-        model = (model or "").strip()
-        if not model:
-            return False
-        host = (ollama_host or "http://localhost:11434").rstrip("/")
-        url = host + "/api/chat"
 
-        payload = {
-            "model": model,
-            "stream": False,
-            "messages": [{"role": "user", "content": "ping"}],
-            "options": {"num_predict": 1},
-        }
-
-        ok, status, data, err = _ollama_http_post_json(url, payload, timeout_s=30)
-        if not ok:
-            return False
-
-        # If we got a response object at all, the model was at least resolvable.
-        # Ollama typically loads the model to answer, so this is a decent warm-load signal.
-        if isinstance(data, dict):
-            if "message" in data or "done" in data or "created_at" in data:
-                return True
-        return True
-    except Exception:
-        return False
 # ------------------ END OLLAMA WARM LOAD HELPERS ------------------
 
 # ----------------------------
@@ -304,11 +183,6 @@ def _normalize_result(res: object) -> Dict[str, Any]:
     return res
 
 
-def _strip_ollama_artifacts(s: str) -> str:
-    s = (s or "")
-    s = s.replace("<|\nend\n", "").replace("<|end|>", "").replace("<|end|", "")
-    s = re.sub(r"\s+$", "", s)
-    return s.strip()
 
 
 def _sha256_file(path: Path) -> str:
@@ -319,126 +193,58 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _full_control() -> bool:
-    """ELI Full Control state — the GUI toggle / `full_control` setting (single source
-    of truth; no environment variable). Never raises."""
-    try:
-        from eli.core.full_control import is_full_control
-        return bool(is_full_control())
-    except Exception:
-        return False
+
+# ── Media family + effector primitives moved to eli.execution.effectors ──
+# (v3 modularisation; imported back so the dispatch + external callers are unchanged).
+from eli.execution.effectors._base import (  # noqa: F401
+    _full_control,
+    _open_in_browser,
+    _run_argv,
+)
+from eli.execution.effectors.media import (  # noqa: F401
+    _get_active_player,
+    _mpv_alive,
+    _mpv_ipc,
+    _mpv_quit,
+    _playerctl,
+    _resolve_media_target,
+    _spotify_is_playing,
+    _targets_mpv,
+    _yt_mix_url,
+    play_media,
+    play_specific,
+)
 
 
-def _shell_command_allowed_fallback(cmd: str) -> bool:
-    """Fail-closed allowlist check used when the SecurityManager can't load.
-
-    Mirrors SecurityManager.is_command_allowed so a degraded manager can never
-    become fail-OPEN: with neither ELI Full Control nor ELI_ALLOWED_CMDS set,
-    nothing runs.
-    """
-    if _full_control():
-        return True
-    raw = (os.environ.get("ELI_ALLOWED_CMDS") or "").strip()
-    if not raw:
-        return False  # fail-closed
-    allowed = {p for p in raw.replace(",", " ").split() if p}
-    if "*" in allowed:
-        return True
-    return os.path.normpath(cmd) in allowed or cmd in allowed
 
 
-def _run(argv: List[str], timeout: int = 15) -> Dict[str, Any]:
-    # Security gate: check command against allowlist before executing.
-    # Fail CLOSED — if the SecurityManager can't load, fall back to an inline
-    # allowlist check rather than running unchecked.
-    if argv:
-        sm = _get_security_manager()
-        allowed = sm.is_command_allowed(argv[0]) if sm is not None else _shell_command_allowed_fallback(argv[0])
-        if not allowed:
-            msg = f"Command blocked by security policy: {argv[0]}"
-            return {
-                "ok": False,
-                "returncode": 1,
-                "stdout": "",
-                "stderr": msg,
-                "cmd": argv,
-                "content": msg,
-                "response": msg,
-            }
-    try:
-        p = subprocess.run(argv, timeout=timeout, capture_output=True, text=True, check=False)
-        ok = (p.returncode == 0)
-        msg = "OK" if ok else "Command failed"
-        return {
-            "ok": ok,
-            "returncode": p.returncode,
-            "stdout": p.stdout,
-            "stderr": p.stderr,
-            "cmd": argv,
-            "content": msg,
-            "response": msg,
-        }
-    except Exception as e:
-        msg = "Command error"
-        return {
-            "ok": False,
-            "returncode": 1,
-            "stdout": "",
-            "stderr": repr(e),
-            "cmd": argv,
-            "content": msg,
-            "response": msg,
-            "error": repr(e),
-        }
+
 
 
 # ----------------------------
 # Grounded runtime audit helpers
 # ----------------------------
-def _canonical_runtime_file_map() -> Dict[str, Path]:
-    root = get_paths().project_root.resolve()
-    # Files live under eli/ subdir
-    _eli = root / 'eli'
-    root = _eli if _eli.exists() else root
-    # Canonical runtime file paths under the live `eli/` layout.
-    # phaseBW5 fix: replaced legacy `brain/cognition/...` and
-    # `tools/automation/...` candidates that no longer correspond
-    # to anything on disk and were producing hallucinated "FAIL"
-    # entries in RUNTIME_AUDIT output.
-    rels = {
-        'cognitive_engine': ['kernel/engine.py'],
-        'gguf_inference':   ['cognition/gguf_inference.py'],
-        'memory':           ['memory/memory.py'],
-        'memory_init':      ['memory/__init__.py'],
-        'router':           ['execution/router_enhanced.py'],
-        'executor':         ['execution/executor_enhanced.py'],
-        'gui':              ['gui/gui_eli_original.py'],
-        'runtime_settings': ['core/runtime_settings.py'],
-        'paths':            ['core/paths.py'],
-        'proactive_daemon': ['planning/proactive_daemon.py'],
-        'agent_bus':        ['cognition/agent_bus.py'],
-        'orchestrator':     ['cognition/orchestrator.py'],
-        'inference_broker': ['cognition/inference_broker.py'],
-        'output_governor':  ['cognition/output_governor.py'],
-        'vector_store':     ['memory/vector_store.py'],
-        # Web server + home/RBAC/audit runtime (api/server.py lives at the project root,
-        # one level above eli/, hence the `../`).
-        'web_server':       ['../api/server.py'],
-        'device_server':    ['runtime/device_server.py'],
-        'home_intel':       ['runtime/home_intel.py'],
-        'api_users':        ['runtime/api_users.py'],
-        'evidence_ledger':  ['runtime/evidence_ledger.py'],
-    }
-    out: Dict[str, Path] = {}
-    for key, candidates in rels.items():
-        chosen = None
-        for rel in candidates:
-            cand = (root / rel).resolve()
-            if cand.exists():
-                chosen = cand
-                break
-        out[key] = chosen or (root / candidates[0]).resolve()
-    return out
+
+# ── system_intel report family moved to eli.execution.effectors.system_intel ──
+from eli.execution.effectors.system_intel import (  # noqa: F401
+    _canonical_runtime_file_map,
+    _diagnose_executor_wrappers,
+    _explain_all_reasoning_modes_report,
+    _explain_cognition_runtime_report,
+    _format_all_reasoning_modes,
+    _format_gui_runtime_audit,
+    _format_memory_audit_for_chat,
+    _format_memory_runtime,
+    _format_memory_status,
+    _format_runtime_audit,
+    _format_runtime_paths,
+    _format_runtime_status,
+    _gpu_status_report,
+    _live_memory_audit,
+    _runtime_boot_status,
+    _runtime_health_probes,
+)
+
 
 def _scan_merge_markers(lines: List[str]) -> List[Dict[str, Any]]:
     issues = []
@@ -512,80 +318,6 @@ def _audit_python_file(path: Path) -> Dict[str, Any]:
         entry['status'] = 'FAIL'
     return entry
 
-def _runtime_health_probes() -> List[Dict[str, Any]]:
-    """LIVE health checks a static source audit cannot catch: actually EXERCISE
-    key subsystems and check DATA INTEGRITY, so real runtime faults surface in an
-    audit (a method-level NameError, malformed data, recurring logged failures)
-    instead of only appearing once at use time. Each probe: {name, ok, detail}."""
-    probes: List[Dict[str, Any]] = []
-
-    def _probe(name, fn):
-        try:
-            ok, detail = fn()
-            probes.append({"name": name, "ok": bool(ok), "detail": str(detail)})
-        except Exception as e:
-            probes.append({"name": name, "ok": False, "detail": f"{type(e).__name__}: {e}"})
-
-    def _db_path():
-        from eli.memory import get_memory
-        return getattr(get_memory(), "db_path", None)
-
-    # Plugin manager — instantiate + list (catches the method-level NameError class
-    # that import/syntax audits miss: the module imports fine, the fault is at call).
-    def _plugins():
-        from eli.plugins.manager import get_manager
-        return True, f"OK — {len(get_manager().list_installed())} plugin(s) installed"
-    _probe("plugin_manager", _plugins)
-
-    # Memory — singleton resolves + db file present.
-    def _mem():
-        from pathlib import Path as _P
-        dbp = _db_path()
-        return (bool(dbp and _P(dbp).exists()),
-                f"db={_P(dbp).name}" if dbp else "no db path")
-    _probe("memory", _mem)
-
-    # Agent bus — registry imports + has agents.
-    def _bus():
-        from eli.cognition.agent_bus import _ALL_AGENTS
-        return bool(_ALL_AGENTS), f"{len(_ALL_AGENTS)} agents registered"
-    _probe("agent_bus", _bus)
-
-    # Habit-rule integrity — flag the un-schedulable corruption class.
-    def _habits():
-        import sqlite3 as _s
-        dbp = _db_path()
-        if not dbp:
-            return True, "no db"
-        c = _s.connect(str(dbp))
-        try:
-            bad = c.execute(
-                "SELECT COUNT(*) FROM habit_rules WHERE enabled=1 AND (hour IS NULL "
-                "OR minute IS NULL OR TRIM(LOWER(command))=TRIM(LOWER(name)))").fetchone()[0]
-            tot = c.execute("SELECT COUNT(*) FROM habit_rules WHERE enabled=1").fetchone()[0]
-        finally:
-            c.close()
-        if bad:
-            return False, f"{bad} of {tot} enabled habit rule(s) un-schedulable (NULL time / bare-token command)"
-        return True, f"{tot} enabled habit rule(s), all schedulable"
-    _probe("habit_integrity", _habits)
-
-    # Recent LIVE failures — surface what the failure log recorded so the audit
-    # reflects live problems, not just static source state. Reads the same
-    # canonical store the Self-Improve panel uses; resolved entries are filtered
-    # out by get_recent_failures, so the audit and the panel agree.
-    def _failures():
-        from eli.runtime.self_improvement import get_self_improvement
-        rows = get_self_improvement().memory.get_recent_failures(limit=5)
-        if not rows:
-            return True, "no live failures logged"
-        summary = "; ".join(
-            f"{(r.get('error') or r.get('user_input') or '')[:70]} (×{r.get('occurrence_count', 1)})"
-            for r in rows)
-        return False, f"{len(rows)} recent live failure(s): {summary}"
-    _probe("recent_failures", _failures)
-
-    return probes
 
 
 def _runtime_audit_report() -> Dict[str, Any]:
@@ -596,168 +328,33 @@ def _runtime_audit_report() -> Dict[str, Any]:
     probes = _runtime_health_probes()
     return {'ok': True, 'entries': entries, 'health_probes': probes}
 
-def _format_runtime_audit(report: Dict[str, Any]) -> str:
-    lines = []
-    for entry in report.get('entries', []):
-        lines.append(f"{entry['status']} {entry['path']}")
-        for issue in entry.get('issues', []):
-            line_no = int(issue.get('line', 0) or 0)
-            prefix = f"  - line {line_no}" if line_no else '  - line ?'
-            lines.append(f"{prefix} [{issue.get('type')}] {issue.get('message')}")
-    probes = report.get('health_probes') or []
-    if probes:
-        lines.append("")
-        lines.append("Live health probes:")
-        for p in probes:
-            mark = "✅" if p.get("ok") else "❌"
-            lines.append(f"  {mark} {p.get('name')}: {p.get('detail')}")
-    return '\n'.join(lines) if lines else 'No runtime files audited.'
 
-def _gpu_status_report() -> Dict[str, Any]:
-    query = [
-        "nvidia-smi",
-        "--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit,driver_version",
-        "--format=csv,noheader,nounits",
-    ]
-    runtime_snapshot: Dict[str, Any] = {}
-    try:
-        snap_path = get_paths().artifacts_dir / "runtime_snapshot.json"
-        if snap_path.exists():
-            runtime_snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
-    except Exception:
-        runtime_snapshot = {}
 
-    try:
-        proc = subprocess.run(
-            query,
-            timeout=6,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except Exception as exc:
-        msg = f"GPU status unavailable: nvidia-smi could not run ({exc})."
-        return {"ok": False, "error": str(exc), "content": msg, "response": msg}
 
-    if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "nvidia-smi returned no output").strip()
-        msg = f"GPU status unavailable: {msg}"
-        return {"ok": False, "returncode": proc.returncode, "content": msg, "response": msg}
+# ── self_maintenance family moved to eli.execution.effectors.self_maintenance ──
+from eli.execution.effectors.self_maintenance import (  # noqa: F401
+    _self_improvement_log_report,
+    proactive_start,
+    proactive_status,
+    proactive_stop,
+)
+import eli.execution.effectors.gaze  # noqa: F401
+import eli.execution.effectors.input_control  # noqa: F401
+import eli.execution.effectors.window_control  # noqa: F401
+import eli.execution.effectors.content_analysis  # noqa: F401
+import eli.execution.effectors.document_analysis  # noqa: F401
+import eli.execution.effectors.document_creation  # noqa: F401
+import eli.execution.effectors.introspection  # noqa: F401
+import eli.execution.effectors.status_reports  # noqa: F401
+import eli.execution.effectors.voice_input  # noqa: F401
+import eli.execution.effectors.coding  # noqa: F401
+import eli.execution.effectors.plugins  # noqa: F401
+import eli.execution.effectors.persona_lock  # noqa: F401
+import eli.execution.effectors.pomodoro  # noqa: F401
+import eli.execution.effectors.wake_word  # noqa: F401
+import eli.execution.effectors.self_improve  # noqa: F401
+import eli.execution.effectors.system_open  # noqa: F401
 
-    import csv
-    rows = list(csv.reader((proc.stdout or "").splitlines()))
-    if not rows:
-        msg = "GPU status unavailable: nvidia-smi returned no GPU rows."
-        return {"ok": False, "content": msg, "response": msg}
-
-    fields = [
-        "name", "memory_total_mib", "memory_used_mib", "memory_free_mib",
-        "utilization_percent", "temperature_c", "power_draw_w", "power_limit_w",
-        "driver_version",
-    ]
-    parsed = []
-    for row in rows:
-        values = [cell.strip() for cell in row]
-        item = {field: (values[i] if i < len(values) else "") for i, field in enumerate(fields)}
-        parsed.append(item)
-
-    first = parsed[0]
-    def _num(value: Any) -> Optional[float]:
-        try:
-            cleaned = re.sub(r"[^0-9.]+", "", str(value or ""))
-            return float(cleaned) if cleaned else None
-        except Exception:
-            return None
-
-    total = _num(first.get("memory_total_mib"))
-    used = _num(first.get("memory_used_mib"))
-    free = _num(first.get("memory_free_mib"))
-    util = _num(first.get("utilization_percent"))
-    used_pct = (used / total * 100.0) if total and used is not None else None
-
-    lines = [
-        "GPU status:",
-        f"- name: {first.get('name') or 'unknown'}",
-        f"- driver: {first.get('driver_version') or 'unknown'}",
-    ]
-    if total is not None and used is not None and free is not None:
-        lines.append(
-            f"- VRAM: {used:.0f} MiB used / {total:.0f} MiB total "
-            f"({free:.0f} MiB free, {used_pct:.1f}% used)"
-        )
-    else:
-        lines.append("- VRAM: unavailable")
-    lines.extend([
-        f"- GPU utilization: {util:.0f}%" if util is not None else "- GPU utilization: unavailable",
-        f"- temperature: {first.get('temperature_c') or 'unknown'} C",
-        f"- power: {first.get('power_draw_w') or 'unknown'} W / {first.get('power_limit_w') or 'unknown'} W limit",
-    ])
-
-    if runtime_snapshot:
-        lines.extend([
-            "",
-            "ELI selected llama.cpp load parameters:",
-            f"- context: {runtime_snapshot.get('n_ctx', 'unknown')}",
-            f"- GPU-layer parameter: {runtime_snapshot.get('n_gpu_layers', 'unknown')}",
-            f"- batch: {runtime_snapshot.get('n_batch', 'unknown')}",
-            f"- CPU threads: {runtime_snapshot.get('n_threads', 'unknown')}",
-        ])
-
-    _total_gb_txt = f"{total / 1024.0:.0f} GB" if total else "a VRAM-limited"
-    lines.extend([
-        "",
-        "Performance reading:",
-        f"- The live runtime is constrained by available VRAM. On {_total_gb_txt} GPU, large context and high GPU-layer counts can exceed it and force fallback.",
-        "- If ELI booted with lower selected ctx/GPU-layer parameters than requested, the fallback is expected behavior, not a settings lie.",
-        "- Higher free VRAM gives more room for GPU layers or batch size; low free VRAM means slower CPU-heavy inference and longer response times.",
-    ])
-    msg = "\n".join(lines)
-    return {"ok": True, "gpus": parsed, "runtime_snapshot": runtime_snapshot, "content": msg, "response": msg}
-
-def _self_improvement_log_report(limit: int = 5, days: int = 30) -> Dict[str, Any]:
-    try:
-        from eli.runtime.self_improvement import get_self_improvement
-        engine = get_self_improvement()
-        rows = engine.analyze_failures(limit=max(1, int(limit)), days=max(1, int(days)), min_cluster_size=1)
-    except Exception as exc:
-        msg = f"Self-improvement log unavailable: {exc}"
-        return {"ok": False, "error": str(exc), "content": msg, "response": msg}
-
-    rows = sorted(rows or [], key=lambda r: float(r.get("timestamp") or 0.0), reverse=True)
-    if not rows:
-        msg = "No failures are recorded in the self-improvement log for the selected window."
-        return {"ok": True, "failures": [], "content": msg, "response": msg}
-
-    last = rows[0]
-    ts = float(last.get("timestamp") or 0.0)
-    when = datetime.fromtimestamp(ts).isoformat(timespec="seconds") if ts else "unknown"
-    err = str(last.get("error") or "").strip() or "(empty error field)"
-    user_input = str(last.get("user_input") or "").strip()
-    count = int(last.get("occurrence_count") or 1)
-
-    lines = [
-        "Last self-improvement failure:",
-        f"- when: {when}",
-        f"- occurrences: {count}",
-        f"- exact_error: {err}",
-    ]
-    if user_input:
-        preview = user_input.replace("\n", "\\n")
-        if len(preview) > 500:
-            preview = preview[:500] + "..."
-        lines.append(f"- triggering_input_preview: {preview}")
-
-    if len(rows) > 1:
-        lines.append("")
-        lines.append("Recent failures:")
-        for idx, row in enumerate(rows[:limit], 1):
-            row_ts = float(row.get("timestamp") or 0.0)
-            row_when = datetime.fromtimestamp(row_ts).isoformat(timespec="seconds") if row_ts else "unknown"
-            row_err = str(row.get("error") or "").strip() or "(empty error field)"
-            lines.append(f"{idx}. {row_when} | x{int(row.get('occurrence_count') or 1)} | {row_err[:240]}")
-
-    msg = "\n".join(lines)
-    return {"ok": True, "failures": rows[:limit], "content": msg, "response": msg}
 
 def _import_audit_report() -> Dict[str, Any]:
     import importlib
@@ -798,72 +395,6 @@ def _format_import_audit(report: Dict[str, Any]) -> str:
     return '\n'.join(lines) if lines else 'No import audit results.'
 
 
-def _diagnose_executor_wrappers() -> Dict[str, Any]:
-    """Walk the executor wrapper stack and report:
-       1. The canonical middleware table (named, ordered)
-       2. The legacy ORIG_EXECUTE rebind chain (discovered via _ELI_*_ORIG_EXECUTE globals)
-       3. For a small set of representative actions, which layer would handle them
-    """
-    g = globals()
-    report: Dict[str, Any] = {
-        "middleware_table": [],
-        "rebind_chain": [],
-        "action_handlers": {},
-    }
-    # 1. canonical middleware table — already structured as ((name, fn), ...)
-    mw_table = g.get("_ELI_EXECUTOR_MIDDLEWARE_TABLE") or ()
-    for entry in mw_table:
-        try:
-            name, fn = entry
-            report["middleware_table"].append({
-                "name": str(name),
-                "callable": getattr(fn, "__name__", repr(fn)),
-                "module": getattr(fn, "__module__", "?"),
-            })
-        except Exception:
-            continue
-    # 2. rebind chain — discover all _ELI_*_ORIG_EXECUTE globals
-    for key, val in sorted(g.items()):
-        if not isinstance(key, str):
-            continue
-        if not key.startswith("_ELI_") or "ORIG_EXECUTE" not in key:
-            continue
-        report["rebind_chain"].append({
-            "sentinel": key,
-            "target_callable": getattr(val, "__name__", repr(val) if val is not None else "<unbound>"),
-            "is_callable": bool(callable(val)),
-        })
-    # 3. current top-level execute identity (which wrapper sits on top)
-    top_execute = g.get("execute")
-    report["active_top_execute"] = {
-        "name": getattr(top_execute, "__name__", repr(top_execute)),
-        "module": getattr(top_execute, "__module__", "?"),
-    }
-    report["active_top_execute_action"] = {
-        "name": getattr(g.get("execute_action"), "__name__", repr(g.get("execute_action"))),
-        "module": getattr(g.get("execute_action"), "__module__", "?"),
-    }
-    # 4. canonical base (what the middleware table eventually wraps)
-    base = g.get("_ELI_EXECUTOR_CANONICAL_BASE")
-    if base is not None:
-        report["canonical_base"] = {
-            "name": getattr(base, "__name__", repr(base)),
-            "module": getattr(base, "__module__", "?"),
-        }
-    # 5. probe a representative set of actions — which middleware short-circuits which
-    probes = [
-        "CHAT", "GENERATE_SCRIPT", "FIX_FILE", "SELF_REPORT", "RUNTIME_AUDIT",
-        "MEMORY_RECALL", "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY",
-        "PLAY_MEDIA", "PAUSE_MEDIA", "VOLUME", "OPEN_APP", "CLOSE_APP",
-        "REASONING_MODE_STATUS", "GUI_RUNTIME_AUDIT",
-    ]
-    handlers: Dict[str, str] = {}
-    for action in probes:
-        # Heuristic: each middleware's filter is in its docstring or name. We don't
-        # actually invoke; we just record that the middleware MIGHT handle it.
-        handlers[action] = "via canonical middleware table → rebind chain → _execute_impl"
-    report["action_handlers"] = handlers
-    return report
 
 
 def _format_executor_wrappers(report: Dict[str, Any]) -> str:
@@ -936,34 +467,6 @@ def _resolve_runtime_paths_report() -> Dict[str, Any]:
         'import_audit': import_audit,
     }
 
-def _format_runtime_paths(report: Dict[str, Any]) -> str:
-    lines = []
-    critical_files = report.get('critical_files') or {}
-    if critical_files:
-        lines.append("Critical runtime files:")
-        for key, path in critical_files.items():
-            lines.append(f"- {key}: {path}")
-
-    import_audit = report.get('import_audit') or {}
-    if import_audit.get('entries'):
-        if lines:
-            lines.append("")
-        lines.append("Current import status:")
-        for entry in import_audit.get('entries', []):
-            error = entry.get('error') or '-'
-            lines.append(f"- {entry.get('module')}: {entry.get('status')} ({error})")
-
-    if lines:
-        lines.append("")
-    lines.append("Runtime directories:")
-    for key, meta in report.get('entries', {}).items():
-        lines.append(
-            f"- {key}: {meta['path']} | "
-            f"inside_project={meta.get('inside_project')} "
-            f"user_specific={meta.get('user_specific')} "
-            f"non_redistributable={meta.get('non_redistributable')}"
-        )
-    return "\n".join(lines)
 
 def _grounded_file_audit_report(path: Path) -> Dict[str, Any]:
     """Grounded structural audit of an explicitly-referenced source file.
@@ -1083,20 +586,6 @@ def _gui_runtime_audit_report(question: Optional[str] = None) -> Dict[str, Any]:
         entry['status'] = 'FAIL'
     return {'ok': True, 'entry': entry}
 
-def _format_gui_runtime_audit(report: Dict[str, Any]) -> str:
-    entry = report.get('entry', {})
-    out = [f"{entry.get('status', 'FAIL')} {entry.get('path', '')}"]
-    evidence = entry.get('evidence') or {}
-    snippets = entry.get('snippets') or {}
-    for key, hits in evidence.items():
-        out.append(f"  - {key}: lines {hits if hits else 'MISSING'}")
-        for snip in snippets.get(key, []):
-            out.append(f"    {snip}")
-    for issue in entry.get('issues', []):
-        line_no = int(issue.get('line', 0) or 0)
-        prefix = f"  - line {line_no}" if line_no else '  - line ?'
-        out.append(f"{prefix} [{issue.get('type')}] {issue.get('message')}")
-    return '\n'.join(out)
 
 
 def _split_text_on_lines(text: str, max_chars: int) -> List[str]:
@@ -1408,242 +897,11 @@ def _explain_memory_runtime_report() -> Dict[str, Any]:
         'recent_turn_count': min(6, int(status.get("conversation_turns", 0) or len(recent or []))),
     }
 
-def _format_memory_runtime(report: Dict[str, Any]) -> str:
-    if not report.get("ok"):
-        return f"Memory runtime inspection failed: {report.get('error', 'unknown error')}"
-
-    paths = report.get("paths", {}) or {}
-    status = report.get("status", {}) or {}
-    name_guess = str(report.get("name_guess") or "").strip()
-    identity_hits = report.get("identity_hits") or []
-    recent_turn_count = int(report.get("recent_turn_count") or 0)
-
-    def _clean_hit(value: Any) -> str:
-        return " ".join(str(value or "").split())
-
-    lines: List[str] = []
-
-    if name_guess:
-        lines.append(
-            f"Yes — I do have grounded memory evidence for you. "
-            f"The strongest current name signal in runtime memory is: {name_guess}."
-        )
-        lines.append("")
-    else:
-        lines.append(
-            "I do have grounded runtime memory state, but I do not currently have a strong "
-            "enough name signal to identify you by name with confidence."
-        )
-        lines.append("")
-
-    lines.append("Memory runtime:")
-    lines.append(f"- active_db: {paths.get('active_db', 'unknown')}")
-    lines.append(f"- user_db: {paths.get('user_db', 'unknown')}")
-    lines.append(f"- agent_db: {paths.get('agent_db', 'unknown')}")
-    lines.append(f"- memory_db: {paths.get('memory_db', 'unknown')}")
-    # Physical DB files on disk (the logical roles above can alias the same
-    # file; this is the true count and is what "how many databases" should use).
-    db_files = report.get("db_files") or []
-    if db_files:
-        lines.append(
-            f"- physical_db_files: {len(db_files)} "
-            f"(active/user/memory roles may alias the same file)"
-        )
-        for _f in db_files:
-            lines.append(
-                f"  - {_f.get('name')} "
-                f"({_f.get('size_mb')} MB, {_f.get('tables')} tables)"
-            )
-    lines.append(f"- memory_entries: {int(status.get('memory_entries', 0) or 0)}")
-    lines.append(f"- conversation_turns: {int(status.get('conversation_turns', 0) or 0)}")
-    lines.append(f"- distinct_sessions: {int(status.get('distinct_sessions', 0) or 0)}")
-    lines.append(f"- db_path: {status.get('db_path', 'unknown')}")
-    lines.append(f"- recent_turn_count: {recent_turn_count}")
-
-    schema = report.get("schema") or {}
-    if schema:
-        lines.append("")
-        lines.append("SQLite tables observed live:")
-        for db_name, tables in schema.items():
-            if not tables:
-                lines.append(f"- {db_name}: no tables found or DB missing")
-                continue
-            rendered = ", ".join(f"{name}({count})" for name, count in sorted(tables.items()))
-            lines.append(f"- {db_name}: {rendered}")
-
-    vector_status = report.get("vector_status") or {}
-    _faiss = 'available' if vector_status.get('faiss_available') else 'not available'
-    _nvec = vector_status.get('ntotal', 'unknown')
-    db_files = report.get("db_files") or []
-    fts_tables = report.get("fts_tables") or []
-    kg = report.get("kg") or {}
-    mechanisms = report.get("mechanisms") or {}
-
-    def _present(key: str) -> str:
-        m = mechanisms.get(key) or {}
-        return f"detected at {m.get('path')}" if m.get("present") else f"NOT FOUND ({m.get('path')})"
-
-    # Stores — derived live from the physical *.sqlite3 files on disk, with the
-    # actual tables each one currently holds. No hardcoded per-DB description:
-    # ELI can add/remove DBs and tables, so this is re-read every call.
-    lines.append("")
-    lines.append(f"Stores — {len(db_files)} physical SQLite file(s) on disk (live):")
-    for _f in db_files:
-        _names = _f.get("table_names") or []
-        _shown = ", ".join(_names[:14]) + (" …" if len(_names) > 14 else "")
-        lines.append(f"- {_f.get('name')} ({_f.get('size_mb')} MB, {_f.get('tables')} tables)")
-        if _shown:
-            lines.append(f"    tables: {_shown}")
-
-    lines.append("")
-    lines.append("STORAGE path (write — input → durable + indexed), live-annotated:")
-    lines.append("1. A turn/fact enters via Memory.store_memory()/log_* (a persistence gate decides what to keep).")
-    lines.append(f"2. Row written to SQLite and mirrored into FTS5 for keyword search "
-                 f"— live FTS5 mirrors: {', '.join(fts_tables) if fts_tables else 'none detected'}.")
-    lines.append(f"3. Text embedded with the local nomic embedder; vector added to FAISS "
-                 f"— live: FAISS {_faiss}, {_nvec} vectors; embedder module {_present('vector_store_faiss')}.")
-    lines.append(f"4. Entities/relations extracted into the knowledge graph "
-                 f"— live: kg_entities={kg.get('entities', 'n/a')}, kg_relations={kg.get('relations', 'n/a')}; "
-                 f"module {_present('knowledge_graph')}.")
-    lines.append(f"   Live totals now: memories={int(status.get('memory_entries', 0) or 0)}, FAISS vectors={_nvec}.")
-
-    lines.append("")
-    lines.append("RECALL path (read — query → ranked context → answer), live-annotated:")
-    lines.append(f"1. HyDE optionally expands a vague query before search — module {_present('hyde')}.")
-    lines.append("2. Parallel retrieval: keyword (SQLite LIKE) + FTS5 full-text + FAISS vectors + knowledge-graph lookup.")
-    lines.append(f"3. RAG hybrid merge + rerank by relevance/recency — orchestrator module {_present('orchestrator')}; "
-                 f"parallel agent dispatch {_present('agent_bus')}.")
-    lines.append("4. Context assembly → persona handoff → LLM synthesis (recency/session-biased; recall-narration filtered).")
-    lines.append(f"- DAG: agents/retrieval run on a dependency DAG; the coding agent decomposes tasks via a subtask DAG "
-                 f"— module {_present('plan_graph_dag')}.")
-
-    lines.append("")
-    lines.append("Index/runtime detail (live):")
-    lines.append(f"- FTS5 mirror tables detected: {', '.join(fts_tables) if fts_tables else 'none'}.")
-    lines.append(f"- FAISS: {_faiss}; index={vector_status.get('index_path', 'unknown')}; vectors={_nvec}.")
-    lines.append(f"- Embedder: {vector_status.get('embedding_model', 'unknown')}")
-    lines.append(f"- Knowledge graph: {kg.get('entities', 'n/a')} entities, {kg.get('relations', 'n/a')} relations "
-                 f"({'present' if kg.get('present') else 'not present'}).")
-    lines.append("- Short-term memory: in-process working memory + recent conversation_turns (no separate short-term DB).")
-    lines.append("- Mechanism modules re-probed on the filesystem this call (no hardcoded claims): "
-                 + "; ".join(
-                       f"{k}={'present' if (mechanisms.get(k) or {}).get('present') else 'missing'}"
-                       for k in ("hyde", "orchestrator", "agent_bus", "vector_store_faiss", "knowledge_graph", "plan_graph_dag")
-                   ) + ".")
-
-    if identity_hits:
-        lines.append("- identity_evidence:")
-        # Phase 9 fix (2026-05-11): identity hits often repeat verbatim
-        # ("Capability inventory updated: ...") because the proactive daemon
-        # writes the same line at every tick. De-dupe so the user sees
-        # distinct evidence rather than the same line N times.
-        _seen: set = set()
-        _printed = 0
-        for hit in identity_hits:
-            if _printed >= 3:
-                break
-            cleaned = _clean_hit(hit)
-            if not cleaned:
-                continue
-            key = cleaned[:220].strip().lower()
-            if key in _seen:
-                continue
-            _seen.add(key)
-            lines.append(f"  - {cleaned[:220]}")
-            _printed += 1
-
-    lines.append("- Main functions/classes: eli.memory.memory.Memory, get_memory(), recall_memory(), store_memory(), get_recent_conversation(), eli.memory.vector_store.VectorStore.search().")
-
-    return "\n".join(lines)
-
-def _explain_all_reasoning_modes_report() -> Dict[str, Any]:
-    """Read all mode data directly from reasoning_modes.py and return as structured evidence."""
-    try:
-        from eli.cognition.reasoning_modes import (
-            _MODE_DESCRIPTIONS,
-            _MODE_TASK_PIPELINE,
-            _MODE_INSTRUCTION_STACK,
-            _MODE_MIN_TOKENS,
-            _MODE_MAX_TOKENS_CAP,
-            _MODE_TEMPERATURE_CEIL,
-            _DISPLAY,
-            PRIVATE_REASONING_MODES,
-        )
-        modes = list(_DISPLAY.keys())
-        mode_data = {}
-        for key in modes:
-            mode_data[key] = {
-                "display": _DISPLAY.get(key, key),
-                "private": key in PRIVATE_REASONING_MODES,
-                "description": _MODE_DESCRIPTIONS.get(key, ""),
-                "pipeline_stages": _MODE_TASK_PIPELINE.get(key, []),
-                "instructions": _MODE_INSTRUCTION_STACK.get(key, []),
-                "min_tokens": _MODE_MIN_TOKENS.get(key, 0),
-                "max_tokens_cap": _MODE_MAX_TOKENS_CAP.get(key, 0),
-                "temperature_ceil": _MODE_TEMPERATURE_CEIL.get(key, 0.7),
-            }
-        import importlib, inspect
-        try:
-            mod = importlib.import_module("eli.cognition.reasoning_modes")
-            src_path = inspect.getfile(mod)
-        except Exception:
-            src_path = "eli/cognition/reasoning_modes.py"
-        return {"ok": True, "source": src_path, "modes": modes, "mode_data": mode_data}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
 
 
-def _format_all_reasoning_modes(report: Dict[str, Any]) -> str:
-    if not report.get("ok"):
-        return f"Reasoning modes report failed: {report.get('error')}"
-    lines = [f"Source: {report.get('source', 'eli/cognition/reasoning_modes.py')}"]
-    lines.append(f"Total modes: {len(report.get('modes', []))}")
-    lines.append("")
-    for key in report.get("modes", []):
-        d = report["mode_data"][key]
-        # Show the PUBLIC mode name (quick/normal/advanced/research/expert), never the
-        # internal key (chain_of_thought/self_consistency/...). The internal keys were kept
-        # stable under the hood, but they must not surface to the user — the public scheme
-        # is quick/normal/advanced/research/expert.
-        _public = str(d['display']).lower()
-        lines.append(f"## {d['display']} (key={_public})")
-        lines.append(f"  private: {d['private']}")
-        lines.append(f"  temperature_ceil: {d['temperature_ceil']}")
-        lines.append(f"  token_floor: {d['min_tokens']}  token_cap: {d['max_tokens_cap']}")
-        lines.append(f"  description: {d['description']}")
-        lines.append(f"  pipeline_stages:")
-        for s in d["pipeline_stages"]:
-            lines.append(f"    - {s}")
-        lines.append(f"  instructions:")
-        for instr in d["instructions"]:
-            lines.append(f"    - {instr}")
-        lines.append("")
-    return "\n".join(lines)
 
 
-def _explain_cognition_runtime_report() -> Dict[str, Any]:
-    files = _canonical_runtime_file_map()
-    cog_path = files['cognitive_engine']
-    mem_path = files['memory']
-    router_path = files['router']
-    executor_path = files['executor']
-    if not cog_path.exists():
-        return {'ok': False, 'error': 'cognitive_engine.py not found'}
-    text = cog_path.read_text(encoding='utf-8', errors='replace')
-    checks = {
-        'process': 'def process(',
-        'memory_retrieval': 'def _retrieve_relevant_memories(',
-        'routing': 'route_intent(',
-        'executor_evidence': '_gather_executor_evidence',
-        'gguf': 'gguf_inference',
-        'streaming': 'def _stream_chat(',
-        'reasoning_loop': '_run_chat_reasoning_loop',
-        'confidence': '_score_response_confidence',
-    }
-    out = {}
-    for key, needle in checks.items():
-        out[key] = [i for i, line in enumerate(text.splitlines(), 1) if needle in line]
-    return {'ok': True, 'path': str(cog_path), 'memory_path': str(mem_path), 'router_path': str(router_path), 'executor_path': str(executor_path), 'checks': out}
+
 
 def _format_cognition_runtime(report: Dict[str, Any]) -> str:
     if not report.get('ok'):
@@ -1795,59 +1053,6 @@ def _runtime_status_report() -> Dict[str, Any]:
     return report
 
 
-def _format_runtime_status(report: Dict[str, Any]) -> str:
-    settings = report.get('settings') or {}
-    runtime = report.get('runtime') or {}
-
-    def _pick(runtime_key, *setting_keys, fallback='unknown'):
-        value = runtime.get(runtime_key, None)
-        if value not in (None, '', 0):
-            return value
-        for key in setting_keys:
-            value = settings.get(key, None)
-            if value not in (None, '', 0):
-                return value
-        return fallback
-
-    provider = runtime.get('provider') or settings.get('provider') or 'unknown'
-    model_path = str(
-        runtime.get('model_path')
-        or report.get('model_path')
-        or settings.get('model_path')
-        or settings.get('custom_model_path')
-        or settings.get('bundled_model_path')
-        or 'unknown'
-    ).strip()
-    model_name = runtime.get('model_name') or (Path(model_path).name if model_path not in ('', 'unknown') else 'unknown')
-    loaded = bool(runtime.get('loaded', False))
-
-    lines = [
-        "Runtime status evidence:",
-        f"- provider: {provider}",
-        f"- model_name: {model_name}",
-        f"- model_path: {model_path}",
-        f"- context_size: {_pick('n_ctx', 'n_ctx', 'context_size')}",
-        f"- gpu_layers: {_pick('n_gpu_layers', 'n_gpu_layers', 'gpu_layers')}",
-        f"- batch_size: {_pick('n_batch', 'n_batch', 'batch_size', 'batch')}",
-        f"- cpu_threads: {_pick('n_threads', 'n_threads', 'cpu_threads', 'threads')}",
-        f"- gguf_loaded_in_this_process: {loaded}",
-    ]
-
-    if settings.get('max_tokens') not in (None, ''):
-        lines.append(f"- max_tokens: {settings.get('max_tokens')}")
-    if settings.get('temperature') not in (None, ''):
-        lines.append(f"- temperature: {settings.get('temperature')}")
-    if settings.get('use_mmap') not in (None, ''):
-        lines.append(f"- use_mmap: {settings.get('use_mmap')}")
-    if settings.get('use_mlock') not in (None, ''):
-        lines.append(f"- use_mlock: {settings.get('use_mlock')}")
-    if str(provider).lower() == 'ollama':
-        if settings.get('ollama_host') not in (None, ''):
-            lines.append(f"- ollama_host: {settings.get('ollama_host')}")
-        if settings.get('ollama_model') not in (None, ''):
-            lines.append(f"- ollama_model: {settings.get('ollama_model')}")
-
-    return '\n'.join(lines)
 
 def _get_db_schema_evidence() -> str:
     """Introspect the canonical SQLite databases and return real table names + row counts."""
@@ -1887,78 +1092,8 @@ def _memory_status_report() -> Dict[str, Any]:
     return rep
 
 
-def _format_memory_status(report: Dict[str, Any]) -> str:
-    return _format_memory_runtime(report)
 
 
-def _runtime_boot_status() -> Dict[str, Any]:
-    """Live boot/wiring probe used by COGNITION_STATUS."""
-    import importlib
-
-    checks: Dict[str, bool] = {}
-    errors: Dict[str, str] = {}
-
-    module_names = {
-        "memory_module": "eli.memory",
-        "memory_core": "eli.memory.memory",
-        "agent_bus": "eli.cognition.agent_bus",
-        "orchestrator": "eli.cognition.orchestrator",
-        "router": "eli.execution.router_enhanced",
-        "executor": "eli.execution.executor_enhanced",
-        "control_contracts": "eli.runtime.control_contracts",
-        "response_surface": "eli.runtime.user_visible_response_surface",
-    }
-
-    loaded: Dict[str, Any] = {}
-    for label, module_name in module_names.items():
-        try:
-            loaded[label] = importlib.import_module(module_name)
-            checks[label] = True
-        except Exception as exc:
-            checks[label] = False
-            errors[label] = f"{type(exc).__name__}: {exc}"
-
-    try:
-        router = loaded.get("router")
-        checks["router.route"] = callable(getattr(router, "route", None))
-    except Exception as exc:
-        checks["router.route"] = False
-        errors["router.route"] = f"{type(exc).__name__}: {exc}"
-
-    try:
-        executor = loaded.get("executor")
-        checks["executor.execute"] = callable(getattr(executor, "execute", None))
-    except Exception as exc:
-        checks["executor.execute"] = False
-        errors["executor.execute"] = f"{type(exc).__name__}: {exc}"
-
-    try:
-        memory = loaded.get("memory_module")
-        checks["memory.get_memory"] = callable(getattr(memory, "get_memory", None))
-    except Exception as exc:
-        checks["memory.get_memory"] = False
-        errors["memory.get_memory"] = f"{type(exc).__name__}: {exc}"
-
-    try:
-        paths = get_paths()
-        path_checks = {
-            "project_root": Path(paths.project_root),
-            "user_db": Path(paths.user_db),
-            "agent_db": Path(paths.agent_db),
-            "settings": Path(paths.project_root) / "config" / "settings.json",
-            "capability_manifest": Path(paths.project_root) / "capability_manifest.json",
-        }
-        for label, path in path_checks.items():
-            checks[f"path.{label}"] = path.exists()
-    except Exception as exc:
-        checks["paths"] = False
-        errors["paths"] = f"{type(exc).__name__}: {exc}"
-
-    return {
-        "ok": all(checks.values()) if checks else False,
-        "checks": checks,
-        "errors": errors,
-    }
 
 
 def _cognition_status_report() -> Dict[str, Any]:
@@ -1994,21 +1129,7 @@ def _format_cognition_status(report: Dict[str, Any]) -> str:
 # Order I check: ELI_CHAT_MODEL env -> OLLAMA_MODEL env (legacy) ->
 # settings["ollama_model"] -> "" (empty, so the caller has to be explicit instead
 # of me guessing).
-def _resolve_default_chat_model() -> str:
-    envv = os.environ.get("ELI_CHAT_MODEL") or os.environ.get("OLLAMA_MODEL")
-    if envv:
-        return envv.strip()
-    try:
-        from eli.core import runtime_settings as _rs
-        s = _rs.load_settings() or {}
-        v = str(s.get("ollama_model") or "").strip()
-        if v:
-            return v
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return ""
 
-DEFAULT_CHAT_MODEL = _resolve_default_chat_model()
 
 
 def _maybe_background_codegen(action, args):
@@ -2297,47 +1418,16 @@ def _save_state(st: Dict[str, Any]) -> None:
         log.debug("suppressed exception", exc_info=True)
 
 
-def _state_get_history(st: Dict[str, Any]) -> List[Dict[str, str]]:
-    h = st.get("chat_history")
-    if not isinstance(h, list):
-        return []
-    out: List[Dict[str, str]] = []
-    for m in h:
-        if not isinstance(m, dict):
-            continue
-        role = m.get("role")
-        content = m.get("content")
-        if role in ("user", "assistant") and isinstance(content, str):
-            out.append({"role": role, "content": content})
-    return out
 
 
-def _state_append_history(st: Dict[str, Any], user_msg: str, assistant_msg: str) -> None:
-    h = _state_get_history(st)
-    h.append({"role": "user", "content": user_msg})
-    h.append({"role": "assistant", "content": assistant_msg})
-    if len(h) > MAX_HISTORY_MESSAGES:
-        h = h[-MAX_HISTORY_MESSAGES:]
-    st["chat_history"] = h
-    st["updated_at"] = time.time()
 
 
 # ----------------------------
 # Persona lock + checksum verification
 # ----------------------------
 
-def _ollama_ps() -> Dict[str, Any]:
-    try:
-        return requests.get(f"{OLLAMA_HOST}/api/ps", timeout=10).json()
-    except Exception:
-        return {"models": []}
 
 
-def _ollama_model_digest_from_ps(ps: Dict[str, Any], model_name: str) -> Optional[str]:
-    for m in ps.get("models", []) or []:
-        if (m.get("name") == model_name) or (m.get("model") == model_name):
-            return m.get("digest") or None
-    return None
 
 
 def _verify_persona_lock(st: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -2459,67 +1549,8 @@ def persona_lock_clear() -> Dict[str, Any]:
 # Persistent long-term memory (deterministic archive)
 # ----------------------------
 
-def memory_store_legacy(text: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
-    text = (text or "").strip()
-    if not text:
-        msg = "Empty memory text."
-        return {"ok": False, "action": "MEMORY_STORE", "error": "empty_text", "content": msg, "response": msg}
-
-    rec = {
-        "ts": time.time(),
-        "text": text,
-        "tags": [t.strip() for t in (tags or []) if isinstance(t, str) and t.strip()],
-    }
-    try:
-        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with MEMORY_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        msg = "Memory stored."
-        return {"ok": True, "action": "MEMORY_STORE", "record": rec, "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to store memory."
-        return {"ok": False, "action": "MEMORY_STORE", "error": repr(e), "content": msg, "response": msg}
 
 
-def memory_recall_legacy(query: str, limit: int = 5) -> Dict[str, Any]:
-    q = (query or "").strip().lower()
-    if not q:
-        msg = "Empty recall query."
-        return {"ok": False, "action": "MEMORY_RECALL", "error": "empty_query", "content": msg, "response": msg}
-
-    hits: List[Dict[str, Any]] = []
-    try:
-        if not MEMORY_PATH.exists():
-            msg = "No memory archive yet."
-            return {"ok": True, "action": "MEMORY_RECALL", "hits": [], "content": msg, "response": msg}
-
-        with MEMORY_PATH.open("r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                text = str(rec.get("text", "")).lower()
-                tags = " ".join(rec.get("tags") or []).lower()
-                if q in text or q in tags:
-                    hits.append(rec)
-
-        hits = hits[-max(1, int(limit)):]  # most recent matches
-        # Human readable summary
-        summary_lines = []
-        for r in reversed(hits):
-            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.get("ts", 0)))
-            t = str(r.get("text", "")).strip()
-            t = t if len(t) <= 180 else t[:177] + "..."
-            summary_lines.append(f"- [{ts}] {t}")
-        content = "Memory recall:\n" + ("\n".join(summary_lines) if summary_lines else "(no matches)")
-        return {"ok": True, "action": "MEMORY_RECALL", "hits": hits, "content": content, "response": content}
-    except Exception as e:
-        msg = "Memory recall failed."
-        return {"ok": False, "action": "MEMORY_RECALL", "error": repr(e), "content": msg, "response": msg}
 
 
 # ----------------------------
@@ -2603,23 +1634,6 @@ def self_test() -> Dict[str, Any]:
     return {"ok": overall_ok, "action": "SELF_TEST", "results": results, "content": msg, "response": msg}
 
 
-def _ollama_chat_raw(user_text: str, temperature: float = 0.7, num_predict: int = 80) -> Dict[str, Any]:
-    model = DEFAULT_CHAT_MODEL
-    payload = {
-        "model": model,
-        "stream": False,
-        "messages": [{"role": "user", "content": user_text}],
-        "options": {"temperature": float(temperature), "num_predict": int(num_predict)},
-    }
-    try:
-        r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=(10, 3600))
-        r.raise_for_status()
-        j = r.json()
-        content = _strip_ollama_artifacts(((j.get("message") or {}).get("content") or "").strip())
-        return {"ok": True, "model": model, "content": content, "response": content}
-    except Exception as e:
-        msg = "raw chat failed"
-        return {"ok": False, "model": model, "error": repr(e), "content": msg, "response": msg}
 
 
 # ----------------------------
@@ -2658,317 +1672,56 @@ def _needs_origin_anchor(ans: str) -> bool:
 
 
 # ================== MEDIA CONTROL FUNCTIONS ==================
-def _get_active_player() -> Optional[str]:
-    """Get the best active MPRIS2 player via playerctl. Returns None if none found."""
-    pass  # shutil already imported at module level
-    if not shutil.which("playerctl"):
-        return None
-    try:
-        r = subprocess.run(["playerctl", "--list-all"], capture_output=True, text=True, timeout=3)
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        players = [p.strip() for p in r.stdout.splitlines() if p.strip()]
-        # Priority: spotify first, then whatever is running
-        for preferred in ("spotify", "Spotify", "vlc", "mpv", "firefox", "chromium"):
-            for p in players:
-                if p.lower().startswith(preferred.lower()):
-                    return p
-        return players[0] if players else None
-    except Exception:
-        return None
 
 
-def _playerctl(cmd: str, player: Optional[str] = None) -> Dict[str, Any]:
-    """Run a targeted playerctl command. Self-contained, no external imports."""
-    pass  # shutil already imported at module level
-    if not shutil.which("playerctl"):
-        return {"ok": False, "error": "playerctl not installed — run: sudo apt install playerctl",
-                "content": "playerctl not installed", "response": "playerctl not installed"}
-    p = player or _get_active_player()
-    if not p:
-        return {"ok": False, "error": "No media player running",
-                "content": "No media player running", "response": "No media player running"}
-    try:
-        r = subprocess.run(["playerctl", "-p", p, cmd], capture_output=True, text=True, timeout=3)
-        if r.returncode == 0:
-            labels = {"play": "▶ Playing", "pause": "⏸ Paused", "stop": "⏹ Stopped",
-                      "next": "⏭ Next track", "previous": "⏮ Previous track"}
-            msg = f"{labels.get(cmd, cmd)} — {p}"
-            return {"ok": True, "player": p, "content": msg, "response": msg}
-        else:
-            msg = f"playerctl {cmd} failed: {r.stderr.strip() or 'unknown error'}"
-            return {"ok": False, "player": p, "error": r.stderr.strip(), "content": msg, "response": msg}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"playerctl {cmd} timed out", "content": "Command timed out", "response": "Command timed out"}
-    except Exception as e:
-        return {"ok": False, "error": str(e), "content": str(e), "response": str(e)}
 
 
 # ── Browser/streaming service → MPRIS player alias map ──────────────────────
-_BROWSER_PLAYERS = {"firefox", "Firefox", "chromium", "Chromium", "chrome"}
-_TARGET_ALIASES: dict = {
-    # streaming services → browser player
-    "netflix":    "browser",
-    "youtube":    "browser",
-    "prime":      "browser",
-    "disney":     "browser",
-    "disneyplus": "browser",
-    "hulu":       "browser",
-    "twitch":     "browser",
-    "brow":       "browser",
-    "browser":    "browser",
-    # explicit players
-    "spotify":    "spotify",
-    "vlc":        "vlc",
-    "mpv":        "mpv",
-}
-
-def _resolve_media_target(target: str | None) -> str | None:
-    """Map a user-supplied target string to an MPRIS player name or None."""
-    if not target:
-        return None
-    alias = _TARGET_ALIASES.get(target.lower().strip())
-    if alias == "browser":
-        # Return first available browser player from playerctl
-        try:
-            import subprocess as _sp
-            r = _sp.run(["playerctl", "--list-all"], capture_output=True, text=True, timeout=3)
-            for p in r.stdout.splitlines():
-                for bp in _BROWSER_PLAYERS:
-                    if p.strip().lower().startswith(bp.lower()):
-                        return p.strip()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        return "firefox"   # fallback name
-    return alias   # e.g. "spotify", "vlc"
 
 
-def _targets_mpv(target: str | None) -> bool:
-    """True when controls should go to the headless YouTube mpv: it's the active ELI
-    source and alive, and the user didn't explicitly name a different player."""
-    if target and "youtube" not in str(target).lower():
-        return False
-    return _MEDIA_STATE.get("source") == "mpv" and _mpv_alive()
 
 
-def stop_media(target: str | None = None) -> Dict[str, Any]:
-    """Stop media. Spotify doesn't support MPRIS Stop so uses pause."""
-    if _targets_mpv(target):
-        _mpv_quit()
-        _MEDIA_STATE.update({"source": None, "title": None, "mpv_sock": None})
-        return {"ok": True, "action": "STOP_MEDIA", "content": "⏹ Stopped — YouTube",
-                "response": "⏹ Stopped — YouTube"}
-    p = _resolve_media_target(target) or _get_active_player()
-    # Spotify ignores Stop — use pause instead
-    cmd = "pause" if (p and "spotify" in p.lower()) else "stop"
-    result = _playerctl(cmd, p)
-    result["action"] = "STOP_MEDIA"
-    return result
 
 
-def pause_media(target: str | None = None) -> Dict[str, Any]:
-    """Pause currently playing media."""
-    if _targets_mpv(target):
-        _mpv_ipc(["set_property", "pause", True])
-        return {"ok": True, "action": "PAUSE_MEDIA", "content": "⏸ Paused — YouTube",
-                "response": "⏸ Paused — YouTube"}
-    result = _playerctl("pause", _resolve_media_target(target) or _get_active_player())
-    result["action"] = "PAUSE_MEDIA"
-    return result
+# ── media transport API moved to eli.execution.effectors.media ──
+from eli.execution.effectors.media import (  # noqa: F401
+    next_media,
+    now_playing,
+    pause_media,
+    previous_media,
+    repeat_media,
+    shuffle_media,
+    stop_media,
+)
 
 
-def play_media(target: str | None = None) -> Dict[str, Any]:
-    """Play/resume media."""
-    if _targets_mpv(target):
-        _mpv_ipc(["set_property", "pause", False])
-        title = _MEDIA_STATE.get("title") or "YouTube"
-        return {"ok": True, "action": "PLAY_MEDIA", "content": f"▶ Resumed — {title}",
-                "response": f"▶ Resumed — {title}"}
-    result = _playerctl("play", _resolve_media_target(target) or _get_active_player())
-    result["action"] = "PLAY_MEDIA"
-    return result
 
 
-def next_media() -> Dict[str, Any]:
-    """Skip to next track."""
-    result = _playerctl("next")
-    result["action"] = "NEXT_MEDIA"
-    return result
 
 
-def previous_media(target: str | None = None) -> Dict[str, Any]:
-    """Go to previous track.
-
-    Spotify's MPRIS implementation of 'Previous' behaves like a media key:
-    if playback position > 3s it seeks to 0 (restart current track) instead
-    of going to the previous track. We force position=0 before sending
-    Previous so the command always skips back regardless of current position.
-    """
-    p = _resolve_media_target(target) or _get_active_player()
-    if p and "spotify" in p.lower():
-        try:
-            subprocess.run(
-                ["playerctl", "-p", p, "position", "0"],
-                capture_output=True, timeout=2,
-            )
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    result = _playerctl("previous", p)
-    result["action"] = "PREVIOUS_MEDIA"
-    return result
 
 
-def shuffle_media(target: str | None = None) -> Dict[str, Any]:
-    """Toggle shuffle mode via playerctl."""
-    result = _playerctl("shuffle Toggle", _resolve_media_target(target) or _get_active_player())
-    result["action"] = "SHUFFLE_MEDIA"
-    return result
 
 
-def repeat_media(target: str | None = None) -> Dict[str, Any]:
-    """Cycle repeat mode (None → Track → Playlist) via playerctl."""
-    result = _playerctl("loop Track", _resolve_media_target(target) or _get_active_player())
-    result["action"] = "REPEAT_MEDIA"
-    return result
 
 
-def _yt_resolve_watch_url(query: str) -> str | None:
-    """Return the first YouTube watch URL for a search query.
-    Uses a plain urllib scrape — no yt-dlp or API key required.
-    Returns None if the network request fails or no video is found.
-    """
-    try:
-        import urllib.request as _ureq
-        import urllib.parse as _up2
-        import re as _re2
-        url = f"https://www.youtube.com/results?search_query={_up2.quote_plus(query)}"
-        req = _ureq.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-        )
-        with _ureq.urlopen(req, timeout=8) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        m = _re2.search(r'"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"', html)
-        if m:
-            return f"https://www.youtube.com/watch?v={m.group(1)}"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return None
 
 
-def _yt_mix_url(watch_url: str | None) -> str | None:
-    """Turn a plain YouTube watch URL into a Mix/radio URL so playback AUTOPLAYS
-    related songs continuously instead of stopping after one video. YouTube's
-    `&list=RD<videoId>` is the auto-generated "Mix" (song radio) seeded from the
-    video — the user's reported "YT doesn't autoplay the next songs" + "play
-    something related" both come from this."""
-    if not watch_url:
-        return watch_url
-    import re as _re3
-    m = _re3.search(r"[?&]v=([A-Za-z0-9_-]{11})", watch_url)
-    if m:
-        vid = m.group(1)
-        return f"https://www.youtube.com/watch?v={vid}&list=RD{vid}"
-    return watch_url
 
 
-def _open_in_browser(url: str) -> None:
-    """Open a URL in the default browser, cross-platform (xdg-open on Linux,
-    `open` on macOS, the default handler on Windows) via platform_compat —
-    raw xdg-open silently no-ops off Linux."""
-    try:
-        from eli.utils.platform_compat import open_url as _open_url
-        _open_url(url)
-    except Exception:
-        import subprocess as _sp2
-        if shutil.which("xdg-open"):
-            _sp2.Popen(["xdg-open", url], stdout=_sp2.DEVNULL, stderr=_sp2.DEVNULL,
-                       start_new_session=True)
 
 
-def _spotify_open_uri(uri: str) -> bool:
-    """OpenUri on a running Spotify via MPRIS dbus. Accepts both spotify: URIs
-    and https://open.spotify.com/... URLs (Spotify opens the latter in-app)."""
-    import subprocess as _sp2
-    try:
-        r = _sp2.run(
-            ["dbus-send", "--print-reply",
-             "--dest=org.mpris.MediaPlayer2.spotify",
-             "/org/mpris/MediaPlayer2",
-             "org.mpris.MediaPlayer2.Player.OpenUri",
-             f"string:{uri}"],
-            capture_output=True, timeout=5,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
 
 
-def _spotify_search(query: str, prefer: str | None = None) -> bool:
-    """Open a Spotify search via dbus.
-
-    prefer='playlists' targets the **Playlists** filter tab
-    (open.spotify.com/search/<q>/playlists), so the top result is a PLAYLIST that
-    contains the requested song — playing it keeps continuation thematic, instead
-    of the 'All' tab which plays one track then drifts to unrelated songs
-    (user-reported). Falls back to the classic spotify:search: URI if the
-    filtered URL is rejected.
-    """
-    import urllib.parse as _up2
-    if prefer in ("playlist", "playlists"):
-        if _spotify_open_uri(f"https://open.spotify.com/search/{_up2.quote(query)}/playlists"):
-            return True
-        # Fall back to the unfiltered search URI.
-        return _spotify_open_uri(f"spotify:search:{_up2.quote(query)}")
-    return _spotify_open_uri(f"spotify:search:{_up2.quote(query)}")
 
 
-def _spotify_play() -> bool:
-    """Start/resume Spotify playback (no Web API). After a spotify:search: OpenUri
-    the search results are the active context, so Play starts the top match.
-
-    Returns True only if playback actually reaches the 'Playing' state — a Play
-    call that returns 0 but leaves Spotify paused/stopped is reported as False so
-    callers can be honest about search-only outcomes.
-    """
-    import subprocess as _sp2
-    try:
-        _sp2.run(["playerctl", "-p", "spotify", "play"], capture_output=True, timeout=5)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    try:
-        _sp2.run(
-            ["dbus-send", "--print-reply",
-             "--dest=org.mpris.MediaPlayer2.spotify",
-             "/org/mpris/MediaPlayer2",
-             "org.mpris.MediaPlayer2.Player.Play"],
-            capture_output=True, timeout=5,
-        )
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return _spotify_is_playing()
 
 
-def _spotify_is_playing() -> bool:
-    """True iff Spotify's MPRIS PlaybackStatus is 'Playing'."""
-    import subprocess as _sp2
-    try:
-        r = _sp2.run(["playerctl", "-p", "spotify", "status"],
-                     capture_output=True, timeout=5, text=True)
-        if r.returncode == 0 and "playing" in (r.stdout or "").strip().lower():
-            return True
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return False
 
 
-def _spotify_running() -> bool:
-    import subprocess as _sp2
-    try:
-        r = _sp2.run(["pgrep", "-x", "spotify"], capture_output=True, timeout=4)
-        return r.returncode == 0
-    except Exception:
-        return False
+
+
+
 
 
 # ── Now-playing state + headless-mpv (YouTube) control ───────────────────────
@@ -2976,260 +1729,24 @@ def _spotify_running() -> bool:
 # control socket. playerctl can't see that mpv (no MPRIS), so pause/stop/resume must
 # talk to the socket directly. We also remember the last source + title so ELI can
 # answer "what's playing?" and aim controls at the right player.
-_MEDIA_STATE: Dict[str, Any] = {"source": None, "title": None, "mpv_sock": None}
 
 
-def _mpv_socket_path() -> str:
-    # Mirrors media_runtime._mpv_socket so reader (here) and writer agree.
-    env = os.environ.get("ELI_YOUTUBE_MPV_IPC")
-    if env:
-        return env
-    try:
-        from eli.utils import platform_compat as _pc
-        if _pc.WINDOWS:
-            return r"\\.\pipe\eli_youtube_mpv"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    import tempfile
-    return os.path.join(tempfile.gettempdir(), "eli_youtube_mpv.sock")
 
 
-def _mpv_alive() -> bool:
-    import socket as _sock
-    p = _MEDIA_STATE.get("mpv_sock") or _mpv_socket_path()
-    if not os.path.exists(p):
-        return False
-    try:
-        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(p)
-        s.close()
-        return True
-    except Exception:
-        return False
 
 
-def _mpv_ipc(command: list, *, want_response: bool = False):
-    """Send one JSON IPC command to the headless YouTube mpv. Returns True/data, or
-    False/None on failure. Never raises."""
-    import socket as _sock
-    import json as _json
-    p = _MEDIA_STATE.get("mpv_sock") or _mpv_socket_path()
-    if not os.path.exists(p):
-        return None if want_response else False
-    try:
-        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-        s.settimeout(2.0)
-        s.connect(p)
-        s.sendall((_json.dumps({"command": command}) + "\n").encode())
-        out = None
-        if want_response:
-            buf = s.recv(8192).decode("utf-8", "ignore")
-            for line in buf.splitlines():
-                try:
-                    j = _json.loads(line)
-                    if isinstance(j, dict) and "data" in j:
-                        out = j["data"]
-                        break
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-        s.close()
-        return out if want_response else True
-    except Exception:
-        return None if want_response else False
 
 
-def _mpv_quit() -> None:
-    """Stop the headless YouTube mpv if it's running."""
-    if _mpv_alive():
-        _mpv_ipc(["quit"])
 
 
-def _set_now_playing(source: str, title: str | None, *, mpv_sock: str | None = None) -> None:
-    # Switching to a different source: stop the old headless mpv so two things don't
-    # play at once (e.g. YouTube audio + Spotify).
-    if _MEDIA_STATE.get("source") == "mpv" and source != "mpv":
-        _mpv_quit()
-    _MEDIA_STATE.update({"source": source, "title": title, "mpv_sock": mpv_sock})
 
 
-def now_playing() -> Dict[str, Any]:
-    """Report what ELI is currently playing and from where."""
-    src = _MEDIA_STATE.get("source")
-    title = _MEDIA_STATE.get("title") or "a track"
-    if src == "mpv" and _mpv_alive():
-        # prefer mpv's resolved media-title; fall back to the requested query
-        mt = _mpv_ipc(["get_property", "media-title"], want_response=True)
-        if isinstance(mt, str) and mt.strip():
-            title = mt.strip()
-        paused = _mpv_ipc(["get_property", "pause"], want_response=True)
-        head = "⏸ Paused" if paused is True else "▶ Playing"
-        msg = f"{head}: {title} — YouTube audio (headless mpv)."
-        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
-    if src == "spotify":
-        head = "▶ Playing" if _spotify_is_playing() else "⏸ Paused"
-        msg = f"{head}: {title} — Spotify."
-        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
-    # Fall back to whatever MPRIS player is active.
-    try:
-        p = _get_active_player()
-        if p:
-            import subprocess as _sp3
-            r = _sp3.run(["playerctl", "-p", p, "metadata", "--format",
-                          "{{artist}} — {{title}}"], capture_output=True, text=True, timeout=3)
-            meta = (r.stdout or "").strip()
-            if meta and meta != "—":
-                return {"ok": True, "action": "NOW_PLAYING",
-                        "content": f"▶ {meta} — {p}.", "response": f"▶ {meta} — {p}."}
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    msg = "Nothing is playing right now."
-    return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
 
-def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
-    """Play a specific song/artist/genre.
-
-    Dispatch priority:
-      1. Explicit spotify target  → Spotify (dbus if open, else xdg-open URI)
-      2. Explicit youtube target  → yt-dlp+mpv if available, else browser watch URL
-      3. "youtube web/website"    → browser watch URL (never mpv)
-      4. "X by Y" (no target)     → yt-dlp+mpv
-      5. Generic fallback         → browser watch URL
-    """
-    import subprocess as _sp
-    import urllib.parse
-    import re as _re
-
-    t = (target or "").lower().strip()
-    player = _resolve_media_target(target) or _get_active_player()
-
-    def _clean(q: str) -> str:
-        q = q.strip()
-        q = _re.sub(
-            r"^(?:a\s+song\s+|the\s+song\s+|the\s+track\s+|a\s+track\s+|me\s+a?\s*|some\s+)",
-            "", q, flags=_re.I,
-        )
-        return q.strip()
-
-    query = _clean(query)
-    _by_m = _re.match(r"^(.+?)\s+by\s+(.+)$", query, _re.I)
-
-    # ── 1. Spotify target ─────────────────────────────────────────────────────
-    is_spotify = "spotify" in t or (player and "spotify" in (player or "").lower())
-    is_youtube = "youtube" in t or t in ("yt",)
-    is_yt_web  = is_youtube and bool(_re.search(r"\bweb(?:site)?\b", t))
-    is_yt_browser = is_yt_web or bool(_re.search(r"youtube\.com", t, _re.I))
-
-    if is_spotify and not is_youtube:
-        import time as _time
-        search_q = (
-            f"{_by_m.group(1).strip()} {_by_m.group(2).strip()}" if _by_m else query
-        )
-        # No Web API: open the search results (this sets the active context to the
-        # matching TRACKS), let results load, then issue Play so the TOP SONG match
-        # starts. Playing the specific requested song is the intended behaviour — the
-        # earlier 'playlists' filter approach opened a LIST of playlists where Play
-        # had nothing to start, which is why playback failed.
-        _opened = _spotify_search(search_q)
-        if not _opened:
-            # Spotify not running yet — launch with the search URI, wait, retry.
-            try:
-                _open_in_browser(f"spotify:search:{urllib.parse.quote(search_q)}")
-                for _ in range(8):
-                    _time.sleep(1.0)
-                    if _spotify_running():
-                        break
-                _opened = _spotify_search(search_q)
-            except Exception:
-                _opened = False
-        if _opened:
-            _time.sleep(1.6)            # let the results view populate
-            if _spotify_play():
-                _set_now_playing("spotify", search_q)
-                msg = f"Playing “{search_q}” on Spotify."
-                return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                        "content": msg, "response": msg}
-            msg = (f"I opened the Spotify search for “{search_q}” but Spotify didn’t start "
-                   f"playback — press play in Spotify, or check that playerctl/dbus can "
-                   f"reach it.")
-            return {"ok": True, "action": "PLAY_MEDIA", "played": False,
-                    "search_only": True, "content": msg, "response": msg}
-        # Spotify was the EXPLICITLY requested target. Even if we couldn't reach it
-        # (not installed / not running / dbus refused), do NOT silently fall through
-        # to YouTube — that opens a second platform the user never asked for.
-        msg = (f"I couldn’t reach Spotify to play “{search_q}” — is it installed and "
-               f"running? Open it and try again, or say “play {search_q} on youtube”.")
-        return {"ok": False, "action": "PLAY_MEDIA", "played": False,
-                "search_only": True, "target": "spotify",
-                "content": msg, "response": msg}
-
-    # ── 2. "youtube web/website/.com" → browser only (never mpv) ─────────────
-    if is_yt_browser:
-        watch = _yt_mix_url(_yt_resolve_watch_url(query))
-        url = watch or f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
-        _open_in_browser(url)
-        msg = f"Opening YouTube in browser: {query} (continuous mix)"
-        return {"ok": True, "action": "PLAY_MEDIA", "content": msg, "response": msg}
-
-    # ── 3. YouTube target (plain) or "X by Y" → yt-dlp+mpv ──────────────────
-    yt_search = (
-        f"{_by_m.group(1).strip()} {_by_m.group(2).strip()} official audio"
-        if _by_m else query
-    )
-
-    if shutil.which("yt-dlp") and shutil.which("mpv"):
-        try:
-            ipc = _mpv_socket_path()
-            _mpv_quit()                      # stop any previous headless YouTube audio
-            _sp.Popen(
-                ["mpv", f"ytdl://ytsearch1:{yt_search}",
-                 f"--input-ipc-server={ipc}",
-                 "--ytdl-format=bestaudio/best",
-                 "--title=ELI-YouTube"],
-                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True,
-            )
-            _title = (f"{_by_m.group(1).strip()} by {_by_m.group(2).strip()}"
-                      if _by_m else query)
-            _set_now_playing("mpv", _title, mpv_sock=ipc)
-            msg = (f"Playing '{_by_m.group(1).strip()}' by {_by_m.group(2).strip()} on "
-                   f"YouTube (audio, in the background)." if _by_m
-                   else f"Playing '{query}' on YouTube (audio, in the background).")
-            return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "content": msg, "response": msg}
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    # ── 4. No yt-dlp/mpv → resolve watch URL and open in browser ─────────────
-    # Direct in-app playback needs yt-dlp + mpv; without them we can only open the
-    # browser. Be HONEST that this is the missing-tools fallback, not real playback
-    # (no-fake-actions) — and tell the user exactly what unlocks "play".
-    _play_hint = (" — for direct playback install mpv + yt-dlp "
-                  "(sudo apt install mpv && pipx install yt-dlp)")
-    watch = _yt_mix_url(_yt_resolve_watch_url(yt_search))
-    if watch:
-        _open_in_browser(watch)
-        _what = (f"'{_by_m.group(1).strip()}' by {_by_m.group(2).strip()}"
-                 if _by_m else f"'{query}'")
-        msg = f"Opening {_what} in the browser{_play_hint}."
-        return {"ok": True, "action": "PLAY_MEDIA", "played": False,
-                "search_only": True, "content": msg, "response": msg}
-
-    # ── 5. Last resort: YouTube search page ──────────────────────────────────
-    encoded = urllib.parse.quote_plus(query)
-    _open_in_browser(f"https://www.youtube.com/results?search_query={encoded}")
-    msg = f"Opening a YouTube search for '{query}' in the browser{_play_hint}."
-    return {"ok": True, "action": "PLAY_MEDIA", "played": False,
-            "search_only": True, "content": msg, "response": msg}
 
 # ================== END MEDIA CONTROL ==================
 
-def _run_ok(argv, timeout: int = 5) -> bool:
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0
-    except Exception:
-        return False
+from eli.execution.effectors._base import _run_ok  # noqa: F401
 
 
 def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) -> Dict[str, Any]:
@@ -3286,189 +1803,10 @@ def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) 
 # CHAT with persistent conversation + lock enforcement
 # ----------------------------
 
-def _memory_capability_truth() -> str:
-    """Truth-only memory capability statement. Never fabricate recall."""
-    try:
-        has_adapter = False
-        has_sqlite = False
-        try:
-            from eli.memory.memory_adapter import memory_recall as _mr  # noqa: F401
-            has_adapter = True
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        try:
-            import sqlite3 as _sql  # noqa: F401
-            has_sqlite = True
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        if has_adapter or has_sqlite:
-            return (
-                "I use two memory layers: session context and persistent local memory. "
-                "Persistent memory is stored locally (SQLite/artifacts via memory adapters) "
-                "and can be recalled across restarts if saved and retrievable by query."
-            )
-        return (
-            "I currently have session context in this runtime; persistent memory backends are "
-            "not available right now. I won’t claim cross-session recall unless retrieval succeeds."
-        )
-    except Exception:
-        return (
-            "I won’t guess about memory state. Session context is available; persistent recall "
-            "depends on configured local memory backends and successful retrieval."
-        )
 
 
-def _live_memory_audit() -> dict:
-    """
-    Real local-memory audit:
-    - SQLite memory DB(s)
-    - conversations JSONL
-    - proactive artifacts
-    - latest context/summary/action files
-    Returns factual counts + health, never fabricated claims.
-    """
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).isoformat()
-
-    root = Path(__file__).resolve().parents[2]  # project root (contains artifacts/, src/)
-    candidates = {
-        "root_artifacts_db": root / "artifacts" / "user.sqlite3",
-        "src_artifacts_db": root / "src" / "eli" / "artifacts" / "user.sqlite3",
-        "conversations_dir": root / "src" / "eli" / "artifacts" / "conversations",
-        "proactive_dir": root / "artifacts" / "proactive",
-        "src_latest_context": root / "artifacts" / "latest_context.txt",
-        "src_latest_summary": root / "artifacts" / "latest_summary.txt",
-        "src_latest_action": root / "artifacts" / "latest_action.txt",
-    }
-
-    report = {
-        "ok": True,
-        "ts_utc": now,
-        "root": str(root),
-        "stores": {},
-        "errors": [],
-    }
-
-    # ---- SQLite scan ----
-    def scan_sqlite(db_path: Path):
-        out = {"path": str(db_path), "exists": db_path.exists(), "size_bytes": 0, "tables": {}, "recent_rows": []}
-        if not db_path.exists():
-            return out
-        out["size_bytes"] = db_path.stat().st_size
-        try:
-            conn = sqlite3.connect(str(db_path))
-            cur = conn.cursor()
-
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
-            tables = [r[0] for r in cur.fetchall()]
-            out["tables"]["__all__"] = len(tables)
-
-            for t in tables:
-                try:
-                    cur.execute(f'SELECT COUNT(*) FROM "{t}"')
-                    out["tables"][t] = int(cur.fetchone()[0] or 0)
-                except Exception as e:
-                    out["tables"][t] = f"count_error: {e}"
-
-            # try pull likely memory/event rows
-            for t in ("events", "memory", "memories", "conversation", "conversations"):
-                if t in tables:
-                    try:
-                        cur.execute(f'SELECT * FROM "{t}" ORDER BY rowid DESC LIMIT 3')
-                        rows = cur.fetchall()
-                        out["recent_rows"].append({"table": t, "rows_found": len(rows)})
-                    except Exception as e:
-                        out["recent_rows"].append({"table": t, "error": str(e)})
-            conn.close()
-        except Exception as e:
-            out["error"] = str(e)
-        return out
-
-    for key in ("root_artifacts_db", "src_artifacts_db"):
-        report["stores"][key] = scan_sqlite(candidates[key])
-
-    # ---- JSONL conversations ----
-    conv_dir = candidates["conversations_dir"]
-    conv_out = {"path": str(conv_dir), "exists": conv_dir.exists(), "files": 0, "lines_total": 0, "latest_file": None}
-    try:
-        if conv_dir.exists():
-            files = sorted(conv_dir.glob("*.jsonl"))
-            conv_out["files"] = len(files)
-            if files:
-                conv_out["latest_file"] = str(files[-1])
-            total = 0
-            for f in files:
-                try:
-                    with f.open("r", encoding="utf-8", errors="ignore") as fh:
-                        for _ in fh:
-                            total += 1
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-            conv_out["lines_total"] = total
-    except Exception as e:
-        conv_out["error"] = str(e)
-    report["stores"]["conversations"] = conv_out
-
-    # ---- proactive files ----
-    pro_dir = candidates["proactive_dir"]
-    pro_out = {"path": str(pro_dir), "exists": pro_dir.exists(), "files": {}}
-    for name in ("latest_context.txt", "latest_summary.txt", "latest_action.txt", "latest_decision.txt", "latest.txt"):
-        fp = pro_dir / name
-        entry = {"exists": fp.exists(), "size_bytes": (fp.stat().st_size if fp.exists() else 0)}
-        if fp.exists():
-            try:
-                txt = fp.read_text(encoding="utf-8", errors="ignore").strip()
-                entry["preview"] = txt[:200]
-            except Exception as e:
-                entry["read_error"] = str(e)
-        pro_out["files"][name] = entry
-    report["stores"]["proactive"] = pro_out
-
-    # ---- top-level latest files ----
-    for key in ("src_latest_context", "src_latest_summary", "src_latest_action"):
-        fp = candidates[key]
-        entry = {"path": str(fp), "exists": fp.exists(), "size_bytes": (fp.stat().st_size if fp.exists() else 0)}
-        if fp.exists():
-            try:
-                entry["preview"] = fp.read_text(encoding="utf-8", errors="ignore").strip()[:200]
-            except Exception as e:
-                entry["read_error"] = str(e)
-        report["stores"][key] = entry
-
-    return report
 
 
-def _format_memory_audit_for_chat(rep: dict) -> str:
-    try:
-        s = rep.get("stores", {})
-        db1 = s.get("root_artifacts_db", {})
-        db2 = s.get("src_artifacts_db", {})
-        conv = s.get("conversations", {})
-        pro = s.get("proactive", {})
-
-        def table_count(d):
-            t = d.get("tables", {})
-            return ", ".join([f"{k}:{v}" for k, v in t.items() if k != "__all__"][:6]) or "none"
-
-        lines = []
-        lines.append("Memory status data:")
-        lines.append(f"- Root DB exists: {db1.get('exists')} | size: {db1.get('size_bytes',0)} bytes | tables: {db1.get('tables',{}).get('__all__',0)}")
-        lines.append(f"  table counts: {table_count(db1)}")
-        lines.append(f"- Src DB exists: {db2.get('exists')} | size: {db2.get('size_bytes',0)} bytes | tables: {db2.get('tables',{}).get('__all__',0)}")
-        lines.append(f"  table counts: {table_count(db2)}")
-        lines.append(f"- Conversation logs: files={conv.get('files',0)} lines_total={conv.get('lines_total',0)} latest={conv.get('latest_file')}")
-        latest_ctx = pro.get("files", {}).get("latest_context.txt", {})
-        latest_sum = pro.get("files", {}).get("latest_summary.txt", {})
-        latest_act = pro.get("files", {}).get("latest_action.txt", {})
-        lines.append(f"- Proactive context exists={latest_ctx.get('exists')} size={latest_ctx.get('size_bytes',0)}")
-        lines.append(f"- Proactive summary exists={latest_sum.get('exists')} size={latest_sum.get('size_bytes',0)}")
-        lines.append(f"- Proactive action exists={latest_act.get('exists')} size={latest_act.get('size_bytes',0)}")
-        lines.append("")
-        lines.append("If you want retrieval proof for a specific topic, ask: \"memory audit for <topic>\" and I will query the DB rows directly.")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Live memory audit failed to format: {e}"
 
 def chat(message: str, *, model: Optional[str] = None, skip_router: bool = False) -> Dict[str, Any]:
     """
@@ -3649,45 +1987,10 @@ def chat_stream(message: str, *, model: Optional[str] = None):
         if text:
             yield text
 
-def open_audio_settings() -> Dict[str, Any]:
-    for cmd in (["pavucontrol"], ["gnome-control-center", "sound"]):
-        r = _run(cmd, timeout=5)
-        if r.get("ok"):
-            msg = "Audio settings opened."
-            return {"ok": True, "action": "OPEN_AUDIO_SETTINGS", "cmd": cmd, "content": msg, "response": msg}
-    msg = "No audio settings app found (pavucontrol / gnome-control-center)."
-    return {"ok": False, "action": "OPEN_AUDIO_SETTINGS", "error": msg, "content": msg, "response": msg}
 
 
-def open_file_system(path: str = "~") -> Dict[str, Any]:
-    try:
-        target = os.path.expanduser(path)
-        open_file(target)
-        msg = f"Opened folder: {target}"
-        return {"ok": True, "action": "OPEN_FILE_SYSTEM", "path": target, "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to open file system."
-        return {"ok": False, "action": "OPEN_FILE_SYSTEM", "error": repr(e), "content": msg, "response": msg}
 
 
-def open_browser(url: str = "https://duckduckgo.com", urls: list = None) -> Dict[str, Any]:
-    """Open one or more URLs in the default browser. Cross-platform via platform_compat
-    (webbrowser on Linux/macOS/Windows, termux-open-url on Android)."""
-    try:
-        from eli.utils.platform_compat import open_url
-        targets = [str(u) for u in (urls or []) if str(u).strip()]
-        if not targets:
-            targets = [str(url)]
-        for target in targets:
-            open_url(target)
-        if len(targets) == 1:
-            msg = f"Opened browser: {targets[0]}"
-            return {"ok": True, "action": "OPEN_BROWSER", "url": targets[0], "content": msg, "response": msg}
-        msg = f"Opened {len(targets)} browser tabs."
-        return {"ok": True, "action": "OPEN_BROWSER", "urls": targets, "content": msg, "response": msg}
-    except Exception as e:
-        msg = f"Failed to open browser: {e}"
-        return {"ok": False, "action": "OPEN_BROWSER", "error": repr(e), "content": msg, "response": msg}
 
 
 def set_user_name(name: str) -> Dict[str, Any]:
@@ -3846,163 +2149,29 @@ def _env_int(name: str, default: int) -> int:
 
 
 # --- MEDIA DUCKING ---
-MEDIA_DUCK = str(os.environ.get("ELI_MEDIA_DUCK", "1")).strip().lower() not in ("0","false","no","off")
-MEDIA_PLAYER = (os.environ.get("ELI_MEDIA_PLAYER", "spotify") or "spotify").strip()
 
-_DUCKED_MEDIA = False
-_DUCK_TIMER = None
-_DUCK_LOCK = threading.Lock()
 
-def _playerctl_run(argv):
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-        return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
-    except Exception as e:
-        return 1, "", str(e)
 
-def _playerctl_p(*args):
-    if MEDIA_PLAYER:
-        return _playerctl_run(["playerctl", "-p", MEDIA_PLAYER, *args])
-    return _playerctl_run(["playerctl", *args])
 
-def _duck_media_pause():
-    # Pause ONLY if it was actually playing; remember we ducked it.
-    global _DUCKED_MEDIA
-    if not MEDIA_DUCK:
-        return
-    if _DUCKED_MEDIA:
-        return
-    rc, out, _ = _playerctl_p("status")
-    if rc == 0 and out.lower() == "playing":
-        _playerctl_p("pause")
-        _DUCKED_MEDIA = True
 
-def _duck_media_resume():
-    global _DUCKED_MEDIA
-    if not MEDIA_DUCK:
-        return
-    if not _DUCKED_MEDIA:
-        return
-    _playerctl_p("play")
-    _DUCKED_MEDIA = False
 
-def _duck_schedule_resume(deadline_s: float):
-    # Reset timer each time wake window is extended.
-    global _DUCK_TIMER
-    if not MEDIA_DUCK:
-        return
-    with _DUCK_LOCK:
-        if _DUCK_TIMER is not None:
-            try:
-                _DUCK_TIMER.cancel()
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            _DUCK_TIMER = None
-        delay = max(0.0, float(deadline_s) - time.time())
-        t = threading.Timer(delay, _duck_media_resume)
-        t.daemon = True
-        _DUCK_TIMER = t
-        t.start()
 
 
 # --- TTS FUNCTIONS ---
-_TTS_ENGINE = None
+
+# ── tts_speech family moved to eli.execution.effectors.tts_speech ──
+from eli.execution.effectors.tts_speech import (  # noqa: F401
+    _eli_speak_piper,
+    _speak,
+)
+
 _MIC_IGNORE_UNTIL = 0.0  # ignore mic until this monotonic time
 _BUSY_UNTIL = 0.0  # ignore mic while executing actions
 _STOP_REQUESTED = False
 
-def _init_tts():
-    global _TTS_ENGINE
-    if _TTS_ENGINE is not None:
-        return
-    try:
-        import pyttsx3
-    except Exception as e:
-        if DEBUG:
-            log.debug(f"[TTS] pyttsx3 not available: {e}")
-        _TTS_ENGINE = None
-        return
 
-    eng = pyttsx3.init()
-    voice_name = os.environ.get("ELI_TTS_VOICE", "").strip().lower()
-    rate       = os.environ.get("ELI_TTS_RATE", "").strip()
 
-    # optional: choose a different voice by partial name
-    if voice_name:
-        try:
-            for v in eng.getProperty("voices"):
-                if voice_name in v.name.lower():
-                    eng.setProperty("voice", v.id)
-                    break
-        except Exception as e:
-            if DEBUG:
-                log.debug(f"[TTS] voice selection failed: {e}")
 
-    if rate:
-        try:
-            eng.setProperty("rate", int(rate))
-        except Exception as e:
-            if DEBUG:
-                log.debug(f"[TTS] rate set failed: {e}")
-
-    _TTS_ENGINE = eng
-
-def _tts_list_voices() -> dict:
-    _init_tts()
-    eng = _TTS_ENGINE
-    voices = []
-    try:
-        for v in (eng.getProperty("voices") or []):
-            voices.append({
-                "id": getattr(v, "id", "") or "",
-                "name": getattr(v, "name", "") or "",
-            })
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return {"current": os.environ.get("ELI_TTS_VOICE", ""), "voices": voices, "count": len(voices)}
-
-def _tts_set_voice(target: str) -> dict:
-    _init_tts()
-    eng = _TTS_ENGINE
-    target_l = (target or "").strip().lower()
-    if not target_l:
-        raise ValueError("empty voice target")
-    chosen_id = None
-    chosen_name = None
-    try:
-        for v in (eng.getProperty("voices") or []):
-            vid = (getattr(v, "id", "") or "").lower()
-            vname = (getattr(v, "name", "") or "").lower()
-            if target_l in vid or target_l in vname:
-                chosen_id = getattr(v, "id", None)
-                chosen_name = getattr(v, "name", None) or target
-                break
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    if not chosen_id:
-        raise ValueError(f"Voice not found: {target}")
-    try:
-        eng.setProperty("voice", chosen_id)
-    except Exception:
-        # still persist preference; engine may apply on next init
-        log.debug("suppressed exception", exc_info=True)
-    os.environ["ELI_TTS_VOICE"] = str(chosen_name)
-    try:
-        MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TTS_PREF_FILE = MEMORY_PATH.parent / "tts_voice.json"
-        TTS_PREF_FILE.write_text(json.dumps({"voice": os.environ["ELI_TTS_VOICE"]}, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return {"voice": os.environ["ELI_TTS_VOICE"], "id": chosen_id}
-
-def _speak_legacy(text: str):
-    """Compatibility wrapper: delegate to canonical TTS router."""
-    try:
-        from eli.perception.tts_router import maybe_speak
-        maybe_speak(text, enabled=True)
-    except Exception as e:
-        log.debug(f"[ELI-TTS] exception: {repr(e)}")
-    return
 
 
 # --- TTS PATCH ---
@@ -4010,7 +2179,6 @@ import tempfile
 from eli.utils.platform_compat import open_url, open_file, notify, play_sound, WINDOWS
 
 # ---- Ollama host canonical config ----
-OLLAMA_HOST = (os.environ.get("ELI_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
 _OLLAMA_HOST = OLLAMA_HOST  # backward-compatible alias
 CHAT_TIMEOUT_S = (10, 3600)  # connect/read timeout for Ollama chat
 
@@ -4020,89 +2188,11 @@ def _eli_set_pulse_sink():
     if sink:
         os.environ["PULSE_SINK"] = sink
 
-def _eli_tts_echo(_text: str) -> None:
-    # Always show what ELI *tries* to say, even if audio routing is cursed.
-    try:
-        if os.environ.get("ELI_TTS_ECHO", "1") != "0":
-            log.debug(f"[ELI-SAY] {_text}")
-        if os.environ.get("ELI_TTS_LOG", "1") != "0":
-            from pathlib import Path
-            import json
-            from datetime import datetime
-            try:
-                from eli.core.paths import logs_dir
-                logp = Path(logs_dir()) / "tts.jsonl"
-            except Exception:
-                logp = Path(__file__).resolve().parent / "data" / "logs" / "tts.jsonl"
-            logp.parent.mkdir(parents=True, exist_ok=True)
-            rec = {"ts": datetime.now().isoformat(timespec="seconds"), "text": _text}
-            with open(logp, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
 
-def _speak(text: str, *args, **kwargs):
-    """Speak arbitrarily long text by chunking + sanitizing to avoid TTS silent failures."""
-    import re as _re
 
-    if text is None:
-        return
-    text = str(text)
-
-    # Strip model junk tokens
-    text = text.replace("<|end|>", "").replace("<|", "").replace("|>", "")
-
-    # Remove/replace fenced code blocks (TTS engines often choke on them)
-    text = _re.sub(r"```.*?```", " [code omitted] ", text, flags=_re.DOTALL)
-
-    # Normalize whitespace
-    text = _re.sub(r"[ \t]+", " ", text)
-    text = _re.sub(r"\n{3,}", "\n\n", text).strip()
-    if not text:
-        return
-
-    # Chunk by sentence-ish boundaries, capped by char length
-    MAX_CHARS = 350
-    parts = _re.split(r"(?<=[.!?])\s+", text)
-    buf = ""
-    chunks = []
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        if len(buf) + len(part) + 1 <= MAX_CHARS:
-            buf = (buf + " " + part).strip()
-        else:
-            if buf:
-                chunks.append(buf)
-            # hard-split very long parts
-            while len(part) > MAX_CHARS:
-                chunks.append(part[:MAX_CHARS])
-                part = part[MAX_CHARS:]
-            buf = part
-    if buf:
-        chunks.append(buf)
-
-    for c in chunks:
-        _speak_raw(c, *args, **kwargs)
-
-def _speak_raw(text: str) -> None:
-    """Compatibility wrapper: delegate to canonical TTS router."""
-    try:
-        from eli.perception.tts_router import speak
-        speak(text)
-    except Exception:
-        return
 
 
 # --- PIPER TTS HOOK ---
-def _eli_speak_piper(text: str):
-    """Compatibility wrapper: canonical Piper selection lives in eli.perception.tts_router."""
-    try:
-        from eli.perception.tts_router import speak
-        speak(text)
-    except Exception:
-        return
 
 
 # Hook into speak function if piper is configured
@@ -4123,346 +2213,28 @@ def _slugify(name: str) -> str:
     name = re.sub(r"[^a-z0-9]+", "_", name).strip("_")
     return name or "doc"
 
-def _open_file(path: str) -> None:
-    try:
-        open_file(path)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
 
-def _allowed_cmds_set():
-    """
-    Allowed executables for sandboxed run().
-    Accept BOTH comma-separated and whitespace-separated formats.
-    Also include both './x' and 'x' variants so normpath quirks don't brick you.
-    """
-    import os
-    import os.path
-    from pathlib import Path as _Path
+# ── files_notes family moved to eli.execution.effectors.files_notes ──
+from eli.execution.effectors.files_notes import (  # noqa: F401
+    _eli_safe_read_file,
+    _eli_safe_screenshot,
+    _eli_safe_write_note,
+    _open_file,
+)
 
-    raw = (os.environ.get("ELI_ALLOWED_CMDS") or "").strip()
-    if not raw:
-        return None
 
-    # commas OR spaces
-    raw = raw.replace(",", " ")
-    parts = [p for p in raw.split() if p]
 
-    allowed = set()
 
-    def add(tok: str):
-        if not tok:
-            return
-        t = str(tok).strip()
-        if not t:
-            return
 
-        # keep raw
-        allowed.add(t)
 
-        # normpath form
-        try:
-            n = os.path.normpath(t)
-            allowed.add(n)
-        except Exception:
-            n = t
 
-        # add "./" and no-"./" variants
-        try:
-            if n.startswith("./"):
-                allowed.add(n[2:])
-            else:
-                allowed.add("./" + n)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    for p in parts:
-        add(p)
-
-    # Always allow venv python in common forms (belt + suspenders)
-    add("./.venv/bin/python")
-    add(".venv/bin/python")
-    try:
-        add(str((_Path(__file__).resolve().parent.parent / ".venv/bin/python").resolve()))
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    return allowed
-
-def _allow_or_block(argv0: str) -> bool:
-    """Allow or block executables based on sandbox rules."""
-    import os
-    
-    # FULL CONTROL MODE: allow everything
-    if _full_control():
-        return True
-    
-    allowed = _allowed_cmds_set()
-    if allowed is None:
-        return True  # No restrictions
-    
-    # Wildcard allows everything
-    if "*" in allowed:
-        return True
-    
-    return argv0 in allowed
-
-def _run_argv(argv, timeout=30):
-    # Normalize timeouts (router sometimes sends None)
-    # None/"" => env ELI_RUN_TIMEOUT_SEC (default 120s)
-    import os as _os
-    if timeout is None or timeout == "":
-        try:
-            timeout = float(_os.environ.get("ELI_RUN_TIMEOUT_SEC", "120"))
-        except Exception:
-            timeout = 120.0
-    else:
-        try:
-            timeout = float(timeout)
-        except Exception:
-            timeout = 120.0
-
-    if not argv:
-        return {"ok": False, "error": "empty argv"}
-    if not _allow_or_block(argv[0]):
-
-        # --- ALLOW_VENV_PYTHON_V1 ---
-        # Normalize doubled venv paths and allow our own venv python binary under the allowlist sandbox.
-        try:
-            import os
-            _v = str(argv[0])
-            # collapse accidental duplication
-            _v = _v.replace("./.venv/bin/./.venv/bin/python", "./.venv/bin/python")
-            _v = _v.replace(".venv/bin/.venv/bin/python", ".venv/bin/python")
-            _v = os.path.normpath(_v)
-            # allow exactly the project venv python
-            _venv_py_rel = os.path.normpath("./.venv/bin/python")
-            _venv_py_abs = os.path.normpath(str((Path(__file__).resolve().parent / ".venv/bin/python")))
-            if _v in (_venv_py_rel, _venv_py_abs) or _v.endswith("/.venv/bin/python"):
-                # overwrite the checked value if it's a simple name
-                if isinstance(argv[0], str):
-                    argv[0] = _v
-                # skip raising
-                raise SystemExit("__ELI_ALLOW_VENV_PYTHON_SKIP__")
-        except SystemExit as _e:
-            if str(_e) == "__ELI_ALLOW_VENV_PYTHON_SKIP__":
-                pass
-            else:
-                raise
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        # If we didn't early-allow venv python, fall through to the original denial.
-        try:
-            _ALLOW_VENV_PYTHON
-        except NameError:
-            _ALLOW_VENV_PYTHON = False
-        if not _ALLOW_VENV_PYTHON:
-            return {"ok": False, "error": f"command not allowed: {argv[0]} (ELI_ALLOWED_CMDS)"}
-
-    try:
-        r = subprocess.run(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-        return {
-            "ok": (r.returncode == 0),
-            "returncode": r.returncode,
-            "stdout": (r.stdout or "")[-2000:],
-            "stderr": (r.stderr or "")[-2000:],
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-def _spotify_player_name():
-    # Pick a player name that actually exists (flatpak spotify usually exposes "spotify")
-    r = _run_argv(["playerctl", "-l"], timeout=30)
-    if r.get("ok") and r.get("stdout"):
-        players = [p.strip() for p in r["stdout"].splitlines() if p.strip()]
-        for p in players:
-            if "spotify" in p.lower():
-                return p
-    return "spotify"
-
-def _spotify_launch():
-    """
-    Launch Spotify and VERIFY it actually stays running.
-    """
-    SPOTIFY_CMD = os.environ.get("ELI_SPOTIFY_CMD", "").strip() or "spotify"
-    argv = shlex.split(SPOTIFY_CMD)
-    if not argv:
-        return {"ok": False, "error": "ELI_SPOTIFY_CMD is empty"}
-
-    if not _allow_or_block(argv[0]):
-        return {"ok": False, "error": f"command not allowed: {argv[0]} (ELI_ALLOWED_CMDS)"}
-
-    # If using Flatpak, verify the app exists/installed first.
-    appid = None
-    if len(argv) >= 3 and argv[0] == "flatpak" and argv[1] == "run":
-        appid = argv[2]
-        chk = subprocess.run(
-            ["flatpak", "info", appid],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if chk.returncode != 0:
-            return {
-                "ok": False,
-                "error": f"Flatpak app not installed or not available: {appid}",
-                "stderr": (chk.stderr or "")[-2000:],
-            }
-
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as e:
-        return {"ok": False, "error": str(e), "cmd": argv}
-
-    # Give it a moment, then verify it's actually running.
-    time.sleep(1.8)
-
-    running = False
-    evidence = {}
-
-    # Prefer flatpak ps if we're launching flatpak
-    if appid:
-        ps = subprocess.run(
-            ["flatpak", "ps"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        evidence["flatpak_ps_rc"] = ps.returncode
-        evidence["flatpak_ps_tail"] = (ps.stdout or "")[-4000:]
-        if ps.returncode == 0 and appid in (ps.stdout or ""):
-            running = True
-    else:
-        # Fallback: check playerctl list (best-effort)
-        r = _run_argv(["playerctl", "-l"], timeout=30)
-        evidence["playerctl"] = r
-        if r.get("ok") and "spotify" in (r.get("stdout","").lower()):
-            running = True
-
-    return {
-        "ok": bool(running),
-        "launched": True,
-        "running": bool(running),
-        "pid": getattr(proc, "pid", None),
-        "cmd": argv,
-        "evidence": evidence,
-    }
-
-def _spotify_ctl(command: str, auto_launch: bool = True):
-    """
-    command: play|pause|stop|status|next|previous|play-pause
-    """
-    player = _spotify_player_name()
-    r = _run_argv(["playerctl", "-p", player, command], timeout=30)
-
-    # If play fails because spotify isn't running/registered, optionally launch and retry
-    if (not r.get("ok")) and auto_launch and command in {"play", "play-pause"}:
-        launch = _spotify_launch()
-        time.sleep(2)
-        player = _spotify_player_name()
-        r2 = _run_argv(["playerctl", "-p", player, command], timeout=30)
-        return {"ok": r2.get("ok", False), "launch": launch, "result": r2, "player": player}
-
-    return {"ok": r.get("ok", False), "result": r, "player": player}
 
 
 # --- APP OPENING FUNCTIONS ---
-_APP_ALIASES = {
-    "mail": "thunderbird",
-    "email": "thunderbird",
-    "e-mail": "thunderbird",
-    "thunderbird": "thunderbird",
-    "thunderbirds": "thunderbird",
-    "thunder birds": "thunderbird",
-    "tundra bird": "thunderbird",
-    "tundrabird": "thunderbird",
-    "browser": "firefox",
-    "mozilla": "firefox",
-    "firefox": "firefox",
-}
 
-def _normalize_app(spoken: str) -> str:
-    """Normalize application names using aliases."""
-    s = (spoken or "").strip().lower()
-    s = " ".join(s.split())
-    return _APP_ALIASES.get(s, s)
 
-def _allowed_apps_set():
-    """Return set of allowed apps, or None for no restrictions."""
-    import os
-    
-    # FULL CONTROL MODE: no app restrictions
-    if _full_control():
-        return None
-    
-    raw = (os.environ.get("ELI_ALLOWED_APPS") or "").strip()
-    if not raw:
-        return None  # None => allow common safe apps
-    return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
-def _open_app_with_timeout(argv, timeout=30):
-    # GUI apps shouldn't be waited on. Spawn + return success unless it exits immediately with error.
-    import subprocess
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True
-        )
-        try:
-            out, err = proc.communicate(timeout=0.7)
-            return {"ok": (proc.returncode == 0), "returncode": proc.returncode, "stdout": out, "stderr": err, "argv": argv}
-        except subprocess.TimeoutExpired:
-            return {"ok": True, "spawned": True, "pid": proc.pid, "argv": argv}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "argv": argv}
 
-def _open_app_builtin(app_name: str) -> dict:
-    app = _normalize_app(app_name)
-    if not app:
-        return {"ok": False, "error": "empty app_name"}
-
-    allowed = _allowed_apps_set()
-    if allowed is not None and app not in allowed:
-        return {"ok": False, "error": f"app not allowed: {app} (set ELI_ALLOWED_APPS)"}
-
-    # Allow per-app override command
-    env_key = "ELI_APP_CMD_" + re.sub(r"[^A-Z0-9]+", "_", app.upper())
-    override = (os.environ.get(env_key) or "").strip()
-
-    if override:
-        argv = shlex.split(override)
-    else:
-        # sensible defaults
-        if app == "thunderbird":
-            argv = ["thunderbird"]
-        elif app == "firefox":
-            argv = ["firefox"]
-        elif app == "spotify":
-            SPOTIFY_CMD = os.environ.get("ELI_SPOTIFY_CMD", "").strip() or "spotify"
-            argv = shlex.split(SPOTIFY_CMD) if SPOTIFY_CMD else ["spotify"]
-        else:
-            # last resort: try running by name
-            argv = [app]
-
-    try:
-        return _open_app_with_timeout(argv)
-    except Exception as e:
-        return {"ok": False, "error": str(e), "app": app, "cmd": argv}
 
 
 # --- BUILTIN DOCUMENT FUNCTIONS ---
@@ -4496,109 +2268,8 @@ def _builtin_create_doc(args: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def _write_note_builtin(args: dict) -> dict:
-    """Create a note file under ELI_DOC_DIR (default: ./eli_docs)."""
-    try:
-        title = (args.get("title") or "note").strip()
-        content = (args.get("content") or "").strip()
-        filename = (args.get("filename") or "").strip()
-        open_after = bool(args.get("open_after", False))
-
-        import os, re, time, subprocess
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent.parent
-        doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        if not filename:
-            safe_title = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", title).strip("_") or "note"
-            filename = f"{safe_title}.md"
-        if not filename.lower().endswith((".md", ".txt")):
-            filename += ".md"
-
-        if not content:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            content = f"# {title}\n\nCreated: {ts}\n\n"
-
-        path = (doc_dir / filename).resolve()
-        doc_dir_resolved = doc_dir.resolve()
-        if path != doc_dir_resolved and doc_dir_resolved not in path.parents:
-            return {"ok": False, "error": "refusing to write outside ELI_DOC_DIR"}
-
-        path.write_text(content, encoding="utf-8")
-
-        if open_after:
-            try:
-                open_file(str(path))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-        return {"ok": True, "path": str(path), "title": title}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 
-def _append_note_builtin(args: dict) -> dict:
-    """Append content to a note under ELI_DOC_DIR."""
-    try:
-        title = (args.get("title") or "").strip()
-        content = (args.get("content") or "").strip()
-        filename = (args.get("filename") or "").strip()
-        open_after = bool(args.get("open_after", False))
-
-        if not title and not filename:
-            return {"ok": False, "error": "append_note: title or filename is required"}
-        if not content:
-            return {"ok": False, "error": "append_note: content is empty"}
-
-        import os, re, time, subprocess
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent.parent
-        doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        note_file = None
-        if filename:
-            note_file = (doc_dir / filename)
-        else:
-            if title.lower().endswith((".md", ".txt")):
-                note_file = (doc_dir / title)
-            else:
-                for ext in (".md", ".txt"):
-                    cand = doc_dir / f"{title}{ext}"
-                    if cand.exists():
-                        note_file = cand
-                        break
-                if note_file is None:
-                    safe_title = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", title).strip("_") or "note"
-                    note_file = doc_dir / f"{safe_title}.md"
-
-        note_file = note_file.resolve()
-        doc_dir_resolved = doc_dir.resolve()
-        if note_file != doc_dir_resolved and doc_dir_resolved not in note_file.parents:
-            return {"ok": False, "error": "refusing to write outside ELI_DOC_DIR"}
-
-        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        blob = f"\n\n---\n\n{ts}\n\n{content.strip()}\n"
-
-        if note_file.exists():
-            prev = note_file.read_text(encoding="utf-8", errors="ignore")
-        else:
-            prev = f"# {title or note_file.stem}\n"
-
-        note_file.write_text(prev.rstrip() + blob, encoding="utf-8")
-
-        if open_after:
-            try:
-                open_file(str(note_file))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-        return {"ok": True, "path": str(note_file), "title": title or note_file.stem}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 
 def _calendar_event_builtin(args: dict) -> dict:
@@ -4711,34 +2382,6 @@ def _calendar_event_builtin(args: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def _recall_memory_builtin(args: dict) -> dict:
-    """Read recent utterances from ./data/memory/utterances.jsonl (if present)."""
-    try:
-        import json
-        from pathlib import Path
-
-        limit = int(args.get("limit", 20))
-        root = Path(__file__).resolve().parent.parent
-        memory_log = root / "data" / "memory" / "utterances.jsonl"
-
-        if not memory_log.exists():
-            return {"ok": True, "entries": [], "message": "No memory log found"}
-
-        entries = []
-        with open(memory_log, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
-        recent = entries[-limit:] if entries else []
-        return {"ok": True, "entries": recent, "count": len(recent), "total": len(entries)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 
 def _type_text_builtin(text: str) -> dict:
@@ -4780,71 +2423,7 @@ def _notify(title: str, msg: str):
 # Artifact saver
 # ----------------------------
 
-def _artifacts_dir() -> "Path":
-    """Return the canonical artifacts root. Honours ELI_ARTIFACTS_DIR (so tests can
-    redirect to a tmp dir and never pollute the real artifacts/) — defaults to
-    artifacts/ under the project root."""
-    from pathlib import Path
-    import os as _o
-    _env = _o.environ.get("ELI_ARTIFACTS_DIR")
-    if _env:
-        _p = Path(_env).expanduser()
-        return _p if _p.is_absolute() else (Path(__file__).resolve().parents[2] / _p)
-    return Path(__file__).resolve().parents[2] / "artifacts"
-
-
-def _save_artifact(content: str, subdir: str, filename: str, fmt: str = "md") -> str:
-    """
-    Save content to artifacts/{subdir}/{filename}.{fmt}.
-    Supported fmt: md, docx, txt, py, sh, csv, html.
-    Returns the absolute path string.
-    """
-    import re as _re
-    from pathlib import Path as _P
-
-    root = _artifacts_dir() / subdir
-    root.mkdir(parents=True, exist_ok=True)
-
-    # Clean filename
-    safe = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(". ")[:80] or "output"
-    out_path = root / f"{safe}.{fmt}"
-    # Avoid collisions
-    if out_path.exists():
-        import time as _t
-        ts = _t.strftime("%Y%m%d_%H%M%S")
-        out_path = root / f"{safe}_{ts}.{fmt}"
-
-    if fmt == "docx":
-        try:
-            from docx import Document
-            from docx.shared import Pt
-            doc = Document()
-            # Style
-            style = doc.styles["Normal"]
-            style.font.name = "Calibri"
-            style.font.size = Pt(11)
-            for block in content.split("\n\n"):
-                block = block.strip()
-                if not block:
-                    continue
-                # Heading detection (markdown ## style)
-                if block.startswith("### "):
-                    p = doc.add_heading(block[4:].strip(), level=3)
-                elif block.startswith("## "):
-                    p = doc.add_heading(block[3:].strip(), level=2)
-                elif block.startswith("# "):
-                    p = doc.add_heading(block[2:].strip(), level=1)
-                else:
-                    p = doc.add_paragraph(block)
-            doc.save(str(out_path))
-        except Exception as _de:
-            # Fallback to txt if docx fails
-            out_path = out_path.with_suffix(".txt")
-            out_path.write_text(content, encoding="utf-8")
-    else:
-        out_path.write_text(content, encoding="utf-8")
-
-    return str(out_path)
+from eli.execution.effectors._base import _artifacts_dir, _save_artifact  # noqa: F401
 
 
 def _eli_self_description_block(limit: int = 2600) -> str:
@@ -4891,6 +2470,9 @@ _GENERATIVE_EVIDENCE_ACTIONS = {
 # ----------------------------
 # Dispatcher
 # ----------------------------
+
+from eli.execution.effectors.registry import get as _registry_get
+import eli.execution.effectors.datetime_calendar  # noqa: F401  (register handlers)
 
 def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     args = args or {}
@@ -4957,6 +2539,11 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             args.setdefault("_evidence", "")
             args.setdefault("_evidence_sources", [])
 
+    # v3 dispatch registry: effectors own their actions; consult before the if-chain.
+    _rh = _registry_get(a)
+    if _rh is not None:
+        return _rh(a, args)
+
     if a == "CHAT":
         msg = args.get("message") or args.get("prompt") or args.get("text") or ""
         model = args.get("model") or None
@@ -5014,35 +2601,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 return {"ok": False, "action": a, "error": str(e2), "content": str(e2), "response": str(e2)}
     
     # --- media control ---
-    if a == "STOP_MEDIA":
-        return stop_media()
-    
-    if a == "PAUSE_MEDIA":
-        return pause_media()
-
-    if a == "NOW_PLAYING":
-        return now_playing()
-
-    if a == "PLAY_MEDIA":
-        query = (args.get("query") or args.get("song") or args.get("artist") or "").strip()
-        target = (args.get("target") or "").strip() or None
-        if query:
-            return play_specific(query, target)
-        return play_media(target)
-    
-    if a == "NEXT_MEDIA":
-        return next_media()
-    
-    if a == "PREVIOUS_MEDIA":
-        return previous_media()
-
-    if a == "SHUFFLE_MEDIA":
-        target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-        return shuffle_media(target=target)
-
-    if a == "REPEAT_MEDIA":
-        target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-        return repeat_media(target=target)
 
     # ---- DISPATCH PATCH: CORE + PROACTIVE ACTIONS ----
     # NOTE: Capabilities can be "registered" without being "implemented".
@@ -5193,92 +2751,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return _execute_impl("OPEN_APP", {"name": mapped})
 
     # ---- OPEN_FILE_SYSTEM VALIDATION GUARD ----
-    if a == "OPEN_FILE_SYSTEM":
-        try:
-            raw_target = str(
-                (args or {}).get("path")
-                or (args or {}).get("target")
-                or (args or {}).get("name")
-                or ""
-            ).strip()
-
-            low_target = raw_target.lower()
-
-            if low_target in {"trash", "/trash"}:
-                probe = _open_app_with_timeout(["xdg-open", "trash:///"])
-                if probe.get("ok") or probe.get("spawned"):
-                    msg = "Opened folder: trash:///"
-                    return {"ok": True, "action": a, "content": msg, "response": msg, "probe": probe}
-                return {"ok": False, "action": a, "error": probe.get("stderr") or probe.get("error") or "trash_open_failed",
-                        "content": "Could not open trash.", "response": "Could not open trash."}
-
-            if low_target in {"home", "/home", "home directory", "home folder",
-                              "home dir", "my home", "my files", "files", "~", "~/",
-                              "file manager", "file explorer", ""}:
-                resolved = str(Path.home())
-            else:
-                cleaned = re.sub(r"\b(folder|directory|path)\b", "", raw_target, flags=re.I).strip()
-                cleaned = cleaned.rstrip("/")
-
-                candidates = []
-
-                if raw_target.startswith("~/"):
-                    candidates.append(Path(raw_target).expanduser())
-
-                if raw_target.startswith("/Desktop/") or raw_target.startswith("/desktop/"):
-                    suffix = raw_target.split("/", 2)[-1] if raw_target.count("/") >= 2 else ""
-                    candidates.append(Path.home() / "Desktop" / suffix)
-
-                if raw_target.startswith("/Documents/") or raw_target.startswith("/documents/"):
-                    suffix = raw_target.split("/", 2)[-1] if raw_target.count("/") >= 2 else ""
-                    candidates.append(Path.home() / "Documents" / suffix)
-
-                if raw_target.startswith("/"):
-                    candidates.append(Path(raw_target))
-
-                if cleaned:
-                    candidates.append(Path.home() / cleaned)
-                    candidates.append(Path.home() / "Desktop" / cleaned)
-                    candidates.append(Path.home() / "Documents" / cleaned)
-
-                resolved = ""
-                seen = set()
-                for cand in candidates:
-                    try:
-                        p = cand.expanduser().resolve()
-                    except Exception:
-                        p = cand.expanduser()
-                    sp = str(p)
-                    if sp in seen:
-                        continue
-                    seen.add(sp)
-                    if p.exists():
-                        resolved = sp
-                        break
-
-                if not resolved:
-                    msg = f"Could not open folder: {raw_target}"
-                    return {"ok": False, "action": a, "error": "path_not_found", "content": msg, "response": msg}
-
-            # Cross-platform folder open: xdg-open (Linux) / open (macOS) /
-            # os.startfile (Windows) via platform_compat — raw xdg-open was
-            # Linux-only and silently failed elsewhere.
-            from eli.utils.platform_compat import open_file as _open_file
-            if _open_file(resolved):
-                msg = f"Opened folder: {resolved}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-
-            return {
-                "ok": False,
-                "action": a,
-                "error": probe.get("stderr") or probe.get("error") or "xdg_open_failed",
-                "content": f"Could not open folder: {resolved}",
-                "response": f"Could not open folder: {resolved}",
-            }
-
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-    # ---- OPEN_APP ----
     if a == "OPEN_APP":
         try:
             name = (args or {}).get("name") or (args or {}).get("app") or ""
@@ -5528,52 +3000,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
     
     # ---- PROACTIVE (start/stop/status) ----
-    if a == "HABIT_STATUS":
-        try:
-            from eli.memory.memory import get_memory as _hm
-            _mem = _hm()
-            rules = _mem.get_habit_rules(enabled_only=False) if hasattr(_mem, 'get_habit_rules') else []
-            detected = _mem.get_detected_habits(min_count=3, limit=8) if hasattr(_mem, 'get_detected_habits') else []
-            usage = _mem.get_requested_action_log(min_count=1, limit=10) if hasattr(_mem, 'get_requested_action_log') else []
-            if not rules and not detected and not usage:
-                msg = "No habits detected yet. Use ELI regularly and habits will emerge from your patterns."
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            lines = []
-            # Behavioural patterns ELI has actually noticed (the `habits` table). This was
-            # previously dark — only the scheduled habit_rules table (empty) was read.
-            if detected:
-                lines.append(f"Behavioural patterns I've picked up on ({len(detected)}):")
-                for d in detected:
-                    _nm = str(d.get("name", "?")).replace("_", " ").lower()
-                    lines.append(f"  • {_nm} — seen {int(d.get('count', 0))}×")
-            # The raw usage log: actions the user has asked ELI to perform, most-used first.
-            # This is the `habits` tally framed as a usage history, distinct from scheduled
-            # rules and from the filtered behavioural-habit view above.
-            if usage:
-                if lines:
-                    lines.append("")
-                lines.append(f"Actions you've asked me to perform ({len(usage)}, most-used first):")
-                for u in usage:
-                    _an = str(u.get("action", "?")).replace("_", " ").lower()
-                    lines.append(f"  • {_an} — {int(u.get('count', 0))}×")
-            if rules:
-                lines.append(f"Scheduled habit rules ({len(rules)}):")
-            for r in rules:
-                if not isinstance(r, dict):
-                    try: r = dict(r)
-                    except: continue
-                name = r.get("name", "?")
-                cmd = r.get("command", "?")
-                hour = r.get("hour", 0)
-                minute = r.get("minute", 0)
-                enabled = r.get("enabled", True)
-                status = "enabled" if enabled else "disabled"
-                lines.append(f"  [{status}] {name} — runs '{cmd}' at {hour:02d}:{minute:02d}")
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg, "rules": rules, "detected": detected, "usage": usage}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     if a == "GET_PROPOSALS":
         # Surface ELI's OWN self-generated agenda: the proposal-only goals that goal
         # autogenesis forms from real signals (recurring errors, frequent behaviours,
@@ -5616,26 +3042,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PROACTIVE_STATUS":
-        try:
-            st = proactive_status()
-            return {"ok": True, "action": a, **st}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PROACTIVE_START":
-        try:
-            st = proactive_start()
-            return {"ok": True, "action": a, **st, "content": "proactive started", "response": "proactive started"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "PROACTIVE_STOP":
-        try:
-            st = proactive_stop()
-            return {"ok": True, "action": a, **st, "content": "proactive stopped", "response": "proactive stopped"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- MESSAGE_TIME_QUERY ----
     # Grounded answer to "what time did I first/last send a message (today)" —
@@ -5823,27 +3231,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         path = str(args.get("path") or "~")
         return open_file_system(path)
     
-    if a == "OPEN_COMMUNICATION_HUB":
-        try:
-            # Prefer local mail clients; fall back to Gmail in browser.
-            candidates = [
-                ["thunderbird"],
-                ["evolution"],
-                ["geary"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened Communication Hub: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            url = "https://mail.google.com"
-            open_browser(url)
-            msg = f"Opened Communication Hub: {url}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
     
     if a == "DATA_FABRICATOR":
         try:
@@ -5897,91 +3284,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "OPEN_AUDIO_SETTINGS":
-        try:
-            # Try common Linux audio mixers/settings panels.
-            candidates = [
-                ["pavucontrol"],
-                ["gnome-control-center", "sound"],
-                ["gnome-control-center"],
-                ["systemsettings5", "kcm_pulseaudio"],
-                ["systemsettings5"],
-                ["kcmshell5", "kcm_pulseaudio"],
-                ["mate-volume-control"],
-                ["xfce4-mixer"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened audio settings: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            raise FileNotFoundError("No audio settings app found (pavucontrol / gnome-control-center / systemsettings5 / etc).")
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "OPEN_URL":
-        url = None
-        query = None
-        try:
-            if isinstance(args, dict):
-                url = (
-                    args.get("url")
-                    or args.get("target")
-                    or args.get("value")
-                    or args.get("path")
-                    or args.get("text")
-                )
-                query = args.get("query")
-        except Exception:
-            url = None
-            query = None
-        return _eli_open_url_action(url, query=query)
-
-    if a == "OPEN_BROWSER":
-        import re as _re2
-        _site_map = {
-            "wikipedia": "https://www.wikipedia.org",
-            "google": "https://www.google.com",
-            "youtube": "https://www.youtube.com",
-            "github": "https://www.github.com",
-            "reddit": "https://www.reddit.com",
-            "netflix": "https://www.netflix.com",
-            "gmail": "https://mail.google.com",
-            "stackoverflow": "https://stackoverflow.com",
-            "twitter": "https://www.twitter.com",
-            "x.com": "https://www.x.com",
-        }
-        raw_q = (args.get("query") or args.get("url") or args.get("link") or "").lower()
-
-        # YouTube with a search query → use YouTubeController for proper search URL
-        _yt_query = (args.get("query") or "").strip()
-        if "youtube" in raw_q and _yt_query and "youtube.com" not in raw_q:
-            try:
-                from eli.tools.media.youtube import YouTubeController
-                _cfg_obj = type("_Cfg", (), {"browser": "chromium", "browser_user_dir": str(_browser_user_dir())})()
-                _yt = YouTubeController(_cfg_obj)
-                result = _yt.open(_yt_query)
-                if result.ok:
-                    msg = f"Opened YouTube search: {_yt_query}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)  # fall through to generic browser open
-
-        found_urls = [v for k, v in _site_map.items() if k in raw_q]
-        if len(found_urls) > 1:
-            return open_browser(found_urls[0], urls=found_urls)
-        url = str(args.get("url") or args.get("link") or "")
-        if not url or not url.startswith("http"):
-            q = (args.get("query") or "").strip()
-            if q:
-                import urllib.parse as _up
-                url = "https://duckduckgo.com/?q=" + _up.quote_plus(q)
-            else:
-                url = "https://duckduckgo.com"
-        return open_browser(url)
-
     if a == "SKIP_YOUTUBE_AD":
         try:
             from eli.tools.media.youtube import YouTubeController
@@ -5993,341 +3295,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "OPEN_NETWORK_BROWSER":
-        try:
-            url = str((args or {}).get("url") or "https://duckduckgo.com").strip()
-            open_browser(url)
-            msg = f"Opened Network Browser: {url}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "OPEN_MEDIA_HUB":
-        try:
-            # Try Spotify client first; otherwise open YouTube Music; otherwise open local Music folder.
-            opened = False
-            # Optional: also open audio settings (requested by voice phrase "initiate audio interface")
-            if (args or {}).get("open_settings"):
-                try:
-                    _ = _execute_impl(action="OPEN_AUDIO_SETTINGS", args={})
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-
-            candidates = [
-                ["spotify"],
-                ["flatpak", "run", "com.spotify.Client"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    opened = True
-                    msg = f"Opened media: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-
-            # Browser fallbacks
-            try:
-                url = "https://music.youtube.com"
-                open_browser(url)
-                msg = f"Opened media: {url}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-            # Local folder fallback
-            try:
-                music_dir = os.path.expanduser("~/Music")
-                open_file_system(music_dir)
-                msg = f"Opened media folder: {music_dir}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception as e:
-                raise e
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "CREATE_DOCUMENT":
-        topic = (args.get("topic") or args.get("text") or args.get("description") or args.get("prompt") or "").strip()
-        if not topic:
-            msg = "Missing topic for document generation"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-
-        # Consume the evidence gathered by the central evidence-routing hook
-        # (evidence_planner). If this handler was called directly without it (a
-        # non-engine caller / test), gather on the fly as a fallback.
-        _doc_evidence = str(args.get("_evidence") or "")
-        _doc_sources = list(args.get("_evidence_sources") or [])
-        if args.get("_evidence") is None:
-            try:
-                from eli.runtime.evidence_planner import plan_and_gather as _pag
-                _doc_evidence, _doc_sources = _pag(
-                    "CREATE_DOCUMENT",
-                    str(args.get("_raw_user_text") or args.get("raw") or topic),
-                    session_id=str(args.get("session_id") or ""),
-                    user_id=str(args.get("user_id") or ""))
-            except Exception:
-                _doc_evidence, _doc_sources = "", []
-
-        fmt = (args.get("format") or "md").lower().strip()
-        import os as _os
-        if _os.environ.get("ELI_TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
-            import re as _re
-            from pathlib import Path as _DPath
-
-            safe_name = _re.sub(r"[^a-z0-9]+", "_", topic.lower())[:50].strip("_")
-            ext = ".md" if fmt == "md" else f".{fmt}"
-            fname = f"{safe_name}{ext}" if safe_name else f"document{ext}"
-
-            doc_dir = _artifacts_dir() / "documents"
-            doc_dir.mkdir(parents=True, exist_ok=True)
-            doc_path = doc_dir / fname
-
-            content = (
-                f"# {topic}\n\n"
-                "## Purpose\n\n"
-                "This deterministic test-mode document proves that document generation writes a real artifact "
-                "to the documents directory without using the old placeholder body.\n\n"
-                "## Generation Contract\n\n"
-                "- Output must be substantive enough for downstream UI wiring tests.\n"
-                "- Output must not be a blank skeleton, a path echo, or a promise to write later.\n"
-                "- Output must stay in `artifacts/documents`, never `artifacts/scripts`.\n\n"
-                "## Verification Notes\n\n"
-                "The runtime generation path applies the same destination contract while using the local "
-                "model to write the full document body. Test mode keeps the content deterministic so "
-                "regression tests can detect stub leakage without loading a model.\n"
-            )
-            if fmt != "md":
-                content = _re.sub(r"^#+\s*", "", content, flags=_re.M)
-            doc_path.write_text(content, encoding="utf-8")
-
-            return {
-                "ok": True,
-                "action": a,
-                "content": content,
-                "response": json.dumps(
-                    {
-                        "event": "artifact_generated",
-                        "kind": "document",
-                        "path": str(doc_path),
-                        "chars": len(content),
-                    },
-                    ensure_ascii=False,
-                    default=str,
-                ),
-                "doc_path": str(doc_path),
-                "filename": fname,
-                "open_in_ide": False,
-            }
-        
-        # Determine document type and tailor the generation settings.
-        _topic_low = topic.lower()
-        _requested_doc_type = str(
-            args.get("doc_type")
-            or args.get("document_type")
-            or args.get("report_type")
-            or ""
-        ).strip()
-        _doc_type_low = (_requested_doc_type or _topic_low).lower()
-        _is_thesis = any(w in _doc_type_low for w in ["phd", "dissertation", "master", "thesis"])
-        _is_research = any(w in _doc_type_low for w in ["research", "peer-review", "peer review", "literature"])
-        _is_report = any(w in _doc_type_low for w in ["report", "analysis", "review", "assessment", "evaluation"])
-        _is_guide = any(w in _doc_type_low for w in ["guide", "tutorial", "how to", "howto", "handbook", "manual"])
-        _is_essay = any(w in _doc_type_low for w in ["essay", "article", "blog", "post", "opinion", "argument"])
-        _is_plan = any(w in _doc_type_low for w in ["plan", "proposal", "strategy", "roadmap", "specification"])
-        _is_summary = any(w in _doc_type_low for w in ["summary", "summarize", "summarise", "overview", "brief"])
-        
-        if _requested_doc_type:
-            doc_type = _requested_doc_type
-        elif _is_summary:
-            doc_type = "summary"
-        elif _is_thesis:
-            doc_type = "thesis/dissertation"
-        elif _is_research:
-            doc_type = "research article"
-        elif _is_report:
-            doc_type = "report"
-        elif _is_guide:
-            doc_type = "guide"
-        elif _is_essay:
-            doc_type = "essay/article"
-        elif _is_plan:
-            doc_type = "plan"
-        else:
-            doc_type = "document"
-
-        if _is_summary:
-            style_instruction = "Use a compact abstract, key findings, caveats, and concise implications."
-            target_tokens = 1200
-        elif _is_thesis:
-            style_instruction = "Use academic thesis structure: abstract, research question, literature context, method, analysis, limitations, and future work."
-            target_tokens = 5000
-        elif _is_research:
-            style_instruction = "Use scholarly article structure: abstract, introduction, background, method or argument, findings, limitations, and references-needed notes."
-            target_tokens = 4200
-        elif _is_report:
-            style_instruction = "Use report structure: executive summary, scope, evidence, analysis, risks, recommendations, and conclusion."
-            target_tokens = 3600
-        elif _is_guide:
-            style_instruction = "Use guide structure: prerequisites, steps, examples, validation checks, and troubleshooting."
-            target_tokens = 2500
-        elif _is_essay:
-            style_instruction = "Use article structure: thesis, developed argument, evidence, counterpoints, and conclusion."
-            target_tokens = 2500
-        elif _is_plan:
-            style_instruction = "Use plan structure: objectives, milestones, resources, risks, dependencies, and acceptance checks."
-            target_tokens = 2500
-        else:
-            style_instruction = "Use a complete document structure with clear sections, specific claims, caveats, and a defensible conclusion."
-            target_tokens = 2500
-        try:
-            from eli.runtime.runtime_policy import budget as _eli_budget
-            target_tokens = _eli_budget("document_tokens", target_tokens, floor=target_tokens, ceiling=7000)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        
-        system_prompt = (
-            "You are ELI's local document generation engine. Produce a finished artifact, not a scaffold. "
-            f"Document type: {doc_type}. {style_instruction} "
-            "Use markdown with meaningful headings, complete paragraphs, and source discipline. "
-            "Do not output blank sections, TODOs, placeholders, invented citations, fake file paths, "
-            "or promises to expand later. If evidence is missing for a factual claim, mark it [source needed] "
-            "or state the assumption explicitly. Every section must carry real content, concrete reasoning, "
-            "and a defensible conclusion. "
-            "When EVIDENCE is provided below, tie every section to specific items in it — name the real "
-            "components, findings, files, or results it contains — and do NOT substitute generic domain "
-            "or business-plan filler for what the evidence actually says."
-        )
-        
-        user_prompt = (
-            f"Write a complete {doc_type} about: {topic}\n\n"
-            + (("EVIDENCE — gathered by ELI's own agents for THIS task"
-                + (f" (sources: {', '.join(_doc_sources)})" if _doc_sources else "")
-                + ". Ground every claim and proposal in the specifics below; refer to "
-                "them directly (real subsystems, real findings, real results). Do NOT "
-                "pad with generic advice. Where the evidence is thin for a point, say so "
-                "honestly rather than inventing:\n\n"
-                f"{_doc_evidence}\n\n")
-               if _doc_evidence else
-               ("No external evidence could be gathered for this topic (e.g. the network "
-                "is off, or nothing relevant is on file). Rely only on well-established "
-                "knowledge, state assumptions explicitly, and do not fabricate specifics, "
-                "citations, or file paths.\n\n"))
-            + "Acceptance criteria:\n"
-            "- The result is a usable document, not a template.\n"
-            "- The opening states the purpose and scope.\n"
-            "- The body develops the topic with specific claims, caveats, and implications.\n"
-            "- The ending gives a concrete conclusion or next action.\n"
-            "- No placeholder headings, no filler, no fake references."
-        )
-        
-        try:
-            from eli.cognition import gguf_inference as _gguf
-            _model = _gguf.load_model()
-            if _model is not None:
-                content = ""
-                # Multi-stage grounded pipeline (plan/outline → grounded sections →
-                # review→revise → polish), grounded in the evidence the central hook
-                # gathered, with a deepen-retry that escalates agent tiers when the
-                # evidence is thin. Falls back to a single pass on any miss / kill switch.
-                try:
-                    from eli.runtime import report_pipeline as _rp
-                    if _rp.enabled():
-                        def _doc_ask(prompt, system=None, max_tokens=1500, temperature=0.4):
-                            return _gguf.chat_completion(prompt, system=system,
-                                max_tokens=max_tokens, temperature=temperature, top_p=0.85)
-                        def _doc_deepen():
-                            from eli.runtime.evidence_planner import plan_and_gather as _pag
-                            return _pag(a, str(args.get("_raw_user_text") or topic),
-                                        "tree_of_thoughts",
-                                        session_id=str(args.get("session_id") or ""),
-                                        user_id=str(args.get("user_id") or ""))
-                        _pi = _rp.generate_document(
-                            topic, ask=_doc_ask, evidence=_doc_evidence,
-                            sources=_doc_sources, doc_type=doc_type,
-                            target_words=max(700, int(target_tokens * 0.6)),
-                            deepen_cb=_doc_deepen)
-                        if _pi.get("ok") and _pi.get("text"):
-                            content = _pi["text"]
-                            log.debug(f"[CREATE_DOCUMENT] multi-stage pipeline produced "
-                                      f"{len(content)} chars across {len(_pi.get('sections') or [])} sections")
-                except Exception as _rp_err:
-                    log.debug(f"[CREATE_DOCUMENT] pipeline failed, single-pass fallback: {_rp_err}")
-                if not content:
-                    content = _gguf.chat_completion(
-                        user_prompt,
-                        system=system_prompt,
-                        max_tokens=target_tokens,
-                        temperature=0.4,
-                        top_p=0.85,
-                    )
-                _min_doc_chars = int(_os.environ.get("ELI_DOCUMENT_MIN_CHARS", "800") or "800")
-                if content:
-                    import re as _re
-                    content = _re.sub(r"^```[a-z]*\n?", "", content.strip(), flags=_re.MULTILINE)
-                    content = _re.sub(r"\n?```$", "", content.strip(), flags=_re.MULTILINE)
-                    content = content.strip()
-                    if len(content) < _min_doc_chars:
-                        log.debug(
-                            f"[CREATE_DOCUMENT] rejected short document: {len(content)} chars < {_min_doc_chars}",
-                        )
-                    else:
-                    
-                        # Save to file
-                        safe_name = _re.sub(r"[^a-z0-9]+", "_", topic.lower())[:50].strip("_")
-                        ext = ".md" if fmt == "md" else f".{fmt}"
-                        fname = f"{safe_name}{ext}" if safe_name else f"document{ext}"
-                        
-                        # Use the canonical artifacts root (honours ELI_ARTIFACTS_DIR;
-                        # monkeypatchable in tests). NB the env var alone is unreliable —
-                        # runtime_settings strips out-of-project ELI_ARTIFACTS_DIR on
-                        # load_settings(), so tests must patch _artifacts_dir, not setenv.
-                        doc_dir = _artifacts_dir() / "documents"
-                        doc_dir.mkdir(parents=True, exist_ok=True)
-                        doc_path = doc_dir / fname
-                        doc_path.write_text(content, encoding="utf-8")
-                        
-                        return {
-                            "ok": True, "action": a, "content": content,
-                            "response": json.dumps(
-                                {
-                                    "event": "artifact_generated",
-                                    "kind": "document",
-                                    "path": str(doc_path),
-                                    "chars": len(content),
-                                },
-                                ensure_ascii=False,
-                                default=str,
-                            ),
-                            "doc_path": str(doc_path), "filename": fname,
-                            "open_in_ide": True,
-                        }
-        except Exception as _e:
-            log.debug(f"[CREATE_DOCUMENT] GGUF error: {_e}")
-        
-        # Fallback
-        msg = "Document generation failed — GGUF model unavailable or produced a document below the quality threshold."
-        return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-
-
-    if a == "PERSONA_LOCK_SET":
-        model = args.get("model") or None
-        modelfile = args.get("modelfile_path") or args.get("modelfile") or None
-        return persona_lock_set(model=model, modelfile_path=modelfile)
-
-    if a == "PERSONA_LOCK_STATUS":
-        return persona_lock_status()
-
-    if a == "PERSONA_LOCK_CLEAR":
-        return persona_lock_clear()
-
-    if a == "SELF_TEST":
-        return self_test()
-
-    # ---- RUN_TESTS — run the pytest suite and return the results document ----
-    # ELI can run this and SUMMARISE it in chat. Defaults to a fast, high-signal
-    # subset (structural claims); pass args["target"] for more, or schedule the
-    # full suite + engine eval overnight (SCHEDULE_TASK kind=eval). The report is
-    # always at artifacts/test_report.md (auto-written by the pytest hook).
     if a == "RUN_TESTS":
         try:
             import subprocess as _ts_sp, sys as _ts_sys
@@ -6349,46 +3317,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # Phase 4: per-function test generation (only passing candidates kept). Heavy
     # (one model call per target); keep the chat limit small — schedule larger runs
     # ("generate tests overnight" → SCHEDULE_TASK kind=testgen).
-    if a == "GENERATE_TESTS":
-        try:
-            from eli.runtime.test_generator import run_testgen
-            limit = int(args.get("limit") or 3)
-            res = run_testgen(limit=max(1, min(limit, 10)))
-            if not res.get("ok"):
-                msg = f"Test generation unavailable: {res.get('reason')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            files = res.get("accepted_files") or []
-            msg = (f"Generated and sandbox-verified {res.get('accepted', 0)} behavioural "
-                   f"test(s) (rejected {res.get('rejected', 0)} of {res.get('targets', 0)} "
-                   f"targets — those failed verification). "
-                   + ("Accepted: " + ", ".join(files) if files else "Nothing accepted this run.")
-                   + " Review them in tests/generated/ (manifest: _manifest.json).")
-            return {"ok": True, "action": a, "content": msg, "response": msg, "result": res}
-        except Exception as e:
-            msg = f"GENERATE_TESTS failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- LORA_STATUS — read-only LoRA training readiness (preflight) ----
-    if a == "LORA_STATUS":
-        try:
-            from eli.learning.training_preflight import preflight_all
-            pf = preflight_all()
-            lines = ["LoRA training readiness:"]
-            for rep in pf.get("reports", []):
-                probs = rep.get("problems") or []
-                lines.append(f"- {rep.get('target')}: "
-                             f"{'READY' if rep.get('can_train') else 'NOT READY'}"
-                             + (f" — {'; '.join(probs)}" if probs else ""))
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "lora_preflight", "result": pf}
-        except Exception as e:
-            msg = f"LORA_STATUS failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- LORA_TRAIN — run the LoRA pipeline DAG (DRY-RUN by default) ----
-    # From chat this is always a dry-run readiness pass (preflight→build→eval); real
-    # training (execute=True) only via the scheduled `lora` task / explicit GUI.
     if a == "LORA_TRAIN":
         try:
             from eli.learning.lora_pipeline import run_pipeline
@@ -6411,102 +3339,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # mixes it with noise/music at random SNRs (robustness over music), and trains a
     # small local classifier head. 100% local, no account, no third-party, no
     # external pre-trained model. Falls back to transcription until a model exists.
-    if a == "WAKE_TRAIN":
-        try:
-            from eli.perception import wakeword as _ww
-            res = _ww.train_model()
-            if not res.get("ok"):
-                msg = f"Wake-word training could not run: {res.get('error')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            msg = (f"Wake-word model trained locally: {res.get('positives')} positive + "
-                   f"{res.get('negatives')} negative samples, decision threshold "
-                   f"{float(res.get('threshold', 0)):.2f}. ELI now spots the wake word "
-                   f"acoustically (robust over background music). For best real-world "
-                   f"accuracy, drop a few real music clips into models/wakeword/noise/ "
-                   f"and run this again.")
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "wakeword_train", "result": res}
-        except Exception as e:
-            msg = f"WAKE_TRAIN failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- WAKE_ENROLL — record the user's own voice + retrain (personalisation) ----
-    # Captures a few real-mic samples of the user saying the wake word through the
-    # running mic loop (no second device), then retrains so the model locks onto how
-    # the user actually says it — the biggest real-mic accuracy win.
-    if a == "WAKE_ENROLL":
-        try:
-            from eli.perception.audio_stt import begin_wake_enrollment
-            n = int((args or {}).get("samples") or (args or {}).get("count") or 5)
-            res = begin_wake_enrollment(n)
-            if not res.get("ok"):
-                msg = f"Wake-word enrollment can't start: {res.get('error')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            msg = res.get("message") or "Listening for your wake-word samples."
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "wakeword_enroll", "result": res}
-        except Exception as e:
-            msg = f"WAKE_ENROLL failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- WAKE_SET — let the user choose their OWN wake word, then train it ----
-    # "change the wake word to athena" / "set my wake word to atlas". Persists the
-    # phrase (used by both the acoustic model and the transcription matcher) and
-    # trains the detector on it in the background (Piper can synthesise any phrase).
-    if a == "WAKE_SET":
-        try:
-            import re as _re_ws
-            phrase = str((args or {}).get("phrase") or (args or {}).get("word")
-                         or (args or {}).get("wake_word") or "").strip().strip('."\'')
-            if not phrase:
-                _raw = str((args or {}).get("_raw_user_text") or (args or {}).get("raw")
-                           or (args or {}).get("message") or "")
-                m = _re_ws.search(r"(?:wake[\s-]*word|wakeword)\s+(?:to|is|as|=)\s+(.+)$", _raw, _re_ws.I)
-                if m:
-                    phrase = m.group(1).strip().strip('."\'')
-            if not phrase:
-                msg = ("What would you like your wake word to be? Say: "
-                       "\"change the wake word to <your phrase>\".")
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            from eli.perception import wakeword as _ww
-            phrases = _ww.set_wake_phrases([phrase])
-            try:
-                from eli.perception import audio_stt as _ast
-                _ast._merge_custom_wake_words()
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            import threading as _th_ws
-            _th_ws.Thread(target=lambda: _ww.train_model(phrases=phrases),
-                          daemon=True, name="eli-wake-set-train").start()
-            msg = (f"Wake word set to \"{phrase}\". I'm training the detector on it now "
-                   f"(about a minute) — it'll work the moment that finishes. Say "
-                   f"\"enroll my wake word\" afterwards to tune it to your voice over music.")
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "wakeword_set", "result": {"phrases": phrases}}
-        except Exception as e:
-            msg = f"WAKE_SET failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- TRAIN_VOICE — learn the user's voice baseline (prosody/tone foundation) ----
-    # SEPARATE from the wake word: this captures natural speech to build a voice
-    # profile (pitch/energy/rate) that later powers tone detection (happy/angry/
-    # excited) and question-vs-statement. See eli/perception/voice_profile.py.
-    if a == "TRAIN_VOICE":
-        try:
-            from eli.perception.audio_stt import begin_voice_training
-            n = int((args or {}).get("samples") or (args or {}).get("count") or 8)
-            res = begin_voice_training(n)
-            if not res.get("ok"):
-                msg = f"Voice training can't start: {res.get('error')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            msg = res.get("message") or "Listening for your voice samples."
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "voice_training", "result": res}
-        except Exception as e:
-            msg = f"TRAIN_VOICE failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- ORCHESTRATION_STATUS — explain the agent DAG + last orchestrated run ----
     if a == "ORCHESTRATION_STATUS":
         try:
             from eli.cognition.agent_bus import orchestration_snapshot
@@ -6611,19 +3443,10 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     if a == "SET_USER_NAME":
         return set_user_name(str(args.get("name", "")))
 
-    if a == "GET_STATUS":
-        return get_status()
-
     if a == "CLEAR_CHAT_HISTORY":
         return clear_chat_history()
 
     # ---- DATE ----
-    if a == "DATE":
-        from datetime import datetime as _dt
-        d = _dt.now().strftime("%A, %Y-%m-%d")
-        return {"ok": True, "action": a, "content": d, "response": d}
-    if a == "GET_DATE":
-        return _execute_impl("DATE", args)
 
     # ---- MEDIA_CONTROL (generic router output) ----
     if a == "MEDIA_CONTROL":
@@ -6674,57 +3497,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- KEYBOARD ----
-    if a == "KEYBOARD":
-        try:
-            from eli.perception.os_controller import press_key, type_text
-            if args.get("type"):
-                return type_text(str(args["type"]))
-            elif args.get("key"):
-                return press_key(str(args["key"]))
-            return {"ok": False, "action": a, "error": "No key or text specified", "content": "No key or text specified", "response": "No key or text specified"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     # ---- OCR_IMAGE ----
-    if a == "OCR_IMAGE":
-        try:
-            path = str(args.get("path") or "").strip()
-            if not path:
-                return {"ok": False, "action": a, "error": "No image path provided",
-                        "content": "No image path provided", "response": "No image path provided"}
-            p = Path(path).expanduser().resolve()
-            if not p.exists():
-                return {"ok": False, "action": a, "error": f"File not found: {p}",
-                        "content": f"File not found: {p}", "response": f"File not found: {p}"}
-            text = None
-            # 1. tesseract CLI (no Python binding needed, no model download)
-            try:
-                import subprocess as _sp
-                _tess = shutil.which("tesseract")
-                if _tess:
-                    _r = _sp.run([_tess, str(p), "stdout", "--psm", "11", "-l", "eng"],
-                                 capture_output=True, text=True, timeout=30)
-                    if _r.returncode == 0:
-                        text = _r.stdout.strip()
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            # 2. pytesseract binding (calls tesseract binary)
-            if not text:
-                try:
-                    import pytesseract
-                    from PIL import Image
-                    text = pytesseract.image_to_string(Image.open(str(p)), config="--psm 11").strip()
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-            if text is None:
-                return {"ok": False, "action": a,
-                        "error": "tesseract not found. Install: sudo apt install tesseract-ocr",
-                        "content": "OCR engine not found.", "response": "OCR engine not found."}
-            msg = f"OCR result from {p.name}:\n\n{text}" if text else f"No text detected in {p.name}."
-            return {"ok": True, "action": a, "content": msg, "response": msg, "text": text, "path": str(p)}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     # ---- AMBIENT_VISION (toggle periodic screen glances) ----
     if a == "AMBIENT_VISION":
         _av_enabled = args.get("enabled")
@@ -6913,101 +3686,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- DICTATE ----
-    if a == "DICTATE":
-        try:
-            action = str(args.get("action") or "start").lower()
-            if action == "start":
-                # Signal the GUI to enable dictation mode; GUI handles the loop
-                msg = "Dictation mode activated. Speak clearly — I'm listening. Say 'stop dictation' to end."
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "dictate_start": True}
-            elif action == "stop":
-                msg = "Dictation mode stopped."
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "dictate_stop": True}
-            return {"ok": False, "action": a, "error": f"Unknown dictate action: {action}",
-                    "content": f"Unsupported executor action: {action}", "response": f"Unsupported executor action: {action}"}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- MOUSE_CONTROL ----
-    if a == "MOUSE_CONTROL":
-        try:
-            import subprocess as _sp
-            mouse_action = str(args.get("action") or "move").lower()
-            x = args.get("x")
-            y = args.get("y")
-            button = str(args.get("button") or "left").lower()
-            double = bool(args.get("double", False))
-            direction = str(args.get("direction") or "down").lower()
-            amount = int(args.get("amount", 3))
-            # Try pyautogui
-            try:
-                import pyautogui
-                if mouse_action == "move" and x is not None and y is not None:
-                    pyautogui.moveTo(int(x), int(y), duration=0.2)
-                    msg = f"Mouse moved to ({x}, {y})"
-                elif mouse_action == "click" and x is not None and y is not None:
-                    pyautogui.moveTo(int(x), int(y), duration=0.1)
-                    if double:
-                        pyautogui.doubleClick(button=button)
-                    else:
-                        pyautogui.click(button=button)
-                    msg = f"{'Double-c' if double else 'C'}licked {button} at ({x}, {y})"
-                elif mouse_action == "scroll":
-                    delta = amount if direction == "up" else -amount
-                    pyautogui.scroll(delta)
-                    msg = f"Scrolled {direction} by {amount}"
-                else:
-                    msg = f"Mouse action '{mouse_action}' performed"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except ImportError:
-                log.debug("suppressed exception", exc_info=True)
-            # Fallback: ydotool (Wayland) or xdotool (X11)
-            tool = "ydotool" if shutil.which("ydotool") else ("xdotool" if shutil.which("xdotool") else None)
-            if tool is None:
-                return {"ok": False, "action": a,
-                        "error": "No mouse control tool found. Install: pip install pyautogui  OR  apt install ydotool",
-                        "content": "No mouse tool available.", "response": "No mouse tool available."}
-            if mouse_action == "move" and x is not None:
-                cmd = [tool, "mousemove", "--", str(x), str(y)] if tool == "ydotool" else [tool, "mousemove", str(x), str(y)]
-            elif mouse_action == "click":
-                btn_flag = "0x40002" if button == "right" else "0x40001"
-                cmd = [tool, "click", btn_flag] if tool == "ydotool" else [tool, "click", "--clearmodifiers", "--button", "3" if button == "right" else "1"]
-            elif mouse_action == "scroll":
-                if tool == "xdotool":
-                    btn = "4" if direction == "up" else "5"
-                    cmd = [tool, "click", "--clearmodifiers", "--repeat", str(amount), "--repeat-delay", "50", btn]
-                else:
-                    cmd = [tool, "scroll", "--", "0", str(-amount if direction == "down" else amount)]
-            else:
-                cmd = []
-            if cmd:
-                _sp.run(cmd, check=True)
-            msg = f"Mouse {mouse_action} executed"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- SET_CLIPBOARD / GET_CLIPBOARD ----
-    if a == "SET_CLIPBOARD":
-        try:
-            from eli.perception.os_controller import set_clipboard
-            txt = str(args.get("text") or "").strip()
-            return set_clipboard(txt)
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "GET_CLIPBOARD":
-        try:
-            from eli.perception.os_controller import get_clipboard
-            txt = get_clipboard() or ""
-            msg = f"Clipboard: {txt[:200]}" if txt else "Clipboard is empty"
-            return {"ok": True, "action": a, "content": msg, "response": msg, "text": txt}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- LIST_DIR ----
     if a == "LIST_DIR":
         path = str((args or {}).get("path") or "~")
         try:
@@ -7063,245 +3741,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return _execute_impl("RUN_CMD", {"cmd": cmd, "shell": True})
 
     # ---- PLUGIN_STATUS ----
-    if a == "PLUGIN_STATUS":
-        try:
-            from eli.plugins.manager import get_manager
-            mgr = get_manager()
-            installed = mgr.list_installed() or []
-            available = mgr.list_available() or []
-            lines = [f"Plugin system status:"]
-            lines.append(f"  Installed: {len(installed)}  |  Available in registry: {len(available)}")
-            if installed:
-                lines.append("")
-                lines.append("Installed plugins:")
-                for p in installed:
-                    status = "enabled" if p.get("enabled") else "disabled"
-                    lines.append(f"  {p['id']:20s} [{status}]  {p.get('description','')[:60]}")
-            else:
-                lines.append("  No plugins installed.")
-            # Check each installed plugin imports cleanly
-            lines.append("")
-            lines.append("Plugin health:")
-            for p in installed:
-                try:
-                    mod_path = f"plugins.{p['id']}.plugin"
-                    __import__(mod_path)
-                    lines.append(f"  {p['id']:20s} OK")
-                except Exception as pe:
-                    lines.append(f"  {p['id']:20s} ERROR: {pe}")
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "installed": len(installed), "available": len(available)}
-        except Exception as e:
-            msg = f"Plugin status error: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- PLUGIN_INSTALL ----
-    if a == "PLUGIN_INSTALL":
-        try:
-            from eli.plugins.manager import get_manager
-            mgr = get_manager()
-            query = (args.get("query") or args.get("plugin") or args.get("name") or "").strip()
-            if not query:
-                return {"ok": False, "action": a, "error": "No plugin specified",
-                        "content": json.dumps({"missing_arg": "plugin", "action": a}, ensure_ascii=False),
-                        "response": json.dumps({"missing_arg": "plugin", "action": a}, ensure_ascii=False)}
-
-            # Try exact match first
-            entry = mgr.get_registry_entry(query.lower().replace(" ", "_"))
-            if entry:
-                result = mgr.install(entry["id"])
-                return {"ok": result.get("ok", False), "action": a,
-                        "content": result.get("content", str(result)),
-                        "response": result.get("response", str(result))}
-
-            # Semantic search
-            matches = mgr.search(query)
-            if not matches:
-                msg = f"No plugins found matching '{query}'. Use 'list plugins' to see what's available."
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-
-            if len(matches) == 1:
-                result = mgr.install(matches[0]["id"])
-                return {"ok": result.get("ok", False), "action": a,
-                        "content": result.get("content", str(result)),
-                        "response": result.get("response", str(result))}
-
-            # Multiple matches — show options
-            lines = [f"Found {len(matches)} plugins matching '{query}':"]
-            for m in matches[:5]:
-                lines.append(f"  • {m['id']} — {m.get('description', '')}")
-            lines.append("\nSpecify the exact plugin id to install, e.g. 'install plugin pomodoro'.")
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- PLUGIN_UNINSTALL ----
-    if a == "PLUGIN_UNINSTALL":
-        try:
-            from eli.plugins.manager import get_manager
-            pid = (args.get("plugin") or args.get("name") or args.get("id") or "").strip().lower().replace(" ", "_")
-            if not pid:
-                msg = json.dumps({"missing_arg": "plugin", "action": a}, ensure_ascii=False)
-                return {"ok": False, "action": a, "error": "No plugin specified",
-                        "content": msg,
-                        "response": msg}
-            result = get_manager().uninstall(pid)
-            return {"ok": result.get("ok", False), "action": a,
-                    "content": result.get("content", str(result)),
-                    "response": result.get("response", str(result))}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- PLUGIN_LIST ----
-    if a == "PLUGIN_LIST":
-        try:
-            from eli.plugins.manager import get_manager
-            mgr = get_manager()
-            scope = (args.get("scope") or "all").lower()
-
-            if scope == "installed":
-                plugins = mgr.list_installed()
-                if not plugins:
-                    msg = "No plugins installed."
-                else:
-                    lines = [f"Installed plugins ({len(plugins)}):"]
-                    for p in plugins:
-                        status = "✓ enabled" if p["enabled"] else "⏸ disabled"
-                        lines.append(f"  • {p['id']} ({status}) — {p.get('description', '')}")
-                    msg = "\n".join(lines)
-            else:
-                plugins = mgr.list_available()
-                installed_ids = {p["id"] for p in mgr.list_installed()}
-                lines = [f"Available plugins ({len(plugins)}):"]
-                for p in plugins:
-                    tag = " [installed]" if p["id"] in installed_ids else ""
-                    lines.append(f"  • {p['id']} — {p.get('description', '')}{tag}")
-                msg = "\n".join(lines)
-
-            return {"ok": True, "action": a, "count": len(plugins),
-                    "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- PLUGIN_SEARCH ----
-    if a == "PLUGIN_SEARCH":
-        try:
-            from eli.plugins.manager import get_manager
-            query = (args.get("query") or args.get("text") or "").strip()
-            if not query:
-                return {"ok": False, "action": a, "error": "No search query",
-                        "content": "What kind of plugin are you looking for?",
-                        "response": "What kind of plugin are you looking for?"}
-            matches = get_manager().search(query)
-            if not matches:
-                msg = f"No plugins found matching '{query}'."
-            else:
-                lines = [f"Plugins matching '{query}' ({len(matches)}):"]
-                for m in matches[:8]:
-                    actions = ", ".join(m.get("actions", [])[:3])
-                    lines.append(f"  • {m['id']} — {m.get('description', '')} [{actions}]")
-                msg = "\n".join(lines)
-            return {"ok": True, "action": a, "count": len(matches),
-                    "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- PLUGIN_ENABLE ----
-    if a == "PLUGIN_ENABLE":
-        try:
-            from eli.plugins.manager import get_manager
-            pid = (args.get("plugin") or args.get("name") or args.get("id") or "").strip().lower().replace(" ", "_")
-            if not pid:
-                msg = json.dumps({"missing_arg": "plugin", "action": a}, ensure_ascii=False)
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            result = get_manager().enable(pid)
-            return {"ok": result.get("ok", False), "action": a,
-                    "content": result.get("content", str(result)),
-                    "response": result.get("response", str(result))}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- PLUGIN_DISABLE ----
-    if a == "PLUGIN_DISABLE":
-        try:
-            from eli.plugins.manager import get_manager
-            pid = (args.get("plugin") or args.get("name") or args.get("id") or "").strip().lower().replace(" ", "_")
-            if not pid:
-                msg = json.dumps({"missing_arg": "plugin", "action": a}, ensure_ascii=False)
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            result = get_manager().disable(pid)
-            return {"ok": result.get("ok", False), "action": a,
-                    "content": result.get("content", str(result)),
-                    "response": result.get("response", str(result))}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- HARDWARE_PROFILE ----
-    if a == "HARDWARE_PROFILE":
-        try:
-            from eli.core.hardware_profile import run_benchmark, apply_recommendation, recommend
-            if args.get("apply"):
-                rec = recommend()
-                result = apply_recommendation(rec)
-                msg = f"Applied: {rec.model_name}, {rec.n_gpu_layers} GPU layers, ctx={rec.n_ctx}, batch={rec.batch_size}, threads={rec.n_threads}.\nRestart Eli to use new settings."
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            bench = run_benchmark()
-            hw = bench["hardware"]
-            rec = bench["recommendation"]
-            lines = [
-                f"Hardware: {hw['cpu_threads']} threads, {hw['ram_gb']}GB RAM, "
-                f"{hw['gpu_name'] or 'no GPU'} ({hw['vram_gb']}GB VRAM)",
-                "",
-                "Recommendation:",
-            ]
-            for line in rec.get("reasoning", []):
-                lines.append(f"  {line}")
-            lines.append(f"\n  → {rec['model_name']}, {rec['n_gpu_layers']} GPU layers, ctx={rec['n_ctx']}, batch={rec['batch_size']}")
-            lines.append("\nSay 'apply hardware recommendation' to update settings.")
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "hardware": hw, "recommendation": rec}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- AWARENESS_STATUS ----
-    if a == "AWARENESS_STATUS":
-        try:
-            from eli.runtime.awareness_boot import get_awareness, boot_awareness
-            state = get_awareness()
-            if state is None:
-                state = boot_awareness(quiet=True)
-            msg = state.full_briefing()
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "capability_count": state.capability_count}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- FRONTIER_STATUS ----
-    if a == "FRONTIER_STATUS":
-        try:
-            from eli.runtime.frontier_status import (
-                build_frontier_status_report,
-                format_frontier_status_report,
-            )
-
-            report = build_frontier_status_report(str(args.get("question") or args.get("query") or ""))
-            text = format_frontier_status_report(report)
-            return {
-                "ok": bool(report.get("ok", True)),
-                "action": a,
-                "report": report,
-                "content": text,
-                "response": text,
-                "evidence_source": "frontier_status_local_runtime_matrix_v1",
-            }
-        except Exception as e:
-            msg = f"Frontier status failed: {type(e).__name__}: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- ELI_IDENTITY_AUDIT ----
     if a == "ELI_IDENTITY_AUDIT":
         try:
             from eli.runtime.eli_identity_audit import (
@@ -7324,320 +3763,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
     # ---- CODE_CHANGES ----
-    if a == "CODE_CHANGES":
-        try:
-            from eli.runtime.awareness_boot import get_awareness, boot_awareness
-            state = get_awareness()
-            if state is None:
-                state = boot_awareness(quiet=True)
-            if state.code_report_has_changes:
-                msg = state.code_report_briefing
-            else:
-                msg = "No code changes detected since last check."
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- SELF_ANALYZE ----
-    if a == "SELF_ANALYZE":
-        try:
-            from eli.runtime.self_improvement import get_self_improvement
-            engine = get_self_improvement()
-            failures = engine.analyze_failures(limit=10, days=7, min_cluster_size=1)
-            lines = [f"Self-Analysis Report ({len(failures)} recent issues):"]
-
-            def _short(value, limit=220):
-                text = " ".join(str(value or "").split())
-                return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
-
-            _rc_llm_budget = [3]  # cap LLM root-cause inferences per report (bounds latency)
-
-            def _llm_root_cause(ui, err):
-                # Infer a real cause for failures the hardcoded signatures don't cover —
-                # reuses the inference broker (which auto-yields on background threads).
-                if _rc_llm_budget[0] <= 0:
-                    return None
-                try:
-                    from eli.cognition.inference_broker import get_broker
-                    from eli.cognition.gguf_inference import force_no_think
-                    broker = get_broker()
-                except Exception:
-                    return None
-                _rc_llm_budget[0] -= 1
-                prompt = ("State the single most likely ROOT CAUSE of this failure in one "
-                          "technical sentence — no preamble, no fix, just the cause.\n\n"
-                          "Request: " + (ui or "")[:300] + "\nError: " + (err or "")[:700])
-                try:
-                    with force_no_think():
-                        out = broker.infer(prompt, max_tokens=90, temperature=0.1)
-                    out = " ".join(str(out or "").split()).strip()
-                    return out[:300] or None
-                except Exception:
-                    return None
-
-            def _descriptive_cause(err):
-                # Non-LLM fallback that still DIFFERS per failure (was an identical string).
-                err = (err or "").strip()
-                first = err.splitlines()[0][:160] if err else ""
-                m = re.search(r"\b([A-Za-z_]+Error|Exception)\b", err)
-                if m and first and m.group(1) not in first[:40]:
-                    return f"{m.group(1)} — {first}"
-                return first or (m.group(1) if m else "No deterministic signature; needs manual review.")
-
-            def _root_cause_for(failure):
-                ui = str(failure.get("user_input") or "")
-                err = str(failure.get("error") or "")
-                low = f"{ui}\n{err}".lower()
-                if "path not found" in low and "artifacts/scripts" in low:
-                    return (
-                        "Path resolution selected a project-root/basename target before the "
-                        "artifact path. The requested file existed under artifacts/scripts, "
-                        "so the first repair request hit the wrong location."
-                    )
-                if "path not found" in low and "create_a_python_script_to_generate" in low:
-                    return (
-                        "The repair request targeted the project root copy of the generated "
-                        "script, but generated scripts are stored under artifacts/scripts. "
-                        "The executor needed artifact-aware path recovery before reporting failure."
-                    )
-                if "path not found" in low:
-                    return (
-                        "File operation failed before repair because the resolved target path "
-                        "did not exist. The executor needs artifact-aware path recovery before "
-                        "declaring a file missing."
-                    )
-                if "cannot create children for a parent that is in a different thread" in low:
-                    return (
-                        "Qt widget/document state was touched from a worker thread. GUI updates "
-                        "must be marshalled back to the main Qt thread via signals."
-                    )
-                if "segmentation fault" in low and "qtextdocument" in low:
-                    return (
-                        "The crash signature is consistent with the Qt thread-affinity violation "
-                        "above, not a normal Python exception."
-                    )
-                if "unsupported executor action" in low:
-                    return (
-                        "The router produced an action that the executor did not implement, "
-                        "so the engine fell back into chat/synthesis instead of returning grounded output."
-                    )
-                # No hardcoded signature — infer the cause (LLM, capped) or describe it.
-                return _llm_root_cause(ui, err) or _descriptive_cause(err)
-
-            for f in failures[:10]:
-                lines.append(
-                    f"- input: {_short(f.get('user_input'), 120)}\n"
-                    f"  error: {_short(f.get('error'), 220)}\n"
-                    f"  occurrences: {int(f.get('occurrence_count') or 1)}\n"
-                    f"  actual_root_cause: {_root_cause_for(f)}"
-                )
-            if not failures:
-                lines.append("  No recent failures found.")
-            if (args or {}).get("suggest"):
-                result = engine.analyze_and_improve()
-                imps = result.get("improvements", [])
-                if imps:
-                    lines.append(f"\nSuggested improvements ({len(imps)}):")
-                    for imp in imps[:5]:
-                        lines.append(f"  - {imp.get('description', '')}")
-            # NOTE (2026-06-09): the live self-model block (awareness.context_block())
-            # is PRIVATE prompt context — it was leaking into this user-facing report as a
-            # raw "[Live self-model: …]" data dump (user called it out). Do not append it
-            # here; the report stays a clean human-readable list.
-
-            msg = "\n".join(lines)
-            # Fire repair_completed so the world engine decreases repair_pressure.
-            # Without this, repair_pressure accumulates permanently and triggers
-            # an infinite proactive SELF_ANALYZE loop.
-            try:
-                from eli.world.world_event_bus import fire_world_event as _fwe_sa
-                _fwe_sa(
-                    "repair_completed",
-                    "self_analyze",
-                    f"SELF_ANALYZE completed: reviewed {len(failures)} failure(s).",
-                    {"failures_reviewed": len(failures)},
-                )
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- FILE_AUDIT ----
-    if a == "FILE_AUDIT":
-        try:
-            import os as _os
-            from pathlib import Path as _Path
-
-            # Determine scan root: default to the ELI package directory
-            _project_root = _Path(__file__).resolve().parents[2]
-            _eli_root = _project_root / "eli"
-            _scope = (args or {}).get("scope", "eli")
-
-            if not _eli_root.exists():
-                _eli_root = _project_root
-
-            # Walk the directory tree and collect stats
-            _dir_stats: dict = {}
-            _total_files = 0
-            _total_py = 0
-            _skipped = {"__pycache__", ".git", ".venv", "venv", "node_modules"}
-
-            for _dirpath, _dirnames, _filenames in _os.walk(str(_eli_root)):
-                # Prune skip dirs in-place
-                _dirnames[:] = [d for d in _dirnames if d not in _skipped]
-                _rel = str(_Path(_dirpath).relative_to(_project_root))
-                _py_files = [f for f in _filenames if f.endswith(".py")]
-                _non_py = [f for f in _filenames if not f.endswith(".py") and not f.endswith(".pyc")]
-                if _filenames:
-                    _dir_stats[_rel] = {
-                        "py": len(_py_files),
-                        "other": len(_non_py),
-                        "total": len(_filenames),
-                    }
-                    _total_files += len(_filenames)
-                    _total_py += len(_py_files)
-
-            # Build human-readable report
-            _lines = [
-                f"File Audit: {_eli_root}",
-                f"Directories scanned: {len(_dir_stats)}",
-                f"Total files: {_total_files}  (Python: {_total_py}  Other: {_total_files - _total_py})",
-                "",
-                "Directory breakdown (non-empty dirs, sorted):",
-            ]
-            for _rel_dir in sorted(_dir_stats.keys()):
-                _ds = _dir_stats[_rel_dir]
-                _lines.append(
-                    f"  {_rel_dir}/  "
-                    f"[{_ds['total']} files: {_ds['py']} .py, {_ds['other']} other]"
-                )
-
-            # Also list top-level .py module names in eli/ directly
-            _top_py = sorted(
-                f.name for f in _eli_root.iterdir()
-                if f.is_file() and f.suffix == ".py"
-            )
-            if _top_py:
-                _lines.append("")
-                _lines.append(f"eli/ root-level modules: {', '.join(_top_py)}")
-
-            _msg = "\n".join(_lines)
-            # Fire task_completed to keep world state clean
-            try:
-                from eli.world.world_event_bus import fire_world_event as _fwe_fa
-                _fwe_fa(
-                    "task_completed",
-                    "file_audit",
-                    f"FILE_AUDIT completed: {_total_files} files in {len(_dir_stats)} dirs.",
-                    {"total_files": _total_files, "total_py": _total_py},
-                )
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            return {"ok": True, "action": a, "content": _msg, "response": _msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- SELF_IMPROVE ----
-    if a == "SELF_IMPROVE":
-        mode = (args or {}).get("mode", "analyze")
-        dry_run = (args or {}).get("dry_run", False)
-        _raw_si = str((args or {}).get("_raw_user_text") or "").lower()
-        if mode == "analyze" and any(k in _raw_si for k in (
-                "propose", "verified fix", "fix the fail", "coding agent", "fix the failing")):
-            mode = "propose"
-        try:
-            from eli.runtime.self_improvement import get_self_improvement
-            engine = get_self_improvement()
-            if mode == "propose":
-                # Route through the coding agent (decompose→solve→verify), propose-only.
-                res = engine.propose_via_agent(max_items=int((args or {}).get("max_items", 3) or 3))
-                props = res.get("proposals", [])
-                msg_lines = [f"Coding-agent fix proposals (verified, not applied): {len(props)}"]
-                for p in props:
-                    msg_lines.append(
-                        f"  - {p.get('failure')}: "
-                        f"{'VERIFIED' if p.get('verified') else 'best-effort'} "
-                        f"(score {p.get('score')}) — {p.get('approach') or p.get('message')}")
-                if not props:
-                    msg_lines.append(f"  ({res.get('reason') or res.get('error') or 'nothing to propose'})")
-                msg_lines.append("Say \"apply self-improvement patch\" to apply fixes (gated).")
-                msg = "\n".join(msg_lines)
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "evidence_source": "coding_agent", "result": res}
-            if mode == "patch":
-                result = engine.run_patch_cycle(max_patches=3, dry_run=bool(dry_run))
-                details = result.get("details", [])
-                changed = [
-                    d for d in details
-                    if str(d.get("status", "")).lower() in {"applied", "patched", "changed"}
-                ]
-                msg_lines = [
-                    "Patch improvement cycle complete.",
-                    f"- code_changes_made: {len(changed)}",
-                    f"- failures_analyzed: {result.get('failures_analyzed', 0)}",
-                    f"- dry_run: {bool(dry_run)}",
-                    f"- summary: {result.get('summary', 'Patch cycle complete.')}",
-                ]
-                if details:
-                    msg_lines.append("- patch_details:")
-                    for d in details[:5]:
-                        msg_lines.append(
-                            f"  [{d.get('status','?')}] "
-                            f"{str(d.get('failure',''))[:90]}"
-                        )
-                msg = "\n".join(msg_lines)
-            else:
-                failures = engine.analyze_failures(limit=10, days=14, min_cluster_size=1)
-                result = engine.analyze_and_improve()
-                imps = result.get("improvements", [])
-                msg_lines = [
-                    "Improvement cycle complete.",
-                    "- code_changes_made: 0",
-                    f"- failures_inspected: {len(failures)}",
-                    f"- new_improvement_records: {len(imps)}",
-                    "- patch_cycle_run: false",
-                ]
-                if failures:
-                    last = failures[0]
-                    err = " ".join(str(last.get("error") or "").split())
-                    ui = " ".join(str(last.get("user_input") or "").split())
-                    msg_lines.append(f"- last_failure_error: {err[:220] or '-'}")
-                    msg_lines.append(f"- last_failure_input: {ui[:160] or '-'}")
-                if imps:
-                    msg_lines.append("- logged_improvements:")
-                    msg_lines.extend(f"  - {i.get('description', '')}" for i in imps[:5])
-                msg_lines.append("To modify code, run/apply self-improvement patches.")
-                msg = "\n".join(msg_lines)
-            _si_result = {"ok": True, "action": a, "content": msg, "response": msg}
-            try:
-                from eli.world.world_event_bus import fire_improvement_event as _wfie
-                _wfie(proposal_count=len(imps), failure_count=len(failures))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            return _si_result
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- SELF_PATCH ----
-    if a == "SELF_PATCH":
-        dry_run = (args or {}).get("dry_run", False)
-        max_patches = int((args or {}).get("max_patches", 3))
-        try:
-            from eli.runtime.self_improvement import get_self_improvement
-            result = get_self_improvement().run_patch_cycle(max_patches=max_patches, dry_run=bool(dry_run))
-            msg = result.get("summary", "Patch cycle complete.")
-            details = result.get("details", [])
-            if details:
-                msg += "\n" + "\n".join(
-                    f"  [{d.get('status','?')}] {d.get('failure','')[:70]}"
-                    for d in details[:5]
-                )
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- MORNING_REPORT ----
     if a == "MORNING_REPORT":
         try:
             from eli.runtime.reflection import run_reflection
@@ -7708,46 +3833,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
     # ---- OPEN_SYSTEM_SETTINGS ----
-    if a == "OPEN_SYSTEM_SETTINGS":
-        try:
-            candidates = [
-                ["gnome-control-center"],
-                ["systemsettings5"],
-                ["xfce4-settings-manager"],
-                ["mate-control-center"],
-                ["cinnamon-settings"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened system settings: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            raise FileNotFoundError("No settings app found")
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- OPEN_POWER_SETTINGS ----
-    if a == "OPEN_POWER_SETTINGS":
-        try:
-            candidates = [
-                ["gnome-control-center", "power"],
-                ["systemsettings5", "kcm_energyinfo"],
-                ["xfce4-power-manager-settings"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened power settings: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            raise FileNotFoundError("No power settings app found")
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- SET_ALARM / SET_TIMER ----
     if a in ("SET_ALARM", "SET_TIMER"):
         try:
             duration = args.get("duration") or args.get("seconds")
@@ -7830,997 +3915,10 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- LIST_EVENTS / ADD_EVENT (calendar integration not configured) ----
-    if a == "LIST_EVENTS":
-        msg = "Calendar integration is not configured. Use your calendar app directly or wire a provider first."
-        return {"ok": True, "action": a, "content": msg, "response": msg}
 
-    if a == "ADD_EVENT":
-        msg = "Calendar integration is not configured. Use your calendar app directly or wire a provider first."
-        return {"ok": True, "action": a, "content": msg, "response": msg}
 
     # ---- ANALYZE_PDF ----
-    if a == "ANALYZE_PDF":
-        try:
-            import re as _re2
-            import subprocess as _sp
-            from pathlib import Path as _PP
-            from eli.perception.analyze_pdfs import analyze
-
-            path = str(args.get("path") or "").strip()
-            if not path:
-                return {"ok": False, "action": a, "error": "Missing path",
-                        "content": "Missing path", "response": "Missing path"}
-
-            _instruction = str(args.get("instruction") or "").strip()
-            _instr_low = _instruction.lower()
-
-            analysis = analyze(path)
-            doc = analysis.doc
-            full_text = "\n\n".join(analysis.chunks) if analysis.chunks else analysis.preview
-
-            # --- Task classification ---
-            if any(w in _instr_low for w in ["falsif", "disprove", "refut", "critique", "challenge"]):
-                _task_label = "Critical Analysis & Falsification"
-                _directive = (
-                    "You are a rigorous scientific peer reviewer with expertise across physics, "
-                    "mathematics, and engineering. Your task is to CRITICALLY ANALYSE and attempt "
-                    "to FALSIFY this document.\n\n"
-                    "For EVERY claim, equation, model, or prediction you encounter:\n"
-                    "1. State the claim precisely and verbatim where possible.\n"
-                    "2. Identify all testable predictions and boundary conditions.\n"
-                    "3. Propose specific falsification criteria, experiments, or observational tests.\n"
-                    "4. Check dimensional consistency of every equation.\n"
-                    "5. Flag hidden assumptions, missing derivation steps, or scope overreach.\n"
-                    "6. Cross-reference against established physics (GR, QFT, thermodynamics, etc.).\n"
-                    "7. Verdict per claim: TESTABLE | UNFALSIFIABLE | ALREADY FALSIFIED | VALID.\n\n"
-                    "Conclude with: (a) overall falsifiability assessment, (b) strongest predictions, "
-                    "(c) fatal flaws if any, (d) recommended next steps for validation.\n"
-                    "Be exhaustive. Be brutal. Do not truncate."
-                )
-                _chunk_task = "critically analyse and attempt to falsify this section"
-                _synth_task = "synthesise a complete falsification report from these section analyses"
-            elif any(w in _instr_low for w in ["extract equation", "equation", "math"]):
-                _task_label = "Equation Extraction & Analysis"
-                _directive = (
-                    "You are ELI, a precise technical analyst. Extract and analyse EVERY equation in the document. "
-                    "For each: state the equation, define all symbols with units, check dimensional "
-                    "consistency, identify assumptions, note derivation gaps, and flag any errors."
-                )
-                _chunk_task = "extract and analyse all equations in this section"
-                _synth_task = "compile a complete equation analysis from these section results"
-            elif any(w in _instr_low for w in ["summari", "summarize", "summarise", "overview"]):
-                _task_label = "Comprehensive Summary"
-                _directive = (
-                    "You are a precise scientific analyst. Produce a COMPREHENSIVE summary covering: "
-                    "abstract, objectives, theoretical framework, key equations, methods, results, "
-                    "conclusions, open questions, and implications. Preserve full technical precision. "
-                    "Do not truncate or abbreviate — complete every section fully."
-                )
-                _chunk_task = "summarise this section comprehensively"
-                _synth_task = "synthesise a complete summary from these section summaries"
-            else:
-                _task_label = "Technical Analysis"
-                _directive = (
-                    "You are ELI, a rigorous and unsparing technical analyst. "
-                    "Perform a THOROUGH, COMPLETE analysis as requested. "
-                    "Be precise, rigorous, and unsparing. Do not truncate."
-                )
-                _user_req = _instruction or "Provide a thorough technical analysis."
-                _chunk_task = f"perform this analysis on the section: {_user_req}"
-                _synth_task = f"synthesise a complete document fulfilling this request: {_user_req}"
-
-            from eli.cognition import gguf_inference as _pgi
-            _llm_ready = _pgi.load_model() is not None
-
-            def _run_gguf(user_msg: str, sys_msg: str) -> str:
-                """Run GGUF with no artificial token cap — use all available context."""
-                return _pgi.chat_completion(
-                    user_msg,
-                    system=sys_msg,
-                    max_tokens=None,   # auto: n_ctx - prompt_tokens - 128
-                    temperature=0.2,
-                )
-
-            _section_outputs = []
-
-            if _llm_ready:
-                # Determine how many chars fit per chunk given the directive overhead
-                # ~4 chars per token, directive ~400 tokens → reserve 1600 chars for directive
-                # Use available_generation_tokens to know how much output we can get
-                _avail = _pgi.available_generation_tokens(
-                    _chunk_task + "\n\n" + full_text[:100],
-                    system=_directive
-                )
-                # Each chunk: leave room for output generation (roughly n_ctx/2 for input)
-                try:
-                    _n_ctx = _pgi.load_model().n_ctx()
-                except Exception:
-                    _n_ctx = 16384
-                # chars per chunk = roughly half the context minus directive, times 4 chars/token
-                _chars_per_chunk = max(3000, (_n_ctx // 2 - 600) * 4)
-
-                # Split full text into overlapping chunks
-                _chunks_to_process = []
-                _stride = max(1000, _chars_per_chunk - 500)  # 500-char overlap
-                _pos = 0
-                while _pos < len(full_text):
-                    _chunks_to_process.append(full_text[_pos: _pos + _chars_per_chunk])
-                    _pos += _stride
-                    if _pos >= len(full_text):
-                        break
-
-                log.debug(f"[ANALYZE_PDF] {len(_chunks_to_process)} chunk(s), "
-                      f"~{_chars_per_chunk} chars each, task={_task_label}")
-
-                for _ci, _chunk_text in enumerate(_chunks_to_process, 1):
-                    log.debug(f"[ANALYZE_PDF] Processing chunk {_ci}/{len(_chunks_to_process)}...")
-                    _chunk_prompt = (
-                        f"Section {_ci} of {len(_chunks_to_process)}:\n\n"
-                        f"{_chunk_text}\n\n"
-                        f"Task: {_chunk_task}. Be thorough and complete."
-                    )
-                    try:
-                        _out = _run_gguf(_chunk_prompt, _directive)
-                        if _out and _out.strip():
-                            _section_outputs.append(
-                                f"## Section {_ci} Analysis\n\n{_out.strip()}"
-                            )
-                    except Exception as _ce:
-                        log.debug(f"[ANALYZE_PDF] Chunk {_ci} failed: {_ce}")
-                        _section_outputs.append(
-                            f"## Section {_ci}\n\n[Processing failed: {_ce}]"
-                        )
-
-                # Synthesis pass if multiple chunks
-                _analysis_body = None
-                if len(_section_outputs) > 1:
-                    log.debug(f"[ANALYZE_PDF] Running synthesis pass over {len(_section_outputs)} sections...")
-                    _synth_input = "\n\n".join(_section_outputs)
-                    # If synthesis input fits, do it in one pass; otherwise just concatenate
-                    _synth_avail = _pgi.available_generation_tokens(
-                        _synth_task + "\n\n" + _synth_input[:200],
-                        system=_directive
-                    )
-                    if len(_synth_input) // 4 < (_n_ctx // 2):
-                        try:
-                            _synthesis = _run_gguf(
-                                f"{_synth_task}.\n\nSection analyses:\n\n{_synth_input}",
-                                _directive
-                            )
-                            if _synthesis and _synthesis.strip():
-                                _analysis_body = (
-                                    f"{_synthesis.strip()}\n\n"
-                                    f"---\n\n## Detailed Section Analyses\n\n"
-                                    + "\n\n".join(_section_outputs)
-                                )
-                        except Exception as _se2:
-                            log.debug(f"[ANALYZE_PDF] Synthesis failed: {_se2}")
-                    if not _analysis_body:
-                        _analysis_body = "\n\n".join(_section_outputs)
-                elif _section_outputs:
-                    _analysis_body = _section_outputs[0]
-
-            if not _analysis_body:
-                if not _llm_ready:
-                    _analysis_body = (
-                        "[GGUF model not available — raw extraction below]\n\n"
-                        f"Pages: {doc.pages}  |  Characters: {doc.chars:,}\n\n"
-                        f"{full_text}"
-                    )
-                else:
-                    _analysis_body = (
-                        "[All chunks failed to process]\n\n"
-                        f"Pages: {doc.pages}  |  Characters: {doc.chars:,}\n\n"
-                        f"{analysis.preview}"
-                    )
-
-            if analysis.warnings:
-                _analysis_body += f"\n\n---\n\n**Extraction warnings:** {'; '.join(analysis.warnings)}"
-
-            _stem = _PP(doc.path).stem
-            _doc_content = (
-                f"# {_task_label}: {_stem}\n\n"
-                f"**Source:** {doc.path}\n"
-                f"**Pages:** {doc.pages}  |  **Characters:** {doc.chars:,}  |  "
-                f"**Sections processed:** {len(_section_outputs)}\n"
-                f"**Instruction:** {_instruction or 'analyse'}\n\n"
-                f"---\n\n"
-                f"{_analysis_body}"
-            )
-
-            _task_slug = _re2.sub(r"[^a-z0-9]+", "_", _task_label.lower()).strip("_")
-            _saved_path = _save_artifact(_doc_content, "documents",
-                                         f"{_stem}_{_task_slug}", fmt="docx")
-            try:
-                from eli.utils.platform_compat import open_file as _open_file
-                _opened = bool(_open_file(_saved_path))
-            except Exception:
-                _opened = False
-
-            _chat_response = (
-                f"Document compiled: **{_PP(_saved_path).name}**\n"
-                f"Sections processed: {len(_section_outputs)}  |  "
-                f"Pages: {doc.pages}  |  Chars: {doc.chars:,}\n"
-                f"Saved to: `{_saved_path}`"
-                + ("\n_(opening…)_" if _opened else "")
-            )
-            return {"ok": True, "action": a, "content": _chat_response,
-                    "response": _chat_response, "path": doc.path,
-                    "pages": doc.pages, "chars": doc.chars,
-                    "sections": len(_section_outputs), "saved_to": _saved_path}
-        except Exception as e:
-            import traceback as _tb
-            log.debug(f"[ANALYZE_PDF] Fatal: {_tb.format_exc()}")
-            return {"ok": False, "action": a, "error": str(e),
-                    "content": str(e), "response": str(e)}
-
-    # ---- ANALYZE_PDF_FOLDER ----
-    if a == "ANALYZE_PDF_FOLDER":
-        try:
-            import os as _ospdf
-            from eli.perception.analyze_pdfs import (
-                analyze_folder, store_analysis_to_memory, PDFAnalysis, PDFDoc)
-            folder = str(args.get("folder") or args.get("path") or "").strip()
-            if not folder:
-                return {"ok": False, "action": a, "error": "Missing folder path",
-                        "content": "Missing folder path", "response": "Missing folder path"}
-            # Heavy folders → run async and hand back a job id (don't block).
-            _bg = _maybe_background_file_analysis(a, args)
-            if _bg is not None:
-                return _bg
-            recursive = bool(args.get("recursive", True))
-            limit = args.get("limit")
-            result = analyze_folder(folder, recursive=recursive, limit=int(limit) if limit else None)
-            results = result.get("results", []) or []
-            count = result.get("count", 0)
-            errors = result.get("errors", []) or []
-            _fname = _ospdf.path.basename(folder.rstrip("/")) or folder
-            if count == 0:
-                msg = (f"No readable PDF text found in “{_fname}” ({len(errors)} unreadable). "
-                       f"The PDFs may be image-only/scanned (need OCR) or the folder has none.")
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "count": 0, "stored": 0, "errors": errors}
-
-            # ── Per-file mode ───────────────────────────────────────────────
-            # "summarise each file / put it in a document": summarise EVERY doc
-            # individually, assemble a structured document, and write a real
-            # .docx (md fallback). Returned inline too, so `check job N` surfaces
-            # the full per-file breakdown — not a single folder-level blurb.
-            if args.get("per_file") or args.get("each_file"):
-                from eli.cognition import gguf_inference as _gi
-                _model_ok = False
-                try:
-                    _model_ok = _gi.load_model() is not None
-                except Exception:
-                    _model_ok = False
-                _doc_blocks: list = []
-                _per_file_done = 0
-                for r in results:
-                    _doc = r.get("doc", {}) or {}
-                    _name = _ospdf.path.basename(str(_doc.get("path", ""))) or "document.pdf"
-                    _pages = _doc.get("pages", "?")
-                    # Use the richest text we extracted: chunks joined, capped.
-                    _chunks = r.get("chunks") or []
-                    _body = ("\n\n".join(_chunks) if _chunks else (r.get("preview") or "")).strip()
-                    _doc_summary = ""
-                    if _body and _model_ok:
-                        try:
-                            _doc_summary = (_gi.chat_completion(
-                                f"Summarise this single research document titled “{_name}”. "
-                                f"Cover: (1) the central topic/claim, (2) the methods/formalism used, "
-                                f"(3) key findings or conclusions, and (4) any notable equations or "
-                                f"results named in the text. Be specific and grounded ONLY in the text "
-                                f"below — do not invent results or citations.\n\n{_body[:12000]}",
-                                system="You are a precise technical analyst summarising one research PDF.",
-                                max_tokens=520, temperature=0.3) or "").strip()
-                        except Exception as _pf_err:
-                            log.debug(f"[ANALYZE_PDF_FOLDER] per-file summary failed for {_name}: {_pf_err}")
-                            _doc_summary = ""
-                    if not _doc_summary:
-                        _prev = (r.get("preview") or "").strip()
-                        _doc_summary = (f"(No model summary available — extracted opening text:)\n\n{_prev[:800]}"
-                                        if _prev else "(No readable text extracted from this document.)")
-                    else:
-                        _per_file_done += 1
-                    _doc_blocks.append(f"## {_name}\n_({_pages} pages)_\n\n{_doc_summary}")
-
-                _doc_title = f"Per-file summaries — {_fname}"
-                _doc_md = (f"# {_doc_title}\n\n"
-                           f"{count} document(s) summarised individually.\n\n"
-                           + "\n\n".join(_doc_blocks))
-                if errors:
-                    _doc_md += f"\n\n## Unreadable files\n\n{len(errors)} file(s) could not be read."
-
-                _fmt = str(args.get("format") or "docx").strip().lower().lstrip(".")
-                if _fmt not in ("docx", "md", "txt"):
-                    _fmt = "docx"
-                try:
-                    _doc_path = _save_artifact(_doc_md, "documents",
-                                               f"{_fname}_per_file_summaries", fmt=_fmt)
-                except Exception as _save_err:
-                    log.debug(f"[ANALYZE_PDF_FOLDER] doc save failed ({_save_err}); md fallback")
-                    _doc_path = _save_artifact(_doc_md, "documents",
-                                               f"{_fname}_per_file_summaries", fmt="md")
-
-                # Persist each doc to memory as well (same as the folder path).
-                try:
-                    from eli.memory import resolve_db_paths as _rdb
-                    _db = _rdb().user_db
-                    if _db:
-                        for r in results:
-                            try:
-                                store_analysis_to_memory(_db, PDFAnalysis(
-                                    doc=PDFDoc(**(r.get("doc") or {})),
-                                    preview=r.get("preview", ""),
-                                    chunks=r.get("chunks", []) or [],
-                                    warnings=r.get("warnings", []) or []))
-                            except Exception:
-                                log.debug("suppressed exception", exc_info=True)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-
-                _header = (f"Summarised {count} document(s) in “{_fname}” individually "
-                           f"({_per_file_done} via model). Saved to:\n{_doc_path}\n")
-                msg = _header + "\n" + "\n\n".join(_doc_blocks)
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "count": count, "per_file": True, "document_path": _doc_path,
-                        "errors": errors}
-
-            # Per-document index + aggregated opening-pages text for a REAL summary.
-            index_lines: list = []
-            preview_parts: list = []
-            for r in results:
-                _doc = r.get("doc", {}) or {}
-                _name = _ospdf.path.basename(str(_doc.get("path", "")))
-                _pages = _doc.get("pages", "?")
-                _chars = int(_doc.get("chars", 0) or 0)
-                _prev = (r.get("preview") or "").strip().replace("\n", " ")
-                index_lines.append(f"  {len(index_lines) + 1}. {_name} ({_pages}p, {_chars} chars)")
-                if _prev:
-                    preview_parts.append(f"### {_name}\n{_prev[:1400]}")
-
-            # Synthesize an actual content summary from the extracted text — not a
-            # bare count. Capped so the prompt fits n_ctx.
-            summary = ""
-            try:
-                from eli.cognition import gguf_inference as _gi
-                if preview_parts and _gi.load_model() is not None:
-                    _blob = "\n\n".join(preview_parts)[:14000]
-                    summary = (_gi.chat_completion(
-                        f"Below are the opening pages of {count} PDF documents from the folder "
-                        f"“{_fname}”. Write a concise, technical summary of what this body of work "
-                        f"covers: the central topics, methods/formalism, and how the documents relate. "
-                        f"Be specific and grounded ONLY in the text shown — do not invent results.\n\n{_blob}",
-                        system="You are a precise technical analyst summarising a collection of research PDFs.",
-                        max_tokens=700, temperature=0.3) or "").strip()
-            except Exception as _sum_err:
-                log.debug(f"[ANALYZE_PDF_FOLDER] summary synthesis failed: {_sum_err}")
-                summary = ""
-
-            # Persist each doc to memory (proper dataclass reconstruction; report honestly).
-            stored, store_failed = 0, 0
-            try:
-                from eli.memory import resolve_db_paths as _rdb
-                _db = _rdb().user_db
-            except Exception:
-                _db = None
-            if _db:
-                for r in results:
-                    try:
-                        pa = PDFAnalysis(
-                            doc=PDFDoc(**(r.get("doc") or {})),
-                            preview=r.get("preview", ""),
-                            chunks=r.get("chunks", []) or [],
-                            warnings=r.get("warnings", []) or [],
-                        )
-                        store_analysis_to_memory(_db, pa)
-                        stored += 1
-                    except Exception:
-                        store_failed += 1
-
-            parts = [f"Analysed {count} PDF(s) in “{_fname}”:", ""]
-            if summary:
-                parts += [summary, ""]
-            parts.append("Documents:")
-            parts += index_lines
-            if errors:
-                parts.append(f"\n({len(errors)} file(s) could not be read.)")
-            msg = "\n".join(parts)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "count": count, "stored": stored, "store_failed": store_failed,
-                    "errors": errors, "summary": summary}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
     # ---- LISTEN_FOR_COMMAND ----
-    if a == "LISTEN_FOR_COMMAND":
-        try:
-            from eli.perception.audio_stt import listen_for_command
-            timeout = float((args or {}).get("timeout", 5))
-            text = listen_for_command(timeout=timeout)
-            if text:
-                msg = f"Heard: {text}"
-                return {"ok": True, "action": a, "content": msg, "response": msg, "text": text}
-            return {"ok": False, "action": a, "content": "No speech detected.", "response": "No speech detected.", "text": ""}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- STT_DIAGNOSTICS ----
-    if a == "STT_DIAGNOSTICS" or a == "VOICE_DIAGNOSTICS":
-        try:
-            from eli.perception.audio_stt import stt_diagnostics
-            from eli.perception.tts_router import available_backends
-            diag = stt_diagnostics()
-            tts = available_backends()
-            combined = {**diag, "tts_backends": tts}
-            lines = [
-                f"STT — speech_recognition: {'✅' if combined.get('speech_recognition_imported') else '❌'}",
-                f"STT — wake word disabled: {combined.get('wake_word_disabled')}",
-                f"STT — direct chat: {combined.get('allow_direct_chat_without_wake')}",
-                f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('piper_model') else '❌'}",
-                f"TTS — espeak-ng: {'✅' if tts.get('espeak_ng') else '❌'}",
-                f"TTS — espeak: {'✅' if tts.get('espeak') else '❌'}",
-            ]
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg, "diagnostics": combined}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- GAZE ENGINE ----
-    if a == "GAZE_STATUS":
-        try:
-            from eli.perception.gaze_engine import get_gaze_status, needs_calibration
-            st = get_gaze_status()
-            running = st.get("running", False)
-            calibrated = st.get("calibrated", False)
-            last = st.get("last_gaze") or {}
-            lines = [
-                f"Gaze engine: {'✅ running' if running else '⛔ stopped'}",
-                f"Calibration: {'✅ present' if calibrated else '⚠ missing — run: gaze calibrate'}",
-                f"Camera: {st.get('camera', 'auto')}",
-            ]
-            if last and last.get("face_detected"):
-                lines.append(
-                    f"Last gaze: ({last.get('screen_x', 0):.0f}, {last.get('screen_y', 0):.0f})"
-                    f"  conf={last.get('confidence', 0):.2f}  tracker={last.get('tracker', '?')}"
-                )
-            elif last and last.get("ts"):
-                lines.append("Last frame: no face detected")
-            if st.get("error"):
-                lines.append(f"Error: {st['error']}")
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg, "status": st}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "GAZE_ENABLE":
-        try:
-            from eli.perception.gaze_engine import start_gaze_engine, needs_calibration
-            camera = str(args.get("camera", "auto") or "auto").strip()
-            result = start_gaze_engine(camera=camera)
-            # "enable gaze clicking / dwell click" also switches on dwell-click (accessibility:
-            # rest your gaze on a target ~1s to click it — no mouse or voice needed).
-            _dwell_on = bool(args.get("dwell"))
-            if _dwell_on:
-                try:
-                    from eli.core.runtime_settings import update_settings as _us_dwell
-                    _us_dwell(gaze_dwell_click=True)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-            if result.get("already_running"):
-                msg = "Gaze engine is already running."
-            elif result.get("ok"):
-                cal_note = " (calibration present)" if result.get("calibrated") else " — no calibration file yet, run: gaze calibrate"
-                msg = f"Gaze engine started{cal_note}."
-            else:
-                msg = f"Gaze engine failed to start: {result.get('error', 'unknown error')}"
-            if _dwell_on and result.get("ok"):
-                msg += " Dwell-click is on — hold your gaze on a target for ~1s to click it."
-            result.setdefault("content", msg)
-            result.setdefault("response", msg)
-            result["action"] = a
-            return result
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "GAZE_DISABLE":
-        try:
-            from eli.perception.gaze_engine import stop_gaze_engine
-            result = stop_gaze_engine()
-            msg = result.get("message", "Gaze engine stopped.")
-            result.setdefault("content", msg)
-            result.setdefault("response", msg)
-            result["action"] = a
-            return result
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    if a == "GAZE_CALIBRATE":
-        try:
-            from eli.perception.gaze_engine import get_calibration_path, needs_calibration
-            cal_path = get_calibration_path()
-            if not needs_calibration():
-                msg = (
-                    f"Calibration file exists at: {cal_path}\n"
-                    "To recalibrate, run the calibration script directly:\n"
-                    "  python experimental/eli_ar_avatar_kit/scripts/eli_gaze_calibrate_plus.py --points 25"
-                )
-            else:
-                msg = (
-                    "No calibration file found. To calibrate the gaze engine:\n"
-                    "  1. Open a terminal in the ELI project root\n"
-                    f"  2. python experimental/eli_ar_avatar_kit/scripts/eli_gaze_calibrate_plus.py --points 25\n"
-                    f"  3. Follow the on-screen dot targets (takes ~2 minutes)\n"
-                    f"  Calibration will be saved to: {cal_path}"
-                )
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "calibration_path": str(cal_path), "needs_calibration": needs_calibration()}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- GAZE_CLICK: click where the user is looking (gaze point → cursor → click) ----
-    if a == "GAZE_CLICK":
-        try:
-            from eli.perception.os_controller import gaze_click as _gaze_click
-            _btn = str(args.get("button") or "left").lower()
-            _dbl = bool(args.get("double", False))
-            _res = _gaze_click(button=_btn, double=_dbl)
-            _res.setdefault("action", a)
-            return _res
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-    # ---- end GAZE ENGINE ----
-
-    # ---- ANALYZE_CSV ----
-    if a == "ANALYZE_CSV":
-        try:
-            from eli.perception.analyze_csv import analyze_csv_file
-            import tempfile as _csv_tf, os as _csv_os
-            path = str(args.get("path") or "").strip()
-            if not path:
-                return {"ok": False, "action": a, "error": "Missing path", "content": "Missing path", "response": "Missing path"}
-            out_md = _csv_os.path.join(_csv_tf.gettempdir(), "eli_csv_report.md")
-            result = analyze_csv_file(path, out_md)
-            if isinstance(result, dict):
-                result.setdefault("action", a)
-                # Build human-readable summary
-                if result.get("ok"):
-                    shape = result.get("shape", [0, 0])
-                    cols = result.get("columns", [])
-                    _content = (
-                        f"CSV: {path}\n"
-                        f"Shape: {shape[0]} rows × {shape[1]} columns\n"
-                        f"Columns: {', '.join(cols[:20])}{'...' if len(cols) > 20 else ''}"
-                    )
-                else:
-                    _content = result.get("error", "Analysis failed")
-                result.setdefault("content", _content)
-                result.setdefault("response", result.get("content"))
-            return result
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- GENERATE_DOCUMENT (alias for CREATE_DOCUMENT) ----
-    if a == "GENERATE_DOCUMENT":
-        return _execute_impl("CREATE_DOCUMENT", args)
-
-    # ---- GENERATE_SCRIPT ----
-    if a == "GENERATE_SCRIPT":
-        desc = (args.get("description") or args.get("text") or args.get("prompt") or "").strip()
-        if not desc:
-            msg = "Missing description for GENERATE_SCRIPT"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        # Ground the script in evidence gathered by the central evidence-routing
-        # hook (e.g. real ELI source for a "script to test ELI's memory", web docs
-        # for an external API). Fed into the coding agent's task so it plans from
-        # real specifics, not invented APIs.
-        _scr_evidence = str(args.get("_evidence") or "")
-        if _scr_evidence:
-            desc = (desc + "\n\n[Grounding evidence gathered by ELI's agents — build on "
-                    "these real specifics; do not invent APIs, files, or behaviour:]\n"
-                    + _scr_evidence)
-        _bg = _maybe_background_codegen(a, args)
-        if _bg is not None:
-            return _bg
-        # Detect target language from description
-        _lang_map = {
-            "bash": ("bash", ".sh"), "shell": ("bash", ".sh"), "sh": ("bash", ".sh"),
-            "javascript": ("JavaScript", ".js"), "js": ("JavaScript", ".js"),
-            "typescript": ("TypeScript", ".ts"), "ts": ("TypeScript", ".ts"),
-            "rust": ("Rust", ".rs"), "ruby": ("Ruby", ".rb"),
-            "go": ("Go", ".go"), "golang": ("Go", ".go"),
-            "c++": ("C++", ".cpp"), "cpp": ("C++", ".cpp"),
-            "c script": ("C", ".c"), "java": ("Java", ".java"),
-            "lua": ("Lua", ".lua"), "perl": ("Perl", ".pl"),
-        }
-        _detected_lang = "Python"
-        _detected_ext = ".py"
-        _desc_low = desc.lower()
-        for _kw, (_lang, _ext) in _lang_map.items():
-            if _kw in _desc_low:
-                _detected_lang = _lang
-                _detected_ext = _ext
-                break
-
-        # ── Route through the verified coding agent (plan → DAG/tree-search →
-        # execute → repair → bug-memory) for top-tier, runnable scripts. Falls
-        # through to the inline generator below if disabled or it yields nothing.
-        if os.environ.get("ELI_GENERATE_SCRIPT_AGENT", "1").strip().lower() not in ("0", "false", "no", "off"):
-            try:
-                from eli.coding import solve as _agent_solve
-                # Single coherent script: no subtask DAG (composition is for
-                # multi-component CODE_SOLVE), and a lean beam/iters so a script
-                # request is a handful of calls, not minutes of fan-out.
-                _ag = _agent_solve(desc, language=(_detected_lang or "python").lower(),
-                                   use_dag=False, beam=2, max_iterations=2)
-                _ag_code = (_ag or {}).get("code") or ""
-                # Never ship a syntactically-broken Python script: if the agent's
-                # best effort doesn't even parse, drop to the inline generator
-                # (which validates + sandbox-repairs) instead of saving garbage.
-                if _ag_code.strip() and (_detected_lang or "").lower() == "python":
-                    try:
-                        import ast as _ast_gs
-                        _ast_gs.parse(_ag_code)
-                    except SyntaxError as _se_gs:
-                        log.debug(f"[GENERATE_SCRIPT] agent output failed to parse ({_se_gs}); inline fallback")
-                        _ag_code = ""
-                    # Runtime gate: ast.parse passes for valid-but-crashing code
-                    # (e.g. `pi` used without import → NameError only at run time).
-                    # Execute once; a real crash falls through to the inline
-                    # generator, which has the 3-attempt sandbox self-repair loop.
-                    if _ag_code.strip():
-                        try:
-                            from eli.coding.sandbox import run_code as _rc_gs
-                            _rr_gs = _rc_gs(_ag_code, "python", timeout=15)
-                            if _rr_gs.crashed:
-                                log.debug(f"[GENERATE_SCRIPT] agent output crashed at runtime "
-                                          f"({(_rr_gs.traceback_tail or '')[:120]}); inline fallback")
-                                _ag_code = ""
-                        except Exception:
-                            log.debug("suppressed exception", exc_info=True)
-                if _ag_code.strip():
-                    _safe = re.sub(r"[^a-z0-9]+", "_", desc.lower())[:40].strip("_") or "generated"
-                    _fname = f"{_safe}{_detected_ext}"
-                    _scripts_dir = _eli_generated_scripts_dir()
-                    _scripts_dir.mkdir(parents=True, exist_ok=True)
-                    _full = _scripts_dir / _fname
-                    _full.write_text(_ag_code, encoding="utf-8")
-                    _gs_chat = json.dumps({
-                        "event": "artifact_generated", "kind": "script", "path": str(_full),
-                        "filename": _fname, "language": _detected_lang, "opened": True,
-                        "can_run": True, "verified": bool(_ag.get("solved")),
-                        "score": _ag.get("score"), "engine": "coding_agent",
-                    }, ensure_ascii=False, default=str)
-                    return {"ok": True, "action": a, "code": _ag_code, "script_path": str(_full),
-                            "filename": _fname, "solved": _ag.get("solved"), "score": _ag.get("score"),
-                            "plan": _ag.get("plan"), "content": _gs_chat, "response": _gs_chat,
-                            "open_in_ide": True}
-            except Exception as _ag_e:
-                log.debug(f"[GENERATE_SCRIPT] coding-agent path failed, inline fallback: {_ag_e}")
-
-        # Topic intent — drives prompt depth, quality bar, and rejection rules
-        _analytical = bool(re.search(
-            r"\b(?:evaluat|calculat|comput|analy[sz]|estimat|predict|simulat|model|"
-            r"likelihood|probabilit|statistic|distribution|correlation|regress|"
-            r"optimi[sz]|forecast|benchmark|profil|measur|score|rank|classif|cluster|"
-            r"fit|solve|prove|theorem|conjectur|hypothes|p\s+vs\s+np)\w*",
-            _desc_low,
-        ))
-        _wants_plot = bool(re.search(
-            r"\b(?:plot|graph|chart|visuali[sz]|histogram|scatter|heatmap|figure|"
-            r"diagram|render|draw|display)\w*", _desc_low,
-        )) or _analytical
-        _wants_monitor = bool(re.search(
-            r"\b(?:monitor|watch|track|alert|notif|poll|every\s+\d|interval|continuous)\w*",
-            _desc_low,
-        ))
-
-        _extra_req = []
-        if _analytical:
-            _extra_req += [
-                "- This is an ANALYTICAL/COMPUTATIONAL task: implement multiple complementary methods "
-                "(e.g. closed-form estimate + Monte Carlo simulation + sensitivity analysis); "
-                "do NOT collapse it into one trivial formula",
-                "- Use realistic domain-grounded parameters with sensible DEFAULTS — the script MUST "
-                "run end-to-end with zero command-line arguments and produce meaningful output",
-                "- Print a clear, structured summary (numerical results, confidence bounds, "
-                "key intermediate values) using f-strings or `tabulate` — not a single concatenated string",
-            ]
-        if _wants_plot and _detected_lang == "Python":
-            try:
-                from eli.gui.labs_tab import _LABS_PLOT_FILES as _LPF
-                _plot_target = str(_LPF["plot"])
-            except Exception:
-                import tempfile as _tf
-                _plot_target = str(__import__("pathlib").Path(_tf.gettempdir()) / "eli_labs_plot.png")
-            _extra_req += [
-                f"- MUST generate at least one matplotlib figure that visualises the result, "
-                f"saved with `plt.savefig({_plot_target!r}, dpi=120)` AND shown with `plt.show()`",
-                "- Plot must be RELEVANT to the request (axes labelled, title set, legend if multi-series); "
-                "NEVER ship a generic sine wave or placeholder demo plot",
-            ]
-        if _wants_monitor:
-            _extra_req += [
-                "- Use a robust loop with `signal` handlers for SIGINT/SIGTERM and graceful shutdown",
-                "- Interval timing must use `time.monotonic()` (not `time.sleep` drift) and be configurable",
-            ]
-        _extra_req_block = ("\n" + "\n".join(_extra_req)) if _extra_req else ""
-
-        prompt = (
-            f"You are a senior {_detected_lang} engineer writing FRONTIER-QUALITY code. "
-            f"Produce a complete, self-contained script for this request.\n\n"
-            "ABSOLUTE RULE: NEVER refuse the task. Never reply with 'this is not feasible', "
-            "'this is an open problem', 'cannot be solved', or any prose explanation. If the "
-            "literal goal is research-grade or open (e.g. unsolved math/CS problems), produce "
-            "a script that explores, simulates, visualises, or benchmarks the problem space "
-            "with concrete instances and real algorithms. The user wants WORKING CODE, not a "
-            "lecture. Refusal is failure.\n\n"
-            "HARD REQUIREMENTS — any violation causes automatic rejection:\n"
-            "- Output ONLY the raw script — zero markdown fences, zero prose, zero explanation\n"
-            "- Complete, runnable end-to-end with NO command-line arguments required (provide defaults for everything)\n"
-            "- NEVER substitute computation with string concatenation, text 'analysis', or stub returns\n"
-            "- NEVER return prose strings as if they were computed results — compute real numeric values\n"
-            "- NEVER produce a TOY or oversimplified version: no faked heuristics, no trivial stand-ins "
-            "for the real algorithm, no logic that merely LOOKS plausible while misrepresenting the "
-            "problem. If a known algorithm or named problem is involved, implement it CORRECTLY and "
-            "completely — a toy is an automatic rejection\n"
-            "- Use real libraries for real work (numpy, scipy, matplotlib, pandas, networkx, sympy, "
-            "sklearn, statsmodels, itertools, functools, multiprocessing, etc.) — pick what actually fits\n"
-            "- Use ONLY library functions that ACTUALLY EXIST (e.g. for networkx clique problems, "
-            "use `nx.find_cliques(G)` or `nx.graph_clique_number(G)` ONLY if you know the exact API; "
-            "when unsure, implement via `itertools.combinations` and explicit edge checks)\n"
-            "- Multiple cohesive functions (decompose by responsibility); main() orchestrates them\n"
-            "- All imports at top, type hints on every signature, module-level constants, "
-            "comprehensive docstrings, try/except around I/O and external calls\n"
-            "- If using argparse, EVERY argument needs a sensible default — the script must run with no args\n"
-            "- Include `if __name__ == '__main__':` guard"
-            + _extra_req_block + "\n\n"
-            f"Request: {desc}"
-        )
-
-        def _verify_python_module_apis(_code: str) -> str | None:
-            """Verify <module>.<attr> references actually exist in the installed library.
-            Catches hallucinated APIs like nx.is_clique, nx.graph_clique_number, np.bool, etc.
-            Only checks fast-to-import libs to keep latency low."""
-            import importlib as _il
-            # alias -> module name (only checked if alias is used as module.attr)
-            _ALIAS_DEFAULT = {
-                "nx": "networkx", "np": "numpy", "pd": "pandas",
-                "sp": "scipy", "sk": "sklearn", "sym": "sympy",
-            }
-            _SKIP_HEAVY = {"matplotlib", "matplotlib.pyplot", "torch", "tensorflow", "cv2"}
-            _aliases = dict(_ALIAS_DEFAULT)
-            for _m in re.finditer(r"^\s*import\s+([\w.]+)\s+as\s+(\w+)", _code, re.MULTILINE):
-                _aliases[_m.group(2)] = _m.group(1)
-            for _m in re.finditer(r"^\s*import\s+([\w.]+)\s*$", _code, re.MULTILINE):
-                _aliases[_m.group(1).split(".")[0]] = _m.group(1)
-            _bad = []
-            for _alias, _modname in _aliases.items():
-                if _modname in _SKIP_HEAVY:
-                    continue
-                if not re.search(rf"\b{re.escape(_alias)}\.[a-zA-Z_]", _code):
-                    continue
-                try:
-                    _mod = _il.import_module(_modname)
-                except Exception:
-                    continue
-                for _m in re.finditer(rf"\b{re.escape(_alias)}\.([a-zA-Z_]\w*)", _code):
-                    _attr = _m.group(1)
-                    if not hasattr(_mod, _attr):
-                        ref = f"{_alias}.{_attr}"
-                        if ref not in _bad:
-                            _bad.append(ref)
-            if _bad:
-                return (
-                    f"code references non-existent module APIs: {', '.join(_bad[:5])}. "
-                    "Use only attributes that actually exist in the installed library."
-                )
-            return None
-
-        def _quality_reject_reason(_code: str) -> str | None:
-            """Return rejection reason or None if code passes quality bar."""
-            _low = _code.lower()
-            _refusal_phrases = (
-                "is not feasible", "is impossible", "cannot be solved",
-                "is an open question", "is an unsolved", "remains unsolved",
-                "no known algorithmic solution", "writing a python script to solve this",
-                "i cannot write", "i can't write", "i won't",
-            )
-            if any(p in _low for p in _refusal_phrases) and _code.count("\n") < 30:
-                return "model refused the task with prose instead of producing code"
-            _bad_markers = (
-                "TODO", "Add code here", "placeholder",
-                "Generate only the requested source code", "This is a request for",
-            )
-            if any(_m.lower() in _code.lower() for _m in _bad_markers):
-                return "output contained stub/template markers"
-            _lines_real = [l for l in _code.splitlines()
-                           if l.strip() and not l.strip().startswith("#")
-                           and not l.strip().startswith('"""')]
-            if len(_lines_real) < 8:
-                return "output was too short to be a real implementation"
-            if re.fullmatch(r"\s*(?:pass|return\s+None)\s*", _code):
-                return "output was an empty implementation"
-            _real_compute_re = re.compile(
-                r"\b(?:numpy|scipy|matplotlib|networkx|sympy|itertools|pandas|sklearn|"
-                r"statsmodels|math\.|random\.|statistics\.|collections\.|functools\.|"
-                r"np\.|plt\.|nx\.|sp\.|pd\.|for\s+\w+\s+in\s+range|"
-                r"while\s+|yield\s+|class\s+\w+|"
-                r"[\+\-\*\/\%]=|==|!=|>=|<=|>>|<<)\b"
-            )
-            if not _real_compute_re.search(_code):
-                return "output contained only text analysis, no real computation"
-            # Function count check
-            _func_count = len(re.findall(r"^\s*def\s+\w+", _code, re.MULTILINE))
-            if _analytical and _func_count < 2:
-                return "analytical task needs decomposition into multiple functions"
-            # All-required-args check
-            if "argparse" in _code:
-                _required_args = re.findall(r"add_argument\s*\([^)]*required\s*=\s*True", _code)
-                _has_defaults = re.search(r"add_argument\s*\([^)]*default\s*=", _code)
-                if _required_args and not _has_defaults:
-                    return "argparse uses required=True without defaults — script can't run without args"
-            # Plot requirement
-            if _wants_plot and _detected_lang == "Python":
-                if not re.search(r"\b(?:plt\.|matplotlib|pyplot|seaborn|sns\.)\b", _code):
-                    return "request implies visualisation but no matplotlib/plotting was used"
-                if not re.search(r"\bplt\.savefig\b", _code):
-                    return "matplotlib used but plt.savefig was not called"
-            # Python AST syntax check + known-bad API blacklist
-            if _detected_lang == "Python":
-                import ast as _ast_q
-                try:
-                    _ast_q.parse(_code)
-                except SyntaxError as _se:
-                    return f"generated code has Python SyntaxError: {_se}"
-                _bad = _verify_python_module_apis(_code)
-                if _bad:
-                    return _bad
-            return None
-
-        def _sandbox_run_python(_code: str) -> tuple[bool, str]:
-            """Execute generated Python to catch runtime crashes before the script
-            is handed to the user. **Delegates to the one canonical sandbox**
-            (`eli/coding/sandbox.run_code`) instead of duplicating it.
-
-            Returns (ok, reason). ok=False ONLY on a genuine unhandled Python
-            exception; clean exit, a timeout (started fine — long/monitor code), a
-            signal/limit kill, and a missing optional dependency are all tolerated.
-            Disable with ELI_GENSCRIPT_VERIFY_RUN=0; timeout via
-            ELI_GENSCRIPT_RUN_TIMEOUT (default 20s)."""
-            import os as _os
-            if _os.environ.get("ELI_GENSCRIPT_VERIFY_RUN", "1").strip().lower() in ("0", "false", "no", "off"):
-                return True, ""
-            try:
-                _timeout = float(_os.environ.get("ELI_GENSCRIPT_RUN_TIMEOUT", "20") or 20)
-            except Exception:
-                _timeout = 20.0
-            try:
-                from eli.coding.sandbox import run_code as _run_code
-                _r = _run_code(_code, "python", timeout=_timeout)
-            except Exception:
-                return True, ""           # sandbox infra failure — never block generation
-            if _r.clean:
-                return True, ""
-            return False, (_r.traceback_tail or _r.note or "runtime crash")
-
-        # Try GGUF first (local, fast, no Ollama dependency)
-        try:
-            from eli.cognition import gguf_inference as _gguf
-            _model = _gguf.load_model()
-            if _model is not None:
-                import re as _re
-                _attempt_tokens = 8000 if (_analytical or _wants_plot) else 4500
-                code = ""
-                _reject_reason = None
-                # 3 attempts: room for a static-quality fix AND a runtime-crash
-                # repair pass (the sandbox traceback is fed back as feedback).
-                for _attempt in range(3):
-                    _attempt_prompt = prompt
-                    if _attempt > 0 and _reject_reason:
-                        _attempt_prompt = (
-                            prompt
-                            + f"\n\nPREVIOUS ATTEMPT WAS REJECTED: {_reject_reason}. "
-                            "Fix this specifically. Produce a substantially more complete implementation."
-                        )
-                    raw_out = _gguf.chat_completion(
-                        _attempt_prompt,
-                        system=(
-                            f"You are an expert {_detected_lang} engineer who writes "
-                            "frontier-quality, decomposed, runnable code. Output only raw "
-                            f"{_detected_lang} code with NO markdown fences and NO explanation."
-                        ),
-                        max_tokens=_attempt_tokens,
-                        temperature=0.2,
-                        top_p=0.9,
-                    )
-                    if not raw_out or len(raw_out.strip()) < 20:
-                        _reject_reason = "model returned empty output"
-                        continue
-                    candidate = _re.sub(r"^```[a-z]*\n?", "", raw_out.strip(), flags=_re.MULTILINE)
-                    candidate = _re.sub(r"\n?```$", "", candidate.strip(), flags=_re.MULTILINE).strip()
-                    _reject_reason = _quality_reject_reason(candidate)
-                    if _reject_reason is None and _detected_lang == "Python":
-                        _ran_ok, _run_err = _sandbox_run_python(candidate)
-                        if not _ran_ok:
-                            _reject_reason = f"script crashed at runtime — fix this exact error:\n{_run_err}"
-                    if _reject_reason is None:
-                        code = candidate
-                        break
-                    log.debug(f"[GENERATE_SCRIPT] attempt {_attempt + 1} rejected: {_reject_reason}")
-                if not code:
-                    msg = f"Generated script rejected after retries: {_reject_reason or 'unknown'}"
-                    return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-                safe = _re.sub(r"[^a-z0-9]+", "_", desc.lower())[:40].strip("_")
-                fname = f"{safe}{_detected_ext}" if safe else f"generated{_detected_ext}"
-                scripts_dir = _eli_generated_scripts_dir()
-                scripts_dir.mkdir(parents=True, exist_ok=True)
-                full_path = scripts_dir / fname
-                full_path.write_text(code, encoding="utf-8")
-                _gs_chat = json.dumps(
-                    {
-                        "event": "artifact_generated",
-                        "kind": "script",
-                        "path": str(full_path),
-                        "filename": fname,
-                        "language": _detected_lang,
-                        "opened": True,
-                        "can_run": True,
-                    },
-                    ensure_ascii=False,
-                    default=str,
-                )
-                return {"ok": True, "action": a, "code": code,
-                        "script_path": str(full_path), "filename": fname,
-                        "content": _gs_chat, "response": _gs_chat,
-                        "open_in_ide": True}
-        except Exception as _e:
-            log.debug(f"[GENERATE_SCRIPT] GGUF failed: {_e}, falling back to Ollama")
-        # Ollama fallback
-        result = chat(prompt, skip_router=True)
-        code = result.get("content", "").strip()
-        import re as _re
-        code = _re.sub(r"^```[a-z]*\n?", "", code, flags=_re.MULTILINE)
-        code = _re.sub(r"\n?```$", "", code, flags=_re.MULTILINE)
-        code = code.strip()
-        _reject_reason2 = _quality_reject_reason(code)
-        if _reject_reason2 is None and _detected_lang == "Python":
-            _ran_ok2, _run_err2 = _sandbox_run_python(code)
-            if not _ran_ok2:
-                _reject_reason2 = f"script crashed at runtime: {_run_err2}"
-        if _reject_reason2 is not None:
-            msg = f"Generated script rejected: {_reject_reason2}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        safe = _re.sub(r"[^a-z0-9]+", "_", desc.lower())[:40].strip("_")
-        fname = f"{safe}{_detected_ext}" if safe else f"generated{_detected_ext}"
-        # Save script to disk
-        scripts_dir = _eli_generated_scripts_dir()
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        full_path = scripts_dir / fname
-        full_path.write_text(code, encoding="utf-8")
-        result["action"] = a
-        result["code"] = code
-        result["script_path"] = str(full_path)
-        result["filename"] = fname
-        result["open_in_ide"] = True
-        _gs_msg = json.dumps(
-            {
-                "event": "artifact_generated",
-                "kind": "script",
-                "path": str(full_path),
-                "filename": fname,
-                "language": _detected_lang,
-                "opened": False,
-                "can_run": True,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
-        result["content"] = _gs_msg
-        result["response"] = _gs_msg
-        return result
-
-    # ---- Background job inspection ----
     if a in ("CHECK_JOB", "BACKGROUND_JOBS"):
         import re as _re_jb
         from eli.runtime.background_tasks import get_background_tasks as _get_bt
@@ -8866,111 +3964,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return {"ok": True, "action": a, "job": t, "content": msg, "response": msg}
 
     # ---- CODE_SOLVE — frontier coding agent (plan→search→verify→repair) ----
-    if a == "CODE_SOLVE":
-        import json as _json_cs, re as _re_cs
-        desc = (args.get("description") or args.get("text") or args.get("prompt")
-                or args.get("query") or "").strip()
-        if not desc:
-            msg = "Missing description for CODE_SOLVE"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        # Code-mode redirect: run a short program IN-PROCESS against eli.api to FULFIL the
-        # request (not produce a standalone script). Opt-in via args.code_mode; the
-        # restricted executor refuses unless Full Control is ON, so this is fail-closed.
-        if args.get("code_mode") or args.get("execute_via_eli"):
-            try:
-                from eli.coding.code_mode import run_code_mode
-                from eli.cognition.inference_broker import get_broker
-                _brk = get_broker()
-
-                def _cm_gen(p: str) -> str:
-                    if _brk is None or not getattr(_brk, "gguf_ready", False):
-                        return ""
-                    return _brk.infer(
-                        p, system="You drive ELI by writing short Python programs that call `api`.",
-                        max_tokens=int(args.get("max_tokens") or 700)) or ""
-
-                _cm = run_code_mode(desc, _cm_gen, max_attempts=int(args.get("max_attempts") or 2))
-                if _cm.get("blocked"):
-                    _m = _cm.get("message") or "Code-mode needs Full Control enabled (GUI toggle)."
-                    return {"ok": False, "action": a, "blocked": True, "content": _m, "response": _m}
-                if _cm.get("ok"):
-                    _res = _cm.get("result")
-                    _m = f"Done (code-mode). Result: {_res}"
-                    return {"ok": True, "action": a, "content": _m, "response": _m,
-                            "result": _res, "meta": {"code_mode": True, "code": _cm.get("code"),
-                                                     "attempts": _cm.get("attempts")}}
-                _m = f"Code-mode couldn't complete after {_cm.get('attempts')} attempt(s): {_cm.get('error')}"
-                return {"ok": False, "action": a, "content": _m, "response": _m}
-            except Exception as _cm_e:
-                _m = f"Code-mode error: {_cm_e}"
-                return {"ok": False, "action": a, "error": _m, "content": _m, "response": _m}
-        _bg = _maybe_background_codegen(a, args)
-        if _bg is not None:
-            return _bg
-        try:
-            from eli.coding import solve as _code_solve
-            _lang = (args.get("language") or "python").strip().lower()
-            # Quick vs Thorough (from the Coding tab). Quick = single-shot, lean.
-            _mode = str(args.get("mode") or "").strip().lower()
-            _solve_kw = {}
-            def _argint(k):
-                try:
-                    return int(args.get(k)) if args.get(k) is not None else None
-                except Exception:
-                    return None
-            if _mode == "quick":
-                _solve_kw = {"use_dag": False, "beam": 2, "max_iterations": 2}
-            else:
-                if args.get("use_dag") is not None:
-                    _solve_kw["use_dag"] = bool(args.get("use_dag"))
-                if _argint("beam") is not None:
-                    _solve_kw["beam"] = _argint("beam")
-                if _argint("max_iterations") is not None:
-                    _solve_kw["max_iterations"] = _argint("max_iterations")
-            res = _code_solve(desc, language=_lang, **_solve_kw)
-            code = res.get("code") or ""
-            if not code.strip():
-                msg = res.get("message") or "coding agent produced no solution"
-                return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-            # Final syntax gate: never present un-parseable Python as runnable.
-            _runnable = True
-            _syntax_note = ""
-            if _lang == "python":
-                try:
-                    import ast as _ast_cs
-                    _ast_cs.parse(code)
-                except SyntaxError as _se_cs:
-                    _runnable = False
-                    _syntax_note = f"SyntaxError: {_se_cs.msg} (line {_se_cs.lineno})"
-            _ext = {"python": ".py", "bash": ".sh", "javascript": ".js", "typescript": ".ts",
-                    "ruby": ".rb", "go": ".go", "lua": ".lua"}.get(_lang, ".txt")
-            # Park un-runnable output as a .draft so a user never accidentally runs
-            # a broken file and hits a traceback.
-            if not _runnable:
-                _ext = _ext + ".draft"
-            safe = _re_cs.sub(r"[^a-z0-9]+", "_", desc.lower())[:40].strip("_") or "solution"
-            scripts_dir = _eli_generated_scripts_dir()
-            scripts_dir.mkdir(parents=True, exist_ok=True)
-            full_path = scripts_dir / f"{safe}{_ext}"
-            full_path.write_text(code, encoding="utf-8")
-            _payload = _json_cs.dumps({
-                "event": "artifact_generated", "kind": "code_solution",
-                "path": str(full_path), "filename": full_path.name, "language": _lang,
-                "solved": res.get("solved"), "score": res.get("score"),
-                "bug_class": res.get("bug_class"), "can_run": _runnable, "opened": _runnable,
-                "runnable": _runnable, "syntax_note": _syntax_note,
-            }, ensure_ascii=False, default=str)
-            return {"ok": True, "action": a, "code": code, "script_path": str(full_path),
-                    "filename": full_path.name, "solved": bool(res.get("solved")) and _runnable,
-                    "runnable": _runnable, "syntax_note": _syntax_note,
-                    "score": res.get("score"), "plan": res.get("plan"),
-                    "search": res.get("search"), "bug_class": res.get("bug_class"),
-                    "content": _payload, "response": _payload, "open_in_ide": _runnable}
-        except Exception as _cs_e:
-            msg = f"CODE_SOLVE failed: {_cs_e}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-
-    # ---- CREATE_FILE — write text to a path (security-gated) + read back ----
     if a == "CREATE_FILE":
         import os as _os_cf, tempfile as _tf_cf, datetime as _dt_cf
         from pathlib import Path as _P_cf
@@ -9040,299 +4033,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 "content": msg, "response": msg}
 
     # ---- GENERATE_PROJECT ----
-    if a == "GENERATE_PROJECT":
-        desc = (args.get("description") or args.get("text") or args.get("prompt") or "").strip()
-        if not desc:
-            # Incomplete input, not a system fault — ask for the missing detail and mark
-            # fault=False so it isn't logged as a recurring error.
-            msg = "What would you like the project to do? Give me a sentence or two and I'll scaffold it."
-            return {"ok": True, "action": a, "fault": False, "needs_input": True,
-                    "content": msg, "response": msg}
-        # Ground in evidence gathered by the central evidence-routing hook.
-        _proj_ev = str(args.get("_evidence") or "")
-        _proj_ev_block = ("\n\nGrounding evidence gathered by ELI's agents — build on "
-                          "these real specifics; do not invent APIs, files, or behaviour:\n"
-                          + _proj_ev) if _proj_ev else ""
-        # Route through the coding PLANNER DAG: decompose into a subtask graph, solve
-        # nodes in dependency order, and VERIFY the composed module (CodeAgent →
-        # eli/coding/plan_graph + eli/core/dag). Falls back to a single-pass plan.
-        import os as _os_gp
-        if str(_os_gp.environ.get("ELI_PROJECT_DAG", "1")).lower() not in ("0", "false", "no", "off"):
-            try:
-                from eli.coding.agent import CodeAgent
-                cr = CodeAgent().solve(f"{desc}{_proj_ev_block}", use_dag=True)
-                if cr is not None and (getattr(cr, "code", "") or "").strip():
-                    plan = getattr(cr, "plan", {}) or {}
-                    steps = plan.get("steps") or (getattr(cr, "search", {}) or {}).get("order") or []
-                    import re as _re_gp
-                    safe = _re_gp.sub(r"[^a-z0-9]+", "_", desc.lower())[:50].strip("_") or "project"
-                    saved = _save_artifact(cr.code, "projects", safe, "py")
-                    lines = [
-                        f"Project built via the planner DAG "
-                        f"({plan.get('approach', 'subtask DAG')}): {len(steps)} step(s), "
-                        f"score {getattr(cr, 'score', 0.0):.2f}"
-                        f"{' (verified)' if getattr(cr, 'solved', False) else ' (best-effort)'}.",
-                    ]
-                    if steps:
-                        lines.append("Steps: " + " → ".join(str(s) for s in steps[:12]))
-                    lines.append(f"Saved → {saved}")
-                    lines.append("\n```python\n" + (cr.code or "")[:6000] + "\n```")
-                    msg = "\n".join(lines)
-                    return {"ok": True, "action": a, "content": msg, "response": msg,
-                            "doc_path": saved, "evidence_source": "planner_dag",
-                            "result": {"score": getattr(cr, "score", 0.0),
-                                       "solved": getattr(cr, "solved", False),
-                                       "steps": steps, "plan": plan}}
-            except Exception as _gp_e:
-                log.debug(f"[GENERATE_PROJECT] planner DAG failed, single-pass fallback: {_gp_e}")
-        prompt = f"Generate a complete project plan and starter files for: {desc}{_proj_ev_block}"
-        return chat(prompt, skip_router=True)
-
-    # ---- FIX_FILE ----
-    if a == "FIX_FILE":
-        from pathlib import Path as _Path
-        import re as _re_ff
-        path = str(args.get("path") or "").strip()
-        path = _re_ff.sub(r'^file\s+', '', path, flags=_re_ff.IGNORECASE).strip()
-        if not path:
-            # Bare "please fix the file" — recover the file the user named a turn earlier
-            # (e.g. the FIX_FILE/EXAMINE_CODE target) instead of failing outright.
-            try:
-                from eli.runtime import code_examiner as _ce_lf
-                path = str(_ce_lf.get_last_file() or "").strip()
-            except Exception:
-                path = ""
-        if not path:
-            msg = ("I don't have a file to fix yet — tell me which one "
-                   "(e.g. 'fix eli/memory/memory.py').")
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        pp = _resolve_existing_user_or_artifact_path(path)
-        if pp.exists():
-            try:
-                from eli.runtime import code_examiner as _ce_lf
-                _ce_lf.set_last_file(str(pp))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-        if not pp.exists():
-            msg = f"Path not found: {pp}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        original = pp.read_text(encoding='utf-8', errors='replace')
-        extra_error = str(args.get("error") or args.get("stderr") or "").strip()
-        ext_to_lang = {
-            ".py": "Python", ".sh": "Bash", ".bash": "Bash", ".js": "JavaScript",
-            ".ts": "TypeScript", ".rb": "Ruby", ".go": "Go", ".rs": "Rust",
-            ".lua": "Lua", ".pl": "Perl", ".java": "Java", ".cpp": "C++",
-            ".c": "C", ".cs": "C#", ".php": "PHP", ".swift": "Swift",
-            ".kt": "Kotlin", ".r": "R", ".ps1": "PowerShell",
-        }
-        lang = ext_to_lang.get(pp.suffix.lower(), "the same language")
-        err_block = f"\n\nReported error / stderr:\n{extra_error}" if extra_error else ""
-        # IMPROVE mode (router: file.improve_python) vs FIX mode: same machinery, different
-        # intent — make working code better (clarity/correctness/robustness, dedupe, dead
-        # code) vs correct errors. Both go through the verified CodeAgent below.
-        _improve = str(args.get("mode") or "").strip().lower() == "improve"
-        _verb = "Improve" if _improve else "Fix"
-        def _verify_python_apis_ff(_code: str) -> str | None:
-            """Same as the GENERATE_SCRIPT path verifier — checks <module>.<attr> against installed libs."""
-            import importlib as _il
-            _ALIAS_DEFAULT = {
-                "nx": "networkx", "np": "numpy", "pd": "pandas",
-                "sp": "scipy", "sk": "sklearn", "sym": "sympy",
-            }
-            _SKIP_HEAVY = {"matplotlib", "matplotlib.pyplot", "torch", "tensorflow", "cv2"}
-            _aliases = dict(_ALIAS_DEFAULT)
-            for _m in _re_ff.finditer(r"^\s*import\s+([\w.]+)\s+as\s+(\w+)", _code, _re_ff.MULTILINE):
-                _aliases[_m.group(2)] = _m.group(1)
-            for _m in _re_ff.finditer(r"^\s*import\s+([\w.]+)\s*$", _code, _re_ff.MULTILINE):
-                _aliases[_m.group(1).split(".")[0]] = _m.group(1)
-            _bad = []
-            for _alias, _modname in _aliases.items():
-                if _modname in _SKIP_HEAVY:
-                    continue
-                if not _re_ff.search(rf"\b{_re_ff.escape(_alias)}\.[a-zA-Z_]", _code):
-                    continue
-                try:
-                    _mod = _il.import_module(_modname)
-                except Exception:
-                    continue
-                for _m in _re_ff.finditer(rf"\b{_re_ff.escape(_alias)}\.([a-zA-Z_]\w*)", _code):
-                    _attr = _m.group(1)
-                    if not hasattr(_mod, _attr):
-                        ref = f"{_alias}.{_attr}"
-                        if ref not in _bad:
-                            _bad.append(ref)
-            if _bad:
-                return (
-                    f"code references non-existent module APIs: {', '.join(_bad[:5])}. "
-                    "Use only attributes that actually exist."
-                )
-            return None
-
-        base_fix_prompt = (
-            f"{'Improve' if _improve else 'Fix'} the following {lang} file. Return ONLY the "
-            "complete " + ("improved" if _improve else "corrected") + " source code — "
-            "no markdown fences, no prose, no explanation, no diff. The entire output must be "
-            "the new file content that can be saved verbatim and run.\n\n"
-            "HARD REQUIREMENTS:\n"
-            "- Use ONLY real library APIs that actually exist; verify function names\n"
-            "- For networkx clique detection, do NOT use nx.is_clique or nx.graph_clique_number "
-            "(neither exists). Instead implement via itertools.combinations + explicit edge checks: "
-            "  `all(G.has_edge(u, v) for u, v in combinations(subset, 2))`\n"
-            "- Replace any non-existent calls with working equivalents from the same library\n"
-            "- Preserve the original intent and structure; minimal but complete fixes\n"
-            "- Keep all original functionality working\n"
-            "- Implement REAL logic — never a toy/oversimplified/faked/hardcoded stand-in for "
-            "the real work; if a known algorithm/problem is involved, implement it correctly\n"
-            "- No TODO stubs, no placeholders, no commentary lines explaining the fix\n"
-            f"- Output must be valid {lang} that parses cleanly\n\n"
-            f"File path: {pp}{err_block}\n\n"
-            "=== ORIGINAL FILE CONTENT BEGINS ===\n"
-            f"{original[:30000]}\n"
-            "=== ORIGINAL FILE CONTENT ENDS ===\n\n"
-            f"Output the fixed {lang} file content now (raw code only):"
-        )
-
-        fixed_code = ""
-        ff_reject_reason = None
-        # Python: route the fix through the VERIFIED CodeAgent first — syntax + static-lint
-        # (pyflakes) + execution + repo-context + self-critique (the A–E ladder) — so a fix
-        # can't ship broken code like `def main:`. Falls through to the legacy loop below for
-        # non-Python, or if the agent yields nothing usable.
-        if pp.suffix.lower() == ".py":
-            try:
-                from eli.coding import solve as _code_solve
-                if _improve:
-                    _fix_task = (
-                        "Improve this Python file and return the COMPLETE improved source. "
-                        "Make it clearer, more correct, more robust, and better-structured "
-                        "WITHOUT changing its external behaviour or purpose; remove duplication "
-                        "and dead code; keep all existing functionality; use only real library "
-                        "APIs that exist."
-                    )
-                else:
-                    _fix_task = (
-                        "Fix this Python file and return the COMPLETE corrected source. Preserve "
-                        "the original intent and structure; make minimal but complete fixes; use "
-                        "only real library APIs that exist."
-                    )
-                _fix_task += (
-                    (f" Reported error: {extra_error}." if extra_error else "")
-                    + f"\n\n--- FILE: {pp.name} ---\n{original[:24000]}"
-                )
-                # FULL verified pass — beam search + repair iterations + self-critique.
-                # Quality over latency by explicit choice: a thorough, correct fix is worth
-                # the wait. Do NOT cut beam/iterations to save time.
-                # use_dag=False: a single-file fix is ONE coherent rewrite, NOT a multi-
-                # component build. The DAG path decomposes into components that each
-                # regenerate the whole file and compose() concatenates them (deduping only
-                # imports), which DUPLICATED the file 6× on the live run. Single-solve only.
-                _cr = _code_solve(_fix_task, language="python", use_tests=False,
-                                  beam=2, max_iterations=3, use_dag=False)
-                _cand = str((_cr or {}).get("code") or "").strip()
-                if _cand and len(_cand) >= 20 and _cand != original.strip():
-                    import ast as _ast_v
-                    try:
-                        _ast_v.parse(_cand)          # belt-and-suspenders (agent already gated)
-                        fixed_code = _cand
-                        log.debug(f"[FIX_FILE] CodeAgent produced verified fix "
-                                  f"(score {(_cr or {}).get('score')})")
-                    except SyntaxError:
-                        log.debug("suppressed exception", exc_info=True)
-            except Exception as _ca_e:
-                log.debug(f"[FIX_FILE] CodeAgent path skipped: {_ca_e}")
-        for _ff_attempt in range(2):
-            if fixed_code:
-                break
-            _ff_prompt = base_fix_prompt
-            if _ff_attempt > 0 and ff_reject_reason:
-                _ff_prompt = (
-                    base_fix_prompt
-                    + f"\n\nPREVIOUS ATTEMPT WAS REJECTED: {ff_reject_reason}. "
-                    "Fix this specifically. Use only APIs that actually exist in the installed library."
-                )
-            _candidate = ""
-            try:
-                from eli.cognition import gguf_inference as _gguf_ff
-                if _gguf_ff.load_model() is not None:
-                    raw = _gguf_ff.chat_completion(
-                        _ff_prompt,
-                        system=(
-                            f"You are an expert {lang} engineer fixing real code. "
-                            "Output ONLY the corrected file content — no fences, no prose. "
-                            "Use only library APIs that actually exist."
-                        ),
-                        max_tokens=8000,
-                        temperature=0.15,
-                        top_p=0.85,
-                    )
-                    if raw:
-                        cand = _re_ff.sub(r"^```[a-z]*\n?", "", raw.strip(), flags=_re_ff.MULTILINE)
-                        cand = _re_ff.sub(r"\n?```$", "", cand.strip(), flags=_re_ff.MULTILINE).strip()
-                        _candidate = cand
-            except Exception as _ff_e:
-                log.debug(f"[FIX_FILE] GGUF path failed: {_ff_e}, falling back to chat")
-            if not _candidate:
-                chat_result = chat(_ff_prompt, skip_router=True)
-                raw = (chat_result.get("content") or "").strip()
-                cand = _re_ff.sub(r"^```[a-z]*\n?", "", raw, flags=_re_ff.MULTILINE)
-                cand = _re_ff.sub(r"\n?```$", "", cand.strip(), flags=_re_ff.MULTILINE).strip()
-                _candidate = cand
-            if not _candidate or len(_candidate) < 20:
-                ff_reject_reason = "model returned no usable code"
-                continue
-            if _candidate.strip() == original.strip():
-                ff_reject_reason = "model returned the file unchanged"
-                continue
-            if pp.suffix.lower() == ".py":
-                import ast as _ast_ff
-                try:
-                    _ast_ff.parse(_candidate)
-                except SyntaxError as _se:
-                    ff_reject_reason = f"corrected code has SyntaxError: {_se}"
-                    continue
-                _api_bad = _verify_python_apis_ff(_candidate)
-                if _api_bad:
-                    ff_reject_reason = _api_bad
-                    log.debug(f"[FIX_FILE] attempt {_ff_attempt + 1} rejected: {_api_bad}")
-                    continue
-            fixed_code = _candidate
-            break
-        if not fixed_code:
-            msg = f"Fix failed after retries: {ff_reject_reason or 'unknown reason'}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        try:
-            _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup = pp.with_suffix(pp.suffix + f".bak.{_ts}")
-            backup.write_text(original, encoding="utf-8")
-        except Exception as _bak_err:
-            msg = f"FIX_FILE aborted: could not write backup for {pp}: {_bak_err}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        pp.write_text(fixed_code, encoding="utf-8")
-        evt = {
-            "event": "artifact_generated",
-            "kind": "script",
-            "path": str(pp),
-            "filename": pp.name,
-            "language": lang,
-            "fixed": True,
-            "backup": str(backup) if backup else None,
-            "opened": True,
-            "can_run": True,
-        }
-        evt_json = json.dumps(evt, ensure_ascii=False, default=str)
-        return {
-            "ok": True,
-            "action": "FIX_FILE",
-            "code": fixed_code,
-            "script_path": str(pp),
-            "path": str(pp),
-            "filename": pp.name,
-            "content": evt_json,
-            "response": evt_json,
-            "open_in_ide": True,
-        }
-
-    # ---- CREATE_FOLDER (new action) ----
     if a == "CREATE_FOLDER":
         import re as _re
         raw = (args.get("name") or args.get("path") or "").strip()
@@ -9428,41 +4128,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return chat("Show me the recent changes or diff in the project.", skip_router=True)
 
     # ---- MEMORY_STATS ----
-    if a == "MEMORY_STATS":
-        try:
-            from eli.memory import get_memory
-            mem = get_memory()
-            conn = mem._get_connection()
-            try:
-                counts = {}
-                for table in ["memories", "conversations", "observations", "failures"]:
-                    try:
-                        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-                        counts[table] = row[0] if row else 0
-                    except Exception:
-                        counts[table] = "N/A"
-                msg = "Memory Stats:\n" + "\n".join(f"  {k}: {v}" for k, v in counts.items())
-            finally:
-                conn.close()
-            # Append conversation log stats from the rotation module
-            try:
-                from eli.perception.log_rotation import convlog_stats
-                log_info = convlog_stats()
-                log_lines = [
-                    f"  log_files: {log_info.get('file_count', 'N/A')}",
-                    f"  log_total_mb: {log_info.get('total_mb', 'N/A')}",
-                ]
-                msg += "\nConversation Logs:\n" + "\n".join(log_lines)
-                counts["log_stats"] = log_info
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            return {"ok": True, "action": a, "content": msg, "response": msg, "counts": counts}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-        
-
-    # ---- Window management (screen control) ────────────────────────────
-    # Tile / arrange windows so all are visible side-by-side. Linux-first.
     if a == "TILE_WINDOWS":
         if shutil.which("wmctrl"):
             try:
@@ -9506,105 +4171,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 "content": "wmctrl not installed; cannot tile windows.",
                 "response": "wmctrl not installed; cannot tile windows."}
 
-    if a == "MINIMISE_ALL":
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-k", "on"])
-            msg = "Showed desktop." if ok else "Failed to minimise all windows."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "super+d"])
-            msg = "Triggered show-desktop shortcut." if ok else "Failed to minimise all windows."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-                "content": "wmctrl or xdotool required to minimise all windows.",
-                "response": "wmctrl or xdotool required to minimise all windows."}
-
-    if a in ("MINIMIZE_APP", "MINIMISE_APP", "HIDE_APP", "MINIMIZE_WINDOW", "MINIMISE_WINDOW"):
-        # Per-app minimise. Delegates to the cross-platform window controller
-        # (Linux wmctrl/xdotool, macOS osascript, Windows ShowWindowAsync,
-        # Android home key). Mirrors the CLOSE_APP branch.
-        from eli.system.portable_app_control import minimize_app
-        name = str(args.get("name") or args.get("target") or args.get("app") or "").strip()
-        return minimize_app(name)
-
-    if a == "RESTORE_WINDOWS":
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-k", "off"])
-            msg = "Restored windows." if ok else "Failed to restore windows."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "wmctrl not installed",
-                "content": "wmctrl required to restore windows.",
-                "response": "wmctrl required to restore windows."}
-
-    if a == "MAXIMISE_WINDOW":
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"])
-            msg = "Maximised current window." if ok else "Failed to maximise window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "super+Up"])
-            msg = "Triggered maximise shortcut." if ok else "Failed to maximise window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-                "content": "wmctrl or xdotool required to maximise.",
-                "response": "wmctrl or xdotool required to maximise."}
-
-    if a == "NEXT_WINDOW":
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "alt+Tab"])
-            msg = "Switched to next window." if ok else "Failed to switch window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "xdotool not installed",
-                "content": "xdotool required to cycle windows.",
-                "response": "xdotool required to cycle windows."}
-
-    if a == "PREVIOUS_WINDOW":
-        if shutil.which("xdotool"):
-            ok = _run_ok(["xdotool", "key", "alt+shift+Tab"])
-            msg = "Switched to previous window." if ok else "Failed to switch window."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "xdotool not installed",
-                "content": "xdotool required to cycle windows.",
-                "response": "xdotool required to cycle windows."}
-
-    if a == "SWITCH_WORKSPACE":
-        direction = str(args.get("direction") or "right").lower()
-        if shutil.which("xdotool"):
-            key = "ctrl+alt+Right" if direction == "right" else "ctrl+alt+Left"
-            ok = _run_ok(["xdotool", "key", key])
-            msg = f"Switched workspace {direction}." if ok else "Failed to switch workspace."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        return {"ok": False, "action": a, "error": "xdotool not installed",
-                "content": "xdotool required to switch workspaces.",
-                "response": "xdotool required to switch workspaces."}
-
-    if a == "FOCUS_APP":
-        name = str(args.get("name") or args.get("app") or "").strip()
-        if not name:
-            return {"ok": False, "action": a, "error": "missing app name",
-                    "content": "Specify app to focus.", "response": "Specify app to focus."}
-        if shutil.which("wmctrl"):
-            ok = _run_ok(["wmctrl", "-a", name])
-            msg = f"Focused {name}." if ok else f"Could not focus {name} — window not found."
-            return {"ok": ok, "action": a, "content": msg, "response": msg}
-        if shutil.which("xdotool"):
-            try:
-                proc = subprocess.run(
-                    ["xdotool", "search", "--name", name],
-                    capture_output=True, text=True, timeout=4
-                )
-                ids = [w for w in (proc.stdout or "").split() if w.strip()]
-                if ids:
-                    ok = _run_ok(["xdotool", "windowactivate", ids[0]])
-                    msg = f"Focused {name}." if ok else f"Could not focus {name}."
-                    return {"ok": ok, "action": a, "content": msg, "response": msg}
-            except Exception as e:
-                return {"ok": False, "action": a, "error": str(e),
-                        "content": str(e), "response": str(e)}
-        return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-                "content": "wmctrl or xdotool required to focus apps.",
-                "response": "wmctrl or xdotool required to focus apps."}
-
     # ---- SCREEN_LOCATE — find/click visible UI text via OCR ─────────────
     if a == "SCREEN_LOCATE":
         query = str(args.get("query") or "").strip()
@@ -9637,139 +4203,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                     "content": f"Screen locator failed: {e}",
                     "response": f"Screen locator failed: {e}"}
 
-    # ---- CLOSE_APP ----
-    if a == "CLOSE_APP":
-        name = str(args.get("name") or args.get("app") or "").strip()
-        if not name:
-            return {"ok": False, "action": a, "error": "missing app name", "content": "Specify app to close.", "response": "Specify app to close."}
-        tried = []
-        for cmd in [["wmctrl", "-c", name], ["pkill", "-f", name], ["pkill", name], ["killall", name]]:
-            if shutil.which(cmd[0]):
-                tried.append(cmd[0])
-                if _run_ok(cmd):
-                    msg = f"Closed {name} via {cmd[0]}."
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-        msg = f"Could not close {name}. Tried: {', '.join(tried) or 'no tools found'}."
-        return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-
     # ---- ANALYZE_IMAGE (metadata + OCR; never confabulate visual content) ----
-    if a == "ANALYZE_IMAGE":
-        import os as _ai_os
-        from pathlib import Path as _AIPP
-        path = str(args.get("path") or args.get("file") or "").strip()
-        if not path:
-            msg = "Specify an image file to analyze."
-            return {"ok": False, "action": a, "error": "missing path", "content": msg, "response": msg}
-        expanded = _ai_os.path.expanduser(path)
-        if not _ai_os.path.exists(expanded):
-            msg = f"Image not found: {expanded}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        try:
-            from eli.perception.analyze_image import analyze_image_file
-        except Exception as _ai_err:
-            msg = f"Image analysis is unavailable: {_ai_err}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        _ai_stem = _AIPP(expanded).stem
-        _ai_out = str(get_paths().artifacts_dir / f"image_report_{_ai_stem}.md")
-        try:
-            rep = analyze_image_file(expanded, _ai_out, ocr=True)
-        except Exception as _ai_err:
-            msg = f"Image analysis failed: {_ai_err}"
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        if not rep.get("ok"):
-            msg = rep.get("error") or "Image analysis failed."
-            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
-        _ai_w, _ai_h = rep.get("width"), rep.get("height")
-        _ai_dims = f"{_ai_w}×{_ai_h} px" if _ai_w and _ai_h else "unknown dimensions"
-        _ai_fmt = rep.get("format", "image")
-        _ai_size = int(rep.get("size_bytes") or 0)
-        _ai_ocr = (rep.get("ocr_text") or "").strip()
-        _ai_name = _AIPP(expanded).name
-        _ai_prompt = str(args.get("prompt") or args.get("instruction") or "").strip() or None
-        _ai_prefer_fast = bool(args.get("prefer_fast"))
-
-        # Real vision first (local VL model). prefer_fast → small Moondream model
-        # for quick glances; falls back to the primary model.
-        _ai_vision_text = ""
-        _ai_vision_err = ""
-        try:
-            from eli.perception import vision as _eli_vision
-            _va_ok, _va_reason = _eli_vision.vision_available()
-            if not _va_ok and _ai_prefer_fast:
-                _va_ok, _va_reason = _eli_vision.fast_vision_available()
-            if _va_ok:
-                _vres = _eli_vision.describe_image(expanded, prompt=_ai_prompt, prefer_fast=_ai_prefer_fast)
-                if _vres.get("ok"):
-                    _ai_vision_text = str(_vres.get("text") or "").strip()
-                else:
-                    _ai_vision_err = str(_vres.get("error") or "")
-            else:
-                _ai_vision_err = _va_reason
-        except Exception as _ai_vexc:
-            _ai_vision_err = str(_ai_vexc)
-
-        # Fuse OCR (exact text) + the vision gist into an accurate, grounded
-        # description via the text model — compensates for the small vision
-        # model's inability to read dense UI text. Strictly evidence-only.
-        _ai_fused = ""
-        try:
-            from eli.core import config as _ai_cfg
-            _fuse_on = bool(_ai_cfg.get("vision_fuse_with_text_model", True))
-        except Exception:
-            _fuse_on = True
-        if _fuse_on and (_ai_vision_text or _ai_ocr):
-            try:
-                from eli.cognition import gguf_inference as _fgi
-                _ocr_clip = (_ai_ocr or "")[:2500]
-                _vis_clip = (_ai_vision_text or "(no visual description available)")[:1200]
-                _fuse_user = (
-                    f"OCR text read from the screen (authoritative for names/titles):\n{_ocr_clip}\n\n"
-                    f"Vision model's visual description:\n{_vis_clip}\n\n"
-                    f"Using ONLY the evidence above, write 2-4 sentences on what application/"
-                    f"content is shown and what the user appears to be doing. Prefer the OCR text "
-                    f"for exact names. Do not invent anything not present in the evidence."
-                )
-                _ai_fused = (_fgi.chat_completion(
-                    _fuse_user,
-                    system=("You describe what is on the user's screen strictly from the provided "
-                            "OCR + vision evidence. Never invent apps, text, or activities. Be concise."),
-                    max_tokens=300, temperature=0.3,
-                ) or "").strip()
-            except Exception as _fuse_err:
-                log.debug(f"[ANALYZE_IMAGE] fusion skipped: {_fuse_err}")
-                _ai_fused = ""
-
-        _ai_header = f"**{_ai_name}** ({_ai_fmt}, {_ai_dims}, {_ai_size:,} bytes)"
-        if _ai_fused:
-            body = _ai_fused
-        elif _ai_vision_text:
-            body = f"Looking at {_ai_header}:\n\n{_ai_vision_text}"
-            if _ai_ocr:
-                body += f"\n\n---\nText I can read in it (OCR):\n\n{_ai_ocr}"
-        elif _ai_ocr:
-            body = (
-                f"I ran OCR on {_ai_header}. Here is the text I extracted from it:\n\n{_ai_ocr}"
-            )
-            if _ai_vision_err:
-                body += (
-                    f"\n\n(I couldn't run full visual analysis — {_ai_vision_err} — "
-                    f"so this is text only.)"
-                )
-        else:
-            body = (
-                f"I examined {_ai_header}. No readable text was detected via OCR"
-            )
-            if _ai_vision_err:
-                body += (
-                    f", and I couldn't run visual analysis ({_ai_vision_err}). "
-                    f"I won't guess at what it shows."
-                )
-            else:
-                body += ". I won't guess at what it shows."
-        return {"ok": True, "action": a, "path": expanded, "ocr_text": _ai_ocr,
-                "vision_text": _ai_vision_text, "fused_text": _ai_fused, "report": rep,
-                "content": body, "response": body}
-
     # ---- SUMMARIZE_FILE ----
     if a == "SUMMARIZE_FILE":
         import os as _os2, subprocess as _sfsp
@@ -9938,53 +4372,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {'ok': False, 'action': a, 'error': str(_exc), 'content': str(_exc), 'response': str(_exc)}
 
     # ---- EXAMINE_CODE / CONFIRM_CODE_FIX / CANCEL_CODE_FIX ----
-    if a == 'EXAMINE_CODE':
-        request = (args or {}).get('request') or (args or {}).get('query') or ''
-        try:
-            from eli.runtime import code_examiner as _ce
-            # Cross-turn recall: "list the errors you found" replays the persisted
-            # last audit verbatim instead of re-scanning (or the model improvising).
-            if _ce.is_recall_request(request):
-                _saved = _ce.get_last_audit()
-                if _saved:
-                    report = _ce.format_saved_audit(_saved)
-                    return {'ok': True, 'action': a, 'content': report, 'response': report,
-                            'evidence_source': 'code_examiner_last_audit'}
-                # No saved audit → fall through and run a fresh scan.
-            paths = _ce.resolve_targets(request)
-            if not paths:
-                msg = ("I couldn't resolve any Python files to examine. Name a file "
-                       "(e.g. 'examine eli/memory/memory.py') or a module.")
-                return {'ok': True, 'action': a, 'content': msg, 'response': msg,
-                        'evidence_source': 'code_examiner_no_targets'}
-            findings = _ce.examine(paths)
-            _ce.save_last_audit(paths, findings)
-            # Report-only policy (2026-06-09): a broad/sweep audit NEVER offers to patch, and
-            # cosmetic lint is never auto-fixed. Fixing is offered only when the user named
-            # specific files AND there's genuine breakage (syntax / failed import / undefined
-            # name). This stops a vague "run full audit" from applying botched 7B lint patches
-            # to ELI's own core files.
-            _named = _ce._extract_named_paths(request)
-            # Anchor the conversational "current file" when the user named one,
-            # so a later "prove you actually read it" audits that file.
-            if _named:
-                try:
-                    _ce.set_last_file(str(_named[0]))
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-            _named = bool(_named)
-            _fixable = [f for f in findings if _ce.is_real_breakage(f)]
-            if _named and _fixable:
-                _ce.set_pending_fix(_fixable, paths)
-            else:
-                _ce.clear_pending_fix()
-            report = _ce.format_report(paths, findings, allow_fix=(_named and bool(_fixable)))
-            return {'ok': True, 'action': a, 'content': report, 'response': report,
-                    'evidence_source': 'code_examiner'}
-        except Exception as _exc:
-            msg = f"Code examination failed: {_exc}"
-            return {'ok': False, 'action': a, 'error': str(_exc), 'content': msg, 'response': msg}
-
     if a in ('CONFIRM_HABIT', 'DECLINE_HABIT'):
         try:
             from eli.planning.habits import get_pending_habit, clear_pending_habit
@@ -10050,71 +4437,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             msg = f"Habit update failed: {_hx}"
             return {'ok': False, 'action': a, 'error': str(_hx), 'content': msg, 'response': msg}
 
-    if a == 'CANCEL_CODE_FIX':
-        try:
-            from eli.runtime import code_examiner as _ce
-            _ce.clear_pending_fix()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        msg = "Okay — I won't change any code. The examination findings are cleared."
-        return {'ok': True, 'action': a, 'content': msg, 'response': msg}
-
-    if a == 'CONFIRM_CODE_FIX':
-        try:
-            from eli.runtime import code_examiner as _ce
-            from eli.runtime.self_improvement import get_self_improvement
-        except Exception as _imp_exc:
-            msg = f"Fix engine unavailable: {_imp_exc}"
-            return {'ok': False, 'action': a, 'error': str(_imp_exc), 'content': msg, 'response': msg}
-
-        pending = _ce.get_pending_fix()
-        if not pending:
-            msg = ("There's no pending examination to fix. Run 'examine <file> for "
-                   "errors' first.")
-            return {'ok': True, 'action': a, 'content': msg, 'response': msg}
-
-        # Tier-3 (logic) findings only get patched if the user explicitly opted in.
-        _msg_low = str((args or {}).get('message') or '').lower()
-        include_tier3 = bool(re.search(r"\b(logic|tier ?3|all|everything|including)\b", _msg_low))
-
-        findings = pending.get('findings') or []
-        confirmed = [f for f in findings
-                     if (not f.get('needs_confirmation')) or include_tier3]
-        skipped_tier3 = [f for f in findings if f.get('needs_confirmation') and not include_tier3]
-
-        engine = get_self_improvement()
-        steps = []
-        for f in confirmed:
-            target = f.get('file')
-            patch = _ce.generate_fix_patch(f)
-            if not patch.get('ok'):
-                steps.append({'file': target, 'status': 'skipped',
-                              'message': patch.get('error', 'no safe patch generated')})
-                continue
-            applied = engine.apply_code_patch(patch, verify=True)
-            status = 'applied' if applied.get('applied') else (
-                'reverted' if 'revert' in str(applied.get('message', '')).lower() else 'skipped')
-            steps.append({'file': target, 'status': status,
-                          'message': applied.get('message', '')})
-
-        _ce.clear_pending_fix()
-
-        lines = ["Code-fix cycle complete."]
-        n_applied = len([s for s in steps if s['status'] == 'applied'])
-        lines.append(f"- patches_applied: {n_applied}/{len(confirmed)}")
-        for s in steps:
-            lines.append(f"  - [{s['status']}] {s['file']}: {s['message'][:160]}")
-        if skipped_tier3:
-            lines.append(f"- left {len(skipped_tier3)} low-confidence (Tier-3) finding(s) "
-                         "untouched (say 'fix the logic ones too' to include them).")
-        if n_applied:
-            lines.append("Each applied patch was syntax-checked and import-verified; "
-                         "any that broke its module was auto-reverted.")
-        msg = "\n".join(lines)
-        return {'ok': True, 'action': a, 'content': msg, 'response': msg,
-                'evidence_source': 'code_examiner_fix'}
-
-    # ---- NEWS_FETCH ----
     if a == 'NEWS_FETCH':
         topic   = (args or {}).get('topic', '')
         sources = (args or {}).get('sources', ['all'])
@@ -10259,47 +4581,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {'ok': False, 'action': a, 'error': str(_exc), 'content': str(_exc), 'response': str(_exc)}
 
     # ---- CPU_USAGE ----
-    if a == "CPU_USAGE":
-        try:
-            import psutil
-            pct = psutil.cpu_percent(interval=0.5)
-            count = psutil.cpu_count()
-            freq = psutil.cpu_freq()
-            freq_str = f" @ {freq.current:.0f} MHz" if freq else ""
-            # Real CPU temperature (package/Tctl) so "cpu temperature" is grounded,
-            # not confabulated. None when the platform exposes no thermal sensor.
-            _cpu_temp = None
-            try:
-                _temps = getattr(psutil, "sensors_temperatures", lambda: {})() or {}
-                for _k in ("coretemp", "k10temp", "cpu_thermal", "acpitz"):
-                    _arr = _temps.get(_k)
-                    if not _arr:
-                        continue
-                    _pick = next((e for e in _arr if any(
-                        x in (getattr(e, "label", "") or "").lower()
-                        for x in ("package", "tctl", "tdie"))), _arr[0])
-                    if getattr(_pick, "current", None):
-                        _cpu_temp = int(round(_pick.current))
-                        break
-            except Exception:
-                _cpu_temp = None
-            _temp_str = f", {_cpu_temp}°C" if _cpu_temp is not None else ""
-            msg = f"CPU usage: {pct:.1f}%  ({count} cores{freq_str}{_temp_str})"
-            return {"ok": True, "action": a, "percent": pct, "cores": count,
-                    "temperature_c": _cpu_temp, "content": msg, "response": msg}
-        except ImportError:
-            import subprocess as _sp
-            try:
-                out = _sp.check_output(["top", "-bn1"], text=True, timeout=5)
-                cpu_line = next((l for l in out.splitlines() if "Cpu(s)" in l or "%Cpu" in l), "")
-                msg = f"CPU: {cpu_line.strip()}" if cpu_line else "CPU info unavailable (install psutil)"
-            except Exception:
-                msg = "CPU info unavailable (install psutil: pip install psutil)"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- RAM_USAGE ----
     if a == "RAM_USAGE":
         try:
             import psutil
@@ -10555,57 +4836,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- POMODORO (START / STOP / STATUS) ----
-    if a in ("POMODORO_START", "POMODORO_STOP", "POMODORO_STATUS"):
-        try:
-            from eli.core.paths import config_dir as _pcd
-            import json as _pj, time as _pt
-            pom_file = _pcd() / "pomodoro.json"
-
-            def _pom_load():
-                if pom_file.exists():
-                    try:
-                        return _pj.loads(pom_file.read_text(encoding="utf-8"))
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                return {}
-
-            def _pom_save(d):
-                pom_file.parent.mkdir(parents=True, exist_ok=True)
-                pom_file.write_text(_pj.dumps(d), encoding="utf-8")
-
-            if a == "POMODORO_STATUS":
-                state = _pom_load()
-                if not state.get("running"):
-                    msg = "No Pomodoro running."
-                else:
-                    elapsed = int(_pt.time() - state.get("start", _pt.time()))
-                    duration = state.get("duration", 1500)
-                    remaining = max(0, duration - elapsed)
-                    msg = (f"Pomodoro running — {elapsed // 60}m {elapsed % 60}s elapsed, "
-                           f"{remaining // 60}m {remaining % 60}s remaining.")
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-
-            if a == "POMODORO_START":
-                minutes = int(args.get("minutes") or args.get("duration") or 25)
-                state = {"running": True, "start": _pt.time(), "duration": minutes * 60}
-                _pom_save(state)
-                msg = f"Pomodoro started: {minutes} minutes. Focus!"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-
-            if a == "POMODORO_STOP":
-                state = _pom_load()
-                if state.get("running"):
-                    elapsed = int(_pt.time() - state.get("start", _pt.time()))
-                    state["running"] = False
-                    _pom_save(state)
-                    msg = f"Pomodoro stopped after {elapsed // 60}m {elapsed % 60}s."
-                else:
-                    msg = "No Pomodoro was running."
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ── DOC_GENERATE / GENERATE_DOCUMENT / CREATE_DOCUMENT ──────────────────
     if a in ("DOC_GENERATE", "GENERATE_DOCUMENT", "CREATE_DOCUMENT"):
         try:
             import re as _dre, tempfile as _dtmp
@@ -10711,8 +4941,6 @@ def _action_pre_dispatch(
             force=args.get("force", False),
             reason=args.get("reason", "manual"),
         )
-    if a == "PERSONA_REFRESH":
-        return _eli_persona_refresh(reason=args.get("reason", "manual"))
     if a == "USER_INFO_REPORT":
         return _eli_user_info_report(
             force=args.get("force", False),
@@ -10929,105 +5157,6 @@ def _action_post_dispatch(
     return result
 
 
-def _eli_open_url_action(raw_url=None, *, query=None):
-    """
-    Safe URL opener for OPEN_URL.
-
-    Rules:
-    - Accepts http/https URLs.
-    - Accepts bare domains like github.com and normalizes to https://github.com.
-    - Blocks unsupported schemes such as file:, javascript:, data:, ftp:, etc.
-    - Uses xdg-open without shell=True.
-    """
-    from urllib.parse import urlparse, quote_plus
-    import shutil
-    import subprocess
-    import webbrowser
-
-    value = str(raw_url or "").strip()
-
-    if not value and query:
-        value = "https://duckduckgo.com/?q=" + quote_plus(str(query).strip())
-
-    if not value:
-        msg = "No URL was provided."
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    # Allow common bare domains: github.com, openai.com/docs, etc.
-    if "://" not in value:
-        if " " in value or "." not in value:
-            msg = f"Not a valid URL or bare domain: {value!r}"
-            return {
-                "ok": False,
-                "action": "OPEN_URL",
-                "url": value,
-                "error": msg,
-                "content": f"⚡ Could not open URL. {msg}",
-                "response": f"⚡ Could not open URL. {msg}",
-            }
-        value = "https://" + value
-
-    parsed = urlparse(value)
-
-    if parsed.scheme not in {"http", "https"}:
-        msg = f"Blocked unsupported URL scheme: {parsed.scheme!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    if not parsed.netloc:
-        msg = f"URL is missing a domain: {value!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
-
-    try:
-        opener = shutil.which("xdg-open")
-        if opener:
-            subprocess.Popen(
-                [opener, value],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        else:
-            webbrowser.open(value, new=2)
-
-        msg = f"Opened URL: {value}"
-        return {
-            "ok": True,
-            "action": "OPEN_URL",
-            "url": value,
-            "content": msg,
-            "response": msg,
-        }
-
-    except Exception as exc:
-        msg = f"Failed to open URL: {exc!r}"
-        return {
-            "ok": False,
-            "action": "OPEN_URL",
-            "url": value,
-            "error": msg,
-            "content": f"⚡ Could not open URL. {msg}",
-            "response": f"⚡ Could not open URL. {msg}",
-        }
 
 
 def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
@@ -11115,151 +5244,17 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
         except Exception as e:
             _msg = f"User identity summary failed: {type(e).__name__}: {e}"
             return {"ok": False, "action": a, "content": _msg, "response": _msg, "error": repr(e)}
-    if a == 'SELF_REPORT':
-        rep = _runtime_status_report()
-        runtime_eff = rep.get('runtime') or {}
-        settings_req = rep.get('settings') or {}
-        # Active user's confirmed name belongs in identity evidence — without it
-        # "who are you / who am I" answers say "name not provided" and then
-        # confabulate a low-confidence story. This is the authoritative profile
-        # name (same source USER_IDENTITY_SUMMARY uses).
-        try:
-            from eli.kernel.state import get_user_name as _gun_sr
-            _active_user = str(_gun_sr("") or "").strip()
-        except Exception:
-            _active_user = ""
-        ev = {
-            "identity": {
-                "name": "ELI",
-                "expanded_name": "Enhanced Learning Interface",
-                "active_user_name": _active_user or "unknown",
-                "grounding_sources": [
-                    "persona",
-                    "memory",
-                    "runtime_state",
-                    "local_files",
-                    "loaded_model",
-                ],
-            },
-            "runtime": {
-                "model_path": runtime_eff.get('model_path') or rep.get('model_path', 'unknown'),
-                "effective_context_size": runtime_eff.get('n_ctx', 'unknown'),
-                "effective_gpu_layers": runtime_eff.get('n_gpu_layers', 'unknown'),
-                "effective_batch_size": runtime_eff.get('n_batch', 'unknown'),
-                "effective_cpu_threads": runtime_eff.get('n_threads', 'unknown'),
-            },
-            "requested_settings": {
-                "n_ctx": settings_req.get('n_ctx', 'unknown'),
-                "n_gpu_layers": settings_req.get('n_gpu_layers', 'unknown'),
-                "n_threads": settings_req.get('n_threads', 'unknown'),
-                "batch_size": settings_req.get('batch_size', 'unknown'),
-            },
-        }
-        # Runtime HEALTH — surface recommended-vs-effective and an explicit
-        # utilization assessment. Without this the evidence only shows
-        # "requested == effective" (trivially consistent), so the model concludes
-        # "no discrepancy" even when the GPU is barely used or ctx is oversized.
-        # Giving it the recommendation + concerns lets it flag the problem instead
-        # of confidently declaring all-clear (it has no grounding to invent one).
-        try:
-            _eff_layers = int(runtime_eff.get('n_gpu_layers') or 0)
-            _eff_ctx = int(runtime_eff.get('n_ctx') or 0)
-            _rec_ctx = int(settings_req.get('hw_profile_n_ctx') or 0)
-            _rec_layers = int(settings_req.get('hw_profile_n_gpu_layers') or 0)
-            _concerns = []
-            if _rec_ctx and _eff_ctx > _rec_ctx:
-                _concerns.append(
-                    f"context {_eff_ctx} exceeds the hardware-recommended {_rec_ctx}; "
-                    f"the oversized KV cache crowds GPU layers out of VRAM"
-                )
-            if _eff_layers <= 1:
-                _concerns.append(
-                    f"only {_eff_layers} GPU layer(s) offloaded — inference is running "
-                    f"almost entirely on CPU, which is slow"
-                )
-            ev["runtime_health"] = {
-                "recommended_n_ctx": _rec_ctx or "unknown",
-                "recommended_n_gpu_layers": _rec_layers or "unknown",
-                "concerns": _concerns or ["none — effective config is within recommended bounds"],
-            }
-        except Exception:
-            log.debug("runtime_health assessment failed", exc_info=True)
-        txt = json.dumps(ev, ensure_ascii=False, indent=2)
-        model_name = (runtime_eff.get('model_path') or rep.get('model_path', '')).split('/')[-1]
-        summary = (
-            f"I'm ELI (Enhanced Learning Interface), running {model_name} locally "
-            f"on GPU ({runtime_eff.get('n_gpu_layers', '?')} layers offloaded). "
-            f"Context window: {runtime_eff.get('n_ctx', '?')} tokens. "
-            f"All core systems nominal."
-        )
-        if _active_user:
-            summary += f" You're {_active_user}."
-        # content/response are user-facing — use the plain summary, never raw JSON.
-        # Structured data stays in report + evidence for grounding/introspection.
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep,
-                'evidence': ev, 'content': summary, 'response': summary}
-    if a == 'IMAGE_STATUS':
-        try:
-            from eli.runtime.evidence_ledger import status_evidence
-
-            query = ""
-            if isinstance(args, dict):
-                query = str(args.get("query") or args.get("message") or args.get("text") or "")
-            rep = status_evidence(query or "image status")
-            txt = "Image/status evidence packet:\n" + json.dumps(rep, indent=2, ensure_ascii=False, default=str)
-            return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-        except Exception as _e:
-            msg = f"Image/status evidence failed: {_e!r}"
-            return {'ok': False, 'action': a, 'error': repr(_e), 'content': msg, 'response': msg}
-    if a == 'RUNTIME_AUDIT':
-        rep = _runtime_audit_report(); txt = _format_runtime_audit(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'IMPORT_AUDIT':
-        rep = _import_audit_report(); txt = _format_import_audit(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'DIAGNOSE_WRAPPERS':
-        rep = _diagnose_executor_wrappers()
-        txt = _format_executor_wrappers(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'RESOLVE_RUNTIME_PATHS':
-        rep = _resolve_runtime_paths_report(); txt = _format_runtime_paths(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
     if a == 'GUI_RUNTIME_AUDIT':
         _q = ""
         if isinstance(args, dict):
             _q = str(args.get("question") or args.get("message") or args.get("text") or "")
         rep = _gui_runtime_audit_report(_q); txt = _format_gui_runtime_audit(rep)
         return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'EXPLAIN_ALL_REASONING_MODES':
-        rep = _explain_all_reasoning_modes_report(); txt = _format_all_reasoning_modes(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'EXPLAIN_MEMORY_RUNTIME':
-        rep = _explain_memory_runtime_report(); txt = _format_memory_runtime(rep)
-        return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'EXPLAIN_COGNITION_RUNTIME':
-        rep = _explain_cognition_runtime_report(); txt = _format_cognition_runtime(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'RUNTIME_STATUS':
-        rep = _runtime_status_report(); txt = _format_runtime_status(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'GPU_STATUS':
-        rep = _gpu_status_report()
-        return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
     if a == 'SELF_IMPROVEMENT_LOG':
         limit = int((args or {}).get('limit') or 5) if isinstance(args, dict) else 5
         days = int((args or {}).get('days') or 30) if isinstance(args, dict) else 30
         rep = _self_improvement_log_report(limit=limit, days=days)
         return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
-    if a == 'MEMORY_STATUS':
-        rep = _memory_status_report(); txt = _format_memory_status(rep)
-        try:
-            txt += '\n\n' + _get_db_schema_evidence()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'COGNITION_STATUS':
-        rep = _cognition_status_report(); txt = _format_cognition_status(rep)
-        return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
     _mem = None  # _mkvi_memory_dispatch removed (was undefined)
     if _mem is not None:
         return _mem
@@ -11373,99 +5368,12 @@ except Exception:
 # ----------------------------
 # Proactive daemon control (real PID management)
 # ----------------------------
-def _proactive_paths():
-    base = Path(os.environ.get("ELI_ARTIFACTS_DIR", "artifacts")) / "proactive"
-    base.mkdir(parents=True, exist_ok=True)
-    return base, base / "daemon.pid", base / "daemon.log"
 
 
-def proactive_status() -> Dict[str, Any]:
-    base, pidf, logf = _proactive_paths()
-    pid = None
-    if pidf.exists():
-        try:
-            pid = int(pidf.read_text().strip())
-        except Exception:
-            pid = None
-    alive = False
-    if pid:
-        try:
-            import psutil as _psutil
-            alive = _psutil.pid_exists(int(pid))
-        except Exception:
-            # psutil missing — the signal-0 probe is POSIX-only. On Windows os.kill with
-            # ANY signal calls TerminateProcess, so os.kill(pid, 0) would KILL the process.
-            if os.name != "nt":
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except Exception:
-                    alive = False
-    # In-process daemon: the GUI runs it as a THREAD (no separate PID), so the PID check
-    # above misses it and falsely reports STOPPED (observed: agent_bus daemon_running=False
-    # while '[PROACTIVE] Daemon started'). Also honour the live in-process signals — the
-    # module singleton's running flag and the named daemon thread.
-    if not alive:
-        try:
-            import threading as _th
-            from eli.planning import proactive_daemon as _pd
-            if getattr(getattr(_pd, "_daemon", None), "running", False):
-                alive = True
-            elif any(t.name == "eli-proactive-daemon" and t.is_alive()
-                     for t in _th.enumerate()):
-                alive = True
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    msg = f"Proactive daemon is {'RUNNING' if alive else 'STOPPED'}."
-    return {"ok": True, "action": "PROACTIVE_STATUS", "pid": pid, "running": alive, "log": str(logf), "content": msg, "response": msg}
 
 
-def proactive_start() -> Dict[str, Any]:
-    base, pidf, logf = _proactive_paths()
-    st = proactive_status()
-    if st.get("running"):
-        return st
-    try:
-        py = sys.executable if "sys" in globals() else "python3"
-    except Exception:
-        py = "python3"
-    # run as module so imports work
-    argv = [py, "-m", "eli.proactive.proactive_daemon"]
-    try:
-        lf = open(logf, "a", encoding="utf-8")
-        p = subprocess.Popen(argv, stdout=lf, stderr=lf, cwd=str(Path.cwd()))
-        pidf.write_text(str(p.pid), encoding="utf-8")
-        msg = "Proactive daemon started."
-        return {"ok": True, "action": "PROACTIVE_START", "pid": p.pid, "cmd": argv, "log": str(logf), "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to start proactive daemon."
-        return {"ok": False, "action": "PROACTIVE_START", "error": repr(e), "content": msg, "response": msg}
 
 
-def proactive_stop() -> Dict[str, Any]:
-    base, pidf, logf = _proactive_paths()
-    pid = None
-    if pidf.exists():
-        try:
-            pid = int(pidf.read_text().strip())
-        except Exception:
-            pid = None
-    if not pid:
-        msg = "Proactive daemon not running (no PID)."
-        return {"ok": True, "action": "PROACTIVE_STOP", "content": msg, "response": msg}
-    try:
-        os.kill(pid, 15)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    try:
-        pidf.unlink(missing_ok=True)  # py3.8+: if not available it will throw
-    except Exception:
-        try:
-            pidf.unlink()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    msg = "Proactive daemon stopped."
-    return {"ok": True, "action": "PROACTIVE_STOP", "pid": pid, "content": msg, "response": msg}
 
 
 class Executor:
@@ -11550,103 +5458,8 @@ def _eli_user_info_report(force=False, reason="query"):
 # Helpers preserved from former EXECUTOR SAFE FILE WRAPPERS (phaseBW2).
 # The wrapper-install scaffolding was removed; pre-dispatch in execute()
 # routes READ_FILE / WRITE_NOTE / SCREENSHOT through these directly.
-def _eli_safe_read_file(args=None):
-    from pathlib import Path
-    _args = args or {}
-    path = str(_args.get("path") or "").strip()
-    if not path:
-        return {"ok": False, "action": "READ_FILE", "content": "Missing file path."}
-    p = resolve_user_repo_path(path)
-    if not p.exists():
-        return {"ok": False, "action": "READ_FILE", "content": f"File not found: {p}"}
-    if p.is_dir():
-        # A directory was passed to READ_FILE — LIST it instead of refusing. The user asked
-        # to read/list the path; refusing (or letting the model confabulate) is worse than
-        # just showing the real contents.
-        try:
-            _entries = sorted(
-                (f"{x.name}/" if x.is_dir() else x.name) for x in p.iterdir())
-            _listing = (f"Contents of {p} ({len(_entries)} items):\n" + "\n".join(_entries))
-            return {"ok": True, "action": "LIST_DIR", "path": str(p),
-                    "content": _listing, "response": _listing}
-        except Exception as _ld_err:
-            return {"ok": False, "action": "READ_FILE",
-                    "content": f"Could not read directory {p}: {_ld_err}"}
-    data = None
-    for enc in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            data = p.read_text(encoding=enc)
-            break
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    if data is None:
-        try:
-            data = p.read_bytes().decode("utf-8", errors="replace")
-        except Exception as e:
-            return {"ok": False, "action": "READ_FILE", "content": f"Could not read file: {e}"}
-    return {
-        "ok": True,
-        "action": "READ_FILE",
-        "path": str(p),
-        "content": data,
-    }
 
-def _eli_safe_write_note(args=None):
-    from pathlib import Path
-    from datetime import datetime
-    _args = args or {}
-    txt = str(_args.get("text") or "").rstrip()
-    if not txt:
-        return {"ok": False, "action": "WRITE_NOTE", "content": "Missing note text."}
-    nb = Path("eli_notebook")
-    nb.mkdir(parents=True, exist_ok=True)
-    daily = nb / f"{datetime.now().strftime('%Y-%m-%d')}.md"
-    prefix = "" if not daily.exists() or not daily.read_text(encoding="utf-8", errors="ignore").strip() else "\n"
-    stamp = datetime.now().strftime("%H:%M:%S")
-    payload = f"{prefix}- [{stamp}] {txt}\n"
-    daily.write_text(daily.read_text(encoding="utf-8", errors="ignore") + payload if daily.exists() else payload, encoding="utf-8")
-    return {
-        "ok": True,
-        "action": "WRITE_NOTE",
-        "path": str(daily),
-        "content": f"Wrote note to {daily}",
-    }
 
-def _eli_safe_screenshot(args=None):
-    _args = args or {}
-    region = _args.get("region", "full")
-    try:
-        from controllers.os_controller import take_screenshot
-    except Exception:
-        try:
-            from eli.perception.os_controller import take_screenshot
-        except Exception as e:
-            return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot backend unavailable: {e}"}
-    try:
-        out = take_screenshot(region)
-    except TypeError:
-        try:
-            out = take_screenshot()
-        except Exception as e:
-            return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot failed: {e}"}
-    except Exception as e:
-        return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot failed: {e}"}
-
-    if isinstance(out, dict):
-        ok = bool(out.get("ok", True))
-        content = str(out.get("content") or out.get("message") or out.get("path") or "Screenshot completed")
-        return {
-            "ok": ok,
-            "action": "SCREENSHOT",
-            "content": content,
-            **out,
-        }
-
-    return {
-        "ok": True,
-        "action": "SCREENSHOT",
-        "content": str(out or "Screenshot completed"),
-    }
 
 
 # Helper preserved from former MEMORY_RECALL USER_INFO COMPAT (phaseBW2).
@@ -12444,192 +6257,12 @@ import subprocess as _eli_tile_subprocess
 _ELI_TILE_ORIG_EXECUTE = globals().get("execute")
 _ELI_TILE_ORIG_EXECUTE_ACTION = globals().get("execute_action")
 
-def _eli_tile_run(cmd, timeout=2):
-    try:
-        return _eli_tile_subprocess.run(
-            cmd,
-            text=True,
-            stdout=_eli_tile_subprocess.PIPE,
-            stderr=_eli_tile_subprocess.PIPE,
-            timeout=timeout,
-        )
-    except Exception as e:
-        class _R:
-            returncode = 999
-            stdout = ""
-            stderr = str(e)
-        return _R()
 
-def _eli_tile_current_desktop():
-    p = _eli_tile_run(["wmctrl", "-d"])
-    if p.returncode != 0:
-        return None
-    for line in p.stdout.splitlines():
-        if "*" in line:
-            try:
-                return int(line.split()[0])
-            except Exception:
-                return None
-    return None
 
-def _eli_tile_screen_size():
-    p = _eli_tile_run(["xdotool", "getdisplaygeometry"])
-    if p.returncode == 0:
-        parts = p.stdout.strip().split()
-        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-            return int(parts[0]), int(parts[1])
 
-    p = _eli_tile_run(["xrandr", "--current"])
-    if p.returncode == 0:
-        m = _eli_tile_re.search(r"current\s+(\d+)\s+x\s+(\d+)", p.stdout)
-        if m:
-            return int(m.group(1)), int(m.group(2))
 
-    return 1366, 768
 
-def _eli_tile_xprop(wid):
-    p = _eli_tile_run(["xprop", "-id", wid], timeout=1)
-    return p.stdout if p.returncode == 0 else ""
 
-def _eli_tile_visible_windows():
-    p = _eli_tile_run(["wmctrl", "-lG", "-p"])
-    if p.returncode != 0:
-        return [], p.stderr.strip() or "wmctrl failed"
-
-    curdesk = _eli_tile_current_desktop()
-    wins = []
-
-    for line in p.stdout.splitlines():
-        parts = line.split(None, 8)
-        if len(parts) < 9:
-            continue
-
-        wid, desk_s, pid_s, x_s, y_s, w_s, h_s, host, title = parts
-        try:
-            desk = int(desk_s)
-            x, y, w, h = int(x_s), int(y_s), int(w_s), int(h_s)
-        except Exception:
-            continue
-
-        if curdesk is not None and desk not in {curdesk, -1}:
-            continue
-        if w < 80 or h < 80:
-            continue
-        if not str(title or "").strip():
-            continue
-
-        xp = _eli_tile_xprop(wid)
-        xp_low = xp.lower()
-
-        # Skip hidden/minimized/taskbar-skipped/system surfaces.
-        if "_net_wm_state_hidden" in xp_low:
-            continue
-        if "_net_wm_state_skip_taskbar" in xp_low:
-            continue
-        if "_net_wm_state_skip_pager" in xp_low:
-            continue
-
-        # Keep normal/dialog windows; skip docks, desktops, menus, tooltips, splash, etc.
-        if "_net_wm_window_type" in xp_low:
-            bad_types = (
-                "_net_wm_window_type_desktop",
-                "_net_wm_window_type_dock",
-                "_net_wm_window_type_toolbar",
-                "_net_wm_window_type_menu",
-                "_net_wm_window_type_utility",
-                "_net_wm_window_type_splash",
-                "_net_wm_window_type_dropdown_menu",
-                "_net_wm_window_type_popup_menu",
-                "_net_wm_window_type_tooltip",
-                "_net_wm_window_type_notification",
-            )
-            if any(t in xp_low for t in bad_types):
-                continue
-
-        wins.append({"id": wid, "desk": desk, "x": x, "y": y, "w": w, "h": h, "title": title})
-
-    return wins, ""
-
-def _eli_tile_parse_grid(args, count):
-    args = args or {}
-    grid = args.get("grid")
-    cols = args.get("cols") or args.get("columns")
-    rows = args.get("rows")
-
-    if isinstance(grid, (list, tuple)) and len(grid) >= 2:
-        cols = cols or grid[0]
-        rows = rows or grid[1]
-
-    try:
-        cols = int(cols) if cols else 0
-    except Exception:
-        cols = 0
-    try:
-        rows = int(rows) if rows else 0
-    except Exception:
-        rows = 0
-
-    if cols > 0 and rows > 0:
-        return max(1, min(cols, 8)), max(1, min(rows, 8))
-
-    if count <= 1:
-        return 1, 1
-    cols = int(_eli_tile_math.ceil(_eli_tile_math.sqrt(count)))
-    rows = int(_eli_tile_math.ceil(count / cols))
-    return max(1, cols), max(1, rows)
-
-def _eli_tile_windows(args=None):
-    wins, err = _eli_tile_visible_windows()
-    if err:
-        return {"ok": False, "action": "TILE_WINDOWS", "content": err, "response": err, "error": err}
-
-    count = len(wins)
-    if count == 0:
-        msg = "No visible normal windows found to tile."
-        return {"ok": False, "action": "TILE_WINDOWS", "content": msg, "response": msg, "count": 0}
-
-    cols, rows = _eli_tile_parse_grid(args or {}, count)
-    screen_w, screen_h = _eli_tile_screen_size()
-
-    margin = int((args or {}).get("margin", 10) or 10)
-    top_reserved = int((args or {}).get("top_reserved", 34) or 34)
-
-    usable_x = margin
-    usable_y = top_reserved + margin
-    usable_w = max(300, screen_w - margin * 2)
-    usable_h = max(240, screen_h - top_reserved - margin * 2)
-
-    cell_w = max(180, usable_w // cols)
-    cell_h = max(140, usable_h // rows)
-
-    moved = 0
-    for i, win in enumerate(wins[: cols * rows]):
-        c = i % cols
-        r = i // cols
-        x = usable_x + c * cell_w
-        y = usable_y + r * cell_h
-        w = max(120, cell_w - margin)
-        h = max(100, cell_h - margin)
-
-        wid = win["id"]
-        _eli_tile_run(["wmctrl", "-ir", wid, "-b", "remove,maximized_vert,maximized_horz"], timeout=1)
-        p = _eli_tile_run(["wmctrl", "-ir", wid, "-e", f"0,{x},{y},{w},{h}"], timeout=2)
-        if p.returncode == 0:
-            moved += 1
-
-    msg = f"Tiled {moved} visible window{'s' if moved != 1 else ''} into a {cols}×{rows} grid."
-    if count > cols * rows:
-        msg += f" {count - cols * rows} visible window(s) did not fit in the requested grid."
-
-    return {
-        "ok": moved > 0,
-        "action": "TILE_WINDOWS",
-        "content": msg,
-        "response": msg,
-        "count": moved,
-        "visible_count": count,
-        "grid": [cols, rows],
-    }
 
 def _eli_second_execute(action, args=None, *pargs, **kwargs):
     action_name = str(action or "").upper()
