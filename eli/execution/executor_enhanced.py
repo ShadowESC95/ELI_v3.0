@@ -356,6 +356,7 @@ import eli.execution.effectors.self_improve  # noqa: F401
 import eli.execution.effectors.system_open  # noqa: F401
 import eli.execution.effectors.web_info  # noqa: F401
 import eli.execution.effectors.timers  # noqa: F401
+import eli.execution.effectors.jobs  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -3775,50 +3776,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
     # ---- ANALYZE_PDF ----
-    # ---- LISTEN_FOR_COMMAND ----
-    if a in ("CHECK_JOB", "BACKGROUND_JOBS"):
-        import re as _re_jb
-        from eli.runtime.background_tasks import get_background_tasks as _get_bt
-        _bt = _get_bt()
-        if a == "BACKGROUND_JOBS":
-            jobs = _bt.list(limit=15)
-            if not jobs:
-                msg = "No background jobs."
-            else:
-                msg = "Background jobs:\n" + "\n".join(
-                    f"  #{j['id']} [{j['status']}] {j['name']} ({j['elapsed_s']}s)" for j in jobs)
-            return {"ok": True, "action": a, "jobs": jobs, "content": msg, "response": msg}
-        _jid = args.get("job_id") or args.get("id")
-        if _jid is None:
-            _m = _re_jb.search(r"\b(\d+)\b", str(args.get("text") or args.get("query") or args.get("description") or ""))
-            _jid = _m.group(1) if _m else None
-        if _jid is None:
-            msg = "Which job? e.g. 'check job 3'."
-            return {"ok": False, "action": a, "content": msg, "response": msg}
-        t = _bt.get(int(_jid))
-        if not t:
-            msg = f"No background job #{_jid}."
-            return {"ok": False, "action": a, "content": msg, "response": msg}
-        if t["status"] == "done":
-            r = t.get("result") or {}
-            extra = ""
-            if isinstance(r, dict) and r.get("script_path"):
-                extra = f" → {r.get('script_path')}"
-                if r.get("solved"):
-                    extra += f" (verified, score {r.get('score')})"
-            msg = f"Job #{_jid} ({t['name']}) done in {t['elapsed_s']}s{extra}."
-            # Surface the actual result (e.g. the PDF-folder summary), not just a
-            # 'done' status — that's what the user is waiting for.
-            _job_content = ""
-            if isinstance(r, dict):
-                _job_content = str(r.get("content") or r.get("response") or "").strip()
-            if _job_content and _job_content not in (msg,):
-                msg += "\n\n" + _job_content
-        elif t["status"] == "failed":
-            msg = f"Job #{_jid} failed: {(t.get('error') or '')[:200]}"
-        else:
-            msg = f"Job #{_jid} ({t['name']}) is {t['status']} — {t['elapsed_s']}s elapsed."
-        return {"ok": True, "action": a, "job": t, "content": msg, "response": msg}
 
     # ---- CODE_SOLVE — frontier coding agent (plan→search→verify→repair) ----
     if a == "CREATE_FILE":
