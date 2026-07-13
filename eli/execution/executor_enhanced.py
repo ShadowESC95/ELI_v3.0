@@ -353,6 +353,7 @@ import eli.execution.effectors.persona_lock  # noqa: F401
 import eli.execution.effectors.pomodoro  # noqa: F401
 import eli.execution.effectors.wake_word  # noqa: F401
 import eli.execution.effectors.self_improve  # noqa: F401
+import eli.execution.effectors.system_open  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -2750,92 +2751,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return _execute_impl("OPEN_APP", {"name": mapped})
 
     # ---- OPEN_FILE_SYSTEM VALIDATION GUARD ----
-    if a == "OPEN_FILE_SYSTEM":
-        try:
-            raw_target = str(
-                (args or {}).get("path")
-                or (args or {}).get("target")
-                or (args or {}).get("name")
-                or ""
-            ).strip()
-
-            low_target = raw_target.lower()
-
-            if low_target in {"trash", "/trash"}:
-                probe = _open_app_with_timeout(["xdg-open", "trash:///"])
-                if probe.get("ok") or probe.get("spawned"):
-                    msg = "Opened folder: trash:///"
-                    return {"ok": True, "action": a, "content": msg, "response": msg, "probe": probe}
-                return {"ok": False, "action": a, "error": probe.get("stderr") or probe.get("error") or "trash_open_failed",
-                        "content": "Could not open trash.", "response": "Could not open trash."}
-
-            if low_target in {"home", "/home", "home directory", "home folder",
-                              "home dir", "my home", "my files", "files", "~", "~/",
-                              "file manager", "file explorer", ""}:
-                resolved = str(Path.home())
-            else:
-                cleaned = re.sub(r"\b(folder|directory|path)\b", "", raw_target, flags=re.I).strip()
-                cleaned = cleaned.rstrip("/")
-
-                candidates = []
-
-                if raw_target.startswith("~/"):
-                    candidates.append(Path(raw_target).expanduser())
-
-                if raw_target.startswith("/Desktop/") or raw_target.startswith("/desktop/"):
-                    suffix = raw_target.split("/", 2)[-1] if raw_target.count("/") >= 2 else ""
-                    candidates.append(Path.home() / "Desktop" / suffix)
-
-                if raw_target.startswith("/Documents/") or raw_target.startswith("/documents/"):
-                    suffix = raw_target.split("/", 2)[-1] if raw_target.count("/") >= 2 else ""
-                    candidates.append(Path.home() / "Documents" / suffix)
-
-                if raw_target.startswith("/"):
-                    candidates.append(Path(raw_target))
-
-                if cleaned:
-                    candidates.append(Path.home() / cleaned)
-                    candidates.append(Path.home() / "Desktop" / cleaned)
-                    candidates.append(Path.home() / "Documents" / cleaned)
-
-                resolved = ""
-                seen = set()
-                for cand in candidates:
-                    try:
-                        p = cand.expanduser().resolve()
-                    except Exception:
-                        p = cand.expanduser()
-                    sp = str(p)
-                    if sp in seen:
-                        continue
-                    seen.add(sp)
-                    if p.exists():
-                        resolved = sp
-                        break
-
-                if not resolved:
-                    msg = f"Could not open folder: {raw_target}"
-                    return {"ok": False, "action": a, "error": "path_not_found", "content": msg, "response": msg}
-
-            # Cross-platform folder open: xdg-open (Linux) / open (macOS) /
-            # os.startfile (Windows) via platform_compat — raw xdg-open was
-            # Linux-only and silently failed elsewhere.
-            from eli.utils.platform_compat import open_file as _open_file
-            if _open_file(resolved):
-                msg = f"Opened folder: {resolved}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-
-            return {
-                "ok": False,
-                "action": a,
-                "error": probe.get("stderr") or probe.get("error") or "xdg_open_failed",
-                "content": f"Could not open folder: {resolved}",
-                "response": f"Could not open folder: {resolved}",
-            }
-
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-    # ---- OPEN_APP ----
     if a == "OPEN_APP":
         try:
             name = (args or {}).get("name") or (args or {}).get("app") or ""
@@ -3369,74 +3284,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "OPEN_AUDIO_SETTINGS":
-        try:
-            # Try common Linux audio mixers/settings panels.
-            candidates = [
-                ["pavucontrol"],
-                ["gnome-control-center", "sound"],
-                ["gnome-control-center"],
-                ["systemsettings5", "kcm_pulseaudio"],
-                ["systemsettings5"],
-                ["kcmshell5", "kcm_pulseaudio"],
-                ["mate-volume-control"],
-                ["xfce4-mixer"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened audio settings: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            raise FileNotFoundError("No audio settings app found (pavucontrol / gnome-control-center / systemsettings5 / etc).")
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-
-    if a == "OPEN_BROWSER":
-        import re as _re2
-        _site_map = {
-            "wikipedia": "https://www.wikipedia.org",
-            "google": "https://www.google.com",
-            "youtube": "https://www.youtube.com",
-            "github": "https://www.github.com",
-            "reddit": "https://www.reddit.com",
-            "netflix": "https://www.netflix.com",
-            "gmail": "https://mail.google.com",
-            "stackoverflow": "https://stackoverflow.com",
-            "twitter": "https://www.twitter.com",
-            "x.com": "https://www.x.com",
-        }
-        raw_q = (args.get("query") or args.get("url") or args.get("link") or "").lower()
-
-        # YouTube with a search query → use YouTubeController for proper search URL
-        _yt_query = (args.get("query") or "").strip()
-        if "youtube" in raw_q and _yt_query and "youtube.com" not in raw_q:
-            try:
-                from eli.tools.media.youtube import YouTubeController
-                _cfg_obj = type("_Cfg", (), {"browser": "chromium", "browser_user_dir": str(_browser_user_dir())})()
-                _yt = YouTubeController(_cfg_obj)
-                result = _yt.open(_yt_query)
-                if result.ok:
-                    msg = f"Opened YouTube search: {_yt_query}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)  # fall through to generic browser open
-
-        found_urls = [v for k, v in _site_map.items() if k in raw_q]
-        if len(found_urls) > 1:
-            return open_browser(found_urls[0], urls=found_urls)
-        url = str(args.get("url") or args.get("link") or "")
-        if not url or not url.startswith("http"):
-            q = (args.get("query") or "").strip()
-            if q:
-                import urllib.parse as _up
-                url = "https://duckduckgo.com/?q=" + _up.quote_plus(q)
-            else:
-                url = "https://duckduckgo.com"
-        return open_browser(url)
-
     if a == "SKIP_YOUTUBE_AD":
         try:
             from eli.tools.media.youtube import YouTubeController
@@ -3448,50 +3295,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-
-    if a == "OPEN_MEDIA_HUB":
-        try:
-            # Try Spotify client first; otherwise open YouTube Music; otherwise open local Music folder.
-            opened = False
-            # Optional: also open audio settings (requested by voice phrase "initiate audio interface")
-            if (args or {}).get("open_settings"):
-                try:
-                    _ = _execute_impl(action="OPEN_AUDIO_SETTINGS", args={})
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-
-            candidates = [
-                ["spotify"],
-                ["flatpak", "run", "com.spotify.Client"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    opened = True
-                    msg = f"Opened media: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-
-            # Browser fallbacks
-            try:
-                url = "https://music.youtube.com"
-                open_browser(url)
-                msg = f"Opened media: {url}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-            # Local folder fallback
-            try:
-                music_dir = os.path.expanduser("~/Music")
-                open_file_system(music_dir)
-                msg = f"Opened media folder: {music_dir}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception as e:
-                raise e
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     if a == "RUN_TESTS":
         try:
@@ -4030,46 +3833,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
     # ---- OPEN_SYSTEM_SETTINGS ----
-    if a == "OPEN_SYSTEM_SETTINGS":
-        try:
-            candidates = [
-                ["gnome-control-center"],
-                ["systemsettings5"],
-                ["xfce4-settings-manager"],
-                ["mate-control-center"],
-                ["cinnamon-settings"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened system settings: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            raise FileNotFoundError("No settings app found")
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- OPEN_POWER_SETTINGS ----
-    if a == "OPEN_POWER_SETTINGS":
-        try:
-            candidates = [
-                ["gnome-control-center", "power"],
-                ["systemsettings5", "kcm_energyinfo"],
-                ["xfce4-power-manager-settings"],
-            ]
-            for cmd in candidates:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened power settings: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-            raise FileNotFoundError("No power settings app found")
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
-
-    # ---- SET_ALARM / SET_TIMER ----
     if a in ("SET_ALARM", "SET_TIMER"):
         try:
             duration = args.get("duration") or args.get("seconds")
