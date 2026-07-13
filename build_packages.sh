@@ -23,6 +23,17 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST="$PROJECT_ROOT/dist"
 VERSION=$(grep -E '^version' "$PROJECT_ROOT/pyproject.toml" | head -1 | awk -F'"' '{print $2}')
 
+# Prefer the project virtualenv interpreter. It carries ELI's full dependency
+# set (fastapi, paho-mqtt, pyflakes, torch…); a bare python3 on PATH is the
+# system interpreter and fails the pre-flight on missing optional deps.
+if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+    PY="$PROJECT_ROOT/.venv/bin/python"
+elif [ -x "$PROJECT_ROOT/.venv/Scripts/python.exe" ]; then
+    PY="$PROJECT_ROOT/.venv/Scripts/python.exe"
+else
+    PY="python3"
+fi
+
 mkdir -p "$DIST"
 
 ALL_TARGETS=("wheel" "wheelhouse" "deb" "appimage" "macos" "windows" "windows-lean")
@@ -38,11 +49,11 @@ echo "  Targets: ${TARGETS[*]}"
 echo "================================================="
 
 build_python_artifacts() {
-    if ( cd /tmp && python3 -c 'import build.__main__' >/dev/null 2>&1 ); then
-        ( cd /tmp && python3 -m build "$PROJECT_ROOT" --wheel --sdist --outdir "$DIST/" )
+    if ( cd /tmp && "$PY" -c 'import build.__main__' >/dev/null 2>&1 ); then
+        ( cd /tmp && "$PY" -m build "$PROJECT_ROOT" --wheel --sdist --outdir "$DIST/" )
     else
         echo "[wheel] python-build frontend not installed; building wheel via pip wheel (sdist skipped)."
-        python3 -m pip wheel --no-deps "$PROJECT_ROOT" -w "$DIST/"
+        "$PY" -m pip wheel --no-deps "$PROJECT_ROOT" -w "$DIST/"
     fi
 }
 
@@ -63,7 +74,7 @@ build_windows_wheelhouse() {
                 PyAutoGUI*|pyautogui*) continue ;;
                 accelerate*) extra_download_args=(--no-deps) ;;
             esac
-            if ! python3 -m pip download \
+            if ! "$PY" -m pip download \
                     --dest "$WHEELHOUSE" \
                     --platform "$WHEELHOUSE_PLATFORM" \
                     --python-version "$pyver" \
@@ -80,7 +91,7 @@ build_windows_wheelhouse() {
             awk 'NF && $1 !~ /^#/'
         )
 
-        if ! python3 -m pip download \
+        if ! "$PY" -m pip download \
                 --dest "$WHEELHOUSE" \
                 --platform "$WHEELHOUSE_PLATFORM" \
                 --python-version "$pyver" \
@@ -95,7 +106,7 @@ build_windows_wheelhouse() {
     done
 
     echo "[wheelhouse] Building pure-Python automation wheels..."
-    if ! python3 -m pip wheel \
+    if ! "$PY" -m pip wheel \
             --wheel-dir "$WHEELHOUSE" \
             "PyAutoGUI>=0.9.54"; then
         echo "[wheelhouse] Missing pure-Python automation wheels for PyAutoGUI."
@@ -148,7 +159,7 @@ EOF
     done
 
     # Pre-generate the gitignored capability manifest into the package (installer fallback).
-    ( cd "$STAGING" && PYTHONPATH="$STAGING" python3 -c \
+    ( cd "$STAGING" && PYTHONPATH="$STAGING" "$PY" -c \
       "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
       >/dev/null 2>&1 || true
 }
@@ -159,16 +170,16 @@ echo "[pre-flight] Compiling the codebase…"
 # This is a MAINTAINER build tool. If it's run from an unpacked release (no .git),
 # fall back to a plain file walk instead of `git ls-files` so it doesn't error out.
 if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    ( cd "$PROJECT_ROOT" && python3 -m py_compile $(git ls-files '*.py') )
+    ( cd "$PROJECT_ROOT" && "$PY" -m py_compile $(git ls-files '*.py') )
 else
     echo "[pre-flight] not a git checkout — this is the maintainer release builder;"
     echo "             to USE ELI run ./ELI_Setup.sh (or ./RUN_ELI.sh). Skipping compile."
-    ( cd "$PROJECT_ROOT" && find eli api -name '*.py' -print0 2>/dev/null | xargs -0 python3 -m py_compile 2>/dev/null || true )
+    ( cd "$PROJECT_ROOT" && find eli api -name '*.py' -print0 2>/dev/null | xargs -0 "$PY" -m py_compile 2>/dev/null || true )
 fi
 
 if [ -z "${SKIP_TESTS:-}" ]; then
     echo "[pre-flight] Running pytest (set SKIP_TESTS=1 to skip)…"
-    ( cd "$PROJECT_ROOT" && pytest -q tests/ )
+    ( cd "$PROJECT_ROOT" && "$PY" -m pytest -q tests/ )
 fi
 
 # ── Targets ─────────────────────────────────────────────────────────────
