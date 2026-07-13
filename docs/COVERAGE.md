@@ -70,7 +70,7 @@ Some code cannot be executed in an automated, headless CI context. It is
 
 | Area | Statements | Why excluded from automated line coverage |
 |------|-----------:|-------------------------------------------|
-| Interactive desktop GUI (`eli/gui/EliMainWindow` full construction) | ~12k | Blocks on interactive display/device/audio init; full-window construction does not terminate headless. Testable GUI *units* (pure helpers, small widgets) are still covered; the interactive window is validated manually and via the run-book. |
+| Interactive desktop GUI (`eli/gui/main_window/` full `EliMainWindow` construction) | ~12k | Blocks on interactive display/device/audio init; full-window construction does not terminate headless. Testable GUI *units* (pure helpers, small widgets, the decomposed mixins) are still covered; the interactive window is validated manually and via the run-book. |
 | GPU/model-load internals beyond the live smoke lane | — | Depend on specific hardware/VRAM; the model-agnostic load path is exercised with a small model on the live lane, but exhaustive per-backend paths (CUDA/Metal/CPU-offload variants) require the matching hardware. |
 | Hardware/OS device I/O (real microphone, camera, speakers, window manager) | — | Require physical devices / a live desktop session; validated on-device, not in headless CI. |
 
