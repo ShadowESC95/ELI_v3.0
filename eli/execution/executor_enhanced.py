@@ -1215,6 +1215,12 @@ def _maybe_background_file_analysis(action, args):
 
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
+    'ANALYZE_PDF_FOLDER',
+    'IMAGE_STATUS',
+    'LISTEN_FOR_COMMAND',
+    'PLUGIN_STATUS',
+    'STT_DIAGNOSTICS',
+    'VOICE_DIAGNOSTICS',
     'ADD_EVENT',
     'BACKGROUND_JOBS',
     'SCHEDULE_TASK',
