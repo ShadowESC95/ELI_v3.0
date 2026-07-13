@@ -3230,11 +3230,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return {"ok": True, "action": a, "content": msg, "response": msg,
                 "job_id": r["job_id"], "kind": r["kind"], "when_ts": r["when_ts"]}
 
-    if a == "OPEN_FILE_SYSTEM":
-        path = str(args.get("path") or "~")
-        return open_file_system(path)
-    
-    
     if a == "DATA_FABRICATOR":
         try:
             # If a topic/prompt is provided, generate a document first then open it.
@@ -4462,7 +4457,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- POMODORO (START / STOP / STATUS) ----
-    if a in ("DOC_GENERATE", "GENERATE_DOCUMENT", "CREATE_DOCUMENT"):
+    if a == "DOC_GENERATE":
         try:
             import re as _dre, tempfile as _dtmp
             from pathlib import Path as _DPath
