@@ -351,6 +351,7 @@ import eli.execution.effectors.coding  # noqa: F401
 import eli.execution.effectors.plugins  # noqa: F401
 import eli.execution.effectors.persona_lock  # noqa: F401
 import eli.execution.effectors.pomodoro  # noqa: F401
+import eli.execution.effectors.wake_word  # noqa: F401
 
 
 def _import_audit_report() -> Dict[str, Any]:
@@ -3542,102 +3543,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # mixes it with noise/music at random SNRs (robustness over music), and trains a
     # small local classifier head. 100% local, no account, no third-party, no
     # external pre-trained model. Falls back to transcription until a model exists.
-    if a == "WAKE_TRAIN":
-        try:
-            from eli.perception import wakeword as _ww
-            res = _ww.train_model()
-            if not res.get("ok"):
-                msg = f"Wake-word training could not run: {res.get('error')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            msg = (f"Wake-word model trained locally: {res.get('positives')} positive + "
-                   f"{res.get('negatives')} negative samples, decision threshold "
-                   f"{float(res.get('threshold', 0)):.2f}. ELI now spots the wake word "
-                   f"acoustically (robust over background music). For best real-world "
-                   f"accuracy, drop a few real music clips into models/wakeword/noise/ "
-                   f"and run this again.")
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "wakeword_train", "result": res}
-        except Exception as e:
-            msg = f"WAKE_TRAIN failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- WAKE_ENROLL — record the user's own voice + retrain (personalisation) ----
-    # Captures a few real-mic samples of the user saying the wake word through the
-    # running mic loop (no second device), then retrains so the model locks onto how
-    # the user actually says it — the biggest real-mic accuracy win.
-    if a == "WAKE_ENROLL":
-        try:
-            from eli.perception.audio_stt import begin_wake_enrollment
-            n = int((args or {}).get("samples") or (args or {}).get("count") or 5)
-            res = begin_wake_enrollment(n)
-            if not res.get("ok"):
-                msg = f"Wake-word enrollment can't start: {res.get('error')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            msg = res.get("message") or "Listening for your wake-word samples."
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "wakeword_enroll", "result": res}
-        except Exception as e:
-            msg = f"WAKE_ENROLL failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- WAKE_SET — let the user choose their OWN wake word, then train it ----
-    # "change the wake word to athena" / "set my wake word to atlas". Persists the
-    # phrase (used by both the acoustic model and the transcription matcher) and
-    # trains the detector on it in the background (Piper can synthesise any phrase).
-    if a == "WAKE_SET":
-        try:
-            import re as _re_ws
-            phrase = str((args or {}).get("phrase") or (args or {}).get("word")
-                         or (args or {}).get("wake_word") or "").strip().strip('."\'')
-            if not phrase:
-                _raw = str((args or {}).get("_raw_user_text") or (args or {}).get("raw")
-                           or (args or {}).get("message") or "")
-                m = _re_ws.search(r"(?:wake[\s-]*word|wakeword)\s+(?:to|is|as|=)\s+(.+)$", _raw, _re_ws.I)
-                if m:
-                    phrase = m.group(1).strip().strip('."\'')
-            if not phrase:
-                msg = ("What would you like your wake word to be? Say: "
-                       "\"change the wake word to <your phrase>\".")
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            from eli.perception import wakeword as _ww
-            phrases = _ww.set_wake_phrases([phrase])
-            try:
-                from eli.perception import audio_stt as _ast
-                _ast._merge_custom_wake_words()
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            import threading as _th_ws
-            _th_ws.Thread(target=lambda: _ww.train_model(phrases=phrases),
-                          daemon=True, name="eli-wake-set-train").start()
-            msg = (f"Wake word set to \"{phrase}\". I'm training the detector on it now "
-                   f"(about a minute) — it'll work the moment that finishes. Say "
-                   f"\"enroll my wake word\" afterwards to tune it to your voice over music.")
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "wakeword_set", "result": {"phrases": phrases}}
-        except Exception as e:
-            msg = f"WAKE_SET failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- TRAIN_VOICE — learn the user's voice baseline (prosody/tone foundation) ----
-    # SEPARATE from the wake word: this captures natural speech to build a voice
-    # profile (pitch/energy/rate) that later powers tone detection (happy/angry/
-    # excited) and question-vs-statement. See eli/perception/voice_profile.py.
-    if a == "TRAIN_VOICE":
-        try:
-            from eli.perception.audio_stt import begin_voice_training
-            n = int((args or {}).get("samples") or (args or {}).get("count") or 8)
-            res = begin_voice_training(n)
-            if not res.get("ok"):
-                msg = f"Voice training can't start: {res.get('error')}"
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            msg = res.get("message") or "Listening for your voice samples."
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "voice_training", "result": res}
-        except Exception as e:
-            msg = f"TRAIN_VOICE failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
-
-    # ---- ORCHESTRATION_STATUS — explain the agent DAG + last orchestrated run ----
     if a == "ORCHESTRATION_STATUS":
         try:
             from eli.cognition.agent_bus import orchestration_snapshot
