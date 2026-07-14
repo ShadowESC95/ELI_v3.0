@@ -3349,64 +3349,11 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             "response": "No IDE found"
         }
 
-    if a == "OPEN_IN_IDE":
-        path = str(args.get("path") or "").strip()
-        for editor in ["code", "codium", "subl", "gedit", "kate"]:
-            try:
-                cmd = [editor] + ([path] if path else [])
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened {path or 'IDE'} in {editor}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
-        return {"ok": False, "action": a, "error": "No IDE found", "content": "No IDE found", "response": "No IDE found"}
 
     if a == "SHOW_DIFF":
         return chat("Show me the recent changes or diff in the project.", skip_router=True)
 
     # ---- MEMORY_STATS ----
-    if a == "TILE_WINDOWS":
-        if shutil.which("wmctrl"):
-            try:
-                listing = subprocess.run(
-                    ["wmctrl", "-l"], capture_output=True, text=True, timeout=4
-                )
-                window_ids = [line.split()[0] for line in (listing.stdout or "").splitlines() if line.strip()]
-                count = len(window_ids)
-                if count == 0:
-                    msg = "No visible windows to tile."
-                    return {"ok": False, "action": a, "content": msg, "response": msg}
-                geom = subprocess.run(
-                    ["xdpyinfo"], capture_output=True, text=True, timeout=4
-                ).stdout if shutil.which("xdpyinfo") else ""
-                m = re.search(r"dimensions:\s*(\d+)x(\d+)", geom or "")
-                if m:
-                    sw, sh = int(m.group(1)), int(m.group(2))
-                else:
-                    sw, sh = 1920, 1080
-                cols = 2 if count <= 4 else 3
-                rows = (count + cols - 1) // cols
-                cw = sw // cols
-                rh = sh // rows
-                for i, wid in enumerate(window_ids):
-                    row = i // cols
-                    col = i % cols
-                    x, y = col * cw, row * rh
-                    subprocess.run([
-                        "wmctrl", "-i", "-r", wid, "-b", "remove,maximized_vert,maximized_horz"
-                    ], check=False, capture_output=True, timeout=4)
-                    subprocess.run([
-                        "wmctrl", "-i", "-r", wid, "-e", f"0,{x},{y},{cw},{rh}"
-                    ], check=False, capture_output=True, timeout=4)
-                msg = f"Tiled {count} window{'s' if count != 1 else ''} into a {cols}×{rows} grid."
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "count": count, "grid": [cols, rows]}
-            except Exception as e:
-                return {"ok": False, "action": a, "error": str(e),
-                        "content": str(e), "response": str(e)}
-        return {"ok": False, "action": a, "error": "wmctrl not installed",
-                "content": "wmctrl not installed; cannot tile windows.",
-                "response": "wmctrl not installed; cannot tile windows."}
 
 
     # ---- ANALYZE_IMAGE (metadata + OCR; never confabulate visual content) ----
