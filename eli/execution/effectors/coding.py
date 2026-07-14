@@ -1081,6 +1081,82 @@ def _h_confirm_code_fix(a, args):
 
 
 
+def _h_run_tests(a, args):
+    try:
+        import subprocess as _ts_sp, sys as _ts_sys
+        from pathlib import Path as _TP
+        from eli.core.paths import project_root as _pr
+        repo = _pr()  # location-independent (was __file__.parents[2], wrong after the move)
+        target = str(args.get("target") or "tests/claims/test_structural_claims.py")
+        r = _ts_sp.run([_ts_sys.executable, "tools/run_test_report.py", target],
+                       cwd=str(repo), capture_output=True, text=True, timeout=900)
+        rep = repo / "artifacts" / "test_report.md"
+        body = rep.read_text(encoding="utf-8")[:4000] if rep.exists() else \
+            (r.stdout or r.stderr or "")[-2000:]
+        return {"ok": True, "action": a, "content": body, "response": body,
+                "report_path": str(rep), "evidence_source": "pytest_test_report"}
+    except Exception as e:
+        msg = f"RUN_TESTS failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
+def _h_test_review(a, args):
+    try:
+        from eli.runtime.test_review import run_and_review
+        target = str(args.get("target") or "tests/claims/test_structural_claims.py")
+        res = run_and_review(target)
+        if res.get("error"):
+            msg = f"Test review could not run: {res['error']}"
+            return {"ok": False, "action": a, "content": msg, "response": msg}
+        t = res.get("totals", {})
+        lines = [f"Test review of `{target}`: {t.get('passed', 0)} passed, "
+                 f"{t.get('failed', 0)} failed, {t.get('errored', 0)} errored, "
+                 f"{t.get('xfailed', 0)} known-gap (xfail) of {t.get('total', 0)}."]
+        if res.get("failures"):
+            lines.append("Failing tests (possible errors):")
+            for f in res["failures"][:10]:
+                lines.append(f"  - {f['node']}: {(f.get('message') or '')[:120]}")
+        fa = res.get("fix_analysis") or {}
+        if fa.get("proposals"):
+            lines.append("Concrete issues found in failing modules (code examiner):")
+            for p in fa["proposals"][:5]:
+                for fn in (p.get("findings") or [])[:3]:
+                    loc = f":{fn.get('line')}" if fn.get("line") else ""
+                    lines.append(f"  - {p['module']}{loc} [{fn.get('kind')}] {fn.get('message')}")
+        if res.get("error_file"):
+            lines.append(f"Errors written to: {res['error_file']}")
+        if res.get("backup_path"):
+            lines.append(f"Previous report backed up to: {res['backup_path']}")
+        if res.get("options"):
+            lines.append("What would you like to do next?")
+            for i, o in enumerate(res["options"], 1):
+                lines.append(f"  {i}. {o['label']}  — say: \"{o['command']}\"")
+        msg = "\n".join(lines)
+        return {"ok": True, "action": a, "content": msg, "response": msg,
+                "evidence_source": "test_review", "result": res}
+    except Exception as e:
+        msg = f"TEST_REVIEW failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
+def _h_lora_train(a, args):
+    try:
+        from eli.learning.lora_pipeline import run_pipeline
+        target = str(args.get("target") or "eli_phi")
+        do_execute = bool(args.get("execute", False))
+        res = run_pipeline(target, execute=do_execute,
+                           max_steps=int(args.get("max_steps", 1) or 1))
+        detail = "\n".join(
+            f"- {s['stage']}: {'ok' if s['ok'] else 'FAILED'} — {s.get('detail')}"
+            for s in res.get("stages", []))
+        msg = (res.get("summary", "") + "\n" + detail).strip()
+        return {"ok": bool(res.get("ok")), "action": a, "content": msg,
+                "response": msg, "evidence_source": "lora_pipeline", "result": res}
+    except Exception as e:
+        msg = f"LORA_TRAIN failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -1096,3 +1172,7 @@ for _action, _fn in {
     "CONFIRM_CODE_FIX": _h_confirm_code_fix,
 }.items():
     _register(_action, _fn)
+
+_register("RUN_TESTS", _h_run_tests)
+_register("TEST_REVIEW", _h_test_review)
+_register("LORA_TRAIN", _h_lora_train)
