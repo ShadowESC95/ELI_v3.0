@@ -2617,17 +2617,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # This block ensures the common actions actually route to real code.
 
     # ---- TIME ----
-    if a == "TIME":
-        from datetime import datetime as _dt
-        original_query = args.get("original_query", "") if args else ""
-        if "time" in original_query.lower() and not any(w in original_query.lower() for w in ["date","day","today","calendar","days"]):
-            time_fmt = "%H:%M:%S"
-        else:
-            time_fmt = "%Y-%m-%d %H:%M:%S"
-        now_str = _dt.now().strftime(time_fmt)
-        return {"ok": True, "action": a, "content": now_str, "response": now_str}
-    if a == "GET_TIME":
-        return _execute_impl("TIME", args)
 
     # ---- HELP / LIST_CAPABILITIES ----
     if a in ("HELP", "LIST_CAPABILITIES"):
