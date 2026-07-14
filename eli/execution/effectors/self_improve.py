@@ -12,6 +12,10 @@ def _runtime_status_report(*a, **k):
     from eli.execution.executor_enhanced import _runtime_status_report as _f
     return _f(*a, **k)
 
+def _self_improvement_log_report(*a, **k):
+    from eli.execution.executor_enhanced import _self_improvement_log_report as _f
+    return _f(*a, **k)
+
 def self_test(*a, **k):
     from eli.execution.executor_enhanced import self_test as _f
     return _f(*a, **k)
@@ -334,6 +338,50 @@ def _h_self_report(a, args):
             'evidence': ev, 'content': summary, 'response': summary}
 
 
+def _h_self_upgrade(a, args):
+    request = (args or {}).get('request', '')
+    try:
+        from eli.kernel.self_upgrade import SelfUpgrader
+        inst = SelfUpgrader()
+        result = inst.upgrade(request)
+        # If the upgrade request also named files / asked to check/examine/
+        # review, run the code examiner and append a tiered report + fix offer.
+        try:
+            from eli.runtime import code_examiner as _ce
+            _low = str(request or "").lower()
+            _wants_examine = bool(
+                _ce._extract_named_paths(request)
+                or re.search(r"\b(examine|review|inspect|check|scan|audit)\b", _low)
+            )
+            if _wants_examine:
+                _paths = _ce.resolve_targets(request)
+                if _paths:
+                    _findings = _ce.examine(_paths)
+                    # Same report-only policy: only offer/pend a fix for genuine breakage on
+                    # explicitly-named files; a broad upgrade-audit is report-only.
+                    _named = bool(_ce._extract_named_paths(request))
+                    _fixable = [f for f in _findings if _ce.is_real_breakage(f)]
+                    if _named and _fixable:
+                        _ce.set_pending_fix(_fixable, _paths)
+                    else:
+                        _ce.clear_pending_fix()
+                    result = result + "\n\n— Code examination —\n" + \
+                        _ce.format_report(_paths, _findings,
+                                          allow_fix=(_named and bool(_fixable)))
+        except Exception as _ex_exc:
+            log.debug(f"[SELF_UPGRADE] examine stage skipped: {_ex_exc}")
+        return {'ok': True, 'action': a, 'content': result, 'response': result}
+    except Exception as _exc:
+        return {'ok': False, 'action': a, 'error': str(_exc), 'content': str(_exc), 'response': str(_exc)}
+
+
+def _h_self_improvement_log(a, args):
+    limit = int((args or {}).get('limit') or 5) if isinstance(args, dict) else 5
+    days = int((args or {}).get('days') or 30) if isinstance(args, dict) else 30
+    rep = _self_improvement_log_report(limit=limit, days=days)
+    return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -344,3 +392,6 @@ for _action, _fn in {
     "SELF_REPORT": _h_self_report,
 }.items():
     _register(_action, _fn)
+
+_register("SELF_UPGRADE", _h_self_upgrade)
+_register("SELF_IMPROVEMENT_LOG", _h_self_improvement_log)
