@@ -228,3 +228,17 @@ def _eli_safe_screenshot(args=None):
     }
 
 __all__ = ['_open_file', '_write_note_builtin', '_append_note_builtin', '_eli_safe_read_file', '_eli_safe_write_note', '_eli_safe_screenshot']
+
+
+def _h_read_file(a, args):
+    return _eli_safe_read_file(args)
+
+
+def _h_write_note(a, args):
+    return _eli_safe_write_note(args)
+
+
+from eli.execution.effectors.registry import register as _register
+
+_register("READ_FILE", _h_read_file)
+_register("WRITE_NOTE", _h_write_note)
