@@ -3777,53 +3777,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {'ok': False, 'action': a, 'error': str(_exc), 'content': str(_exc), 'response': str(_exc)}
 
     # ---- CPU_USAGE ----
-    if a == "RAM_USAGE":
-        try:
-            import psutil
-            vm = psutil.virtual_memory()
-            used_gb = vm.used / (1024 ** 3)
-            total_gb = vm.total / (1024 ** 3)
-            msg = f"RAM usage: {vm.percent:.1f}%  ({used_gb:.1f} GB used / {total_gb:.1f} GB total)"
-            return {"ok": True, "action": a, "percent": vm.percent,
-                    "used_gb": round(used_gb, 2), "total_gb": round(total_gb, 2),
-                    "content": msg, "response": msg}
-        except ImportError:
-            msg = "RAM info unavailable (install psutil: pip install psutil)"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- SYSTEM_STATS ----
-    if a == "SYSTEM_STATS":
-        try:
-            import psutil, platform as _platform
-            cpu_pct = psutil.cpu_percent(interval=0.5)
-            vm = psutil.virtual_memory()
-            disk = psutil.disk_usage("/")
-            used_ram = vm.used / (1024 ** 3)
-            total_ram = vm.total / (1024 ** 3)
-            used_disk = disk.used / (1024 ** 3)
-            total_disk = disk.total / (1024 ** 3)
-            lines = [
-                f"System: {_platform.system()} {_platform.release()}",
-                f"CPU:    {cpu_pct:.1f}%  ({psutil.cpu_count()} cores)",
-                f"RAM:    {vm.percent:.1f}%  ({used_ram:.1f}/{total_ram:.1f} GB)",
-                f"Disk:   {disk.percent:.1f}%  ({used_disk:.1f}/{total_disk:.1f} GB)",
-            ]
-            try:
-                bat = psutil.sensors_battery()
-                if bat:
-                    lines.append(f"Battery: {bat.percent:.0f}%  ({'charging' if bat.power_plugged else 'on battery'})")
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "cpu_percent": cpu_pct, "ram_percent": vm.percent, "disk_percent": disk.percent}
-        except ImportError:
-            msg = "System stats unavailable (install psutil: pip install psutil)"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
     # ---- SPEAK ----
