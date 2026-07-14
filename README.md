@@ -438,7 +438,7 @@ data whenever you want.
 - `eli/memory` — episodic, semantic, FAISS vector index, knowledge graph
 - `eli/planning` — goals, jobs, autonomy, proactive daemon, scheduling
 - `eli/execution` — router + executor + **`effectors/`**: a dispatch **registry** where each action
-  family is its own module. **118 actions across 23 effector modules** (of 174 `SUPPORTED_ACTIONS`);
+  family is its own module. **169 actions across 34 effector modules** (of 185 `SUPPORTED_ACTIONS`);
   adding a capability is a drop-in module + one `register()` call, never a god-file edit
 - `eli/perception` — audio, screenshots, OS controller, TTS/STT
 - `eli/runtime` — arbitration, verification, security policy
