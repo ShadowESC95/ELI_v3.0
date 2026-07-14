@@ -3730,18 +3730,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
     # ---- SPEAK ----
-    if a == "SPEAK":
-        try:
-            text = (args.get("text") or args.get("message") or args.get("content") or "").strip()
-            if not text:
-                return {"ok": False, "action": a, "error": "No text to speak",
-                        "content": "Provide text to speak.", "response": "Provide text to speak."}
-            from eli.perception.tts_router import maybe_speak
-            maybe_speak(text, enabled=True)
-            msg = f"Speaking: {text[:80]}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- SMART_HOME ----
     # Routes through ELI's OWN MQTT device server (eli.runtime.device_server) — no
