@@ -3246,31 +3246,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # mixes it with noise/music at random SNRs (robustness over music), and trains a
     # small local classifier head. 100% local, no account, no third-party, no
     # external pre-trained model. Falls back to transcription until a model exists.
-    if a == "ORCHESTRATION_STATUS":
-        try:
-            from eli.cognition.agent_bus import orchestration_snapshot
-            snap = orchestration_snapshot()
-            lines = [
-                f"Agent orchestration ({snap.get('engine')}): "
-                f"{snap.get('count')} agents, critical path {snap.get('critical_path')} layer(s).",
-                "Execution layers (each runs in parallel):",
-            ]
-            for i, layer in enumerate(snap.get("execution_layers") or []):
-                lines.append(f"  layer {i}: {', '.join(layer)}")
-            if snap.get("dependencies"):
-                lines.append("Dependencies: " + "; ".join(
-                    f"{k}←{','.join(v)}" for k, v in snap["dependencies"].items()))
-            last = snap.get("last_run")
-            if last:
-                lines.append(f"Last run: ok={last.get('ok')} "
-                             f"{last.get('seconds')}s, failed={last.get('failed')}, "
-                             f"skipped={last.get('skipped')}")
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "agent_orchestrator", "result": snap}
-        except Exception as e:
-            msg = f"ORCHESTRATION_STATUS failed: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
     # ---- MULTI_COMMAND — run several chained commands in order, combine results ----
     # 'close steam and set an alarm for 7am' → route + execute each segment. Sequential
@@ -3342,26 +3317,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return _execute_impl("RUN_CMD", {"cmd": cmd, "shell": True})
 
     # ---- PLUGIN_STATUS ----
-    if a == "ELI_IDENTITY_AUDIT":
-        try:
-            from eli.runtime.eli_identity_audit import (
-                build_eli_identity_audit,
-                format_eli_identity_audit,
-            )
-
-            report = build_eli_identity_audit(str(args.get("question") or args.get("query") or ""))
-            text = format_eli_identity_audit(report)
-            return {
-                "ok": bool(report.get("ok", True)),
-                "action": a,
-                "report": report,
-                "content": text,
-                "response": text,
-                "evidence_source": "eli_identity_audit_local_verified_matrix_v1",
-            }
-        except Exception as e:
-            msg = f"ELI identity audit failed: {type(e).__name__}: {e}"
-            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
     # ---- CODE_CHANGES ----
 

@@ -101,6 +101,55 @@ def _h_gui_runtime_audit(a, args):
     return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
 
 
+def _h_orchestration_status(a, args):
+    try:
+        from eli.cognition.agent_bus import orchestration_snapshot
+        snap = orchestration_snapshot()
+        lines = [
+            f"Agent orchestration ({snap.get('engine')}): "
+            f"{snap.get('count')} agents, critical path {snap.get('critical_path')} layer(s).",
+            "Execution layers (each runs in parallel):",
+        ]
+        for i, layer in enumerate(snap.get("execution_layers") or []):
+            lines.append(f"  layer {i}: {', '.join(layer)}")
+        if snap.get("dependencies"):
+            lines.append("Dependencies: " + "; ".join(
+                f"{k}←{','.join(v)}" for k, v in snap["dependencies"].items()))
+        last = snap.get("last_run")
+        if last:
+            lines.append(f"Last run: ok={last.get('ok')} "
+                         f"{last.get('seconds')}s, failed={last.get('failed')}, "
+                         f"skipped={last.get('skipped')}")
+        msg = "\n".join(lines)
+        return {"ok": True, "action": a, "content": msg, "response": msg,
+                "evidence_source": "agent_orchestrator", "result": snap}
+    except Exception as e:
+        msg = f"ORCHESTRATION_STATUS failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
+def _h_eli_identity_audit(a, args):
+    try:
+        from eli.runtime.eli_identity_audit import (
+            build_eli_identity_audit,
+            format_eli_identity_audit,
+        )
+
+        report = build_eli_identity_audit(str(args.get("question") or args.get("query") or ""))
+        text = format_eli_identity_audit(report)
+        return {
+            "ok": bool(report.get("ok", True)),
+            "action": a,
+            "report": report,
+            "content": text,
+            "response": text,
+            "evidence_source": "eli_identity_audit_local_verified_matrix_v1",
+        }
+    except Exception as e:
+        msg = f"ELI identity audit failed: {type(e).__name__}: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -120,3 +169,6 @@ for _action, _fn in {
     _register(_action, _fn)
 
 _register("GUI_RUNTIME_AUDIT", _h_gui_runtime_audit)
+
+_register("ORCHESTRATION_STATUS", _h_orchestration_status)
+_register("ELI_IDENTITY_AUDIT", _h_eli_identity_audit)
