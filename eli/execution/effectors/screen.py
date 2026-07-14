@@ -113,6 +113,15 @@ def _h_screen_locate(a, args):
                 "response": f"Screen locator failed: {e}"}
 
 
+def _h_screenshot(a, args):
+    try:
+        from eli.perception.os_controller import take_screenshot
+        region = (args.get("region") or "full").strip()
+        return take_screenshot(region=region)
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -121,3 +130,5 @@ for _action, _fn in {
     "SCREEN_LOCATE": _h_screen_locate,
 }.items():
     _register(_action, _fn)
+
+_register("SCREENSHOT", _h_screenshot)
