@@ -3009,102 +3009,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # read from the conversation_turns log, never the wall clock.
 
     # ---- MEMORY_RECALL ----
-    if a == "MEMORY_RECALL":
-        q = str(args.get("query", "")).strip()
-        try:
-            lim = int(args.get("limit", 5))
-        except Exception:
-            lim = 5
-
-        if not q:
-            return {"ok": False, "action": a, "error": "empty_query", "content": "empty_query", "response": "empty_query"}
-
-        # 1) Canonical Memory class (proven working)
-        try:
-            from eli.memory.memory import get_memory as _get_mem_recall
-            _mem_r = _get_mem_recall()
-            hits = _mem_r.search_memory(q, limit=20) or []
-            if isinstance(hits, list):
-                # Truncate each hit and cap total to prevent context overflow.
-                # Large hits (e.g. repeated conversation dumps) crash llama.cpp.
-                _PER_HIT_CHARS = 300
-                _MAX_TOTAL_CHARS = 3000
-                lines, total = [], 0
-                for h in hits:
-                    t = (h.get("text", "") or "").strip()
-                    if not t:
-                        continue
-                    t = t[:_PER_HIT_CHARS]
-                    lines.append(t)
-                    total += len(t)
-                    if total >= _MAX_TOTAL_CHARS:
-                        break
-                content = "Memory recall:\n" + "\n---\n".join(lines) if lines else "Memory recall:\n(no matches)"
-            else:
-                content = "Memory recall:\n(no matches)"
-            if not content.strip():
-                content = "Memory recall:\n(no matches)"
-            return {"ok": True, "action": a, "hits": hits, "content": content, "response": content}
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        # 2) Legacy fallback: brain.memory_adapter.memory_search (may not exist)
-        try:
-            from eli.memory.memory_adapter import memory_search
-            result = memory_search(q, k=lim)
-            # Ensure consistent envelope
-            if isinstance(result, dict):
-                result.setdefault("action", a)
-                result.setdefault("ok", True)
-                if "content" not in result:
-                    # memory_adapter may return 'results' (common) or 'hits' (legacy).
-                    hits = result.get("results")
-                    if hits is None:
-                        hits = result.get("hits")
-                    if hits is None:
-                        hits = result.get("items")
-                    if hits is None:
-                        hits = []
-                    content = ""
-                    if isinstance(hits, list) and hits:
-                        # Friendly readable render (top-k)
-                        lines = []
-                        for h in hits:
-                            if not isinstance(h, dict):
-                                continue
-                            t = (h.get("text") or "").strip()
-                            if not t:
-                                continue
-                            score = h.get("score", None)
-                            tags = h.get("tags", "")
-                            if score is not None:
-                                try:
-                                    lines.append(f"- ({float(score):.3f}) {t} [{tags}]")
-                                except Exception:
-                                    lines.append(f"- {t} [{tags}]")
-                            else:
-                                lines.append(f"- {t} [{tags}]")
-                        content = "\n".join(lines).strip()
-                    result["content"] = content or "Memory recall:\n(no matches)"
-                    # Also expose a consistent 'hits' key for any callers expecting it.
-                    if "hits" not in result:
-                        result["hits"] = hits
-                result.setdefault("response", result.get("response") or result["content"])
-            return result
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        # 2) Fallback: canonical Memory class
-        try:
-            from eli.memory.memory import get_memory
-            _mem = get_memory()
-            hits = _mem.search_memory(q, limit=20) or []
-            content = "\n".join((h.get("text", "") or "") for h in hits) if isinstance(hits, list) else "Memory recall:\n(no matches)"
-            if not content.strip():
-                content = "Memory recall:\n(no matches)"
-            return {"ok": True, "action": a, "hits": hits, "content": content, "response": content}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # Quick commands
     if a == "CHECK_CHRONAL_ALIGNMENT":
@@ -3259,13 +3163,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
     # ---- SCREENSHOT ----
-    if a == "SCREENSHOT":
-        try:
-            from eli.perception.os_controller import take_screenshot
-            region = (args.get("region") or "full").strip()
-            return take_screenshot(region=region)
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- KEYBOARD ----
     # ---- OCR_IMAGE ----
@@ -3509,16 +3406,10 @@ def _action_pre_dispatch(
                     "content": _msg, "response": _msg}
 
     # MEMORY_RECALL identity-shaped queries -> USER_INFO_REPORT ---------
-    if a == "MEMORY_RECALL" and "_eli_is_identity_memory_query" in globals() \
-            and _eli_is_identity_memory_query(args):
-        return _eli_user_info_report(force=False,
-                                     reason="memory_recall_identity_compat")
 
     # User info actions --------------------------------------------------
 
     # Safe file/screenshot ops ------------------------------------------
-    if a == "SCREENSHOT":
-        return _eli_safe_screenshot(args)
 
     # OPEN_APP / OPEN_IDE pre-flight via grounded_remediation ----------
     if a in {"OPEN_APP", "OPEN_IDE"}:
