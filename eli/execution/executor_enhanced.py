@@ -361,6 +361,7 @@ import eli.execution.effectors.smart_home  # noqa: F401
 import eli.execution.effectors.ai_mode  # noqa: F401
 import eli.execution.effectors.notes  # noqa: F401
 import eli.execution.effectors.habits  # noqa: F401
+import eli.execution.effectors.misc  # noqa: F401
 import eli.execution.effectors.screen  # noqa: F401
 import eli.execution.effectors.file_ops  # noqa: F401
 
@@ -3012,12 +3013,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # ---- MEMORY_RECALL ----
 
     # Quick commands
-    if a == "CHECK_CHRONAL_ALIGNMENT":
-        import time as _t_mod
-        _now = _t_mod.localtime()
-        msg = (f"Chronal alignment nominal. Local time: "
-               f"{_t_mod.strftime('%Y-%m-%d %H:%M:%S', _now)}.")
-        return {"ok": True, "action": a, "content": msg, "response": msg}
 
     if a == "SCHEDULE_TASK":
         # Schedule a heavy/overnight task (code/research/self-upgrade/reflection)
@@ -3050,57 +3045,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return {"ok": True, "action": a, "content": msg, "response": msg,
                 "job_id": r["job_id"], "kind": r["kind"], "when_ts": r["when_ts"]}
 
-    if a == "DATA_FABRICATOR":
-        try:
-            # If a topic/prompt is provided, generate a document first then open it.
-            topic = str((args or {}).get("topic") or (args or {}).get("query") or (args or {}).get("text") or (args or {}).get("message") or "").strip()
-            if topic:
-                r = _execute_impl(action="CREATE_DOCUMENT", args={"topic": topic, "format": (args or {}).get("format") or "md"})
-                # If generation succeeded, also open in an editor if available
-                if r.get("ok") and r.get("path"):
-                    path = r.get("path")
-                    editors = [
-                        ["code", path],
-                        ["codium", path],
-                        ["gedit", path],
-                        ["kate", path],
-                        ["nano", path],
-                    ]
-                    for cmd in editors:
-                        try:
-                            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            break
-                        except FileNotFoundError:
-                            continue
-                return r
-
-            # Otherwise just open an editor for a new blank file.
-            out_dir = Path(str(Path.home() / "Documents" / "ELI" / "artifacts")).resolve()
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / f"data_construct_{int(time.time())}.md"
-            if not out_path.exists():
-                out_path.write_text("# Data Construct\n\n", encoding="utf-8")
-
-            editors = [
-                ["code", str(out_path)],
-                ["codium", str(out_path)],
-                ["gedit", str(out_path)],
-                ["libreoffice", "--writer", str(out_path)],
-            ]
-            for cmd in editors:
-                try:
-                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    msg = f"Opened editor: {' '.join(cmd)}"
-                    return {"ok": True, "action": a, "path": str(out_path), "content": msg, "response": msg}
-                except FileNotFoundError:
-                    continue
-
-            # Fallback: open with default system handler
-            open_file(str(out_path))
-            msg = f"Opened file: {out_path}"
-            return {"ok": True, "action": a, "path": str(out_path), "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
 
@@ -3253,8 +3197,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         }
 
 
-    if a == "SHOW_DIFF":
-        return chat("Show me the recent changes or diff in the project.", skip_router=True)
 
     # ---- MEMORY_STATS ----
 
