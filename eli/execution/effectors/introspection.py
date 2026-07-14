@@ -93,6 +93,14 @@ def _h_cognition_status(a, args):
     return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
 
 
+def _h_gui_runtime_audit(a, args):
+    _q = ""
+    if isinstance(args, dict):
+        _q = str(args.get("question") or args.get("message") or args.get("text") or "")
+    e = _ex(); rep = e._gui_runtime_audit_report(_q); txt = e._format_gui_runtime_audit(rep)
+    return {'ok': True, 'action': a, 'report': rep, 'content': txt, 'response': txt}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -110,3 +118,5 @@ for _action, _fn in {
     "COGNITION_STATUS": _h_cognition_status,
 }.items():
     _register(_action, _fn)
+
+_register("GUI_RUNTIME_AUDIT", _h_gui_runtime_audit)
