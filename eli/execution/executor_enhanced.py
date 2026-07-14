@@ -1217,6 +1217,7 @@ def _maybe_background_file_analysis(action, args):
 
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
+    'USER_INFO_REPORT',
     'SET_USER_NAME',
     'SKIP_YOUTUBE_AD',
     'ANALYZE_PDF_FOLDER',
@@ -3927,16 +3928,6 @@ def _action_pre_dispatch(
                                      reason="memory_recall_identity_compat")
 
     # User info actions --------------------------------------------------
-    if a == "REFRESH_USER_INFO":
-        return _eli_refresh_user_info(
-            force=args.get("force", False),
-            reason=args.get("reason", "manual"),
-        )
-    if a == "USER_INFO_REPORT":
-        return _eli_user_info_report(
-            force=args.get("force", False),
-            reason=args.get("reason", "identity_query"),
-        )
 
     # Safe file/screenshot ops ------------------------------------------
     if a == "SCREENSHOT":
@@ -4159,78 +4150,6 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     _override = _action_pre_dispatch(action, args, **kwargs)
     if _override is not None:
         return _action_post_dispatch(action, args, _override)
-    if a == 'USER_IDENTITY_SUMMARY':
-        _question = str((args or {}).get("question") or (args or {}).get("query") or "who am i")
-        try:
-            _snapshot = _eli_user_info_report(force=False, reason="user_identity_summary")
-            _raw = str(_snapshot.get("content") or _snapshot.get("response") or "")
-
-            def _section(_name):
-                _lines = []
-                _inside = False
-                _header = f"[{_name}]"
-                for _ln in _raw.splitlines():
-                    _s = _ln.strip()
-                    if _s == _header:
-                        _inside = True
-                        continue
-                    if _inside and _s.startswith("[") and _s.endswith("]"):
-                        break
-                    if _inside and _s.startswith("- "):
-                        _item = _s[2:].strip()
-                        if _item and _item.lower() != "none confirmed.":
-                            _lines.append(_item.rstrip("."))
-                return _lines
-
-            _identity = _section("Identity")
-            _prefs = _section("Communication Preferences")
-            _working = _section("Working Style")
-            _projects = _section("Active Projects")
-            _technical = _section("Technical Environment")
-
-            _lines = ["Current user identity summary:"]
-
-            if _identity:
-                _lines.append("")
-                _lines.append("Identity:")
-                for _x in _identity[:5]:
-                    _lines.append(f"- {_x}.")
-            else:
-                _lines.append("")
-                _lines.append("- I do not have a confirmed name/identity row in the current user-info snapshot.")
-
-            _facts = []
-            for _bucket in (_prefs, _working, _projects, _technical):
-                for _x in _bucket:
-                    if _x not in _facts:
-                        _facts.append(_x)
-
-            if _facts:
-                _lines.append("")
-                _lines.append("What I can say from current memory:")
-                for _x in _facts[:10]:
-                    _lines.append(f"- {_x}.")
-
-            _msg = "\n".join(_lines).strip()
-            if not _msg:
-                _msg = "I have no clean user identity summary available right now."
-
-            return {
-                "ok": True,
-                "action": a,
-                "content": _msg,
-                "response": _msg,
-                "report": {
-                    "source": "user_info_snapshot_summarized",
-                    "raw_snapshot_suppressed": True,
-                    "question": _question,
-                },
-                "evidence_source": "user_info_snapshot_summarized",
-                "generation_invoked": False,
-            }
-        except Exception as e:
-            _msg = f"User identity summary failed: {type(e).__name__}: {e}"
-            return {"ok": False, "action": a, "content": _msg, "response": _msg, "error": repr(e)}
     _mem = None  # _mkvi_memory_dispatch removed (was undefined)
     if _mem is not None:
         return _mem

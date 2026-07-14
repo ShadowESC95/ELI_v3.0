@@ -262,6 +262,16 @@ def clear_chat_history(*a, **k):
     return _f(*a, **k)
 
 
+def _eli_refresh_user_info(*a, **k):
+    from eli.execution.executor_enhanced import _eli_refresh_user_info as _f
+    return _f(*a, **k)
+
+
+def _eli_user_info_report(*a, **k):
+    from eli.execution.executor_enhanced import _eli_user_info_report as _f
+    return _f(*a, **k)
+
+
 def _h_memory_store(a, args):
     txt = str(args.get("text") or args.get("content") or args.get("message") or "").strip()
     # Remove common prefixes like "memory: " and quotes
@@ -321,8 +331,100 @@ def _h_clear_chat_history(a, args):
     return clear_chat_history()
 
 
+def _h_refresh_user_info(a, args):
+    return _eli_refresh_user_info(
+        force=args.get("force", False),
+        reason=args.get("reason", "manual"),
+    )
+
+
+def _h_user_info_report(a, args):
+    return _eli_user_info_report(
+        force=args.get("force", False),
+        reason=args.get("reason", "identity_query"),
+    )
+
+
+def _h_user_identity_summary(a, args):
+    _question = str((args or {}).get("question") or (args or {}).get("query") or "who am i")
+    try:
+        _snapshot = _eli_user_info_report(force=False, reason="user_identity_summary")
+        _raw = str(_snapshot.get("content") or _snapshot.get("response") or "")
+
+        def _section(_name):
+            _lines = []
+            _inside = False
+            _header = f"[{_name}]"
+            for _ln in _raw.splitlines():
+                _s = _ln.strip()
+                if _s == _header:
+                    _inside = True
+                    continue
+                if _inside and _s.startswith("[") and _s.endswith("]"):
+                    break
+                if _inside and _s.startswith("- "):
+                    _item = _s[2:].strip()
+                    if _item and _item.lower() != "none confirmed.":
+                        _lines.append(_item.rstrip("."))
+            return _lines
+
+        _identity = _section("Identity")
+        _prefs = _section("Communication Preferences")
+        _working = _section("Working Style")
+        _projects = _section("Active Projects")
+        _technical = _section("Technical Environment")
+
+        _lines = ["Current user identity summary:"]
+
+        if _identity:
+            _lines.append("")
+            _lines.append("Identity:")
+            for _x in _identity[:5]:
+                _lines.append(f"- {_x}.")
+        else:
+            _lines.append("")
+            _lines.append("- I do not have a confirmed name/identity row in the current user-info snapshot.")
+
+        _facts = []
+        for _bucket in (_prefs, _working, _projects, _technical):
+            for _x in _bucket:
+                if _x not in _facts:
+                    _facts.append(_x)
+
+        if _facts:
+            _lines.append("")
+            _lines.append("What I can say from current memory:")
+            for _x in _facts[:10]:
+                _lines.append(f"- {_x}.")
+
+        _msg = "\n".join(_lines).strip()
+        if not _msg:
+            _msg = "I have no clean user identity summary available right now."
+
+        return {
+            "ok": True,
+            "action": a,
+            "content": _msg,
+            "response": _msg,
+            "report": {
+                "source": "user_info_snapshot_summarized",
+                "raw_snapshot_suppressed": True,
+                "question": _question,
+            },
+            "evidence_source": "user_info_snapshot_summarized",
+            "generation_invoked": False,
+        }
+    except Exception as e:
+        _msg = f"User identity summary failed: {type(e).__name__}: {e}"
+        return {"ok": False, "action": a, "content": _msg, "response": _msg, "error": repr(e)}
+
+
 from eli.execution.effectors.registry import register as _register
 
 _register("MEMORY_STORE", _h_memory_store)
 _register("SET_USER_NAME", _h_set_user_name)
 _register("CLEAR_CHAT_HISTORY", _h_clear_chat_history)
+
+_register("REFRESH_USER_INFO", _h_refresh_user_info)
+_register("USER_INFO_REPORT", _h_user_info_report)
+_register("USER_IDENTITY_SUMMARY", _h_user_identity_summary)
