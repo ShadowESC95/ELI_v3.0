@@ -353,6 +353,9 @@ def test_control_action_result_uses_full_pipeline_in_nonquick_mode():
             "threshold": 0.7,
             "clarified": False,
         }
+        # Grounded control actions synthesise via _compact_grounded_synthesis; mock it so
+        # the test is self-contained (no dependency on a loaded GGUF model / leaked mock).
+        eng._compact_grounded_synthesis = lambda *_a, **_k: "I checked the runtime audit evidence: imports were checked."
 
         result = eng.process("run a full runtime audit", reasoning_mode="chain_of_thought")
 
