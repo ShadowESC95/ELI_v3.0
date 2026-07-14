@@ -70,13 +70,18 @@ def rel(p: Path) -> str:
     return str(p.relative_to(REPO))
 
 
+_EXAMPLE_DOCS = {"NEXT_SESSION.md", "EXTENDING_ELI.md"}
+
+
 @lru_cache(maxsize=1)
 def blueprint_files() -> tuple:
-    # NEXT_SESSION.md is the private (gitignored) forward-work handoff: it
-    # deliberately references modules that don't exist YET, so it is excluded
-    # from claims that verify blueprints against the current tree.
+    # These docs deliberately reference files not in THIS tree, so they are
+    # excluded from claims that verify blueprints against the current code:
+    # NEXT_SESSION.md is the forward-work handoff (future modules), and
+    # EXTENDING_ELI.md is a how-to guide with illustrative example paths
+    # (e.g. effectors/display_control.py) a user would create themselves.
     return tuple(sorted(p for p in (REPO / "blueprints").glob("*.md")
-                        if p.name != "NEXT_SESSION.md"))
+                        if p.name not in _EXAMPLE_DOCS))
 
 
 _FILE_RE = re.compile(r"`([a-zA-Z0-9_][a-zA-Z0-9_./\-]*\.py)`")
