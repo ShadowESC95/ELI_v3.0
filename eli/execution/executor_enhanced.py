@@ -357,6 +357,8 @@ import eli.execution.effectors.system_open  # noqa: F401
 import eli.execution.effectors.web_info  # noqa: F401
 import eli.execution.effectors.timers  # noqa: F401
 import eli.execution.effectors.jobs  # noqa: F401
+import eli.execution.effectors.smart_home  # noqa: F401
+import eli.execution.effectors.ai_mode  # noqa: F401
 import eli.execution.effectors.screen  # noqa: F401
 import eli.execution.effectors.file_ops  # noqa: F401
 
@@ -1217,6 +1219,7 @@ def _maybe_background_file_analysis(action, args):
 
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
+    'SET_AI_MODE',
     'USER_INFO_REPORT',
     'SET_USER_NAME',
     'SKIP_YOUTUBE_AD',
@@ -3493,82 +3496,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # Routes through ELI's OWN MQTT device server (eli.runtime.device_server) — no
     # Home Assistant. Resolves the spoken device/room name against ELI's registry and
     # publishes on/off over MQTT. Devices are set up in the web app's Home tab.
-    if a == "SMART_HOME":
-        try:
-            from eli.runtime.device_server import get_server
-            srv = get_server()
-            device = (args.get("device") or args.get("name") or "").strip()
-            raw = (args.get("command") or args.get("action") or args.get("state") or "").strip().lower()
-            # Bluetooth verbs (connect/disconnect/pair/use_for_audio) — resolve the spoken name
-            # against discovered/registered Bluetooth devices and drive the OS BT stack. Handled
-            # HERE, before the on/off mapping below ("on" is a substring of "c-on-nect").
-            _btc = raw.replace(" ", "_").replace("-", "_")
-            if args.get("bt") or _btc in ("connect", "disconnect", "pair", "trust", "use_for_audio"):
-                if _btc in ("use_for_audio", "audio", "route_audio") and device:
-                    from eli.runtime.local_connectivity import route_audio_by_name
-                    _ar = route_audio_by_name(device)
-                    if _ar.get("ok"):
-                        _label = _ar.get("display_name") or _ar.get("alias") or device
-                        _say = f"Audio is now playing through {_label}."
-                        return {"ok": True, "action": a, "content": _say, "response": _say}
-                from eli.runtime.device_server import bluetooth_control_by_name
-                _r = bluetooth_control_by_name(device, _btc or "connect")
-                _nm = _r.get("device_name") or device or "the device"
-                if _r.get("ok"):
-                    _say = {
-                        "use_for_audio": f"Audio is now playing through {_nm}.",
-                        "connect": f"Connected to {_nm}.",
-                        "disconnect": f"Disconnected {_nm}.",
-                        "pair": f"Paired with {_nm}.",
-                        "trust": f"Trusted {_nm}.",
-                    }.get(_btc, f"{_nm}: {_btc}.")
-                    return {"ok": True, "action": a, "content": _say, "response": _say}
-                _e = _r.get("error") or "I couldn't do that with Bluetooth."
-                return {"ok": False, "action": a, "error": _e, "content": _e, "response": _e}
-            cmd = "on" if "on" in raw else "off" if "off" in raw else raw
-            if not device:
-                msg = "Which device or room? For example: 'turn on the desk lamp'."
-                return {"ok": False, "action": a, "error": "no_device", "content": msg, "response": msg}
-            devs = srv.list_devices()
-            if not devs:
-                msg = ("No devices set up yet — add them in the Home tab of ELI's web app "
-                       "(ELI's own MQTT device server).")
-                return {"ok": False, "action": a, "error": "no_devices", "content": msg, "response": msg}
-            dl = device.lower()
-            match = next((d for d in devs if d["id"].lower() == dl or (d.get("name", "").lower() == dl)), None)
-            if match is None:
-                match = next((d for d in devs if dl and dl in (d.get("name", "").lower())), None)
-            if match is not None:
-                res = srv.control(match["id"], cmd)
-                label = match.get("name") or match["id"]
-                if res.get("ok"):
-                    msg = f"{label}: {cmd}"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                err = res.get("error") or "control failed"
-                return {"ok": False, "action": a, "error": err, "content": err, "response": err}
-            # Not a device — maybe a room name ("turn off the kitchen").
-            room_names = {r["room"].lower(): r["room"] for r in srv.rooms()}
-            if dl in room_names:
-                res = srv.control_room(room_names[dl], cmd)
-                if res.get("ok"):
-                    msg = f"{room_names[dl]}: {cmd} ({res.get('count', 0)} device(s))"
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                err = res.get("error") or "no controllable devices"
-                return {"ok": False, "action": a, "error": err, "content": err, "response": err}
-            # Not a device or room — maybe a scene ("activate movie mode" / "movie mode").
-            scene_names = {s["name"].lower(): s["name"] for s in srv.list_scenes()}
-            scene_key = next((k for k in scene_names if k in dl or dl in k), None)
-            if scene_key:
-                res = srv.activate_scene(scene_names[scene_key])
-                if res.get("ok"):
-                    msg = f"Scene '{res.get('scene')}' activated ({res.get('ran', 0)} device(s))."
-                    return {"ok": True, "action": a, "content": msg, "response": msg}
-                err = res.get("error") or "scene failed"
-                return {"ok": False, "action": a, "error": err, "content": err, "response": err}
-            msg = f"I don't have a device, room, or scene called '{device}'."
-            return {"ok": False, "action": a, "error": "not_found", "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- NOTE ACTIONS (LIST_NOTES / NEW_NOTE / SEARCH_NOTES) ----
     if a in ("LIST_NOTES", "NEW_NOTE", "SEARCH_NOTES"):
@@ -3652,27 +3579,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": False, "action": a, "error": str(_dge), "content": str(_dge), "response": str(_dge)}
 
     # ── SET_AI_MODE ──────────────────────────────────────────────────────────
-    if a == "SET_AI_MODE":
-        try:
-            # Public mode names are Quick / Normal / Advanced / Research / Expert.
-            # canonical_mode() accepts those AND every legacy alias (cot/tot/…) and
-            # maps to the stable internal strategy key; mode_display() gives the public
-            # label so the user never sees the internal name.
-            from eli.cognition.reasoning_modes import canonical_mode as _cm, mode_display as _md
-            raw = str(args.get("mode") or args.get("reasoning_mode") or args.get("value") or "quick")
-            canonical = _cm(raw)
-            from eli.core.runtime_settings import save_settings as _ss
-            _ss({"reasoning_mode": canonical})
-            try:
-                from eli.kernel.engine import get_engine as _ge
-                _ge()._reasoning_mode = canonical
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            msg = f"Reasoning mode set to {_md(canonical)}."
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "mode": canonical, "mode_display": _md(canonical)}
-        except Exception as _sme:
-            return {"ok": False, "action": a, "error": str(_sme), "content": str(_sme), "response": str(_sme)}
 
     return {"ok": False, "action": a, "error": f"Unsupported executor action: {a}", "content": f"Unsupported executor action: {a}", "response": f"Unsupported executor action: {a}"}
 
