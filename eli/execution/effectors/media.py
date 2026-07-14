@@ -20,6 +20,21 @@ log = get_logger(__name__)
 
 from eli.execution.effectors._base import _allow_or_block, _open_in_browser, _run_argv
 
+
+def _execute_impl(*a, **k):
+    from eli.execution.executor_enhanced import _execute_impl as _f
+    return _f(*a, **k)
+
+
+def _browser_user_dir(*a, **k):
+    from eli.execution.executor_enhanced import _browser_user_dir as _f
+    return _f(*a, **k)
+
+
+def _volume_fallback(*a, **k):
+    from eli.execution.executor_enhanced import _volume_fallback as _f
+    return _f(*a, **k)
+
 # ── media state ──
 MEDIA_DUCK = str(os.environ.get("ELI_MEDIA_DUCK", "1")).strip().lower() not in ("0","false","no","off")
 MEDIA_PLAYER = (os.environ.get("ELI_MEDIA_PLAYER", "spotify") or "spotify").strip()
@@ -735,6 +750,56 @@ __all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_
 
 # ── dispatch handlers (v3 registry) ──
 # Registering here is all it takes to add a media action — no executor edit.
+def _h_media_control(a, args):
+    cmd = (args.get("command") or "play-pause").strip().lower()
+    target = (args.get("target") or args.get("app") or args.get("player") or "").strip().lower() or None
+    cmd_map = {
+        "pause": "PAUSE_MEDIA", "stop": "STOP_MEDIA",
+        "play": "PLAY_MEDIA", "resume": "PLAY_MEDIA",
+        "next": "NEXT_MEDIA", "skip": "NEXT_MEDIA",
+        "previous": "PREVIOUS_MEDIA", "prev": "PREVIOUS_MEDIA",
+    }
+    mapped = cmd_map.get(cmd)
+    if mapped:
+        # Forward target into sub-handler args
+        forwarded = dict(args)
+        forwarded["_target"] = target
+        # Call targeted versions directly when target present
+        if target and mapped == "PAUSE_MEDIA":
+            return pause_media(target=target)
+        if target and mapped in ("PLAY_MEDIA",):
+            return play_media(target=target)
+        if target and mapped == "STOP_MEDIA":
+            return stop_media(target=target)
+        return _execute_impl(mapped, forwarded)
+    # Fallback: playerctl generic
+    try:
+        subprocess.run(["playerctl", cmd], timeout=5, capture_output=True)
+        msg = f"Media: {cmd}"
+        return {"ok": True, "action": a, "content": msg, "response": msg}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+def _h_skip_youtube_ad(a, args):
+    try:
+        from eli.tools.media.youtube import YouTubeController
+        _cfg_obj = type("_Cfg", (), {"browser": (args or {}).get("browser", "chromium"), "browser_user_dir": str(_browser_user_dir())})()
+        _yt = YouTubeController(_cfg_obj)
+        result = _yt.skip_ad()
+        msg = "YouTube ad skipped." if result.ok else f"Ad skip failed: {result.data.get('error', 'unknown')}"
+        return {"ok": result.ok, "action": a, "content": msg, "response": msg}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+def _h_volume(a, args):
+    direction = (args.get("direction") or "").strip().lower()
+    level = args.get("level")
+    delta = int(args.get("delta", 10))
+    return _volume_fallback(direction=direction, delta=delta, level=level)
+
+
 from eli.execution.effectors.registry import register as _register
 
 
@@ -767,3 +832,7 @@ for _action, _fn in {
     "REPEAT_MEDIA": _h_repeat_media,
 }.items():
     _register(_action, _fn)
+
+_register("MEDIA_CONTROL", _h_media_control)
+_register("SKIP_YOUTUBE_AD", _h_skip_youtube_ad)
+_register("VOLUME", _h_volume)

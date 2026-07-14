@@ -1216,6 +1216,7 @@ def _maybe_background_file_analysis(action, args):
 
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
+    'SKIP_YOUTUBE_AD',
     'ANALYZE_PDF_FOLDER',
     'IMAGE_STATUS',
     'LISTEN_FOR_COMMAND',
@@ -3278,16 +3279,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
-    if a == "SKIP_YOUTUBE_AD":
-        try:
-            from eli.tools.media.youtube import YouTubeController
-            _cfg_obj = type("_Cfg", (), {"browser": (args or {}).get("browser", "chromium"), "browser_user_dir": str(_browser_user_dir())})()
-            _yt = YouTubeController(_cfg_obj)
-            result = _yt.skip_ad()
-            msg = "YouTube ad skipped." if result.ok else f"Ad skip failed: {result.data.get('error', 'unknown')}"
-            return {"ok": result.ok, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
     if a == "RUN_TESTS":
@@ -3443,42 +3434,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
     # ---- DATE ----
 
     # ---- MEDIA_CONTROL (generic router output) ----
-    if a == "MEDIA_CONTROL":
-        cmd = (args.get("command") or "play-pause").strip().lower()
-        target = (args.get("target") or args.get("app") or args.get("player") or "").strip().lower() or None
-        cmd_map = {
-            "pause": "PAUSE_MEDIA", "stop": "STOP_MEDIA",
-            "play": "PLAY_MEDIA", "resume": "PLAY_MEDIA",
-            "next": "NEXT_MEDIA", "skip": "NEXT_MEDIA",
-            "previous": "PREVIOUS_MEDIA", "prev": "PREVIOUS_MEDIA",
-        }
-        mapped = cmd_map.get(cmd)
-        if mapped:
-            # Forward target into sub-handler args
-            forwarded = dict(args)
-            forwarded["_target"] = target
-            # Call targeted versions directly when target present
-            if target and mapped == "PAUSE_MEDIA":
-                return pause_media(target=target)
-            if target and mapped in ("PLAY_MEDIA",):
-                return play_media(target=target)
-            if target and mapped == "STOP_MEDIA":
-                return stop_media(target=target)
-            return _execute_impl(mapped, forwarded)
-        # Fallback: playerctl generic
-        try:
-            subprocess.run(["playerctl", cmd], timeout=5, capture_output=True)
-            msg = f"Media: {cmd}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- VOLUME ----
-    if a == "VOLUME":
-        direction = (args.get("direction") or "").strip().lower()
-        level = args.get("level")
-        delta = int(args.get("delta", 10))
-        return _volume_fallback(direction=direction, delta=delta, level=level)
 
 
     # ---- SCREENSHOT ----
