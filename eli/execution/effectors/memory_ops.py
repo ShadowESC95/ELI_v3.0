@@ -250,3 +250,79 @@ def _recall_memory_builtin(args: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 __all__ = ['_get_canonical_memory', 'search_memory', 'search_memory_compat', '_repo_root', '_convlog_path', '_convlog_append', '_get_memory_path', 'memory_store', 'memory_recall', '_state_get_history', '_state_append_history', 'memory_store_legacy', 'memory_recall_legacy', '_recall_memory_builtin']
+
+
+def set_user_name(*a, **k):
+    from eli.execution.executor_enhanced import set_user_name as _f
+    return _f(*a, **k)
+
+
+def clear_chat_history(*a, **k):
+    from eli.execution.executor_enhanced import clear_chat_history as _f
+    return _f(*a, **k)
+
+
+def _h_memory_store(a, args):
+    txt = str(args.get("text") or args.get("content") or args.get("message") or "").strip()
+    # Remove common prefixes like "memory: " and quotes
+    txt = re.sub(r'^memory:\s*', '', txt, flags=re.IGNORECASE)
+    txt = re.sub(r'^"(.+)"$', r'\1', txt)
+    if not txt:
+        return {"ok": False, "action": a, "error": "empty_text", "content": "empty_text", "response": "empty_text"}
+
+    tags = args.get("tags", [])
+    if isinstance(tags, str):
+        tags = [x.strip() for x in tags.split(",") if x.strip()]
+    elif isinstance(tags, (tuple, set)):
+        tags = [str(x).strip() for x in tags if str(x).strip()]
+    elif not isinstance(tags, list):
+        tags = []
+
+    # --- FIX: try local memory_store first, then fallback to other backends ---
+    # Local JSONL memory_store() (most reliable, no prefix)
+    try:
+        result = memory_store(txt, tags=tags)
+        if isinstance(result, dict):
+            result.setdefault("action", a)
+            result.setdefault("ok", True)
+            result.setdefault("content", result.get("content") or "memory stored")
+            result.setdefault("response", result.get("response") or result["content"])
+        return result
+    except Exception as e:
+        # If local fails, try adapter
+        try:
+            from eli.memory.memory_adapter import memory_store as adapter_store
+            result = adapter_store(txt, tags=tags)
+            if isinstance(result, dict):
+                result.setdefault("action", a)
+                result.setdefault("ok", True)
+                result.setdefault("content", result.get("content") or "memory stored")
+                result.setdefault("response", result.get("response") or result["content"])
+            return result
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Last resort: canonical Memory class
+        try:
+            from eli.memory.memory import get_memory
+            _mem = get_memory()
+            _mem.store_memory(txt, tags=",".join(tags) if isinstance(tags, list) else str(tags))
+            msg = "memory stored"
+            return {"ok": True, "action": a, "content": msg, "response": msg}
+        except Exception as e2:
+            return {"ok": False, "action": a, "error": str(e2), "content": str(e2), "response": str(e2)}
+
+
+def _h_set_user_name(a, args):
+    return set_user_name(str(args.get("name", "")))
+
+
+def _h_clear_chat_history(a, args):
+    return clear_chat_history()
+
+
+from eli.execution.effectors.registry import register as _register
+
+_register("MEMORY_STORE", _h_memory_store)
+_register("SET_USER_NAME", _h_set_user_name)
+_register("CLEAR_CHAT_HISTORY", _h_clear_chat_history)

@@ -1217,6 +1217,7 @@ def _maybe_background_file_analysis(action, args):
 
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
+    'SET_USER_NAME',
     'SKIP_YOUTUBE_AD',
     'ANALYZE_PDF_FOLDER',
     'IMAGE_STATUS',
@@ -2562,55 +2563,6 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return chat(str(msg), model=model)
 
     # Persistent memory
-    if a == "MEMORY_STORE":
-        txt = str(args.get("text") or args.get("content") or args.get("message") or "").strip()
-        # Remove common prefixes like "memory: " and quotes
-        txt = re.sub(r'^memory:\s*', '', txt, flags=re.IGNORECASE)
-        txt = re.sub(r'^"(.+)"$', r'\1', txt)
-        if not txt:
-            return {"ok": False, "action": a, "error": "empty_text", "content": "empty_text", "response": "empty_text"}
-
-        tags = args.get("tags", [])
-        if isinstance(tags, str):
-            tags = [x.strip() for x in tags.split(",") if x.strip()]
-        elif isinstance(tags, (tuple, set)):
-            tags = [str(x).strip() for x in tags if str(x).strip()]
-        elif not isinstance(tags, list):
-            tags = []
-
-        # --- FIX: try local memory_store first, then fallback to other backends ---
-        # Local JSONL memory_store() (most reliable, no prefix)
-        try:
-            result = memory_store(txt, tags=tags)
-            if isinstance(result, dict):
-                result.setdefault("action", a)
-                result.setdefault("ok", True)
-                result.setdefault("content", result.get("content") or "memory stored")
-                result.setdefault("response", result.get("response") or result["content"])
-            return result
-        except Exception as e:
-            # If local fails, try adapter
-            try:
-                from eli.memory.memory_adapter import memory_store as adapter_store
-                result = adapter_store(txt, tags=tags)
-                if isinstance(result, dict):
-                    result.setdefault("action", a)
-                    result.setdefault("ok", True)
-                    result.setdefault("content", result.get("content") or "memory stored")
-                    result.setdefault("response", result.get("response") or result["content"])
-                return result
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-            # Last resort: canonical Memory class
-            try:
-                from eli.memory.memory import get_memory
-                _mem = get_memory()
-                _mem.store_memory(txt, tags=",".join(tags) if isinstance(tags, list) else str(tags))
-                msg = "memory stored"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except Exception as e2:
-                return {"ok": False, "action": a, "error": str(e2), "content": str(e2), "response": str(e2)}
     
     # --- media control ---
 
@@ -3426,11 +3378,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             msg = f"TEST_REVIEW failed: {e}"
             return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
-    if a == "SET_USER_NAME":
-        return set_user_name(str(args.get("name", "")))
 
-    if a == "CLEAR_CHAT_HISTORY":
-        return clear_chat_history()
 
     # ---- DATE ----
 
