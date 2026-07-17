@@ -288,6 +288,11 @@ class CapabilitySync:
         router_path = next((p for p in _router_candidates if p.exists()), None)
         if router_path and router_path.exists():
             src = router_path.read_text(encoding="utf-8", errors="replace")
+            # The router is being decomposed into eli/execution/routing/*.py (intent
+            # families lifted out of the monolith); scan those too so a lifted
+            # intent stays discoverable/routable.
+            for _rp in sorted((router_path.parent / "routing").glob("*.py")):
+                src += "\n" + _rp.read_text(encoding="utf-8", errors="replace")
             intents = _extract_router_intents(src)
             for intent in intents:
                 if intent in caps:
