@@ -26,20 +26,24 @@ pipeline-description module.
 
 Moved so far
 ------------
-    _common.py        shared stage primitives (governance soft-import)
+    _common.py        shared stage primitives: governance soft-import,
+                      _eli_path_get, _is_brief_phatic_prompt (used by the engine
+                      AND the stages — one source, not re-derived per module)
     memory_commit.py  MemoryCommitMixin — Stage 12: decide what is worth
                       remembering, store the user/assistant turns, learn from
                       the executed result
+    retrieval.py      RetrievalMixin — tiered memory fetch: relevant-memory
+                      recall, recent-topic summary, runtime memory snapshot
     fast_actions.py   Phase 45 direct fast-actions (authoritative executor results)
 
 Planned next (pipeline order, per blueprints/v3_monolith_decomposition.md §3):
     lifecycle.py       __init__ / _init_gguf / shutdown / background loops
-    retrieval.py       tiered memory fetch + recent-topic + runtime snapshot
     prompt_assembly.py persona brief + evidence/working-memory assembly
     reasoning_modes.py chain-of-thought / tree-of-thought / self-consistency /
                        constitutional / chat-reasoning loop
     generation.py      streaming + generate + chat-response finalisation
 """
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
+from eli.kernel.stages.retrieval import RetrievalMixin
 
-__all__ = ["MemoryCommitMixin"]
+__all__ = ["MemoryCommitMixin", "RetrievalMixin"]
