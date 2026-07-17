@@ -186,3 +186,8 @@ models/unsloth_compiled_cache/
 # private dev handoff — never publish
 blueprints/NEXT_SESSION.md
 blueprints/NEXT_SESSION.pdf
+
+# repomix output + per-user voice presets (runtime)
+repomix-output.xml
+repomix-core.xml
+config/voices/
