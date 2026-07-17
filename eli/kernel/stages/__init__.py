@@ -37,19 +37,32 @@ Moved so far
     reasoning_modes.py ReasoningModesMixin — chain-of-thought / tree-of-thought /
                       self-consistency / constitutional, the chat reasoning loop,
                       and answer synthesis
+    prompt_assembly.py PromptAssemblyMixin — builds the enhanced system prompt,
+                      gathers/attaches executor evidence, assembles the grounded
+                      evidence + precise working-memory context, splices the
+                      persona hand-off
     guards.py         output/evidence guards shared by the engine and the stages:
                       failed-executor detection + honest surfacing, identity
                       self-report guards, reasoning-scaffold strip
+    persona_text.py   persona + identity text prep shared by the engine and the
+                      prompt_assembly/generation stages (persona load, identity-
+                      context sanitise); a leaf module so mixins import it without
+                      a cycle back to engine
     fast_actions.py   Phase 45 direct fast-actions (authoritative executor results)
 
 Planned next (pipeline order, per blueprints/v3_monolith_decomposition.md §3):
-    prompt_assembly.py persona brief + evidence/working-memory assembly
     generation.py      streaming + generate + chat-response finalisation
     lifecycle.py       _init_gguf / shutdown / background loops (__init__ stays
                        on CognitiveEngine — it is the class's own constructor)
 """
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
+from eli.kernel.stages.prompt_assembly import PromptAssemblyMixin
 from eli.kernel.stages.reasoning_modes import ReasoningModesMixin
 from eli.kernel.stages.retrieval import RetrievalMixin
 
-__all__ = ["MemoryCommitMixin", "ReasoningModesMixin", "RetrievalMixin"]
+__all__ = [
+    "MemoryCommitMixin",
+    "PromptAssemblyMixin",
+    "ReasoningModesMixin",
+    "RetrievalMixin",
+]
