@@ -211,7 +211,49 @@ def _eli_test_mode() -> bool:
     return "pytest" in sys.modules
 
 
+
+def _eli_bus_first_ok_result(bus_result, action):
+    """Return the bus's *successful* authoritative result for action, if any.
+
+    Used as a "don't replan a success" guard: when the AgentBus already ran a
+    deterministic action ok (e.g. MORNING_REPORT with the full report in
+    content) but a redundant re-execution downstream failed, we trust the
+    earlier success instead of replanning into an invented/unsupported action.
+    """
+    action_u = str(action or "").upper().strip()
+    if not action_u or bus_result is None:
+        return None
+
+    def _ok_with_content(d):
+        if not isinstance(d, dict) or d.get("skipped"):
+            return False
+        if not d.get("ok"):
+            return False
+        if str(d.get("action") or action_u).upper().strip() != action_u:
+            return False
+        return bool(str(d.get("content") or d.get("response") or "").strip())
+
+    try:
+        ar = getattr(bus_result, "action_result", None)
+        if _ok_with_content(ar):
+            return dict(ar)
+    except Exception:
+        pass
+
+    try:
+        for r in list(getattr(bus_result, "agent_results", []) or []):
+            if str(getattr(r, "agent", "") or "") not in {"system", "plugin"}:
+                continue
+            data = getattr(r, "data", None)
+            if _ok_with_content(data):
+                return dict(data)
+    except Exception:
+        pass
+
+    return None
+
 __all__ = [
+    "_eli_bus_first_ok_result",
     "_eli_test_mode",
     "_HAS_GOVERNANCE",
     "_eli_path_get",
