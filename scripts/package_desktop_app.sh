@@ -141,6 +141,25 @@ else
   echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
 fi
 
+# A "full" package (starter model present) also bundles the small aux weights the installer
+# would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
+# Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
+if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
+  _EMB="$ROOT/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
+  if [ -f "$_EMB" ]; then
+    mkdir -p "$STAGING/models/embeddings"; cp "$_EMB" "$STAGING/models/embeddings/"
+    echo "[package] bundling embedder (memory/RAG): $(du -h "$_EMB" | cut -f1)"
+  fi
+  for _vd in "$ROOT/tts_piper/piper" "$ROOT/models/tts/piper"; do
+    if [ -f "$_vd/en_US-amy-medium.onnx" ]; then
+      mkdir -p "$STAGING/tts_piper/piper"
+      cp "$_vd/en_US-amy-medium.onnx" "$_vd/en_US-amy-medium.onnx.json" "$STAGING/tts_piper/piper/" 2>/dev/null || true
+      echo "[package] bundling default Piper voice (amy-medium)"
+      break
+    fi
+  done
+fi
+
 if [ "$WITH_ASSETS" -eq 1 ]; then
   echo "[package] including local model/voice assets; this can be very large"
   [ -d "$ROOT/models" ] && cp -a "$ROOT/models/." "$STAGING/models/"
