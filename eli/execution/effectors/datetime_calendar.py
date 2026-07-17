@@ -5,8 +5,7 @@ ADD_EVENT (stubs until a calendar provider is wired).
 """
 from __future__ import annotations
 
-from datetime import datetime
-
+from eli.core.worldclock import describe
 from eli.execution.effectors.registry import register as _register
 
 _CAL_MSG = ("Calendar integration is not configured. Use your calendar app directly or "
@@ -14,7 +13,8 @@ _CAL_MSG = ("Calendar integration is not configured. Use your calendar app direc
 
 
 def _h_date(a, args):
-    d = datetime.now().strftime("%A, %Y-%m-%d")
+    d = describe((args.get("original_query") or "") if args else "",
+                 default_date=True, default_time=False)
     return {"ok": True, "action": a, "content": d, "response": d}
 
 
@@ -23,13 +23,8 @@ def _h_calendar_stub(a, args):
 
 
 def _h_time(a, args):
-    original_query = args.get("original_query", "") if args else ""
-    if "time" in original_query.lower() and not any(
-            w in original_query.lower() for w in ["date", "day", "today", "calendar", "days"]):
-        time_fmt = "%H:%M:%S"
-    else:
-        time_fmt = "%Y-%m-%d %H:%M:%S"
-    now_str = datetime.now().strftime(time_fmt)
+    now_str = describe((args.get("original_query") or "") if args else "",
+                       default_date=False, default_time=True)
     return {"ok": True, "action": a, "content": now_str, "response": now_str}
 
 

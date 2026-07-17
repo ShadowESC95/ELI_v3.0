@@ -9,10 +9,22 @@ def _eli_runtime_cognition_failure_guard(text):
     raw = str(text or "")
     low = raw.lower().strip()
 
-    if re.search(r"\bnvidia-smi\b", low) or (
+    # "how many layers are you using?" means GPU offload layers in ELI's own
+    # runtime — n_gpu_layers is live in the GPU_STATUS snapshot. Left to CHAT it
+    # confabulated (a real session answered with After Effects compositing
+    # advice), and "are you using the gpu?" drew "I am running on CPU, not GPU"
+    # while 11 layers were offloaded. Grounded report, not a guess.
+    _gpu_layer_question = (
+        re.search(r"\blayers?\b", low)
+        and re.search(r"\b(you|your|offload\w*|gpu|vram|cuda|model|running|loaded|use|using)\b", low)
+        and not re.search(r"\b(image|photo|photoshop|after\s?effects|composit\w*|design|"
+                          r"canvas|css|z-index|onion\s?skin)\b", low)
+    )
+    if re.search(r"\bnvidia-smi\b", low) or _gpu_layer_question or (
         re.search(r"\b(gpu|vram|cuda|nvidia)\b", low)
-        and re.search(r"\b(stat|stats|status|diagnostic|diagnostics|usage|memory|"
-                      r"performance|running on|tell me what it means|temp|temperature|how hot)\b", low)
+        and re.search(r"\b(stat|stats|status|diagnostic|diagnostics|usage|using|use|memory|"
+                      r"performance|running on|running|offload\w*|accelerat\w*|"
+                      r"tell me what it means|temp|temperature|how hot)\b", low)
     ):
         return {
             "action": "GPU_STATUS",
@@ -82,8 +94,14 @@ def _eli_recent_memory_processing_question(text: object) -> bool:
     if _eli_recent_mem_re.search(r"\b(how many|count|number of)\b.{0,40}\b(memories|memory rows|memory entries)\b", low):
         return False
 
+    # "processed"/"processing" are deliberately NOT memory terms. They also
+    # appear in recent_terms below, so counting them here collapsed the two-signal
+    # AND at the bottom of this function into a bare "processing" + "you" test —
+    # which routed behavioural complaints ("you're not processing my questions
+    # properly, are you okay?") to a SQLite memory inventory. The explicit
+    # patterns below still catch "what memories have you been processing".
     memory_terms = _eli_recent_mem_re.search(
-        r"\b(memories|memory|remembered|remembering|processed|processing|learning|stored|recalled|recall)\b",
+        r"\b(memories|memory|remembered|remembering|learning|stored|recalled|recall)\b",
         low,
     )
     recent_terms = _eli_recent_mem_re.search(
