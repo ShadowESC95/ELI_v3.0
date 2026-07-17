@@ -19,6 +19,10 @@ except Exception:  # pragma: no cover
     def write_incident(payload: dict) -> str:
         return ""
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 _LOCK = threading.RLock()
 _BUSY = False
 _PENDING = None
@@ -107,7 +111,7 @@ def _save_pending_state(payload: dict | None) -> None:
         try:
             path.unlink()
         except FileNotFoundError:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -138,7 +142,7 @@ def get_pending():
                         _PENDING = None
                         _save_pending_state(None)
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
         return _PENDING
 
 def clear_pending() -> None:
@@ -158,7 +162,7 @@ def remember_failure(result: dict) -> None:
     try:
         write_incident({"kind": "failure", "result": result})
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
 def set_pending_for_test(plan: dict, result: dict, stage: str = "offered") -> None:
     global _PENDING
@@ -224,20 +228,15 @@ read -r _
     return sh_path, None
 
 def _terminal_argv_linux(sh_path: Path):
-    """Pick the first available Linux terminal emulator."""
-    if shutil.which("gnome-terminal"):
-        return ["gnome-terminal", "--", "bash", str(sh_path)]
-    if shutil.which("x-terminal-emulator"):
-        return ["x-terminal-emulator", "-e", "bash", str(sh_path)]
-    if shutil.which("kgx"):
-        return ["kgx", "bash", str(sh_path)]
-    if shutil.which("konsole"):
-        return ["konsole", "-e", "bash", str(sh_path)]
-    if shutil.which("xfce4-terminal"):
-        return ["xfce4-terminal", "--command", f"bash {sh_path}"]
-    if shutil.which("xterm"):
-        return ["xterm", "-e", "bash", str(sh_path)]
-    return None
+    """Pick the first available terminal emulator.
+
+    Delegates to platform_compat so the candidate list has a single owner — this
+    copy knew only the Debian/GNOME terminals and returned None on an Arch or
+    minimal-WM box running kitty/foot/alacritty.
+    """
+    from eli.utils.platform_compat import terminal_argv
+
+    return terminal_argv(["bash", str(sh_path)])
 
 def _terminal_build_windows(cmd: str, log_path: Path, rc_path: Path, ps1_path: Path):
     """Write a PowerShell runner and build a visible (UAC-elevated when required)
@@ -324,7 +323,7 @@ def _run_in_terminal(cmd: str) -> dict:
             "created_at": _now(),
         }, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         subprocess.Popen(argv, start_new_session=True)
