@@ -34,16 +34,22 @@ Moved so far
                       the executed result
     retrieval.py      RetrievalMixin — tiered memory fetch: relevant-memory
                       recall, recent-topic summary, runtime memory snapshot
+    reasoning_modes.py ReasoningModesMixin — chain-of-thought / tree-of-thought /
+                      self-consistency / constitutional, the chat reasoning loop,
+                      and answer synthesis
+    guards.py         output/evidence guards shared by the engine and the stages:
+                      failed-executor detection + honest surfacing, identity
+                      self-report guards, reasoning-scaffold strip
     fast_actions.py   Phase 45 direct fast-actions (authoritative executor results)
 
 Planned next (pipeline order, per blueprints/v3_monolith_decomposition.md §3):
-    lifecycle.py       __init__ / _init_gguf / shutdown / background loops
     prompt_assembly.py persona brief + evidence/working-memory assembly
-    reasoning_modes.py chain-of-thought / tree-of-thought / self-consistency /
-                       constitutional / chat-reasoning loop
     generation.py      streaming + generate + chat-response finalisation
+    lifecycle.py       _init_gguf / shutdown / background loops (__init__ stays
+                       on CognitiveEngine — it is the class's own constructor)
 """
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
+from eli.kernel.stages.reasoning_modes import ReasoningModesMixin
 from eli.kernel.stages.retrieval import RetrievalMixin
 
-__all__ = ["MemoryCommitMixin", "RetrievalMixin"]
+__all__ = ["MemoryCommitMixin", "ReasoningModesMixin", "RetrievalMixin"]

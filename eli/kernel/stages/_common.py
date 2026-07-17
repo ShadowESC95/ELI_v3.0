@@ -6,6 +6,9 @@ with its own try/except.
 """
 from __future__ import annotations
 
+import os
+import sys
+
 import re
 
 # Response governance is optional (it may not be installed). The engine uses
@@ -198,7 +201,18 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     return False
 
 
+def _eli_test_mode() -> bool:
+    if os.environ.get("ELI_TEST_MODE", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return "pytest" in sys.modules
+
+
 __all__ = [
+    "_eli_test_mode",
     "_HAS_GOVERNANCE",
     "_eli_path_get",
     "_is_brief_phatic_prompt",
