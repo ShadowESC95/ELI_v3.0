@@ -59,9 +59,10 @@ artifacts/*
 eli/artifacts/
 .code_monitor_state.json
 
-# ── Blueprints — PDFs only in git; source docs/icons stay local ───────────────
+# ── Blueprints — PDFs + the PDF-build tooling in git; source docs/icons stay local ─
 blueprints/*
 !blueprints/*.pdf
+!blueprints/build_blueprint_pdf.py
 
 # ── Generated / auto-updated files (manifest tracked; blueprint markdown local) ─
 eli/capability_inventory.generated.json
