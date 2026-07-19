@@ -41,6 +41,10 @@ Moved so far
                       gathers/attaches executor evidence, assembles the grounded
                       evidence + precise working-memory context, splices the
                       persona hand-off
+    generation.py     GenerationMixin — the model-facing half: calls the local
+                      model (streaming or one-shot), governs/normalises the
+                      visible text, runs the rapport/semantic conversational
+                      guards, finalises the chat result
     guards.py         output/evidence guards shared by the engine and the stages:
                       failed-executor detection + honest surfacing, identity
                       self-report guards, reasoning-scaffold strip
@@ -48,19 +52,25 @@ Moved so far
                       prompt_assembly/generation stages (persona load, identity-
                       context sanitise); a leaf module so mixins import it without
                       a cycle back to engine
+    output_text.py    assistant-output text normalisation shared by the engine
+                      (process/correction) and the generation stage
+    model_runtime.py  model-runtime access seam (soft-imported inference module +
+                      broker) shared by the engine and the generation stage — one
+                      binding both resolve to
     fast_actions.py   Phase 45 direct fast-actions (authoritative executor results)
 
 Planned next (pipeline order, per blueprints/v3_monolith_decomposition.md §3):
-    generation.py      streaming + generate + chat-response finalisation
     lifecycle.py       _init_gguf / shutdown / background loops (__init__ stays
                        on CognitiveEngine — it is the class's own constructor)
 """
+from eli.kernel.stages.generation import GenerationMixin
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
 from eli.kernel.stages.prompt_assembly import PromptAssemblyMixin
 from eli.kernel.stages.reasoning_modes import ReasoningModesMixin
 from eli.kernel.stages.retrieval import RetrievalMixin
 
 __all__ = [
+    "GenerationMixin",
     "MemoryCommitMixin",
     "PromptAssemblyMixin",
     "ReasoningModesMixin",
