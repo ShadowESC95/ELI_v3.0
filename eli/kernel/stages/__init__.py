@@ -57,13 +57,18 @@ Moved so far
     model_runtime.py  model-runtime access seam (soft-imported inference module +
                       broker) shared by the engine and the generation stage — one
                       binding both resolve to
+    lifecycle.py      LifecycleMixin — _init_gguf / shutdown / background daemons
+                      (reflection, habits, self-improvement, proactive listener) /
+                      session digest. __init__ stays on CognitiveEngine — it is
+                      the class's own constructor and the state these operate on.
     fast_actions.py   Phase 45 direct fast-actions (authoritative executor results)
 
-Planned next (pipeline order, per blueprints/v3_monolith_decomposition.md §3):
-    lifecycle.py       _init_gguf / shutdown / background loops (__init__ stays
-                       on CognitiveEngine — it is the class's own constructor)
+The pipeline stages (retrieval → prompt_assembly → reasoning_modes → generation →
+memory_commit) plus lifecycle now live here; process() stays on CognitiveEngine
+as the orchestrator that drives them.
 """
 from eli.kernel.stages.generation import GenerationMixin
+from eli.kernel.stages.lifecycle import LifecycleMixin
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
 from eli.kernel.stages.prompt_assembly import PromptAssemblyMixin
 from eli.kernel.stages.reasoning_modes import ReasoningModesMixin
@@ -71,6 +76,7 @@ from eli.kernel.stages.retrieval import RetrievalMixin
 
 __all__ = [
     "GenerationMixin",
+    "LifecycleMixin",
     "MemoryCommitMixin",
     "PromptAssemblyMixin",
     "ReasoningModesMixin",
