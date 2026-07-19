@@ -7,7 +7,7 @@ pandoc + xelatex -> PDF. The source .md is untouched (keeps emoji + mermaid for 
 
 Run:  .venv/bin/python blueprints/build_manual_pdf.py
 """
-import base64, re, subprocess, sys, urllib.request
+import base64, re, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,25 +25,97 @@ DECORATIVE = "🎵🪟🔊📄✍️📊🌐⏰🔧🧩"
 
 
 def render_mermaid(code: str, idx: int) -> Path | None:
-    """Render one mermaid block to PNG via kroki. Returns the PNG path, or None on failure."""
-    try:
-        req = urllib.request.Request(
-            "https://kroki.io/mermaid/png", data=code.encode("utf-8"),
-            headers={"Content-Type": "text/plain",
-                     "User-Agent": "Mozilla/5.0 (ELI-manual-build)"}, method="POST")
-        with urllib.request.urlopen(req, timeout=40) as r:
-            data = r.read()
-        if data[:8] != b"\x89PNG\r\n\x1a\n":
-            print(f"  ! block {idx}: not a PNG (kroki may not support this diagram)")
-            return None
-        ASSETS.mkdir(exist_ok=True)
-        p = ASSETS / f"diagram_{idx:02d}.png"
-        p.write_bytes(data)
-        print(f"  ok block {idx}: {len(data)} bytes -> {p.name}")
-        return p
-    except Exception as e:
-        print(f"  ! block {idx}: {e}")
-        return None
+    """Render one mermaid block to PNG via kroki, retrying transient failures.
+
+    kroki.io intermittently 400s / rate-limits a burst of requests — the SAME
+    source that fails in the batch succeeds on retry. Without retrying, a flaked
+    block fell back to a raw code block in the PDF, silently dropping a diagram
+    that had rendered fine before.
+    """
+    last = "unknown error"
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request(
+                "https://kroki.io/mermaid/png", data=code.encode("utf-8"),
+                headers={"Content-Type": "text/plain",
+                         "User-Agent": "Mozilla/5.0 (ELI-manual-build)"}, method="POST")
+            with urllib.request.urlopen(req, timeout=40) as r:
+                data = r.read()
+            if data[:8] != b"\x89PNG\r\n\x1a\n":
+                last = "response was not a PNG"
+            else:
+                ASSETS.mkdir(exist_ok=True)
+                p = ASSETS / f"diagram_{idx:02d}.png"
+                p.write_bytes(data)
+                print(f"  ok block {idx}: {len(data)} bytes -> {p.name}"
+                      + (f" (attempt {attempt + 1})" if attempt else ""))
+                return p
+        except Exception as e:
+            last = str(e)
+        time.sleep(1.5 * (attempt + 1))  # back off, then retry the same source
+    print(f"  ! block {idx}: {last} (gave up after 5 tries)")
+    return None
+
+
+def _weight_tables(text: str) -> str:
+    # Size a table's columns to its ACTUAL content, not a fixed template, so the
+    # widest column (whichever it is) gets the room and numeric columns stay tight.
+    # Only tables with a genuinely wide column (content over WRAP chars) are given
+    # explicit p{} widths; narrower tables render fine at natural width and are left
+    # alone. Columns are weighted by their longest UNBREAKABLE token (a text column
+    # wraps at spaces; a monospace name/path can't) so a monospace column never
+    # overruns the next one. Shared verbatim with build_blueprint_pdf.py.
+    CAP, FLOOR, WRAP = 42, 4, 40
+
+    def _plain(cell):
+        t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", cell)  # links -> text
+        return t.replace("`", "").replace("**", "").replace("*", "")
+
+    def _cells(line, n):
+        parts = [c.strip() for c in line.strip().strip("|").split("|")]
+        return (parts + [""] * n)[:n]
+
+    def _is_row(line):
+        s = line.strip()
+        return s.startswith("|") and s.endswith("|") and s.count("|") >= 2
+
+    def _is_sep(line):
+        return _is_row(line) and set(line.strip()) <= set("|-: ")
+
+    lines = text.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        if i + 1 < len(lines) and _is_row(lines[i]) and _is_sep(lines[i + 1]):
+            sep = lines[i + 1]
+            ncols = sep.strip().count("|") - 1
+            j = i + 2
+            body = []
+            while j < len(lines) and _is_row(lines[j]) and not _is_sep(lines[j]):
+                body.append(lines[j]); j += 1
+            if ncols in (4, 5, 6, 7):
+                widths = [FLOOR] * ncols
+                raw_max = 0
+                for row in [lines[i]] + body:
+                    for c, cell in enumerate(_cells(row, ncols)):
+                        p = _plain(cell)
+                        raw_max = max(raw_max, len(p))
+                        longest = max((len(tok) for tok in p.split()), default=0)
+                        widths[c] = max(widths[c], min(longest, CAP))
+                if raw_max <= WRAP:            # fits at natural width — leave it
+                    out.append(lines[i]); i += 1
+                    continue
+                aligns = ["c" if s.startswith(":") and s.endswith(":") else
+                          "r" if s.endswith(":") else "l" if s.startswith(":") else "d"
+                          for s in _cells(sep, ncols)]
+                new = "|"
+                for c in range(ncols):
+                    d = "-" * max(widths[c], 3)
+                    new += ({"c": f":{d}:", "r": f"{d}:", "l": f":{d}"}.get(aligns[c], d)) + "|"
+                out.append(lines[i]); out.append(new); out.extend(body)
+                i = j
+                continue
+        out.append(lines[i]); i += 1
+    return "\n".join(out)
 
 
 def main() -> int:
@@ -78,6 +150,11 @@ def main() -> int:
         out = out.replace(e, t)
     for ch in DECORATIVE:
         out = out.replace(ch + " ", "").replace(ch, "")
+
+    # Content-measured table widths (shared with the other blueprint builders). The
+    # manual's tables are all 2–3 columns and already fit at natural width, so this
+    # is a no-op here — it's in place for consistency and any future wide table.
+    out = _weight_tables(out)
 
     BUILD_MD.write_text(out, encoding="utf-8")
 
