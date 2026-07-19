@@ -63,6 +63,8 @@ eli/artifacts/
 blueprints/*
 !blueprints/*.pdf
 !blueprints/build_blueprint_pdf.py
+!blueprints/build_capabilities_pdf.py
+!blueprints/build_manual_pdf.py
 
 # ── Generated / auto-updated files (manifest tracked; blueprint markdown local) ─
 eli/capability_inventory.generated.json
