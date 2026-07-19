@@ -89,8 +89,14 @@ def _weight_tables(text: str) -> str:
                     for c, cell in enumerate(_cells(row, ncols)):
                         p = _plain(cell)
                         raw_max = max(raw_max, len(p))
+                        # Weight by the longest UNBREAKABLE token, not the whole cell:
+                        # a text column wraps at spaces so it needs only its longest
+                        # word, while a monospace column (an action name / path) can't
+                        # wrap and must get its full token width. Weighting by cell
+                        # length instead lets two wide text columns starve a narrow-
+                        # looking monospace one until its names overrun the next column.
                         longest = max((len(tok) for tok in p.split()), default=0)
-                        widths[c] = max(widths[c], min(max(len(p), longest), CAP))
+                        widths[c] = max(widths[c], min(longest, CAP))
                 if raw_max <= WRAP:            # fits at natural width — leave it
                     out.append(lines[i]); i += 1
                     continue
