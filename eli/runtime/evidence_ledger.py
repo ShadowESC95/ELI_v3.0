@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from eli.core.sqlite_util import apply_pragmas
 import time
 import hashlib
 import hmac
@@ -102,8 +103,7 @@ def _connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
     path = Path(db_path).expanduser().resolve() if db_path else _default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=5.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
+    apply_pragmas(conn, db_path=str(path))
     ensure_schema(conn)
     return conn
 

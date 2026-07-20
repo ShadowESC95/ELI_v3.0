@@ -13,6 +13,7 @@ def _path_value(obj, key, default=None):
 import json
 import os
 import sqlite3
+from eli.core.sqlite_util import apply_pragmas
 import sys as _sys
 import threading
 import time
@@ -1264,9 +1265,7 @@ def _memory_connection(self):
     p = _path_from_args(db_path=getattr(self, "db_path", None), db_type=getattr(self, "db_type", None))
     self.db_path = p
     conn = sqlite3.connect(str(p))
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA cache_size=-64000;")  # 64 MB page cache
+    apply_pragmas(conn, db_path=str(p), cache_size=-64000)  # WAL, or DELETE on WAL-hostile fs
     _ensure_full_memory_schema(conn)
     conn.commit()
     return conn
@@ -1498,8 +1497,7 @@ class Memory(metaclass=_MemoryMeta):
     def _ensure_tables(self):
         conn = sqlite3.connect(str(_memory_db_path_for_instance(self)))
         try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
+            apply_pragmas(conn, db_path=str(_memory_db_path_for_instance(self)))
             _ensure_memory_schema(conn)
             conn.commit()
         finally:
@@ -1796,8 +1794,7 @@ class Memory(metaclass=_MemoryMeta):
         for sec_path in self.secondary_paths:
             try:
                 sec_conn = sqlite3.connect(sec_path)
-                sec_conn.execute("PRAGMA journal_mode=WAL;")
-                sec_conn.execute("PRAGMA synchronous=NORMAL;")
+                apply_pragmas(sec_conn, db_path=str(sec_path))
                 _ensure_memory_schema(sec_conn)
                 self._store_to_db(sec_conn, t, tags, source, kind, confidence, ts,
                                    importance=importance)
@@ -2556,8 +2553,7 @@ class Memory(metaclass=_MemoryMeta):
         for sec_path in self.secondary_paths:
             try:
                 sec_conn = sqlite3.connect(sec_path)
-                sec_conn.execute("PRAGMA journal_mode=WAL;")
-                sec_conn.execute("PRAGMA synchronous=NORMAL;")
+                apply_pragmas(sec_conn, db_path=str(sec_path))
                 _ensure_memory_schema(sec_conn)
                 _write_to_conn(sec_conn)
                 sec_conn.commit()
