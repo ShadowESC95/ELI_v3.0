@@ -24,7 +24,14 @@ def _h_smart_home(a, args):
                 _ar = route_audio_by_name(device)
                 if _ar.get("ok"):
                     _label = _ar.get("display_name") or _ar.get("alias") or device
-                    _say = f"Audio is now playing through {_label}."
+                    # Only claim it's *currently* playing when a live stream actually
+                    # moved; otherwise it's just the default for future playback.
+                    # Saying "now playing" with nothing playing is the "said
+                    # connected but no audio" complaint.
+                    if _ar.get("streams_moved"):
+                        _say = f"Audio is now playing through {_label}."
+                    else:
+                        _say = f"{_label} is set as the output — audio will play through it."
                     return {"ok": True, "action": a, "content": _say, "response": _say}
             from eli.runtime.device_server import bluetooth_control_by_name
             _r = bluetooth_control_by_name(device, _btc or "connect")
