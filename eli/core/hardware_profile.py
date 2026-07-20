@@ -261,6 +261,19 @@ def _derive_mode_presets(_base_n_ctx: int, base_max_tokens: int,
     }
 
 
+def _memlock_can_lock_model() -> bool:
+    """RLIMIT_MEMLOCK high enough (>=4 GiB or unlimited) to mlock a model? POSIX
+    only; non-POSIX (Windows) keeps prior behaviour."""
+    try:
+        import resource
+    except Exception:
+        return True
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+        return soft == -1 or soft >= 4 * 1024 ** 3
+    except Exception:
+        return True
+
 def detect_hardware() -> HardwareProfile:
     """Probe the host for CPU/RAM/free-VRAM. Reads FREE VRAM from nvidia-smi."""
     hw = HardwareProfile()
@@ -905,7 +918,10 @@ def recommend(hw: Optional[HardwareProfile] = None,
         rec.reasoning.append(f"batch capped to {rec.batch_size} by ELI_TARGET_BATCH={_env_batch_cap}")
 
     rec.use_mmap = True
-    rec.use_mlock = (hw.available_ram_gb >= 16)
+    # Only recommend mlock where the OS memlock limit can actually lock a multi-GB
+    # model — RLIMIT_MEMLOCK is often capped low (containers, frozen builds) no
+    # matter how much RAM is installed, and requesting it there just warns.
+    rec.use_mlock = (hw.available_ram_gb >= 16) and _memlock_can_lock_model()
     rec.max_tokens = -1   # unlimited — use full remaining context
     rec.temperature = 0.7
 
