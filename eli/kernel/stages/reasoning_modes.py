@@ -293,11 +293,24 @@ class ReasoningModesMixin:
         reason_overrides = dict(gen_overrides or {})
         reason_overrides["temperature"] = temp_reason
         reason_overrides["max_tokens"]  = max_tok_reason
-        private_reasoning = self._get_chat_response(
-            reason_prompt, working_context,
-            reasoning_mode="chain_of_thought", gen_overrides=reason_overrides,
-            situation_brief=situation_brief,
-        )
+        # Suppress the model's own <think> wrapper on a reasoning model. This stage
+        # ALREADY asks for explicit numbered-step prose reasoning that stage 2 must
+        # read — but a reasoning model wraps that prose in <think>…</think>, and when
+        # it hits max_tokens before closing the tag, the think-strip drops the whole
+        # thing to empty. Stage 2 then gets an empty scratchpad and re-thinks from
+        # scratch (observed: 170-230s burned per pass, then a full retry). With the
+        # closed-think prefill the reasoning is written directly as the prose this
+        # two-stage design intends. See gguf_inference.force_no_think.
+        try:
+            from eli.cognition.gguf_inference import force_no_think as _fnt
+        except Exception:
+            from contextlib import nullcontext as _fnt  # type: ignore
+        with _fnt():
+            private_reasoning = self._get_chat_response(
+                reason_prompt, working_context,
+                reasoning_mode="chain_of_thought", gen_overrides=reason_overrides,
+                situation_brief=situation_brief,
+            )
         log.debug(
             f"[REASONING][CoT] private scratchpad ({len(private_reasoning)} chars, "
             f"max_tok={max_tok_reason}, temp={temp_reason:.2f})"
@@ -330,11 +343,18 @@ class ReasoningModesMixin:
         final_overrides = dict(gen_overrides or {})
         final_overrides["temperature"] = temp_final
         final_overrides["max_tokens"]  = max_tok_final
-        final = self._get_chat_response(
-            final_prompt, working_context,
-            reasoning_mode="chain_of_thought", gen_overrides=final_overrides,
-            situation_brief=situation_brief,
-        )
+        # Stage 2 already has the scratchpad — it must synthesise, not re-open a
+        # second <think> block that truncates to empty. Same closed-think prefill.
+        try:
+            from eli.cognition.gguf_inference import force_no_think as _fnt2
+        except Exception:
+            from contextlib import nullcontext as _fnt2  # type: ignore
+        with _fnt2():
+            final = self._get_chat_response(
+                final_prompt, working_context,
+                reasoning_mode="chain_of_thought", gen_overrides=final_overrides,
+                situation_brief=situation_brief,
+            )
         final = _strip_reasoning_scaffold(final)
         log.debug(
             f"[REASONING][CoT] final answer ({len(final)} chars, "
