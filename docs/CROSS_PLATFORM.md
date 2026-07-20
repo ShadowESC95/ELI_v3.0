@@ -104,6 +104,23 @@ The installer installs these **when a package manager + sudo/admin is available*
 **prints the exact command** so you can run it. None are required for ELI to start — missing ones
 only disable that one optional feature (gracefully).
 
+## Portable-build robustness (lean distros / awkward filesystems)
+
+- **GUI is self-contained on lean distros.** Qt 6.5+ dlopens `libxcb-cursor.so.0` for its xcb
+  platform plugin at runtime; a minimal desktop (bare Arch, Debian netinst) without it fails to
+  open the window (*"libxcb-cursor0 is needed to load the Qt xcb platform plugin"*). The **AppImage
+  bundles it** (`ELI.spec`), and CI gates a real-X GUI launch under `xvfb` (`QT_QPA_PLATFORM=xcb`)
+  so it can't regress. A **source / portable** install uses your system Qt instead, so on a minimal
+  desktop the GUI may need `libxcb-cursor0` (Debian/Ubuntu) or `xcb-util-cursor` (Arch).
+- **Database survives WAL-hostile filesystems.** The portable build keeps its SQLite databases under
+  the folder it is extracted to. On filesystems that lack SQLite's write-ahead-log locking —
+  **NTFS/exFAT/FAT and network mounts** (e.g. a `~/Downloads` on a dual-boot data drive) — WAL fails
+  with *"attempt to write a readonly database"*. `eli.core.sqlite_util.apply_pragmas` detects this
+  and falls back to a rollback (DELETE) journal, so ELI works wherever it is placed.
+- **Rolling distros (Arch) with a newer Python than upstream wheels.** `install.sh` detects when no
+  prebuilt `llama-cpp-python` wheel exists for the host Python and installs a build toolchain +
+  falls back from the frozen lock to version ranges, instead of aborting.
+
 ## Verifying on your platform
 - `python -c "from eli.utils.platform_compat import normalize_platform; print(normalize_platform())"`
   → prints `linux`/`macos`/`windows`/`android`.

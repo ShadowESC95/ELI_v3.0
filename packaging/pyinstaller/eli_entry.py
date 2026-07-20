@@ -94,6 +94,13 @@ def _selftest() -> int:
         from eli.core.init_data import bootstrap_once
         bootstrap_once()
         import eli.gui.gui_eli_original as gui  # full GUI import chain (Qt, plugins, memory)
+        # Instantiate QApplication so the selftest actually LOADS the Qt platform
+        # plugin (offscreen when headless, xcb under a real/virtual X). Importing
+        # the GUI module alone never loads a platform, so it can't catch a missing
+        # platform dependency like libxcb-cursor.so.0 — creating the app does: an
+        # unresolved xcb dep makes Qt abort here, which the xcb launch gate detects.
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841
         import api.server                             # noqa: F401  web/phone server stack
         import llama_cpp                              # noqa: F401  native inference libs load
         # llama_cpp must import from REAL files on disk (module_collection_mode

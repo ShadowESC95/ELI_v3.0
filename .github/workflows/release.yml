@@ -304,8 +304,13 @@ jobs:
       - name: System build deps (portaudio, espeak, Qt/GL runtime libs)
         run: |
           sudo apt-get update
+          # libxcb-cursor0: Qt 6.5+ dlopens libxcb-cursor.so.0 for its xcb platform
+          #   plugin; PySide6's hook only bundles it if present on the build host,
+          #   else lean end-user distros die with "libxcb-cursor0 is needed to load
+          #   the Qt xcb platform plugin". xvfb: virtual X for the real-xcb GUI gate.
           sudo apt-get install -y --no-install-recommends \
-            portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 espeak-ng
+            portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 espeak-ng \
+            libxcb-cursor0 xvfb
 
       - name: Install dependencies (core hard-fails; optional extras degrade loudly)
         run: |
@@ -341,15 +346,32 @@ jobs:
       - name: PyInstaller build (ELI.spec)
         run: pyinstaller --noconfirm --clean ELI.spec
 
-      - name: Smoke check — bundle structure + REAL launch selftest (headless)
+      - name: Smoke check — bundle structure + REAL launch selftest (headless + xcb)
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           test -x dist/ELI/ELI || { echo "::error::dist/ELI/ELI missing"; exit 1; }
           test -x dist/ELI/ELI-Server || { echo "::error::dist/ELI/ELI-Server missing"; exit 1; }
           test -d dist/ELI/_internal/eli || { echo "::error::eli source tree missing from bundle"; exit 1; }
+          # Self-containment guard: the Qt xcb plugin dlopens libxcb-cursor.so.0 at
+          # runtime; if it's not bundled the GUI dies on lean distros (minimal Arch,
+          # Debian netinst) with "libxcb-cursor0 is needed to load the Qt xcb plugin".
+          if ! find dist/ELI -name 'libxcb-cursor.so.*' | grep -q .; then
+            echo "::error::libxcb-cursor.so.0 is NOT bundled — the Qt GUI will fail on minimal distros"
+            exit 1
+          fi
+          # Headless engine selftest (offscreen Qt platform).
           if ! ./dist/ELI/ELI --selftest; then
-            echo "::error::frozen app failed its launch selftest:"
+            echo "::error::frozen app failed its headless launch selftest:"
+            cat eli_selftest_error.log 2>/dev/null || true
+            exit 1
+          fi
+          # Real-X GUI selftest under a virtual display — creates a QApplication on
+          # the xcb platform exactly as an end-user desktop does; this is what
+          # catches a missing Qt GUI dependency (like libxcb-cursor) that offscreen
+          # mode never loads.
+          if ! xvfb-run -a env QT_QPA_PLATFORM=xcb ./dist/ELI/ELI --selftest; then
+            echo "::error::frozen app failed the xcb (real X) launch selftest — a Qt GUI dependency is missing from the bundle:"
             cat eli_selftest_error.log 2>/dev/null || true
             exit 1
           fi
