@@ -374,20 +374,26 @@ if ! _llama_wheel_available; then
     ensure_build_toolchain
 fi
 if [ "$OS" = "Darwin" ]; then
-    echo "     (with Metal GPU acceleration)"
-    CMAKE_ARGS="-DLLAMA_METAL=on" "$PIP" install llama-cpp-python --prefer-binary --quiet || true
+    # Metal is the default backend in macOS wheels; the flag only matters for a
+    # source build. GGML_METAL is the current name (llama.cpp renamed LLAMA_METAL).
+    echo "     (with Metal GPU acceleration — Apple Silicon unified memory)"
+    CMAKE_ARGS="-DGGML_METAL=on" "$PIP" install llama-cpp-python --prefer-binary --quiet || true
 elif [ "$CPU_ONLY" -eq 1 ]; then
     "$PIP" install llama-cpp-python --prefer-binary --quiet || true
 elif [ "$HAS_AMD" -eq 1 ]; then
-    echo "     (AMD — ROCm/hipBLAS, then Vulkan, then CPU)"
-    if CMAKE_ARGS="-DGGML_HIPBLAS=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
-        :
+    echo "     (AMD — ROCm/HIP, then Vulkan, then CPU)"
+    # llama.cpp renamed the ROCm option GGML_HIPBLAS -> GGML_HIP; try the current
+    # name first, then the legacy one, so the build works on new AND old sources.
+    if CMAKE_ARGS="-DGGML_HIP=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
+        echo "[OK] llama-cpp built with ROCm/HIP (GGML_HIP)."
+    elif CMAKE_ARGS="-DGGML_HIPBLAS=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
+        echo "[OK] llama-cpp built with ROCm/HIP (legacy GGML_HIPBLAS)."
     elif CMAKE_ARGS="-DGGML_VULKAN=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
         echo "[OK] llama-cpp built with Vulkan (AMD GPU via Mesa/Vulkan)."
     else
         echo "[WARN] AMD GPU builds failed (ROCm toolkit or Vulkan dev libs missing)."
         echo "       Installing CPU build. For AMDGPU later:"
-        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIPBLAS=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
+        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIP=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
         echo "         Vulkan: CMAKE_ARGS=\"-DGGML_VULKAN=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
         "$PIP" install llama-cpp-python --prefer-binary --quiet || true
     fi
@@ -405,7 +411,7 @@ if [ "$SKIP_TORCH" -eq 0 ] && [ "$CPU_ONLY" -eq 0 ] && [ "$OS" != "Darwin" ]; th
     elif [ "$HAS_AMD" -eq 1 ]; then
         echo "[WARN] llama-cpp is CPU-only — ROCm/Vulkan GPU builds did not compile."
         echo "       ELI runs on CPU for now. For AMD GPU offload:"
-        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIPBLAS=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
+        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIP=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
         echo "         Vulkan: CMAKE_ARGS=\"-DGGML_VULKAN=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
     elif [ "$INSTALL_CUDA" -eq 1 ]; then
         echo "[WARN] prebuilt llama-cpp is CPU-only — installing CUDA toolkit and rebuilding from source..."

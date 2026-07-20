@@ -18,7 +18,7 @@ from typing import Dict
 
 from eli.core import runtime_settings
 from eli.kernel.stages._common import _eli_test_mode
-from eli.kernel.stages.model_runtime import gguf_inference
+from eli.kernel.stages.model_runtime import gguf_inference, gguf_import_error
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -228,11 +228,21 @@ class LifecycleMixin:
         self._gpu_layers = 0
         try:
             if gguf_inference is None:
-                self._gguf_load_error = "GGUF module not available"
-                log.debug(f"[COGNITIVE] {self._gguf_load_error}")
+                # The inference module wouldn't import. gguf_import_error carries
+                # the root cause (e.g. a llama-cpp GPU backend .so that won't load)
+                # so a broken CUDA/ROCm/Metal build is diagnosable, not just "off".
+                self._gguf_load_error = (
+                    f"GGUF module not available — {gguf_import_error}"
+                    if gguf_import_error else "GGUF module not available")
+                if _eli_test_mode():
+                    log.debug(f"[COGNITIVE] {self._gguf_load_error}")
+                else:
+                    log.warning(f"[COGNITIVE] local inference unavailable: "
+                                f"{self._gguf_load_error}")
                 return
             model_path = gguf_inference.get_model_path()
             if not model_path:
+                # Normal on a fresh install with no model downloaded yet — not an error.
                 self._gguf_load_error = "No GGUF model found"
                 log.debug(f"[COGNITIVE] {self._gguf_load_error}")
                 return
@@ -266,11 +276,19 @@ class LifecycleMixin:
                 self._gguf_available = False
                 getter = getattr(gguf_inference, "get_last_error", None)
                 self._gguf_load_error = getter() if callable(getter) else "GGUF load failed"
-                log.debug(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
+                # A model IS present but wouldn't load (VRAM, corrupt GGUF, GPU
+                # backend fault) — the user expects inference, so make it visible.
+                if _eli_test_mode():
+                    log.debug(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
+                else:
+                    log.warning(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
         except Exception as e:
             self._gguf_available = False
             self._gguf_load_error = str(e)
-            log.debug(f"[COGNITIVE] GGUF init failed: {e}")
+            if _eli_test_mode():
+                log.debug(f"[COGNITIVE] GGUF init failed: {e}")
+            else:
+                log.warning(f"[COGNITIVE] GGUF init failed: {e}", exc_info=True)
 
     def _generate_session_digest(self) -> None:
         """Summarise the last 20 conversation turns into a searchable session digest memory."""

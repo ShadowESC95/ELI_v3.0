@@ -429,6 +429,26 @@ def detect_hardware() -> HardwareProfile:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+    # Apple Silicon (Metal) — macOS ships no nvidia-smi/rocm-smi, and the GPU shares
+    # UNIFIED memory with the CPU instead of having separate VRAM. llama-cpp built
+    # with Metal (install.sh: -DGGML_METAL=on) offloads to that GPU, so detect it
+    # here or the smart loader sizes zero GPU layers and runs CPU-only on a Mac.
+    if not hw.has_gpu and sys.platform == "darwin":
+        try:
+            import platform as _plat
+            _arm = _plat.machine().lower() in ("arm64", "aarch64")
+            # Usable Metal working set is a fraction of unified RAM; keep headroom
+            # for the OS + CPU-side tensors. reduce-to-fit corrects any optimism at
+            # load time. Intel Macs have Metal too but weaker GPUs — be conservative.
+            _frac = 0.70 if _arm else 0.40
+            hw.total_vram_mb = int(hw.ram_gb * 1024)
+            hw.free_vram_mb = int(hw.available_ram_gb * 1024 * _frac)
+            hw.vram_gb = hw.free_vram_mb / 1024.0
+            hw.gpu_name = "Apple Silicon GPU (Metal)" if _arm else "Apple GPU (Metal)"
+            hw.has_gpu = True
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
     if not hw.has_gpu and not hw.gpu_name:
         hw.gpu_name = "CPU only"
 
