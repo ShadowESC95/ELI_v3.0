@@ -652,6 +652,23 @@ def _make_stopping_criteria(background: bool):
     return StoppingCriteriaList([_crit])
 
 
+def _mlock_viable() -> bool:
+    """True only when the OS memlock limit can actually lock a multi-GB model.
+
+    RLIMIT_MEMLOCK is frequently capped low (64 KB-8 MB) regardless of installed
+    RAM. Only gate on POSIX where the limit is inspectable; leave non-POSIX
+    (Windows) behaviour unchanged.
+    """
+    try:
+        import resource
+    except Exception:
+        return True  # non-POSIX - preserve prior behaviour
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+        return soft == -1 or soft >= 4 * 1024 ** 3  # -1 = unlimited; else need >=4 GiB
+    except Exception:
+        return True
+
 def load_model(force_reload: bool = False):
     global _llm
 
@@ -800,7 +817,12 @@ def load_model(force_reload: bool = False):
     }
 
     kwargs["use_mmap"] = _boolish(use_mmap, True)
-    kwargs["use_mlock"] = _boolish(use_mlock, False)
+    # Gate use_mlock on the actual OS memlock limit: RAM-based heuristics enable it
+    # at >=16 GB, but RLIMIT_MEMLOCK is often capped low (containers, some distros,
+    # frozen builds), where requesting it only yields 'failed to mlock … Cannot
+    # allocate memory' warnings. mmap still loads the model — so drop mlock rather
+    # than request the impossible.
+    kwargs["use_mlock"] = _boolish(use_mlock, False) and _mlock_viable()
 
     if cache_k:
         kwargs["cache_type_k"] = cache_k
