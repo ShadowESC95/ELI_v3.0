@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from eli.core.sqlite_util import apply_pragmas
 import time
 import subprocess
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ DB_PATH = JOBS_DIR / "jobs.sqlite"
 def _db() -> sqlite3.Connection:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
+    apply_pragmas(conn, db_path=str(DB_PATH))
     conn.execute("""
     CREATE TABLE IF NOT EXISTS jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
