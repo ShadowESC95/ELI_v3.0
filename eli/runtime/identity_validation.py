@@ -4,6 +4,18 @@ import re
 from typing import Any, Dict
 
 
+# Imperative command verbs. A captured name almost never opens with one; a
+# multi-word candidate whose FIRST word is a command verb is a command, not a
+# name (see normalize_identity_candidate). Single-word overlaps are left alone.
+_COMMAND_VERBS = frozenset({
+    "pause", "play", "resume", "stop", "skip", "next", "previous", "rewind",
+    "open", "close", "launch", "start", "quit", "exit", "run", "execute",
+    "mute", "unmute", "turn", "set", "show", "hide", "toggle", "switch",
+    "tell", "give", "make", "create", "delete", "remove", "add", "send",
+    "search", "find", "go", "put", "take", "get", "download", "install",
+    "increase", "decrease", "raise", "lower", "volume", "brightness",
+})
+
 _INVALID_SINGLE_TOKENS = {
     "",
     "a",
@@ -96,6 +108,13 @@ def normalize_identity_candidate(value: Any, *, max_words: int = 3) -> str:
     if not words or len(words) > max_words:
         return ""
     if any(w.lower() in _INVALID_SINGLE_TOKENS for w in words):
+        return ""
+    # "pause spotify" / "open chrome": a multi-word candidate that opens with an
+    # imperative command verb is a command, not a name. A real session logged
+    # "pause spotify" as the user's name (the first thing typed), so every
+    # self-report greeted them as "pause spotify". Single-word overlaps (the name
+    # "Mark") are left alone — this fires only on the command SHAPE (verb + object).
+    if len(words) > 1 and words[0].lower() in _COMMAND_VERBS:
         return ""
     if len(words) == 1 and words[0].lower().endswith("ing") and len(words[0]) > 4:
         return ""
