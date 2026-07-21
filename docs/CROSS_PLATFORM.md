@@ -106,12 +106,17 @@ only disable that one optional feature (gracefully).
 
 ## Portable-build robustness (lean distros / awkward filesystems)
 
-- **GUI is self-contained on lean distros.** Qt 6.5+ dlopens `libxcb-cursor.so.0` for its xcb
-  platform plugin at runtime; a minimal desktop (bare Arch, Debian netinst) without it fails to
-  open the window (*"libxcb-cursor0 is needed to load the Qt xcb platform plugin"*). The **AppImage
-  bundles it** (`ELI.spec`), and CI gates a real-X GUI launch under `xvfb` (`QT_QPA_PLATFORM=xcb`)
-  so it can't regress. A **source / portable** install uses your system Qt instead, so on a minimal
-  desktop the GUI may need `libxcb-cursor0` (Debian/Ubuntu) or `xcb-util-cursor` (Arch).
+- **GUI is self-contained on lean distros.** Qt 6.5+'s xcb platform plugin links the whole
+  **xcb-util family** (`libxcb-cursor/icccm/image/keysyms/render-util/util`) at runtime; a minimal
+  desktop (bare Arch, Debian netinst) missing any member fails to open the window — Qt reports it
+  misleadingly as *"libxcb-cursor0 is needed"* whichever one is actually absent (on Arch the real
+  culprit was `libxcb-icccm`). The **AppImage bundles the full family** into `PySide6/Qt/lib` — the
+  dir the plugin actually searches via its RUNPATH (`ELI.spec`) — and CI asserts each member landed
+  there, plus gates a real-X GUI launch under `xvfb` (`QT_QPA_PLATFORM=xcb`) so it can't regress. A
+  **source / portable** install uses your system Qt instead, so on a minimal desktop the GUI may
+  need those packages (Debian: `libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+  libxcb-render-util0 libxcb-util1`; Arch: `xcb-util-cursor xcb-util-wm xcb-util-image
+  xcb-util-keysyms xcb-util-renderutil`).
 - **Database survives WAL-hostile filesystems.** The portable build keeps its SQLite databases under
   the folder it is extracted to. On filesystems that lack SQLite's write-ahead-log locking —
   **NTFS/exFAT/FAT and network mounts** (e.g. a `~/Downloads` on a dual-boot data drive) — WAL fails
