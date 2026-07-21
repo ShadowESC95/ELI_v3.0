@@ -304,13 +304,16 @@ jobs:
       - name: System build deps (portaudio, espeak, Qt/GL runtime libs)
         run: |
           sudo apt-get update
-          # libxcb-cursor0: Qt 6.5+ dlopens libxcb-cursor.so.0 for its xcb platform
-          #   plugin; PySide6's hook only bundles it if present on the build host,
-          #   else lean end-user distros die with "libxcb-cursor0 is needed to load
-          #   the Qt xcb platform plugin". xvfb: virtual X for the real-xcb GUI gate.
+          # xcb-util family: Qt 6.5+'s xcb platform plugin (libqxcb.so) links the
+          #   whole set at runtime (libxcb-cursor/icccm/image/keysyms/render-util/util).
+          #   PyInstaller only bundles what is present at build time, so these MUST be
+          #   installed or the AppImage fails on lean end-user distros — Qt reports it
+          #   misleadingly as "libxcb-cursor0 is needed" whichever member is missing.
+          #   xvfb: virtual X for the real-xcb GUI gate.
           sudo apt-get install -y --no-install-recommends \
             portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 espeak-ng \
-            libxcb-cursor0 xvfb
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-render-util0 libxcb-util1 xvfb
 
       - name: Install dependencies (core hard-fails; optional extras degrade loudly)
         run: |
@@ -353,13 +356,20 @@ jobs:
           test -x dist/ELI/ELI || { echo "::error::dist/ELI/ELI missing"; exit 1; }
           test -x dist/ELI/ELI-Server || { echo "::error::dist/ELI/ELI-Server missing"; exit 1; }
           test -d dist/ELI/_internal/eli || { echo "::error::eli source tree missing from bundle"; exit 1; }
-          # Self-containment guard: the Qt xcb plugin dlopens libxcb-cursor.so.0 at
-          # runtime; if it's not bundled the GUI dies on lean distros (minimal Arch,
-          # Debian netinst) with "libxcb-cursor0 is needed to load the Qt xcb plugin".
-          if ! find dist/ELI -name 'libxcb-cursor.so.*' | grep -q .; then
-            echo "::error::libxcb-cursor.so.0 is NOT bundled — the Qt GUI will fail on minimal distros"
-            exit 1
-          fi
+          # Self-containment guard: the Qt xcb plugin (libqxcb.so) links the whole
+          # xcb-util family at runtime and resolves them via its RUNPATH from
+          # PySide6/Qt/lib. Assert EACH member is bundled IN THAT EXACT DIRECTORY —
+          # v2.1.20 bundled libxcb-cursor into the bundle root instead, which the
+          # plugin never searches, so the GUI still failed on lean distros. Checking
+          # the precise dir (not just "present somewhere") is what closes that gap.
+          QTLIBDIR=dist/ELI/_internal/PySide6/Qt/lib
+          for _lib in libxcb-cursor.so libxcb-icccm.so libxcb-image.so \
+                      libxcb-keysyms.so libxcb-render-util.so libxcb-util.so; do
+            if ! ls "$QTLIBDIR/$_lib"* >/dev/null 2>&1; then
+              echo "::error::$_lib is NOT bundled in $QTLIBDIR — Qt xcb GUI will fail on minimal distros"
+              exit 1
+            fi
+          done
           # Headless engine selftest (offscreen Qt platform).
           if ! ./dist/ELI/ELI --selftest; then
             echo "::error::frozen app failed its headless launch selftest:"
