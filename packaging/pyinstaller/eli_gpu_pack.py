@@ -55,16 +55,63 @@ def _eli_root() -> Path:
     raise RuntimeError("ELI_PROJECT_ROOT not set — run via the ELI executable")
 
 
-def _driver_cuda_version() -> tuple[int, int] | None:
+def _nvidia_driver_version() -> tuple[int, int] | None:
+    """(major, minor) of the installed NVIDIA driver — distro-independent.
+
+    Reads the version from ``nvidia-smi --query-gpu=driver_version`` (a stable
+    machine field, unlike the human header) and falls back to
+    ``/proc/driver/nvidia/version``, which the kernel module writes on EVERY
+    distro whenever it is loaded. Neither depends on the CUDA-header line that
+    Node's Optimus + driver-610 setup didn't emit."""
     smi = shutil.which("nvidia-smi")
-    if not smi:
-        return None
-    try:
-        out = subprocess.run([smi], capture_output=True, text=True, timeout=20).stdout
+    if smi:
+        try:
+            out = subprocess.run([smi, "--query-gpu=driver_version", "--format=csv,noheader"],
+                                 capture_output=True, text=True, timeout=20)
+            m = re.search(r"(\d+)\.(\d+)", out.stdout or "")
+            if m:
+                return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+    try:  # e.g. "NVRM version: NVIDIA UNIX x86_64 Kernel Module  610.43.03  ..."
+        txt = Path("/proc/driver/nvidia/version").read_text()
+        m = re.search(r"Kernel Module\s+(\d+)\.(\d+)", txt)
+        if m:
+            return int(m.group(1)), int(m.group(2))
     except Exception:
-        return None
-    m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", out)
-    return (int(m.group(1)), int(m.group(2))) if m else None
+        pass
+    return None
+
+def _cuda_from_driver(drv: tuple[int, int]) -> tuple[int, int] | None:
+    """Max CUDA a Linux NVIDIA driver supports — coarse but monotonic, enough to
+    choose among the cu121..cu124 wheel indices. Newer drivers are backward
+    compatible, so a driver >= 550 (incl. Node's 610) safely runs the cu124 pack."""
+    major = drv[0]
+    for min_drv, cuda in ((550, (12, 4)), (545, (12, 3)), (535, (12, 2)), (525, (12, 1))):
+        if major >= min_drv:
+            return cuda
+    return None  # older than the oldest wheel index
+
+def _driver_cuda_version() -> tuple[int, int] | None:
+    """Best CUDA version the NVIDIA driver supports. Tries, in order: the
+    ``CUDA Version`` header from ``nvidia-smi`` (bare, then ``-q``), then DERIVES
+    it from the driver version. The header is a display string that some drivers/
+    configs (Optimus, headless, very new drivers) omit or garble — deriving from
+    the driver version makes wheel selection work regardless, on every distro."""
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        for args in ([smi], [smi, "-q"]):
+            try:
+                out = subprocess.run(args, capture_output=True, text=True, timeout=20).stdout or ""
+            except Exception:
+                out = ""
+            m = re.search(r"CUDA Version\s*:?\s*(\d+)\.(\d+)", out)
+            if m:
+                return int(m.group(1)), int(m.group(2))
+    drv = _nvidia_driver_version()
+    if drv is not None:
+        return _cuda_from_driver(drv)
+    return None
 
 
 def _has_amd_gpu() -> bool:
