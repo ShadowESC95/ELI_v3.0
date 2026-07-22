@@ -114,16 +114,72 @@ def _driver_cuda_version() -> tuple[int, int] | None:
     return None
 
 
-def _has_amd_gpu() -> bool:
+# PCI vendor ids (sysfs `/sys/.../vendor`, lowercased) — one source of truth so
+# every vendor is detected the same robust way, on every distro.
+_PCI_VENDOR = {"nvidia": "0x10de", "amd": "0x1002", "intel": "0x8086"}
+# Known DISCRETE Intel Arc PCI device-id ranges (Alchemist / Arc Pro / Battlemage).
+# An Intel iGPU shares vendor 0x8086 but a non-Arc device id, so it is NOT
+# auto-routed to a GPU pack, while a real discrete Arc is.
+_INTEL_ARC_DEVICE_RANGES = ((0x4F80, 0x4F8F), (0x5690, 0x56BF), (0xE200, 0xE21F))
+
+
+def _sysfs_pci_vendor_present(vendor_hex: str) -> bool:
+    """True if any PCI device reports *vendor_hex* (Linux sysfs). Vendor-neutral."""
     try:
-        if sys.platform == "win32":
-            import os
-            sys32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
-            return (sys32 / "amdhip64.dll").is_file() or (sys32 / "atiadlxx.dll").is_file()
-        drm = Path("/sys/class/drm")
-        for card in drm.glob("card*/device/vendor"):
-            if card.read_text().strip().lower() == "0x1002":  # AMD PCI vendor id
+        import os
+        for entry in os.listdir("/sys/bus/pci/devices"):
+            try:
+                if (Path("/sys/bus/pci/devices") / entry / "vendor").read_text().strip().lower() == vendor_hex:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _has_amd_gpu() -> bool:
+    """True if an AMD GPU is present, on every OS. Presence-based (no fragile
+    version parse): the driver runtime DLLs (Windows), the PCI vendor id in sysfs
+    (Linux), or an rocm-smi that lists a device."""
+    if sys.platform == "win32":
+        import os
+        sys32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        if (sys32 / "amdhip64.dll").is_file() or (sys32 / "atiadlxx.dll").is_file():
+            return True
+    if _sysfs_pci_vendor_present(_PCI_VENDOR["amd"]):
+        return True
+    smi = shutil.which("rocm-smi")
+    if smi:
+        try:
+            out = subprocess.run([smi, "--showid"], capture_output=True, text=True, timeout=20)
+            if out.returncode == 0 and "GPU" in (out.stdout or ""):
                 return True
+        except Exception:
+            pass
+    return False
+
+
+def _has_intel_arc_gpu() -> bool:
+    """True for a DISCRETE Intel Arc GPU (NOT an integrated iGPU — Vulkan offload to
+    an iGPU rarely beats CPU, so those stay on CPU unless the user forces --vulkan).
+    Linux: the newer ``xe`` kernel driver is discrete-only, or a PCI device id in a
+    known Arc family range."""
+    try:
+        for dev in Path("/sys/class/drm").glob("card*/device"):
+            try:
+                if (dev / "vendor").read_text().strip().lower() != _PCI_VENDOR["intel"]:
+                    continue
+                try:
+                    if (dev / "driver").resolve().name.lower() == "xe":
+                        return True
+                except Exception:
+                    pass
+                did = int((dev / "device").read_text().strip(), 16)
+                if any(lo <= did <= hi for lo, hi in _INTEL_ARC_DEVICE_RANGES):
+                    return True
+            except Exception:
+                continue
     except Exception:
         pass
     return False
@@ -223,9 +279,10 @@ def install(argv: list[str] | None = None) -> int:
         if not picked:
             return _fail("no CUDA wheel found for this python/platform in the llama-cpp-python index")
         backend, version, url = picked
-    elif want_vulkan or _has_amd_gpu():
-        # AMD / Intel Arc (or forced): CI-built Vulkan backend. The GPU
-        # driver already ships the Vulkan loader the wheel needs.
+    elif want_vulkan or _has_amd_gpu() or _has_intel_arc_gpu():
+        # AMD / discrete Intel Arc (or forced): CI-built Vulkan backend. The GPU
+        # driver already ships the Vulkan loader the wheel needs. Discrete Arc is
+        # now auto-detected (xe driver / Arc PCI id) — no --vulkan needed.
         _say("using the Vulkan backend (AMD / Intel Arc)" if not want_vulkan
              else "Vulkan backend forced (--vulkan)")
         # Vulkan is llama.cpp's universal AMD/Intel path: works on every card
@@ -248,9 +305,10 @@ def install(argv: list[str] | None = None) -> int:
         backend, (version, url) = "vulkan", found
     else:
         return _fail(
-            "no supported GPU detected (no NVIDIA driver, no AMD GPU). Apple "
-            "GPUs are already supported by the macOS build; use --vulkan to "
-            "force the Vulkan pack (e.g. Intel Arc). CPU inference keeps working."
+            "no supported GPU detected (no NVIDIA driver, no AMD GPU, no discrete "
+            "Intel Arc). Apple GPUs are already supported by the macOS build; use "
+            "--vulkan to force the Vulkan pack (e.g. an Intel iGPU). CPU inference "
+            "keeps working."
         )
 
     _say(f"downloading llama-cpp-python {version} ({backend}, {_platform_tag()}) — several hundred MB…")
