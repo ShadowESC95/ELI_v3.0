@@ -2111,7 +2111,10 @@ _register()
             "model_path": model_path,
             "custom_model_path": self.model_path_input.text(),
             "bundled_model_path": bundled_path,
-            "ollama_host": self.ollama_host_input.text().strip(),
+            # Store the canonical form, so "localhost:11434" or a bare IP typed
+            # here is persisted as a URL every consumer can actually use.
+            "ollama_host": self.ollama_manager._normalize_host(
+                self.ollama_host_input.text().strip()),
             "ollama_model": self.ollama_model_combo.currentText().strip(),
             "n_ctx": int(self.n_ctx_input.value()),
             "n_threads": int(self.n_threads_input.value()),
