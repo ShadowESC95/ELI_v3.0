@@ -519,15 +519,177 @@ class ChromeIoMixin:
                 return cand
         return sys.executable
 
+    def _eli_server_refresh_firewall_hint(self) -> None:
+        try:
+            from eli.runtime.server_util import firewall_hint
+            fw = firewall_hint()
+            cmds = fw.get("commands") or []
+            tool = fw.get("tool") or "firewall"
+            if cmds:
+                self._srv_fw_cmd.setText(cmds[0])
+                self._srv_fw_note.setText(
+                    f"If your phone cannot connect, allow ELI through {tool} on your home network. "
+                    "A tech-savvy person can run the command below once in Terminal "
+                    "(it will ask for your computer password)."
+                )
+            else:
+                self._srv_fw_cmd.clear()
+                self._srv_fw_note.setText(
+                    "If your phone cannot connect, check your computer's firewall settings "
+                    "and allow incoming connections for Python / ELI on port 8081."
+                )
+        except Exception:
+            log.debug("firewall hint refresh failed", exc_info=True)
+
+    def _eli_server_copy_firewall_cmd(self) -> None:
+        cmd = (self._srv_fw_cmd.text() or "").strip()
+        if not cmd:
+            return
+        try:
+            QApplication.clipboard().setText(cmd)
+            self._srv_status.setText("● Firewall command copied — paste into Terminal")
+            self._srv_status.setStyleSheet("font-size:12px;font-weight:700;color:#ebcb8b;")
+        except Exception:
+            log.debug("firewall command copy failed", exc_info=True)
+
+    def _eli_server_open_firewall_terminal(self) -> None:
+        cmd = (self._srv_fw_cmd.text() or "").strip()
+        if not cmd:
+            QMessageBox.information(
+                self,
+                "Firewall",
+                "Start phone / Wi-Fi mode first, or copy a firewall command from the Connect tab.",
+            )
+            return
+        script = f"{cmd}\necho\necho Done. You can close this window.\nread -r -p 'Press Enter to close…' _"
+        # Single owner for the terminal list (platform_compat) — covers Debian/GNOME/KDE,
+        # macOS and Windows terminals rather than guessing at a handful of Linux ones.
+        from eli.utils.platform_compat import terminal_argv
+
+        term_cmd = terminal_argv(["bash", "-lc", script])
+        if term_cmd:
+            try:
+                subprocess.Popen(term_cmd)
+                return
+            except Exception:
+                log.debug("could not launch a terminal for the firewall command", exc_info=True)
+        QMessageBox.information(
+            self,
+            "Firewall",
+            "Could not open a terminal automatically.\n\nCopy the command and run it manually:\n\n" + cmd,
+        )
+
+    def _eli_server_show_running_dialog(self, probe: dict, lan: bool) -> bool:
+        """Return True if caller should treat the server as available."""
+        if probe.get("eli_running"):
+            title = "ELI is already running"
+            body = (
+                "The web server is already active on this computer — "
+                "you do not need to start it again.\n\n"
+                "Open the link below on this computer or your phone."
+            )
+            url = (probe.get("lan_url") if lan else None) or probe.get("local_url") or ""
+        else:
+            title = "Port already in use"
+            body = (
+                f"Port {probe.get('port', 8081)} is used by another program, so ELI cannot start here.\n\n"
+                "Close the other program, or run ELI Server from only one place at a time."
+            )
+            url = ""
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumWidth(480)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(body))
+        if url:
+            link = QLabel(f'<a href="{url}" style="color:#a3be8c;">{url}</a>')
+            link.setOpenExternalLinks(True)
+            link.setWordWrap(True)
+            lay.addWidget(link)
+            self._srv_url.setText(url)
+            self._eli_server_update_ui("running")
+        box = QDialogButtonBox()
+        if url:
+            open_btn = box.addButton("Open in browser", QDialogButtonBox.ButtonRole.AcceptRole)
+            open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        box.addButton(QDialogButtonBox.StandardButton.Close)
+        lay.addWidget(box)
+        box.rejected.connect(dlg.reject)
+        if url:
+            box.accepted.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        dlg.exec()
+        return bool(probe.get("eli_running"))
+
+    def _eli_server_refresh_qr(self, http_url: str = "", https_url: str = "") -> None:
+        """Render connect QRs in the settings page (best-effort)."""
+        try:
+            from eli.runtime.server_util import qr_png_bytes
+        except Exception:
+            return
+        for lab, url, label in (
+            (getattr(self, "_srv_qr_http", None), http_url, "HTTP connect"),
+            (getattr(self, "_srv_qr_https", None), https_url, "HTTPS voice"),
+        ):
+            if lab is None:
+                continue
+            if url:
+                try:
+                    # QLabel rich-text can't load data: URI <img> — decode the PNG into a
+                    # QPixmap and set it directly. This is what makes the QR actually appear.
+                    pix = QPixmap()
+                    if not pix.loadFromData(qr_png_bytes(url), "PNG"):
+                        raise RuntimeError("QR decode failed")
+                    pix = pix.scaled(190, 190, Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+                    lab.setPixmap(pix)
+                    lab.setToolTip(f"{label}: {url}")
+                except Exception as ex:
+                    lab.setText(f"{label}\n(QR unavailable: {ex})")
+            else:
+                lab.clear()
+                lab.setText(
+                    f"{label}\n\nClick “📱 Start (phone / Wi-Fi)” above.\n"
+                    "The QR appears here for your phone\n"
+                    "to scan. (“This computer” mode is\nlocalhost-only — no phone QR.)"
+                )
+
+    def _eli_server_stop_https(self) -> None:
+        uv = getattr(self, "_srv_https_uv", None)
+        if uv is not None:
+            try:
+                uv.should_exit = True
+            except Exception:
+                log.debug("HTTPS sidecar shutdown signal failed", exc_info=True)
+        self._srv_https_uv = None
+        self._srv_https_thread = None
+        import os
+        os.environ.pop("ELI_API_HTTPS_PORT", None)
+        try:
+            self._srv_https_url.clear()
+            self._eli_server_refresh_qr()
+        except Exception:
+            log.debug("HTTPS UI clear/QR refresh failed", exc_info=True)
+
     def _eli_server_start(self, lan: bool) -> None:
         # Run the web server IN-PROCESS (a background thread) so it shares this app's
         # already-loaded model/engine instead of spawning a second process that would
         # load the model again and run the machine out of memory.
-        import os, secrets, threading
+        import os, threading
         if getattr(self, "_srv_thread", None) and self._srv_thread.is_alive():
             return  # already running
         from api.server import effective_api_port
         port = effective_api_port()  # honours the user's saved api_port setting
+        try:
+            from eli.runtime.server_util import probe_eli_server
+            probe = probe_eli_server(port)
+            if probe.get("in_use"):
+                if self._eli_server_show_running_dialog(probe, lan):
+                    if lan:
+                        self._eli_server_refresh_firewall_hint()
+                    return
+        except Exception:
+            log.debug("pre-start already-running probe failed", exc_info=True)
         if lan:
             # Stable, persisted token — reused across restarts so an already-paired
             # phone is NOT stranded (a fresh token every start meant its saved URL
@@ -538,14 +700,16 @@ class ChromeIoMixin:
             os.environ["ELI_API_HOST"] = host
             os.environ["ELI_API_TOKEN"] = token
             os.environ.pop("ELI_API_ALLOW_TOKENLESS", None)  # LAN must require the token
-            url = f"http://{self._eli_server_lan_ip()}:{port}/#token={token}"
+            url = f"http://{self._eli_server_lan_ip()}:{port}/?open=connect#token={token}"
         else:
             host = "127.0.0.1"
             os.environ["ELI_API_HOST"] = host
             os.environ["ELI_API_ALLOW_TOKENLESS"] = "1"
+            os.environ.pop("ELI_API_HTTPS_PORT", None)
             url = f"http://127.0.0.1:{port}/"
         os.environ["ELI_API_PORT"] = str(port)
         self._srv_err = ""
+        https_url = ""
         try:
             import uvicorn
             from api.server import app as _app
@@ -560,10 +724,42 @@ class ChromeIoMixin:
 
             self._srv_thread = threading.Thread(target=_run, daemon=True)
             self._srv_thread.start()
+            if lan:
+                from eli.runtime.server_util import start_https_sidecar
+                hport = start_https_sidecar(host=host)
+                if hport:
+                    https_url = f"https://{self._eli_server_lan_ip()}:{hport}/#token={token}"
+                    self._srv_https_url.setText(https_url)
+                else:
+                    self._srv_https_url.setText("(HTTPS unavailable — pip install cryptography segno)")
+            else:
+                self._srv_https_url.clear()
+                self._eli_server_stop_https()
             self._srv_url.setText(url)
+            self._eli_server_refresh_qr(
+                http_url=f"http://{self._eli_server_lan_ip()}:{port}/#token={token}" if lan else "",
+                https_url=https_url,
+            )
             self._eli_server_update_ui("starting")
+            if lan:
+                self._eli_server_refresh_firewall_hint()
+                try:
+                    QDesktopServices.openUrl(QUrl(url))
+                except Exception:
+                    log.debug("auto-open browser on LAN start failed", exc_info=True)
         except Exception as e:
-            self._eli_server_update_ui("error", str(e))
+            err = str(e)
+            if "98" in err or "already in use" in err.lower() or "address already in use" in err.lower():
+                try:
+                    from eli.runtime.server_util import probe_eli_server
+                    probe = probe_eli_server(port)
+                    if probe.get("in_use") and self._eli_server_show_running_dialog(probe, lan):
+                        if lan:
+                            self._eli_server_refresh_firewall_hint()
+                        return
+                except Exception:
+                    log.debug("post-error already-running probe failed", exc_info=True)
+            self._eli_server_update_ui("error", err)
 
     def _eli_server_apply_port(self) -> None:
         """Persist the chosen API port; used on the next server Start."""
@@ -580,6 +776,7 @@ class ChromeIoMixin:
             QMessageBox.warning(self, "Server port", str(ex))
 
     def _eli_server_stop(self) -> None:
+        self._eli_server_stop_https()
         uv = getattr(self, "_srv_uv", None)
         if uv is not None:
             try:
@@ -589,6 +786,10 @@ class ChromeIoMixin:
         self._srv_uv = None
         self._srv_thread = None
         self._srv_url.clear()
+        try:
+            self._eli_server_refresh_qr()
+        except Exception:
+            log.debug("QR clear on server stop failed", exc_info=True)
         self._eli_server_update_ui("stopped")
 
     def _eli_server_rotate_token(self) -> None:
@@ -611,7 +812,17 @@ class ChromeIoMixin:
         lan = os.environ.get("ELI_API_HOST", "") == "0.0.0.0"
         if running and lan:
             port = int(os.environ.get("ELI_API_PORT", "8081"))
-            self._srv_url.setText(f"http://{self._eli_server_lan_ip()}:{port}/#token={token}")
+            self._srv_url.setText(
+                f"http://{self._eli_server_lan_ip()}:{port}/?open=connect#token={token}")
+            hport = os.environ.get("ELI_API_HTTPS_PORT", "")
+            https_url = (
+                f"https://{self._eli_server_lan_ip()}:{hport}/#token={token}" if hport else "")
+            if https_url:
+                self._srv_https_url.setText(https_url)
+            self._eli_server_refresh_qr(
+                http_url=f"http://{self._eli_server_lan_ip()}:{port}/#token={token}",
+                https_url=https_url,
+            )
             try:
                 self._srv_status.setText("● Token rotated — re-open the new link on each phone")
                 self._srv_status.setStyleSheet("font-size:12px;font-weight:700;color:#ebcb8b;")

@@ -1199,6 +1199,40 @@ _register()
             "border-radius:5px;padding:7px;font-size:12px;}")
         vbox.addWidget(self._srv_url)
 
+        qr_title = QLabel("Scan with your phone (Connect tab also has these)")
+        qr_title.setStyleSheet("color:#88c0d0;font-size:12px;font-weight:700;margin-top:10px;")
+        vbox.addWidget(qr_title)
+        qr_row = QHBoxLayout()
+        self._srv_qr_http = QLabel("HTTP QR appears when phone/Wi-Fi mode is running…")
+        self._srv_qr_http.setAlignment(Qt.AlignCenter)
+        self._srv_qr_http.setMinimumSize(200, 200)
+        self._srv_qr_https = QLabel("")
+        self._srv_qr_https.setAlignment(Qt.AlignCenter)
+        self._srv_qr_https.setMinimumSize(200, 200)
+        for lab in (self._srv_qr_http, self._srv_qr_https):
+            lab.setStyleSheet(
+                "QLabel{background:#eafcff;border:1px solid #2a2d36;border-radius:8px;"
+                "padding:8px;color:#4c566a;font-size:10px;}")
+            qr_row.addWidget(lab)
+        qr_row.addStretch()
+        vbox.addLayout(qr_row)
+
+        self._srv_https_url = QLineEdit()
+        self._srv_https_url.setReadOnly(True)
+        self._srv_https_url.setPlaceholderText("HTTPS link for phone microphone (port 8443)…")
+        self._srv_https_url.setStyleSheet(
+            "QLineEdit{background:#12141a;color:#88c0d0;border:1px solid #2a2d36;"
+            "border-radius:5px;padding:7px;font-size:12px;}")
+        vbox.addWidget(self._srv_https_url)
+
+        https_note = QLabel(
+            "Phone chat uses HTTP (port 8081). Phone microphone needs HTTPS (port 8443) — "
+            "accept the one-time “connection not private” warning on the phone. "
+            "Do not use https:// on port 8081 (that causes “Invalid HTTP request” errors).")
+        https_note.setWordWrap(True)
+        https_note.setStyleSheet("color:#606880;font-size:10px;")
+        vbox.addWidget(https_note)
+
         hint = QLabel(
             "“Phone / Wi-Fi” mode is protected by a one-time access token baked into the "
             "link — open it once on the phone and it’s remembered. Keep this on your own "
@@ -1206,6 +1240,41 @@ _register()
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#606880;font-size:10px;")
         vbox.addWidget(hint)
+
+        fw_title = QLabel("Phone can't connect? — Firewall (one-time)")
+        fw_title.setStyleSheet("color:#88c0d0;font-size:12px;font-weight:700;margin-top:8px;")
+        vbox.addWidget(fw_title)
+        self._srv_fw_note = QLabel(
+            "If your phone is on the same Wi-Fi but cannot open ELI, your computer's "
+            "firewall is usually blocking port 8081. Ask a tech-savvy person to run "
+            "the command below once — or copy it and paste into Terminal."
+        )
+        self._srv_fw_note.setWordWrap(True)
+        self._srv_fw_note.setStyleSheet("color:#7b8394;font-size:10px;line-height:1.45;")
+        vbox.addWidget(self._srv_fw_note)
+        self._srv_fw_cmd = QLineEdit()
+        self._srv_fw_cmd.setReadOnly(True)
+        self._srv_fw_cmd.setPlaceholderText("Firewall command appears here when phone/Wi-Fi mode is used…")
+        self._srv_fw_cmd.setStyleSheet(
+            "QLineEdit{background:#12141a;color:#ebcb8b;border:1px solid #2a2d36;"
+            "border-radius:5px;padding:7px;font-size:11px;font-family:monospace;}")
+        vbox.addWidget(self._srv_fw_cmd)
+        fw_row = QHBoxLayout()
+        self._srv_fw_copy = QPushButton("Copy command")
+        self._srv_fw_term = QPushButton("Open in Terminal")
+        for b in (self._srv_fw_copy, self._srv_fw_term):
+            b.setFixedHeight(28)
+            b.setStyleSheet(
+                "QPushButton{background:#3b4252;color:#eceff4;border:none;border-radius:5px;"
+                "padding:0 12px;font-size:11px;font-weight:600;}"
+                "QPushButton:hover{background:#4c566a;}")
+            fw_row.addWidget(b)
+        fw_row.addStretch()
+        vbox.addLayout(fw_row)
+        self._srv_fw_copy.clicked.connect(self._eli_server_copy_firewall_cmd)
+        self._srv_fw_term.clicked.connect(self._eli_server_open_firewall_terminal)
+        self._eli_server_refresh_firewall_hint()
+
         vbox.addStretch()
 
         # Poll the child process so the UI reflects crashes / external stops.
