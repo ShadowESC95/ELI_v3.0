@@ -10,9 +10,13 @@ reported WITHOUT touching the network, and every download is gated through
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -23,6 +27,143 @@ log = logging.getLogger(__name__)
 _PIPER_VOICE = "en_US-amy-medium"
 _PIPER_BASE = ("https://huggingface.co/rhasspy/piper-voices/resolve/main/"
                "en/en_US/amy/medium/")
+
+# ── Voice catalog ───────────────────────────────────────────────────────────────
+# Upstream publishes an index of every voice it hosts (166 voices / 45 languages
+# at time of writing) with exact file paths, sizes and md5 digests. Fetching it
+# beats hardcoding voice ids: the user gets every accent/quality upstream offers,
+# downloads are checksum-verified, and the list can never drift out of date.
+# The curated PIPER_CATALOG below stays as the offline fallback + "recommended".
+_INDEX_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json"
+_INDEX_FILENAME = "voices.index.json"
+_INDEX_MAX_AGE_S = 7 * 24 * 3600
+
+# Voices ELI does NOT redistribute, keyed by voice NAME so every quality variant
+# is covered (the licence attaches to the dataset, not to one .onnx):
+#   ryan   — CC-BY-NC-SA 4.0 (non-commercial: incompatible with a shipped product)
+#   lessac — Blizzard/Lessac dataset, redistribution not cleared
+#   cori   — clearance pending review
+# A user may still download these for their own personal use; we simply never
+# put them in a release asset. scripts/asset_release_policy.py mirrors this set.
+RESTRICTED_VOICE_NAMES = frozenset({"ryan", "lessac", "cori"})
+
+PIPER_CATALOG: Dict[str, Dict[str, str]] = {
+    # Standard — clean, neutral, "robotic-normal"
+    "en_US-amy-medium":        {"tier": "standard", "desc": "Amy (US female) — default, clear",      "license": "MIT"},
+    "en_US-hfc_female-medium": {"tier": "standard", "desc": "HFC female (US) — neutral, crisp",       "license": "MIT"},
+    "en_US-hfc_male-medium":   {"tier": "standard", "desc": "HFC male (US) — neutral, even",          "license": "MIT"},
+    "en_US-joe-medium":        {"tier": "standard", "desc": "Joe (US male) — calm, steady",           "license": "MIT"},
+    "en_US-kathleen-low":      {"tier": "standard", "desc": "Kathleen (US female) — light, quick",    "license": "MIT"},
+    # Advanced — higher fidelity / more character
+    "en_US-lessac-high":       {"tier": "advanced", "desc": "Lessac (US male) — high fidelity, smooth","license": "Blizzard/Lessac (uncleared)"},
+    "en_US-lessac-medium":     {"tier": "advanced", "desc": "Lessac (US male) — smooth, warm",        "license": "Blizzard/Lessac (uncleared)"},
+    "en_GB-alan-medium":       {"tier": "advanced", "desc": "Alan (UK male) — refined British",       "license": "OS"},
+    "en_GB-northern_english_male-medium": {"tier": "advanced", "desc": "Northern English male — characterful", "license": "OS"},
+    "en_US-kusal-medium":      {"tier": "advanced", "desc": "Kusal (US male) — expressive",           "license": "MIT"},
+    # NC-SA — never auto-bundled into a release
+    "en_US-ryan-high":         {"tier": "advanced", "desc": "Ryan (US male) — very natural (NC-SA)",  "license": "CC-BY-NC-SA"},
+}
+
+
+def voice_name_of(voice_id: str) -> str:
+    """'en_GB-northern_english_male-medium' -> 'northern_english_male'."""
+    parts = str(voice_id or "").split("-")
+    return "-".join(parts[1:-1]) if len(parts) >= 3 else ""
+
+
+def is_restricted(voice_id: str) -> bool:
+    """True when ELI must not redistribute this voice (user may still fetch it)."""
+    return voice_name_of(voice_id) in RESTRICTED_VOICE_NAMES
+
+
+def _index_cache_path() -> Path:
+    return _piper_dest() / _INDEX_FILENAME
+
+
+def voice_index(refresh: bool = False) -> Dict[str, Any]:
+    """The upstream voice index, cached on disk. Offline-safe: returns the cached
+    copy (or {} if never fetched) without touching the network unless asked."""
+    cache = _index_cache_path()
+    if not refresh:
+        try:
+            if cache.is_file() and cache.stat().st_size > 0:
+                return json.loads(cache.read_text(encoding="utf-8"))
+        except Exception:
+            log.debug("voice_assets: cached index unreadable", exc_info=True)
+    return {}
+
+
+def fetch_voice_index(force: bool = False) -> Dict[str, Any]:
+    """Download (and cache) the upstream voice index. Netguard-gated. Falls back to
+    the cached copy on any failure so a picker still works offline."""
+    cache = _index_cache_path()
+    try:
+        fresh_enough = (cache.is_file() and cache.stat().st_size > 0
+                        and (time.time() - cache.stat().st_mtime) < _INDEX_MAX_AGE_S)
+    except OSError:
+        fresh_enough = False
+    if fresh_enough and not force:
+        return voice_index()
+    try:
+        import urllib.request
+        from eli.core import netguard
+        with netguard.allow_network("voice asset: piper voice index"):
+            req = urllib.request.Request(
+                _INDEX_URL, headers={"User-Agent": "ELI/2.0 (voice-assets)"})
+            with netguard.guarded_urlopen(req, timeout=60) as r:
+                raw = r.read()
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict) or not data:
+            raise ValueError("empty or malformed voice index")
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_suffix(cache.suffix + ".part")
+        tmp.write_bytes(raw)
+        tmp.replace(cache)
+        return data
+    except Exception:
+        log.debug("voice_assets: voice index fetch failed (using cache)", exc_info=True)
+        return voice_index()
+
+
+def _index_files(voice_id: str, index: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """The {relative_path: {size_bytes, md5_digest}} map for a voice, if indexed."""
+    entry = index.get(voice_id) or {}
+    files = entry.get("files") or {}
+    return files if isinstance(files, dict) else {}
+
+
+def _voice_url_base(voice_id: str) -> str:
+    """Derive the rhasspy/piper-voices URL dir for a '<locale>-<name>-<quality>' id."""
+    parts = str(voice_id).split("-")
+    if len(parts) < 3:
+        raise ValueError(f"bad voice id: {voice_id!r}")
+    locale, quality = parts[0], parts[-1]
+    name = "-".join(parts[1:-1])
+    lang = locale.split("_")[0]
+    return (f"https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+            f"{lang}/{locale}/{name}/{quality}/")
+
+
+def _voice_present_strict(voice_id: str) -> bool:
+    """True only when THIS exact voice's .onnx + .onnx.json exist (no fuzzy any-voice
+    fallback — that would make every catalog voice look installed once one exists)."""
+    dirs = [_piper_dest()]
+    try:
+        from eli.perception.tts_router import _voice_search_dirs
+        dirs += list(_voice_search_dirs())
+    except Exception:
+        pass
+    try:
+        from eli.core.paths import project_root
+        dirs.append(Path(project_root()) / "tts_piper" / "piper")
+    except Exception:
+        pass
+    for d in dirs:
+        onnx = Path(d) / f"{voice_id}.onnx"
+        cfg = Path(d) / f"{voice_id}.onnx.json"
+        if onnx.is_file() and onnx.stat().st_size > 0 and cfg.is_file() and cfg.stat().st_size > 0:
+            return True
+    return False
 
 
 def piper_voice_ready(voice: str = _PIPER_VOICE) -> bool:
@@ -82,35 +223,261 @@ def _mirror_piper_to_packaged_layout(voice: str) -> None:
         log.debug("voice_assets: packaged piper mirror skipped", exc_info=True)
 
 
-def ensure_piper_voice() -> Dict[str, Any]:
-    """Fetch the default Piper voice (``.onnx`` + ``.onnx.json``) if no voice exists."""
-    if _piper_present():
-        _mirror_piper_to_packaged_layout(_PIPER_VOICE)
-        return {"ok": True, "asset": "piper", "already_present": True, "voice": _PIPER_VOICE}
+def download_voice(voice_id: str, mirror: bool = False) -> Dict[str, Any]:
+    """Fetch any catalog (or well-formed) Piper voice: ``<id>.onnx`` + ``<id>.onnx.json``.
+    Idempotent + offline-safe (netguard-gated). Streams to a ``.part`` then atomically
+    replaces, so a killed download never leaves a half-written voice."""
+    if _voice_present_strict(voice_id):
+        if mirror:
+            _mirror_piper_to_packaged_layout(voice_id)
+        return {"ok": True, "asset": "piper", "already_present": True, "voice": voice_id}
     dest = _piper_dest()
     try:
         dest.mkdir(parents=True, exist_ok=True)
         import urllib.request
         from eli.core import netguard
-        with netguard.allow_network("voice asset: piper voice"):
-            for fn in (f"{_PIPER_VOICE}.onnx", f"{_PIPER_VOICE}.onnx.json"):
+        # Prefer the upstream index: it gives the exact repo-relative path (voices
+        # whose folder isn't derivable from the id, e.g. multi-speaker ones) and an
+        # md5 per file so a truncated or proxy-mangled download is caught here
+        # rather than surfacing later as a corrupt-model crash.
+        index = voice_index() or fetch_voice_index()
+        indexed = _index_files(voice_id, index)
+        if indexed:
+            jobs = [(Path(rel).name, _INDEX_URL.rsplit("/", 1)[0] + "/" + rel,
+                     str((meta or {}).get("md5_digest") or ""))
+                    for rel, meta in indexed.items()
+                    if Path(rel).name.endswith((".onnx", ".onnx.json"))]
+        else:
+            base = _voice_url_base(voice_id)
+            jobs = [(fn, base + fn, "") for fn in (f"{voice_id}.onnx", f"{voice_id}.onnx.json")]
+        with netguard.allow_network(f"voice asset: piper {voice_id}"):
+            for fn, url, want_md5 in jobs:
                 target = dest / fn
                 if target.exists() and target.stat().st_size > 0:
                     continue
-                req = urllib.request.Request(_PIPER_BASE + fn,
+                req = urllib.request.Request(url,
                                              headers={"User-Agent": "ELI/2.0 (voice-assets)"})
-                with netguard.guarded_urlopen(req, timeout=180) as r:
-                    data = r.read()
-                if not data:
-                    return {"ok": False, "asset": "piper", "error": f"empty download: {fn}"}
                 tmp = target.with_suffix(target.suffix + ".part")
-                tmp.write_bytes(data)
+                digest = hashlib.md5()
+                with netguard.guarded_urlopen(req, timeout=300) as r, open(tmp, "wb") as fh:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        fh.write(chunk)
+                if tmp.stat().st_size <= 0:
+                    tmp.unlink(missing_ok=True)
+                    return {"ok": False, "asset": "piper", "voice": voice_id,
+                            "error": f"empty download: {fn}"}
+                if want_md5 and digest.hexdigest() != want_md5:
+                    tmp.unlink(missing_ok=True)
+                    return {"ok": False, "asset": "piper", "voice": voice_id,
+                            "error": f"checksum mismatch: {fn}"}
                 tmp.replace(target)
-        _mirror_piper_to_packaged_layout(_PIPER_VOICE)
-        return {"ok": True, "asset": "piper", "already_present": False, "voice": _PIPER_VOICE}
+        if mirror:
+            _mirror_piper_to_packaged_layout(voice_id)
+        return {"ok": True, "asset": "piper", "already_present": False, "voice": voice_id}
     except Exception as e:
-        log.debug("voice_assets: piper fetch failed", exc_info=True)
-        return {"ok": False, "asset": "piper", "error": str(e)}
+        log.debug("voice_assets: voice fetch failed (%s)", voice_id, exc_info=True)
+        return {"ok": False, "asset": "piper", "voice": voice_id, "error": str(e)}
+
+
+def list_catalog() -> "list[Dict[str, Any]]":
+    """Curated Piper voices annotated with on-disk presence (for a picker / CLI)."""
+    return [{"id": vid, "present": _voice_present_strict(vid), **meta}
+            for vid, meta in PIPER_CATALOG.items()]
+
+
+def list_available_voices(language: str = "", installed_only: bool = False,
+                          refresh: bool = False) -> "list[Dict[str, Any]]":
+    """Every voice obtainable on this box, annotated for a picker.
+
+    Sourced from the upstream index when available (all languages/accents/qualities),
+    else the curated catalog. ``language`` filters on family or locale ('en',
+    'en_GB'). Each row carries ``present`` (installed), ``restricted`` (ELI won't
+    redistribute it — user may still download it) and ``size_mb`` so a UI can warn
+    before a 60 MB fetch. Pure-local unless ``refresh`` is set.
+    """
+    index = fetch_voice_index() if refresh else (voice_index() or {})
+    rows: "list[Dict[str, Any]]" = []
+    if index:
+        for vid, entry in index.items():
+            lang = (entry or {}).get("language") or {}
+            code = str(lang.get("code") or "")
+            if language and not (code == language or lang.get("family") == language
+                                 or code.startswith(f"{language}_")):
+                continue
+            size = sum(int((m or {}).get("size_bytes") or 0)
+                       for p, m in ((entry or {}).get("files") or {}).items()
+                       if str(p).endswith(".onnx"))
+            curated = PIPER_CATALOG.get(vid, {})
+            rows.append({
+                "id": vid,
+                "name": entry.get("name") or voice_name_of(vid),
+                "language": code,
+                "language_name": lang.get("name_english") or "",
+                "country": lang.get("country_english") or "",
+                "quality": entry.get("quality") or "",
+                "size_mb": round(size / (1 << 20), 1) if size else 0.0,
+                "present": _voice_present_strict(vid),
+                "restricted": is_restricted(vid),
+                "recommended": vid in PIPER_CATALOG,
+                "tier": curated.get("tier", ""),
+                "desc": curated.get("desc", ""),
+                "license": curated.get("license", ""),
+            })
+    else:  # offline and never fetched — curated list is better than nothing
+        for vid, meta in PIPER_CATALOG.items():
+            if language and not vid.startswith(language):
+                continue
+            rows.append({"id": vid, "name": voice_name_of(vid), "language": vid.split("-")[0],
+                         "language_name": "", "country": "", "quality": vid.split("-")[-1],
+                         "size_mb": 0.0, "present": _voice_present_strict(vid),
+                         "restricted": is_restricted(vid), "recommended": True, **meta})
+    if installed_only:
+        rows = [r for r in rows if r["present"]]
+    rows.sort(key=lambda r: (not r["recommended"], r["id"]))
+    return rows
+
+
+def incomplete_voices(search_dirs: "list[Path] | None" = None) -> "list[Dict[str, Any]]":
+    """Voices whose ``.onnx`` is on disk but whose ``.onnx.json`` config is not.
+
+    Piper cannot load a model without its config, so such a voice is invisible to
+    ``tts_router.list_voices()`` — it silently occupies ~60 MB while being unusable.
+    The config is ~5 KB, so repairing is cheap where re-downloading the model isn't.
+    """
+    dirs = [Path(d) for d in (search_dirs or [])] or [_piper_dest()]
+    try:
+        from eli.core.paths import project_root
+        packaged = Path(project_root()) / "tts_piper" / "piper"
+        if not search_dirs and packaged.is_dir():
+            dirs.append(packaged)
+    except Exception:
+        log.debug("voice_assets: packaged dir probe failed", exc_info=True)
+    out: "list[Dict[str, Any]]" = []
+    seen: set = set()
+    for d in dirs:
+        try:
+            for onnx in sorted(Path(d).glob("*.onnx")):
+                cfg = Path(str(onnx) + ".json")
+                key = (str(d), onnx.stem)
+                if not cfg.is_file() and key not in seen:
+                    seen.add(key)
+                    out.append({"voice": onnx.stem, "dir": str(d), "onnx": str(onnx)})
+        except Exception:
+            log.debug("voice_assets: scan of %s failed", d, exc_info=True)
+    return out
+
+
+def repair_voice_configs(mirror: bool = True) -> Dict[str, Any]:
+    """Fetch the missing ``.onnx.json`` for every incomplete voice on disk.
+
+    Netguard-gated and idempotent; returns per-voice results. This makes voices
+    that were shipped/downloaded without their config usable instead of dead weight.
+    """
+    broken = incomplete_voices()
+    if not broken:
+        return {"ok": True, "repaired": [], "failed": [], "already_complete": True}
+    repaired, failed = [], []
+    # One fetch per voice — the same voice is commonly incomplete in BOTH the
+    # models/ and packaged tts_piper/ layouts, and the mirror covers the second.
+    for vid in sorted({str(item["voice"]) for item in broken}):
+        res = download_voice(vid, mirror=mirror)
+        (repaired if res.get("ok") else failed).append(
+            vid if res.get("ok") else {"voice": vid, "error": res.get("error")})
+    return {"ok": not failed, "repaired": repaired, "failed": failed}
+
+
+# Accent / language words a user might say, mapped to a locale prefix used to
+# filter the catalog. Keeps the conversational voice actions (DOWNLOAD_VOICE /
+# SET_VOICE) from hardcoding voice ids — "get me a Scottish voice" resolves here.
+_ACCENT_HINTS = {
+    "british": "en_GB", "uk": "en_GB", "england": "en_GB", "english accent": "en_GB",
+    "scottish": "en_GB", "scotland": "en_GB",  # narrowed to a Scottish voice below
+    "american": "en_US", "us": "en_US", "usa": "en_US", "united states": "en_US",
+    "irish": "en_IE", "australian": "en_AU",
+    "french": "fr", "german": "de", "spanish": "es", "italian": "it",
+    "dutch": "nl", "polish": "pl", "russian": "ru", "chinese": "zh",
+    "portuguese": "pt", "czech": "cs",
+}
+_NAMED_ACCENT_VOICE = {  # a specific catalog voice for a narrower accent word
+    "scottish": "en_GB-alba-medium", "scotland": "en_GB-alba-medium",
+    "northern": "en_GB-northern_english_male-medium",
+}
+
+
+def resolve_voice_query(text: str) -> Dict[str, Any]:
+    """Turn a spoken voice request into a concrete choice, without hardcoding ids.
+
+    Returns ``{"voice": <id or "">, "matches": [ids…], "kind": ...}``. Resolution:
+    an exact/loose voice-name or character-name match wins; else an accent/language
+    word narrows the catalog; else empty (caller lists options). Character voices
+    (``char:hal``) are matched too, so "the HAL voice" works.
+    """
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return {"voice": "", "matches": [], "kind": "none"}
+
+    # Natural neural voice ("use the natural/human/realistic voice"). Gender-aware;
+    # falls back to Piper at synth time if the neural extra isn't installed.
+    if re.search(r"\b(natural|human|human[- ]like|realistic|lifelike|neural)\b", raw):
+        try:
+            from eli.perception import tts_xtts
+            fem = re.search(r"\b(female|woman|women|she|her)\b", raw)
+            male = re.search(r"\b(male|man|men|he|him|guy)\b", raw)
+            pick = "sophia" if fem else ("james" if male else "sophia")
+            vid = f"{tts_xtts.NATURAL_PREFIX}{pick}"
+            return {"voice": vid, "matches": [vid], "kind": "natural"}
+        except Exception:
+            log.debug("natural voice match failed", exc_info=True)
+
+    # Character voices first ("hal", "jarvis", "glados"…).
+    try:
+        from eli.perception import voice_fx
+        for c in voice_fx.list_characters():
+            nm = str(c.get("name") or "").lower()
+            if nm and re.search(rf"\b{re.escape(nm)}\b", raw):
+                return {"voice": c["id"], "matches": [c["id"]], "kind": "character"}
+    except Exception:
+        log.debug("voice_fx match failed", exc_info=True)
+
+    rows = list_available_voices()
+    by_id = {r["id"].lower(): r["id"] for r in rows}
+    by_name = {}
+    for r in rows:
+        by_name.setdefault(str(r.get("name") or "").lower(), r["id"])
+
+    # Exact voice id, then a bare voice name ("amy", "alan", "thorsten").
+    for token in re.findall(r"[a-z0-9_]+", raw):
+        if token in by_id:
+            return {"voice": by_id[token], "matches": [by_id[token]], "kind": "id"}
+    for name, vid in by_name.items():
+        if name and re.search(rf"\b{re.escape(name)}\b", raw):
+            return {"voice": vid, "matches": [vid], "kind": "name"}
+
+    # A specific accent word that maps to one shipped voice. Word-boundary match
+    # so short words never fire on a substring ("us" must not match "use").
+    for word, vid in _NAMED_ACCENT_VOICE.items():
+        if re.search(rf"\b{re.escape(word)}\b", raw) and any(r["id"] == vid for r in rows):
+            return {"voice": vid, "matches": [vid], "kind": "accent"}
+
+    # An accent/language word → the catalog filtered to that locale, preferring
+    # already-installed then recommended voices so the pick is a good default.
+    for word, prefix in sorted(_ACCENT_HINTS.items(), key=lambda kv: -len(kv[0])):
+        if re.search(rf"\b{re.escape(word)}\b", raw):
+            cand = [r for r in rows if str(r.get("language", "")).startswith(prefix)]
+            cand.sort(key=lambda r: (not r["present"], not r["recommended"], r["id"]))
+            ids = [r["id"] for r in cand]
+            return {"voice": ids[0] if ids else "", "matches": ids, "kind": "accent"}
+
+    return {"voice": "", "matches": [], "kind": "none"}
+
+
+def ensure_piper_voice() -> Dict[str, Any]:
+    """Fetch the default Piper voice if the box has none (installer's online step)."""
+    return download_voice(_PIPER_VOICE, mirror=True)
 
 
 def ensure_whisper() -> Dict[str, Any]:
@@ -151,8 +518,24 @@ def ensure_whisper() -> Dict[str, Any]:
 
 
 def ensure_voice_assets() -> Dict[str, Any]:
-    """Ensure both STT (whisper) and TTS (piper voice) weights are present."""
-    return {"piper": ensure_piper_voice(), "whisper": ensure_whisper()}
+    """Ensure STT (whisper) + TTS (piper voice) weights are present, and SELF-HEAL
+    the shipped pack.
+
+    The released voice asset historically shipped models without their tiny
+    ``.onnx.json`` configs (12 models / 2 configs), leaving a fresh user with only
+    a couple of usable voices. Piper can't load a config-less model, so those are
+    dead weight until repaired. Repairing here — on the first-boot asset step —
+    makes every shipped medium voice usable automatically instead of needing a
+    manual fix. Best-effort and netguard-gated; a repair failure never blocks boot.
+    """
+    out: Dict[str, Any] = {"piper": ensure_piper_voice(), "whisper": ensure_whisper()}
+    try:
+        if incomplete_voices():
+            out["repair"] = repair_voice_configs(mirror=True)
+    except Exception as e:
+        log.debug("voice_assets: config self-heal skipped", exc_info=True)
+        out["repair"] = {"ok": False, "error": str(e)}
+    return out
 
 
 def _main() -> int:
