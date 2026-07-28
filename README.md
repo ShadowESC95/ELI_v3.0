@@ -57,7 +57,7 @@ of any kind. It's model-, user-, and hardware-agnostic by design.
 Beyond answering questions, it acts on your machine, remembers you across sessions, reports its own
 state from real runtime evidence rather than guessing, and can even read its own source, write and
 repair code, and fine-tune on your conversation history so it gets better at serving *you*.
-**205 capabilities** sit behind a single typed or spoken interface.
+**212 capabilities** sit behind a single typed or spoken interface.
 
 And because the model is *yours* and swappable, ELI's ceiling isn't fixed — it rises with the
 open-model frontier and the hardware you give it. The quality is a dial you control, not a
@@ -102,7 +102,7 @@ day to day:
 Asking *"what can you do?"* lists the full surface.
 
 <details>
-<summary><b>Full capability breadth — 205 capabilities across 17 areas</b></summary>
+<summary><b>Full capability breadth — 212 capabilities across 17 areas</b></summary>
 
 | Area | What's in it |
 |---|---|
@@ -438,7 +438,7 @@ data whenever you want.
 - `eli/memory` — episodic, semantic, FAISS vector index, knowledge graph
 - `eli/planning` — goals, jobs, autonomy, proactive daemon, scheduling
 - `eli/execution` — router + executor + **`effectors/`**: a dispatch **registry** where each action
-  family is its own module. **169 actions across 34 effector modules** (of 185 `SUPPORTED_ACTIONS`);
+  family is its own module. **169 actions across 37 effector modules** (of 189 `SUPPORTED_ACTIONS`);
   adding a capability is a drop-in module + one `register()` call, never a god-file edit
 - `eli/perception` — audio, screenshots, OS controller, TTS/STT
 - `eli/runtime` — arbitration, verification, security policy
@@ -449,7 +449,7 @@ data whenever you want.
   (trial/personal/pro/enterprise); editions overlay the core, never fork it
 - `eli/cli` — headless REPL (`eli --headless`)
 - `config` — portable default settings · `models` — local GGUF payloads (gitignored)
-- `tests` — a large pytest suite (**7,900+ tests**, including a `claims/` layer that
+- `tests` — a large pytest suite (**8,700+ tests**, including a `claims/` layer that
   checks the project against its own documentation); the full suite runs locally, while CI gates a
   cross-platform portable subset (no GGUF/display/GPU) on Linux, macOS, and Windows
 
