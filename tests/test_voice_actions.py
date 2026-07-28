@@ -40,8 +40,6 @@ def test_set_voice_routes(text):
     assert _action(text) == "SET_VOICE"
 
 
-@pytest.mark.skip(reason="SET_COMMUNICATION_STYLE (persona tone control) is not yet "
-                          "ported to v3 — deferred separately from the voice-library port")
 @pytest.mark.parametrize("text", [
     "change your voice to sarcastic", "speak to me like a pirate",
     "use a funny voice", "use a serious voice", "be more formal",
