@@ -190,6 +190,24 @@ def list_voices() -> list[str]:
                     voices.append(name)
         except Exception:
             pass
+    # Character voices (char:hal, char:tars, …) — base voice + ffmpeg effect chain.
+    try:
+        from eli.perception import voice_fx
+        for c in voice_fx.list_characters():
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                voices.append(c["id"])
+    except Exception:
+        pass
+    # Cloned voices (clone:<name>) — XTTS-v2 from a reference sample.
+    try:
+        from eli.perception import tts_xtts
+        for c in tts_xtts.list_clones():
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                voices.append(c["id"])
+    except Exception:
+        pass
     for sv in _list_system_voices():
         if sv not in seen:
             seen.add(sv)
@@ -632,6 +650,11 @@ def _run_tts(text: str, voice_name: str | None = None) -> bool:
     import os as _os
 
     active = voice_name or get_active_voice()
+    # Character (char:) / cloned (clone:) voice → render via synthesize_wav (which owns
+    # the effect chain / XTTS + fallback), then play the WAV on the host.
+    if str(active).startswith(("char:", "clone:")):
+        wav = synthesize_wav(text, voice_name=active)
+        return _play_wav_bytes(wav) if wav else False
     # Never voice a degenerate fragment (also avoids the piper wave crash on '-').
     if _eli_tts_is_unspeakable(text):
         log.debug(f"[TTS_FINAL_PIPER_ONLY] skipped unspeakable text: {str(text)[:24]!r}")
@@ -823,6 +846,54 @@ def _concat_wavs(wavs: list[bytes]) -> Optional[bytes]:
     return out.getvalue()
 
 
+def _apply_tone_pitch(wav_bytes: Optional[bytes]) -> Optional[bytes]:
+    """Shift the synthesized audio by the current emotion's pitch (semitones) so a
+    `sad` reply sounds lower and an `ecstatic` one higher — the pitch dimension the
+    Piper CLI can't do itself. No-op when pitch≈0 or ffmpeg is missing (fail open)."""
+    if not wav_bytes:
+        return wav_bytes
+    try:
+        from eli.cognition import tone_adaptor
+        semis = float((tone_adaptor.voice_prosody() or {}).get("pitch") or 0.0)
+    except Exception:
+        return wav_bytes
+    if abs(semis) < 0.1 or not shutil.which("ffmpeg"):
+        return wav_bytes
+    import subprocess as _sp
+    import tempfile as _tf
+    sr = _wav_sample_rate_bytes(wav_bytes)
+    factor = max(0.5, min(2.0, 2.0 ** (semis / 12.0)))
+    # asetrate shifts pitch+speed; atempo restores duration → pitch-only shift.
+    chain = f"asetrate={int(sr*factor)},aresample={sr},atempo={1.0/factor:.4f}"
+    out = ""
+    try:
+        fd, out = _tf.mkstemp(suffix=".wav"); __import__("os").close(fd)
+        proc = _sp.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "wav", "-i", "pipe:0", "-af", chain, out],
+                       input=wav_bytes, stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=30)
+        if proc.returncode == 0 and __import__("os").path.getsize(out) > 0:
+            return Path(out).read_bytes()
+    except Exception:
+        log.debug("[TTS] tone pitch shift failed", exc_info=True)
+    finally:
+        if out:
+            try:
+                __import__("os").unlink(out)
+            except OSError:
+                log.debug("[TTS] pitch temp cleanup failed", exc_info=True)
+    return wav_bytes
+
+
+def _wav_sample_rate_bytes(wav_bytes: bytes) -> int:
+    import io as _io
+    import wave as _wave
+    try:
+        with _wave.open(_io.BytesIO(wav_bytes)) as w:
+            return w.getframerate() or 22050
+    except Exception:
+        return 22050
+
+
 def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
     """Render `text` to WAV bytes with the active Piper voice — for clients that
     play audio themselves (browser voice). Returns None if nothing speakable or
@@ -831,6 +902,39 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
     if _eli_tts_is_unspeakable(text):
         return None
     active = voice_name or get_active_voice()
+    # Cloned voice (clone:<name>): Coqui XTTS-v2 from a reference sample. If the extra
+    # isn't installed / no reference, returns None → we fall back to the default voice.
+    if str(active).startswith("clone:"):
+        try:
+            from eli.perception import tts_xtts
+            wav = tts_xtts.synthesize_wav(text, active)
+            if wav:
+                return _apply_tone_pitch(wav)
+        except Exception:
+            log.debug("[TTS_WAV] clone voice resolve failed", exc_info=True)
+        active = _DEFAULT_VOICE
+    # Character voice (char:hal, char:tars, …): synth the base Piper voice, then run
+    # its ffmpeg effect chain over the result. Recurses once with a real base voice.
+    if str(active).startswith("char:"):
+        try:
+            from eli.perception import voice_fx
+            spec = voice_fx.get_preset(active)
+            if spec:
+                # Resolve the base to a voice that is actually installed: the ideal
+                # `base`, else the preset's shipped `fallback`, else the English
+                # default. A missing base must never fall through to the generic
+                # resolver, which picks the first .onnx alphabetically (a
+                # foreign-language voice in the shipped pack) and garbles the text.
+                installed = set(list_voices())
+                base = str(spec.get("base") or "").strip()
+                if base not in installed:
+                    fb = str(spec.get("fallback") or "").strip()
+                    base = fb if fb in installed else _DEFAULT_VOICE
+                base_wav = synthesize_wav(text, voice_name=base)
+                return voice_fx.apply_fx(base_wav, spec) if base_wav else None
+        except Exception:
+            log.debug("[TTS_WAV] character voice resolve failed", exc_info=True)
+        active = _DEFAULT_VOICE  # unknown character → safe default
     model = find_voice_model(active)
     if not model:
         log.debug(f"[TTS_WAV] no voice model for active={active}")
@@ -842,4 +946,4 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
     cfg = _find_piper_config(model)
     chunks = _tts_chunks(text) or [text]
     rendered = [_piper_render_wav(c, model, cfg, piper_bin) for c in chunks]
-    return _concat_wavs([r for r in rendered if r])
+    return _apply_tone_pitch(_concat_wavs([r for r in rendered if r]))
