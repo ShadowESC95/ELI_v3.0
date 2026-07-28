@@ -1227,6 +1227,7 @@ SUPPORTED_ACTIONS = [
     'SET_AI_MODE',
     'USER_INFO_REPORT',
     'SET_USER_NAME',
+    'SET_COMMUNICATION_STYLE',
     'SKIP_YOUTUBE_AD',
     'ANALYZE_PDF_FOLDER',
     'IMAGE_STATUS',
@@ -2072,6 +2073,33 @@ def set_user_name(name: str) -> Dict[str, Any]:
         log.debug(f"[EXECUTOR] identity-pattern purge failed (non-fatal): {_pe}")
     msg = f"Got it. I'll call you {n}."
     return {"ok": True, "action": "SET_USER_NAME", "user_name": n, "content": msg, "response": msg}
+
+
+def set_communication_style_action(style: str) -> Dict[str, Any]:
+    """Persist an explicit tone/communication preference ('how to speak to me'). Empty or a
+    reset phrase clears it. Feeds the persona brief via user_profile.json."""
+    s = str(style or "").strip()
+    if s.lower() in {"reset", "clear", "default", "normal", "none", "your default", "back to normal"}:
+        s = ""
+    if not s and str(style or "").strip():
+        try:
+            from eli.kernel.state import set_communication_style as _set
+            _set("")
+        except Exception:
+            log.debug("[SET_COMMUNICATION_STYLE] reset-write failed", exc_info=True)
+        msg = "Tone reset — back to my default voice."
+        return {"ok": True, "action": "SET_COMMUNICATION_STYLE", "communication_style": "", "content": msg, "response": msg}
+    if not s:
+        msg = "Tell me how you'd like me to speak — e.g. 'blunt, with dry humour, concise'."
+        return {"ok": False, "action": "SET_COMMUNICATION_STYLE", "error": "empty", "content": msg, "response": msg}
+    try:
+        from eli.kernel.state import set_communication_style as _set
+        _set(s)
+    except Exception as e:
+        msg = f"Couldn't save that tone preference: {e}"
+        return {"ok": False, "action": "SET_COMMUNICATION_STYLE", "error": repr(e), "content": msg, "response": msg}
+    msg = f"Got it — I'll speak to you {s} from now on. Say 'reset your tone' to clear it."
+    return {"ok": True, "action": "SET_COMMUNICATION_STYLE", "communication_style": s, "content": msg, "response": msg}
 
 
 def _purge_conflicting_identity_patterns(new_name: str) -> int:
@@ -3306,6 +3334,12 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             return {"ok": True, "action": a, "voice": vid, "content": msg, "response": msg}
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+    # ---- SET_COMMUNICATION_STYLE ----
+    # Explicit persona TONE preference — how the user wants to be spoken to. Distinct
+    # from SET_VOICE (the actual audio voice); disambiguated in the router.
+    if a == "SET_COMMUNICATION_STYLE":
+        return set_communication_style_action(str(args.get("style", "")))
 
     # ---- SMART_HOME ----
     # Routes through ELI's OWN MQTT device server (eli.runtime.device_server) — no
