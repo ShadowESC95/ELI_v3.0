@@ -67,6 +67,7 @@ _add("Conversation & persona", "PERSONA_LOCK_SET", "Pin a persona/role for the s
 _add("Conversation & persona", "PERSONA_LOCK_CLEAR", "Release a pinned persona", "“clear persona lock”")
 _add("Conversation & persona", "PERSONA_LOCK_STATUS", "Show the current persona lock", "“what persona are you locked to”")
 _add("Conversation & persona", "PERSONA_REFRESH", "Refresh/reload ELI's persona from the latest profile", "“refresh your persona”", "“reload your persona”")
+_add("Conversation & persona", "SET_COMMUNICATION_STYLE", "Set/reset your explicit tone preference (distinct from SET_VOICE, the actual TTS voice)", "“speak to me more bluntly”", "“be more formal”", "“reset your tone”")
 _add("Conversation & persona", "HELP", "List what ELI can do", "“help”", "“what commands do you have”")
 _add("Conversation & persona", "LIST_CAPABILITIES", "Enumerate ELI's capabilities", "“what can you do”", "“list your capabilities”")
 
