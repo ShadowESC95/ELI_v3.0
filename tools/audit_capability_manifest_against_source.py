@@ -4,12 +4,19 @@ from __future__ import annotations
 import ast
 import json
 import importlib
+import re
 from pathlib import Path
 
 ROOT = Path.cwd()
 MANIFEST = ROOT / "capability_manifest.json"
 EXECUTOR = ROOT / "eli/execution/executor_enhanced.py"
 ROUTER = ROOT / "eli/execution/router_enhanced.py"
+# v3 decomposed the monolith: routing lives across eli/execution/routing/*.py (each emits
+# _mk("ACTION", …)) and dispatch across eli/execution/effectors/*.py (each _register(
+# "ACTION", handler)). The audit MUST scan these subfolders or it under-reports routable /
+# in_dispatch for every decomposed action (33 false failures otherwise).
+ROUTING_DIR = ROOT / "eli/execution/routing"
+EFFECTORS_DIR = ROOT / "eli/execution/effectors"
 PLUGIN_REGISTRY = ROOT / "eli/plugins/registry/index.json"
 
 failures = []
@@ -103,7 +110,9 @@ def extract_router_actions(path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func
-            if isinstance(fn, ast.Name) and fn.id == "_mk":
+            # `_mk("X", …)` and its family of wrappers (`_eli_pm_mk`, `_eli_lrf_mk`, …) all
+            # emit a route; match any *_mk name so a wrapper-routed intent isn't missed.
+            if isinstance(fn, ast.Name) and fn.id.endswith("_mk"):
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     actions.add(node.args[0].value.strip().upper())
 
@@ -117,6 +126,33 @@ def extract_router_actions(path: Path) -> set[str]:
                 ):
                     actions.add(v.value.strip().upper())
 
+    return actions
+
+
+def extract_registered_actions(directory: Path) -> set[str]:
+    """Actions registered via ``_register("ACTION", handler)`` across the effector modules —
+    v3's decomposed dispatch (the monolith's ``if a == "X"`` moved into effectors/)."""
+    actions: set[str] = set()
+    if not directory.is_dir():
+        return actions
+    for path in sorted(directory.glob("*.py")):
+        try:
+            src = path.read_text(encoding="utf-8")
+            tree = ast.parse(src)
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            # Direct form: _register("ACTION", handler)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "_register" and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                actions.add(node.args[0].value.strip().upper())
+        # Dict-loop form: `for a, f in {"ACTION": _h_handler, …}.items(): _register(a, f)`
+        # — the action is the dict key mapped to an _h_ handler.
+        if "_register(" in src:
+            for m in re.finditer(r'["\']([A-Z_]{3,})["\']\s*:\s*_h_\w+', src):
+                actions.add(m.group(1).strip().upper())
     return actions
 
 
@@ -167,6 +203,10 @@ def main() -> int:
 
     supported = extract_supported(EXECUTOR)
     routable_raw = extract_router_actions(ROUTER)
+    # v3 decomposed routing: also scan the routing/ subpackage for _mk(...) emissions.
+    if ROUTING_DIR.is_dir():
+        for _p in sorted(ROUTING_DIR.glob("*.py")):
+            routable_raw |= extract_router_actions(_p)
     plugin_map = extract_plugin_actions(PLUGIN_REGISTRY)
     plugin_actions = {a for acts in plugin_map.values() for a in acts}
 
@@ -178,6 +218,8 @@ def main() -> int:
 
     known_actions = manifest_actions | supported | routable | plugin_actions
     dispatch = extract_if_actions(EXECUTOR, known_actions)
+    # v3 decomposed dispatch: effector modules register handlers via _register("X", fn).
+    dispatch |= extract_registered_actions(EFFECTORS_DIR)
 
     for action in SAFE_INDIRECT_DISPATCH_CHECKS:
         if indirect_executor_handles(action):

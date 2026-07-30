@@ -847,6 +847,21 @@ def _route_plugin_bridge_prepass(raw: str, low: str):
             return _mk("SMART_HOME", {"command": command, "text": command}, 0.97,
                        matched_by="plugin.prepass.smart_home", entities={"command": command})
 
+    # Generic smart-home device commands with NO "smart home" prefix: "turn off the lights",
+    # "dim the bedroom lamp", "set the thermostat to 20". SMART_HOME is a CORE action (routed
+    # here, run via ELI's own MQTT device server) — not a catalog plugin — so the router must
+    # reach it directly. Scoped to real device nouns, so it never eats "turn off the music".
+    _dev_cmd = re.search(
+        r"\b(turn|switch|toggle|dim|brighten|set)\b[^.?!]{0,40}?\b"
+        r"(lights?|lamps?|bulbs?|thermostat|heating|radiator|plugs?|sockets?|"
+        r"outlets?|fans?|blinds|curtains|shades|dimmer)\b",
+        low,
+    )
+    if _dev_cmd:
+        _cmd = raw.strip()
+        return _mk("SMART_HOME", {"command": _cmd, "text": _cmd}, 0.94,
+                   matched_by="smart_home.device_command", entities={"command": _cmd})
+
     return None
 
 

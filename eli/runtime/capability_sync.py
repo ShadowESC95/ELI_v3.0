@@ -133,7 +133,12 @@ def _ast_extract_dispatch_actions(source: str) -> Set[str]:
             ):
                 actions.add(v.value.upper())
 
-    return actions
+    # The `{"action": …}` heuristic above also catches string literals that are NOT
+    # dispatchable actions: TEMPLATE is a Google-Calendar URL parameter
+    # (`{"action": "TEMPLATE", "dates": …}`) and SEQUENCE_STEP is an error-result label
+    # (`{"ok": False, "action": "SEQUENCE_STEP", …}`). Neither is routed or handled, so
+    # exclude them — they were phantom capabilities in the manifest.
+    return actions - {"TEMPLATE", "SEQUENCE_STEP"}
 
 
 def _ast_extract_supported_actions(source: str) -> Set[str]:
@@ -276,6 +281,34 @@ class CapabilitySync:
                     "routable": False,
                     "plugin": None,
                 }
+
+        # 1b. Effectors: v3 decomposed dispatch. Handlers are lifted out of the monolith
+        # into eli/execution/effectors/*.py and wired via `_register("ACTION", fn)`. The
+        # executor `if a == "X"` scan can't see those, so without this an effector-handled
+        # action reads as in_dispatch=False even though it genuinely dispatches.
+        if executor_path:
+            _eff_dir = executor_path.parent / "effectors"
+            if _eff_dir.is_dir():
+                for _ep in sorted(_eff_dir.glob("*.py")):
+                    try:
+                        _es = _ep.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    # Direct `_register("ACTION", fn)` + dict-loop `{"ACTION": _h_fn, …}`.
+                    _eff_acts = set(re.findall(r'_register\(\s*["\']([A-Z_]+)["\']', _es))
+                    if "_register(" in _es:
+                        _eff_acts |= set(re.findall(r'["\']([A-Z_]{3,})["\']\s*:\s*_h_\w+', _es))
+                    for _act in _eff_acts:
+                        if _act in caps:
+                            caps[_act]["in_dispatch"] = True
+                        else:
+                            caps[_act] = {
+                                "source": "executor",
+                                "in_supported_list": False,
+                                "in_dispatch": True,
+                                "routable": False,
+                                "plugin": None,
+                            }
 
         # 2. Router: regex-extract intent names.
         # Keep legacy candidates, but prefer the current canonical layout.
