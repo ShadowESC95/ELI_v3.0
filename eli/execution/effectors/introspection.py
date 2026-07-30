@@ -150,6 +150,44 @@ def _h_eli_identity_audit(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
 
+def _h_codebase_graph(a, args):
+    """ELI answers questions about its OWN architecture from the live import graph of
+    its source (codebase_graph.py) — grounded in what the code actually imports, never
+    hand-drawn. The user's phrasing resolves component names against the real graph."""
+    try:
+        from eli.runtime import codebase_graph as _cg
+        question = str((args or {}).get("question") or (args or {}).get("text") or "").strip()
+        msg = _cg.explain(question)
+        return {"ok": True, "action": a, "content": msg, "response": msg,
+                "evidence_source": "codebase_graph",
+                "result": {"graph": _cg.build_graph(), "question": question}}
+    except Exception as e:
+        msg = f"CODEBASE_GRAPH failed: {type(e).__name__}: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
+def _h_autopilot_debug(a, args):
+    """Turn a pasted traceback / pytest failure into a grounded plan — root cause,
+    affected files, suspect commits (git), rollback plan, patch plan (relevance-filtered
+    code_examiner scan), validation commands. Assembles existing parts; invents nothing."""
+    try:
+        from eli.runtime import autopilot_debugger as _dbg
+        _a = args or {}
+        error_text = str(_a.get("error_text") or _a.get("text")
+                         or _a.get("traceback") or _a.get("query") or "")
+        targets = _a.get("targets") or _a.get("files") or []
+        if isinstance(targets, str):
+            targets = [t.strip() for t in targets.split(",") if t.strip()]
+        verdict = _dbg.diagnose(error_text=error_text, targets=list(targets),
+                                run_tests=bool(_a.get("run_tests")))
+        msg = _dbg.format_report(verdict)
+        return {"ok": True, "action": a, "content": msg, "response": msg,
+                "evidence_source": "autopilot_debugger", "result": verdict}
+    except Exception as e:
+        msg = f"AUTOPILOT_DEBUG failed: {type(e).__name__}: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -172,3 +210,5 @@ _register("GUI_RUNTIME_AUDIT", _h_gui_runtime_audit)
 
 _register("ORCHESTRATION_STATUS", _h_orchestration_status)
 _register("ELI_IDENTITY_AUDIT", _h_eli_identity_audit)
+_register("CODEBASE_GRAPH", _h_codebase_graph)
+_register("AUTOPILOT_DEBUG", _h_autopilot_debug)
