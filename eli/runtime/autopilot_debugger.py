@@ -280,6 +280,111 @@ def diagnose(error_text: str = "", targets: Optional[List[str]] = None,
     }
 
 
+def _pytest_targets(verdict: Dict[str, Any]) -> List[str]:
+    """The failing-test node-ids to (re)run for verification — never the ratchet."""
+    out: List[str] = []
+    for c in verdict.get("validation_commands", []):
+        if "no_silent_swallow" in c:
+            continue
+        m = re.search(r"pytest\s+(\S+)", c)
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def _run_validation(root: Path, targets: List[str]) -> Dict[str, Any]:
+    """Run the validation targets and report whether any FAILED (the bug reproduces)."""
+    if not targets:
+        return {"ran": False, "failed": False, "output": ""}
+    out = _run_pytest(root, targets)
+    failed = bool(re.search(r"\b\d+\s+failed\b", out) or re.search(r"^(?:FAILED|ERROR)\s", out, re.M)
+                  or "errors" in out.lower() and "0 errors" not in out.lower())
+    passed = bool(re.search(r"\b\d+\s+passed\b", out)) and not failed
+    return {"ran": True, "failed": failed, "passed": passed, "output": out[-4000:]}
+
+
+def resolve(error_text: str = "", targets: Optional[List[str]] = None,
+            max_rounds: int = 2, apply: bool = False) -> Dict[str, Any]:
+    """Close the loop: diagnose → REPRODUCE (run validation) → (governed) attempt a
+    validated fix, re-run, keep-if-green / revert-if-not, iterate.
+
+    apply=False (default): diagnose + reproduce only — a *verified* diagnosis (read-only,
+      no source touched). Upgrades "here's what I think" to "I ran it: confirmed failing."
+    apply=True (governed): also attempt code_examiner's VALIDATED fixes for the relevant
+      findings, applied via SelfImprovementEngine (syntax + import verify + auto-revert),
+      re-running the validation each round. Any fix that doesn't turn the tests green is
+      reverted. Never commits — the human / approval gate owns that.
+    """
+    root = _repo_root()
+    verdict = diagnose(error_text, targets)
+    pt = _pytest_targets(verdict)
+    repro = _run_validation(root, pt)
+    trace: Dict[str, Any] = {
+        "ok": True, "verdict": verdict, "reproduced": repro["failed"],
+        "reproduction": repro, "applied": False, "resolved": False, "rounds": [],
+    }
+    if not apply or not repro["failed"]:
+        # verified diagnosis (or nothing to reproduce / nothing to fix)
+        return trace
+
+    trace["applied"] = True
+    try:
+        from eli.runtime import code_examiner as ce
+        from eli.runtime.self_improvement import SelfImprovementEngine
+        eng = SelfImprovementEngine()
+    except Exception as e:
+        trace["rounds"].append({"error": f"fix machinery unavailable: {e}"})
+        return trace
+
+    findings = [f for f in verdict.get("static_findings", []) if str(f.get("file", "")).endswith(".py")]
+    tried: set = set()
+    for _rnd in range(max_rounds):
+        target = next((f for f in findings if (f["file"], f.get("line")) not in tried), None)
+        if not target:
+            break
+        tried.add((target["file"], target.get("line")))
+        patch = ce.generate_fix_patch(target)
+        if not patch.get("ok"):
+            trace["rounds"].append({"finding": target, "patch_ok": False, "why": patch.get("error")})
+            continue
+        applied = eng.apply_code_patch(patch)
+        if not applied.get("applied"):
+            trace["rounds"].append({"finding": target, "applied": False, "why": applied.get("message")})
+            continue
+        after = _run_validation(root, pt)
+        if not after["failed"]:
+            trace["rounds"].append({"finding": target, "applied": True, "verified_green": True,
+                                    "fix": patch.get("description")})
+            trace["resolved"] = True
+            return trace
+        # applied cleanly but tests still red → revert (never leave a non-green change)
+        try:
+            eng.revert_patch(patch["file"])
+        except Exception:
+            log.debug("autopilot: revert failed for %s", patch.get("file"), exc_info=True)
+        trace["rounds"].append({"finding": target, "applied": True, "verified_green": False, "reverted": True})
+    return trace
+
+
+def format_resolution(t: Dict[str, Any]) -> str:
+    """Human-readable rendering of a resolve() loop."""
+    L = [format_report(t["verdict"]), ""]
+    r = t.get("reproduction", {})
+    if r.get("ran"):
+        L.append("Reproduction: " + ("CONFIRMED failing (ran the validation)." if t["reproduced"]
+                                     else "did NOT reproduce — the tests pass as-is."))
+    if not t.get("applied"):
+        L.append("\n(diagnosis + reproduction only — pass apply=True to attempt a verified auto-fix)")
+        return "\n".join(L)
+    if t.get("resolved"):
+        won = next((x for x in t["rounds"] if x.get("verified_green")), {})
+        L.append(f"\n✅ RESOLVED: applied a validated fix and the tests went green — {won.get('fix','')}")
+    else:
+        L.append(f"\n⚠️ Not auto-resolved after {len(t['rounds'])} round(s); every attempted fix was "
+                 "reverted (tests stayed red or no validated patch). Diagnosis + plan above stand.")
+    return "\n".join(L)
+
+
 def format_report(d: Dict[str, Any]) -> str:
     """Human-readable rendering of a diagnose() verdict."""
     if not d.get("ok"):

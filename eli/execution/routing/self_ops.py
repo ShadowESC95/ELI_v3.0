@@ -60,7 +60,15 @@ def _eli_self_improvement_phrase_guard(text):
                           r"(fail|crash|break|error|except))\b", low)
                 and re.search(r"\b(error|traceback|exception|failure|failing|crash(ed)?|"
                               r"stack\s*trace|pytest|assert(ion)?|bug)\b", low))):
-        return _mk("AUTOPILOT_DEBUG", {"error_text": raw}, 0.93, matched_by="autopilot.debug.guard")
+        _dbg_args = {"error_text": raw}
+        # Explicit closed-loop intent: "fix it and verify" / "repair this" → governed
+        # apply loop; "reproduce/confirm this" → reproduce-only. Bare debug stays diagnosis.
+        if re.search(r"\b(fix|repair|patch|resolve)\b.*\b(it|this|the\s+(bug|error|fail))\b|"
+                     r"\b(fix|repair)\s+and\s+(verify|test|check)\b|\bmake\s+it\s+pass\b", low):
+            _dbg_args["apply"] = True
+        elif re.search(r"\b(reproduce|verify|confirm)\b", low):
+            _dbg_args["verify"] = True
+        return _mk("AUTOPILOT_DEBUG", _dbg_args, 0.93, matched_by="autopilot.debug.guard")
     if re.search(r"\blora\s+status\b|\b(lora|training)\s+(status|readiness|ready)\b|"
                  r"\bis\s+lora\s+ready\b|\bcheck\s+(the\s+)?lora\b|"
                  r"\bcan\s+you\s+(fine[- ]?tune|train)\b", low):

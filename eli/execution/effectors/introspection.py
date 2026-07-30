@@ -178,6 +178,15 @@ def _h_autopilot_debug(a, args):
         targets = _a.get("targets") or _a.get("files") or []
         if isinstance(targets, str):
             targets = [t.strip() for t in targets.split(",") if t.strip()]
+        apply = bool(_a.get("apply") or _a.get("fix"))
+        verify = bool(_a.get("verify") or _a.get("reproduce"))
+        if apply or verify:
+            # Closed loop: reproduce (run validation), and if apply — attempt a validated,
+            # auto-reverting fix and re-verify. Governed; never commits.
+            trace = _dbg.resolve(error_text=error_text, targets=list(targets), apply=apply)
+            msg = _dbg.format_resolution(trace)
+            return {"ok": True, "action": a, "content": msg, "response": msg,
+                    "evidence_source": "autopilot_debugger", "result": trace}
         verdict = _dbg.diagnose(error_text=error_text, targets=list(targets),
                                 run_tests=bool(_a.get("run_tests")))
         msg = _dbg.format_report(verdict)
