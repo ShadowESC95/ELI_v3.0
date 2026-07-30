@@ -1024,15 +1024,39 @@ class SelfImprovementEngine:
         except Exception as exc:
             return {"ok": False, "message": f"Revert failed: {exc}"}
 
-    def run_patch_cycle(self, max_patches: int = 3, dry_run: bool = False) -> dict:
+    def _test_verify_patch(self, patch: dict) -> dict:
+        """Run the affected file's tests after a patch — the TEST-verify gate that
+        import-verify alone can't give. Returns {verified: True|False|None, target}.
+        None = no test file to run (can't verify → kept but marked unverified)."""
+        rel = str(patch.get("file") or "").strip()
+        if not rel:
+            return {"verified": None, "target": None}
+        try:
+            from eli.runtime import autopilot_debugger as _dbg
+            root = _dbg._repo_root()
+            tf = _dbg._test_for(rel)
+            if not tf or not (root / tf).is_file():
+                return {"verified": None, "target": None}
+            res = _dbg._run_validation(root, [tf])
+            if not res.get("ran"):
+                return {"verified": None, "target": tf}
+            return {"verified": not res["failed"], "target": tf}
+        except Exception:
+            log.debug("self-improve: test-verify failed", exc_info=True)
+            return {"verified": None, "target": None}
+
+    def run_patch_cycle(self, max_patches: int = 3, dry_run: bool = False,
+                        verify_tests: bool = True) -> dict:
         """
-        Full automated patch cycle:
+        Full automated patch cycle (a governed closed loop):
         1. Analyze recurring failures (min 2 occurrences)
         2. For each, ask LLM to generate a specific code fix
-        3. Validate syntax and apply the fix
-        4. Report results
+        3. Validate syntax + apply the fix (import-verify + auto-revert)
+        4. TEST-verify: run the affected file's tests; revert any patch that goes red
+        5. Report results
 
-        Returns a detailed dict with per-patch outcomes.
+        `verify_tests=False` restores the old import-only behaviour. Returns a detailed
+        dict with per-patch outcomes.
         """
         failures = self.analyze_failures(limit=20, days=14, min_cluster_size=2)
 
@@ -1086,13 +1110,30 @@ class SelfImprovementEngine:
 
                 apply_result = self.apply_code_patch(patch)
                 if apply_result.get("applied"):
+                    # Frontier #4: TEST-verify, not just import-verify. A patch can import
+                    # cleanly yet break behaviour — run the affected file's tests and revert
+                    # any patch that doesn't stay green. This closes the self-improve loop.
+                    _tv = self._test_verify_patch(patch) if verify_tests else {"verified": None}
+                    if _tv.get("verified") is False:
+                        self.revert_patch(patch.get("file"))
+                        results["patches_reverted"] = results.get("patches_reverted", 0) + 1
+                        results["details"].append({
+                            "failure": err_preview,
+                            "count": count,
+                            "status": "reverted_tests_red",
+                            "file": patch.get("file"),
+                            "tests": _tv.get("target"),
+                        })
+                        log.debug(f"[SELF-IMPROVE] Reverted (tests red): {patch.get('file')} — {_tv.get('target')}")
+                        continue
                     results["patches_applied"] += 1
                     results["details"].append({
                         "failure": err_preview,
                         "count": count,
-                        "status": "applied",
+                        "status": "applied_test_verified" if _tv.get("verified") else "applied",
                         "file": apply_result.get("file"),
                         "message": apply_result.get("message"),
+                        "tests_verified": _tv.get("verified"),
                     })
                 else:
                     results["patches_failed"] += 1
@@ -1116,10 +1157,12 @@ class SelfImprovementEngine:
 
         applied = results["patches_applied"]
         total = results["patches_generated"]
+        reverted = results.get("patches_reverted", 0)
         results["summary"] = (
             f"Patch cycle complete: {applied}/{total} patches applied "
-            f"({results['patches_failed']} failed, {results['patches_skipped']} skipped). "
-            f"Analyzed {len(failures)} recurring failures."
+            f"({results['patches_failed']} failed, {results['patches_skipped']} skipped"
+            + (f", {reverted} reverted after tests went red" if reverted else "")
+            + f"). Analyzed {len(failures)} recurring failures."
         )
         log.debug(f"[SELF-IMPROVE] {results['summary']}")
         return results
