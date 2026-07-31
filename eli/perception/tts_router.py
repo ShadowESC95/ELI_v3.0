@@ -392,7 +392,22 @@ def available_backends() -> dict:
         "pyttsx3": True,
         "espeak_ng": shutil.which("espeak-ng") is not None,
         "espeak": shutil.which("espeak") is not None,
+        # Neural clone backends (clone:<name>): Chatterbox (MIT, preferred) → XTTS (legacy).
+        "chatterbox": _clone_backend_available("chatterbox"),
+        "xtts": _clone_backend_available("xtts"),
     }
+
+
+def _clone_backend_available(which: str) -> bool:
+    """Report whether a neural clone backend is importable — for diagnostics/UI. Never raises."""
+    try:
+        if which == "chatterbox":
+            from eli.perception import tts_chatterbox
+            return tts_chatterbox.chatterbox_available()
+        from eli.perception import tts_xtts
+        return tts_xtts.xtts_available()
+    except Exception:
+        return False
 
 
 # ── Piper-only TTS path ────────────────────────────────────────────────────
@@ -953,16 +968,33 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
     if _eli_tts_is_unspeakable(text):
         return None
     active = voice_name or get_active_voice()
-    # Cloned voice (clone:<name>): Coqui XTTS-v2 from a reference sample. If the extra
-    # isn't installed / no reference, returns None → we fall back to the default voice.
+    # Cloned voice (clone:<name>) from a reference sample. Preferred backend is
+    # Chatterbox (MIT — commercial-clean, native emotion via `exaggeration`); XTTS-v2
+    # (Coqui, non-commercial model) is the legacy fallback. BOTH read the same
+    # reference-clip registry, so a recorded/uploaded voice works on whichever is
+    # installed. If neither can synth, fall back to the default Piper voice.
     if str(active).startswith("clone:"):
+        # Native emotional delivery: map the active tone to Chatterbox's exaggeration.
+        _exag = None
+        try:
+            from eli.cognition import tone_adaptor as _tone
+            _exag = _tone.voice_exaggeration()
+        except Exception:
+            log.debug("[TTS_WAV] tone exaggeration read skipped", exc_info=True)
+        try:
+            from eli.perception import tts_chatterbox
+            wav = tts_chatterbox.synthesize_wav(text, active, exaggeration=_exag)
+            if wav:
+                return wav  # Chatterbox handles emotion natively — no post-hoc pitch shift
+        except Exception:
+            log.debug("[TTS_WAV] chatterbox clone resolve failed", exc_info=True)
         try:
             from eli.perception import tts_xtts
             wav = tts_xtts.synthesize_wav(text, active)
             if wav:
                 return _apply_tone_pitch(wav)
         except Exception:
-            log.debug("[TTS_WAV] clone voice resolve failed", exc_info=True)
+            log.debug("[TTS_WAV] xtts clone resolve failed", exc_info=True)
         active = _DEFAULT_VOICE
     # Character voice (char:hal, char:tars, …): synth the base Piper voice, then run
     # its ffmpeg effect chain over the result. Recurses once with a real base voice.
