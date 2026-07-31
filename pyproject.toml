@@ -130,6 +130,16 @@ extras = [
 full = [
     "eli-v3[gui,tts,asr,llm,image,docs,server,vision,web,analysis,wakeword,extras]",
 ]
+# Neural voice cloning — Chatterbox (Resemble AI, MIT-licensed code + weights).
+# Commercial-clean replacement for XTTS (Coqui's model licence is non-commercial):
+# zero-shot cloning from a short reference clip + native emotion/exaggeration control.
+# Heavy (pulls torch), opt-in — NOT part of `full`; downloads a model on first use.
+# Powers clone:<name> voices; the record/upload flow feeds it via the shared registry.
+chatterbox = [
+    "chatterbox-tts>=0.1",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+]
 # LoRA fine-tuning (heavy, opt-in — NOT part of full). See training/README.md.
 training = [
     "torch>=2.0",
