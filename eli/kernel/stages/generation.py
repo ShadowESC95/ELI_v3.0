@@ -1668,6 +1668,33 @@ class GenerationMixin:
             else:
                 situation_brief = semantic_guard
 
+        # ── Anti-repeat contract (streaming) ──
+        # ELI re-served its own last reply verbatim across turns, re-asking a question the
+        # user had already answered. Guards in finalize and in the memory-context builder
+        # both missed it: streaming never reaches finalize, and the memory context is
+        # discarded or skipped ("reusing pre-built bus memory context"). situation_brief IS
+        # the streaming prompt (stage_11 measures ctx_chars=len(situation_brief)), and it
+        # is where the rapport/semantic guards already land — so the constraint goes here.
+        try:
+            _prev_eli = []
+            for _t in (self.memory.get_recent_conversation(limit=8) or []):
+                if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                    _c = str((_t or {}).get("content", "") or "").strip()
+                    if _c:
+                        _prev_eli.append(_c)
+            if _prev_eli:
+                _quoted = "\n".join(f"  - {s[:220]}" for s in _prev_eli[:3])
+                _no_repeat = (
+                    "YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of it, and do "
+                    "not re-ask a question the user has already answered:\n" + _quoted +
+                    "\nReply to what the user just said. If you have already described your "
+                    "own state or mood, do not describe it again unless asked."
+                )
+                situation_brief = (_no_repeat + "\n\n" + situation_brief).strip()
+                log.debug(f"[ANTI-REPEAT] contract injected ({len(_prev_eli[:3])} prior replies)")
+        except Exception:
+            log.debug("[ANTI-REPEAT] contract skipped", exc_info=True)
+
         # Do not promote raw memory_context into situation_brief.
         # Raw context is private evidence, not answer text.
         if not situation_brief:
