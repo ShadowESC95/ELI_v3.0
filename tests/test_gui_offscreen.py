@@ -19,6 +19,10 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Constructing a widget must never reach the network. FirstBootWizard kicks off a
+# real asset prefetch from its constructor, which aborted the pytest process in
+# this lane. Run with --noconftest, so set the offline default here explicitly.
+os.environ["ELI_OFFLINE"] = "1"
 
 import pytest
 
