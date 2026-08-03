@@ -363,6 +363,27 @@ class RetrievalMixin:
     f"[MEMORY] Canonical memory-db recall failed: {legacy_e}")
                     log.debug(
                         f"[MEMORY] Stored memory search returned: {len(mem_results) if mem_results else 0} results")
+                    # ELI's OWN past replies must never come back as "Stored knowledge".
+                    # Live failure: a chat line ("still glitchy, still running on the same
+                    # old code") was stored, the reflection engine summarised it as a "top
+                    # topic", and it was recalled in a LATER session as a fact and recited.
+                    try:
+                        from eli.cognition.output_governor import is_echo_of_recent
+                        _own = []
+                        for _t in (self.memory.get_recent_conversation(limit=30) or []):
+                            if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                                _c = str((_t or {}).get("content", "") or "")
+                                if _c:
+                                    _own.append(_c)
+                        if _own and mem_results:
+                            _kept = [m for m in mem_results
+                                     if not is_echo_of_recent(str(m.get("text") or ""), _own)]
+                            if len(_kept) != len(mem_results):
+                                log.debug(f"[MEMORY] dropped {len(mem_results) - len(_kept)} "
+                                          "recalled memories that were ELI's own replies")
+                            mem_results = _kept
+                    except Exception:
+                        log.debug("[MEMORY] self-reply memory filter skipped", exc_info=True)
                     if mem_results:
                         lines_out = []
                         for mem in mem_results[:5]:

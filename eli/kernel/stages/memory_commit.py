@@ -56,6 +56,21 @@ class MemoryCommitMixin:
                 "i'm here.", "i'm here", "got it.", "got it", "ok.", "ok"
             }:
                 return
+            # ELI talking ABOUT ITSELF is not knowledge. Stored, it returns in a later
+            # session under "Stored knowledge:" and gets recited as fact.
+            _t_low = text.lower()
+            _self_status = (
+                (re.search(r"\b(i'?m|i am|i've|i have been|my)\b", _t_low)
+                 and re.search(r"\b(glitch\w*|standing by|running on|same old code|"
+                               r"still here|buggy|broken|fine|okay|ok|good|alright|well|"
+                               r"ready|online|operational|functioning|state|status|mood|"
+                               r"feeling)\b", _t_low))
+                or re.search(r"\b(still glitch\w*|same old code|standing by|"
+                             r"running on the same)\b", _t_low)
+            )
+            if _self_status:
+                log.debug("[MEMORY] not storing ELI's own self-status remark as knowledge")
+                return
             kind = "assistant_insight"
             source = "assistant"
         else:
