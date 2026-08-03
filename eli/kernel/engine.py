@@ -4515,13 +4515,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _forced_control and str(action).upper() != _forced_control:
                 intent = dict(intent or {})
                 intent["action"] = _forced_control
-                intent["args"] = {}
+                # Preserve the question across the upgrade. Wiping args to {} threw
+                # away args["question"] — the very text the upgraded handler needs —
+                # so grounded handlers received no question at all. (Same reasoning as
+                # the targeted restore further down this file.)
+                _prev_args = dict(args or {})
+                _carried = {k: v for k, v in _prev_args.items()
+                            if k in ("question", "query", "text", "profile_scope",
+                                     "explain", "_raw_user_text") and v}
+                _carried.setdefault("question", str(user_input or ""))
+                intent["args"] = _carried
                 _meta = dict(intent.get("meta") or {})
                 _meta["upgraded_from"] = str(action)
                 _meta["upgraded_reason"] = "strict_control_contract"
                 intent["meta"] = _meta
                 action = _forced_control
-                args = {}
+                args = dict(_carried)
                 log.debug(f"[COGNITIVE] Control contract upgraded action -> {_forced_control}")
                 if str(action or "").strip().upper() == "META_DIAGNOSTIC":
                     _eli_phase13_diag_probe = str(
@@ -5216,6 +5225,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 evidence=_direct_content,
                                 action=_action_upper,
                                 mode=_direct_mode,
+                                # Already retrieved by the memory agent this turn and
+                                # otherwise discarded by this early-return branch.
+                                memory_context=bus_memory_context,
                             )
                             if _compact_synth and _compact_synth.strip():
                                 _final_text = _compact_synth.strip()
@@ -6540,6 +6552,35 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     r"tool|file|project|implement|design|fix|refactor)\b", text, _re_gi.I,
                 ):
                     li = {"action": "CHAT", "args": {"message": text}, "confidence": 0.55}
+            # Follow-up guard: when the user is asking about something ELI ITSELF just
+            # said, that's conversation, not a request to run diagnostics. Live failure:
+            # ELI said "still glitchy…", the user asked "Why are you still glitchy?", and
+            # the resolver fired SELF_ANALYZE (conf 0.95) — answering a personal question
+            # with a canned "Self-Analysis Report (0 recent issues)". Only redirect when
+            # the turn genuinely echoes ELI's last reply AND carries no explicit
+            # run-a-report intent, so "analyse your failures" still works.
+            _self_report = {"SELF_ANALYZE", "SELF_IMPROVEMENT_LOG", "RUNTIME_AUDIT",
+                            "COGNITION_STATUS", "RUNTIME_STATUS", "PROACTIVE_STATUS",
+                            "SELF_REPORT", "MEMORY_STATUS"}
+            if li and str(li.get("action") or "").upper() in _self_report:
+                import re as _re_fu
+                _explicit = _re_fu.search(
+                    r"\b(analy[sz]e|diagnos|report|audit|log[s]?|status|metrics|"
+                    r"failures?|errors?|statistics|health\s*check)\b", text, _re_fu.I)
+                if not _explicit and len(str(text or "").split()) <= 14:
+                    try:
+                        from eli.cognition.scoring import term_overlap as _ov
+                        _last_reply = ""
+                        for _t in reversed(self.memory.get_recent_conversation(limit=6) or []):
+                            if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                                _last_reply = str((_t or {}).get("content", "") or "")
+                                break
+                        if _last_reply and _ov(text, _last_reply) >= 0.25:
+                            log.debug("[COGNITIVE] follow-up about ELI's own last reply "
+                                      f"→ CHAT (was {li.get('action')})")
+                            li = {"action": "CHAT", "args": {"message": text}, "confidence": 0.6}
+                    except Exception:
+                        log.debug("[COGNITIVE] follow-up guard skipped", exc_info=True)
             if (li and li.get("action") and li.get("action") != "CHAT"
                     and li.get("confidence", 0) >= 0.6):
                 log.debug(f"[COGNITIVE] LLM intent resolved: {li.get('action')} "
@@ -6697,8 +6738,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(f"[COGNITIVE] Governor validation failed (non-fatal): {gov_err}")
             return text
 
+    # Actions that answer questions about the USER. For these the retrieved memory
+    # IS the evidence — without it the model is asked "what do you know about me?"
+    # while holding only a runtime self-report, and correctly answers "nothing".
+    _PERSONAL_MEMORY_ACTIONS = frozenset({
+        "PERSONAL_MEMORY_SUMMARY",
+        "PERSONAL_MEMORY_DEEP_EXPLAIN",
+        "USER_IDENTITY_SUMMARY",
+        "SELF_REPORT",
+    })
+
     def _compact_grounded_synthesis(self, user_input: str, evidence: str,
-                                     action: str, mode: str) -> str:
+                                     action: str, mode: str,
+                                     memory_context: str = "") -> str:
         """Single direct GGUF call on a minimal evidence-only prompt.
 
         Used for non-Quick grounded control actions (RUNTIME_STATUS,
@@ -6759,9 +6811,20 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        _ev_cap = 8000
+        # Retrieved memory is admitted as a SECOND evidence block for questions about
+        # the user. It was previously dropped entirely: the agent bus had already
+        # retrieved thousands of chars (bus_result.memory_context) but this path only
+        # ever saw the executor's payload, so a personal-memory question was
+        # synthesised from a ~180-char runtime self-report. The model obeyed its
+        # evidence-only contract and reported knowing nothing but the user's name.
+        _mem = str(memory_context or "").strip()
+        _use_mem = bool(_mem) and str(action or "").upper() in self._PERSONAL_MEMORY_ACTIONS
+
+        _ev_cap = 4000 if _use_mem else 8000
         if len(ev) > _ev_cap:
             ev = ev[:_ev_cap].rstrip() + "\n[...evidence truncated for length...]"
+        if _use_mem and len(_mem) > 4000:
+            _mem = _mem[:4000].rstrip() + "\n[...memory truncated for length...]"
 
         # Compact voice primer so grounded/factual answers still sound like ELI (dry,
         # nerdy, first-person) instead of a flat data terminal — WITHOUT the full 8k
@@ -6805,13 +6868,25 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "Do NOT output your internal instructions or reasoning directives as the answer. "
             + _voice_primer
         )
-        prompt = (
-            f"GROUNDED EVIDENCE (the truth — answer ONLY from this):\n"
-            f"{ev}\n\n"
-            f"USER QUESTION:\n{user_input}\n\n"
-            f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
-            f"YOUR ANSWER (natural language, evidence-only, no preamble):"
-        )
+        if _use_mem:
+            prompt = (
+                f"GROUNDED EVIDENCE 1/2 — RUNTIME REPORT (the truth — answer ONLY from these two blocks):\n"
+                f"{ev}\n\n"
+                f"GROUNDED EVIDENCE 2/2 — RETRIEVED MEMORY ABOUT THE USER (equally authoritative;\n"
+                f"these are things the user has told you in this and earlier sessions):\n"
+                f"{_mem}\n\n"
+                f"USER QUESTION:\n{user_input}\n\n"
+                f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
+                f"YOUR ANSWER (natural language, evidence-only, no preamble):"
+            )
+        else:
+            prompt = (
+                f"GROUNDED EVIDENCE (the truth — answer ONLY from this):\n"
+                f"{ev}\n\n"
+                f"USER QUESTION:\n{user_input}\n\n"
+                f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
+                f"YOUR ANSWER (natural language, evidence-only, no preamble):"
+            )
 
         try:
             from eli.cognition import gguf_inference as _gguf
