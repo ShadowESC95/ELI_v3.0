@@ -205,20 +205,13 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
           shopt -s nullglob
-          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz)
+          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz dist/SHA256SUMS-*.txt)
           [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
           for f in "${FILES[@]}"; do
             echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
             gh release upload "$TAG" "$f" --clobber
           done
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: eli-windows
-          retention-days: 1   # checksums only — installers go straight to the Release
-          path: |
-            dist/SHA256SUMS-*.txt
-          if-no-files-found: error
 
   build-macos:
     env:
@@ -315,20 +308,13 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
           shopt -s nullglob
-          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz)
+          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz dist/SHA256SUMS-*.txt)
           [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
           for f in "${FILES[@]}"; do
             echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
             gh release upload "$TAG" "$f" --clobber
           done
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: eli-macos
-          retention-days: 1   # checksums only — installers go straight to the Release
-          path: |
-            dist/SHA256SUMS-*.txt
-          if-no-files-found: error
 
   build-linux:
     env:
@@ -484,20 +470,13 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
           shopt -s nullglob
-          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz)
+          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz dist/SHA256SUMS-*.txt)
           [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
           for f in "${FILES[@]}"; do
             echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
             gh release upload "$TAG" "$f" --clobber
           done
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: eli-linux
-          retention-days: 1   # checksums only — installers go straight to the Release
-          path: |
-            dist/SHA256SUMS-*.txt
-          if-no-files-found: error
 
   release:
     name: publish GitHub Release
@@ -505,17 +484,20 @@ jobs:
     needs: [guard, build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Merge checksums
+      # Nothing to download: each build job uploaded its installers and checksum
+      # straight to the Release. Merge the per-platform checksums by pulling them
+      # back off the Release, so no Actions artifact storage is touched at all.
+      - name: Merge checksums from the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cd dist
-          cat SHA256SUMS-*.txt > SHA256SUMS.txt
-          rm SHA256SUMS-*.txt
-          ls -lh
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p dist && cd dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "SHA256SUMS-*.txt" --clobber || true
+          shopt -s nullglob
+          parts=(SHA256SUMS-*.txt)
+          if [ ${#parts[@]} -gt 0 ]; then cat "${parts[@]}" > SHA256SUMS.txt; ls -lh; fi
 
       - name: Create/update GitHub Release and upload artifacts
         uses: softprops/action-gh-release@v2
