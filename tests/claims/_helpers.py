@@ -20,7 +20,14 @@ if str(REPO) not in sys.path:
 
 @lru_cache(maxsize=1)
 def manifest() -> dict:
-    return json.loads((REPO / "capability_manifest.json").read_text(encoding="utf-8"))
+    path = REPO / "capability_manifest.json"
+    if not path.is_file():
+        # The manifest is generated, not committed, so a fresh clone has none. The
+        # claims conftest normally creates it before collection; regenerate here too
+        # so importing this module outside pytest works the same way.
+        from .conftest import ensure_claims_artifacts
+        ensure_claims_artifacts()
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def capabilities() -> list:
