@@ -347,6 +347,11 @@ _WEB_UI = """<!doctype html>
     background:transparent; color:var(--fg-dim); font-size:13.5px; font-weight:500; cursor:pointer; text-align:left;
     position:relative; transition:var(--fast); letter-spacing:.3px; white-space:nowrap; }
   nav.tabs button svg { width:17px; height:17px; flex:none; opacity:.75; transition:var(--fast); }
+  nav.tabs a.navlink { display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:10px;
+    background:transparent; color:var(--fg-dim); font-size:13.5px; font-weight:500; text-decoration:none;
+    text-align:left; transition:var(--fast); letter-spacing:.3px; white-space:nowrap; }
+  nav.tabs a.navlink svg { width:17px; height:17px; flex:none; opacity:.75; transition:var(--fast); }
+  nav.tabs a.navlink:hover { color:var(--accent); background:rgba(34,211,238,.07); }
   nav.tabs button:hover { color:var(--fg); background:rgba(34,211,238,.07); }
   nav.tabs button.active { color:var(--accent); background:linear-gradient(90deg, rgba(34,211,238,.16), transparent);
     box-shadow:inset 0 0 0 1px rgba(34,211,238,.28); text-shadow:0 0 12px rgba(34,211,238,.55); }
@@ -741,6 +746,7 @@ _WEB_UI = """<!doctype html>
       <button data-tab="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="8" cy="18" r="2" fill="currentColor" stroke="none"/></svg><span>Admin</span></button>
       <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Settings</span></button>
       <button data-tab="connect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18.5h2"/></svg><span>Connect</span></button>
+      <a class="navlink" href="/mcp" title="Model Context Protocol — external tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="2.6"/><circle cx="4.5" cy="6" r="2"/><circle cx="4.5" cy="18" r="2"/><circle cx="19.5" cy="12" r="2"/><path d="M6.3 7L9.6 10.6M6.3 17L9.6 13.4M14.6 12h2.9"/></svg><span>MCP</span></a>
     </nav>
     <div class="sidefoot"><span id="rolebadge">local &middot; private</span><button class="iconbtn" id="appearbtn" title="Colours" onclick="openAppear()">&#9670;</button><button class="iconbtn" id="themebtn" title="Toggle light / dark">&#9680;</button></div>
   </aside>
@@ -3388,6 +3394,228 @@ def _extract_response_text(result) -> str:
         return "".join(parts).strip()
     except Exception:
         return str(result or "").strip()
+
+
+_MCP_PAGE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ELI — MCP</title>
+<link rel="icon" type="image/png" sizes="64x64" href="/icon.png?size=64">
+<meta name="theme-color" content="#05070d">
+<script>try{if(localStorage.getItem('eli_theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#05070d; --grid:rgba(34,211,238,.05);
+    --card:rgba(13,20,33,.62); --card2:rgba(20,28,44,.55); --line:rgba(64,224,255,.15); --input:rgba(7,12,22,.72);
+    --fg:#dbeafe; --fg-dim:#8aa4c8; --mut:#5b6b86;
+    --accent:#22d3ee; --accent2:#f637ec; --accent-press:#06b6d4;
+    --ok:#34f5c5; --warn:#ffd166; --bad:#ff5d73;
+    --radius:14px; --radius-sm:10px; --shadow:0 2px 10px rgba(0,0,0,.5), 0 14px 44px rgba(0,0,0,.42);
+    --fast:.18s cubic-bezier(.4,0,.2,1); --mono:ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg:#eef3fb; --grid:rgba(8,145,178,.06);
+    --card:rgba(255,255,255,.82); --card2:#f4f8fd; --line:rgba(8,145,178,.22); --input:#eef4fb;
+    --fg:#0c1828; --fg-dim:#3f5168; --mut:#7589a3;
+    --accent:#0891b2; --accent2:#be1d8f; --accent-press:#0e7490;
+    --ok:#059669; --warn:#b45309; --bad:#dc2626;
+    --shadow:0 1px 2px rgba(20,30,60,.06), 0 10px 30px rgba(20,30,60,.1);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--fg); min-height:100dvh;
+    font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; -webkit-font-smoothing:antialiased;
+    background:
+      radial-gradient(1100px 560px at 82% -12%, rgba(34,211,238,.08), transparent 60%),
+      radial-gradient(900px 520px at -12% 112%, rgba(246,55,236,.06), transparent 60%),
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0/34px 34px,
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0/34px 34px,
+      var(--bg); }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 20px 72px; }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding-bottom:22px; }
+  .logo { font-family:var(--mono); color:var(--accent); font-weight:800; font-size:17px; text-shadow:0 0 14px var(--accent); }
+  h1 { font-size:clamp(24px,4vw,34px); margin:0; letter-spacing:-.02em; text-wrap:balance; }
+  .sub { color:var(--fg-dim); font-size:14.5px; line-height:1.6; max-width:66ch; margin:10px 0 0; }
+  .spacer { flex:1; }
+  a.back, button { font:inherit; cursor:pointer; border-radius:var(--radius-sm); transition:var(--fast); }
+  a.back { color:var(--fg-dim); text-decoration:none; border:1px solid var(--line); padding:7px 13px; font-size:13.5px; }
+  a.back:hover { color:var(--accent); border-color:var(--accent); }
+  button { background:var(--accent); color:#04121a; border:0; padding:8px 15px; font-weight:650; font-size:13.5px; }
+  button:hover { background:var(--accent-press); }
+  button.ghost { background:transparent; color:var(--fg-dim); border:1px solid var(--line); }
+  button.ghost:hover { color:var(--accent); border-color:var(--accent); }
+  button:focus-visible, a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  section { margin-top:26px; }
+  h2 { font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); margin:0 0 12px; font-weight:700; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:17px 19px; box-shadow:var(--shadow); backdrop-filter:blur(16px); }
+  .card + .card { margin-top:11px; }
+  .row { display:flex; align-items:baseline; gap:11px; flex-wrap:wrap; }
+  .name { font-family:var(--mono); font-weight:700; font-size:15px; }
+  .pill { font-size:11px; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+    padding:3px 9px; border-radius:999px; border:1px solid currentColor; }
+  .pill.ok { color:var(--ok); } .pill.bad { color:var(--bad); } .pill.idle { color:var(--mut); }
+  .why { color:var(--bad); font-size:13.5px; margin-top:9px; line-height:1.55;
+    font-family:var(--mono); word-break:break-word; }
+  .tools { margin-top:12px; display:flex; flex-wrap:wrap; gap:7px; }
+  .tool { font-family:var(--mono); font-size:12px; color:var(--fg-dim);
+    background:var(--card2); border:1px solid var(--line); border-radius:999px; padding:4px 11px; }
+  .desc { color:var(--fg-dim); font-size:13.5px; line-height:1.6; margin-top:7px; }
+  pre { background:var(--input); border:1px solid var(--line); border-radius:var(--radius-sm);
+    padding:14px 16px; overflow-x:auto; font-family:var(--mono); font-size:12.5px; line-height:1.65;
+    color:var(--fg-dim); margin:0; }
+  code { font-family:var(--mono); font-size:.92em; color:var(--accent); }
+  .empty { color:var(--fg-dim); font-size:14px; line-height:1.65; }
+  .note { border-left:2px solid var(--accent2); padding-left:14px; color:var(--fg-dim);
+    font-size:13.5px; line-height:1.65; }
+  .path { font-family:var(--mono); font-size:12.5px; color:var(--accent); word-break:break-all; }
+  @media (prefers-reduced-motion:reduce){ *{transition:none!important} }
+</style></head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo">ELI</span>
+    <h1>Model Context Protocol</h1>
+    <span class="spacer"></span>
+    <button class="ghost" id="theme">theme</button>
+    <a class="back" href="/">&larr; chat</a>
+  </header>
+  <p class="sub">ELI works both ways here: it <strong>gains</strong> tools from MCP servers you
+  configure, and it <strong>offers</strong> its own actions to any other MCP client. Servers run as
+  local subprocesses over stdio, so nothing on this page opens a network connection.</p>
+
+  <section>
+    <h2>Configured servers <button class="ghost" id="refresh" style="margin-left:8px">refresh</button></h2>
+    <div id="servers"><div class="card"><span class="empty">Loading&hellip;</span></div></div>
+  </section>
+
+  <section>
+    <h2>Available tools</h2>
+    <div id="tools"><div class="card"><span class="empty">Loading&hellip;</span></div></div>
+  </section>
+
+  <section>
+    <h2>Adding a server</h2>
+    <div class="card">
+      <p class="desc" style="margin-top:0">Create <span class="path" id="cfgpath">config/mcp_servers.json</span>
+      and restart nothing &mdash; servers start on first use.</p>
+<pre>{
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/path/you/want/to/expose"]
+    }
+  }
+}</pre>
+      <p class="desc">Then ask ELI &ldquo;<em>list my MCP tools</em>&rdquo; or
+      &ldquo;<em>run mcp tool filesystem.read_file</em>&rdquo;. Anything that fails to start reports
+      its real reason above rather than disappearing quietly.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>ELI as a server</h2>
+    <div class="card">
+      <p class="desc" style="margin-top:0">Point any MCP client at this command to give it ELI's own action surface:</p>
+<pre>python -m eli.integrations.mcp.server</pre>
+      <p class="note">Actions that drive the machine, run code, or change ELI itself are withheld
+      unless <code>ELI_MCP_ALLOW_CONTROL=1</code>. Handing an external client the mouse, the shell
+      and the self-upgrade path by default would be a poor trade for convenience.</p>
+    </div>
+  </section>
+</div>
+<script>
+  const token = localStorage.getItem('eli_token') || '';
+  const H = () => { const h = {}; if (token) h['Authorization'] = 'Bearer ' + token; return h; };
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  function applyTheme(t){ document.documentElement.setAttribute('data-theme', t); }
+  applyTheme(localStorage.getItem('eli_theme') || 'dark');
+  document.getElementById('theme').onclick = () => {
+    const t = (localStorage.getItem('eli_theme') === 'light') ? 'dark' : 'light';
+    localStorage.setItem('eli_theme', t); applyTheme(t);
+  };
+
+  async function load(refresh) {
+    const sEl = document.getElementById('servers'), tEl = document.getElementById('tools');
+    try {
+      const r = await fetch('/v1/mcp/status', {headers: H()});
+      if (!r.ok) throw new Error('status ' + r.status + (r.status === 401 ? ' — this server needs a token' : ''));
+      const st = await r.json();
+      if (st.config_path) document.getElementById('cfgpath').textContent = st.config_path;
+      if (!st.servers || !st.servers.length) {
+        sEl.innerHTML = '<div class="card"><span class="empty">No MCP servers configured yet, so ELI has ' +
+          'no external tools beyond its own. Add one below and it will appear here.</span></div>';
+      } else {
+        sEl.innerHTML = st.servers.map(s => {
+          const cls = s.connected ? 'ok' : (s.error ? 'bad' : 'idle');
+          const lbl = s.connected ? 'connected' : (s.error ? 'not working' : 'not started');
+          return '<div class="card"><div class="row"><span class="name">' + esc(s.name) + '</span>' +
+            '<span class="pill ' + cls + '">' + lbl + '</span>' +
+            '<span class="empty" style="font-family:var(--mono);font-size:12px">' + esc(s.command) + '</span></div>' +
+            (s.error ? '<div class="why">' + esc(s.error) + '</div>' : '') +
+            ((s.tools && s.tools.length) ? '<div class="tools">' +
+              s.tools.map(t => '<span class="tool">' + esc(t) + '</span>').join('') + '</div>' : '') +
+            '</div>';
+        }).join('');
+      }
+    } catch (e) {
+      sEl.innerHTML = '<div class="card"><div class="why">Could not read MCP status: ' + esc(e.message) + '</div></div>';
+    }
+    try {
+      const r = await fetch('/v1/mcp/tools' + (refresh ? '?refresh=1' : ''), {headers: H()});
+      if (!r.ok) throw new Error('status ' + r.status);
+      const data = await r.json();
+      const tools = data.tools || [];
+      tEl.innerHTML = tools.length
+        ? tools.map(t => '<div class="card"><div class="row"><span class="name">' + esc(t.qualified) + '</span></div>' +
+            (t.description ? '<div class="desc">' + esc(t.description) + '</div>' : '') + '</div>').join('')
+        : '<div class="card"><span class="empty">No tools discovered. Either nothing is configured, ' +
+          'or the configured servers did not start — the reason is shown above.</span></div>';
+    } catch (e) {
+      tEl.innerHTML = '<div class="card"><div class="why">Could not list tools: ' + esc(e.message) + '</div></div>';
+    }
+  }
+  document.getElementById('refresh').onclick = () => load(true);
+  load(false);
+</script>
+</body></html>
+"""
+
+
+_mcp_log = get_logger(__name__) if "get_logger" in dir() else __import__(
+    "eli.utils.log", fromlist=["get_logger"]).get_logger(__name__)
+
+
+@app.get("/mcp", response_class=HTMLResponse, tags=["Root"])
+async def mcp_page():
+    """Dedicated MCP page — configured servers, discovered tools, and setup."""
+    return HTMLResponse(_MCP_PAGE)
+
+
+@app.get("/v1/mcp/status", tags=["MCP"], dependencies=[Depends(_require_token)])
+async def mcp_status():
+    """Configured MCP servers with their live connection state and real failure reasons."""
+    try:
+        from eli.integrations.mcp import client as _mcp
+        return _mcp.status()
+    except Exception as e:
+        _mcp_log.debug("mcp status failed", exc_info=True)
+        return {"configured": 0, "servers": [], "config_path": "", "error": str(e)}
+
+
+@app.get("/v1/mcp/tools", tags=["MCP"], dependencies=[Depends(_require_token)])
+async def mcp_tools(refresh: bool = False):
+    """Every tool across every configured MCP server."""
+    try:
+        from eli.integrations.mcp import client as _mcp
+        return {"tools": _mcp.list_tools(refresh=refresh)}
+    except Exception as e:
+        _mcp_log.debug("mcp tools failed", exc_info=True)
+        return {"tools": [], "error": str(e)}
 
 
 @app.get("/", response_class=HTMLResponse, tags=["Root"])

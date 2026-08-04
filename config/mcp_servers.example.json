@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Copy this file to mcp_servers.json to give ELI tools from external MCP servers.",
+    "Each entry is a local program ELI launches on demand and speaks to over stdio —",
+    "nothing here opens a network connection, so it stays inside ELI's offline-by-default",
+    "posture. Servers start on first use, not at boot, so an entry you are not using",
+    "costs nothing and a broken one cannot delay startup.",
+    "Ask ELI 'what MCP servers do I have' or 'list my MCP tools' to see what it found,",
+    "including the real reason for anything that failed to start."
+  ],
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/path/you/want/to/expose"]
+    },
+    "eli": {
+      "_comment": "ELI exposing its own actions — useful for testing the loop end to end.",
+      "command": "python",
+      "args": ["-m", "eli.integrations.mcp.server"],
+      "env": {"ELI_MCP_ALLOW_CONTROL": "0"}
+    }
+  }
+}

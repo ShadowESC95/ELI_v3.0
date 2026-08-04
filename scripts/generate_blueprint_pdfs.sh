@@ -46,6 +46,7 @@ FULL_SOURCES=(
   inference_and_hardware.md adaptive_inference_governor.md learning.md
   lora_pipeline.md background_tasks.md runtime_planning_world.md
   operations.md running_eli_at_scale.md security.md diagrams.md
+  tool_calling_and_computer_use.md mcp.md
   capabilities_and_actions.md
 )
 FULL_PATHS=()

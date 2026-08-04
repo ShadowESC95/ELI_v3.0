@@ -364,6 +364,8 @@ import eli.execution.effectors.habits  # noqa: F401
 import eli.execution.effectors.misc  # noqa: F401
 import eli.execution.effectors.shell  # noqa: F401
 import eli.execution.effectors.screen  # noqa: F401
+import eli.execution.effectors.computer_use  # noqa: F401
+import eli.execution.effectors.mcp_tools  # noqa: F401
 import eli.execution.effectors.file_ops  # noqa: F401
 
 
@@ -1223,6 +1225,10 @@ def _maybe_background_file_analysis(action, args):
 
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
+    'COMPUTER_USE',
+    'MCP_STATUS',
+    'MCP_TOOLS',
+    'MCP_CALL',
     'DOC_GENERATE',
     'SET_AI_MODE',
     'USER_INFO_REPORT',

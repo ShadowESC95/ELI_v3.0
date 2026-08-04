@@ -1589,6 +1589,39 @@ def route(text: str) -> Dict[str, Any]:
     ):
         return _mk("CHAT", {"message": raw}, 0.9, matched_by="chat.relational_concern")
 
+    # MCP — external tool servers. Kept above the long-question guard for the same
+    # reason as COMPUTER_USE: these are naturally phrased as full questions.
+    if re.search(r"\b(?:mcp|external\s+tool)\s+(?:server\s+)?status\b", low) or \
+       re.search(r"\bwhat\s+mcp\s+servers?\b", low):
+        return _mk("MCP_STATUS", {}, 0.95, matched_by="mcp.status")
+    if re.search(r"\b(?:list|show|what)\s+(?:are\s+)?(?:my\s+|the\s+)?mcp\s+tools?\b", low) or \
+       re.search(r"\bmcp\s+tools?\b", low):
+        return _mk("MCP_TOOLS", {}, 0.94, matched_by="mcp.tools")
+    _mcpm = re.search(r"\b(?:run|call|use|invoke)\s+(?:the\s+)?mcp\s+tool\s+(?P<t>[\w.\-]+)", low)
+    if _mcpm:
+        return _mk("MCP_CALL", {"tool": _mcpm.group("t")}, 0.94, matched_by="mcp.call")
+
+    # COMPUTER_USE — a goal that needs several observe/act rounds on the real screen,
+    # rather than one locate-and-click. Placed BEFORE the long-question guard because
+    # these goals are naturally long sentences ("can you open settings and turn dark
+    # mode on for me?" is 12 words with a question mark) and would otherwise be
+    # swallowed into CHAT, which is precisely the case that used to end in ELI
+    # describing an action it never took.
+    _mcpm = re.search(
+        r"\b(?:use|drive|take\s+over|control|operate)\s+(?:my\s+|the\s+)?"
+        r"(?:computer|screen|desktop|machine|mouse\s+and\s+keyboard)\b(?:\s+(?:and|to)\s+(?P<g1>.+))?",
+        low)
+    if not _mcpm:
+        _mcpm = re.search(r"(?P<g1>.+?)\s+for\s+me\s+on\s+(?:my|the)\s+screen\b", low)
+    if not _mcpm:
+        _mcpm = re.search(r"^(?:computer[\s_-]?use)\b[:,]?\s*(?P<g1>.+)$", low)
+    if _mcpm:
+        goal = (_mcpm.groupdict().get("g1") or "").strip(" .?!,")
+        if not goal:
+            goal = raw.strip()
+        return _mk("COMPUTER_USE", {"goal": goal}, 0.93,
+                   matched_by="computer_use.goal", entities={"goal": goal})
+
     # NOTE: clock questions are exempt. Asking completely ("Eli, what is the
     # date, the day, and what is the time?" — 12 words) must not be answered
     # worse than asking tersely ("what is the time" — 4). The TIME/DATE routes
@@ -4861,6 +4894,39 @@ try:
             def _stage_identity_audit(text, *_a, **_k):
                 return _eli_phase39_identity_audit_contract(text)
 
+            def _stage_mcp_explicit(text, *_a, **_k):
+                # "run mcp tool X" names the mechanism outright and must outrank the
+                # generic "run <thing>" app-launch route further down.
+                m = re.search(r"\b(?:run|call|use|invoke)\s+(?:the\s+)?mcp\s+tool\s+"
+                              r"(?P<t>[\w.\-]+)(?:\s+with\s+(?P<rest>.+))?$",
+                              str(text or ""), re.I)
+                if not m:
+                    return None
+                args = {"tool": m.group("t")}
+                rest = (m.groupdict().get("rest") or "").strip()
+                if rest:
+                    try:
+                        parsed = json.loads(rest)
+                        if isinstance(parsed, dict):
+                            args["arguments"] = parsed
+                    except Exception:
+                        args["arguments"] = {"input": rest}
+                return {"action": "MCP_CALL", "args": args, "confidence": 0.97,
+                        "matched_by": "mcp.call_explicit"}
+
+            def _stage_computer_use_explicit(text, *_a, **_k):
+                # An explicit "computer use: <goal>" prefix is the user stating the
+                # mechanism outright, so it must outrank keyword heuristics further
+                # down (a goal mentioning "search for X" was landing on WEB_SEARCH).
+                m = re.match(r"^\s*computer[\s_-]?use\b[:,]?\s*(.+)$", str(text or ""), re.I)
+                if not m:
+                    return None
+                goal = m.group(1).strip(" .?!,")
+                if not goal:
+                    return None
+                return {"action": "COMPUTER_USE", "args": {"goal": goal},
+                        "confidence": 0.97, "matched_by": "computer_use.explicit"}
+
             def _stage_memory_runtime_lock(text, *_a, **_k):
                 if _eli_memory_runtime_route_lock_should_trigger(text):
                     return _eli_memory_runtime_route_lock_result(text)
@@ -5305,6 +5371,8 @@ try:
                 ("pending_remediation_confirm", _stage_pending_remediation_confirm),
                 ("pending_proposal_confirm", _stage_pending_proposal_confirm),
                 ("react_to_pasted_content", _stage_react_to_pasted_content),
+                ("mcp_explicit", _stage_mcp_explicit),
+                ("computer_use_explicit", _stage_computer_use_explicit),
                 ("precedence", _stage_precedence),
                 ("identity_audit", _stage_identity_audit),
                 ("frontier_status", _stage_frontier_status),
