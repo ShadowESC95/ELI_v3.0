@@ -188,14 +188,36 @@ jobs:
           done
           cat SHA256SUMS-windows.txt
 
+      # Upload the installers STRAIGHT to the GitHub Release instead of through
+      # Actions artifact storage. A private repo only gets ~1-2 GB of included
+      # Actions storage while one ELI run produces ~5 GB of installers, so the
+      # upload could never fit — every release died on "Artifact storage quota has
+      # been hit", and purging only bought minutes. Release assets do not count
+      # against that quota. Only the few-hundred-byte checksum file still travels
+      # as an artifact, so the publish job can still merge SHA256SUMS.
+      - name: Upload installers directly to the Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
+          shopt -s nullglob
+          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz)
+          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
+          for f in "${FILES[@]}"; do
+            echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
+            gh release upload "$TAG" "$f" --clobber
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: eli-windows
-          retention-days: 3   # build intermediates; the publish job consumes them immediately
+          retention-days: 1   # checksums only — installers go straight to the Release
           path: |
-            dist/*.zip
-            dist/*.exe
-            dist/SHA256SUMS-windows.txt
+            dist/SHA256SUMS-*.txt
           if-no-files-found: error
 
   build-macos:
@@ -276,13 +298,36 @@ jobs:
           done
           cat SHA256SUMS-macos.txt
 
+      # Upload the installers STRAIGHT to the GitHub Release instead of through
+      # Actions artifact storage. A private repo only gets ~1-2 GB of included
+      # Actions storage while one ELI run produces ~5 GB of installers, so the
+      # upload could never fit — every release died on "Artifact storage quota has
+      # been hit", and purging only bought minutes. Release assets do not count
+      # against that quota. Only the few-hundred-byte checksum file still travels
+      # as an artifact, so the publish job can still merge SHA256SUMS.
+      - name: Upload installers directly to the Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
+          shopt -s nullglob
+          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz)
+          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
+          for f in "${FILES[@]}"; do
+            echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
+            gh release upload "$TAG" "$f" --clobber
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: eli-macos
-          retention-days: 3   # build intermediates; the publish job consumes them immediately
+          retention-days: 1   # checksums only — installers go straight to the Release
           path: |
-            dist/*.dmg
-            dist/SHA256SUMS-macos.txt
+            dist/SHA256SUMS-*.txt
           if-no-files-found: error
 
   build-linux:
@@ -422,14 +467,36 @@ jobs:
           done
           cat SHA256SUMS-linux.txt
 
+      # Upload the installers STRAIGHT to the GitHub Release instead of through
+      # Actions artifact storage. A private repo only gets ~1-2 GB of included
+      # Actions storage while one ELI run produces ~5 GB of installers, so the
+      # upload could never fit — every release died on "Artifact storage quota has
+      # been hit", and purging only bought minutes. Release assets do not count
+      # against that quota. Only the few-hundred-byte checksum file still travels
+      # as an artifact, so the publish job can still merge SHA256SUMS.
+      - name: Upload installers directly to the Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
+          shopt -s nullglob
+          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz)
+          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
+          for f in "${FILES[@]}"; do
+            echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
+            gh release upload "$TAG" "$f" --clobber
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: eli-linux
-          retention-days: 3   # build intermediates; the publish job consumes them immediately
+          retention-days: 1   # checksums only — installers go straight to the Release
           path: |
-            dist/*.AppImage
-            dist/*.tar.gz
-            dist/SHA256SUMS-linux.txt
+            dist/SHA256SUMS-*.txt
           if-no-files-found: error
 
   release:
@@ -456,10 +523,5 @@ jobs:
           name: ELI v${{ needs.guard.outputs.version }}
           generate_release_notes: true
           files: |
-            dist/*.zip
-            dist/*.exe
-            dist/*.dmg
-            dist/*.AppImage
-            dist/*.tar.gz
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
