@@ -245,6 +245,18 @@ Answer:"""
                 if _dir and _cur.get("tone") != "neutral":
                     _tcue = f"[Tone — {_cur['tone']}: {_dir} Do NOT mention this directive.]"
                     situation_brief = (_tcue + "\n\n" + (situation_brief or "")).strip()
+                # Tone shades HOW ELI sounds. affect_policy states what he should DO
+                # differently — answer shorter, stop hedging, offer to take over — so
+                # the behavioural half is instructed rather than left to be inferred
+                # from a register cue.
+                try:
+                    from eli.cognition.affect_policy import directive as _affect_directive
+                    _adir = _affect_directive()
+                    if _adir:
+                        situation_brief = (f"[Approach: {_adir} Do NOT mention this directive.]"
+                                           + "\n\n" + (situation_brief or "")).strip()
+                except Exception:
+                    log.debug("affect policy directive skipped", exc_info=True)
 
                 # ── Persist the read so ELI can be PROACTIVE, not only reactive ──
                 # tone_adaptor forgets each turn (12s acoustic slot + last-utterance

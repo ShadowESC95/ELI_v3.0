@@ -1226,6 +1226,7 @@ def _maybe_background_file_analysis(action, args):
 # Enumerated actions for capability_registry bootstrap
 SUPPORTED_ACTIONS = [
     'COMPUTER_USE',
+    'GOAL_PROGRESS',
     'MCP_STATUS',
     'MCP_TOOLS',
     'MCP_CALL',

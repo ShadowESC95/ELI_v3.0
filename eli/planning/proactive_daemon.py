@@ -96,6 +96,20 @@ class ProactiveDaemon:
         norm = " ".join(str(text or "").lower().split())
         if not norm:
             return False
+        # Hold non-urgent initiative when the user is frustrated or low. This is the
+        # single choke point for unprompted suggestions ("pattern", "improvement",
+        # "home"), so gating here covers all of them. The emotional check-in does NOT
+        # pass through here — it queues directly — which is deliberate: a low mood is
+        # the reason to ask how someone is, and the reason not to pitch them a tip.
+        try:
+            from eli.cognition.affect_policy import should_defer_proactive
+            defer, why = should_defer_proactive()
+            if defer:
+                log.debug("[PROACTIVE] holding '%s' suggestion — %s", kind, why)
+                return False
+        except Exception:
+            log.debug("[PROACTIVE] affect gate unavailable", exc_info=True)
+
         key = f"{kind}|{hashlib.sha1(norm.encode()).hexdigest()}"
         now = time.time()
         # purge expired entries so the state file stays small

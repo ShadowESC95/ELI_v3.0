@@ -60,3 +60,39 @@ for _action, _fn in {
     "BACKGROUND_JOBS": _h_check_job,
 }.items():
     _register(_action, _fn)
+
+
+def _h_goal_progress(a, args):
+    """What ELI is working on, finished, or gave up on — from the persisted record."""
+    try:
+        from eli.planning.work_loop import progress_report
+        rep = progress_report()
+    except Exception as e:
+        msg = f"Couldn't read goal progress: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+    if not rep.get("ok"):
+        msg = f"Couldn't read goal progress: {rep.get('error', 'unknown')}"
+        return {"ok": False, "action": a, "content": msg, "response": msg}
+
+    goals = rep.get("goals") or []
+    if not goals:
+        msg = ("I have no goals on the books, so there's nothing in progress. "
+               "Autonomous work only runs when the operator policy is set to goal_driven.")
+        return {"ok": True, "action": a, "content": msg, "response": msg, **rep}
+
+    lines = [f"{rep['active']} active, {rep['done']} done, {rep['stopped']} stopped:"]
+    for g in goals:
+        bit = f"  {g['title']} — {g['status']} after {g['attempts']} attempt(s)"
+        if g.get("stop_reason"):
+            bit += f" ({g['stop_reason']})"
+        last = g.get("last_step") or {}
+        if last.get("outcome"):
+            bit += f"; last step {last.get('action', '?')} → {last['outcome']}"
+        lines.append(bit)
+    body = "\n".join(lines)
+    return {"ok": True, "action": a, "content": body, "response": body, **rep}
+
+
+from eli.execution.effectors.registry import register as _register_goal_progress
+_register_goal_progress("GOAL_PROGRESS", _h_goal_progress)

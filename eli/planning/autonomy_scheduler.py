@@ -142,6 +142,39 @@ def scheduler_tick(limit: int = 3, now: float | None = None, cooldown_sec: int =
             )
             attention_added += 1
 
+    # goal_driven is the one mode that acts. Everything else keeps the propose-and-wait
+    # behaviour; this used to be true of goal_driven too, which made the mode a label.
+    # The approval engine still decides per action, so selecting goal_driven grants a
+    # standing intent to act, not a bypass of the gate.
+    if mode == "goal_driven":
+        try:
+            from eli.planning.goal_execution import run_due_goals
+            execution = run_due_goals(limit=limit, now=now)
+        except Exception as exc:
+            execution = {"ok": False, "count": 0, "items": [], "error": str(exc)}
+        out["execution"] = execution
+        # Sustained work: advance one unfinished goal a step further. Separate from the
+        # single-shot execution above because a goal that needs four steps should still
+        # finish, across restarts, rather than tick forever without converging.
+        try:
+            from eli.planning.work_loop import work_tick
+            out["work"] = work_tick(limit=1, now=now)
+        except Exception as exc:
+            out["work"] = {"ok": False, "advanced": 0, "items": [], "error": str(exc)}
+        for item in execution.get("items", []):
+            if item.get("outcome") in ("done", "failed", "error"):
+                append_attention(
+                    kind="goal_executed",
+                    title=f"Goal {item.get('outcome')}: {item.get('title', '')}",
+                    state="done" if item.get("outcome") == "done" else "failed",
+                    severity="medium" if item.get("outcome") == "done" else "high",
+                    source="autonomy_scheduler",
+                    metadata=item,
+                    suppression_key=f"goal_exec:{item.get('goal_id')}",
+                    suppression_window_sec=120,
+                )
+                attention_added += 1
+
     proposal_summary = safe_proposal_summary()
     counts = _proposal_counts(proposal_summary)
 
