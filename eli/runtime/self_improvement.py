@@ -41,6 +41,13 @@ def _safe_str(x: Any) -> str:
         return ""
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "").strip() or default)
+    except Exception:
+        return float(default)
+
+
 def _dotted_module_for_path(p: Path) -> Optional[str]:
     """Return the importable dotted module name for a project .py file, or None
     if it isn't an importable module under the `eli` package."""
@@ -390,7 +397,14 @@ class SelfImprovementEngine:
             except Exception:
                 pass
 
-    def analyze_and_improve(self) -> Dict[str, Any]:
+    def analyze_and_improve(self, *, repair: bool = False) -> Dict[str, Any]:
+        """Analyse recent failures and log improvement records.
+
+        `repair=False` (the default) keeps this method what its name promises: a
+        fast, read-mostly pass over the failure table. Set `repair=True` only from
+        a BOUNDED BACKGROUND job — it invokes the coding agent, which fans out to
+        tens of sequential model calls (see propose_via_agent).
+        """
         failures = self.analyze_failures(limit=25, min_cluster_size=1)
         improvements: List[Dict[str, Any]] = []
 
@@ -437,8 +451,14 @@ class SelfImprovementEngine:
         # surface via GET_PROPOSALS. Previously analyze_and_improve only logged 'investigate'
         # stubs that never became anything (the proposals=0 root cause). Propose-only:
         # nothing is auto-applied. Gated so the daemon never thrashes the GGUF/coding agent.
+        #
+        # 2026-08-02: this used to fire on `_model_ready` ALONE, so a read-sounding
+        # "analyze" detonated the full coding agent (~85-130 sequential model calls,
+        # 30-500s each) on whatever thread called it — including the GUI chat worker
+        # and the shutdown path. That is the 2-hour freeze. Repair is now opt-in and
+        # belongs on a bounded background job; the caller owns the wall-clock budget.
         proposals_made = 0
-        if improvements:
+        if improvements and repair:
             try:
                 from eli.cognition import gguf_inference as _gi
                 _model_ready = bool(getattr(_gi, "is_loaded", lambda: False)())
@@ -455,13 +475,14 @@ class SelfImprovementEngine:
 
         return {"improvements": improvements, "proposals_made": proposals_made}
 
-    def _generate_and_persist_fix_proposals(self, max_items: int = 2) -> int:
+    def _generate_and_persist_fix_proposals(self, max_items: int = 2,
+                                            budget_s: Optional[float] = None) -> int:
         """Run the coding-agent self-repair proposer and persist each result as a
         proposal-only goal (visible via GET_PROPOSALS). Returns the count persisted.
         Best-effort; never raises into the caller."""
         made = 0
         try:
-            gen = self.propose_via_agent(max_items=max_items)
+            gen = self.propose_via_agent(max_items=max_items, budget_s=budget_s)
             for pr in (gen.get("proposals") or []):
                 if not isinstance(pr, dict):
                     continue
@@ -529,10 +550,16 @@ class SelfImprovementEngine:
             parts.append("Propose a minimal corrected implementation.")
         return "\n".join(parts)
 
-    def propose_via_agent(self, max_items: int = 3, run_timeout: float = 20.0) -> Dict[str, Any]:
+    def propose_via_agent(self, max_items: int = 3, run_timeout: float = 20.0,
+                          budget_s: Optional[float] = None) -> Dict[str, Any]:
         """Route self-improvement through the CODING AGENT: per recent failure, the
-        agent decomposes → solves → VERIFIES a fix (its tree-search + execution gate),
-        orchestrated in parallel on the DAG. Propose-only — nothing is applied."""
+        agent decomposes → solves → VERIFIES a fix (its tree-search + execution gate).
+        Propose-only — nothing is applied.
+
+        `run_timeout` is the SANDBOX subprocess timeout for executing candidate code.
+        `budget_s` is the WALL-CLOCK budget shared across every failure in this call —
+        without it this method is unbounded (the 2-hour freeze).
+        """
         failures = [f for f in self.analyze_failures(limit=10, min_cluster_size=1)
                     if _safe_str(f.get("error")) or _safe_str(f.get("user_input"))][:max_items]
         if not failures:
@@ -540,11 +567,29 @@ class SelfImprovementEngine:
         try:
             from eli.core.dag import Task, run_graph
             from eli.coding.agent import CodeAgent
+            from eli.coding.budget import Deadline, DEFAULT_SOLVE_BUDGET_S
             agent = CodeAgent()
+            # ONE absolute deadline shared by every failure, so N failures cannot
+            # multiply the wall clock. Checked before each model call downstream.
+            deadline = Deadline(
+                float(budget_s) if budget_s else _env_float(
+                    "ELI_SELF_REPAIR_BUDGET_S", DEFAULT_SOLVE_BUDGET_S),
+                label="self_repair",
+            )
 
             def _mk(failure):
                 def _run(ctx):
-                    cr = agent.solve(self._build_fix_task(failure), run_timeout=run_timeout)
+                    # run_graph spawns FRESH threads and the background marker is
+                    # thread-local, so it must be set here, not on the caller. This
+                    # is what makes these calls preemptible by a foreground turn and
+                    # stops them stamping _last_foreground_ts (which starved daemons).
+                    try:
+                        from eli.cognition.gguf_inference import set_background_inference
+                        set_background_inference(True)
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                    cr = agent.solve(self._build_fix_task(failure),
+                                     run_timeout=run_timeout, deadline=deadline)
                     return {
                         "failure": (_safe_str(failure.get("user_input"))
                                     or _safe_str(failure.get("error")))[:140],
@@ -558,7 +603,11 @@ class SelfImprovementEngine:
 
             tasks = [Task(id=f"fix_{i}", run=_mk(f), critical=False)
                      for i, f in enumerate(failures)]
-            report = run_graph(tasks, max_workers=max(2, len(tasks)))
+            # Serial on purpose: there is ONE model behind a single call lock
+            # (gguf_inference._LLM_CALL_LOCK), so extra workers bought scheduling
+            # noise, not throughput — while each fresh thread lost the thread-local
+            # background marker. The shared deadline bounds the total either way.
+            report = run_graph(tasks, max_workers=1)
             proposals = [o.result for _tid, o in report.outcomes.items() if o.ok and o.result]
             return {"ok": True, "proposals": proposals, "count": len(proposals),
                     "orchestration": report.to_dict()}
@@ -1252,7 +1301,10 @@ class SelfImprovementEngine:
                 pass
             while True:
                 try:
-                    self.analyze_and_improve()
+                    # The one legitimate autonomous repair path: already marked
+                    # background (preemptible + token-capped) and now bounded by a
+                    # shared wall-clock budget inside propose_via_agent.
+                    self.analyze_and_improve(repair=True)
                 except Exception as _exc:
                     log.warning("[SELF_IMPROVEMENT] analyze_and_improve error: %s", _exc)
                 time.sleep(interval_hours * 3600)

@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from eli.coding.budget import Deadline
 from eli.core.dag import DAG, build_dag
 from eli.utils.log import get_logger
 
@@ -115,14 +116,21 @@ def compose(order: List[str], solutions: Dict[str, str]) -> str:
 
 def solve_dag(task: str, generate: Optional[GenerateFn], *, language: str,
               single_solver: Callable[[str], Any], max_nodes: int = 6,
-              min_nodes: int = 2) -> Optional[DagSolveResult]:
+              min_nodes: int = 2, deadline: Optional["Deadline"] = None) -> Optional[DagSolveResult]:
     """Decompose into a subtask DAG and solve in topological order, passing each
     node its dependencies' code. Returns None when the task is a single node (the
     caller should then use the plain single-shot path).
 
     `single_solver(node_task) -> object with .code (and optionally .score)`
     solves one node WITHOUT recursing into the DAG (no infinite recursion).
+
+    `deadline` is the shared absolute budget for the whole solve. Node solving
+    stops when it expires; `compose` already skips unsolved nodes, so whatever
+    was completed is still returned.
     """
+    deadline = Deadline.coerce(deadline, label="solve_dag")
+    if deadline.check("decompose"):
+        return None
     g, node_tasks = decompose_dag(task, generate, language=language, max_nodes=max_nodes)
     order = g.topological_order()
     if len(order) < min_nodes:
@@ -131,6 +139,8 @@ def solve_dag(task: str, generate: Optional[GenerateFn], *, language: str,
     solutions: Dict[str, str] = {}
     node_scores: Dict[str, float] = {}
     for nid in order:
+        if deadline.check(f"dag_node:{nid}"):
+            break
         node = g.get(nid)
         dep_code = "\n\n".join(
             f"# already-built component `{d}`:\n{solutions[d]}"

@@ -159,7 +159,32 @@ def _h_self_improve(a, args):
         engine = get_self_improvement()
         if mode == "propose":
             # Route through the coding agent (decompose→solve→verify), propose-only.
-            res = engine.propose_via_agent(max_items=int((args or {}).get("max_items", 3) or 3))
+            # This fans out to tens of sequential model calls (30-500s each on a
+            # local GGUF), so it runs as a BACKGROUND job and chat answers at once.
+            # Running it inline is what froze the GUI for 2+ hours.
+            max_items = int((args or {}).get("max_items", 3) or 3)
+            try:
+                from eli.runtime.background_tasks import get_background_tasks
+                from eli.runtime.scheduled_tasks import _surface
+                label = "self-repair proposals"
+                jid = get_background_tasks().submit(
+                    f"self_improve:propose",
+                    engine.propose_via_agent,
+                    max_items=max_items,
+                    kind="self_improve",
+                    on_done=_surface(label, "self_improve", label="Self-improvement"),
+                )
+                msg = (
+                    f"Started coding-agent self-repair as background job #{jid}.\n"
+                    f"- scope: up to {max_items} recent failure(s), propose-only (nothing applied)\n"
+                    f"- it yields to you: send any message and it pauses for your turn\n"
+                    f"- result lands in the Proactive panel; or say \"check job {jid}\""
+                )
+                return {"ok": True, "action": a, "content": msg, "response": msg,
+                        "evidence_source": "coding_agent", "job_id": jid, "backgrounded": True}
+            except Exception as _bg_exc:
+                log.debug("[SELF_IMPROVE] background submit failed, running inline: %s", _bg_exc)
+            res = engine.propose_via_agent(max_items=max_items)
             props = res.get("proposals", [])
             msg_lines = [f"Coding-agent fix proposals (verified, not applied): {len(props)}"]
             for p in props:
@@ -201,9 +226,10 @@ def _h_self_improve(a, args):
             imps = result.get("improvements", [])
             msg_lines = [
                 "Improvement cycle complete.",
-                "- code_changes_made: 0",
                 f"- failures_inspected: {len(failures)}",
                 f"- new_improvement_records: {len(imps)}",
+                f"- fix_proposals_generated: {result.get('proposals_made', 0)}",
+                "- code_changes_made: 0 (analysis only — nothing was applied)",
                 "- patch_cycle_run: false",
             ]
             if failures:

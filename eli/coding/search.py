@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+from eli.coding.budget import Deadline
 from eli.coding.planner import Plan, implement
 from eli.coding.verification import Candidate, verify_candidate
 from eli.coding.bug_memory import BugMemory
@@ -95,11 +96,16 @@ def tree_search(
     explore_c: float = 0.7,
     run_timeout: float = 20.0,
     time_budget_s: float = 240.0,
+    deadline: Optional[Deadline] = None,
     no_improve_patience: int = 3,
     bug_memory: Optional[BugMemory] = None,
     context: str = "",
 ) -> SearchResult:
     t0 = time.time()
+    # One ABSOLUTE deadline for the whole solve. When a caller passes one it is
+    # shared with the DAG/critique passes, so the budget cannot be re-armed per
+    # loop; `time_budget_s` remains the fallback for standalone callers.
+    deadline = deadline if deadline is not None else Deadline(time_budget_s, label="tree_search")
     nodes: List[Candidate] = []
     visits: Dict[int, int] = {}
     trace: List[Dict] = []
@@ -122,6 +128,10 @@ def tree_search(
 
     # ── Roots: a diverse beam (temperature ladder = U-style exploration) ─────
     for i in range(max(1, beam)):
+        # Check BEFORE the call, not after: a single generation can outlast the
+        # whole budget, so an after-the-fact check can never enforce it.
+        if deadline.check(f"root#{i}"):
+            break
         temp = round(0.15 + 0.25 * i, 2)
         code = implement(task, plan, generate, language=language, context=context, temperature=temp)
         cand = Candidate(code=code, language=language, origin="implementer")
@@ -132,15 +142,19 @@ def tree_search(
         trace.append({"step": f"root#{i}", **cand.summary()})
         if cand.score >= target_score:
             return SearchResult(cand, nodes, trace, 0, time.time() - t0, solved=True)
-        if time.time() - t0 > time_budget_s:
-            break
+
+    if not nodes:
+        # Deadline/shutdown hit before a single root was generated.
+        trace.append({"step": "aborted", "reason": "deadline before first root"})
+        empty = Candidate(code="", language=language, origin="aborted")
+        return SearchResult(empty, [], trace, 0, time.time() - t0, solved=False)
 
     # ── Iterative expansion ──────────────────────────────────────────────────
     iterations = 0
     best_score = max((c.score for c in nodes), default=0.0)
     stale = 0
     for it in range(max_iterations):
-        if time.time() - t0 > time_budget_s:
+        if deadline.check(f"refine#{it}"):
             break
         total = sum(visits.values())
         parent = _select_ucb(nodes, visits, total, target_score, explore_c)

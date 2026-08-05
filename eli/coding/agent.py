@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
+from eli.coding.budget import Deadline, DEFAULT_SOLVE_BUDGET_S, _shutting_down
 from eli.coding.planner import Plan, plan_task, implement
 from eli.coding.verification import Candidate, verify_candidate, synthesize_tests, critique_candidate
 from eli.coding.search import tree_search, SearchResult
@@ -92,34 +93,48 @@ class CodeAgent:
     def solve(self, task: str, *, language: str = "python", use_tests: bool = True,
               beam: Optional[int] = None, max_iterations: Optional[int] = None,
               run_timeout: float = 20.0, target_score: float = 0.95,
-              use_dag: Optional[bool] = None) -> CodeResult:
+              use_dag: Optional[bool] = None,
+              deadline: "Deadline | float | None" = None) -> CodeResult:
+        """`run_timeout` is the SANDBOX subprocess timeout for executing candidate
+        code. `deadline` is the wall-clock budget for the whole solve — one shared
+        absolute instant threaded through the DAG, tree search and critique passes."""
         if not (task or "").strip():
             return CodeResult(False, False, "", language, 0.0, {}, "", {}, None,
                               "empty task")
+        deadline = Deadline.coerce(
+            deadline if deadline is not None else DEFAULT_SOLVE_BUDGET_S, label="solve")
         # Subtask-DAG path for decomposable tasks (shared eli.core.dag engine).
         if use_dag is None:
             use_dag = os.environ.get("ELI_CODING_DAG", "1").strip().lower() not in ("0", "false", "no", "off")
         if use_dag and language == "python":
             dag_cr = self._try_dag_solve(task, use_tests=use_tests, run_timeout=run_timeout,
-                                         target_score=target_score)
+                                         target_score=target_score, deadline=deadline)
             if dag_cr is not None and dag_cr.code.strip() and (dag_cr.solved or dag_cr.score >= 0.5):
                 return dag_cr   # else fall through to single-shot
+            # A self-repair task rarely composes into a runnable module, so the
+            # fall-through is the common case, not the exception — it must not run
+            # a second full pass on an exhausted budget.
+            if dag_cr is not None and deadline.expired():
+                return dag_cr
         return self._solve_single(task, language=language, use_tests=use_tests, beam=beam,
                                    max_iterations=max_iterations, run_timeout=run_timeout,
-                                   target_score=target_score)
+                                   target_score=target_score, deadline=deadline)
 
     def _try_dag_solve(self, task: str, *, use_tests: bool, run_timeout: float,
-                       target_score: float) -> Optional[CodeResult]:
+                       target_score: float,
+                       deadline: Optional[Deadline] = None) -> Optional[CodeResult]:
         """Decompose into a subtask DAG; solve nodes topologically; verify the
         composed module. Returns None when the task is a single node."""
+        deadline = Deadline.coerce(deadline, label="dag_solve")
         try:
             from eli.coding.plan_graph import solve_dag
             from eli.coding.verification import Candidate, verify_candidate
             def _node_solver(node_task: str):
                 return self._solve_single(node_task, language="python", use_tests=False,
                                           beam=2, max_iterations=2, run_timeout=run_timeout,
-                                          target_score=target_score)
-            dag_res = solve_dag(task, self.generate, language="python", single_solver=_node_solver)
+                                          target_score=target_score, deadline=deadline)
+            dag_res = solve_dag(task, self.generate, language="python",
+                                single_solver=_node_solver, deadline=deadline)
             if dag_res is None or not dag_res.combined_code.strip():
                 return None
             cand = Candidate(code=dag_res.combined_code, language="python", origin="dag")
@@ -144,10 +159,16 @@ class CodeAgent:
 
     def _solve_single(self, task: str, *, language: str = "python", use_tests: bool = True,
                       beam: Optional[int] = None, max_iterations: Optional[int] = None,
-                      run_timeout: float = 20.0, target_score: float = 0.95) -> CodeResult:
+                      run_timeout: float = 20.0, target_score: float = 0.95,
+                      deadline: Optional[Deadline] = None) -> CodeResult:
         beam = beam if beam is not None else _env_int("ELI_CODING_BEAM", 3)
         max_iterations = (max_iterations if max_iterations is not None
                           else _env_int("ELI_CODING_MAX_ITERS", 6))
+        deadline = Deadline.coerce(deadline, label="solve_single")
+
+        def _aborted(stage: str) -> CodeResult:
+            return CodeResult(False, False, "", language, 0.0, {}, "", {}, None,
+                              f"halted at {stage}: {'shutdown' if _shutting_down() else 'deadline'}")
 
         # 0) Repo context — relevant EXISTING project code (named files' imports + the
         #    defs of symbols the task names) so the agent writes against real APIs/patterns
@@ -158,16 +179,22 @@ class CodeAgent:
         except Exception:
             ctx = ""
 
+        # Every model call below is gated on the shared deadline, checked BEFORE
+        # the call — one generation can outlast the whole budget on a local model.
         # 1) Plan (structured decomposition; reasoning-native budget — see plan_task)
+        if deadline.check("plan"):
+            return _aborted("plan")
         plan = plan_task(task, self.generate, language=language, context=ctx)
 
         # 2) Seed implementation — used as concrete context for test synthesis
+        if deadline.check("seed"):
+            return _aborted("seed")
         seed_code = implement(task, plan, self.generate, language=language,
                               context=ctx, temperature=0.2)
 
         # 3) Synthesize tests (only meaningful for Python execution gating)
         tests = ""
-        if use_tests and language == "python" and seed_code.strip():
+        if use_tests and language == "python" and seed_code.strip() and not deadline.check("tests"):
             tests = synthesize_tests(task, seed_code, self.generate)
 
         # 4) Tree search with mandatory execution feedback + bug memory
@@ -175,6 +202,7 @@ class CodeAgent:
             task, self.generate, plan=plan, language=language, tests=tests or None,
             beam=beam, max_iterations=max_iterations, target_score=target_score,
             run_timeout=run_timeout, bug_memory=self.bug_memory, context=ctx,
+            deadline=deadline,
         )
         best = result.best
         solved = result.solved
@@ -183,11 +211,12 @@ class CodeAgent:
         #    edge-case bug tests miss. One model review; if it names concrete issues, one
         #    more refinement, kept only if it scores at least as well. Off via ELI_CODING_CRITIQUE=0.
         if (best.code.strip() and self.generate is not None
-                and _env_int("ELI_CODING_CRITIQUE", 1)):
+                and _env_int("ELI_CODING_CRITIQUE", 1)
+                and not deadline.check("critique")):
             try:
                 issues = critique_candidate(task, best.code, self.generate,
                                             language=language, context=ctx)
-                if issues:
+                if issues and not deadline.check("critique_refine"):
                     refined = implement(task, plan, self.generate, language=language,
                                         context=ctx, prior_code=best.code,
                                         feedback="self-review found issues — fix these:\n" + issues)

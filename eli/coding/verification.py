@@ -189,6 +189,14 @@ def _parse_test_result(res: RunResult) -> tuple[int, int]:
 def score_candidate(cand: Candidate) -> float:
     """Aggregate 0..1 score. Weights shift toward whatever evidence exists:
     tests dominate when present; otherwise clean execution dominates."""
+    # Empty output is not a solution. Without this an empty candidate scored 0.84
+    # — ast.parse("") parses, "" executes cleanly, and the no-TODO/FIXME quality
+    # branch pays 0.2 — so a generation that returned nothing OUTRANKED real code
+    # that merely crashed, poisoning UCB selection and the final best-pick. Empty
+    # generations are common: inference_broker raises after one empty retry and
+    # the agent's _broker_generate swallows that to "".
+    if not (cand.code or "").strip():
+        return 0.0
     # Syntactically broken code can never be the "best" candidate — hard-cap it
     # so a valid-but-untested candidate always beats an un-parseable one (and so
     # a broken script is never shipped as a deliverable).

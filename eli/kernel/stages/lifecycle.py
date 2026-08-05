@@ -139,13 +139,11 @@ class LifecycleMixin:
         except Exception:
             pass
 
-        # 5. Brief self-improvement analysis on exit (if there were failures)
-        try:
-            from eli.runtime.self_improvement import get_self_improvement
-            si = get_self_improvement()
-            si.analyze_and_improve()
-        except Exception:
-            pass
+        # 5. (removed) Self-improvement analysis on exit.
+        #    signal_shutdown() has already fired above, so the broker short-circuits
+        #    every generation to "" — this step walked the whole self-improvement /
+        #    coding-agent stack during teardown to produce nothing, while delaying
+        #    the model unload. Analysis belongs on the 24h background loop.
 
         # 6. Close the memory store — final WAL checkpoint, then SQLite handles.
         try:

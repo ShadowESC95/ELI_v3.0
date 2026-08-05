@@ -124,8 +124,12 @@ def _eli_self_improvement_phrase_guard(text):
         low,
     ):
         return {
+            # Pass the raw utterance through: the effector sniffs it to choose
+            # analyze (fast, read-mostly) vs propose (coding agent, backgrounded).
+            # With args={} that sniff saw an empty string, so "propose"/"fix the
+            # failing X" was unreachable from chat and every request ran analyze.
             "action": "SELF_IMPROVE",
-            "args": {},
+            "args": {"_raw_user_text": raw},
             "confidence": 0.99,
             "meta": {
                 "matched_by": "eli.self_improvement_cycle_guard",
