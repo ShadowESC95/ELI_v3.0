@@ -96,6 +96,7 @@ class ProactiveDaemon:
         norm = " ".join(str(text or "").lower().split())
         if not norm:
             return False
+
         # Hold non-urgent initiative when the user is frustrated or low. This is the
         # single choke point for unprompted suggestions ("pattern", "improvement",
         # "home"), so gating here covers all of them. The emotional check-in does NOT

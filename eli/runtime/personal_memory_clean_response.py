@@ -78,6 +78,24 @@ _FACT_PATTERNS = [
     r"\bUser is an\b.{3,220}",
     r"\bUser has\b.{3,220}",
     r"\bUser asked to remember\b.{3,220}",
+    # Possessive forms. The user states preferences as "my favourite X is Y" far
+    # more often than "I prefer Y", and taste facts (music, films, teams) live
+    # almost exclusively in that shape — none of the verb patterns above can match
+    # it, so those facts were stored and then never surfaced.
+    r"\bUser's (?:favou?rite|preferred|fav)\b.{3,220}",
+    r"\bUser's (?:name|job|role|setup|stack|style|tone|accent|timezone|birthday)\b.{3,220}",
+    r"\bUser likes\b.{3,220}",
+    r"\bUser loves\b.{3,220}",
+    r"\bUser enjoys\b.{3,220}",
+    r"\bUser listens\b.{3,220}",
+    r"\bUser reads\b.{3,220}",
+    r"\bUser watches\b.{3,220}",
+    r"\bUser plays\b.{3,220}",
+    r"\bUser runs\b.{3,220}",
+    r"\bUser works\b.{3,220}",
+    r"\bUser needs\b.{3,220}",
+    r"\bUser avoids\b.{3,220}",
+    r"\bUser hates\b.{3,220}",
 ]
 
 
@@ -129,10 +147,42 @@ def _is_poison(text: str) -> bool:
     return any(re.search(p, text, re.IGNORECASE) for p in _POISON_PATTERNS)
 
 
+# First-person → third-person normalisation, applied before the `User …`-anchored
+# patterns below. The writer (memory salience auto-capture) stores the user's own
+# words verbatim — "my favourite rapper is X", "i prefer Y" — while every read
+# pattern requires a literal "User " prefix that nothing ever produced. The result
+# was a store full of preferences that the personal-memory report could not see,
+# so it could only ever report the user's name.
+_FIRST_PERSON_NORMALISERS: tuple[tuple[str, str], ...] = (
+    (r"^\s*my\s+(?=favourite|favorite|preferred|fav\b)", "User's "),
+    (r"^\s*my\s+(name|job|role|setup|stack|style|tone|accent|timezone|birthday)\b", r"User's \1"),
+    (r"^\s*i\s+(prefer|like|love|enjoy|hate|dislike|avoid|use|run|work|play|listen|read|watch)\b",
+     r"User \1s"),
+    (r"^\s*i\s+am\s+", "User is "),
+    (r"^\s*i'm\s+", "User is "),
+    (r"^\s*i\s+have\s+", "User has "),
+    (r"^\s*i\s+want\s+", "User wants "),
+    (r"^\s*i\s+need\s+", "User needs "),
+    (r"^\s*i\s+work\s+", "User works "),
+)
+
+
+def _normalise_person(text: str) -> str:
+    """Rewrite a first-person statement into the third-person form the fact
+    patterns expect. Returns the text unchanged when nothing matches."""
+    out = text
+    for pat, repl in _FIRST_PERSON_NORMALISERS:
+        new = re.sub(pat, repl, out, count=1, flags=re.IGNORECASE)
+        if new != out:
+            return new
+    return out
+
+
 def _extract_fact(text: str) -> str | None:
     text = _clean_text(text)
     if _is_poison(text):
         return None
+    text = _normalise_person(text)
 
     for pat in _FACT_PATTERNS:
         m = re.search(pat, text, re.IGNORECASE)

@@ -144,7 +144,23 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         r"about\s+(?:us|me\s+and\s+you|you\s+and\s+(?:me|i)))\b",
         low,
     ))
-    if not _is_change_query and not _is_conversational_persona and re.search(
+    # A question about the USER is never a question about ELI's identity. Without
+    # this, "What do you know about me … - as a person, who am i?" matched the
+    # generic identity regex below (via the unanchored `as a person`) and was
+    # rewritten to SELF_REPORT — so a personal-memory question was answered with a
+    # runtime self-report, and the user was told "your name is jason, nothing more".
+    _is_about_the_user = bool(re.search(
+        r"\b(about me|about myself|know me|remember me|who am i|what am i|"
+        r"my (?:name|preferences?|profile|tastes?|habits?|style|tone))\b",
+        low,
+    ))
+    # A route already decided by a first-class contract must not be second-guessed
+    # by the generic patterns below. Placed here (not at the top of the function)
+    # so the deliberate upgrades above — SELF_UPDATE, EXPLAIN_LAST_RESPONSE and the
+    # persona-evolution rule — still apply.
+    if _is_about_the_user and act in CONTROL_ACTIONS:
+        return act
+    if not _is_change_query and not _is_conversational_persona and not _is_about_the_user and re.search(
         r"\b("
         r"who are you"
         r"|who you are"
@@ -156,7 +172,10 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         r"|do you know who you are"
         r"|tell me about yourself"
         r"|tell me .{0,40}who you are"
-        r"|as (?:a |an )?(?:person|entity)"
+        # Self-anchored: "you, as a person" / "as a person, who are you" — NOT a
+        # bare "as a person", which also occurs in questions about the user.
+        r"|you,? as (?:a |an )?(?:person|entity)"
+        r"|as (?:a |an )?(?:person|entity),? (?:who|what) are you"
         r"|your identity"
         r"|your persona"
         r"|persona evolved"
