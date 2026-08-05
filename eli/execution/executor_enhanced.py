@@ -357,6 +357,7 @@ import eli.execution.effectors.system_open  # noqa: F401
 import eli.execution.effectors.web_info  # noqa: F401
 import eli.execution.effectors.timers  # noqa: F401
 import eli.execution.effectors.jobs  # noqa: F401
+import eli.execution.effectors.tasks  # noqa: F401
 import eli.execution.effectors.smart_home  # noqa: F401
 import eli.execution.effectors.ai_mode  # noqa: F401
 import eli.execution.effectors.notes  # noqa: F401
@@ -1245,6 +1246,9 @@ SUPPORTED_ACTIONS = [
     'ADD_EVENT',
     'BACKGROUND_JOBS',
     'SCHEDULE_TASK',
+    'LIST_TASKS',
+    'CANCEL_TASK',
+    'RESCHEDULE_TASK',
     'AMBIENT_VISION',
     'ANALYZE_CSV',
     'ANALYZE_IMAGE',
@@ -2994,16 +2998,32 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         # to run at a parsed time and surface the result. See runtime.scheduled_tasks.
         req = str((args or {}).get("request") or (args or {}).get("text")
                   or (args or {}).get("message") or "").strip()
-        when = str((args or {}).get("when") or req)
+        # Do NOT fall back to the whole request as the time spec. That fallback fed
+        # the parser a paragraph, which matched nothing and silently defaulted to
+        # 02:00 tomorrow — the "8:45am today → 02:00 next morning" bug.
+        when = str((args or {}).get("when") or "").strip()
         kind = (args or {}).get("kind")
         if not req:
             msg = "What should I work on, and when? (e.g. 'research X overnight')."
             return {"ok": False, "action": a, "content": msg, "response": msg}
-        # Recurring if the user said "every/each/daily/nightly" (so 'every morning'
-        # repeats; a bare 'tomorrow' is one-shot).
+        # Refuse to guess a time. Asking is always better than booking the wrong slot.
+        try:
+            from eli.runtime.scheduled_tasks import parse_when_strict as _pw_strict
+            if not when or _pw_strict(when) is None:
+                msg = (f"I can schedule “{req[:80]}” — when should it run? "
+                       f"Give me a time like “at 14:00”, “in 2 hours”, or “tomorrow morning”.")
+                return {"ok": False, "action": a, "needs_time": True,
+                        "content": msg, "response": msg}
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # Recurring if the user said "every/each/daily/nightly" IN THE TIME SPEC.
+        # Matching the whole utterance meant an incidental "each of us" or "daily
+        # grind" created a job that repeated forever.
         import re as _re_sched
-        recurring = bool(_re_sched.search(r"\b(every|each|daily|nightly|recurring|each day)\b",
-                                          f"{when} {req}", _re_sched.I))
+        recurring = bool(_re_sched.search(
+            r"\b(every|each)\s+(morning|day|night|evening|week|hour|monday|tuesday|"
+            r"wednesday|thursday|friday|saturday|sunday)\b|\b(daily|nightly|weekly|hourly)\b",
+            when, _re_sched.I))
         try:
             from eli.runtime.scheduled_tasks import schedule_request
             r = schedule_request(req, when_spec=when, kind=kind, recurring=recurring)

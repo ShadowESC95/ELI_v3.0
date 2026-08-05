@@ -171,6 +171,22 @@ class BackgroundTasks:
             tasks = [t for t in tasks if t.status == status]
         return [t.to_dict() for t in tasks[:limit]]
 
+    def _forget_persisted(self, t: "Task") -> None:
+        """Drop the durable store entry for a cancelled scheduled task.
+
+        Previously only the GUI Tasks tab did this, so a cancel from anywhere else
+        (chat, API, a future caller) removed the in-process timer but left the JSON
+        entry — and the task came back on the next boot. Cancelling at source is the
+        only way that stays true for every caller."""
+        pid = str((t.meta or {}).get("pid") or "")
+        if not pid:
+            return
+        try:
+            from eli.runtime.scheduled_tasks import forget as _forget
+            _forget(pid)
+        except Exception as exc:
+            log.debug(f"[BG] forget persisted task {pid} failed: {exc}")
+
     def cancel(self, jid: int) -> bool:
         """Best-effort cancel. Threads already running can't be force-killed, but a
         queued task is cancelled and a running one is marked for the runner to skip."""
@@ -191,11 +207,13 @@ class BackgroundTasks:
                         pass
                 t.status = "cancelled"
                 t.finished = time.time()
+                self._forget_persisted(t)
                 return True
             cancelled = fut.cancel() if fut else False
             if cancelled or t.status == "queued":
                 t.status = "cancelled"
                 t.finished = time.time()
+                self._forget_persisted(t)
                 return True
             # running: mark; cooperative tasks may observe this via get()
             t.note = (t.note + " | cancel requested").strip(" |")

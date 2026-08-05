@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from eli.core import when as _when
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -97,41 +98,22 @@ def forget(pid: str) -> None:
 
 
 # ── Time parsing ─────────────────────────────────────────────────────────────
-def parse_when(text: str) -> float:
+def parse_when(text: str, *, now: Optional[datetime] = None) -> float:
     """Return a unix timestamp for when to run, parsed from natural language.
-    Defaults to the next 02:00 (overnight) when no explicit time is found."""
-    t = (text or "").lower()
-    now = datetime.now()
 
-    m = re.search(r"\bin\s+(\d+)\s*(hour|hr|minute|min)s?\b", t)
-    if m:
-        n = int(m.group(1))
-        delta = timedelta(hours=n) if m.group(2).startswith(("hour", "hr")) else timedelta(minutes=n)
-        return (now + delta).timestamp()
+    Thin delegate to the shared parser in `eli.core.when` (single owner). Keeps the
+    legacy never-None contract by falling back to the next 02:00, because the boot
+    restore and the recurring re-arm both re-resolve `when_spec` through here and
+    must always get a timestamp. Callers that need to DETECT an unparseable spec —
+    and ask the user rather than invent a time — should use `parse_when_strict`.
+    """
+    ts = parse_when_strict(text, now=now)
+    return ts if ts is not None else _when.parse_when("", now=now, default="overnight")
 
-    m = re.search(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", t)
-    if m:
-        hh = int(m.group(1)) % 24
-        mm = int(m.group(2) or 0)
-        ap = m.group(3)
-        if ap == "pm" and hh < 12:
-            hh += 12
-        if ap == "am" and hh == 12:
-            hh = 0
-        target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        return target.timestamp()
 
-    if "tomorrow" in t:
-        hh = 2 if ("overnight" in t or "tonight" in t) else 9
-        return (now + timedelta(days=1)).replace(hour=hh, minute=0, second=0, microsecond=0).timestamp()
-
-    # overnight / tonight / default → next 02:00
-    target = now.replace(hour=_OVERNIGHT_HOUR, minute=0, second=0, microsecond=0)
-    if target <= now:
-        target += timedelta(days=1)
-    return target.timestamp()
+def parse_when_strict(text: str, *, now: Optional[datetime] = None) -> Optional[float]:
+    """Parse a `when` spec, returning None when no time can be determined."""
+    return _when.parse_when(text, now=now)
 
 
 # ── Kind inference ───────────────────────────────────────────────────────────
@@ -308,15 +290,25 @@ def _result_preview(kind: str, res: Any) -> str:
     if kind == "lora":
         lr = res.get("lora") or {}
         return str(lr.get("summary") or lr)[:400]
+    if kind == "self_improve":
+        props = res.get("proposals") or []
+        if not props:
+            return f"no fix proposals ({res.get('reason') or 'nothing to propose'})"
+        head = "; ".join(
+            f"{str(p.get('failure'))[:60]} → "
+            f"{'VERIFIED' if p.get('verified') else 'best-effort'} (score {p.get('score')})"
+            for p in props[:3] if isinstance(p, dict)
+        )
+        return f"{len(props)} fix proposal(s), none applied: {head}"
     return str(res)[:300]
 
 
-def _surface(request: str, kind: str):
+def _surface(request: str, kind: str, label: str = "Overnight"):
     """Return an on_done callback that posts the finished result to the Proactive panel."""
     def _cb(task) -> None:
         try:
             res = getattr(task, "result", None)
-            note = (f"Overnight {kind} task done — “{request[:70]}”:\n\n"
+            note = (f"{label} {kind} task done — “{request[:70]}”:\n\n"
                     f"{_result_preview(kind, res)}")
             from eli.planning.proactive_daemon import get_daemon
             d = get_daemon()

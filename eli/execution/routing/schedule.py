@@ -5,7 +5,7 @@ import re
 
 
 _SCHEDULE_TIME_RX = re.compile(
-    r"\b(overnight|tonight|later tonight|tomorrow"
+    r"\b(overnight|tonight|later tonight|tomorrow|today"
     r"|this\s+(?:morning|afternoon|evening|noon)"
     r"|every\s+(?:morning|day|night|evening|week)|each\s+(?:morning|day|night)"
     r"|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?"
@@ -30,19 +30,68 @@ _SCHEDULE_ACTION_RX = re.compile(
     r"|self[\s_-]?test|generate tests?|test generation|lora|fine[\s_-]?tune"
     r"|self[\s_-]?upgrade|reflection)\b", re.I)
 
-# Imperative command verbs — "open spotify at 8pm", "get the news at 7am", "play X
-# at 9", "close steam in 2 hours". With a future-time marker these mean DEFER the
-# command to the background workers.
+# Imperative command verbs — "open spotify at 8pm", "play X at 9", "close steam in
+# 2 hours". With a future-time marker these mean DEFER the command to the workers.
+#
+# Deliberately NARROW. This previously included stop|check|run|go|take|find|read|
+# show|get|turn|send — everyday conversational verbs that made almost any sentence
+# containing a clock time look like a command. "Stop being so grumpy … at 8:30 on a
+# saturday? … go back to sleep haha" matched on "Stop" and was scheduled as a code
+# job. Only unambiguous app/media/system verbs remain; a genuine heavy task is
+# still caught by _SCHEDULE_VERB_RX or _SCHEDULE_ACTION_RX.
 _IMPERATIVE_RX = re.compile(
-    r"\b(open|launch|start|play|pause|stop|close|quit|kill|get|fetch|show|check"
-    r"|run|remind|turn|mute|unmute|screenshot|take|send|search|find|read|enable"
-    r"|disable|update|download|email|message|post)\b", re.I)
+    r"\b(open|launch|play|pause|close|quit|kill|fetch|mute|unmute"
+    r"|screenshot|search|enable|disable|download|email|post)\b", re.I)
 
 # Don't treat genuine questions as scheduling ("what's on tonight?").
 _QUESTION_RX = re.compile(r"^\s*(what|whats|what's|how|why|who|where|which|whose|tell me|show me what)\b", re.I)
 
+# Conversational address — banter, opinions and second-person commentary are never
+# task requests, however many clock words they happen to contain.
+_CHATTER_RX = re.compile(
+    r"\b(you think|you're|you are|being so|stop being|i want to|i think|i reckon"
+    r"|do you want|don't want|dont want|go back to sleep|haha|lol|jesus christ"
+    r"|for fuck'?s sake|shut up|calm down|wake up)\b", re.I)
+
 # These have their own dedicated time-aware handlers — never hijack them.
 _DEDICATED_TIME_RX = re.compile(r"\b(alarm|timer|stopwatch|pomodoro)\b", re.I)
+
+# A time marker and a command verb must belong to the SAME clause. Without this
+# they could sit 200 chars apart in unrelated sentences and still schedule.
+_PROXIMITY_CHARS = 45
+
+
+def _near(a: tuple[int, int], b: tuple[int, int], window: int = _PROXIMITY_CHARS) -> bool:
+    """True when two regex spans are close enough to be one clause."""
+    if a[0] <= b[1] and b[0] <= a[1]:
+        return True                       # overlapping
+    gap = b[0] - a[1] if b[0] > a[1] else a[0] - b[1]
+    return gap <= window
+
+
+_DAY_QUALIFIER_RX = re.compile(r"^(today|tonight|tomorrow|overnight)$", re.I)
+
+
+def _extract_when(t: str) -> str:
+    """Collect the time markers that form the `when` spec.
+
+    A clock time and its day qualifier are separate matches and the parser needs
+    both ("…for 8:45am today"). But an explicit clock time beats a vague day-part
+    from another clause: in "…woke up on the wrong side of the bed this morning.
+    Schedule … for 8:45am today", "this morning" is narration, not the request.
+    """
+    parts: list[str] = []
+    for m in _SCHEDULE_TIME_RX.finditer(t):
+        p = m.group(0).strip()
+        if p.lower() not in {s.lower() for s in parts}:
+            parts.append(p)
+    if not parts:
+        return ""
+    has_clock = any(any(ch.isdigit() for ch in p) for p in parts)
+    if has_clock:
+        parts = [p for p in parts
+                 if any(ch.isdigit() for ch in p) or _DAY_QUALIFIER_RX.match(p)]
+    return " ".join(parts).strip()
 
 
 def _strip_schedule_time(t: str) -> str:
@@ -66,19 +115,40 @@ def _eli_schedule_prepass(user_text: str):
     t = (user_text or "").strip()
     if len(t.split()) < 3:
         return None
-    if not _SCHEDULE_TIME_RX.search(t):
+    m_time = _SCHEDULE_TIME_RX.search(t)
+    if not m_time:
         return None
     if _DEDICATED_TIME_RX.search(t):
         return None
     if _QUESTION_RX.search(t):
         return None
-    m_action = _SCHEDULE_ACTION_RX.search(t)
-    if not (_SCHEDULE_VERB_RX.search(t) or m_action or _IMPERATIVE_RX.search(t)):
+    # Any question mark, anywhere — mirrors the command splitter's guard. The
+    # ^-anchored rule above misses mid-sentence questions, which is how a rhetorical
+    # "you think i want to debug and test you at 8:30 on a saturday?" got scheduled.
+    if "?" in t:
         return None
+    if _CHATTER_RX.search(t):
+        return None
+
+    m_action = _SCHEDULE_ACTION_RX.search(t)
+    m_verb = _SCHEDULE_VERB_RX.search(t) or m_action or _IMPERATIVE_RX.search(t)
+    if not m_verb:
+        return None
+    # The verb and the time must be in the same clause (see _PROXIMITY_CHARS).
+    if not _near(m_verb.span(), m_time.span()):
+        # A named schedulable action anywhere in the utterance is explicit enough
+        # ("get a morning report ready for me tomorrow morning").
+        if not m_action:
+            return None
+
     inner = m_action.group(0) if m_action else _strip_schedule_time(t)
     return {
         "action": "SCHEDULE_TASK",
-        "args": {"request": inner, "when": t},
+        # `when` is the extracted time PHRASE, never the whole utterance. Passing the
+        # raw sentence meant the parser saw a paragraph, found nothing it understood,
+        # and silently fell back to 02:00 tomorrow — so "8:45am today" was scheduled
+        # for the small hours of the next day.
+        "args": {"request": inner, "when": _extract_when(t)},
         "confidence": 0.9,
         "meta": {"matched_by": "schedule.prepass"},
     }

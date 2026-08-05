@@ -212,8 +212,12 @@ class TasksTab(QWidget):
         when_edit = QLineEdit(when)
         when_edit.setPlaceholderText("overnight · tonight · at 2am · in 3 hours · tomorrow")
         kind_combo = QComboBox()
-        kind_combo.addItems(["auto", "research", "code", "self_upgrade", "reflection"])
-        kind_combo.setCurrentText(kind if kind in ("auto", "research", "code", "self_upgrade", "reflection") else "auto")
+        # Every kind the scheduler can dispatch (scheduled_tasks._WORKERS). eval,
+        # testgen and lora were missing, so editing one of those jobs silently reset
+        # it to "auto" and re-inferred a different kind.
+        from eli.runtime.task_admin import KNOWN_KINDS
+        kind_combo.addItems(list(KNOWN_KINDS))
+        kind_combo.setCurrentText(kind if kind in KNOWN_KINDS else "auto")
         form.addRow("Task:", req_edit)
         form.addRow("When:", when_edit)
         form.addRow("Kind:", kind_combo)
@@ -230,9 +234,11 @@ class TasksTab(QWidget):
             return None
         return r, when_edit.text().strip() or "overnight", kind_combo.currentText()
 
-    def _schedule(self, request: str, when: str, kind: str):
+    def _schedule(self, request: str, when: str, kind: str, recurring: bool = False):
         from eli.runtime.scheduled_tasks import schedule_request
-        return schedule_request(request, when_spec=when, kind=(None if kind == "auto" else kind))
+        return schedule_request(request, when_spec=when,
+                                kind=(None if kind == "auto" else kind),
+                                recurring=bool(recurring))
 
     def _add_task(self):
         vals = self._task_dialog("Add scheduled task")
@@ -263,7 +269,9 @@ class TasksTab(QWidget):
             return
         self._forget_persisted(jid)     # drop the old durable record
         bt.cancel(jid)                  # un-arm the old timer
-        r = self._schedule(*vals)       # re-create at the new time (new pid, re-persisted)
+        # Preserve recurrence: without it, editing a nightly job silently made it
+        # one-shot and the recurring work quietly stopped happening.
+        r = self._schedule(*vals, recurring=bool(meta.get("recurring")))
         if r.get("ok"):
             self.result.setPlainText(f"Rescheduled → job #{r['job_id']} ({r['kind']}) for {r['when_human']}.")
         else:

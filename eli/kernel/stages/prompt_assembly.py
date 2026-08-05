@@ -1404,6 +1404,24 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+        # ── Scheduled-task awareness injection ───────────────────────────────
+        # Nothing used to put task state in front of the model, so a question about
+        # its own schedule was answered from nothing: asked to delete a task, it
+        # replied "the system shows no active background tasks" while four were
+        # armed and listed in the Tasks tab. Give it the rows (or an explicit
+        # "none") and that failure mode becomes impossible rather than unlikely.
+        try:
+            if re.search(r"\b(task|tasks|scheduled|schedule|background job|overnight|"
+                         r"queued|pending|reschedule|cancel)\b", str(user_input or ""), re.I):
+                from eli.runtime.task_admin import describe_tasks
+                _tasks_desc = describe_tasks(limit=10)
+                _extra_blocks.append(
+                    "[SCHEDULED TASKS — live and authoritative. This IS the complete "
+                    "list; if it says none, there are none. Never claim a task exists "
+                    "or does not exist beyond what is listed here]\n" + _tasks_desc)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         # ── Home awareness injection ─────────────────────────────────────────
         # On a home/device question, give ELI the REAL device state (what's on, rooms,
         # usual habits) from its own device server so it answers from fact, not guesses.

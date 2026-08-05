@@ -2131,6 +2131,35 @@ def route(text: str) -> Dict[str, Any]:
     if re.search(r"\b(?:background\s+jobs|list\s+(?:background\s+|running\s+)?jobs|running\s+jobs|what\s+jobs)\b", low):
         return _mk("BACKGROUND_JOBS", {}, 0.9, matched_by="dev.background_jobs")
 
+    # ── Scheduled-task control ────────────────────────────────────────────────
+    # Chat had no way to see or change the scheduler: the triggers above demand the
+    # literal word "jobs", so "delete background TASK for 02:00 on Sunday" matched
+    # nothing, fell through to CHAT, and the model asserted there were no scheduled
+    # tasks while four were armed. These claim the "task" phrasings authoritatively.
+    _TASK_WORD = r"(?:task|tasks|scheduled\s+task|background\s+task|scheduled\s+job)"
+
+    if re.search(r"\b(?:cancel|delete|remove|kill|drop|clear|stop)\b[^.?!]{0,40}\b" + _TASK_WORD + r"\b", low):
+        _m_id = re.search(r"\b(?:task|job)\s*#?\s*(\d{1,6})\b", low)
+        return _mk("CANCEL_TASK",
+                   {"job_id": _m_id.group(1) if _m_id else None, "text": raw},
+                   0.95, matched_by="tasks.cancel")
+
+    if re.search(r"\b(?:reschedule|re-schedule|move|push|shift|change)\b[^.?!]{0,40}\b" + _TASK_WORD + r"\b", low):
+        _m_id = re.search(r"\b(?:task|job)\s*#?\s*(\d{1,6})\b", low)
+        # The new time is whatever follows to/for/until/at.
+        _m_when = re.search(r"\b(?:to|for|until|till|at)\s+(.{2,40})$", low)
+        return _mk("RESCHEDULE_TASK",
+                   {"job_id": _m_id.group(1) if _m_id else None,
+                    "when": (_m_when.group(1).strip() if _m_when else ""), "text": raw},
+                   0.95, matched_by="tasks.reschedule")
+
+    if re.search(r"\b(?:list|show|what(?:'s| is| are)?|which|any)\b[^.?!]{0,30}\b"
+                 r"(?:scheduled|background|pending|upcoming|queued)\b[^.?!]{0,20}\b" + _TASK_WORD + r"\b", low) \
+            or re.search(r"\b" + _TASK_WORD + r"\b[^.?!]{0,20}\b(?:scheduled|pending|queued|upcoming)\b", low) \
+            or re.search(r"\b(?:my|the)\s+(?:scheduled\s+)?tasks\b", low) \
+            or re.search(r"\bwhat(?:'s| is| have you got)\s+(?:scheduled|queued|pending|planned)\b", low):
+        return _mk("LIST_TASKS", {}, 0.9, matched_by="tasks.list")
+
     # CODE_SOLVE — the verified coding agent (plan → DAG/tree search → execute →
     # repair). Takes precedence over GENERATE_SCRIPT for requests that ask for
     # verification/testing/robustness; plain "write a script" stays GENERATE_SCRIPT.
