@@ -66,6 +66,28 @@ def _eli_pm_pre_route(text):
             "routing_fault.browser_complaint",
         )
 
+    # "why did that one work and the others didn't", "why did you fail to open
+    # downloads", "why was that routed wrong" — questions about ELI's own
+    # dispatch. This runs in the PRE-route, ahead of chat.long_question_guard,
+    # which would otherwise force anything 12+ words to CHAT; answered as chat
+    # with no trace attached, the model invented a cause (it blamed a typo for
+    # an app the user never named). ROUTING_FAULT_EXPLAIN answers from the
+    # actual router result instead.
+    if (
+        _eli_pm_re.search(
+            r"\bwhy\b[^?]*\b(?:did|does|didn'?t|do)\b[^?]*"
+            r"\b(?:that|this|it|those|the\s+(?:others?|first|last|previous|other\s+ones?))\b"
+            r"[^?]*\b(?:work(?:ing|ed)?|fail(?:ed)?|open|run|route[ds]?)\b", low)
+        or _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:fail(?:ed)?|not\s+work|didn'?t\s+work|did\s+not\s+work)\b", low)
+        or _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:route[ds]?|routing|mis-?rout\w*)\b", low)
+    ):
+        return _eli_pm_mk(
+            "ROUTING_FAULT_EXPLAIN",
+            {"question": raw},
+            0.98,
+            "routing_fault.dispatch_question",
+        )
+
     if _eli_pm_re.search(r"\bstop giving me data dumps\b|\bwe are not in quick mode\b|\bfull and personalised response\b|\bfull and personalized response\b", low):
         return _eli_pm_mk(
             "PERSONAL_MEMORY_DEEP_EXPLAIN",

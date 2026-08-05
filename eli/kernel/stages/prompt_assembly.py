@@ -1263,6 +1263,15 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+        # Computed ONCE, outside the blocks that consume it. This used to be
+        # assigned inside the world-state try below; when that block raised
+        # (concurrent world-state write), the later self-status block died on
+        # UnboundLocalError and the LIVE SELF-STATUS evidence was silently
+        # dropped — so the model, asked "how's the head?", invented a GPU
+        # temperature. A failure to read the symbolic world must not disarm the
+        # anti-confabulation guard.
+        _ui_low = str(user_input or "").lower()
+
         # ── World awareness state injection ──────────────────────────────────
         # Inject ELI's live AwarenessState so synthesis knows its own internal
         # confidence / uncertainty / focus. Only injected when world state
@@ -1297,7 +1306,6 @@ Answer:"""
             # continuity) as LITERAL ongoing work and fabricates "contradictions /
             # inconsistencies that have arisen, which I'm resolving" — a no-fake-actions
             # violation that made the user think ELI was malfunctioning.
-            _ui_low = str(user_input or "").lower()
             _room_relevant = bool(re.search(
                 r"\b(room|world|avatar|where are you|your location|"
                 r"what are you (?:doing|working on|up to)|in there)\b", _ui_low))

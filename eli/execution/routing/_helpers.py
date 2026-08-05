@@ -11,15 +11,37 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-COMMON_DIRS = {
-    "home": "~",
-    "desktop": str(Path.home() / "Desktop"),
-    "downloads": str(Path.home() / "Downloads"),
-    "documents": str(Path.home() / "Documents"),
-    "music": str(Path.home() / "Music"),
-    "pictures": str(Path.home() / "Pictures"),
-    "videos": str(Path.home() / "Videos"),
-}
+try:
+    # Resolved per-machine (honours XDG user-dirs, so localised folder names
+    # like ~/Téléchargements work) rather than assuming the English defaults.
+    from eli.utils.platform_compat import user_dirs as _user_dirs
+    COMMON_DIRS = _user_dirs()
+except Exception:
+    COMMON_DIRS = {
+        "home": "~",
+        "desktop": str(Path.home() / "Desktop"),
+        "downloads": str(Path.home() / "Downloads"),
+        "documents": str(Path.home() / "Documents"),
+        "music": str(Path.home() / "Music"),
+        "pictures": str(Path.home() / "Pictures"),
+        "videos": str(Path.home() / "Videos"),
+    }
+
+
+def _known_dir_path(s: str) -> str:
+    """Expanded path when *s* NAMES a well-known user folder, else "".
+
+    The decision counterpart to _expand_common_dir, which always returns
+    something (falling back to the raw token) and therefore cannot be used to
+    decide whether a phrase IS a folder. Without a predicate, "open downloads"
+    was indistinguishable from "open spotify" and got launched as an app —
+    answered with "downloads is not installed, shall I install it?".
+    """
+    try:
+        from eli.utils.platform_compat import known_user_dir as _kud
+        return _kud(s)
+    except Exception:
+        return ""
 
 
 def _mk(
@@ -257,4 +279,4 @@ def _extract_int(raw: str, default: int, min_value: int,
     n = int(m.group(1))
     return max(min_value, min(max_value, n))
 
-__all__ = ['COMMON_DIRS', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']
+__all__ = ['COMMON_DIRS', '_known_dir_path', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']
