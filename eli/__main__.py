@@ -8,60 +8,21 @@ Flags:
                    hash to config/trusted_agents.json) then exit.
   --activate-key <key>
                    Activate a commercial ELI v3 license on this machine.
+                   Add --force to replace a different active license.
   --license-status Show license activation status (JSON) and exit.
   --deactivate-license
                    Remove local license activation and exit.
+  --start-trial    Start this install's 7-day trial and exit.
 """
 from __future__ import annotations
 import sys
 
 
 def _handle_license_flags(args: list[str]) -> int | None:
-    if "--activate-key" in args:
-        idx = args.index("--activate-key")
-        if idx + 1 >= len(args):
-            print("Error: --activate-key requires a license key", file=sys.stderr)
-            return 1
-        from eli.licensing.activation import activate_license_key
+    """Delegate to the shared handler (also used by the frozen entry point)."""
+    from eli.licensing.flags import handle_license_flags
 
-        try:
-            state = activate_license_key(args[idx + 1])
-        except Exception as exc:
-            print(f"Activation failed: {exc}", file=sys.stderr)
-            return 1
-        print(f"License activated ({state.tier}, {state.seats} seat(s)).")
-        return 0
-
-    if "--license-status" in args:
-        import json
-        from eli.licensing.activation import validate_activation
-        from eli.licensing.storage import activation_state_path, license_dir
-
-        status = validate_activation()
-        payload = {
-            "active": status.active,
-            "required": status.required,
-            "tier": status.tier,
-            "seats": status.seats,
-            "machines_bound": status.machines_bound,
-            "expires_at": status.expires_at,
-            "message": status.message,
-            "license_dir": str(license_dir()),
-            "activation_file": str(activation_state_path()),
-        }
-        print(json.dumps(payload, indent=2))
-        return 0 if status.active or not status.required else 2
-
-    if "--deactivate-license" in args:
-        from eli.licensing.activation import deactivate_license
-
-        if deactivate_license():
-            print("License deactivated.")
-            return 0
-        print("No license activation found.")
-        return 1
-
-    return None
+    return handle_license_flags(args)
 
 
 def main() -> int:

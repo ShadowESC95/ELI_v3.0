@@ -1167,7 +1167,9 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 def main():
     print(f"\n  {APP_NAME} {APP_VERSION}\n  ───────────────\n")
 
-    app = QApplication(sys.argv)
+    # Reuse an existing instance: the license gate may already have created one
+    # to show its activation dialog, and Qt permits only one per process.
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle('Fusion')
     app.setApplicationName(APP_NAME)
     try:

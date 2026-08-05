@@ -39,14 +39,40 @@ def signing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     lic_dir = tmp_path / "licensing"
     lic_dir.mkdir()
+    data_dir = tmp_path / "artifacts"
+    data_dir.mkdir()
     monkeypatch.setenv("ELI_LICENSE_DIR", str(lic_dir))
+    # Trial markers are mirrored into the data dir; without this they would land
+    # in the developer's real artifacts directory and leak between runs.
+    monkeypatch.setenv("ELI_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(data_dir))
     monkeypatch.setenv("ELI_LICENSE_PUBLIC_KEY", str(pub))
     monkeypatch.setenv("ELI_LICENSE_SIGNING_KEY", str(priv))
     monkeypatch.delenv("ELI_LICENSE_BYPASS", raising=False)
     monkeypatch.delenv("ELI_REQUIRE_LICENSE", raising=False)
     monkeypatch.delenv("ELI_RETAIL_BUILD", raising=False)
     monkeypatch.delenv("ELI_LICENSE_KEY", raising=False)
-    return {"private": priv, "public": pub, "license_dir": lic_dir}
+
+    from eli.core import paths
+    from eli.licensing import machine_id
+
+    for fn in (
+        paths.data_dir,
+        paths.config_dir,
+        machine_id.machine_fingerprint,
+        machine_id.legacy_machine_fingerprints,
+    ):
+        fn.cache_clear()
+
+    yield {"private": priv, "public": pub, "license_dir": lic_dir, "data_dir": data_dir}
+
+    for fn in (
+        paths.data_dir,
+        paths.config_dir,
+        machine_id.machine_fingerprint,
+        machine_id.legacy_machine_fingerprints,
+    ):
+        fn.cache_clear()
 
 
 def _sample_payload() -> LicensePayload:

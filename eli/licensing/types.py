@@ -113,3 +113,6 @@ class ActivationStatus:
     expires_at: str | None
     message: str
     state: ActivationState | None = None
+    # Trial lifecycle for this install: available | active | expired | revoked.
+    # None when trials are irrelevant (paid license active, or env-key path).
+    trial: str | None = None

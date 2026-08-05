@@ -5,7 +5,7 @@
     "trial": {
       "label": "Trial",
       "seats_default": 1,
-      "duration_days_default": 14,
+      "duration_days_default": 7,
       "commercial_use": false,
       "updates_months": 0,
       "support": "community",

@@ -4,32 +4,49 @@ import argparse
 import json
 import sys
 
-from eli.licensing.activation import (
-    activate_license_key,
-    deactivate_license,
-    validate_activation,
-)
-from eli.licensing.storage import activation_state_path, ensure_license_dir, license_dir
+from eli.licensing.activation import activate_license_key, deactivate_license
+from eli.licensing.storage import activation_state_path, ensure_license_dir
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
-    status = validate_activation()
-    payload = {
-        "active": status.active,
-        "required": status.required,
-        "tier": status.tier,
-        "seats": status.seats,
-        "machines_bound": status.machines_bound,
-        "expires_at": status.expires_at,
-        "message": status.message,
-        "license_dir": str(license_dir()),
-        "activation_file": str(activation_state_path()),
-    }
-    if status.state is not None:
-        payload["license_id"] = status.state.license_id
-        payload["machines"] = [m.to_dict() for m in status.state.machines]
+    from eli.licensing.flags import status_payload
+
+    payload = status_payload()
     print(json.dumps(payload, indent=2))
-    return 0 if status.active or not status.required else 2
+    return 0 if payload["active"] or not payload["required"] else 2
+
+
+def _cmd_trial(_args: argparse.Namespace) -> int:
+    from eli.licensing.trial import trial_summary
+
+    print(json.dumps(trial_summary(), indent=2))
+    return 0
+
+
+def _cmd_start_trial(_args: argparse.Namespace) -> int:
+    from eli.licensing.trial import grant_trial, trial_duration_days, trial_state
+
+    state = grant_trial()
+    if state is None:
+        print(
+            f"Trial not available on this machine (state: {trial_state()}).",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"{trial_duration_days()}-day trial started.")
+    print(f"  reference:  {state.customer_ref}")
+    print(f"  expires_at: {state.expires_at}")
+    return 0
+
+
+def _cmd_revoke_trial(_args: argparse.Namespace) -> int:
+    from eli.licensing.trial import revoke_trial
+
+    if revoke_trial(reason="manual"):
+        print("Trial revoked.")
+        return 0
+    print("No active trial to revoke.")
+    return 1
 
 
 def _cmd_activate(args: argparse.Namespace) -> int:
@@ -84,6 +101,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="unbind only this machine (keep license for other seats)",
     )
     p_deact.set_defaults(func=_cmd_deactivate)
+
+    p_trial = sub.add_parser("trial", help="show trial state for this install")
+    p_trial.set_defaults(func=_cmd_trial)
+
+    p_start = sub.add_parser("start-trial", help="start this install's trial")
+    p_start.set_defaults(func=_cmd_start_trial)
+
+    p_revoke = sub.add_parser("revoke-trial", help="revoke this install's trial")
+    p_revoke.set_defaults(func=_cmd_revoke_trial)
 
     return parser
 

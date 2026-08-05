@@ -91,6 +91,13 @@ product_signing.pem
 **/product_signing.pem
 eli-license-signing/
 
+# Per-machine license state — activation bindings, trial markers and the
+# persisted install id. Machine-specific and never belongs in the repo.
+config/licensing/activation.json
+config/licensing/trial.json
+config/licensing/machine.id
+**/.eli_trial_state.json
+
 # ── IDE & editor ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/
