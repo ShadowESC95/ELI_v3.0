@@ -139,18 +139,34 @@ def xtts_available() -> bool:
         return False
 
 
+def _select_device() -> str:
+    """cuda if available, else cpu. ``ELI_XTTS_DEVICE`` forces it.
+
+    The override matters because XTTS shares the GPU with the main model: on a
+    small card, loading XTTS while the LLM is resident is what produces an OOM
+    stall or a segfault mid-sentence. This is also how the startup picker pins
+    the choice made BEFORE the main model claims VRAM — without it, the decision
+    could only be changed in code.
+    """
+    import os
+    forced = os.environ.get("ELI_XTTS_DEVICE", "").strip().lower()
+    if forced in ("cpu", "cuda"):
+        return forced
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        log.debug("tts_xtts: torch/cuda probe failed — using CPU", exc_info=True)
+    return "cpu"
+
+
 def _get_model():
     global _TTS
     if _TTS is not None:
         return _TTS
     from TTS.api import TTS as _TTSApi
-    device = "cpu"
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device = "cuda"
-    except Exception:
-        log.debug('tts_xtts: CUDA probe failed — using CPU', exc_info=True)
+    device = _select_device()
     log.info("tts_xtts: loading XTTS-v2 on %s (first run downloads ~1.8GB)…", device)
     _TTS = _TTSApi(_XTTS_MODEL).to(device)
     return _TTS

@@ -122,3 +122,24 @@ def test_main_handles_the_license_flag():
            "eli" / "__main__.py").read_text(encoding="utf-8")
     assert '"--license" in args' in src
     assert "license_info" in src
+
+# ── XTTS device override ─────────────────────────────────────────────────────
+@pytest.mark.parametrize("forced", ["cpu", "cuda"])
+def test_xtts_device_can_be_forced(monkeypatch, forced):
+    """XTTS shares the GPU with the main model; pinning it to CPU must not
+    require a code edit."""
+    from eli.perception.tts_xtts import _select_device
+    monkeypatch.setenv("ELI_XTTS_DEVICE", forced)
+    assert _select_device() == forced
+
+
+def test_xtts_device_ignores_a_bogus_value(monkeypatch):
+    from eli.perception.tts_xtts import _select_device
+    monkeypatch.setenv("ELI_XTTS_DEVICE", "gpu-please")
+    assert _select_device() in {"cpu", "cuda"}
+
+
+def test_xtts_device_autodetects_without_the_override(monkeypatch):
+    from eli.perception.tts_xtts import _select_device
+    monkeypatch.delenv("ELI_XTTS_DEVICE", raising=False)
+    assert _select_device() in {"cpu", "cuda"}
