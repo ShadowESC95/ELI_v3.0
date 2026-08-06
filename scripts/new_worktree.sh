@@ -45,10 +45,19 @@ case "${1:-}" in
         name="${2:?usage: new_worktree.sh --remove <name>}"
         target="$PARENT/$BASENAME-$name"
         [ -d "$target" ] || die "no worktree at $target"
-        # Remove the symlinks first so nothing walks into the shared .venv.
+        force=""
+        [ "${3:-}" = "--force" ] || [ "${3:-}" = "-f" ] && force="--force"
+        # Ask git FIRST whether it will let this go. Unlinking up front and then
+        # having git refuse leaves a stranded worktree with no .venv — worse than
+        # the state we started in.
+        if [ -z "$force" ] && [ -n "$(git -C "$target" status --porcelain 2>/dev/null)" ]; then
+            die "$target has uncommitted changes; commit them, or re-run with --force"
+        fi
+        # Drop the symlinks before deletion so nothing can walk into the shared
+        # .venv / models / tts_piper and delete the originals.
         for d in "${SHARED[@]}"; do [ -L "$target/$d" ] && rm -f "$target/$d"; done
-        git -C "$ROOT" worktree remove "$target" "${3:-}" \
-            || die "git refused; commit or discard changes in $target first (or pass --force)"
+        git -C "$ROOT" worktree remove ${force:+$force} "$target" \
+            || die "git refused to remove $target"
         echo "[worktree] removed $target"
         exit 0
         ;;
