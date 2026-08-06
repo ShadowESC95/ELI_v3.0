@@ -226,18 +226,84 @@ def _list_system_voices(refresh: bool = False) -> list[str]:
     _SYSTEM_VOICES_CACHE = list(out)
     return out
 
+_PIPER_PROSODY_DEFAULTS = {
+    "length_scale": 1.03,
+    "noise_scale": 0.72,
+    "noise_w": 0.85,
+    "sentence_silence": 0.38,
+}
+
+
+def _piper_prosody_args() -> "list[str]":
+    """Build Piper CLI prosody flags from env overrides + expressive defaults.
+    Returns [] if disabled (ELI_TTS_PROSODY=0) so a user can fall back to Piper's
+    own per-voice defaults. Reads settings once; never raises."""
+    if os.environ.get("ELI_TTS_PROSODY", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return []
+    vals = dict(_PIPER_PROSODY_DEFAULTS)
+    try:
+        from eli.core.runtime_settings import load_settings
+        s = load_settings() or {}
+        for k in vals:
+            v = s.get(f"tts_{k}")
+            if v is not None:
+                vals[k] = v
+    except Exception:
+        log.debug("[TTS] prosody settings read failed", exc_info=True)
+    # Emotional delivery: the current tone (from tone_adaptor) overrides the base
+    # pace / expressiveness / sentence-pause so ELI's VOICE carries the emotion —
+    # slow+flat+long pauses for sad, fast+bright+short for ecstatic, etc.
+    try:
+        from eli.cognition import tone_adaptor
+        for k, v in (tone_adaptor.voice_prosody() or {}).items():
+            if k in vals and v is not None:
+                vals[k] = v
+    except Exception:
+        log.debug("[TTS] tone prosody merge skipped", exc_info=True)
+    for k in vals:  # env wins over everything (explicit user pin)
+        ev = os.environ.get(f"ELI_TTS_{k.upper()}", "").strip()
+        if ev:
+            vals[k] = ev
+    args: "list[str]" = []
+    for flag, key in (("--length_scale", "length_scale"), ("--noise_scale", "noise_scale"),
+                      ("--noise_w", "noise_w"), ("--sentence_silence", "sentence_silence")):
+        try:
+            args += [flag, str(float(vals[key]))]
+        except (TypeError, ValueError):
+            log.debug("[TTS] bad prosody value for %s: %r", key, vals[key])
+    return args
+
+
+_LOW_QUALITY_SUFFIXES = ("-x_low", "-low")
+
+
+def _is_low_quality_piper(name: str) -> bool:
+    return str(name or "").endswith(_LOW_QUALITY_SUFFIXES)
+
+
+def _allow_robotic_voices() -> bool:
+    """Opt back in to espeak `sys:` + low-quality Piper voices (default: hidden)."""
+    return os.environ.get("ELI_TTS_ALLOW_ROBOTIC", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def list_voices() -> list[str]:
     """Return runnable voices: Piper ONNX names, then OS voices (``sys:`` prefix)."""
     voices: list[str] = []
     seen: set[str] = set()
+    low: list[str] = []
+    allow_robotic = _allow_robotic_voices()
     for d in _voice_search_dirs():
         try:
             for f in sorted(d.glob("*.onnx")):
                 if not _has_piper_config(f):
                     continue
                 name = f.stem  # e.g. en_US-lessac-high
-                if name not in seen:
-                    seen.add(name)
+                if name in seen:
+                    continue
+                seen.add(name)
+                if _is_low_quality_piper(name) and not allow_robotic:
+                    low.append(name)      # deferred; only used as last resort
+                else:
                     voices.append(name)
         except Exception:
             pass
@@ -259,10 +325,15 @@ def list_voices() -> list[str]:
                 voices.append(c["id"])
     except Exception:
         pass
-    for sv in _list_system_voices():
-        if sv not in seen:
-            seen.add(sv)
-            voices.append(sv)
+    sys_voices = [sv for sv in _list_system_voices() if sv not in seen]
+    if allow_robotic:
+        voices.extend(sys_voices)
+        voices.extend(low)
+    elif not voices:
+        # Nothing natural on this box — return the robotic ones so ELI can still
+        # speak, rather than an empty list (mute).
+        voices.extend(low)
+        voices.extend(sys_voices)
     return voices
 
 
@@ -571,6 +642,7 @@ def _speak_piper_cli(text, voice_name=None):
     _base_cmd = [piper_bin, "--model", str(model), "--output_file", str(wav)]
     if cfg:
         _base_cmd.extend(["--config", str(cfg)])
+    _base_cmd.extend(_piper_prosody_args())  # expressive pacing + sentence pauses
 
     def _run_piper(use_cuda):
         _cmd = list(_base_cmd) + (["--cuda"] if use_cuda else [])
@@ -863,6 +935,7 @@ def _piper_render_wav(text: str, model, cfg, piper_bin: str) -> Optional[bytes]:
     base_cmd = [piper_bin, "--model", str(model), "--output_file", str(wav)]
     if cfg:
         base_cmd.extend(["--config", str(cfg)])
+    base_cmd.extend(_piper_prosody_args())  # expressive pacing + sentence pauses
 
     def _run(use_cuda):
         cmd = list(base_cmd) + (["--cuda"] if use_cuda else [])

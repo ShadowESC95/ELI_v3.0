@@ -1363,6 +1363,26 @@ Answer:"""
                         "physical/runtime state, use THESE exact figures. You have NO other "
                         "sensors: never invent a temperature, 'thermal throttling', or 'overnight "
                         "diagnostics' — if a value isn't listed here, say you don't track it]\n" + _ss)
+
+            # ── Verified self-FACTS (construction, not physical state) ──────
+            # The sibling of the block above: that one is "how am I running",
+            # this is "what am I made of". Both exist because the alternative is
+            # a confident invention — ELI once placed its databases under an
+            # invented username and described upgrading via a script that never
+            # existed. Rides above the handoff cap for the same reason.
+            _self_descriptive = bool(re.search(
+                r"\b(what are you|who are you|describe yourself|"
+                r"your (?:architecture|internals?|capabilit\w+|components?|design|"
+                r"databases?|storage|memory system|codebase|upgrade path)|"
+                r"how (?:do|are) you (?:built|structured|made|work)|"
+                r"how do you (?:upgrade|update) yourself|what do you run on)\b",
+                _ui_low))
+            if _self_descriptive:
+                from eli.runtime.self_facts import render_self_facts_block as _rsf
+                _sf = _rsf()
+                if _sf.strip():
+                    _live_self_status = ((_live_self_status + "\n\n")
+                                         if _live_self_status else "") + _sf
         except Exception:
             log.debug("live self-status injection skipped", exc_info=True)
 

@@ -161,7 +161,12 @@ class OllamaModelSelector(QWidget):
         """Background thread: fetch models, then hand the result to the GUI thread
         over the _models_ready signal (never a timer — see the signal's comment)."""
         try:
-            from eli.integrations.ollama.client import is_running, list_models, get_active_model
+            from eli.integrations.ollama.client import (
+                ensure_server_running, is_running, list_models, get_active_model,
+            )
+            # Installed-but-stopped is the #1 "Ollama isn't loading anything"
+            # cause; start it rather than showing the user an empty picker.
+            ensure_server_running()
             running = is_running()
             models = list_models() if running else []
             active = get_active_model()

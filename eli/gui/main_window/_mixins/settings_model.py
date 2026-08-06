@@ -584,6 +584,30 @@ _register()
         vbox.addStretch()
         return page
 
+    def _reload_voice_selector(self) -> None:
+        """Repopulate the voice dropdown after the library dialog installs one.
+
+        Without this the newly downloaded voice exists on disk but the open
+        Settings page still shows the old list, so it looks like the download
+        did nothing.
+        """
+        try:
+            sel = getattr(self, "_voice_selector", None)
+            if sel is None:
+                return
+            from eli.perception.tts_router import list_voices, get_active_voice
+            current = get_active_voice()
+            sel.blockSignals(True)
+            sel.clear()
+            voices = list_voices()
+            for v in voices:
+                sel.addItem(v)
+            if current in voices:
+                sel.setCurrentText(current)
+            sel.blockSignals(False)
+        except Exception:
+            log.debug("[TTS] voice selector reload failed", exc_info=True)
+
     def _build_settings_runtime_page(self) -> QWidget:
         page, vbox = self._settings_page(
             "Runtime",
@@ -695,6 +719,28 @@ _register()
             _voice_lbl.setStyleSheet("color:#8eaac8; min-width:50px;")
             _voice_row_layout.addWidget(_voice_lbl)
             _voice_row_layout.addWidget(self._voice_selector, 1)
+
+            # Voice library — ELI ships a small pack; upstream hosts ~166 across 45
+            # languages and voice_assets could already fetch any of them, but until
+            # now nothing exposed that to the user. This button is that path.
+            _get_btn = QPushButton("Get more…")
+            _get_btn.setToolTip(
+                "Browse and download additional Piper voices — more English accents, "
+                "other languages, and the ideal base voices for the character presets.")
+
+            def _open_voice_library():
+                try:
+                    from eli.gui.widgets.voice_downloader import VoiceDownloadDialog
+                    dlg = VoiceDownloadDialog(self)
+                    dlg.voices_changed.connect(self._reload_voice_selector)
+                    dlg.exec()
+                except Exception as _e:
+                    log.debug(f"[TTS] voice library dialog failed: {_e}", exc_info=True)
+                    QMessageBox.warning(self, "Voice library",
+                                        f"Could not open the voice library:\n{_e}")
+
+            _get_btn.clicked.connect(_open_voice_library)
+            _voice_row_layout.addWidget(_get_btn)
             tts_form.addRow(_voice_row_widget)
 
             # Test voice button

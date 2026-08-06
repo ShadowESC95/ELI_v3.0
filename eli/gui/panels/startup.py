@@ -46,7 +46,8 @@ def _query_ollama_tags(host: str, timeout: int = 5):
     # Normalise through the client so a scheme-less "localhost:11434" typed here
     # behaves exactly as it does everywhere else, and try the same IPv4 fallback.
     try:
-        from eli.integrations.ollama.client import candidate_hosts
+        from eli.integrations.ollama.client import candidate_hosts, ensure_server_running
+        ensure_server_running()   # auto-start a local Ollama that's installed but stopped
         bases = candidate_hosts(host)
     except Exception:
         bases = [(host or "http://127.0.0.1:11434").strip().rstrip("/")]

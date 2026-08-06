@@ -13,6 +13,10 @@ Flags:
   --deactivate-license
                    Remove local license activation and exit.
   --start-trial    Start this install's 7-day trial and exit.
+  --license, --licence
+                   Print the PolyForm Internal Use terms ELI ships under, then
+                   exit. Distinct from --license-status, which reports this
+                   install's ACTIVATION state; this prints the TERMS.
 """
 from __future__ import annotations
 import sys
@@ -31,6 +35,14 @@ def main() -> int:
     license_rc = _handle_license_flags(args)
     if license_rc is not None:
         return license_rc
+
+    # ── Licence TERMS ─────────────────────────────────────────────────────────
+    # Runs after the activation flags above (they match exact strings, so
+    # "--license" and "--license-status" cannot collide) and before anything
+    # heavy is imported: asking for the terms must work on a broken install.
+    if "--license" in args or "--licence" in args:
+        from eli.runtime.license_info import print_license
+        return print_license()
 
     # ── Trust-agent utility ───────────────────────────────────────────────────
     if "--trust-agent" in args:

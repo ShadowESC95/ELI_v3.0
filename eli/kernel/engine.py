@@ -6477,6 +6477,21 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final_response = (
                     "Sorry — my reply came out garbled there. Could you ask me that again?"
                 )
+        # ── Self-description repair (outbound) ───────────────────────────────
+        # The prompt-level self-facts block makes fabrication rare; this makes it
+        # correctable. ELI has placed its databases under an invented username,
+        # written agent.sqlite for agent.sqlite3, and described upgrading itself
+        # via a script that has never existed. Cheap: returns immediately unless a
+        # path or script token is present.
+        try:
+            from eli.runtime.self_facts import repair_self_description as _repair_self
+            _repaired, _self_fixes = _repair_self(final_response)
+            if _self_fixes:
+                log.debug(f"[COGNITIVE] Self-description repaired: {'; '.join(_self_fixes)}")
+                final_response = _repaired
+        except Exception:
+            log.debug("self-description repair skipped", exc_info=True)
+
         # Placeholder/template-leak guard (user directive, 2026-06-06: "I expect
         # the appropriate answer"): the model sometimes emits an unfilled scaffold
         # like "[list up to 3 habits from memory or analysis]" when evidence

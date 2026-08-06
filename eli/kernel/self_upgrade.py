@@ -22,10 +22,31 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+from eli.utils.log import get_logger
 from eli.core.paths import project_root as _project_root
+
+log = get_logger(__name__)
 PROJECT_ROOT = _project_root()
 _DEFAULT_RELEASE_REPO = os.environ.get("ELI_RELEASE_REPO", "ShadowESC95/ELI_v3.0")
-_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.36")
+_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.37")
+
+
+def _install_kind() -> str:
+    """How this ELI was installed — decides which upgrade mechanisms can work.
+
+    ``appimage``  running from an AppImage; its runtime exports APPIMAGE as the
+                  absolute path of the .AppImage file. Upgrading means fetching
+                  a new AppImage — there is no git checkout and no pip.
+    ``frozen``    another PyInstaller bundle (Windows .exe, macOS .app).
+    ``source``    a git/pip checkout — the only case this module was originally
+                  written for, which is why an AppImage install used to run
+                  `git pull` and `pip install` and fail both by construction.
+    """
+    if os.environ.get("APPIMAGE"):
+        return "appimage"
+    if getattr(sys, "frozen", False):
+        return "frozen"
+    return "source"
 
 
 def _run(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 120) -> Dict[str, Any]:
@@ -145,18 +166,30 @@ class SelfUpgrader:
     # ── Private step implementations ──────────────────────────────────────────
 
     def _local_version(self) -> str:
-        try:
-            import importlib.metadata as im
-            return str(im.version("eli-mkxi"))
-        except Exception:
-            pass
+        """The version actually running.
+
+        pyproject.toml is consulted FIRST. Installed dist metadata goes stale the
+        moment the project is bumped without reinstalling, and a wrong local
+        version makes the upgrade comparison meaningless — this venv still carries
+        an `eli-mkxi 2.0.0` dist from the v2 lineage, which made v3 report itself
+        as 2.0.0 in upgrade summaries and self-description. pyproject is bundled
+        into the frozen builds too (the spec ships it as data), so it is the more
+        reliable source in both cases.
+        """
         try:
             text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
             m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
             if m:
                 return m.group(1)
         except Exception:
-            pass
+            # Silent failure here is how the wrong version got reported in the
+            # first place — say so rather than sliding to the stale fallback.
+            log.debug("version: pyproject read failed", exc_info=True)
+        try:
+            import importlib.metadata as im
+            return str(im.version("eli-v3"))
+        except Exception:
+            log.debug("version: dist metadata unavailable", exc_info=True)
         return "0.0.0"
 
     def _release_upgrade(self) -> Tuple[bool, str]:
