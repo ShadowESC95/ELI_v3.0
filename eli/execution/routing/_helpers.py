@@ -55,14 +55,20 @@ def _mk(
     required_capabilities: Optional[List[str]] = None,
     allow_chat_without_evidence: Optional[bool] = None,
     task_family: Optional[str] = None,
+    meta_extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Canonical route object with debug/planner metadata."""
+    """Canonical route object with debug/planner metadata.
+
+    `meta_extra` merges caller-supplied keys into meta for contracts that carry
+    fields with no dedicated parameter (response_contract, requires_plan, …).
+    The named parameters win, so a caller cannot quietly redefine matched_by.
+    """
     out = {
         "action": action,
         "args": args or {},
         "confidence": float(max(0.0, min(1.0, confidence))),
     }
-    meta: Dict[str, Any] = {}
+    meta: Dict[str, Any] = dict(meta_extra or {})
     if matched_by:
         meta["matched_by"] = matched_by
     if entities:
