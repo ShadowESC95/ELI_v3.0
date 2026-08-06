@@ -623,6 +623,12 @@ def _route_set_communication_style(raw: str, low: str) -> Optional[Dict[str, Any
                                        matched_by="voice.set.persona_disambig")
                     except Exception:
                         log.debug("voice disambig in persona route failed", exc_info=True)
+                # NOTE: v2 additionally routes a palette-resolvable style to SET_TONE
+                # here. v3 deliberately does not — test_voice_actions asserts that a
+                # tone request which isn't a real voice stays persona tone, so
+                # "be more formal" / "use a funny voice" remain
+                # SET_COMMUNICATION_STYLE. The standalone tone route below still
+                # catches directives the persona patterns don't name ("be comedic").
                 return _mk(
                     "SET_COMMUNICATION_STYLE",
                     {"style": style},
@@ -1284,6 +1290,70 @@ def route(text: str) -> Dict[str, Any]:
     # this deterministic region so a concrete voice request isn't swallowed by the
     # later persona-style route ("use a X voice"). Runs AFTER wake/train above, so
     # "train my voice" and "voice diagnostics" have already returned.
+    # ── Tone / emotion register (shades ELI's delivery; core personality unchanged) ──
+    # Ported from v2: tone_adaptor.set_tone/clear_tone and the emotion palette were
+    # already here, and the Settings dropdown already called them — only the spoken
+    # route was missing, so "be comedic" did nothing.
+    # CLEAR first ("back to normal", "be yourself", "drop the tone").
+    if re.search(r"\b(back to (normal|yourself)|be yourself|normal tone|drop the (tone|act|voice)"
+                 r"|stop (that|the tone|acting)|reset your tone|clear (the )?tone)\b", low):
+        return _mk("CLEAR_TONE", {}, 0.9, matched_by="tone.clear")
+    # SET — an explicit tone directive that names a palette tone/alias. Gated on BOTH
+    # a tone-setting verb AND the phrase resolving to a real tone, so "be comedic" /
+    # "talk street" / "sound more professional" fire, but a passing mention
+    # ("that joke was comedic gold") does not.
+    if re.search(r"\b(be|sound|talk|speak|act|go|get|use|make it|keep it|more|less)\b", low):
+        try:
+            from eli.cognition.emotion_palette import resolve_tone as _rt
+            _tone = _rt(raw)
+            if _tone and _tone != "neutral":
+                return _mk("SET_TONE", {"tone": _tone}, 0.9, matched_by="tone.set")
+        except Exception:
+            log.debug("tone.set resolve failed", exc_info=True)
+
+    # CREATE / clone a voice from a dropped-in recording (wav/mp3/mp4). Checked
+    # before the download/set routes so "create a voice from …" isn't mis-read.
+    if re.search(r"\b(voice|clone)\b", low) and re.search(
+            r"\b(creat|make|build|clone|generat|record)\w*\b", low) and (
+            re.search(r"\.(wav|mp3|mp4|m4a|ogg|flac|aac|webm)\b", low)
+            or re.search(r"\b(from|using|out of|with)\b.*\b(recording|audio|clip|sample|file|voice)\b", low)
+            or re.search(r"\b(my|this|the)\s+(recording|audio|clip|sample|voice)\b", low)):
+        _m = re.search(r"\b(?:called|named|name it|as)\s+([A-Za-z0-9_ -]{1,40})", raw)
+        _f = re.search(r"([~/\w. -]+\.(?:wav|mp3|mp4|m4a|ogg|flac|aac|webm))\b", raw, re.I)
+        _args = {"query": raw}
+        if _m:
+            _args["name"] = _m.group(1).strip()
+        if _f:
+            _args["file"] = _f.group(1).strip()
+        return _mk("CREATE_VOICE", _args, 0.9, matched_by="voice.create")
+
+    # DESIGN_VOICE — build your own voice from a base + pitch/speed (no audio clip needed).
+    # "design a voice called Nova, deep and slow". Sits AFTER voice.create so a request that
+    # names an audio file still clones rather than designing from scratch.
+    if (re.search(r"\b(design|make|create|build|set\s*up)\b", low)
+            and re.search(r"\bvoice\b", low)
+            and re.search(r"\b(?:called|named|name it)\s+[A-Za-z0-9_-]", raw, re.I)):
+        _dm = re.search(r"\b(?:called|named|name it)\s+([A-Za-z0-9_ -]{1,40})", raw, re.I)
+        _dargs = {"query": raw}
+        if _dm:
+            _dargs["name"] = _dm.group(1).strip().rstrip(",.")
+        _p = re.search(r"\bpitch\s*([+-]?\d+(?:\.\d+)?)", low)
+        _sp = re.search(r"\bspeed\s*(\d+(?:\.\d+)?)", low)
+        if _p:
+            _dargs["pitch"] = _p.group(1)
+        if _sp:
+            _dargs["speed"] = _sp.group(1)
+        # plain-English shaping
+        if re.search(r"\b(deep|low|lower)\b", low) and not _p:
+            _dargs["pitch"] = -2.0
+        if re.search(r"\b(high|higher|bright)\b", low) and not _p:
+            _dargs["pitch"] = 2.0
+        if re.search(r"\b(slow|slower)\b", low) and not _sp:
+            _dargs["speed"] = 0.9
+        if re.search(r"\b(fast|faster|quick)\b", low) and not _sp:
+            _dargs["speed"] = 1.1
+        return _mk("DESIGN_VOICE", _dargs, 0.9, matched_by="voice.design")
+
     if re.search(r"\bvoices?\b|\baccents?\b", low):
         _has_dl = bool(re.search(r"\b(download|install|fetch|add|grab)\b", low))
         # LIST — asking what's available (no fetch/switch verb)

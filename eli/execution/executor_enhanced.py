@@ -1409,6 +1409,10 @@ SUPPORTED_ACTIONS = [
     'LIST_VOICES',
     'DOWNLOAD_VOICE',
     'SET_VOICE',
+    'SET_TONE',
+    'CLEAR_TONE',
+    'CREATE_VOICE',
+    'DESIGN_VOICE',
     'STOP_MEDIA',
     'NOW_PLAYING',
     'SUMMARIZE_FILE',
@@ -3380,6 +3384,126 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             label = vid.replace("char:", "").upper() if vid.startswith("char:") else vid
             msg = f"Voice set to {label}."
             return {"ok": True, "action": a, "voice": vid, "content": msg, "response": msg}
+        except Exception as e:
+            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+    # ── Tone + voice authoring (ported from v2) ──────────────────────────────
+    # tone_adaptor / emotion_palette / voice_fx were already present here and the
+    # Settings dropdown already called set_tone(); only these action branches and
+    # their router intents were missing, so a spoken "be comedic" reached nothing.
+    # ---- DESIGN_VOICE — build your OWN named voice from a base + effects ----
+    # voice_fx.save_preset existed but nothing reached it, so users could only clone from a
+    # recording; they could not design a voice. The shipped styles are deliberately generic
+    # (calm/robotic/energetic/synthetic/refined) — this is how a user makes one that is
+    # theirs: pick a base voice, shift pitch/speed, name it, and it becomes char:<name>.
+    if a == "DESIGN_VOICE":
+        try:
+            from eli.perception import voice_fx, tts_router
+            name = str(args.get("name") or args.get("voice") or "").strip()
+            if not name:
+                msg = ("Give the voice a name — e.g. \"design a voice called Nova, deep and "
+                       "slow\". You can set base (any installed voice), pitch (semitones, "
+                       "-6..+6), speed (0.5..1.5) and a description.")
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            installed = list(tts_router.list_voices())
+            base = str(args.get("base") or "").strip()
+            if base and base not in installed:
+                msg = (f"'{base}' isn't installed. Available: " + ", ".join(installed[:12]) +
+                       ("…" if len(installed) > 12 else ""))
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            spec = {"base": base or (installed[0] if installed else "en_US-amy-medium"),
+                    "desc": str(args.get("desc") or args.get("description") or
+                                f"Custom voice: {name}")}
+            for k, lo, hi in (("pitch", -6.0, 6.0), ("speed", 0.5, 1.5)):
+                if args.get(k) is not None:
+                    try:
+                        spec[k] = max(lo, min(hi, float(args.get(k))))
+                    except (TypeError, ValueError):
+                        # A non-numeric pitch/speed just means that dimension is
+                        # left at the base voice's default — but say so, rather
+                        # than dropping the user's argument in silence.
+                        log.debug("DESIGN_VOICE: ignoring non-numeric %s=%r",
+                                  k, args.get(k), exc_info=True)
+            if args.get("filters"):
+                spec["filters"] = str(args.get("filters"))
+            res = voice_fx.save_preset(name, spec)
+            if not res.get("ok"):
+                msg = f"Could not save that voice: {res.get('error')}"
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            msg = (f"Made the voice '{res['name']}' ({spec['desc']}) on {spec['base']}"
+                   + (f", pitch {spec['pitch']:+g}" if "pitch" in spec else "")
+                   + (f", speed {spec['speed']:g}x" if "speed" in spec else "")
+                   + f". Use it any time with: use the {res['name']} voice.")
+            return {"ok": True, "action": a, "content": msg, "response": msg, "result": res}
+        except Exception as e:
+            msg = f"DESIGN_VOICE failed: {e}"
+            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+    if a == "CREATE_VOICE":
+        try:
+            name = (args.get("name") or args.get("voice") or "").strip()
+            src = (args.get("file") or args.get("path") or args.get("audio")
+                   or args.get("source") or "").strip()
+            if not src:
+                msg = ("To make a voice, give me an audio file of it — a .wav, .mp3 or .mp4 "
+                       "(a short, clean ~6–20s clip works best). In the app: Settings > Voice "
+                       "> \"Create a voice from an audio file…\".")
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            import os as _os
+            src = _os.path.expanduser(src)
+            if not _os.path.isfile(src):
+                msg = f"I couldn't find that audio file: {src}"
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            if not name:
+                name = _os.path.splitext(_os.path.basename(src))[0]
+            from eli.perception import tts_xtts
+            res = tts_xtts.add_clone(name, src)
+            if not res.get("ok"):
+                msg = f"Couldn't create that voice: {res.get('error')}"
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            vid = res.get("id") or ("clone:" + name)
+            try:
+                from eli.perception.tts_router import set_active_voice
+                set_active_voice(vid)
+            except Exception:
+                log.debug("[CREATE_VOICE] set-active failed", exc_info=True)
+            extra = ("" if res.get("synth_ready") else
+                     " It'll sound like the sample once the neural voice extra is installed "
+                     "(`pip install -e \".[natural]\"` from the ELI project root); until then "
+                     "I'll use a normal voice.")
+            msg = f"Created the voice '{name}' from your recording and set it active.{extra}"
+            return {"ok": True, "action": a, "voice": vid, "content": msg, "response": msg}
+        except Exception as e:
+            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+    # ---- SET_TONE ----
+    # Pin the emotion/register ELI expresses (words + voice + face). Distinct from
+    # SET_VOICE (which voice) and SET_COMMUNICATION_STYLE (free-text persona): this
+    # picks a named tone from the emotion palette ("be comedic", "talk street").
+    if a == "SET_TONE":
+        try:
+            q = (args.get("tone") or args.get("style") or args.get("query")
+                 or args.get("text") or args.get("message") or "").strip()
+            from eli.cognition import tone_adaptor, emotion_palette
+            res = tone_adaptor.set_tone(q)
+            if res.get("ok"):
+                msg = f"Tone set to {res['tone']} — {res.get('desc','')}. Say \"go back to normal\" to clear it."
+                return {"ok": True, "action": a, "tone": res["tone"], "content": msg, "response": msg}
+            sample = ", ".join(emotion_palette.list_tones()[:12])
+            msg = (f"I couldn't match \"{q}\" to a tone. Try one like: {sample}… "
+                   f"(or \"be comedic\", \"talk street\", \"go professional\").")
+            return {"ok": False, "action": a, "content": msg, "response": msg}
+        except Exception as e:
+            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+    # ---- CLEAR_TONE ----
+    # Drop the tone override → back to autonomous, emotion-adaptive expression.
+    if a == "CLEAR_TONE":
+        try:
+            from eli.cognition import tone_adaptor
+            tone_adaptor.clear_tone()
+            msg = "Back to my normal, adaptive tone — I'll read the room again."
+            return {"ok": True, "action": a, "content": msg, "response": msg}
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
