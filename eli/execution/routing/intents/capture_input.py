@@ -20,7 +20,7 @@ from eli.execution.routing._helpers import (
 )
 
 
-def route_capture_input(raw: str, low: str, text_l: str):
+def route_capture_input(text: str, raw: str, low: str, text_l: str):
     m = re.match(r"^mkdir\s+(.+)$", raw, re.I)
     if m:
         folder_name = m.group(1).strip()

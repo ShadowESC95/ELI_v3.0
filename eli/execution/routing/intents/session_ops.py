@@ -16,7 +16,7 @@ from eli.execution.routing._helpers import (
 )
 
 
-def route_session_ops(raw: str, low: str, text_l: str):
+def route_session_ops(text: str, raw: str, low: str, text_l: str):
     _low_raw = str(raw or "").lower()
     if any(_p in _low_raw for _p in (
         "one answer", "short answer", "short answers", "terribly short",

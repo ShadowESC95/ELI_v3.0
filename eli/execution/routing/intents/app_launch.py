@@ -19,7 +19,7 @@ from eli.execution.routing._helpers import (
 )
 
 
-def route_app_launch(raw: str, low: str, text_l: str):
+def route_app_launch(text: str, raw: str, low: str, text_l: str):
     _open_m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
     if _open_m:
         target = re.sub(r"\s+app$", "", _open_m.group(2).strip(), flags=re.I)

@@ -17,7 +17,7 @@ from eli.execution.routing._helpers import (
 )
 
 
-def route_documents(raw: str, low: str, text_l: str):
+def route_documents(text: str, raw: str, low: str, text_l: str):
     m = re.search(
         r"\b(create|write|generate|draft|make|place|raise)\s+(?:a\s+)?(?:doc|document|report|notes?)\s+(?:about|on|for)\s+(.+)$",
         raw,

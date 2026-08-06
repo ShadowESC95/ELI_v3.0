@@ -18,7 +18,7 @@ from eli.execution.routing._helpers import (
 )
 
 
-def route_shell_ops(raw: str, low: str, text_l: str):
+def route_shell_ops(text: str, raw: str, low: str, text_l: str):
     shell_prefixes = (
         "execute ",
         "run cmd ",

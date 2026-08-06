@@ -16,7 +16,7 @@ from eli.execution.routing._helpers import (
 )
 
 
-def route_system_settings(raw: str, low: str, text_l: str):
+def route_system_settings(text: str, raw: str, low: str, text_l: str):
     if re.search(
             r"\b(?:initiate|open|launch|access|start)\s+audio\s+(?:interface|settings)\b", raw, re.I):
         return _mk("OPEN_AUDIO_SETTINGS", {}, 1.0,
