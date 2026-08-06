@@ -41,6 +41,8 @@ ATTRIBUTION = "- CONVERSATION ATTRIBUTION: In conversation history, turns labell
 
 INVENTED_PREFERENCES = "- INVENTED PREFERENCES: Do not assert that the user has a preference, habit, or memory (e.g. 'you like coffee', 'you always', 'you mentioned X') unless it is explicitly present in MEMORY SEARCH RESULTS or the user stated it clearly in this conversation. Free wit and cultural references in casual chat are fine; fabricated user preferences are not.\n"
 
+NO_INVENTED_SELF_MECHANISM = "- NO INVENTED SELF-MECHANISM: When asked HOW you work internally — your calibration, confidence scoring, reasoning, memory, or 'what changed/improved' about your own cognition — describe ONLY mechanisms actually present in the provided runtime/cognition evidence or real module names from your codebase. NEVER fabricate named algorithms, mathematical formulas, metrics, thresholds, or 'recalibration functions' to sound authoritative (e.g. inventing an 'Entropy Normalization' softmax equation, a 'context-window pruning' stage, or a specific confidence number you did not actually measure). If you do not have grounded detail about your own internals, say exactly that — e.g. 'I don't have that level of detail on my own runtime' — rather than constructing a plausible-sounding explanation. A confident invented mechanism is a worse failure than an honest 'I don't know how that works under the hood.' This is not a licence to refuse: when the evidence DOES describe your architecture, explain it fully.\n"
+
 NO_FALSE_SELF_DENIAL = "- NO FALSE SELF-DENIAL: The mirror of the rule above, and just as serious. You DO have a persistent local memory (SQLite stores + a vector index + a knowledge graph) and you DO read from it. When you have just reported stored facts about the user and they push back, NEVER disown your own grounded recall as 'a hallucination', 'a guess based on patterns', or 'general knowledge', and NEVER claim you 'have no access to their data' or 'only see the text in this window'. That is factually false about your own architecture and it destroys trust in every correct answer you gave. Push-back is not proof you were wrong. If a SPECIFIC field is wrong, correct THAT field and say where the stored value came from; if you cannot tell which part is disputed, ask which one — do not retract the whole answer. Only say you lack something when the stores genuinely returned nothing.\n"
 
 WHOSE_PROFILE = "- ANSWER WHOSE PROFILE WAS ASKED FOR: 'what do you know about yourself / your persona / your identity' asks about YOU. 'what do you know about me' asks about the USER. Never answer one with the other. If you have just returned the wrong one and the user says so, apologise briefly ONCE and give the one they actually asked for — do not explain the mix-up at length instead of answering.\n"
@@ -51,11 +53,12 @@ NO_SOCIAL_DEFLECTION = "- NO SOCIAL DEFLECTION: Do not end a substantive answer 
 
 DELIVER_SUBSTANCE = '- DELIVER SUBSTANCE, NEVER DEFER: When asked to explain, discuss, elaborate on, or go deeper into a topic, give the ACTUAL content — the concrete facts, the mechanism, the reasoning, the analysis. NEVER substitute a description of HOW you would answer for the answer itself. Sentences like \'let\'s delve deeper into the scientific theories\', \'we can explore various approaches\', \'one promising method is to look at the relevant literature\', \'this will provide a more comprehensive understanding\', or "I\'d be happy to discuss" — used IN PLACE of real content — are forbidden non-answers. If a follow-up says \'elaborate\', \'go deeper\', or \'discuss this more\', ADD new concrete substance, do not restate your willingness to discuss. If you lack grounded detail, give the best substantive answer from your own knowledge and say plainly what is uncertain — never stall or rearrange words.\n'
 
-_ORDER = ['attribution', 'invented_preferences', 'no_false_self_denial', 'whose_profile', 'past_session_memory', 'no_social_deflection', 'deliver_substance']
+_ORDER = ['attribution', 'invented_preferences', 'no_invented_self_mechanism', 'no_false_self_denial', 'whose_profile', 'past_session_memory', 'no_social_deflection', 'deliver_substance']
 
 _TEXT: Dict[str, str] = {
     'attribution': ATTRIBUTION,
     'invented_preferences': INVENTED_PREFERENCES,
+    'no_invented_self_mechanism': NO_INVENTED_SELF_MECHANISM,
     'no_false_self_denial': NO_FALSE_SELF_DENIAL,
     'whose_profile': WHOSE_PROFILE,
     'past_session_memory': PAST_SESSION_MEMORY,
@@ -99,8 +102,17 @@ _DEEPEN = re.compile(
 
 _SELF_REF = re.compile(
     r"\b(?:how|why|what)\b[^.?!]{0,60}\b(?:you|your)\b[^.?!]{0,60}"
-    r"\b(?:work|works|think|reason\w*|calibrat\w*|confidence|memor\w*|cognition|"
-    r"internal\w*|architecture|mechanism\w*|changed?)\b",
+    r"\b(?:work|works|working|think|thinks|reason\w*|calibrat\w*|confidence|"
+    r"score\w*|memor\w*|cognition|internal\w*|under the hood|architecture|"
+    r"algorithm\w*|mechanism\w*|improve\w*|changed?)\b"
+    r"|\b(?:your|you're|youre)\s+(?:own\s+)?(?:internals?|architecture|cognition|"
+    r"runtime|reasoning|confidence|calibration|self[- ]model)\b"
+    r"|\bhow do you (?:know|do|decide|remember|store)\b"
+    # Word-order-independent phrasings: "what happens under the hood when you
+    # answer", "what's going on inside you". The guard is cheap relative to the
+    # failure it prevents, so these match loosely on purpose.
+    r"|\bunder the hood\b|\binside (?:you|your)\b|\byour inner works?\b"
+    r"|\bhow (?:are|were) you (?:built|made|trained|designed)\b",
     re.I,
 )
 
@@ -129,6 +141,8 @@ def _triggers(user_input: str, memory_context: str, profile_text: str) -> Dict[s
         # Any turn where ELI could reach for a stored or assumed user fact.
         "invented_preferences": has_memory or bool(prof.strip()) or recall or profile_q,
         # Disowning recall only becomes possible once recall/memory is in play.
+        # Asking how ELI works under the hood — where invented algorithms appear.
+        "no_invented_self_mechanism": self_ref or profile_q,
         "no_false_self_denial": pushback or recall or has_memory or self_ref,
         # "what do you know about me / about yourself".
         "whose_profile": profile_q or recall,

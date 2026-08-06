@@ -134,3 +134,31 @@ def test_phatic_turn_is_substantially_cheaper():
 def test_report_accounts_for_every_guard():
     r = pr.selection_report("what do you know about me")
     assert set(r["included"]) | set(r["skipped"]) == set(pr._ORDER)
+
+@pytest.mark.parametrize("ui", [
+    "how does your confidence scoring actually work?",
+    "how do you work internally",
+    "what changed about your reasoning?",
+    "explain your own architecture",
+    "how do you remember things",
+    "what happens under the hood when you answer",
+    "how do you decide what to say",
+])
+def test_self_mechanism_questions_get_the_no_invented_mechanism_guard(ui):
+    """Ported from v2: stops ELI inventing named algorithms about its own internals."""
+    assert pr.NO_INVENTED_SELF_MECHANISM in pr.select_rules(ui)
+
+
+def test_self_mechanism_guard_precedes_the_rule_that_references_it():
+    """NO FALSE SELF-DENIAL opens 'The mirror of the rule above' — so the rule it
+    mirrors must actually sit immediately above it."""
+    block = pr.all_rules()
+    i = block.index("- NO INVENTED SELF-MECHANISM:")
+    j = block.index("- NO FALSE SELF-DENIAL:")
+    assert i < j, "the mirrored rule must come first"
+    between = block[block.index("\n", i) + 1:j].strip()
+    assert between == "", f"another rule sits between them: {between[:60]!r}"
+
+
+def test_casual_turn_does_not_pay_for_the_self_mechanism_guard():
+    assert pr.NO_INVENTED_SELF_MECHANISM not in pr.select_rules("hey eli")
