@@ -31,7 +31,14 @@ def render_mermaid(code: str, idx: int) -> Path | None:
     source that fails in the batch succeeds on retry. Without retrying, a flaked
     block fell back to a raw code block in the PDF, silently dropping a diagram
     that had rendered fine before.
+
+    When kroki is unreachable outright (offline, or a hard 403), fall back to the
+    PNG already in manual_assets/ from the last good build. A rebuild for a
+    version stamp must not quietly ship a manual with its diagrams replaced by
+    raw code — and on an offline-by-default project the build should not need
+    the network at all when nothing about the diagrams has changed.
     """
+    cached = ASSETS / f"diagram_{idx:02d}.png"
     last = "unknown error"
     for attempt in range(5):
         try:
@@ -52,8 +59,14 @@ def render_mermaid(code: str, idx: int) -> Path | None:
                 return p
         except Exception as e:
             last = str(e)
+        if cached.exists():
+            break        # a good PNG is already on disk; don't burn the backoff
         time.sleep(1.5 * (attempt + 1))  # back off, then retry the same source
-    print(f"  ! block {idx}: {last} (gave up after 5 tries)")
+
+    if cached.exists():
+        print(f"  cached block {idx}: kroki unavailable ({last}) — reusing {cached.name}")
+        return cached
+    print(f"  ! block {idx}: {last} (gave up after 5 tries, no cached PNG)")
     return None
 
 
