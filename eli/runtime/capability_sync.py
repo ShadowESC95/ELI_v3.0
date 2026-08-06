@@ -321,10 +321,12 @@ class CapabilitySync:
         router_path = next((p for p in _router_candidates if p.exists()), None)
         if router_path and router_path.exists():
             src = router_path.read_text(encoding="utf-8", errors="replace")
-            # The router is being decomposed into eli/execution/routing/*.py (intent
+            # The router is being decomposed into eli/execution/routing/ (intent
             # families lifted out of the monolith); scan those too so a lifted
-            # intent stays discoverable/routable.
-            for _rp in sorted((router_path.parent / "routing").glob("*.py")):
+            # intent stays discoverable/routable. Recursive: the ordered stages
+            # live one level down in routing/intents/, and a flat glob silently
+            # marked everything they own (LIST_VOICES, HELP, …) unroutable.
+            for _rp in sorted((router_path.parent / "routing").rglob("*.py")):
                 src += "\n" + _rp.read_text(encoding="utf-8", errors="replace")
             intents = _extract_router_intents(src)
             for intent in intents:
