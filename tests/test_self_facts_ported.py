@@ -32,11 +32,21 @@ def test_version_is_the_running_v3_version_not_a_stale_dist():
 
 
 def test_facts_are_populated_from_the_live_system():
+    """Facts that never depend on a generated file must always be present.
+
+    `capabilities` is deliberately NOT required: it is read from
+    capability_manifest.json, which a fresh checkout (or a new worktree) has not
+    generated yet. get_self_facts omits what it cannot verify rather than
+    guessing — that is the whole point of the module — so absence is correct and
+    a wrong number would not be.
+    """
     f = get_self_facts()
-    for key in ("version", "install_kind", "databases", "capabilities", "components"):
+    for key in ("version", "install_kind", "databases", "components"):
         assert key in f, f"missing fact: {key}"
     assert f["install_kind"] in {"source", "appimage", "frozen"}
-    assert int(f["capabilities"]) > 0
+    # Present-or-absent, but never a fabricated value.
+    if "capabilities" in f:
+        assert int(f["capabilities"]) > 0
 
 
 def test_database_paths_are_real_and_absolute():

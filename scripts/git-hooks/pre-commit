@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Warn when you are committing inside a tree that holds work you did not stage.
+#
+# Why this exists
+# ---------------
+# More than one agent/editor session can share a single checkout. Git protects
+# committed work; it does nothing for *uncommitted* edits, and a session that
+# stages broadly (`git add -A`, `git commit -a`) silently absorbs another
+# session's in-flight changes into its own commit — or a careless `checkout --`
+# destroys them outright. Nothing errors. The attribution is simply wrong and
+# the other session's work is gone.
+#
+# This happened on 2026-08-06: an uncommitted `capability_sync.py` fix and a
+# `pyproject.toml` bump were sitting in the tree, authored by a concurrent
+# session, while another was staging its own port. It was caught by hand.
+#
+# The hook cannot know *whose* edits are whose. What it can do is refuse to let
+# the situation pass unnoticed: if tracked files are modified but not staged,
+# it says so and names them, so "are those mine?" gets asked before the commit
+# rather than after.
+#
+# Not fatal by default — this is a normal state when you deliberately stage a
+# subset. Set ELI_PRECOMMIT_STRICT=1 to make it blocking, or
+# ELI_PRECOMMIT_ALLOW_DIRTY=1 to silence it for a single commit.
+set -uo pipefail
+
+[ "${ELI_PRECOMMIT_ALLOW_DIRTY:-0}" = "1" ] && exit 0
+
+# Tracked files modified in the working tree but NOT in this commit.
+unstaged="$(git diff --name-only --diff-filter=ACMR 2>/dev/null || true)"
+[ -z "$unstaged" ] && exit 0
+
+# Untracked files are noisier and usually harmless; list them only as a count.
+untracked_n="$(git ls-files --others --exclude-standard 2>/dev/null | wc -l | tr -d ' ')"
+worktrees="$(git worktree list 2>/dev/null | wc -l | tr -d ' ')"
+
+echo "──────────────────────────────────────────────────────────────────────"
+echo "pre-commit: this tree has tracked changes that are NOT in your commit."
+echo
+echo "$unstaged" | sed 's/^/    modified, unstaged: /'
+[ "${untracked_n:-0}" -gt 0 ] && echo "    (+ $untracked_n untracked file(s))"
+echo
+if [ "${worktrees:-1}" -gt 1 ]; then
+    echo "  NOTE: $worktrees worktrees share this repository."
+fi
+echo "  If any of the above is another session's work, do NOT 'git add -A' or"
+echo "  'git checkout --' it. Stage your own files by name."
+echo "  scripts/new_worktree.sh gives a session its own checkout so this"
+echo "  cannot happen at all."
+echo "──────────────────────────────────────────────────────────────────────"
+
+if [ "${ELI_PRECOMMIT_STRICT:-0}" = "1" ]; then
+    echo "pre-commit: ELI_PRECOMMIT_STRICT=1 — refusing. Commit anyway with" >&2
+    echo "            ELI_PRECOMMIT_ALLOW_DIRTY=1 git commit …" >&2
+    exit 1
+fi
+exit 0

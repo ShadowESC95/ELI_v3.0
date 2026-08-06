@@ -4,5 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOKS="$ROOT/.git/hooks"
 mkdir -p "$HOOKS"
-install -m 755 "$ROOT/scripts/git-hooks/commit-msg" "$HOOKS/commit-msg"
-echo "[OK] Installed $HOOKS/commit-msg"
+for h in commit-msg pre-commit; do
+  install -m 755 "$ROOT/scripts/git-hooks/$h" "$HOOKS/$h"
+  echo "[OK] Installed $HOOKS/$h"
+done
