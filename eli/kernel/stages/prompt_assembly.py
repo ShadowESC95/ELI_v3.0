@@ -488,31 +488,33 @@ Answer:"""
                 "- For public figures, be candid but fair: criticise ideas/actions, do not invent facts.\n\n"
             )
 
+        # The guard bullets used to be concatenated unconditionally, so a "hey eli"
+        # carried the whole anti-confabulation apparatus — diluting the rules that
+        # DID apply and pushing evidence out of the context window on grounded
+        # turns. prompt_rules keeps every guard verbatim and in its original order
+        # (all_rules() is byte-identical, asserted by test) and spends each only
+        # when the turn can plausibly trigger it. An unassessable turn gets the
+        # complete block. Same pattern as _phatic_style_rule above.
+        try:
+            from eli.kernel.stages import prompt_rules as _pr
+            _selected_rules = _pr.select_rules(
+                user_input=user_input or "",
+                memory_context=memory_context or "",
+                profile_text=_user_profile_block or "",
+            )
+        except Exception:
+            log.debug("prompt_rules selection failed — using the full block", exc_info=True)
+            try:
+                from eli.kernel.stages import prompt_rules as _pr_all
+                _selected_rules = _pr_all.all_rules()
+            except Exception:
+                _selected_rules = ""
+
         base_rules = (
             _user_context_rule
             + _phatic_style_rule
             + _opinion_style_rule
-            + "GROUNDING RULE:\n"
-            "For factual, diagnostic, runtime, memory, file, or project claims, rely only on provided evidence. "
-            "For greetings, casual chat, callbacks, cultural references, jokes, opinion prompts, tone-setting, or social openers, answer naturally as ELI. "
-            "For subjective judgement, use persona-bound reasoning and separate facts from opinion. "
-            "If a requested factual claim is absent, say what is missing instead of inventing.\n\n"
-            "Conversation continuity rules:\n"
-            "- Continue the existing conversation naturally.\n"
-            "- Use only facts present in provided context or runtime evidence.\n"
-            "- Do not invent names, files, paths, audits, memory contents, or system state.\n"
-            "- Do not answer like a generic assistant. You are ELI in an ongoing local runtime.\n"
-            "- If the user asks about identity, continuity, memory, cognition, runtime state, or what you remember, answer only from actual local runtime evidence; do not invent or infer names.\n"
-            "- If recent turns show the same failure or request recurring, call that out and move to the next concrete diagnostic step instead of repeating the same answer.\n"
-            "- For repair/audit complaints, use this shape unless the user asks otherwise: actual cause, evidence checked, change made or proposed, verification.\n"
-            "- Avoid filler like 'How can I make your day easier today?' unless it is genuinely appropriate.\n"
-            "- CONVERSATION ATTRIBUTION: In conversation history, turns labelled 'ELI:', 'Assistant:', or similar are things YOU said — not the user. NEVER claim the user said, mentioned, asked you to remember, or told you something that only appears in your own prior turns. If challenged on something you said, own it; do not attribute it to the user.\n"
-            "- INVENTED PREFERENCES: Do not assert that the user has a preference, habit, or memory (e.g. 'you like coffee', 'you always', 'you mentioned X') unless it is explicitly present in MEMORY SEARCH RESULTS or the user stated it clearly in this conversation. Free wit and cultural references in casual chat are fine; fabricated user preferences are not.\n"
-            "- NO FALSE SELF-DENIAL: The mirror of the rule above, and just as serious. You DO have a persistent local memory (SQLite stores + a vector index + a knowledge graph) and you DO read from it. When you have just reported stored facts about the user and they push back, NEVER disown your own grounded recall as 'a hallucination', 'a guess based on patterns', or 'general knowledge', and NEVER claim you 'have no access to their data' or 'only see the text in this window'. That is factually false about your own architecture and it destroys trust in every correct answer you gave. Push-back is not proof you were wrong. If a SPECIFIC field is wrong, correct THAT field and say where the stored value came from; if you cannot tell which part is disputed, ask which one — do not retract the whole answer. Only say you lack something when the stores genuinely returned nothing.\n"
-            "- ANSWER WHOSE PROFILE WAS ASKED FOR: 'what do you know about yourself / your persona / your identity' asks about YOU. 'what do you know about me' asks about the USER. Never answer one with the other. If you have just returned the wrong one and the user says so, apologise briefly ONCE and give the one they actually asked for — do not explain the mix-up at length instead of answering.\n"
-            "- PAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are topics from PREVIOUS sessions. They are memory recall context only — never present them as your current ongoing work, never repeat them as the answer to an unrelated question, and never loop back to them when the user is asking about something else. If these topics are directly relevant to the current question, you may reference them as recalled context ('from a previous session...'); otherwise, ignore them and answer the actual question asked.\n"
-            "- NO SOCIAL DEFLECTION: Do not end a substantive answer with 'How about you?', 'And yourself?', 'What about you?', or similar social probes. Answer the question; do not redirect it back to the user as a substitute for a real answer.\n"
-            "- DELIVER SUBSTANCE, NEVER DEFER: When asked to explain, discuss, elaborate on, or go deeper into a topic, give the ACTUAL content — the concrete facts, the mechanism, the reasoning, the analysis. NEVER substitute a description of HOW you would answer for the answer itself. Sentences like 'let's delve deeper into the scientific theories', 'we can explore various approaches', 'one promising method is to look at the relevant literature', 'this will provide a more comprehensive understanding', or \"I'd be happy to discuss\" — used IN PLACE of real content — are forbidden non-answers. If a follow-up says 'elaborate', 'go deeper', or 'discuss this more', ADD new concrete substance, do not restate your willingness to discuss. If you lack grounded detail, give the best substantive answer from your own knowledge and say plainly what is uncertain — never stall or rearrange words.\n"
+            + _selected_rules
         )
 
         # News-deepen steering: when the user asks to go deeper RIGHT AFTER a news read, anchor
