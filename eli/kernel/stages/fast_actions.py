@@ -95,6 +95,30 @@ _DIRECT_FINAL_ACTIONS = frozenset({
 })
 
 
+# Actions whose answer is produced by READING LIVE STATE (a socket, a player, a
+# device, a runtime singleton) rather than by synthesising prose. These inherently
+# score grounding 0.00 on the agent bus — there is nothing in memory to ground a
+# question about what is playing *right now* — so the low-grounding downgrade would
+# fire on them every single time and hand the question to CHAT, which then invents an
+# answer. That is exactly backwards: these are the actions that can answer truthfully,
+# because executing them IS the fact-check.
+#
+# The naming convention carries the meaning, so match on it rather than trusting a
+# hand-kept list to stay complete — that list already drifted once and let NOW_PLAYING
+# through, which is how ELI came to confabulate a YouTube playback explanation instead
+# of reporting "Nothing is playing right now."
+_LIVE_STATE_ACTION_SUFFIXES = ("_STATUS", "_STATS", "_USAGE")
+# Only names the suffix rule cannot catch belong here.
+_LIVE_STATE_ACTIONS = frozenset({
+    "NOW_PLAYING",
+})
+
+
+def _is_live_state_action(a: str) -> bool:
+    """True when the action answers by reading real live state. Never downgradeable."""
+    return a in _LIVE_STATE_ACTIONS or a.endswith(_LIVE_STATE_ACTION_SUFFIXES)
+
+
 def _is_soft_informational_action(action) -> bool:
     """True only for synthesised informational actions — the sole kind safe to
     silently re-route to CHAT on low grounding. CHAT itself and every control / OS /
@@ -104,6 +128,8 @@ def _is_soft_informational_action(action) -> bool:
     if not a or a == "CHAT":
         return False
     if a in _DIRECT_FINAL_ACTIONS or a in _PHASE45_DIRECT_FAST_ACTIONS:
+        return False
+    if _is_live_state_action(a):
         return False
     try:
         from eli.runtime.control_contracts import CONTROL_ACTIONS as _CC
