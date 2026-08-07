@@ -17,11 +17,30 @@ command -v xelatex >/dev/null || { echo "xelatex required" >&2; exit 1; }
 VERSION="$(grep -E '^version' "$ROOT/pyproject.toml" | head -1 | awk -F'"' '{print $2}')"
 DATE="$(date +'%B %Y')"
 
+# Cover mark. The shipped manuals carried no ELI branding at all — a reader who
+# downloaded one had nothing tying it to the app. pandoc's `titlegraphic` is
+# beamer-only, and prepending to \maketitle silently eats the whole title block, so
+# the working hook is titling's \pretitle/\posttitle. Degrades to the plain title
+# page if the icon is missing rather than failing the build.
+ICON="$ROOT/packaging/desktop/eli-256.png"
+TITLE_ARGS=()
+if [ -f "$ICON" ]; then
+  TITLE_ARGS+=(
+    -V header-includes='\usepackage{graphicx}'
+    -V header-includes='\usepackage{titling}'
+    -V header-includes='\pretitle{\begin{center}\includegraphics[width=2.2cm]{'"$ICON"'}\\[0.9em]\LARGE\bfseries}'
+    -V header-includes='\posttitle{\par\end{center}\vskip 0.3em}'
+  )
+else
+  echo "[WARN] app icon missing, manuals will build unbranded: $ICON" >&2
+fi
+
 pdf() { # pdf <out.pdf> <title> <src.md...>
   local out="$1" title="$2"; shift 2
   for f in "$@"; do [ -f "$f" ] || { echo "missing source: $f" >&2; exit 1; }; done
   pandoc "$@" -o "$out" \
     --pdf-engine=xelatex \
+    "${TITLE_ARGS[@]}" \
     -V geometry:margin=0.9in -V fontsize=10pt -V documentclass=article \
     -V colorlinks=true -V linkcolor=blue -V urlcolor=blue \
     --toc --toc-depth=2 \
