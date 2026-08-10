@@ -37,6 +37,7 @@ from eli.kernel.stages.guards import (
     _failed_executor_query_from_prompt,
     _failed_executor_relevant_block,
     _failed_executor_surface,
+    _deprimed_retry_prompt,
     _stream_holding_back_repeats,
     _user_asked_for_a_repeat,
 )
@@ -1777,23 +1778,37 @@ class GenerationMixin:
                 # than a preamble the model can drift past. A second repeat is served
                 # as-is: an honest duplicate beats an empty turn or an infinite retry.
                 full_tokens.clear()
-                _retry_prompt = (
-                    "The reply you just produced repeated something you had already said. "
-                    "Write a DIFFERENT reply. Do not restate any earlier point, do not "
-                    "re-ask an answered question, and respond only to the user's latest "
-                    "message.\n\n" + prompt
-                )
-                log.debug("[ANTI-REPEAT] retry generation issued")
+                _retry_prompt = _deprimed_retry_prompt(prompt)
+                log.debug("[ANTI-REPEAT] retry generation issued (prior replies stripped "
+                          "from prompt: %d -> %d chars)", len(prompt), len(_retry_prompt))
                 _retry = self.generate_stream_from_assembled_prompt(
                     _retry_prompt,
                     working_memory=wm,
                     reasoning_mode=reasoning_mode,
                 )
-                for piece in _stream_holding_back_repeats(
-                        _retry, _recent_eli, allow_retry=False):
-                    full_tokens.append(piece)
-                    yielded = True
-                    yield piece
+                # The de-primed prompt is materially different from the first, so a
+                # second attempt is worth one more generation. Live evidence: attempt
+                # 2 reproduced the opening verbatim when it was still primed. Beyond
+                # this, serve it — an honest duplicate beats silence or a loop.
+                try:
+                    for piece in _stream_holding_back_repeats(
+                            _retry, _recent_eli, allow_retry=True):
+                        full_tokens.append(piece)
+                        yielded = True
+                        yield piece
+                except _RepeatDetected:
+                    log.debug("[ANTI-REPEAT] de-primed retry still repeated — serving it")
+                    full_tokens.clear()
+                    _last = self.generate_stream_from_assembled_prompt(
+                        _retry_prompt,
+                        working_memory=wm,
+                        reasoning_mode=reasoning_mode,
+                    )
+                    for piece in _stream_holding_back_repeats(
+                            _last, _recent_eli, allow_retry=False):
+                        full_tokens.append(piece)
+                        yielded = True
+                        yield piece
 
             if yielded:
                 final_text = "".join(full_tokens).strip()

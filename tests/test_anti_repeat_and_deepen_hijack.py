@@ -1,4 +1,4 @@
-"""Locks on two defects from a live v2.1.59 session (13:51-13:56), ported to v3.
+"""Locks on two defects from live v2 sessions (13:51-13:56 and 15:13), ported to v3.
 
 In v3 the repeat guard lives in eli/kernel/stages/guards.py and the deepen guard in
 eli/kernel/engine.py, so the imports differ; the behaviour must not.
@@ -27,7 +27,9 @@ import time
 import pytest
 
 from eli.kernel.stages.guards import (
+    _ANTI_REPEAT_BLOCK_RE,
     _RepeatDetected,
+    _deprimed_retry_prompt,
     _is_repeat_of_recent,
     _repeat_ratio,
     _stream_holding_back_repeats,
@@ -189,6 +191,72 @@ def test_ordinary_turns_do_not_stand_the_guard_down(ordinary):
     disarmed the guard, the original repeats would still get through. The last one
     matters most: complaining about repetition must not license more of it."""
     assert not _user_asked_for_a_repeat(ordinary), ordinary
+
+
+# ── 3c. the retry must not re-prime the model with the text it must avoid ───
+# Live evidence (v2.1.60, 15:13:31): the guard caught a repeat, retried, and the
+# retry produced the SAME opening — prompt_tokens 4501 -> 4495, barely changed,
+# because the retry was `instruction + prompt` and `prompt` still carried the
+# contract quoting three prior replies verbatim. A turn earlier the same retry had
+# succeeded ('You' -> 'Hello'), so this is probabilistic, not deterministic.
+_CONTRACT = (
+    "YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of it, and do "
+    "not re-ask a question the user has already answered:\n"
+    f"  - {SLEEP_REPLY[:220]}\n"
+    "Reply to what the user just said. If you have already described your "
+    "own state or mood, do not describe it again unless asked."
+)
+_PROMPT = _CONTRACT + "\n\nPERSONA: terse\nUSER: what's the morning report?"
+
+
+def test_retry_prompt_no_longer_quotes_the_reply_it_must_avoid():
+    """The whole point: stop handing the model the text it must not produce."""
+    out = _deprimed_retry_prompt(_PROMPT)
+    assert "recalibrating the quantum model" not in out
+    assert "stress tests on your sleep schedule" not in out
+
+
+def test_retry_prompt_keeps_a_constraint_that_names_no_content():
+    out = _deprimed_retry_prompt(_PROMPT).lower()
+    assert "not repeat anything you have already said" in out
+
+
+def test_retry_prompt_preserves_the_rest_of_the_prompt():
+    """Stripping must remove the quotes, not the persona or the user's question."""
+    out = _deprimed_retry_prompt(_PROMPT)
+    assert "PERSONA: terse" in out
+    assert "USER: what's the morning report?" in out
+
+
+def test_retry_prompt_is_materially_shorter():
+    """4501 -> 4495 tokens was the symptom: the retry was effectively the same
+    prompt. It has to actually change."""
+    assert len(_deprimed_retry_prompt(_PROMPT)) < len(_PROMPT)
+
+
+def test_retry_prompt_survives_a_prompt_with_no_contract():
+    """Not every turn injects one (no prior replies on turn 1)."""
+    bare = "PERSONA: terse\nUSER: hello"
+    out = _deprimed_retry_prompt(bare)
+    assert "USER: hello" in out and out != bare   # instruction prepended, nothing lost
+
+
+@pytest.mark.parametrize("bad", ["", None])
+def test_retry_prompt_never_raises(bad):
+    assert isinstance(_deprimed_retry_prompt(bad), str)
+
+
+def test_contract_and_stripper_stay_in_sync():
+    """If the contract wording is edited without updating the regex, the stripper
+    silently stops working and the retry is primed again — exactly the live bug."""
+    import inspect
+    from eli.kernel.stages import generation as eng
+
+    src = inspect.getsource(eng)
+    assert "YOU HAVE ALREADY SAID THE FOLLOWING" in src
+    assert _ANTI_REPEAT_BLOCK_RE.search(_CONTRACT), (
+        "the regex no longer matches the contract this module injects"
+    )
 
 
 # ── 4. the deepen window is bounded ─────────────────────────────────────────
