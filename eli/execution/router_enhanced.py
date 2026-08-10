@@ -677,6 +677,31 @@ def _route_grounded_runtime_intent(
                    matched_by="router.explain_last_response",
                    allow_chat_without_evidence=False)
 
+    # Provenance of ELI's OWN last statement, in the words people actually use.
+    # The route above only fires on jargon ("which agents contributed", "grounded
+    # trace"). A live v2 session asked the plain version — "where are you getting
+    # this information?" — which fell to fallback.chat at 0.60, and the model
+    # invented a source: it claimed to be "keeping tabs on your project's state"
+    # from "the Simulation Lab", none of which exists. A scan of all four SQLite
+    # stores found those names only in ELI's own replies, written after it said
+    # them. The bus records which agents contributed to the previous turn, so this
+    # is answerable from real data and must never be narrated.
+    #
+    # Gated on a demonstrative (that/this/it) so it stays about ELI's own prior
+    # statement: "how do you know my name" has its own route and must not be caught.
+    if re.search(
+        r"\bwhere\s+(?:are|did)\s+you\s+get(?:ting)?\s+(?:that|this|it|the\s+\w+)\b"
+        r"|\bwhere\s+(?:is|did)\s+(?:that|this|it)\s+(?:com(?:e|ing)\s+)?from\b"
+        r"|\bhow\s+do\s+you\s+know\s+(?:that|this|any\s+of\s+(?:that|this))\b"
+        r"|\bwhat\s+are\s+you\s+basing\s+(?:that|this|it)\s+on\b"
+        r"|\bwhat(?:'s|\s+is)\s+(?:that|this)\s+based\s+on\b"
+        r"|\bsays\s+who\b",
+        raw, re.I,
+    ):
+        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.95,
+                   matched_by="router.explain_last_response.provenance",
+                   need_grounding=True, allow_chat_without_evidence=False)
+
     if _is_identity and not _has_system_kw:
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="identity.chat_classified")
 
