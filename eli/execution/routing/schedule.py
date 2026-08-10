@@ -44,7 +44,22 @@ _IMPERATIVE_RX = re.compile(
     r"|screenshot|search|enable|disable|download|email|post)\b", re.I)
 
 # Don't treat genuine questions as scheduling ("what's on tonight?").
-_QUESTION_RX = re.compile(r"^\s*(what|whats|what's|how|why|who|where|which|whose|tell me|show me what)\b", re.I)
+# Questions must not be scheduled. This matched wh-words ONLY, so every yes/no
+# question fell through: "Do you ever get tired of me asking you the same kinds of
+# questions over and over again every day?" has no wh-word, "every day" satisfied
+# the future-time pattern, and it became a SCHEDULE_TASK at 0.9 — the prepass
+# docstring claims questions are excluded, and for yes/no questions it was not true.
+#
+# Auxiliary openers are split deliberately. "do/does/did/are/is/was/were/have/has/am
+# + pronoun" asks ELI ABOUT something and is conversational. "can/could/would/will
+# you" is a polite REQUEST — "can you open spotify at 8pm?" must still schedule — so
+# those are NOT listed here.
+_QUESTION_RX = re.compile(
+    r"^\s*(what|whats|what's|how|why|who|where|which|whose|tell me|show me what)\b"
+    r"|^\s*(do|does|did|are|is|was|were|have|has|had|am)\s+"
+    r"(you|i|we|it|that|this|there|they)\b",
+    re.I,
+)
 
 # Conversational address — banter, opinions and second-person commentary are never
 # task requests, however many clock words they happen to contain.
