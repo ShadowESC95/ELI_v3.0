@@ -49,7 +49,7 @@ jobs:
 
       - name: Cross-platform unit tests (explicit self-contained files — no GGUF / display / generated artifacts)
         run: >
-          pytest -q -p no:cacheprovider
+          python -m pytest -q -p no:cacheprovider
           tests/test_dual_gpu_settings.py
           tests/test_user_model.py
           tests/test_08_hardware.py
@@ -62,7 +62,7 @@ jobs:
 
       - name: Claims structural smoke (manifest ↔ executor)
         run: >
-          pytest -q -p no:cacheprovider
+          python -m pytest -q -p no:cacheprovider
           tests/claims/test_structural_claims.py
           tests/claims/test_capability_manifest.py::test_manifest_total_matches_capability_count
           tests/claims/test_no_silent_swallow.py
