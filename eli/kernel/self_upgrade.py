@@ -28,7 +28,7 @@ from eli.core.paths import project_root as _project_root
 log = get_logger(__name__)
 PROJECT_ROOT = _project_root()
 _DEFAULT_RELEASE_REPO = os.environ.get("ELI_RELEASE_REPO", "ShadowESC95/ELI_v3.0")
-_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.42")
+_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.43")
 
 
 def _install_kind() -> str:
