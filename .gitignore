@@ -59,9 +59,16 @@ artifacts/*
 eli/artifacts/
 .code_monitor_state.json
 
-# ── Blueprints — PDFs + the PDF-build tooling in git; source docs/icons stay local ─
+# ── Blueprints — sources, PDFs and the PDF-build tooling are all tracked ─────────
+# 68 PDFs were tracked and every markdown SOURCE was local-only. That asymmetry is why
+# docs drift with no reviewable diff: in v2 the same convention let
+# voice_cloning_pipeline.md sit a month behind the code describing an extra that had
+# gained three dependencies, and the shipped manual point at a Settings page that does
+# not exist — neither could ever appear in a review, because neither was in git.
+# Sources are 69 files of markdown; icons and other assets stay local.
 blueprints/*
 !blueprints/*.pdf
+!blueprints/*.md
 !blueprints/build_blueprint_pdf.py
 !blueprints/build_capabilities_pdf.py
 !blueprints/build_manual_pdf.py
