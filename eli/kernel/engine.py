@@ -1893,6 +1893,35 @@ def _eli_phase13c_bus_action_result(bus_result, action):
 # ── End failed-executor guard helpers ─────────────────────────────────────────
 
 
+# How long after a briefing a bare follow-up ("the first one") still reads as a
+# deepen request. Beyond this the user has moved on, and rewriting their command
+# into CHAT is a misroute rather than a rescue.
+_DEEPEN_WINDOW_SECONDS = float(os.environ.get("ELI_DEEPEN_WINDOW_SECONDS", "300"))
+
+# Actions that ARM the news topic-deepen rule. They must never also be its victims:
+# MORNING_REPORT armed the rule and was eligible to be rewritten by it, so asking for
+# a report right after a report could not return a report.
+_DEEPEN_ARMING_ACTIONS = ("NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
+
+
+def _is_explicit_command_match(intent) -> bool:
+    """True when the router named this action outright, rather than guessing.
+
+    The deepen heuristic exists to rescue inputs with no clear intent ("the first
+    one"), which arrive from the LLM resolver as low-confidence fallbacks. A named
+    match at high confidence is a command and must survive.
+    """
+    if not isinstance(intent, dict):
+        return False
+    try:
+        meta = intent.get("meta") or {}
+        via = str(meta.get("matched_by") or "")
+        conf = float(intent.get("confidence") or 0.0)
+    except Exception:
+        return False
+    return bool(via) and not via.startswith("fallback.") and conf >= 0.9
+
+
 def _clarifier_norm(text: str) -> str:
     """Punctuation- and case-insensitive form, for comparing an utterance to itself.
 
@@ -4537,6 +4566,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if str(action).upper() not in ("CHAT", "NOOP", "UNKNOWN", ""):
                 self._last_command_action = {
                     "action": action, "args": dict(args or {}), "input": user_input,
+                    # Stamped so consumers that mean "right after X" can actually
+                    # check it. The news topic-deepen rule read this dict as proof a
+                    # briefing had just happened, but CHAT never overwrites it, so one
+                    # report left the flag set for the lifetime of the process and
+                    # every later short input stayed eligible to be rewritten to CHAT.
+                    "ts": time.time(),
                 }
         except Exception:
             log.debug("suppressed exception", exc_info=True)
@@ -4706,7 +4741,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 _deepen_topic = _edt_direct(user_input)
                 _lca_direct = getattr(self, "_last_command_action", None) or {}
                 _was_news_direct = str(_lca_direct.get("action") or "").upper() in (
-                    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
+                    _DEEPEN_ARMING_ACTIONS)
+                # "right after" means within the window, not "at any point since launch".
+                if _was_news_direct:
+                    _lca_ts = float(_lca_direct.get("ts") or 0.0)
+                    if _lca_ts and (time.time() - _lca_ts) > _DEEPEN_WINDOW_SECONDS:
+                        _was_news_direct = False
                 # ACCEPTING a news follow-up offer: right after a briefing ELI asks "want to dive
                 # deeper into X or Y?"; the user's reply ("running local llms please", "the first
                 # one") carries NO explicit deepen verb, so extract_deepen_topic misses it and the
@@ -4726,6 +4766,14 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     _wc = len(str(user_input or "").split())
                     if _act_up not in _hard and 1 <= _wc <= 7:
                         _deepen_topic = str(user_input or "").strip().rstrip("?.!,;: ").strip()
+                # An EXPLICIT, high-confidence router match is a command, not an
+                # ambiguous follow-up. Observed in v2: "Good.. morning report?" matched
+                # self.morning_report at 0.95 and was still rewritten to CHAT, so the
+                # user asked for a morning report and got small-talk. MORNING_REPORT is
+                # also in the arming set, so a report suppressed the next report.
+                if _is_explicit_command_match(intent) or _act_up in _DEEPEN_ARMING_ACTIONS:
+                    _deepen_topic = ""
+
                 if _deepen_topic and _was_news_direct:
                     log.debug(f"[COGNITIVE] news topic-deepen: {action}→CHAT "
                               f"(topic='{_deepen_topic}')")

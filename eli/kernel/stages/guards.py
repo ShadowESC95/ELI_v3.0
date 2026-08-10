@@ -1,17 +1,19 @@
 """Engine guards — output/evidence guards shared by the engine and its stages.
 
-Three cohesive groups:
+Four cohesive groups:
   * failed-executor: detect a failed executor result in the evidence and surface
     it honestly instead of letting the model narrate around it;
   * identity self-report: spot an identity self-report request and reject a bad
     self-report output;
-  * scaffold strip: remove reasoning scaffolding from generated text.
+  * scaffold strip: remove reasoning scaffolding from generated text;
+  * anti-repeat: refuse to serve a reply ELI has already given.
 
 Lifted from engine.py so the engine and the reasoning-mode stage share one
 implementation rather than each reaching into the monolith.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import re
 
@@ -287,3 +289,115 @@ def _strip_reasoning_scaffold(text: str) -> str:
             break
         t = new_t
     return t
+
+
+# ── Anti-repeat: verification, not just instruction ──────────────────────────
+# The prompt-level contract in the generation stage ("YOU HAVE ALREADY SAID THE
+# FOLLOWING — do not repeat any of it") is advisory. In one observed v2 session an
+# 8B model ignored it four times, serving the same 40-word paragraph verbatim at
+# 13:52, 13:52, 13:55 and 13:56 — including right after the user told it to stop and
+# it answered "I'll stop". Asking a model not to repeat itself is not a control;
+# checking whether it did is.
+#
+# Self-contained by necessity: engine.py imports the stages, so reaching back for
+# engine._clarifier_norm would close an import cycle.
+_REPEAT_HEAD_CHARS = 200      # buffered before first paint
+_REPEAT_RATIO = 0.86          # difflib ratio over normalised text
+_REPEAT_COMPARE_AGAINST = 4   # how many recent ELI turns to test
+
+
+def _repeat_norm(text: str) -> str:
+    """Punctuation- and case-insensitive form. Apostrophes are deleted rather than
+    spaced so "what's" and "whats" collapse together instead of leaving "what s"."""
+    lowered = str(text or "").lower().replace("'", "").replace("’", "")
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", lowered)).strip()
+
+
+_REPEAT_REQUESTED_RE = re.compile(
+    r"\b(say (that|it) again|repeat (that|it|yourself)|come again|again please"
+    r"|what did you (just )?say|read (that|it) back|one more time"
+    r"|(say|tell) (me )?(that|it) (once )?more)\b",
+    re.I,
+)
+
+
+def _user_asked_for_a_repeat(user_input: str) -> bool:
+    """True when repeating IS the request.
+
+    Without this the anti-repeat guard becomes its own bug: "say that again" would
+    be answered, correctly, with the previous reply — which the guard would then
+    reject as a repeat and regenerate into something the user did not ask for.
+    """
+    return bool(_REPEAT_REQUESTED_RE.search(str(user_input or "")))
+
+
+def _repeat_ratio(a: str, b: str) -> float:
+    na, nb = _repeat_norm(a), _repeat_norm(b)
+    if not na or not nb:
+        return 0.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def _is_repeat_of_recent(candidate: str, prior_replies, *,
+                         ratio: float = _REPEAT_RATIO) -> bool:
+    """True when `candidate` restates something ELI already said.
+
+    Compared head-to-head over the same number of characters: a reply that opens
+    identically and then continues is still a repeat to the reader, and comparing a
+    200-char head against a 600-char prior reply would score low purely on the
+    length difference and let it through.
+    """
+    cand = str(candidate or "").strip()
+    if len(_repeat_norm(cand)) < 40:
+        return False                      # too short to judge; "Okay." is not a repeat
+    for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+        p = str(prior or "").strip()
+        if not p:
+            continue
+        n = min(len(cand), len(p))
+        if n < 40:
+            continue
+        if _repeat_ratio(cand[:n], p[:n]) >= ratio:
+            return True
+    return False
+
+
+class _RepeatDetected(Exception):
+    """Raised inside the streaming guard when the opening restates a recent reply.
+
+    An exception rather than a return value because the check lives inside a
+    generator: it has to unwind the partially-consumed stream without having
+    yielded any of it to the caller.
+    """
+
+
+def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool):
+    """Yield `stream`, withholding the opening until it is cleared as non-repeating.
+
+    Once a chunk is yielded it is on the user's screen, so the check must happen
+    before first paint: the first `_REPEAT_HEAD_CHARS` are buffered, tested, then
+    released untouched in the common case.
+    """
+    head, released = [], False
+    for chunk in stream:
+        piece = str(chunk or "")
+        if not piece:
+            continue
+        if released:
+            yield piece
+            continue
+        head.append(piece)
+        if sum(len(h) for h in head) < _REPEAT_HEAD_CHARS:
+            continue
+        opening = "".join(head)
+        if allow_retry and recent_replies and _is_repeat_of_recent(opening, recent_replies):
+            raise _RepeatDetected(opening)
+        released = True
+        yield opening
+    if not released:
+        # The stream ended inside the buffer: a short reply, still worth checking.
+        opening = "".join(head)
+        if opening:
+            if allow_retry and recent_replies and _is_repeat_of_recent(opening, recent_replies):
+                raise _RepeatDetected(opening)
+            yield opening

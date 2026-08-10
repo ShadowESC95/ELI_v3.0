@@ -32,10 +32,13 @@ from eli.kernel.stages.persona_text import (
 from eli.kernel.stages.output_text import _normalize_assistant_text
 from eli.kernel.stages.model_runtime import gguf_inference, _get_inference_broker
 from eli.kernel.stages.guards import (
+    _RepeatDetected,
     _failed_executor_is_failed_block,
     _failed_executor_query_from_prompt,
     _failed_executor_relevant_block,
     _failed_executor_surface,
+    _stream_holding_back_repeats,
+    _user_asked_for_a_repeat,
 )
 from eli.kernel.stages.fast_actions import (
     _PHASE45_DIRECT_FAST_ACTIONS,
@@ -1744,13 +1747,53 @@ class GenerationMixin:
                 reasoning_mode=reasoning_mode,
             )
 
-            for chunk in stream:
-                piece = str(chunk or "")
-                if not piece:
-                    continue
-                full_tokens.append(piece)
-                yielded = True
-                yield piece
+            # ── Anti-repeat ENFORCEMENT (see guards._is_repeat_of_recent) ─────
+            # The contract injected into situation_brief above only *asks*. This
+            # checks. It acts on the opening rather than the finished reply: once a
+            # chunk is yielded it is on the user's screen, so a check that waits for
+            # the full text can only report a repeat, never prevent one.
+            _recent_eli = []
+            if _user_asked_for_a_repeat(user_input):
+                log.debug("[ANTI-REPEAT] user asked for a repeat — guard stood down")
+            else:
+                try:
+                    for _t in (self.memory.get_recent_conversation(limit=8) or []):
+                        if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                            _c = str((_t or {}).get("content", "") or "").strip()
+                            if _c:
+                                _recent_eli.append(_c)
+                except Exception:
+                    log.debug("[ANTI-REPEAT] recent-reply fetch failed", exc_info=True)
+
+            try:
+                for piece in _stream_holding_back_repeats(
+                        stream, _recent_eli, allow_retry=True):
+                    full_tokens.append(piece)
+                    yielded = True
+                    yield piece
+            except _RepeatDetected:
+                log.debug("[ANTI-REPEAT] opening matched a recent reply — regenerating")
+                # Regenerate ONCE, with the constraint restated as a hard rule rather
+                # than a preamble the model can drift past. A second repeat is served
+                # as-is: an honest duplicate beats an empty turn or an infinite retry.
+                full_tokens.clear()
+                _retry_prompt = (
+                    "The reply you just produced repeated something you had already said. "
+                    "Write a DIFFERENT reply. Do not restate any earlier point, do not "
+                    "re-ask an answered question, and respond only to the user's latest "
+                    "message.\n\n" + prompt
+                )
+                log.debug("[ANTI-REPEAT] retry generation issued")
+                _retry = self.generate_stream_from_assembled_prompt(
+                    _retry_prompt,
+                    working_memory=wm,
+                    reasoning_mode=reasoning_mode,
+                )
+                for piece in _stream_holding_back_repeats(
+                        _retry, _recent_eli, allow_retry=False):
+                    full_tokens.append(piece)
+                    yielded = True
+                    yield piece
 
             if yielded:
                 final_text = "".join(full_tokens).strip()
