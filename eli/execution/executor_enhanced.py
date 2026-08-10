@@ -3307,7 +3307,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                         f"Downloadable: {len(dl)} more"
                         + (f" across {len(langs)} languages" if langs else "")
                         + (f" ({len(en)} English accents)" if en else "")
-                        + ". Say e.g. \"download a British voice\", or open Settings > Voice.")
+                        + ". Say e.g. \"download a British voice\", or open Settings \u25b8 Runtime \u25b8 \"VOICE / TTS\".")
             except Exception:
                 log.debug("[LIST_VOICES] catalog summary failed", exc_info=True)
             msg = "\n".join(lines)
@@ -3446,8 +3446,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                    or args.get("source") or "").strip()
             if not src:
                 msg = ("To make a voice, give me an audio file of it — a .wav, .mp3 or .mp4 "
-                       "(a short, clean ~6–20s clip works best). In the app: Settings > Voice "
-                       "> \"Create a voice from an audio file…\".")
+                       "(a short, clean ~6\u201320s clip works best). In the app: Settings \u25b8 Runtime "
+                       "\u25b8 \"VOICE / TTS\".")
                 return {"ok": False, "action": a, "content": msg, "response": msg}
             import os as _os
             src = _os.path.expanduser(src)

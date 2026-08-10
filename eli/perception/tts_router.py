@@ -18,7 +18,7 @@ import subprocess
 import threading
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from eli.utils.platform_compat import LINUX, play_sound
 
@@ -449,16 +449,64 @@ def _find_piper_bin() -> Optional[str]:
     return None
 
 
+# ── Neural-voice fallback state (observable, not silent) ─────────────────────
+# A `clone:` voice that cannot synthesise fell through to Piper with no log line at
+# all. Live consequence in v2: Settings reported "Active voice: natural:sophia" while
+# every reply was spoken by en_US-amy-medium, and a user who dropped in a voice clip
+# had no way to learn the clone was registered but never used. Record WHY, so the
+# diagnostics panel and the console agree with what leaves the speakers.
+_NEURAL_FALLBACK: Dict[str, Any] = {"active": False, "requested": "", "reason": ""}
+
+
+def _neural_unavailable_reason() -> str:
+    """Why a cloned voice cannot synthesise right now, in one line."""
+    if _clone_backend_available("chatterbox"):
+        return "the clone backend is present but produced no audio for this voice"
+    if _clone_backend_available("xtts"):
+        return "the clone backend is present but produced no audio for this voice"
+    return ("no neural clone backend is installed in this build "
+            "(chatterbox-tts, or coqui-tts as the legacy fallback)")
+
+
+def _note_neural_fallback(requested) -> None:
+    """Record (and log once per change) that a cloned voice fell back to Piper."""
+    global _NEURAL_FALLBACK
+    if not requested:
+        if _NEURAL_FALLBACK.get("active"):
+            log.debug("[TTS_NEURAL] clone voice is working again")
+        _NEURAL_FALLBACK = {"active": False, "requested": "", "reason": ""}
+        return
+    reason = _neural_unavailable_reason()
+    if (not _NEURAL_FALLBACK.get("active")) or _NEURAL_FALLBACK.get("requested") != requested:
+        log.warning(
+            "[TTS_NEURAL] '%s' could not synthesise — %s. Falling back to the Piper "
+            "voice '%s'. The selected voice is NOT what you are hearing.",
+            requested, reason, _DEFAULT_VOICE,
+        )
+    _NEURAL_FALLBACK = {"active": True, "requested": str(requested), "reason": reason}
+
+
+def neural_fallback_state() -> Dict[str, Any]:
+    """Public read for the diagnostics panel."""
+    return dict(_NEURAL_FALLBACK)
+
+
 def available_backends() -> dict:
     installed = list_voices()
     active = get_active_voice()
-    active_model = find_voice_model(active)
+    # `clone:`/`natural:`/`char:` voices are not Piper models. find_voice_model()
+    # cannot resolve them and returns whatever its fallback picks — alphabetically the
+    # first installed voice — so the panel showed a Czech model for a neural voice
+    # while synthesis actually used _DEFAULT_VOICE. Report what will really be used.
+    _is_neural = str(active).startswith(("natural:", "clone:"))
+    active_model = find_voice_model(_DEFAULT_VOICE if _is_neural else active)
     return {
         "piper_python": True,
         "piper_bin": _find_piper_bin(),
         "piper_voices": installed,
         "system_voices": [v for v in installed if _is_system_voice(v)],
         "active_voice": active,
+        "default_voice": _DEFAULT_VOICE,
         "active_model": str(active_model) if active_model else None,
         "pyttsx3": True,
         "espeak_ng": shutil.which("espeak-ng") is not None,
@@ -1065,9 +1113,11 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             from eli.perception import tts_xtts
             wav = tts_xtts.synthesize_wav(text, active)
             if wav:
+                _note_neural_fallback(None)
                 return _apply_tone_pitch(wav)
         except Exception:
             log.debug("[TTS_WAV] xtts clone resolve failed", exc_info=True)
+        _note_neural_fallback(active)
         active = _DEFAULT_VOICE
     # Character voice (char:hal, char:tars, …): synth the base Piper voice, then run
     # its ffmpeg effect chain over the result. Recurses once with a real base voice.

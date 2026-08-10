@@ -39,6 +39,10 @@ env:
   REQUIRED_EXTRAS: "gui llm server docs analysis extras"
   # Extras bundled when their wheels resolve on the runner; skipped (loudly)
   # otherwise — every optional import in ELI degrades cleanly by design.
+  # NOTE: consumed by ALL THREE build jobs. The neural clone engine is added as a
+  # job-level override on build-linux only — that is the one job installing the CPU
+  # torch stack first; adding it globally makes windows/macos resolve torch from PyPI
+  # and their bundles then fail the 2 GiB asset guard.
   OPTIONAL_EXTRAS: "tts asr image vision web wakeword"
 
 jobs:
@@ -320,6 +324,16 @@ jobs:
     env:
       ELI_REQUIRE_VOICES: "1"
       GH_TOKEN: ${{ github.token }}
+      # Linux-only: bundle the neural clone engine so `clone:` voices actually
+      # synthesise instead of silently falling back to Piper. CHATTERBOX, not the
+      # `natural` (XTTS-v2) extra: Chatterbox is MIT and commercial-clean, while the
+      # XTTS-v2 *model* is non-commercial — v3 already prefers Chatterbox for exactly
+      # that reason (see tts_router: "Chatterbox (MIT, preferred) -> XTTS (legacy)"),
+      # and shipping a non-commercial model in a redistributed artifact would cut
+      # against that. Safe here and only here: this job installs the CPU torch stack
+      # from the pytorch CPU index before the extras loop and fails on any nvidia-*
+      # wheel. Model weights are NOT bundled; they download on first use.
+      OPTIONAL_EXTRAS: "tts asr image vision web wakeword chatterbox"
     name: linux (AppImage)
     needs: guard
     runs-on: ubuntu-latest
@@ -357,7 +371,10 @@ jobs:
           python -m pip install --upgrade pip wheel
           pip install -r requirements-build.txt
           # CPU torch first — default PyPI torch drags ~6 GB of CUDA libs into the bundle.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # CPU torch stack FIRST — default PyPI torch drags ~6 GB of CUDA libs into the
+          # bundle. torchaudio is included because the clone engine requires it, and
+          # resolving it from PyPI afterwards pulls the CUDA build of torch back in.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install ".[$(echo $REQUIRED_EXTRAS | tr ' ' ',')]"
           pip install llama-cpp-python --prefer-binary \
             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
@@ -366,6 +383,11 @@ jobs:
             pip install ".[$extra]" \
               || echo "::warning::optional extra '$extra' has no installable wheels on linux — shipped build degrades cleanly without it"
           done
+          if pip list --format=freeze | grep -q '^nvidia-'; then
+            echo "::error::CUDA wheels were pulled in (nvidia-*) — the torch stack is no longer CPU-only:"
+            pip list --format=freeze | grep '^nvidia-' | sed 's/^/  /'
+            exit 1
+          fi
 
       - name: Generate capability manifests (bundled introspection data)
         run: |
