@@ -37,7 +37,7 @@ from eli.kernel.stages.guards import (
     _failed_executor_query_from_prompt,
     _failed_executor_relevant_block,
     _failed_executor_surface,
-    _deprimed_retry_prompt,
+    _deprimed_persona_brief,
     _stream_holding_back_repeats,
     _user_asked_for_a_repeat,
 )
@@ -1778,12 +1778,24 @@ class GenerationMixin:
                 # than a preamble the model can drift past. A second repeat is served
                 # as-is: an honest duplicate beats an empty turn or an infinite retry.
                 full_tokens.clear()
-                _retry_prompt = _deprimed_retry_prompt(prompt)
-                log.debug("[ANTI-REPEAT] retry generation issued (prior replies stripped "
-                          "from prompt: %d -> %d chars)", len(prompt), len(_retry_prompt))
+                # De-prime the PERSONA HANDOFF, which is where the contract lives.
+                # `prompt` is the user's message and must reach the model unaltered.
+                _retry_brief = _deprimed_persona_brief(situation_brief)
+                _retry_wm = SimpleNamespace(
+                    user_input=user_input,
+                    assembled_context=memory_context,
+                    persona_handoff=_retry_brief,
+                    final_response="",
+                    trace={},
+                    bus_result=pre_built_bus_result,
+                    short_term_memory=SimpleNamespace(recent_turns=_wm_recent_turns),
+                )
+                log.debug("[ANTI-REPEAT] retry generation issued (persona handoff "
+                          "de-primed: %d -> %d chars)",
+                          len(situation_brief), len(_retry_brief))
                 _retry = self.generate_stream_from_assembled_prompt(
-                    _retry_prompt,
-                    working_memory=wm,
+                    prompt,
+                    working_memory=_retry_wm,
                     reasoning_mode=reasoning_mode,
                 )
                 # The de-primed prompt is materially different from the first, so a
@@ -1800,8 +1812,8 @@ class GenerationMixin:
                     log.debug("[ANTI-REPEAT] de-primed retry still repeated — serving it")
                     full_tokens.clear()
                     _last = self.generate_stream_from_assembled_prompt(
-                        _retry_prompt,
-                        working_memory=wm,
+                        prompt,
+                        working_memory=_retry_wm,
                         reasoning_mode=reasoning_mode,
                     )
                     for piece in _stream_holding_back_repeats(

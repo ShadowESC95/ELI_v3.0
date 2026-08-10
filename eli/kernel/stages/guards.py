@@ -338,8 +338,17 @@ _ANTI_REPEAT_BLOCK_RE = re.compile(
 )
 
 
-def _deprimed_retry_prompt(prompt: str) -> str:
-    """Strip the verbatim prior replies before regenerating.
+def _deprimed_persona_brief(situation_brief: str) -> str:
+    """Strip the verbatim prior replies from the PERSONA HANDOFF before regenerating.
+
+    Named for its argument on purpose. The first version took `prompt` and was a
+    no-op: in the generation stage `prompt` is the user's own message
+    (``prompt = str((args or {}).get("message") or user_input or "").strip()``),
+    while the anti-repeat contract is injected into `situation_brief`, which reaches
+    the model as ``wm.persona_handoff``. Stripping the user's message removed
+    nothing and prepended an instruction to their words instead. The live v2 log
+    said so plainly — "prior replies stripped from prompt: 26 -> 143 chars", and 26
+    is the length of "fair point pal, fair point".
 
     Observed live (v2.1.60, 15:13): the guard caught a repeat, retried, and the
     retry produced the SAME opening — prompt_tokens barely moved, 4501 -> 4495,
@@ -356,12 +365,12 @@ def _deprimed_retry_prompt(prompt: str) -> str:
     stripped = _ANTI_REPEAT_BLOCK_RE.sub(
         "Do not repeat anything you have already said in this conversation, and do "
         "not re-ask a question the user has already answered.",
-        str(prompt or ""),
+        str(situation_brief or ""),
     )
     return (
         "Your previous attempt repeated an earlier reply. Respond only to the user's "
         "latest message, with different content.\n\n" + stripped
-    )
+    ).strip()
 
 
 def _repeat_ratio(a: str, b: str) -> float:
