@@ -1,7 +1,4 @@
-"""Locks on two defects from a live v2.1.63 session (18:47-18:50), ported to v3.
-
-In v3 the streaming guard lives in eli/kernel/stages/generation.py; the router route
-is in the same place as v2.
+"""Locks on two defects from a live session (v2.1.63, 18:47–18:50).
 
 ELI claimed it had been "keeping tabs on your project's state" from "the Simulation
 Lab", citing a "branch tree" and a "development console". None of that existed. A scan
