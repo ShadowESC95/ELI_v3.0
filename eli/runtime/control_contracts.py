@@ -148,7 +148,7 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
     # this, "What do you know about me … - as a person, who am i?" matched the
     # generic identity regex below (via the unanchored `as a person`) and was
     # rewritten to SELF_REPORT — so a personal-memory question was answered with a
-    # runtime self-report, and the user was told "your name is jason, nothing more".
+    # runtime self-report, and the user was told "your name is alex, nothing more".
     _is_about_the_user = bool(re.search(
         r"\b(about me|about myself|know me|remember me|who am i|what am i|"
         r"my (?:name|preferences?|profile|tastes?|habits?|style|tone))\b",

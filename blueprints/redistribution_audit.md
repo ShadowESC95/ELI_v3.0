@@ -32,7 +32,7 @@ fixed 2026-07-03). The tree is clean and the suite is green on those paths.
 
 ## 1. Redistribution readiness
 
-**1.1 Personal data — PASS.** No `/home/jay`, name, or email in any *tracked* source file
+**1.1 Personal data — PASS.** No `/home/alex`, name, or email in any *tracked* source file
 (`eli/`, `api/`, `bin/`, `scripts/`). The only personal-data references are in `LICENSE`,
 `NOTICE`, `README`, `SECURITY`, `CONTRIBUTING` — the **intentional** copyright + security
 contact, which *should* carry the author's name. Verified via `git grep`.
@@ -54,7 +54,7 @@ are all present.
 
 **1.6 Untracked junk — CLEANUP RECOMMENDED (non-blocking).** These exist in the folder but are
 **untracked → they never ship**, and are now gitignored so they can't be committed by accident:
-- `sys/` — a stray directory (contains `/home/jay` + name). **Recommend: delete.**
+- `sys/` — a stray directory (contains `/home/alex` + name). **Recommend: delete.**
 - the benchmark `.sh` scripts and `build_h2h_full.py` under `tools/eval/benchmarks/` — dev benchmark
   scripts with hardcoded paths + name. **Recommend: delete.**
 - `eli/eli_examination_report_*.txt`, `eli/.claude/` — local artifacts/IDE config.

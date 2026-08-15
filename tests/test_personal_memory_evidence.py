@@ -2,7 +2,7 @@
 memory that was retrieved for them.
 
 Regression cover for a session where the user asked what ELI knew about them and
-was told "I know your name is jason. That is the entirety of my knowledge base
+was told "I know your name is alex. That is the entirety of my knowledge base
 regarding you" — on a turn where the memory agent had already retrieved 10,858
 characters. Two independent defects combined:
 
@@ -72,7 +72,7 @@ def test_retrieved_memory_reaches_the_synthesis_prompt():
     prompt = _capture_prompt(
         engine,
         user_input=USER_QUESTION,
-        evidence="I'm ELI. Context window: 8192 tokens. You're jason.",
+        evidence="I'm ELI. Context window: 8192 tokens. You're alex.",
         action="PERSONAL_MEMORY_SUMMARY",
         mode="self_consistency",
         memory_context="User's favourite rapper is Immortal Technique.",
@@ -104,7 +104,7 @@ def test_empty_memory_context_keeps_the_single_evidence_prompt():
     prompt = _capture_prompt(
         engine,
         user_input=USER_QUESTION,
-        evidence="You're jason.",
+        evidence="You're alex.",
         action="PERSONAL_MEMORY_SUMMARY",
         mode="quick",
         memory_context="   ",
@@ -123,7 +123,7 @@ def test_first_person_statements_become_readable_facts():
         "i use arch linux and neovim": "uses",
         "I am a security researcher": "is a security researcher",
         "i love hip hop and documentaries": "loves",
-        "my name is Jason": "name is Jason",
+        "my name is Alex": "name is Alex",
     }
     for raw, expected in cases.items():
         got = _extract_fact(raw)

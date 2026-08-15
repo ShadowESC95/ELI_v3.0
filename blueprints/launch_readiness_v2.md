@@ -86,7 +86,7 @@ two god-files (`executor_enhanced` 14.5k, `engine` 13.5k) whose action handlers 
 
 ## 6. Redistribution / launch blockers — all clear
 
-- **0** `/home/jay`/name/email in tracked source (only the intentional copyright in
+- **0** `/home/alex`/name/email in tracked source (only the intentional copyright in
   LICENSE/NOTICE/README/SECURITY/CONTRIBUTING).
 - **0** hardcoded secrets/keys.
 - **Fresh clone** (`git archive HEAD`): 19 MB / 834 files, **zero** user DBs / audio / uploads;
