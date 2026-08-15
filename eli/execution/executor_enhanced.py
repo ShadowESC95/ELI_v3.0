@@ -6005,6 +6005,19 @@ try:
 
 
     def _eli_self_project_root():
+        """Canonical, environment-honouring root — never the module's own location.
+
+        Path(__file__).parents[2] resolves INSIDE the read-only AppImage mount in a
+        shipped build, so this report read a runtime_snapshot.json that does not
+        exist there and ran `git -C` against a directory that is not a repository.
+        """
+        try:
+            from eli.core.paths import project_root as _canonical_project_root
+            root = _eli_self_Path(_canonical_project_root())
+            if str(root):
+                return root
+        except Exception:
+            pass
         try:
             return _eli_self_Path(__file__).resolve().parents[2]
         except Exception:
@@ -6071,8 +6084,24 @@ try:
             ],
         )
 
-        runtime_snapshot = _eli_self_read_json(root / "artifacts" / "runtime_snapshot.json")
+        # Read the snapshot where the loader WRITES it — get_paths().artifacts_dir,
+        # which honours the artifacts override.
+        runtime_snapshot = {}
+        try:
+            runtime_snapshot = _eli_self_read_json(
+                get_paths().artifacts_dir / "runtime_snapshot.json")
+        except Exception:
+            runtime_snapshot = {}
+        if not runtime_snapshot:
+            runtime_snapshot = _eli_self_read_json(root / "artifacts" / "runtime_snapshot.json")
+
         manifest = _eli_self_read_json(root / "capability_manifest.json")
+        if not manifest:
+            try:
+                manifest = _eli_self_read_json(
+                    _eli_self_Path(__file__).resolve().parents[2] / "capability_manifest.json")
+            except Exception:
+                manifest = {}
 
         runtime = {
             "model_path": runtime_snapshot.get("model_path"),
@@ -6105,6 +6134,9 @@ try:
                 "tags": _eli_self_split_lines(tags.get("stdout"), 20),
                 "head_ok": bool(head.get("ok")),
                 "status_ok": bool(status.get("ok")),
+                # A shipped build has no repository at all. Without this the empty
+                # output of a FAILED `git status --short` was rendered as "clean".
+                "available": bool(head.get("ok") or status.get("ok")),
             },
             "capabilities": {
                 "manifest_total": manifest.get("total"),
@@ -6139,9 +6171,13 @@ try:
         lines.append("")
         lines.append("Recent Git updates:")
         commits = report["git"]["recent_commits"]
+        _git_available = report["git"].get("available", True)
         if commits:
             for c in commits:
                 lines.append(f"- {c}")
+        elif not _git_available:
+            lines.append(f"- No git repository at {report['project_root']} — this is a "
+                         "packaged build, so commit history is not readable from here.")
         else:
             lines.append("- No recent Git commit evidence was available.")
 
@@ -6184,13 +6220,18 @@ try:
             lines.append(f"- dirty_entries: {len(dirty)} shown below")
             for d in dirty[:10]:
                 lines.append(f"  - {d}")
+        elif not _git_available:
+            lines.append("- not available (no git repository in this build)")
         else:
             lines.append("- clean according to git status --short")
 
-        lines.append("")
-        lines.append("Grounding rule: if an update/check is not listed above, ELI must not claim it happened.")
-
         content = "\n".join(lines)
+
+        # The grounding rule is an instruction TO THE MODEL and must never be part
+        # of the visible answer.
+        report["policy"]["grounding_rule"] = (
+            "If an update/check is not listed in this report, ELI must not claim it happened."
+        )
 
         return {
             "ok": True,
