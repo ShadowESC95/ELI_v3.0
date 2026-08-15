@@ -1742,6 +1742,19 @@ _register()
                 _user_pinned_ctx = _spin_ctx
             else:
                 _user_pinned_ctx = None
+            # The user's own GPU-layer choice, protected exactly like ctx. A tuning
+            # run made while the GPU is busy computes a low layer count for THOSE
+            # conditions; persisting it as the preference makes a transient state
+            # permanent (observed in v2: a pinned 99 became 13 while a video played,
+            # and every later boot loaded at 13 with the GPU idle).
+            try:
+                _user_pinned_layers = int(self.n_gpu_layers_input.value())
+            except Exception:
+                _user_pinned_layers = 0
+            try:
+                _user_pinned_batch = int(self.batch_size_input.value())
+            except Exception:
+                _user_pinned_batch = 0
             rec = _hp_recommend(hw, [{
                 "name": model_file.name,
                 "path": str(model_file),
@@ -1805,12 +1818,18 @@ _register()
             # the user at a lower ctx next boot. The load path's smart-fit reduces to
             # fit (and logs) at load time; the effective value lives in hw_profile_*.
             _canonical_ctx = int(_user_pinned_ctx) if _user_pinned_ctx else int(rec.n_ctx)
+            _canonical_layers = int(_user_pinned_layers) if _user_pinned_layers else int(rec.n_gpu_layers)
             _min_batch = int(_os_ctx.environ.get("ELI_MIN_BATCH", "128") or "128")
             _apply_batch = max(int(rec.batch_size), _min_batch)
+            # Batch follows the same rule as ctx and layers: the user's choice is a
+            # preference, the tuner's is a measurement. The ELI_MIN_BATCH floor is a
+            # safety limit and still applies to whichever value wins.
+            _canonical_batch = (max(int(_user_pinned_batch), _min_batch)
+                                if _user_pinned_batch else _apply_batch)
             try:
                 self.n_ctx_input.setValue(_canonical_ctx)
-                self.n_gpu_layers_input.setValue(int(rec.n_gpu_layers))
-                self.batch_size_input.setValue(_apply_batch)
+                self.n_gpu_layers_input.setValue(_canonical_layers)
+                self.batch_size_input.setValue(_canonical_batch)
                 if int(rec.n_threads) > 0:
                     self.n_threads_input.setValue(int(rec.n_threads))
             except Exception as _spin_err:
@@ -1823,8 +1842,8 @@ _register()
                 from eli.core.runtime_settings import load_settings as _rs_load, save_settings as _rs_save
                 _s = dict(_rs_load() or {})
                 _s["n_ctx"] = _canonical_ctx        # user's chosen ctx, preserved
-                _s["n_gpu_layers"] = int(rec.n_gpu_layers)
-                _s["batch_size"] = _apply_batch
+                _s["n_gpu_layers"] = _canonical_layers   # user's choice, preserved
+                _s["batch_size"] = _canonical_batch   # user's choice, preserved
                 if int(rec.n_threads) > 0:
                     _s["n_threads"] = int(rec.n_threads)
                 _s["hw_profile_n_ctx"] = int(rec.n_ctx)   # effective (VRAM-reduced) value
@@ -1833,9 +1852,32 @@ _register()
                 _s["cache_type_k"] = _ck
                 _s["cache_type_v"] = _cv
                 _rs_save(_s)
-                self._hardware_tuning_log(
-                    "HW profile applied as canonical settings (calculated for this model)."
-                )
+                # Say what was applied and what was NOT. Announcing the whole
+                # profile as canonical was wrong: ctx and gpu_layers are the user's.
+                _applied_desc = ((f"threads={int(rec.n_threads)}" if int(rec.n_threads) > 0
+                                  else "nothing"))
+                _not_applied = []
+                if int(rec.n_ctx) != int(_canonical_ctx):
+                    _not_applied.append(f"n_ctx (yours: {_canonical_ctx}, tuner: {int(rec.n_ctx)})")
+                if int(rec.n_gpu_layers) != int(_canonical_layers):
+                    _not_applied.append(
+                        f"n_gpu_layers (yours: {_canonical_layers}, tuner: {int(rec.n_gpu_layers)})")
+                if int(_apply_batch) != int(_canonical_batch):
+                    _not_applied.append(
+                        f"batch_size (yours: {_canonical_batch}, tuner: {int(_apply_batch)})")
+                if _not_applied:
+                    self._hardware_tuning_log(
+                        f"Applied as canonical: {_applied_desc}. NOT applied: "
+                        + "; ".join(_not_applied)
+                        + ". Your values are kept; the tuner's are stored as hw_profile_* "
+                          "fallbacks, used only if your settings fail to load."
+                    )
+                else:
+                    self._hardware_tuning_log(
+                        f"Applied as canonical: n_ctx={_canonical_ctx} "
+                        f"gpu_layers={_canonical_layers} batch={_canonical_batch} "
+                        f"{_applied_desc} (calculated for this model)."
+                    )
             except Exception as _save_err:
                 self._hardware_tuning_log(f"Warning: hw_profile save failed: {_save_err}")
 

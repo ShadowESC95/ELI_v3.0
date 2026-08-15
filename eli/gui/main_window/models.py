@@ -272,6 +272,17 @@ class LocalModelManager:
                             f"[GUI][LOAD] smart-fit reduced ctx {_sf_user_ctx}->{_sf_ctx} to fit "
                             f"{_sf_gpu.free_mb}MB free VRAM (your setting didn't fit — reduced to "
                             f"avoid OOM, not replaced)")
+                    # Layers get the same announcement as ctx. Shedding GPU layers is
+                    # the FIRST thing smart-fit does (ctx is protected to last), so it
+                    # is the reduction users actually hit — and it was near-silent: a
+                    # 99 -> 31 cut showed up only as a number in the parameter list
+                    # while per-turn latency went from ~3s to ~14s.
+                    if _user_gpu_layers and _sf_layers < _user_gpu_layers:
+                        log.debug(
+                            f"[GUI][LOAD] smart-fit reduced GPU layers {_user_gpu_layers}->{_sf_layers} "
+                            f"to fit {_sf_gpu.free_mb}MB free VRAM — your context of {_sf_ctx} was kept "
+                            f"(ctx is reduced last). Expect slower generation: the layers that did not "
+                            f"fit run on CPU. Free VRAM or lower the context to get them back.")
                     _add_attempt("smart-fit", _sf_ctx, _sf_layers, _sf_batch)
             except Exception as _sf_err:
                 log.debug(f"[GUI][LOAD] smart-fit attempt skipped: {_sf_err}")
@@ -460,6 +471,22 @@ class LocalModelManager:
                     "load_mode": "GPU" if int(self.n_gpu_layers) > 0 else "CPU",
                 })
                 print("✅ gguf_inference live runtime override published")
+
+                # The reasoning-mode budgets were derived from the startup tuner's
+                # recommended ctx, which the attempt list above is free to override —
+                # and does. Re-derive them from the ctx that actually loaded, or every
+                # mode plans against a context the model is not running.
+                try:
+                    from eli.core.startup_hardware_optimizer import (
+                        resize_budgets_to_effective_ctx as _resize_budgets,
+                    )
+                    _budget_delta = _resize_budgets(int(self.n_ctx))
+                    if _budget_delta:
+                        log.debug(
+                            f"[GUI][LOAD] mode budgets re-derived from effective ctx={int(self.n_ctx)}: "
+                            f"{sorted(_budget_delta)} (were sized for the tuner's recommendation)")
+                except Exception as _budget_err:
+                    log.debug(f"[GUI][LOAD] mode budget re-derivation skipped: {_budget_err}")
             except Exception as e:
                 log.debug(f"[GUI] live runtime override publish failed: {e}")
             self.load_error = None
