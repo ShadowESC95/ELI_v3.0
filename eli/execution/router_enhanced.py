@@ -620,6 +620,47 @@ def _route_set_communication_style(raw: str, low: str) -> Optional[Dict[str, Any
     return None
 
 
+# Technical runtime questions — "what model are you running", "how many gpu
+# layers". The previous version matched the bare words `model`, `threads`, `batch`
+# and `provider`, so it fired at confidence 0.99 on any sentence containing one.
+# Observed live in v2: "what's going on with your world model?" was routed to
+# runtime status, pre-empting every conversational route below it.
+_RUNTIME_STATUS_RE = re.compile(
+    r"\bwhat are you actually running on\b"
+    r"|\brunning on right now\b"
+    r"|\b(?:what|which|whats|what's)\s+model\b"
+    r"|\bmodel\s+(?:are|is|do|does)\s+(?:you|it)\b"
+    r"|\bmodel\s+(?:name|path|file|size|id|weights|quant\w*)\b"
+    r"|\b(?:running|loaded|load(?:ing)?|using|swap\w*\s+to)\s+(?:a\s+|the\s+|which\s+|what\s+)?model\b"
+    r"|\bcontext\s+(?:size|window|length)\b|\bn_ctx\b"
+    r"|\bgpu\s+layers?\b|\bn_gpu_layers\b|\boffload(?:ed|ing)?\s+layers?\b"
+    r"|\bbatch\s+size\b|\bn_batch\b"
+    r"|\b(?:how many|number of)\s+threads\b|\bthread\s+count\b|\bn_threads\b"
+    r"|\b(?:inference|model|llm|backend)\s+provider\b"
+    r"|\bwhich\s+provider\b|\bwhat\s+provider\b",
+    re.I,
+)
+
+
+# The GUI turns a dropped/attached image into a marker in the user's message:
+#     [Attached image: shot.png — path: /home/u/Pictures/shot.png]
+# The generic path extractor swept up the closing bracket, so the path did not
+# exist AND `endswith(".png")` was False — an attached IMAGE routed to
+# SUMMARIZE_FILE instead of ANALYZE_IMAGE.
+_ATTACHMENT_MARKER_RE = re.compile(
+    r"\[\s*Attached\s+(?:image|file)\s*:[^\]]*?\bpath\s*:\s*(?P<path>[^\]]+?)\s*\]",
+    re.I,
+)
+
+
+def _attachment_marker_path(raw: str) -> Optional[str]:
+    """Path out of the GUI's attachment marker, without its closing bracket."""
+    m = _ATTACHMENT_MARKER_RE.search(str(raw or ""))
+    if not m:
+        return None
+    return (m.group("path") or "").strip() or None
+
+
 def _route_grounded_runtime_intent(
         raw: str, low: str) -> Optional[Dict[str, Any]]:
     if not raw:
@@ -640,7 +681,7 @@ def _route_grounded_runtime_intent(
     _is_identity = any(p in low for p in _identity_phrases)
     _has_system_kw = any(k in low for k in _memory_system_keywords)
 
-    if re.search(r"\b(what are you actually running on|running on right now|model|context size|gpu layers|threads|batch|provider)\b", raw, re.I):
+    if _RUNTIME_STATUS_RE.search(raw):
         return _mk("CHAT", {"message": raw}, 0.99, matched_by="runtime.status.identity_grounded_chat", allow_chat_without_evidence=False)
 
     # identity precedence
@@ -2777,8 +2818,11 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         target = m.group(1).strip()
         # If target contains an absolute path, extract from the first / or ~/
         # This handles typos, extra verbs, and multi-word prefixes cleanly.
-        _path_hit = re.search(r'[~/].*$', target)
-        if _path_hit:
+        _attached = _attachment_marker_path(raw)
+        _path_hit = None if _attached else re.search(r'[~/].*$', target)
+        if _attached:
+            target = _attached
+        elif _path_hit:
             # Capture the FULL remainder (paths legitimately contain spaces,
             # parens, ×, –, accents — e.g. physics dirs). Then prefer the LONGEST
             # existing prefix so a real spaced path is kept intact while trailing
@@ -2786,6 +2830,14 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             # first space (old [^\s]+) cut spaced paths and led to phantom paths
             # the model then "summarised" from the name.
             _cand = _path_hit.group(0).strip()
+            if not os.path.exists(os.path.expanduser(_cand)):
+                # A closing delimiter glued to the last token survives the
+                # whole-token walk-back below. Only applied when it helps, so a
+                # real path ending in ')' — "paper (2).pdf" — is left alone.
+                _untrimmed = _cand
+                _cand = _cand.rstrip("]})>\"'`,;")
+                if _cand != _untrimmed and not os.path.exists(os.path.expanduser(_cand)):
+                    _cand = _untrimmed
             if not os.path.exists(os.path.expanduser(_cand)):
                 _toks = _cand.split()
                 for _k in range(len(_toks), 0, -1):

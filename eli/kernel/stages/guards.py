@@ -304,6 +304,7 @@ def _strip_reasoning_scaffold(text: str) -> str:
 _REPEAT_HEAD_CHARS = 200      # buffered before first paint
 _REPEAT_RATIO = 0.86          # difflib ratio over normalised text
 _REPEAT_COMPARE_AGAINST = 4   # how many recent ELI turns to test
+_REPEAT_RETRY_TEMP_BUMP = 0.35  # widen sampling on the retry — see the retry path
 
 
 def _repeat_norm(text: str) -> str:
@@ -329,6 +330,68 @@ def _user_asked_for_a_repeat(user_input: str) -> bool:
     reject as a repeat and regenerate into something the user did not ask for.
     """
     return bool(_REPEAT_REQUESTED_RE.search(str(user_input or "")))
+
+
+# A greeting is the other case where recurring is correct. "Evening" at 23:00 is
+# ELI reading the authoritative clock in its own system prompt, not recycling a
+# paragraph — but to the guard it looked like the previous session's opener.
+#
+# Live at 2.1.83, 23:10: the first generation opened 'Even…' (right), the guard
+# matched it against a recent reply and regenerated, and the retry — explicitly
+# instructed to produce "different content" — echoed the user's own misspelling
+# echoing the user's own typo and then telling him off for it. A correct answer
+# was replaced by a wrong one because it resembled a previous hello.
+#
+# Trade-off, stated plainly: greeting turns lose anti-repeat protection, so ELI
+# may open two sessions the same way. That is a far smaller failure than naming
+# the wrong time of day, and it is the same call already made for "say that
+# again" above — when repetition is the correct answer, the guard stands down.
+_GREETING_STEMS = (
+    "hello", "hi", "hey", "hiya", "howya", "howdy", "yo", "sup",
+    "morning", "afternoon", "evening", "night", "nite", "greetings",
+)
+# Words that can precede the greeting itself ("good afternoon", "ah hello").
+_GREETING_LEAD_SKIP = {"good", "a", "the", "well", "ah", "oh", "so", "hows", "how"}
+_GREETING_MAX_WORDS = 6       # beyond this a request is attached, not just a hello
+_GREETING_FUZZ = 0.8          # "aftrnoon" ≈ "afternoon" (0.94)
+_GREETING_FUZZ_MIN_LEN = 4    # below this only exact matches — "his" scores 0.8 vs "hi"
+# A time-of-day word can also open a real request — "night mode is broken please
+# fix". That is not a hello, and it should keep its anti-repeat protection.
+_GREETING_DISQUALIFIER_RE = re.compile(
+    r"\b(fix|broken|error|bug|crash(?:ed|ing)?|fail(?:ed|ing|s)?|please|can you|"
+    r"could you|why|how do|show me|open|run|write|check|make|set|change|update)\b",
+    re.I,
+)
+
+
+def _is_greeting_turn(user_input: str) -> bool:
+    """True when the user is saying hello.
+
+    Typo-tolerant on purpose: the live failure arrived as "Good aftrnoon, Eli", and
+    a check that only recognised correctly-spelled greetings would not have stood
+    down for the very message that exposed the bug.
+    """
+    norm = _repeat_norm(user_input)
+    if not norm:
+        return False
+    if _GREETING_DISQUALIFIER_RE.search(str(user_input or "")):
+        return False
+    words = norm.split()
+    if len(words) > _GREETING_MAX_WORDS:
+        return False
+    for word in words[:2]:
+        if word in _GREETING_LEAD_SKIP:
+            continue
+        if word in _GREETING_STEMS:
+            return True
+        if len(word) >= _GREETING_FUZZ_MIN_LEN:
+            return any(
+                len(stem) >= _GREETING_FUZZ_MIN_LEN
+                and difflib.SequenceMatcher(None, word, stem).ratio() >= _GREETING_FUZZ
+                for stem in _GREETING_STEMS
+            )
+        return False
+    return False
 
 
 # The contract block injected into situation_brief, matched so a retry can remove it.
@@ -413,14 +476,25 @@ class _RepeatDetected(Exception):
     """
 
 
-def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool):
+def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
+                                 salvage: bool = False):
     """Yield `stream`, withholding the opening until it is cleared as non-repeating.
+
+    Module-level and dependency-free so the guard can be driven directly by tests;
+    a closure inside the streaming method could only ever be tested by
+    re-implementing it, which proves nothing.
 
     Once a chunk is yielded it is on the user's screen, so the check must happen
     before first paint: the first `_REPEAT_HEAD_CHARS` are buffered, tested, then
     released untouched in the common case.
+
+    `allow_retry` raises `_RepeatDetected` so the caller can regenerate. `salvage`
+    is for the final attempt, where raising is no longer useful: the recycled
+    opening sentences are dropped and the remainder is served, buffering on until
+    something novel arrives. A reply that is repeat all the way down still gets
+    served whole — an honest duplicate beats an empty turn.
     """
-    head, released = [], False
+    head, released, salvaging = [], False, False
     for chunk in stream:
         piece = str(chunk or "")
         if not piece:
@@ -432,14 +506,162 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool):
         if sum(len(h) for h in head) < _REPEAT_HEAD_CHARS:
             continue
         opening = "".join(head)
-        if allow_retry and recent_replies and _is_repeat_of_recent(opening, recent_replies):
-            raise _RepeatDetected(opening)
+        if not salvaging and recent_replies and _is_repeat_of_recent(opening, recent_replies):
+            if allow_retry:
+                raise _RepeatDetected(opening)
+            if not salvage:
+                released = True
+                yield opening
+                continue
+            salvaging = True
+        if salvaging:
+            novel = _strip_repeated_opening(opening, recent_replies)
+            if len(_repeat_norm(novel)) < _REPEAT_MIN_SENTENCE_CHARS:
+                # Still inside the recycled preamble, or holding a fragment too
+                # short to judge — keep buffering rather than paint it. Releasing
+                # on a 3-character tail ("How") would let the rest of a sentence
+                # ELI has already said stream out behind it.
+                continue
+            released = True
+            yield novel
+            continue
         released = True
         yield opening
     if not released:
         # The stream ended inside the buffer: a short reply, still worth checking.
         opening = "".join(head)
         if opening:
-            if allow_retry and recent_replies and _is_repeat_of_recent(opening, recent_replies):
-                raise _RepeatDetected(opening)
+            if salvaging or (recent_replies
+                             and _is_repeat_of_recent(opening, recent_replies)):
+                if allow_retry and not salvaging:
+                    raise _RepeatDetected(opening)
+                if salvage or salvaging:
+                    novel = _strip_repeated_opening(opening, recent_replies)
+                    # Nothing but repeat, and no more stream to wait for: serve the
+                    # duplicate rather than a fragment or an empty turn.
+                    if len(_repeat_norm(novel)) >= _REPEAT_MIN_SENTENCE_CHARS:
+                        yield novel
+                    else:
+                        yield opening
+                    return
             yield opening
+
+
+# ── Anti-repeat: salvage instead of serving the duplicate ────────────────────
+# Live evidence (2.1.80): attempt 1 opened "You're not wrong — I'm a bit of a hot
+# mess…", the guard caught it, the retry opened with the SAME two sentences, and
+# the duplicate was served because the retry was the last chance. But the retry
+# was not a total loss: after those two recycled sentences it went on to answer
+# the question that had actually been asked. Serving or discarding the whole
+# reply were both wrong — the repeat was a preamble, not the answer.
+#
+# So the last attempt trims rather than surrenders: leading sentences that
+# restate a recent reply are dropped and the novel remainder is served. Only if
+# nothing novel survives does the honest-duplicate rule still apply.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])[\"'’”)\]]*\s+")
+_REPEAT_MIN_SENTENCE_CHARS = 12   # below this a sentence carries no content to match on
+_REPEAT_MIN_REDACT_CHARS = 40     # shorter lines are too generic to redact on a match
+
+
+def _split_sentences_with_gaps(text: str):
+    """Sentences paired with the whitespace that followed them.
+
+    Keeping the gaps means a trimmed remainder is the ORIGINAL substring, not a
+    re-joined approximation — no lost line breaks, no invented spaces.
+    """
+    body = str(text or "")
+    out, last = [], 0
+    for m in _SENTENCE_SPLIT_RE.finditer(body):
+        out.append((body[last:m.start()], m.group(0)))
+        last = m.end()
+    out.append((body[last:], ""))
+    return [(s, g) for s, g in out if s or g]
+
+
+def _prior_sentences(prior_replies) -> List[str]:
+    sentences: List[str] = []
+    for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+        for s, _gap in _split_sentences_with_gaps(str(prior or "").strip()):
+            s = s.strip()
+            if s:
+                sentences.append(s)
+    return sentences
+
+
+def _sentence_seen_before(sentence: str, prior_sentences, *, partial: bool) -> bool:
+    """True when this sentence restates one ELI already delivered.
+
+    `partial` is for the trailing fragment of a still-streaming buffer: it is
+    compared against the OPENING of each prior sentence, so a repeat that is only
+    half-emitted is recognised as one instead of reading as novel text.
+    """
+    cand = _repeat_norm(sentence)
+    if len(cand) < _REPEAT_MIN_SENTENCE_CHARS:
+        return False
+    for prior in prior_sentences:
+        pn = _repeat_norm(prior)
+        if len(pn) < _REPEAT_MIN_SENTENCE_CHARS:
+            continue
+        if partial:
+            if len(pn) < len(cand):
+                continue
+            pn = pn[:len(cand)]
+        if difflib.SequenceMatcher(None, cand, pn).ratio() >= _REPEAT_RATIO:
+            return True
+    return False
+
+
+def _strip_repeated_opening(text: str, prior_replies) -> str:
+    """Return `text` with its recycled opening sentences removed.
+
+    Returns "" when every sentence is one ELI has already said — the caller
+    decides what to do with a reply that is nothing but repeat.
+    """
+    body = str(text or "")
+    priors = _prior_sentences(prior_replies)
+    if not body.strip() or not priors:
+        return body
+    parts = _split_sentences_with_gaps(body)
+    keep = 0
+    for i, (sentence, _gap) in enumerate(parts):
+        stripped = sentence.strip()
+        if not stripped:
+            keep = i + 1
+            continue
+        complete = bool(re.search(r"[.!?…][\"'’”)\]]*$", stripped))
+        is_tail = (i == len(parts) - 1)
+        if _sentence_seen_before(stripped, priors, partial=(is_tail and not complete)):
+            keep = i + 1
+            continue
+        break
+    if keep == 0:
+        return body
+    return "".join(s + g for s, g in parts[keep:]).lstrip()
+
+
+def _redact_prior_replies(text: str, prior_replies) -> str:
+    """Remove ELI's own recent replies from a prompt block before regenerating.
+
+    De-priming the persona brief alone was not enough: the same paragraph also
+    reaches the model through the assembled memory context and the handoff's
+    evidence block, so the retry was still shown the exact text it had just been
+    told not to produce. Matching is line-wise and ratio-based, so unrelated
+    evidence on neighbouring lines survives intact.
+    """
+    body = str(text or "")
+    priors = [str(p or "").strip() for p in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]]
+    priors = [p for p in priors if len(_repeat_norm(p)) >= _REPEAT_MIN_REDACT_CHARS]
+    if not body or not priors:
+        return body
+    kept = []
+    for line in body.splitlines():
+        norm = _repeat_norm(line)
+        if len(norm) >= _REPEAT_MIN_REDACT_CHARS and any(
+                _repeat_ratio(line, p) >= _REPEAT_RATIO
+                or _repeat_norm(p) in norm
+                for p in priors):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+

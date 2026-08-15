@@ -45,6 +45,9 @@ from eli.kernel.stages.guards import (
     _failed_executor_relevant_block,
     _failed_executor_surface,
     _deprimed_persona_brief,
+    _is_greeting_turn,
+    _redact_prior_replies,
+    _REPEAT_RETRY_TEMP_BUMP,
     _stream_holding_back_repeats,
     _user_asked_for_a_repeat,
 )
@@ -1169,6 +1172,7 @@ class GenerationMixin:
     def generate_stream_from_assembled_prompt(self, prompt: str,
                                               working_memory=None,
                                               reasoning_mode: Optional[str] = None,
+                                              gen_overrides: Optional[Dict[str, Any]] = None,
                                               **kwargs):
         memory_context = ""
         situation_brief = ""
@@ -1326,6 +1330,7 @@ class GenerationMixin:
                 prompt,
                 memory_context,
                 reasoning_mode=reasoning_mode,
+                gen_overrides=gen_overrides,
                 situation_brief=situation_brief,
             ):
                 piece = str(chunk or "")
@@ -1701,7 +1706,15 @@ class GenerationMixin:
         # is where the rapport/semantic guards already land — so the constraint goes here.
         try:
             _prev_eli = []
-            for _t in (self.memory.get_recent_conversation(limit=8) or []):
+            # Skipped on a greeting for the same reason the enforcement guard is:
+            # telling the model "do not repeat any of this" while it decides how to
+            # say hello is the pressure that pushed a correct "Evening" into the
+            # user's misspelled "Aftrnoon".
+            _greeting_turn = _is_greeting_turn(user_input)
+            if _greeting_turn:
+                log.debug("[ANTI-REPEAT] greeting — contract not injected")
+            else:
+              for _t in (self.memory.get_recent_conversation(limit=8) or []):
                 if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
                     _c = str((_t or {}).get("content", "") or "").strip()
                     if _c:
@@ -1776,6 +1789,11 @@ class GenerationMixin:
             _recent_eli = []
             if _user_asked_for_a_repeat(user_input):
                 log.debug("[ANTI-REPEAT] user asked for a repeat — guard stood down")
+            elif _is_greeting_turn(user_input):
+                # Leaving _recent_eli empty disarms the guard: both
+                # _stream_holding_back_repeats calls no-op on an empty list.
+                log.debug("[ANTI-REPEAT] greeting — guard stood down "
+                          "(a time-of-day greeting is meant to recur)")
             else:
                 try:
                     for _t in (self.memory.get_recent_conversation(limit=8) or []):
@@ -1800,47 +1818,57 @@ class GenerationMixin:
                 full_tokens.clear()
                 # De-prime the PERSONA HANDOFF, which is where the contract lives.
                 # `prompt` is the user's message and must reach the model unaltered.
-                _retry_brief = _deprimed_persona_brief(situation_brief)
+                # Stripping the contract is necessary but not sufficient: the same
+                # reply also reaches the model through the assembled memory context
+                # and the handoff's evidence block, so attempt 2 was still reading
+                # its own last paragraph. Redact it from every block feeding the retry.
+                _retry_brief = _redact_prior_replies(
+                    _deprimed_persona_brief(situation_brief), _recent_eli)
+                _retry_context = _redact_prior_replies(memory_context, _recent_eli)
                 _retry_wm = SimpleNamespace(
                     user_input=user_input,
-                    assembled_context=memory_context,
+                    assembled_context=_retry_context,
                     persona_handoff=_retry_brief,
                     final_response="",
                     trace={},
                     bus_result=pre_built_bus_result,
                     short_term_memory=SimpleNamespace(recent_turns=_wm_recent_turns),
                 )
+                # Same prompt at the same temperature is the same reply. A retry that
+                # changes only the framing leaves the sampler free to walk the identical
+                # path, which is exactly what it did; widen it.
+                _retry_gen = None
+                try:
+                    _base_temp = float(self._generation_settings().get("temperature", 0.7) or 0.7)
+                    _retry_gen = {"temperature": round(min(1.2, _base_temp + _REPEAT_RETRY_TEMP_BUMP), 3)}
+                except Exception:
+                    log.debug("[ANTI-REPEAT] retry temperature bump skipped", exc_info=True)
                 log.debug("[ANTI-REPEAT] retry generation issued (persona handoff "
-                          "de-primed: %d -> %d chars)",
-                          len(situation_brief), len(_retry_brief))
+                          "de-primed: %d -> %d chars, context %d -> %d chars, temp=%s)",
+                          len(situation_brief), len(_retry_brief),
+                          len(memory_context or ""), len(_retry_context or ""),
+                          (_retry_gen or {}).get("temperature", "unchanged"))
                 _retry = self.generate_stream_from_assembled_prompt(
                     prompt,
                     working_memory=_retry_wm,
                     reasoning_mode=reasoning_mode,
+                    gen_overrides=_retry_gen,
                 )
                 # The de-primed prompt is materially different from the first, so a
                 # second attempt is worth one more generation. Live evidence: attempt
                 # 2 reproduced the opening verbatim when it was still primed. Beyond
                 # this, serve it — an honest duplicate beats silence or a loop.
-                try:
-                    for piece in _stream_holding_back_repeats(
-                            _retry, _recent_eli, allow_retry=True):
-                        full_tokens.append(piece)
-                        yielded = True
-                        yield piece
-                except _RepeatDetected:
-                    log.debug("[ANTI-REPEAT] de-primed retry still repeated — serving it")
-                    full_tokens.clear()
-                    _last = self.generate_stream_from_assembled_prompt(
-                        prompt,
-                        working_memory=_retry_wm,
-                        reasoning_mode=reasoning_mode,
-                    )
-                    for piece in _stream_holding_back_repeats(
-                            _last, _recent_eli, allow_retry=False):
-                        full_tokens.append(piece)
-                        yielded = True
-                        yield piece
+                # allow_retry=False: this IS the second chance. Passing True made a
+                # repeated retry raise again and trigger a THIRD generation — observed
+                # at 20.1s for one reply, with the log claiming "serving it" while it
+                # silently regenerated. Two generations is the cap. salvage=True so the
+                # cap is not a surrender: if attempt 2 opens with the same recycled
+                # sentences and then answers, the recycled part is dropped.
+                for piece in _stream_holding_back_repeats(
+                        _retry, _recent_eli, allow_retry=False, salvage=True):
+                    full_tokens.append(piece)
+                    yielded = True
+                    yield piece
 
             if yielded:
                 final_text = "".join(full_tokens).strip()
