@@ -27,6 +27,11 @@ from typing import Any, Dict, Generator, List, Optional
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
+# How much of a reply the last-response trace keeps. Enough to quote the message
+# back when asked what it was; short enough that a file rewritten every turn does
+# not grow into the largest thing under artifacts/.
+_TRACE_TEXT_CHARS = 1200
+
 
 
 
@@ -3348,6 +3353,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         grounded: bool = False,
         response: str = "",
         grounding_confidence: Optional[float] = None,
+        user_input: str = "",
     ) -> None:
         try:
             score = None if confidence is None else float(confidence)
@@ -3397,6 +3403,16 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "evidence_used": bool(evidence_used),
             "grounded": bool(grounded),
             "response_chars": len(str(response or "")),
+            # The MESSAGE, not just how long it was. "What was the last message
+            # you sent?" could not be answered from this trace at all: it carried
+            # response_chars and a confidence score and nothing else, so the only
+            # possible reply was a telemetry dump about a message whose text was
+            # never recorded. Truncated because this file is rewritten every turn.
+            "response_text": str(response or "")[:_TRACE_TEXT_CHARS],
+            "response_truncated": len(str(response or "")) > _TRACE_TEXT_CHARS,
+            # What it was answering, so "explain your last response" can say what
+            # the exchange was rather than only how confident it felt.
+            "user_input": str(user_input or "")[:400],
             "grounding_confidence": _grounding_score,
         }
         try:

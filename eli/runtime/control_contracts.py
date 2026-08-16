@@ -140,7 +140,10 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         r"feelings?|personality|opinion|thoughts?|mood)|"
         r"our\s+(?:interactions?|conversations?|chats?|relationship|history|"
         r"discussions?|talks?)|"
-        r"how\s+(?:do\s+)?you\s+feel|what\s+do\s+you\s+(?:like|think|enjoy)|"
+        r"how\s+(?:do\s+|are\s+|r\s+)?you\s+feel(?:ing)?|"
+        r"(?:are|r)\s+you\s+(?:feeling|ok|okay|alright|good|well)\b|"
+        r"you\s+(?:are|re)\s+feeling|"
+        r"what\s+do\s+you\s+(?:like|think|enjoy)|"
         r"about\s+(?:us|me\s+and\s+you|you\s+and\s+(?:me|i)))\b",
         low,
     ))
@@ -176,8 +179,11 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         # bare "as a person", which also occurs in questions about the user.
         r"|you,? as (?:a |an )?(?:person|entity)"
         r"|as (?:a |an )?(?:person|entity),? (?:who|what) are you"
-        r"|your identity"
-        r"|your persona"
+        # Asked ABOUT, not merely mentioned. "nice to see your persona" is a
+        # remark; it forced a runtime identity dump over the question that
+        # actually followed it ("so you are feeling, fine?").
+        r"|(?:what(?:'?s| is| are)?|describe|explain|tell me|show me|list)"
+        r"\s+(?:me\s+)?(?:about\s+)?(?:your|the)\s+(?:identity|persona)"
         r"|persona evolved"
         r"|identity evolved"
         r"|defined with .{0,80}memories"
@@ -438,7 +444,23 @@ def _trace_text(trace: Dict[str, Any]) -> str:
     grounding = trace.get("grounding_confidence")
     conf_str = "" if agg_val is None else f"{agg_val:.2f}"
 
-    return "\n".join([
+    # Lead with the MESSAGE. "What was the last message you sent, explain it" was
+    # answered with request ids, agent names and confidence scores and never once
+    # said what the message was — because the text was not recorded at all, only
+    # response_chars. It is recorded now, so quote it first and let the telemetry
+    # be the supporting detail it was always meant to be.
+    head: list[str] = []
+    _said = str(trace.get("response_text") or "").strip()
+    if _said:
+        _ell = "…" if trace.get("response_truncated") else ""
+        head.append("Last message I sent:")
+        head.append(f'  "{_said}{_ell}"')
+        _asked = str(trace.get("user_input") or "").strip()
+        if _asked:
+            head.append(f'  (in reply to: "{_asked}")')
+        head.append("")
+
+    return "\n".join(head + [
         "Previous-response trace evidence:",
         f"- request_id: {trace.get('request_id') or ''}",
         f"- route_action: {trace.get('route_action') or trace.get('intent') or trace.get('action') or ''}",

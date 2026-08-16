@@ -61,6 +61,11 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
+# How much of a reply the last-response trace keeps. Enough to quote the message
+# back when asked what it was; short enough that a file rewritten every turn does
+# not grow into the largest thing under artifacts/.
+_TRACE_TEXT_CHARS = 1200
+
 
 def _eli_conversation_semantic_guard(user_text: str) -> str:
     """
@@ -1929,15 +1934,30 @@ class GenerationMixin:
                     self._last_request_meta = {
                         "action": "CHAT",
                         "result_action": "CHAT",
+                        "route_action": "CHAT",
+                        "request_id": str(_eli_pipeline_req or ""),
                         "reasoning_mode": str(reasoning_mode or "quick"),
                         "agents_used": _s_agents,
                         "aggregated_confidence": _s_agg,
+                        "confidence": _s_agg,
                         "grounding_confidence": _s_grounding,
                         "confidence_label": _s_label,
                         "evidence_used": bool(pre_built_memory_context),
                         "grounded": bool(pre_built_memory_context),
                         "response_chars": len(final_text),
+                        "response_text": final_text[:_TRACE_TEXT_CHARS],
+                        "response_truncated": len(final_text) > _TRACE_TEXT_CHARS,
+                        "user_input": str(user_input or "")[:400],
                     }
+                    # PERSIST it, not just the in-memory badge. This block already
+                    # existed and only ever set _last_request_meta, so a streamed
+                    # CHAT — which is every ordinary GUI turn — never wrote
+                    # last_trace.json. "What was the last message you sent?" then
+                    # answered from whichever run last wrote the file: observed in
+                    # v2 2.1.96 reporting a turn from 106 minutes and one restart
+                    # earlier, with full confidence and no indication it was stale.
+                    from eli.runtime.last_trace import save_last_trace as _save_lt
+                    _save_lt(dict(self._last_request_meta))
                 except Exception as _smeta_err:
                     log.debug(f"[PIPELINE] Stream meta publish failed: {_smeta_err}")
                 log.debug(f"[COGNITIVE][TIMING] stream_total={_time.perf_counter() - started:.3f}s")
