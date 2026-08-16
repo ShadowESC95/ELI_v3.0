@@ -151,7 +151,7 @@ def _load_persona_text() -> str:
 
     return (
         "You are ELI — Enhanced Learning Interface. You run locally on this "
-        "machine. Be terse, grounded, direct, and never claim to be a generic "
+        "machine. Be substantive, grounded, direct, and never claim to be a generic "
         "cloud AI assistant."
     )
 

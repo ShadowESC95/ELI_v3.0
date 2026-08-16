@@ -407,12 +407,22 @@ def mode_presets(n_ctx: int, max_tokens: int) -> Dict[str, Dict[str, Any]]:
 
     return {
         "quick": {
-            "max_tokens": min(max_tokens, 1024),
+            # No output ceiling. A mode is "quick" because it does ONE pass with
+            # minimal retrieval — that is what costs time. Truncating the answer
+            # does not make it quick, it makes it incomplete: max_tokens is a
+            # ceiling, not a target, so a short answer is short regardless and
+            # the cap only ever bites when the model had more to say.
+            #
+            # These were a flat 1024 / 3072 while every other preset scaled, so a
+            # 30B model got a 7B budget. The real limit — prompt + generation <=
+            # n_ctx — is applied per call in gguf_inference._fit_generation_budget
+            # from the actual prompt, which is the only place that can know it.
+            "max_tokens": max_tokens,
             "passes": 1,
             "memory_depth": "minimal",
         },
         "standard": {
-            "max_tokens": min(max_tokens, 3072),
+            "max_tokens": max_tokens,
             "passes": 1,
             "memory_depth": "normal",
         },

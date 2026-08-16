@@ -198,7 +198,23 @@ class LocalModelManager:
             _base_ctx = _user_ctx
             _base_layers = int(effective_n_gpu_layers)
             _base_batch = int(effective_n_batch)
-            # ── Smart loader (PRIMARY attempt) ────────────────────────────
+            # ── The user's OWN settings, first ────────────────────────────
+            #
+            # What the operator chose in the startup dialog is attempted before
+            # anything ELI calculates. smart-fit used to run first and its result
+            # was queued ahead of this, so on a machine where the fit reduced
+            # anything the user's actual choice was never tried at all — it sat
+            # at position 2 behind a config that always loaded. Someone who sets
+            # 99 GPU layers has said what they want; if the hardware refuses,
+            # the smart fit below is the answer, but the refusal should come from
+            # the driver, not from ELI pre-emptively overruling them.
+            #
+            # This costs one failed load attempt on hardware that genuinely
+            # cannot honour the request. That is the price of treating the
+            # setting as a setting rather than a suggestion.
+            _add_attempt("requested", _base_ctx, _base_layers, _base_batch)
+
+            # ── Smart loader (fit-to-hardware fallback) ───────────────────
             # Anchor on the user's preferred ctx/batch, then fit into the VRAM
             # actually free NOW (vision + nomic already resident), reducing GPU
             # LAYERS first (in increments), then batch, then ctx — quality over
@@ -290,7 +306,7 @@ class LocalModelManager:
 
             # User's exact settings — in case smart-fit was skipped (no GPU
             # detected) or the user's request already fits unchanged.
-            _add_attempt("requested", _base_ctx, _base_layers, _base_batch)
+            # (queued above, ahead of smart-fit — see the note there)
 
             # Hardware profile recommendation (legacy static fallback) — COMPUTED
             # here, but QUEUED further down, after the reduce-to-fit rungs.
