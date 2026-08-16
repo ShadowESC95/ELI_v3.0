@@ -1806,7 +1806,8 @@ class GenerationMixin:
 
             try:
                 for piece in _stream_holding_back_repeats(
-                        stream, _recent_eli, allow_retry=True):
+                        stream, _recent_eli, allow_retry=True,
+                        echo_sources=[user_input]):
                     full_tokens.append(piece)
                     yielded = True
                     yield piece
@@ -1865,7 +1866,8 @@ class GenerationMixin:
                 # cap is not a surrender: if attempt 2 opens with the same recycled
                 # sentences and then answers, the recycled part is dropped.
                 for piece in _stream_holding_back_repeats(
-                        _retry, _recent_eli, allow_retry=False, salvage=True):
+                        _retry, _recent_eli, allow_retry=False, salvage=True,
+                        echo_sources=[user_input]):
                     full_tokens.append(piece)
                     yielded = True
                     yield piece

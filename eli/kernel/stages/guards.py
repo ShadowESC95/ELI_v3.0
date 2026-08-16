@@ -443,6 +443,52 @@ def _repeat_ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
+# ── Anti-echo: ELI must not speak the user's own sentence back as its own ────
+# Observed live (v2 2.1.95). User: "Still on loop, seson 3 now. How is your
+# memory after all the codebse changes?"  ELI: "I'm still on loop, season 3 now.
+# Your memory's a bit fuzzy…" — the user's line returned in the first person,
+# with the roles inverted, and RAW_HEAD confirms the model generated it rather
+# than any display layer adding it.
+#
+# The repeat guard above cannot catch this. It compares head-to-head over equal
+# lengths, which scores that pair at 0.667 against the 0.86 bar, because only
+# the FIRST SENTENCE was copied and the rest diverged. Compared sentence to
+# sentence the same pair scores 0.926. So this checks the opening sentence
+# specifically, and is deliberately separate from _is_repeat_of_recent: that
+# function means "ELI already said this", a different claim about a different
+# corpus, and widening it would change every caller.
+#
+# A false positive costs one regeneration and the caller's salvage path still
+# serves a sane reply, so the threshold favours catching the echo.
+_ECHO_MIN_SENTENCE_CHARS = 18     # shorter than this, agreement is not plagiarism
+_ECHO_RATIO = 0.80
+
+
+def _first_sentence(text: str) -> str:
+    parts = _SENTENCE_SPLIT_RE.split(str(text or "").strip(), maxsplit=1)
+    return (parts[0] if parts else "").strip()
+
+
+def _opens_by_echoing(opening: str, sources) -> bool:
+    """True when the reply's first sentence restates a sentence the USER wrote.
+
+    Only the opening is judged: quoting the user mid-reply ("you said X, and
+    that's why…") is legitimate and common. Leading with their sentence as your
+    own is the failure.
+    """
+    first = _first_sentence(opening)
+    if len(_repeat_norm(first)) < _ECHO_MIN_SENTENCE_CHARS:
+        return False
+    for src in list(sources or [])[:4]:
+        for sentence in _SENTENCE_SPLIT_RE.split(str(src or "").strip()):
+            sentence = sentence.strip()
+            if len(_repeat_norm(sentence)) < _ECHO_MIN_SENTENCE_CHARS:
+                continue
+            if _repeat_ratio(first, sentence) >= _ECHO_RATIO:
+                return True
+    return False
+
+
 def _is_repeat_of_recent(candidate: str, prior_replies, *,
                          ratio: float = _REPEAT_RATIO) -> bool:
     """True when `candidate` restates something ELI already said.
@@ -477,6 +523,7 @@ class _RepeatDetected(Exception):
 
 
 def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
+                                 echo_sources=None,
                                  salvage: bool = False):
     """Yield `stream`, withholding the opening until it is cleared as non-repeating.
 
@@ -506,6 +553,14 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
         if sum(len(h) for h in head) < _REPEAT_HEAD_CHARS:
             continue
         opening = "".join(head)
+        # The user's own sentence coming back in ELI's voice is caught here too:
+        # same buffered-head mechanism, same retry, different corpus.
+        if not salvaging and echo_sources and _opens_by_echoing(opening, echo_sources):
+            if allow_retry:
+                raise _RepeatDetected(opening)
+            # No retry left: fall through to the repeat handling below, which
+            # trims the offending opening sentences rather than serving them.
+            recent_replies = list(recent_replies or []) + list(echo_sources or [])
         if not salvaging and recent_replies and _is_repeat_of_recent(opening, recent_replies):
             if allow_retry:
                 raise _RepeatDetected(opening)
@@ -531,8 +586,14 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
         # The stream ended inside the buffer: a short reply, still worth checking.
         opening = "".join(head)
         if opening:
-            if salvaging or (recent_replies
-                             and _is_repeat_of_recent(opening, recent_replies)):
+            # An echoed opening is usually SHORT — "I'm still on loop, season 3
+            # now." never fills the 200-char buffer — so this path, not the one
+            # above, is where the live case is actually caught.
+            _echoed = bool(echo_sources) and _opens_by_echoing(opening, echo_sources)
+            if _echoed and not salvaging:
+                recent_replies = list(recent_replies or []) + list(echo_sources or [])
+            if salvaging or _echoed or (recent_replies
+                                        and _is_repeat_of_recent(opening, recent_replies)):
                 if allow_retry and not salvaging:
                     raise _RepeatDetected(opening)
                 if salvage or salvaging:
