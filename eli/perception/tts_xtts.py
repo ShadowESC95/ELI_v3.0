@@ -131,12 +131,84 @@ def list_clones() -> "list[Dict[str, Any]]":
 
 
 # ── Synthesis (needs the optional TTS package) ──────────────────────────────────
+_COMPAT_PATCHED = False
+_XTTS_IMPORT_ERROR = ""
+# Python does not cache a FAILED import, so every call re-walked sys.path and
+# re-logged. The shipped bundle deliberately omits coqui-tts (Piper is the
+# bundled engine), so several callers each paid a full failed-import walk at
+# startup. The answer cannot change within a process.
+_XTTS_AVAILABLE: "bool | None" = None
+
+
+def _patch_transformers_compat() -> None:
+    """coqui-tts's XTTS layer imports `isin_mps_friendly`, a torch.isin() shim
+    transformers carried for old Apple-MPS backends and dropped in transformers>=5.
+    Off MPS, plain torch.isin() is exactly the same behaviour, so restore the name
+    rather than pin transformers back (the rest of ELI is on transformers==5.x).
+
+    Runs at most once. A missing `transformers`/`torch` is the EXPECTED state when the
+    heavy clone extra isn't installed — that path stays quiet; only genuine failures
+    (the module is present but the patch didn't take) are worth logging."""
+    global _COMPAT_PATCHED
+    if _COMPAT_PATCHED:
+        return
+    _COMPAT_PATCHED = True
+    try:
+        import transformers.pytorch_utils as _ptu
+    except ModuleNotFoundError:
+        return  # clone extra not installed — nothing to patch, nothing to report
+    except Exception:
+        log.debug("tts_xtts: transformers import failed", exc_info=True)
+        return
+    try:
+        if not hasattr(_ptu, "isin_mps_friendly"):
+            import torch as _torch
+            _ptu.isin_mps_friendly = lambda elements, test_elements: _torch.isin(elements, test_elements)
+    except ModuleNotFoundError:
+        return  # torch absent — same expected optional-dependency case
+    except Exception:
+        log.debug("tts_xtts: transformers compat shim failed", exc_info=True)
+
+
+def _reset_availability_cache() -> None:
+    """Test seam: forget the cached probe result."""
+    global _XTTS_AVAILABLE
+    _XTTS_AVAILABLE = None
+
+
+def xtts_import_error() -> str:
+    """Why the neural backend is unavailable, or "" when it is fine."""
+    return _XTTS_IMPORT_ERROR
+
+
 def xtts_available() -> bool:
+    """Probe the neural backend, applying the compat shim FIRST.
+
+    The shim has to run before the probe, not after: `import TTS` is the thing
+    that needs it. Written the other way round, the import raises, the function
+    returns False, and the patch that would have fixed it never runs — neural
+    voice is silently off on a machine with torch, coqui-tts and the 1.8GB
+    weights all present and working.
+
+    The bare `except: return False` this replaces also threw the diagnosis away,
+    so a build where the engine could not import was indistinguishable from one
+    where it was never installed, and nothing anywhere said which.
+    """
+    global _XTTS_AVAILABLE, _XTTS_IMPORT_ERROR
+    if _XTTS_AVAILABLE is not None:
+        return _XTTS_AVAILABLE
+    _patch_transformers_compat()
     try:
         import TTS  # noqa: F401
-        return True
-    except Exception:
+    except Exception as exc:
+        _XTTS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+        # Debug level: on a build without the optional extra this is expected.
+        log.debug("tts_xtts: neural backend unavailable — %s", _XTTS_IMPORT_ERROR)
+        _XTTS_AVAILABLE = False
         return False
+    _XTTS_IMPORT_ERROR = ""
+    _XTTS_AVAILABLE = True
+    return True
 
 
 def _select_device() -> str:
@@ -165,6 +237,10 @@ def _get_model():
     global _TTS
     if _TTS is not None:
         return _TTS
+    # Same reason as in xtts_available(): this import is the one that needs the
+    # shim, so it has to be applied before, not after. A caller reaching here
+    # without having probed first would otherwise fail on transformers>=5.
+    _patch_transformers_compat()
     from TTS.api import TTS as _TTSApi
     device = _select_device()
     log.info("tts_xtts: loading XTTS-v2 on %s (first run downloads ~1.8GB)…", device)

@@ -3,6 +3,17 @@ name: cross-platform-smoke
 #   Manual only — avoids metered Actions on every push (private repo). Releases are
 #   built locally via scripts/build_grandma_release.sh (no CI required).
 
+# Manual only, and deliberately NOT matched to v2.
+#
+# v2 (ShadowESC95/ELI_v2.0) is a PUBLIC repo, where Actions on standard runners is
+# free and unmetered, so its copy of this workflow was moved to `pull_request` +
+# `push: main` — the gate there costs nothing and now actually blocks a bad merge.
+#
+# This repo is PRIVATE, so every minute is metered, and Actions is currently
+# billing-blocked: each release run has died in 3-4 seconds since v3.0.48. Adding
+# push/PR triggers here would queue runs that cannot start, and would silently
+# begin consuming paid minutes the moment billing is restored. Leave it manual
+# until billing is sorted, then mirror the v2 trigger block.
 on:
   workflow_dispatch:
 
