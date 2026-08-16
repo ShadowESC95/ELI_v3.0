@@ -332,10 +332,27 @@ def _read_json(path: Path) -> Dict[str, Any]:
         pass
     return {}
 
+def _data_dirs() -> tuple[Path, Path]:
+    """(artifacts, config) as the running install actually uses them.
+
+    The project root is the install tree; in a packaged build it is a read-only
+    AppImage mount holding neither the snapshot nor the live settings, so both
+    reads came back empty and this contract reported paths that do not exist.
+    """
+    root = _root()
+    try:
+        from eli.core.paths import get_paths as _gp
+        p = _gp()
+        return Path(p.artifacts_dir), Path(p.config_dir)
+    except Exception:
+        return root / "artifacts", root / "config"
+
+
 def runtime_paths() -> Dict[str, Any]:
     root = _root()
-    snap = _read_json(root / "artifacts" / "runtime_snapshot.json")
-    cfg = _read_json(root / "config" / "settings.json")
+    _artifacts, _config = _data_dirs()
+    snap = _read_json(_artifacts / "runtime_snapshot.json")
+    cfg = _read_json(_config / "settings.json")
 
     model_path = str(
         snap.get("model_path")
@@ -356,12 +373,12 @@ def runtime_paths() -> Dict[str, Any]:
     return {
         "project_root": str(root),
         "python": str((root / ".venv" / "bin" / "python3").resolve()),
-        "runtime_snapshot": str(root / "artifacts" / "runtime_snapshot.json"),
-        "config_settings": str(root / "config" / "settings.json"),
+        "runtime_snapshot": str(_artifacts / "runtime_snapshot.json"),
+        "config_settings": str(_config / "settings.json"),
         "model_path": model_path,
         "models_dir": str(root / "models"),
-        "user_db": str(root / "artifacts" / "db" / "user.sqlite3"),
-        "agent_db": str(root / "artifacts" / "db" / "agent.sqlite3"),
+        "user_db": str(_artifacts / "db" / "user.sqlite3"),
+        "agent_db": str(_artifacts / "db" / "agent.sqlite3"),
         "persona_base": str(root / "eli" / "cognition" / "persona.txt"),
         "persona_auto": str(root / "eli" / "cognition" / "persona.auto.txt"),
         "snapshot": snap,

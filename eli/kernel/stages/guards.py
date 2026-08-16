@@ -462,6 +462,11 @@ def _repeat_ratio(a: str, b: str) -> float:
 # serves a sane reply, so the threshold favours catching the echo.
 _ECHO_MIN_SENTENCE_CHARS = 18     # shorter than this, agreement is not plagiarism
 _ECHO_RATIO = 0.80
+# The corpus is the current message PLUS recent user turns, because the echo that
+# prompted this widening came from a session three hours earlier, reintroduced
+# through recalled memory. Comparing a single opening sentence against ~17 short
+# strings is trivial next to the generation it guards.
+_ECHO_MAX_SOURCES = 20
 
 
 def _first_sentence(text: str) -> str:
@@ -479,7 +484,7 @@ def _opens_by_echoing(opening: str, sources) -> bool:
     first = _first_sentence(opening)
     if len(_repeat_norm(first)) < _ECHO_MIN_SENTENCE_CHARS:
         return False
-    for src in list(sources or [])[:4]:
+    for src in list(sources or [])[:_ECHO_MAX_SOURCES]:
         for sentence in _SENTENCE_SPLIT_RE.split(str(src or "").strip()):
             sentence = sentence.strip()
             if len(_repeat_norm(sentence)) < _ECHO_MIN_SENTENCE_CHARS:

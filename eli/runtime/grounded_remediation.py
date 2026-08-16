@@ -91,8 +91,19 @@ def _root() -> Path:
 def _q(value: str) -> str:
     return shlex.quote(str(value))
 
+def _artifacts_dir() -> Path:
+    """User-writable data dir. These are WRITE paths, so resolving them under
+    the project root is worse than a stale read: in a packaged build that root
+    is a read-only AppImage mount and the mkdir fails outright."""
+    try:
+        from eli.core.paths import data_dir as _dd
+        return Path(_dd())
+    except Exception:
+        return _root() / "artifacts"
+
+
 def _pending_file() -> Path:
-    path = _root() / "artifacts" / "pending_remediation.json"
+    path = _artifacts_dir() / "pending_remediation.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -272,7 +283,7 @@ def _terminal_build_windows(cmd: str, log_path: Path, rc_path: Path, ps1_path: P
     return ps1_path, argv, None
 
 def _run_in_terminal(cmd: str) -> dict:
-    run_dir = _root() / "artifacts" / "terminal_runs"
+    run_dir = _artifacts_dir() / "terminal_runs"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")

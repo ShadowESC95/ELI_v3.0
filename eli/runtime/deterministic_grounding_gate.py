@@ -88,8 +88,24 @@ def _db_count(db: Path, table: str) -> str:
         return f"error:{type(e).__name__}"
 
 
+def _artifacts_dir() -> Path:
+    """Where the snapshot, databases and vector index are actually written.
+
+    The project root and the artifacts dir are the same directory in a source
+    checkout and different ones in a shipped build — the code sits on the
+    read-only AppImage mount while data lives under ~/.local/share/ELI_v2. So
+    `PROJECT_ROOT / "artifacts"` reads a tree that is not there: the snapshot
+    comes back empty and the memory report declares every database missing.
+    """
+    try:
+        from eli.core.paths import data_dir as _dd
+        return Path(_dd())
+    except Exception:
+        return PROJECT_ROOT / "artifacts"
+
+
 def _runtime_snapshot() -> dict[str, Any]:
-    return _read_json(PROJECT_ROOT / "artifacts" / "runtime_snapshot.json")
+    return _read_json(_artifacts_dir() / "runtime_snapshot.json")
 
 
 def _settings() -> dict[str, Any]:
@@ -202,10 +218,11 @@ def _gui_runtime_audit() -> str:
 
 
 def _memory_report() -> str:
-    user_db = PROJECT_ROOT / "artifacts" / "db" / "user.sqlite3"
-    agent_db = PROJECT_ROOT / "artifacts" / "db" / "agent.sqlite3"
-    vec = PROJECT_ROOT / "artifacts" / "vectors" / "index.faiss"
-    meta = PROJECT_ROOT / "artifacts" / "vectors" / "meta.pkl"
+    _artifacts = _artifacts_dir()
+    user_db = _artifacts / "db" / "user.sqlite3"
+    agent_db = _artifacts / "db" / "agent.sqlite3"
+    vec = _artifacts / "vectors" / "index.faiss"
+    meta = _artifacts / "vectors" / "meta.pkl"
 
     lines = ["Memory runtime report: deterministic", ""]
     lines.append(f"user_db: {user_db} exists={user_db.exists()}")

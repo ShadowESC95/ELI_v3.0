@@ -1792,6 +1792,25 @@ class GenerationMixin:
             # chunk is yielded it is on the user's screen, so a check that waits for
             # the full text can only report a repeat, never prevent one.
             _recent_eli = []
+            # Recent USER turns, as anti-echo sources. The guard originally
+            # compared only against the CURRENT message, which was not enough:
+            # at v2 2.1.97 ELI opened a turn with
+            #   "Still on loop, seson 3 now. How is your memory after all the
+            #    codebse changes?"
+            # — a user message from a session three hours earlier, replayed
+            # verbatim down to both typos, in reply to "just checking in on you".
+            # Past user turns reach the model through recalled memory, so they
+            # have to be in the guard's corpus too, not just the live input.
+            _recent_user: list = []
+            try:
+                for _t in (self.memory.get_recent_conversation(limit=16) or []):
+                    if str((_t or {}).get("role", "")).lower() == "user":
+                        _c = str((_t or {}).get("content", "") or "").strip()
+                        if _c:
+                            _recent_user.append(_c)
+            except Exception:
+                log.debug("[ANTI-ECHO] recent-user fetch failed", exc_info=True)
+            _echo_sources = [user_input] + _recent_user
             if _user_asked_for_a_repeat(user_input):
                 log.debug("[ANTI-REPEAT] user asked for a repeat — guard stood down")
             elif _is_greeting_turn(user_input):
@@ -1812,7 +1831,7 @@ class GenerationMixin:
             try:
                 for piece in _stream_holding_back_repeats(
                         stream, _recent_eli, allow_retry=True,
-                        echo_sources=[user_input]):
+                        echo_sources=_echo_sources):
                     full_tokens.append(piece)
                     yielded = True
                     yield piece
@@ -1872,7 +1891,7 @@ class GenerationMixin:
                 # sentences and then answers, the recycled part is dropped.
                 for piece in _stream_holding_back_repeats(
                         _retry, _recent_eli, allow_retry=False, salvage=True,
-                        echo_sources=[user_input]):
+                        echo_sources=_echo_sources):
                     full_tokens.append(piece)
                     yielded = True
                     yield piece

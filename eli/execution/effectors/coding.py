@@ -1090,7 +1090,19 @@ def _h_run_tests(a, args):
         target = str(args.get("target") or "tests/claims/test_structural_claims.py")
         r = _ts_sp.run([_ts_sys.executable, "tools/run_test_report.py", target],
                        cwd=str(repo), capture_output=True, text=True, timeout=900)
-        rep = repo / "artifacts" / "test_report.md"
+        # run_test_report.py writes to $ELI_ARTIFACTS_DIR when set and falls back
+        # to <repo>/artifacts otherwise. Reading only the fallback meant that with
+        # the override in play the report was written to one place and looked for
+        # in another, so this silently degraded to the stdout tail.
+        try:
+            from pathlib import Path as _RepPath
+
+            from eli.core.paths import data_dir as _dd
+            rep = _RepPath(_dd()) / "test_report.md"
+            if not rep.exists():
+                rep = repo / "artifacts" / "test_report.md"
+        except Exception:
+            rep = repo / "artifacts" / "test_report.md"
         body = rep.read_text(encoding="utf-8")[:4000] if rep.exists() else \
             (r.stdout or r.stderr or "")[-2000:]
         return {"ok": True, "action": a, "content": body, "response": body,
