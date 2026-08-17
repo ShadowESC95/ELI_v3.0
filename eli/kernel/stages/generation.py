@@ -206,11 +206,15 @@ class GenerationMixin:
         # Broad fallback: scoped extraction may miss inline failures.
         _p_low = str(prompt or "").lower()
         if (
+            # Structured markers only. "filenotfounderror"/"file not found" are
+            # dropped here: they match narrative (a commit message, a quoted
+            # log) and the co-occurrence test below could not save them —
+            # "grounded_evidence" is present on EVERY grounded turn, so any
+            # mention of an error name anywhere in the prompt satisfied it.
             ("'ok': false" in _p_low or '"ok": false' in _p_low
-             or "ok=false" in _p_low or "filenotfounderror" in _p_low
-             or "file not found" in _p_low or "successful: 0 | failed:" in _p_low)
+             or "ok=false" in _p_low or "successful: 0 | failed:" in _p_low)
             and ("execute result" in _p_low or "agent:system" in _p_low
-                 or "grounded_evidence" in _p_low or "analyze_pdf" in _p_low)
+                 or "analyze_pdf" in _p_low)
         ):
             return _failed_executor_surface(
                 prompt, _failed_executor_query_from_prompt(prompt)

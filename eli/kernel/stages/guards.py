@@ -17,6 +17,52 @@ import difflib
 import json
 import re
 
+# Actions whose evidence is a REPORT ABOUT the system. Their bundles quote git
+# logs, failure counts and telemetry by design, so scanning that prose for error
+# words cannot distinguish "this action failed" from "this action is describing a
+# failure". The caller already knows whether these succeeded — SELF_REPORT came
+# back ok=True with synthesis_validated=True while this guard was overwriting its
+# content with "I did not successfully complete `ACTION`".
+#
+# The trigger was a git commit message quoted in the evidence:
+#   "...stop printing a FileNotFoundError stack when clearing a pending fix"
+# A commit about FIXING an error was read as an error. Which is why the test for
+# this passed all morning and failed the same afternoon on an unchanged commit:
+# the commit LOG had changed, not the code.
+#
+# Membership is decided by what the action DOES, never by how it is named. The
+# self-* actions that APPLY changes — SELF_PATCH, SELF_IMPROVE, SELF_UPDATE,
+# SELF_UPGRADE — are deliberately absent: a failed self-patch narrated as success
+# is precisely the fabrication this guard exists to stop. Only actions that read
+# and describe belong here.
+_REPORTS_ABOUT_STATE = frozenset({
+    # Reports carried over from v2.
+    "SELF_REPORT", "RUNTIME_STATUS", "RUNTIME_AUDIT", "IMPORT_AUDIT",
+    "GUI_RUNTIME_AUDIT", "MEMORY_STATUS", "COGNITION_STATUS", "META_DIAGNOSTIC",
+    "SELF_ANALYZE", "SELF_IMPROVEMENT_LOG", "EXPLAIN_LAST_RESPONSE",
+    "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "ROUTING_FAULT_EXPLAIN",
+    "PERSONAL_MEMORY_DEEP_EXPLAIN", "PERSONAL_MEMORY_SUMMARY", "EXAMINE_CODE",
+    # v3-only read-and-describe actions, vulnerable to the same confusion.
+    # EXPLAIN_LAST_FAILURE is the clearest case in the tree: its evidence is a
+    # failure by definition, so the unpatched guard could never let it answer.
+    "EXPLAIN_LAST_FAILURE", "EXPLAIN_ALL_REASONING_MODES", "AWARENESS_STATUS",
+    "CHECK_TARGET_STATUS", "DIAGNOSE_WRAPPERS", "ELI_IDENTITY_AUDIT",
+    "FILE_AUDIT", "FRONTIER_STATUS", "GAZE_STATUS", "GET_STATUS", "GPU_STATUS",
+    "HABIT_STATUS", "IMAGE_STATUS", "LORA_STATUS", "MCP_STATUS", "MORNING_REPORT",
+    "NAME_SOURCE_AUDIT", "ORCHESTRATION_STATUS", "PERSONA_LOCK_STATUS",
+    "PLUGIN_STATUS", "POMODORO_STATUS", "PROACTIVE_STATUS",
+    "REASONING_MODE_STATUS", "SELF_TEST", "STT_DIAGNOSTICS",
+    "USER_IDENTITY_SUMMARY", "USER_INFO_REPORT", "VOICE_DIAGNOSTICS",
+})
+
+# Actions that CHANGE something. Never exempt, however report-like the name
+# looks — asserted by tests/test_failure_words_in_prose.py so a later edit
+# cannot quietly move one into the set above.
+_MUTATING_SELF_ACTIONS = frozenset({
+    "SELF_PATCH", "SELF_IMPROVE", "SELF_UPDATE", "SELF_UPGRADE",
+})
+
+
 def _failed_executor_is_failed(evidence: str, action: str = "") -> bool:
     """Return True if evidence indicates an executor action failed."""
     import re as _re
@@ -24,14 +70,52 @@ def _failed_executor_is_failed(evidence: str, action: str = "") -> bool:
     low = ev.lower()
     act = str(action or "").upper().strip()
 
+    # A report about failures is not a failed report — see the note above.
+    if act in _REPORTS_ABOUT_STATE:
+        return False
+
     actionish = bool(act and act not in {"CHAT", "NONE"})
+    _inferred = False
     if not actionish:
         actionish = any(x in low for x in (
             "'action':", '"action":', "action=", "analyze_pdf",
             "runtime_audit", "execute result", "agent:system", "response_mode",
         ))
+        _inferred = actionish
     if not actionish:
         return False
+
+    # A REPORT ABOUT failures is not a failed report.
+    #
+    # When no action was passed, "this evidence is an executor result" is inferred
+    # from markers like `action=` appearing anywhere — and a self-report bundles
+    # agent-dispatch telemetry, whose every line looks exactly like that:
+    #
+    #     action=CHAT agents=[memory, orchestrator] confidence=0.84 ok=True
+    #     action=MEMORY_RECALL ... ok=False
+    #
+    # So one failed dispatch recorded anywhere in the log made SELF_REPORT return
+    # "I did not successfully complete `ACTION`" — with a placeholder name,
+    # because there was no action to name — while the report itself carried
+    # ok=True and synthesis_validated=True. It passed for months and started
+    # failing the day a failure row existed.
+    #
+    # On the inferred path, require a marker that a specific EXECUTOR RESULT
+    # failed, rather than any `ok=false` that might be a logged row about some
+    # other turn. An explicitly-passed action keeps the original, broader check:
+    # there the caller has told us which action's result this is.
+    if _inferred:
+        _dict_form = bool(
+            _re.search(r'["\']ok["\']\s*:\s*false\b', low)
+            or _re.search(r'["\']ok["\']\s*:\s*False\b', ev)
+        )
+        _explicit_failure = bool(
+            "execute result" in low and _dict_form
+            or "successful: 0 | failed:" in low
+            or "filenotfounderror" in low
+            or ("traceback" in low and "failed" in low)
+        )
+        return _explicit_failure
 
     return bool(
         _re.search(r'["\']ok["\']\s*:\s*false\b', low)
@@ -100,12 +184,19 @@ def _failed_executor_relevant_block(prompt: str) -> str:
 
 def _failed_executor_is_failed_block(block: str) -> bool:
     low = str(block or "").lower()
-    return (
-        "'ok': false" in low or '"ok": false' in low
-        or "ok=false" in low or "ok: false" in low
-        or "filenotfounderror" in low or "file not found" in low
-        or "successful: 0 | failed:" in low or "analyze_pdf failure" in low
-    )
+    # Structured evidence that a result failed — unambiguous.
+    if ("'ok': false" in low or '"ok": false' in low
+            or "ok=false" in low or "ok: false" in low
+            or "successful: 0 | failed:" in low or "analyze_pdf failure" in low):
+        return True
+    # A bare error NAME in prose is not a failure. A self-report quotes git
+    # commit messages, and one of them —
+    #   "stop printing a FileNotFoundError stack when clearing a pending fix"
+    # — was read as a live FileNotFoundError, so a successful report was
+    # replaced with "I did not successfully complete `ACTION`". Require the name
+    # to sit next to something that marks an actual result.
+    return (("filenotfounderror" in low or "file not found" in low)
+            and ("execute result" in low or "traceback" in low))
 
 
 def _failed_executor_query_from_prompt(prompt: str) -> str:

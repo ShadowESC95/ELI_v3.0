@@ -10,7 +10,7 @@ The matrix below is **code coverage** — how each capability is *implemented* p
 separate and more honest: what I've genuinely **run**.
 
 - **Run-verified, end to end:** **Linux (x86_64) + NVIDIA.** Install, first-run, the full test
-  suite (7,300+ passing), voice, vision, the server — all of it. This is the tested path.
+  suite (9,900+ passing), voice, vision, the server — all of it. This is the tested path.
 - **Code-verified, not yet run on real hardware:** **AMD (ROCm), Windows, macOS, Android.** The
   installers, per-OS requirements, paths, GPU detection (NVIDIA / AMD / Apple), and the abstraction
   layer below are all present and read line-by-line — but "correct in the code" isn't the same as
