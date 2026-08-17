@@ -363,22 +363,15 @@ class LifecycleMixin:
                 insights = result.get("insights", [])
                 if insights:
                     log.debug(f"[COGNITIVE] eli-reflection: {len(insights)} insights generated")
-                    # Store individual insights as searchable "insight" memories.
-                    # NOT tagged "reflection" — that tag is noise-filtered in recall.
-                    for _ins in insights[:5]:
-                        _ins_text = str(_ins or "").strip()
-                        if not _ins_text or len(_ins_text) < 15:
-                            continue
-                        try:
-                            self.memory.store_memory(
-                                _ins_text,
-                                tags=["eli_insight", "auto"],
-                                kind="insight",
-                                source="eli_reflection",
-                                importance=0.68,
-                            )
-                        except Exception:
-                            log.debug("suppressed exception", exc_info=True)
+                    # Persisting them here as well was a DOUBLE write:
+                    # run_reflection -> reflect_on_period already stores each
+                    # insight, and this loop stored the same rows again with no
+                    # duplicate check of any kind. Every reflection cycle
+                    # therefore appended two copies of every insight, which is
+                    # how one machine reached 135 reflection rows with 34 exact
+                    # duplicates — six identical copies of a single row — all of
+                    # them ranking in recall by weight of numbers.
+                    # reflect_on_period owns this; do not write it twice.
             except Exception as e:
                 log.debug(f"[COGNITIVE] Reflection failed: {e}")
         finally:
