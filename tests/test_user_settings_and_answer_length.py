@@ -170,7 +170,10 @@ def test_the_users_own_settings_are_the_first_load_attempt():
     """
     src = (REPO / "eli/gui/main_window/models.py").read_text(encoding="utf-8")
     assert '_add_attempt("requested", _base_ctx, _base_layers, _base_batch,' in src
-    assert "verify=True" in src
+    # Verification is CONDITIONAL: only a request that exceeds the measured
+    # fit is proven. An unconditional verify made every GPU start pay for a
+    # cold load, and a live 2.2.8 launch sat silent for 3m29s.
+    assert "verify=_needs_proof" in src
     assert "_attempts.insert(0, _entry)" in src
 
 
