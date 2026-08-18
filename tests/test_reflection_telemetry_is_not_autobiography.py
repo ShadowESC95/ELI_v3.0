@@ -107,14 +107,14 @@ def test_the_source_is_what_is_filtered(mem):
 
 
 def test_noise_sources_names_the_reflection_writer():
-    import inspect
+    """The vocabulary now lives at the choke point (eli/core/self_provenance),
+    not inline in the recall query — this asserts the invariant rather than the
+    shape of the code that enforces it."""
+    from eli.core.self_provenance import MEMORY_SOURCES, memory_exclusion_sql
 
-    from eli.memory import memory as _m
-
-    src = inspect.getsource(_m)
-    i = src.index("_noise_sources = (")
-    block = src[i:i + 200]
-    assert "eli_reflection" in block
+    assert "eli_reflection" in MEMORY_SOURCES
+    _, params = memory_exclusion_sql({"kind", "source", "tags"}, alias="")
+    assert "eli_reflection" in params
 
 
 # ── duplicate suppression must be an existence check ───────────────────────
@@ -168,9 +168,8 @@ def test_repeated_reflection_does_not_multiply_rows(mem, unique):
 
 # ── the engine must not write the same insights a second time ──────────────
 def test_the_engine_does_not_double_store_reflection_insights():
-    """reflect_on_period already persists them; the lifecycle stage storing them
-    again was the unbounded-growth half of the bug. v3 keeps this in
-    eli/kernel/stages/lifecycle.py rather than the engine."""
+    """reflect_on_period already persists them; the engine storing them again
+    was the unbounded-growth half of the bug."""
     import inspect
 
     from eli.kernel.stages import lifecycle
@@ -180,4 +179,4 @@ def test_the_engine_does_not_double_store_reflection_insights():
     window = src[i:i + 1200]
     code = "\n".join(l for l in window.splitlines() if not l.lstrip().startswith("#"))
     assert "store_memory" not in code, \
-        "the lifecycle stage is storing reflection insights again on top of reflect_on_period"
+        "the engine is storing reflection insights again on top of reflect_on_period"
