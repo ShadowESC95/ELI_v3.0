@@ -449,7 +449,7 @@ data whenever you want.
   (trial/personal/pro/enterprise); editions overlay the core, never fork it
 - `eli/cli` — headless REPL (`eli --headless`)
 - `config` — portable default settings · `models` — local GGUF payloads (gitignored)
-- `tests` — a large pytest suite (**10,044+ tests**, including a `claims/` layer that
+- `tests` — a large pytest suite (**10,072+ tests**, including a `claims/` layer that
   checks the project against its own documentation); the full suite runs locally, while CI gates a
   cross-platform portable subset (no GGUF/display/GPU) on Linux, macOS, and Windows
 
@@ -512,7 +512,7 @@ I'd rather tell you exactly what I've run than pretend it's flawless everywhere.
 
 **What I've actually run, end to end:** Linux (x86_64) with an NVIDIA GPU. That's my machine, so
 it's the one platform where I can honestly say the whole thing — install, first-run, the full test
-suite (10,044+ passing), voice, vision, the server, all of it — genuinely works. If you're on
+suite (10,072+ passing), voice, vision, the server, all of it — genuinely works. If you're on
 Linux + NVIDIA, you're on the tested path.
 
 **What the code handles but I haven't run on real hardware yet:** AMD (ROCm), Windows, and macOS.
