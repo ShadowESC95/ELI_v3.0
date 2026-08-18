@@ -1485,7 +1485,10 @@ Answer:"""
         if _extra_blocks:
             brief = "\n\n".join(filter(None, [brief] + _extra_blocks))
         # Phase 6: single 8 KB ceiling for the full assembled handoff.
-        brief = self._cap_text(brief, 8192, "persona_handoff")
+        # A SHARE of the live window, not a fixed 8192 — the persona claimed the
+        # same characters at ctx=4096 as at ctx=32768, squeezing the evidence
+        # _effective_n_ctx exists to balance it against. Reuses _cap_text.
+        brief = self._cap_text(brief, self._persona_handoff_budget(), "persona_handoff")
         # Real self-status rides ABOVE the cap — if the user asked how ELI is doing,
         # the measured telemetry must never be the thing truncation drops (that's
         # what made the model fall back to fabricating CPU/GPU temperatures).

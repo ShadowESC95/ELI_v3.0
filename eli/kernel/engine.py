@@ -2243,6 +2243,24 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "cpu_only": bool(cpu_only),
         }
 
+    # Roughly four characters per token, and at most a quarter of the window for
+    # who ELI is — the rest belongs to what the user said and what was retrieved.
+    _PERSONA_SHARE_OF_CTX = 0.25
+    _PERSONA_CHARS_PER_TOKEN = 4
+    _PERSONA_MIN_CHARS = 2048
+    _PERSONA_MAX_CHARS = 8192
+
+    def _persona_handoff_budget(self) -> int:
+        """Character budget for the persona brief, derived from the live window."""
+        try:
+            ctx = int(self._effective_n_ctx() or 0)
+        except Exception:
+            ctx = 0
+        if ctx <= 0:
+            return self._PERSONA_MIN_CHARS
+        share = int(ctx * self._PERSONA_CHARS_PER_TOKEN * self._PERSONA_SHARE_OF_CTX)
+        return max(self._PERSONA_MIN_CHARS, min(self._PERSONA_MAX_CHARS, share))
+
     def _effective_n_ctx(self) -> int:
         """Best-known context window (tokens). Live runtime params → snapshot →
         conservative default. Used to budget the persona against evidence."""
@@ -7248,6 +7266,27 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
 _engine: Optional[CognitiveEngine] = None
 
+
+# ── What ELI's prompt actually needs, in TOKENS ──────────────────────────────
+#
+# The GUI loader sized the requested context from a flat `ELI_CTX_BRIEF_FLOOR`
+# of 12288 "so the persona/memory brief is never chopped". 12288 is the brief's
+# budget in CHARACTERS (persona 8192 + memory 4096) — it was being spent as
+# TOKENS, demanding four times the context the brief can ever occupy, on every
+# machine. On a small card that difference is decisive: smart_fit honours the
+# requested context by shedding GPU layers, so an inflated floor pushes the
+# whole model onto the CPU to reserve room nothing will use.
+#
+# Derived here, from the same budgets the assembler actually enforces, so the
+# two cannot drift apart again.
+ELI_BUDGET_MEMORY_CHARS = 4096
+ELI_CHARS_PER_TOKEN = 4
+
+
+def eli_brief_budget_tokens() -> int:
+    """Context (tokens) ELI's persona + memory brief can actually occupy."""
+    chars = int(CognitiveEngine._PERSONA_MAX_CHARS) + int(ELI_BUDGET_MEMORY_CHARS)
+    return max(1024, chars // ELI_CHARS_PER_TOKEN)
 
 def get_engine() -> CognitiveEngine:
     global _engine

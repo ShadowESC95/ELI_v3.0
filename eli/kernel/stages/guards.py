@@ -394,6 +394,10 @@ def _strip_reasoning_scaffold(text: str) -> str:
 # engine._clarifier_norm would close an import cycle.
 _REPEAT_HEAD_CHARS = 200      # buffered before first paint
 _REPEAT_RATIO = 0.86          # difflib ratio over normalised text
+# A stock opener repeated across replies reads as a tic even when the rest
+# differs. Short openers ("Yes.", "Okay.") are exempt — not a stylistic rut.
+_REPEAT_OPENING_MIN_CHARS = 12
+_REPEAT_OPENING_RATIO = 0.92
 _REPEAT_COMPARE_AGAINST = 4   # how many recent ELI turns to test
 _REPEAT_RETRY_TEMP_BUMP = 0.35  # widen sampling on the retry — see the retry path
 
@@ -558,6 +562,10 @@ _ECHO_RATIO = 0.80
 # through recalled memory. Comparing a single opening sentence against ~17 short
 # strings is trivial next to the generation it guards.
 _ECHO_MAX_SOURCES = 20
+# Reproducing a whole message back is an echo however its first sentence
+# tokenises. Long enough that a short shared phrase ("yeah, fair enough") is not
+# mistaken for one.
+_ECHO_MIN_HEAD_CHARS = 40
 
 
 def _first_sentence(text: str) -> str:
@@ -572,6 +580,21 @@ def _opens_by_echoing(opening: str, sources) -> bool:
     that's why…") is legitimate and common. Leading with their sentence as your
     own is the failure.
     """
+    # WHOLE-HEAD test first. Judging only the opening sentence meant a SHORT
+    # opening sentence disabled the guard entirely — live at v2 2.3.0 ELI replied
+    # with the user's own message reproduced verbatim (ratio 1.000), and this
+    # returned False because its first sentence, "You're not wrong.", is 15
+    # normalised characters against the 18-character minimum below.
+    _head = _repeat_norm(opening)
+    if len(_head) >= _ECHO_MIN_HEAD_CHARS:
+        for src in list(sources or [])[:_ECHO_MAX_SOURCES]:
+            _src = _repeat_norm(src)
+            if len(_src) < _ECHO_MIN_HEAD_CHARS:
+                continue
+            n = min(len(_head), len(_src))
+            if _repeat_ratio(_head[:n], _src[:n]) >= _ECHO_RATIO:
+                return True
+
     first = _first_sentence(opening)
     if len(_repeat_norm(first)) < _ECHO_MIN_SENTENCE_CHARS:
         return False
@@ -597,6 +620,21 @@ def _is_repeat_of_recent(candidate: str, prior_replies, *,
     cand = str(candidate or "").strip()
     if len(_repeat_norm(cand)) < 40:
         return False                      # too short to judge; "Okay." is not a repeat
+
+    # A recycled OPENING SENTENCE is a repeat to the reader even when everything
+    # after it is new — the head-to-head ratio below cannot see it, because the
+    # differing remainder drags the score under the threshold. Live at v2 2.3.0
+    # seven consecutive replies opened "You're not wrong." and the guard fired on
+    # only two of them.
+    _cand_open = _repeat_norm(_first_sentence(cand))
+    if len(_cand_open) >= _REPEAT_OPENING_MIN_CHARS:
+        for _prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            _prior_open = _repeat_norm(_first_sentence(_prior))
+            if len(_prior_open) < _REPEAT_OPENING_MIN_CHARS:
+                continue
+            if _repeat_ratio(_cand_open, _prior_open) >= _REPEAT_OPENING_RATIO:
+                return True
+
     for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
         p = str(prior or "").strip()
         if not p:
