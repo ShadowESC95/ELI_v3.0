@@ -310,6 +310,30 @@ class ChromeIoMixin:
         except Exception as _e:
             log.debug(f"[GUI] toggle operator console dock failed: {_e}")
 
+    def _install_hardware_log_relay(self, dock) -> None:
+        """Attach the dock to ELI's hardware/load logging, exactly once."""
+        if getattr(self, "_hardware_log_relay", None) is not None:
+            return
+        try:
+            import logging as _logging
+            from eli.gui.panels.startup import HardwareTuningLogRelay
+            relay = HardwareTuningLogRelay(dock)
+            # The "eli" parent, not the root logger: every module that writes this
+            # story is eli.*, and propagation carries all of them. Attaching to
+            # root would format every record in the process — including third-party
+            # libraries — just to substring-match it.
+            #
+            # The level is deliberately NOT raised. These lines are emitted at
+            # DEBUG; if the app is running quieter than that they are absent from
+            # the terminal too, and the tab showing the same thing as the terminal
+            # is the point. Forcing DEBUG here would add console noise the operator
+            # did not ask for.
+            _logging.getLogger("eli").addHandler(relay)
+            self._hardware_log_relay = relay
+        except Exception as exc:
+            log.debug(f"[GUI] hardware log relay not installed: {exc}")
+            self._hardware_log_relay = None
+
     def _ensure_hardware_tuning_dock(self):
         dock = getattr(self, "_hardware_tuning_dock", None)
         if dock is not None:
@@ -319,6 +343,10 @@ class ChromeIoMixin:
             self._hardware_tuning_dock = dock
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
             dock.hide()
+            # Subscribe the dock to the hardware/load lines ELI already writes to
+            # the terminal, so the tab and the terminal cannot report different
+            # numbers for the same launch.
+            self._install_hardware_log_relay(dock)
             return dock
         except Exception as e:
             log.debug(f"[GUI] hardware tuning dock attach failed: {e}")
