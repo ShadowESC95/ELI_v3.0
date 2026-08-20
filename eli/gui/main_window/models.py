@@ -555,7 +555,7 @@ class LocalModelManager:
                         f"[GUI][LOAD] verifying your settings on this machine "
                         f"(ctx={_cand['n_ctx']} gpu_layers={_cand['n_gpu_layers']} "
                         f"batch={_cand['n_batch']}) — up to "
-                        f"{int(float(os.environ.get('ELI_LOAD_PROBE_TIMEOUT', '') or 60))}s "
+                        f"{int(float(os.environ.get('ELI_LOAD_PROBE_TIMEOUT', '') or 30))}s "
                         f"this once, then remembered…")
                     try:
                         from eli.core.load_probe import probe_config

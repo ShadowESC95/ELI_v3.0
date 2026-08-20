@@ -53,7 +53,13 @@ log = get_logger(__name__)
 # minutes with nothing on screen explaining why. Past this budget the answer is
 # "unproven", the operator's settings stand, and startup continues.
 # Override with ELI_LOAD_PROBE_TIMEOUT.
-_DEFAULT_TIMEOUT_S = 60.0
+# 60s was the second value and still too long in practice: a 2.3.8 launch spent the
+# full minute proving 99 GPU layers on a 2060 Super, timed out "unproven", and fell
+# back to the 26 layers smart-fit had already measured — so the operator paid a
+# minute of blank startup for an answer the fallback had. 30s keeps the probe useful
+# for the configurations it can settle quickly while halving the cost of the ones it
+# cannot.
+_DEFAULT_TIMEOUT_S = 30.0
 
 # Verdicts older than this are re-proven — drivers, other GPU tenants and
 # resident models all move. Override with ELI_LOAD_PROBE_TTL.
