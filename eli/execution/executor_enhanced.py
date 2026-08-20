@@ -3540,6 +3540,18 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
     # ── SET_AI_MODE ──────────────────────────────────────────────────────────
 
+    # Last stop before "unsupported": an installed plugin may own this action.
+    # Checked here rather than earlier so a plugin can never shadow a built-in —
+    # a marketplace listing that declared SHUTDOWN or SEND_EMAIL would otherwise
+    # take over that verb for the whole assistant.
+    try:
+        from eli.plugins.manager import get_manager
+        _plugin_result = get_manager().dispatch(a, args)
+        if _plugin_result is not None:
+            return _plugin_result
+    except Exception:
+        log.debug("[EXECUTOR] plugin dispatch failed", exc_info=True)
+
     return {"ok": False, "action": a, "error": f"Unsupported executor action: {a}", "content": f"Unsupported executor action: {a}", "response": f"Unsupported executor action: {a}"}
 
 

@@ -25,8 +25,13 @@ def _h_self_analyze(a, args):
     try:
         from eli.runtime.self_improvement import get_self_improvement
         engine = get_self_improvement()
-        failures = engine.analyze_failures(limit=10, days=7, min_cluster_size=1)
-        lines = [f"Self-Analysis Report ({len(failures)} recent issues):"]
+        _window_days = int((args or {}).get("days") or 7)
+        failures = engine.analyze_failures(limit=10, days=_window_days, min_cluster_size=1)
+        # State the window. Without it "0 recent issues" reads as "nothing is wrong",
+        # while SELF_IMPROVE — using a different lookback — reports failures in the
+        # same breath. Live at 2.3.10 the two contradicted each other seconds apart.
+        lines = [f"Self-Analysis Report ({len(failures)} open issue(s) "
+                 f"in the last {_window_days} day(s)):"]
 
         def _short(value, limit=220):
             text = " ".join(str(value or "").split())
@@ -114,7 +119,23 @@ def _h_self_analyze(a, args):
                 f"  actual_root_cause: {_root_cause_for(f)}"
             )
         if not failures:
-            lines.append("  No recent failures found.")
+            _older = {}
+            try:
+                _older = engine.failures_outside_window(days=_window_days) or {}
+            except Exception:
+                log.debug("[SELF_ANALYZE] older-failure count unavailable", exc_info=True)
+            _older_n = int(_older.get("count") or 0)
+            if _older_n:
+                lines.append(
+                    f"  Nothing in the last {_window_days} day(s) — but {_older_n} "
+                    f"open failure(s) are older than that (oldest "
+                    f"{_older.get('oldest_days')} days). Ask for a longer window, "
+                    f"e.g. \"analyse my failures over 30 days\"."
+                )
+            else:
+                lines.append(
+                    f"  No open failures in the last {_window_days} day(s), "
+                    f"and none older either.")
         if (args or {}).get("suggest"):
             result = engine.analyze_and_improve()
             imps = result.get("improvements", [])
