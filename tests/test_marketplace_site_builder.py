@@ -103,3 +103,69 @@ def test_an_empty_registry_still_builds(tmp_path):
                      "https://github.com/x/y")
     html = (out / "index.html").read_text(encoding="utf-8")
     assert "No plugins are listed yet" in html
+
+
+def test_the_store_links_back_to_the_main_site(site):
+    """The marketplace is a room in ELI's house, not a separate building. A visitor
+    who lands on a plugin page must have an obvious way back to the product."""
+    html, _ = site
+    assert html.count("https://geteli.tech") >= 3, (
+        "the store should link home from the brand, the nav and the footer")
+    assert "geteli.tech#private" in html, "the privacy section should be reachable"
+
+
+def test_the_brand_mark_is_a_link_home(site):
+    html, _ = site
+    i = html.index('class="brand"')
+    assert 'href="https://geteli.tech"' in html[i - 120:i + 120]
+
+
+def test_the_logo_is_embedded_not_linked(tmp_path):
+    """The brand mark must not become the one outbound request on the page."""
+    from pathlib import Path
+
+    logo = Path("blueprints/Eli_Icon.png")
+    if not logo.is_file():
+        import pytest as _pt
+        _pt.skip("logo not present in this checkout")
+
+    idx = tmp_path / "index.json"
+    idx.write_text(json.dumps(REGISTRY), encoding="utf-8")
+    out = tmp_path / "site"
+    build_site.build(str(idx), str(out), "ELI Marketplace", "plugins.geteli.tech",
+                     "https://github.com/x/y", "https://geteli.tech", str(logo))
+    html = (out / "index.html").read_text(encoding="utf-8")
+
+    assert 'src="data:image/png;base64,' in html
+    assert not re.search(r'<img[^>]+src=["\']https?://', html, re.I)
+
+
+def test_a_missing_logo_falls_back_rather_than_failing(tmp_path, capsys):
+    """A broken path must not take the whole deploy down."""
+    idx = tmp_path / "index.json"
+    idx.write_text(json.dumps(REGISTRY), encoding="utf-8")
+    out = tmp_path / "site"
+    build_site.build(str(idx), str(out), "ELI Marketplace", "plugins.geteli.tech",
+                     "https://github.com/x/y", "https://geteli.tech",
+                     str(tmp_path / "nope.png"))
+    html = (out / "index.html").read_text(encoding="utf-8")
+    assert '<span class="mark"' in html, "should fall back to the plain mark"
+
+
+def test_cname_is_written_into_the_published_artifact(site):
+    """GitHub Pages reads the custom domain from a CNAME inside the DEPLOYED
+    artifact, not the repo root. A CNAME beside the workflow is invisible to the
+    deployment: the binding never completes, no certificate is issued, and the
+    site answers on http while hanging on https with nothing explaining why."""
+    _, out = site
+    cname = out / "CNAME"
+    assert cname.is_file(), "no CNAME in the build output"
+    assert cname.read_text(encoding="utf-8").strip() == "plugins.geteli.tech"
+
+
+def test_no_cname_when_no_domain_is_configured(tmp_path):
+    idx = tmp_path / "index.json"
+    idx.write_text(json.dumps(REGISTRY), encoding="utf-8")
+    out = tmp_path / "site"
+    build_site.build(str(idx), str(out), "ELI Marketplace", "", "", "https://geteli.tech")
+    assert not (out / "CNAME").exists()
