@@ -127,3 +127,15 @@ class LabsTab(QWidget):
             self._inner_tabs.addTab(self._test_review_tab, "🧪 Test & Review")
         except Exception as _tr_err:
             log.debug(f"[Labs] Test & Review sub-tab unavailable: {_tr_err}")
+
+        # LoRA training. Lives under Labs beside the other advanced tools rather than
+        # as a top-level tab — most operators never train a model, and the ones who do
+        # are already in here. The tab reports missing prerequisites (no GPU, no base
+        # model, packages absent) instead of vanishing, so someone looking for the
+        # feature finds out WHY it cannot run.
+        try:
+            from eli.gui.tabs.training_tab import TrainingTab
+            self._training_tab = TrainingTab(parent_window=self._parent)
+            self._inner_tabs.addTab(self._training_tab, "🎓 Training")
+        except Exception as _train_err:
+            log.debug(f"[Labs] Training sub-tab unavailable: {_train_err}")

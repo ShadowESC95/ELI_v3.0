@@ -35,7 +35,23 @@ class _TestReviewTab(QWidget):
         row.addWidget(self._run_btn)
         self._quick_btn = QPushButton("⚡ Quick review")
         self._quick_btn.clicked.connect(lambda: self._start("tests/claims/test_structural_claims.py"))
-        row.addWidget(self._quick_btn); row.addStretch(1)
+        row.addWidget(self._quick_btn)
+
+        # The eval board — behaviour regressions rather than unit failures. It has
+        # existed under tools/eval for a long time but only ever ran from a terminal.
+        # Run in-process: the rubric assertions are graded by ELI's OWN loaded model,
+        # so a subprocess would pull a second copy of the chat model into VRAM.
+        self._eval_btn = QPushButton("🎯 Eval board")
+        self._eval_btn.setToolTip("Router + executor behaviour cases. Instant, no model needed.")
+        self._eval_btn.clicked.connect(lambda: self._start_eval("router"))
+        row.addWidget(self._eval_btn)
+        self._judge_btn = QPushButton("⚖️ Eval + judge")
+        self._judge_btn.setToolTip(
+            "Full board including engine cases graded by ELI's own local model. "
+            "Needs a loaded model and takes several minutes.")
+        self._judge_btn.clicked.connect(lambda: self._start_eval("all"))
+        row.addWidget(self._judge_btn)
+        row.addStretch(1)
         lay.addLayout(row)
 
         # Coloured pass/fail summary bar.
@@ -77,6 +93,10 @@ class _TestReviewTab(QWidget):
     def _set_busy(self, busy: bool):
         self._run_btn.setEnabled(not busy)
         self._quick_btn.setEnabled(not busy)
+        for _b in ("_eval_btn", "_judge_btn"):
+            _w = getattr(self, _b, None)
+            if _w is not None:
+                _w.setEnabled(not busy)
 
     def _clear_options(self):
         while self._opts_layout.count():
@@ -84,6 +104,25 @@ class _TestReviewTab(QWidget):
             w = it.widget()
             if w:
                 w.deleteLater()
+
+    def _start_eval(self, target: str):
+        """Run the eval board. Results come back in the same shape as a test run, so
+        the table / detail / fix handoff below need no special case."""
+        self._set_busy(True)
+        self._clear_options()
+        self._summary.setStyleSheet("padding:5px;font-weight:bold;border-radius:4px;"
+                                    "background:#2e3440;color:#d8dee9;")
+        self._summary.setText(
+            "Running the eval board…"
+            + (" engine cases are graded by ELI's own model and take several minutes."
+               if target != "router" else " (router + executor cases, no model needed)"))
+        self._table.setRowCount(0); self._detail.clear(); self._fix_btn.setEnabled(False)
+        self._eli_summary.setText("")
+        from eli.runtime.eval_review import run_eval_board
+        w = _BgWorker(lambda: run_eval_board(target))
+        w.done.connect(self._on_run_done)
+        self._workers.append(w)
+        w.start()
 
     def _start(self, target: str):
         self._set_busy(True)

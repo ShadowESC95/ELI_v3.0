@@ -20,7 +20,7 @@ flowchart TD
     T --> Rep[Report Builder]
     T --> Wld[Eli's World]
     T --> Set[Settings · 11 pages: Model · Runtime · Generation ·<br/>Reasoning · Identity · Audio · Application ·<br/>Agents · Gaze · Web Server · Advanced]
-    T --> Labs[Labs · 10 sub-tabs]
+    T --> Labs[Labs · 11 sub-tabs]
     Labs --> L1[Notebook · Memory · Jupyter · Calculator · Physics]
     Labs --> L2[File Chat · Workspaces · Sim/IDE]
     Labs --> L3[Orchestration · Test & Review<br/>dev/diagnostic tools]
@@ -65,9 +65,9 @@ are really application logic, not just UI:
 
 ## Labs workspace (`labs_tab.py`)
 
-A 5.7k-line "scientific workspace" tab with **10 sub-tabs**: Notebook, Memory &
+A "scientific workspace" tab with **11 sub-tabs**: Notebook, Memory &
 Conversations, Jupyter, Calculator, Physics constants, File Chat, Workspaces,
-Sim/IDE, **Orchestration**, **Test & Review**. (Report Builder was promoted out of Labs
+Sim/IDE, **Orchestration**, **Test & Review**, **Training**. (Report Builder was promoted out of Labs
 to its own main tab; Orchestration + Test & Review were demoted back INTO Labs in the
 2026-06-18 advisory as developer/diagnostic tools.) This is the research-bench surface (reflects whatever technical/research work
 the active user does, surfaced dynamically from their own data).
@@ -102,3 +102,85 @@ the active user does, surfaced dynamically from their own data).
   3. UI logic instantiating engine/memory directly makes a clean headless mode
      harder (there *is* `eli --headless`, but the GUI module re-implements
      bridges rather than sharing one service layer).
+
+
+## Update — 2.3.7 / 3.0.x (three new surfaces)
+
+| Surface | Where | What it is |
+|---|---|---|
+| 🎓 **Training** | Labs sub-tab (`eli/gui/tabs/training_tab.py`) | four-step LoRA wizard: Hardware → Target → Data → Train |
+| 🛒 **Marketplace** | Settings sub-tab (`eli/gui/tabs/marketplace_tab.py`) | community plugins: browse, verify, scan, install, permissions, sources |
+| **Permission dialog** | anywhere (`eli/gui/panels/permission_dialog.py`) | Android-style consent: Allow once · Always allow · Not now · Never allow |
+| 🎯 **Eval board** / ⚖️ **Eval + judge** | Labs ▸ Test & Review (`eli/gui/labs/test_review_tab.py`) | behaviour regression board, run in-process |
+
+Registration points in the decomposed layout: `eli/gui/labs/container.py` for the
+Training sub-tab, `eli/gui/panels/settings.py` for Marketplace and the **Create
+agent** button, and `eli/gui/main_window/_mixins/tabs.py` for the consent-dialog
+handler.
+
+### Labs ▸ 🎓 Training
+
+The GUI half of the LoRA pipeline, which `lora_pipeline.py` had always claimed was
+driven by "the GUI / scheduled task" — the GUI half was never built, so the human
+review gate the trainer requires had no interface at all.
+
+Four steps, each reporting what it *found* rather than what it assumes, because the
+operator is not necessarily on the machine this was written on:
+
+1. **Hardware** — accelerator and vendor, free VRAM, whether 4-bit is available,
+   which Python packages are missing, and which trainable base models exist. States
+   plainly when the machine cannot train rather than starting a job that never ends.
+2. **Target** — declare a target against any local HF base (family auto-detected).
+3. **Data** — the review queue: filter by needs-review / flagged / clean, read each
+   exchange, approve/reject/edit, bulk-approve the clean set, then save.
+4. **Train** — three recipes with raw parameters behind an *Advanced* disclosure, a
+   dry-run readiness check, then the real run on a **QThread** with live step/loss.
+
+Threading: training reaches the GUI through **signals only** — a queued signal is
+the one marshalling primitive that works from a worker, since `QTimer.singleShot`
+called off the GUI thread never fires.
+
+### Settings ▸ 🛒 Marketplace
+
+Four panes matching the four decisions an operator makes: **Browse**, **Installed**,
+**Permissions**, **Sources**. See `security.md` for the verification, scanning and
+runtime-enforcement model — the short version is that the install path is
+deliberately slow, nothing is written to disk before the operator has seen a scan
+result, and what is written arrives switched off with no permissions granted.
+
+### The consent dialog
+
+Modelled on the Android runtime-permission prompt: asked at the point of use, phrased
+as what the plugin can do *to you* rather than which API it calls, and answerable
+with **Allow once · Always allow · Not now · Never allow**. The two refusals are
+distinct on purpose — without a permanent "Never", a plugin can nag until the
+operator clicks the wrong button out of fatigue.
+
+`ConsentBridge` marshals requests from worker threads onto the GUI thread and waits,
+with a bounded timeout that **denies** if the GUI never answers, keeping the
+fail-closed rule true even when the UI is what failed.
+
+### Creating an agent
+
+Settings ▸ Agents gained **Create agent**, which collects an `AgentSpec` — objective,
+instruction, triggers, and success criteria — instead of the previous free-text
+"persona". Saving registers the agent live, with no restart. See
+`orchestration_and_agents.md`.
+
+
+### Marketplace panes and the one-click path
+
+Five panes: **Browse**, **Installed**, **Permissions**, **MCP servers**, **Sources**.
+
+Browse carries two buttons on purpose. **⬇ Install** is the one-click path — it
+downloads to memory, checks the checksum and signature, runs every scanner, and then
+either installs (when nothing needs deciding) or opens the full review dialog with
+the reasons named. **🔍 Check this plugin** is the same work with the dialog always
+shown, for someone who wants to read the findings first. Neither writes to disk
+before the operator has an answer.
+
+**MCP servers** is its own pane because they install differently: there is no source
+for ELI to scan, only a command. What is checked is that the runtime exists and that
+the server answers a real `initialize` + `tools/list` handshake, and the pane states
+plainly that ELI's offline switch cannot contain a separate process. Re-check runs
+`mcp.doctor()` and reports each server's exact fault.

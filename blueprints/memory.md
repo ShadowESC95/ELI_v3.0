@@ -8,12 +8,12 @@ full-text + vector + graph, all local SQLite/FAISS. Companion to
 
 | File | LOC | Role |
 |---|---|---|
-| `memory.py` | 4.5k | the `Memory` god-class + `DBPaths` + module facade |
-| `knowledge_graph.py` | 564 | entity/relation graph (KG) |
+| `memory.py` | 4.7k | the `Memory` god-class + `DBPaths` + module facade |
+| `knowledge_graph.py` | 643 | entity/relation graph (KG) |
 | `habits_memory_db.py` | 470 |
-| `vector_store.py` | 411 | FAISS vector index + embedder |
+| `vector_store.py` | 430 | FAISS vector index + embedder |
 | `__init__.py` | 0 |
-| `system_index.py` | 238 | indexed apps/executables/files |
+| `system_index.py` | 278 | indexed apps/executables/files |
 | `memory_truth.py` | 190 |
 | `memory_adapter.py` | 131 | compat adapter |
 | `memory_service.py`, `sqlite_memory.py`, `stores.py`, `populate_memories.py` | small | helpers/compat |
@@ -44,15 +44,36 @@ persistent concern:
 `vector_store` is a lazy property; the KG is integrated via
 `knowledge_graph.get_knowledge_graph()`.
 
-## Schema (≈24 tables)
+## Schema (≈25 tables)
 
 `memories` (+ legacy `memory`), `conversation_turns` (+ `conversations`),
 `session_summaries`, `kg_entities`, `kg_relations`, `habit_rules`,
 `habit_events`, `habits`, `failures`, `corrections`, `improvements`,
 `observations`, `capability_proposals`, `learning_replay`, `user_patterns`,
 `desktop_apps`, `executables`, `recent_files`, `user_dirs`, `error_tracking`,
-`recall_log`, `events`, `semantic`. FTS5 virtual tables back conversation and KG
-search.
+`recall_log`, `events`, `semantic`, `emotion_events`. FTS5 virtual tables back
+conversation and KG search.
+
+### `emotion_events` (v2.1.31) — the emotional timeline
+
+Owned by `cognition/emotion_timeline.py`, not the `Memory` class: it opens
+`user.sqlite3` directly (same pattern as `habits_memory_db.py`) and creates its table
+idempotently, so it adds nothing to the 4.7k-line god-class.
+
+| column | meaning |
+|---|---|
+| `ts`, `user_id`, `session_id` | when / whose / which session |
+| `detected` | what the USER seemed to feel |
+| `expressed` | the register ELI answered in |
+| `valence` | `negative` / `positive` / `neutral` — what makes "has been negative for a while" answerable without caring which specific emotion each read was |
+| `confidence`, `source`, `arousal` | how strong the read was and where it came from (voice / text / fused / override) |
+| `user_text` | the utterance that produced the read |
+| `eli_prior_action` | **the action ELI ran on the PRECEDING turn** — this is the column that lets ELI ask whether the mood turned because of something *it* did |
+
+Indexed on `ts` and `(user_id, ts)`. Reads come back `ORDER BY ts DESC, id DESC` — the
+`id` tiebreak matters because several reads can land inside one second and run-length
+counting would otherwise mis-order. See `blueprints/perception.md` for the assessment
+gates and the proactive surfacing path.
 
 ## `recall_memory` — the hybrid retriever (memory.py:1722)
 
@@ -138,3 +159,22 @@ gap ELI's own grounding admits.
   Both write sites now use the canonical `_dump_meta` (JSON); the index re-syncs cleanly to the
   memory count. (This also closes a pickle-RCE-on-load vector the codebase had deliberately
   retired.) KG populator enriched (broader, clean entity extraction from `user_patterns`).
+
+
+## Update — 2.3.7 (recent-history window widened)
+
+`runtime/memory_evidence.py` capped every recent-history pull at
+`max(4, min(limit, 8))`. The cap **silently ignored a larger limit**: a caller asking
+for 40 recent turns still received 8, so continuity was being thrown away by a
+constant nobody could see or configure.
+
+- `RECENT_HISTORY_CAP = 40` — the ceiling now follows the caller, bounded only by a
+  sane upper limit so a huge `limit` cannot drag the whole conversation table into a
+  single turn.
+- `collect_memory_evidence(limit=32)` and `build_memory_evidence_text(limit=32)` —
+  defaults raised from 12 and 8.
+
+This is separate from `cog.mem_recent_turns` (default 24, max 80), the user-facing
+tunable in Settings ▸ Cognition that governs how many recent turns enter the prompt.
+The prompt assembler still does the real budgeting downstream; this change only stops
+the evidence layer discarding history before the budgeter ever sees it.

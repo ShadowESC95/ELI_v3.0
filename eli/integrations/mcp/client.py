@@ -43,8 +43,19 @@ _LOCK = threading.RLock()
 
 
 def config_path() -> Path:
-    from eli.core.paths import config_dir
-    return Path(config_dir()) / "mcp_servers.json"
+    """The one file both MCP halves read.
+
+    Delegates to `eli.plugins.mcp.config_path` so the lifecycle side (which installs
+    and verifies servers) and the runtime side (which calls their tools) can never
+    disagree about where the config lives — including under the ELI_MCP_CONFIG
+    override, which only one of them used to honour.
+    """
+    try:
+        from eli.plugins.mcp import config_path as _lifecycle_path
+        return Path(_lifecycle_path())
+    except Exception:
+        from eli.core.paths import config_dir
+        return Path(config_dir()) / "mcp_servers.json"
 
 
 def load_config() -> Dict[str, Dict[str, Any]]:

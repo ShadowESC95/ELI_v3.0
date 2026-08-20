@@ -42,10 +42,12 @@ How to read this manual:
 17. [Privacy & staying offline](#17-privacy--staying-offline)
 18. [Troubleshooting](#18-troubleshooting)
 19. [Quick phrasebook (cheat sheet)](#19-quick-phrasebook-cheat-sheet)
-20. [Glossary](#20-glossary)
-21. [Appendix A — Under the hood: how ELI thinks (the full pipeline)](#21-appendix-a--under-the-hood-how-eli-thinks-the-full-pipeline)
-22. [Appendix B — Under the hood: how ELI remembers (the full memory system)](#22-appendix-b--under-the-hood-how-eli-remembers-the-full-memory-system)
-23. [Appendix C — Under the hood: how ELI stays safe and yours (security)](#23-appendix-c--under-the-hood-how-eli-stays-safe-and-yours-security)
+20. [Add-ons: plugins & the community marketplace](#20-add-ons-plugins--the-community-marketplace)
+21. [Making ELI your own: custom agents](#21-making-eli-your-own-custom-agents)
+22. [Glossary](#22-glossary)
+23. [Appendix A — Under the hood: how ELI thinks (the full pipeline)](#23-appendix-a--under-the-hood-how-eli-thinks-the-full-pipeline)
+24. [Appendix B — Under the hood: how ELI remembers (the full memory system)](#24-appendix-b--under-the-hood-how-eli-remembers-the-full-memory-system)
+25. [Appendix C — Under the hood: how ELI stays safe and yours (security)](#25-appendix-c--under-the-hood-how-eli-stays-safe-and-yours-security)
 
 ---
 
@@ -123,9 +125,11 @@ flowchart TD
     H --> J
 ```
 
-**The promise in that diagram:** ELI **never fakes an action**. If it says it played a song or
-fixed a file, it really did — and if it couldn't, it says so plainly instead of bluffing. This is
-built into the software, not just good manners.
+**The promise in that diagram:** ELI is **built not to fake an action**. When it says it played a
+song or fixed a file, that claim comes from the code that actually ran it — and when it couldn't,
+it is designed to say so plainly instead of bluffing. This is enforced in software, not just good
+manners. It is a strong guard rather than a mathematical guarantee: no filter over a language
+model can promise perfection, so ELI is built to fail loudly rather than quietly invent.
 
 ---
 
@@ -133,7 +137,7 @@ built into the software, not just good manners.
 
 🟡 *A little technical, but only once.*
 
-### Installing (v2.1.11 and later — one download per platform)
+### Installing (v2.1.23 and later — one download per platform)
 Get the latest from **GitHub Releases**. Every release is built in CI and **launch-tested on
 Windows, macOS and Linux** before it can publish.
 
@@ -144,7 +148,7 @@ Windows, macOS and Linux** before it can publish.
 - **macOS (Apple Silicon):** open the `.dmg`, drag **ELI** into Applications. First launch is
   right-click → **Open** (the app is unsigned). Apple-GPU acceleration is built in — nothing to
   set up.
-- **Linux:** `chmod +x ELI_v3-<version>-x86_64.AppImage` and run it. On first launch it offers
+- **Linux:** `chmod +x ELI_v2-<version>-x86_64.AppImage` and run it. On first launch it offers
   **applications-menu entries** (ELI, ELI Server, and a working Uninstall).
 
 ```mermaid
@@ -175,8 +179,8 @@ flowchart TD
 | **Chat model** | if you accept the model offer | sized to your hardware (e.g. ~4.7 GiB) |
 
 Everything ELI knows and downloads lives in **one per-user folder** that **survives upgrades**
-— like a save-game: `%LOCALAPPDATA%\ELI_v3` (Windows), `~/Library/Application Support/ELI_v3`
-(macOS), `~/.local/share/ELI_v3` (Linux). Databases start as a **true blank slate** — no
+— like a save-game: `%LOCALAPPDATA%\ELI_v2` (Windows), `~/Library/Application Support/ELI_v2`
+(macOS), `~/.local/share/ELI_v2` (Linux). Databases start as a **true blank slate** — no
 personal data ships in any installer.
 
 ### Starting over, or uninstalling
@@ -270,8 +274,8 @@ terms:
 | **Self-Improve** | What ELI is proposing to improve in *itself* — approval-gated. |
 | **Report Builder** | Generate longer documents/reports with sources (evidence → outline → draft → revise). |
 | **Elis World** | ELI's own world-model view. |
-| **Labs** | Power-user workshop — notebook, Jupyter, calculator, physics, file-chat, **projects/workspaces**, sim-IDE, orchestration, test review. |
-| **Settings** | Model (incl. the model-switch dropdown), hardware, voice, and privacy options (§16). |
+| **Labs** | Power-user workshop — notebook, Jupyter, calculator, physics, file-chat, **projects/workspaces**, sim-IDE, orchestration, test review, **training** (§14). |
+| **Settings** | Model (incl. the model-switch dropdown), hardware, voice, privacy options (§16), plugins and the **Marketplace** (§20). |
 
 You rarely need the tabs directly — almost everything is reachable by **asking** in Chat:
 "show my habits", "what do you remember about me", "show background jobs", "make an image of …",
@@ -330,7 +334,7 @@ and ELI opens or reports the right thing.
 
 ### 🔧 Asking ELI about itself (honest introspection)
 - "what are you running on?" (model, context, GPU) · "how does your memory work?"
-- "what do you know about me?" · "what have you been working on?" · "status"
+- "what do you know about me?" · "what updates have you made recently?" · "status"
 
 ### 👁️ Eye control (gaze)
 - "calibrate gaze", then "enable gaze". With it on, ELI clicks **where you're looking** when you
@@ -380,18 +384,30 @@ itself with you. When you want to steer it, you can, without erasing that:
   the wheel back to the natural persona.
 - "refresh your persona" reloads it from your latest profile (after ELI's learned something new
   about you).
+- **Set how it talks to you** *(new, 2.1.23)* — say *"speak to me more bluntly"*, *"be funnier"*,
+  or *"respond as Rick"* and it **sticks** (say *"reset your tone"* to clear it). You can also set
+  it in **Settings → Identity → Tone / how ELI speaks**. This explicit preference takes priority
+  over the tone ELI infers, but leaving it blank keeps ELI's natural emergent voice in charge.
+- ELI also keeps a small set of **core values** (memory policy, verbosity, safety) that are part
+  of its persona and evolve alongside it.
 
 The rule of thumb: **the emergent voice is the default and the truth of who ELI is with you; a
 lock is a temporary hat it wears on request.** ELI won't drift into a scripted character on its
 own, and a lock never overwrites the underlying personality — it sits on top until you clear it.
 
-**Setting a permanent tone preference.** A lock is for a single session; if you want ELI to speak
-to you a certain way **every time**, set it in **Settings → Identity → "Tone / how ELI speaks"**
-(pick a preset or type your own — "blunt, concise, no preamble", "dry humour, a bit sarcastic") or
-just say it in chat: "speak to me more bluntly", "be more formal", "respond as a patient teacher".
-It's saved to your profile and takes priority over ELI's auto-inferred tone. Leave it blank (or
-say "reset your tone") to go back to ELI's own emergent voice. This is distinct from your **TTS
-voice** — "use the alan voice" switches what ELI sounds like, not how it talks to you.
+### 🎚️ Tone & emotion — reading the room
+ELI now **reads the emotional situation from two independent signals** — the *sound* of your voice
+(energy, mood) and the *content* of what you say — and shades **how** it delivers: its wording, its
+voice (pace, warmth, pauses), and its avatar expression all move together. If you're clearly
+frustrated it gets calmer and more direct; if you're playing, it plays back; if you're upset, it
+softens. **This never changes who ELI is** — its core personality stays exactly the same; it just
+picks the tone that's most useful for the moment.
+
+You can also set the register yourself: *"be comedic"*, *"talk street"*, *"sound more
+professional"*, *"use a deadpan tone"* — and *"go back to normal"* (or *"be yourself"*) to hand it
+back to ELI's own read of the room. There's a growing palette of tones (comedic, professional,
+curious, deadpan, tender, street-smart, gremlin, and more), and you can add your own in
+`config/voices/tones.json`. Turn the whole thing off with `ELI_TONE_ADAPT=0`.
 
 ---
 
@@ -499,16 +515,32 @@ flowchart LR
 - **Dictation:** "start dictation" / "stop dictating" — speak and ELI types into the active field.
 - **Transcribe a recording:** "transcribe audio.wav"
 - **ELI speaking back:** "say good morning"
+- **A human-like voice:** at the **startup model picker** (before ELI loads its model) pick
+  **Voice engine → "Natural neural (XTTS-v2)"** for an expressive, human-sounding voice — or say
+  *"use the natural voice"* any time. It needs a one-time `pip install "eli-v2.0[natural]"`
+  (downloads ~1.8 GB on first use) and a reasonable GPU; on a lighter machine leave it on **Piper**,
+  which is fast and now noticeably more natural (it pauses on full stops and lifts on questions).
+- **Change ELI's voice:** the voice dropdown next to the chat box, **Settings ▸ Runtime ▸ "VOICE / TTS"**, or
+  just ask — *"use the alan voice"*, *"switch your voice to amy"*, *"use a natural male voice"*.
+- **Get more voices and accents:** ask ELI directly — *"what voices do you have"*, *"download a
+  British voice"*, *"get me a Scottish accent"* — or use **Settings ▸ Runtime ▸ "VOICE / TTS" > "Get more
+  voices / accents..."**. Either way, ELI can download from a library of **166 voices across 45
+  languages** — 38 of them English (US, British, Scottish, Northern and Southern English). Each is
+  verified, installed, and selectable immediately. A few voices are marked *personal use only*:
+  their licences don't allow ELI to bundle them, but you can still download them yourself.
+- **Character voices:** choose `char:hal`, `char:tars`, `char:rick`, `char:glados` or `char:jarvis`
+  from the same dropdown — each is a real voice plus a live effect chain. You can make your own,
+  and downloading a character's "ideal base" voice (flagged in the voice library) sharpens it.
+- **Make your own voice:** **Settings ▸ Runtime ▸ "VOICE / TTS"** — either **drop in a clip** (a short, clean
+  ~6–20s .wav/.mp3/.mp4 of the voice you want) or click **"Record a voice now"** to capture 12
+  seconds from your mic on the spot. You can also say *"create a voice called Nova from clip.mp4"*.
+  It sounds like your sample once the neural voice extra is installed
+  (`pip install "eli-v2.0[natural]"`); until then it's saved and ELI uses a normal voice.
+- **ELI's face reacts:** the little animated face shows how ELI feels, **moves its mouth while it
+  speaks**, and shows a focused look while it's thinking.
 - **Teach ELI your voice & tone:** "train my voice" — it learns your pitch/energy and even emotion
   cues, then adapts how it speaks to you.
 - **If voice misbehaves:** "run voice diagnostics".
-
-**Choosing what ELI sounds like.** ELI ships with a handful of voices, but the full library is
-**166 voices across 45 languages/accents** — say "what voices do you have" to hear the installed
-ones plus a summary of what's downloadable, "download a British voice" (or "get me a Scottish
-accent", "install en_US-amy-medium") to fetch and switch to one, or "use the alan voice" / "use
-the HAL voice" to switch among voices already installed. Downloads are checksum-verified and
-netguard-gated like everything else network-facing.
 
 ---
 
@@ -580,13 +612,10 @@ displays now uses the safe fragment form, on the desktop panel and both launcher
 
 ### Voice from the phone needs HTTPS
 Browsers block the microphone on a plain `http://` LAN address, so the phone **mic** needs a
-secure page. Starting **phone / Wi-Fi mode** — from the desktop panel's button, `--https`, or the
-HTTPS toggle — runs a *second* server alongside on port **8443** with a self-signed certificate,
-automatically; there's nothing extra to turn on. Accept the one-time "not private" warning on the
-phone and the mic works. Plain HTTP stays the primary path (it's what QR scanners open reliably);
-HTTPS runs *in addition*, purely for voice. **Settings → Web Server** shows both links and their
-QR codes directly on the desktop panel, so you don't need to open the web Connect tab just to
-scan one — point your phone's camera at the desktop screen and go.
+secure page. Start with `--https` (or the HTTPS toggle) and ELI runs a *second* server alongside
+on port **8443** with a self-signed certificate — accept the one-time "not private" warning and
+the mic works. Plain HTTP stays the primary path (it's what QR scanners open reliably); HTTPS
+runs *in addition*, purely for voice.
 
 ### Switching the model from the dashboard
 **Settings → Model** lists every model installed on your computer, with sizes. Pick one and ELI
@@ -697,19 +726,26 @@ You can also just **drop any `.gguf` file** into the `models/` folder and ELI fi
 In **Settings → Model** (or "Model menu / Auto Detect"), pick the file. ELI sizes it to your
 hardware automatically — you don't tune anything.
 
-### Using Ollama instead of a local GGUF file
-If you already run [Ollama](https://ollama.com) — on this computer or another machine on your
-network — ELI can use it as the chat backend instead of a local `.gguf` file. Pick **Ollama** as
-the provider in **Settings → Model**; the toolbar model switcher lists whatever's pulled into
-Ollama and hot-swaps between them, same as a local model.
-- **Any way you type the host works** — `localhost:11434`, `127.0.0.1`, a bare LAN IP, with or
-  without `http://` — ELI fills in the scheme and port. This is deliberate: Ollama's own docs and
-  installers set `OLLAMA_HOST` *without* a scheme, so ELI accepts that form everywhere it accepts
-  a host (Settings, the startup picker, the first-run wizard).
-- **Works across Windows, macOS and Linux**, local or pointed at another machine on your LAN — a
-  configured Ollama host is treated as a trusted local service, so it works with the **Net toggle
-  off**.
-- Ollama sizes its own VRAM usage, so none of ELI's GPU-layer tuning applies when it's the backend.
+### Using Ollama instead (Windows, macOS, Linux)
+🟡 If you already run **Ollama**, ELI can use your Ollama models instead of a GGUF file —
+handy when you've curated models there, or want ELI to share one Ollama install.
+
+1. Install and start Ollama (`https://ollama.com/download`). On Windows and macOS it starts
+   itself; on Linux use `systemctl --user start ollama` (or `ollama serve`).
+2. Pull at least one model, e.g. `ollama pull llama3.2`.
+3. In ELI: **Settings → Model → Backend = Ollama**, then **Refresh Ollama Models** and pick one.
+   It's also in the startup model picker and the toolbar dropdown.
+
+**Host and port.** Leave *Host* blank/default for a normal local install. Set it if Ollama runs
+elsewhere — a different port (`localhost:9999`), another machine (`192.168.1.20`), or a container.
+You can type it any way that makes sense (`localhost:11434`, `127.0.0.1:11434`, a bare IP) — ELI
+fills in the missing pieces. **Ollama on another machine is supported**: ELI treats a host you
+configured as a deliberate local service, so its offline-by-default guard won't block it and the
+Net toggle can stay off.
+
+**If ELI can't see your models:** confirm Ollama is running (`ollama list` in a terminal). If it's
+on another machine, start it there with `OLLAMA_HOST=0.0.0.0:11434` so it accepts connections
+beyond that machine, and allow port `11434` through its firewall.
 
 ### 🔴 Training your own ELI-flavoured model (advanced, optional)
 You can fine-tune a model so it speaks in **ELI's voice** out of the box.
@@ -718,6 +754,48 @@ You can fine-tune a model so it speaks in **ELI's voice** out of the box.
 through extracting a voice dataset and training, to producing a ready-to-load `.gguf`. Crucially,
 ELI's **personality stays live** (never frozen into the model); training only shapes the *manner*
 of speech.
+
+---
+
+### Training ELI on your own conversations
+
+🟡 ELI can fine-tune a model on **the way you actually talk to it** — all on your
+computer, nothing uploaded. **Labs ▸ 🎓 Training**, four steps.
+
+**1. Can this machine do it?** ELI checks your graphics card, how much memory is
+free, and whether the training software is installed — then tells you plainly. If
+your card is too small it says how much it needed and what would fix it, rather than
+starting something that runs for days.
+
+Works with NVIDIA and AMD cards. Apple and Intel graphics are detected but cannot run
+training; ELI says so instead of pretending.
+
+**2. What are you training?** You need a **Hugging Face model folder**, which is a
+different thing from the `.gguf` file ELI chats with. ELI lists every one it can find
+on your computer. Pick one, give it a name, done.
+
+**3. Which conversations should it learn from?** This is the important step. ELI
+gathers your past exchanges and sorts them for you:
+
+- exchanges that were clearly broken are **removed automatically**;
+- exchanges that look odd are **flagged for you to read**;
+- the rest are shown as clean.
+
+You approve the clean batch in one click and then read the flagged ones. **Nothing
+trains on anything you have not approved.** Typically that means reading a few hundred
+rather than every single exchange.
+
+You can also edit an exchange — fix ELI's answer to what it *should* have said — and
+train on the corrected version.
+
+**4. Train.** Pick Light (minutes), Standard, or Deep (hours). "Check readiness" runs
+every check without training. "Start training" runs it, showing progress and loss, and
+you can cancel.
+
+> **After training finishes**, the result is a small "adapter" file, not a new brain.
+> To actually chat with it, the adapter has to be merged into the base model and
+> converted to `.gguf`. ELI tells you this when the run ends — it will not pretend the
+> model has changed when it hasn't. See the fine-tuning guide for that step.
 
 ---
 
@@ -820,14 +898,112 @@ flowchart TD
   "say good morning" · "train my voice"
 
 **Check on ELI**
-- "what are you running on?" · "status" · "what have you been working on?"
+- "what are you running on?" · "status" · "what updates have you made recently?"
 
 **Models (in a terminal)**
 - `python -m eli.core.model_download --list` · `python -m eli.core.model_download --auto`
 
 ---
 
-## 20. Glossary
+## 20. Add-ons: plugins & the community marketplace
+
+🟡 **Settings ▸ 🛒 Marketplace.** Plugins add abilities to ELI. Some ship with it;
+others are written by **other people in the community**.
+
+### The honest bit, first
+
+The marketplace belongs to the community, not to ELI's author. Anyone can host one
+and anyone can publish to it. **Nobody vets what goes in**, so ELI will never tell you
+a plugin is safe — it isn't in a position to know.
+
+What it does instead, before a single file lands on your computer:
+
+- **Checks the file is the file.** The listing publishes a fingerprint; ELI checks the
+  download against it. If it doesn't match, it refuses — that means the file was
+  changed somewhere between the publisher and you.
+- **Checks who wrote it**, if they signed it and you have chosen to trust their key.
+  Unsigned isn't blocked — it's clearly labelled *unverified*.
+- **Reads the code.** If it uses an ability it never declared, ELI refuses.
+- **Scans it for malware** — eleven different checks, looking for things like remote
+  access backdoors, password stealing, hidden start-up entries, disguised code, and
+  crypto miners. If you have ClamAV or YARA installed, those run too.
+- **Shows you everything it found**, then asks.
+
+If a scanner couldn't run, ELI says the check was **partial**. It won't call something
+clean that it didn't fully check.
+
+### Permissions — like your phone
+
+A newly installed plugin arrives **switched off with no permissions at all**.
+
+When you enable it and it first wants to do something — reach the internet, read your
+files, use your microphone — ELI asks. The message names the plugin, says what it can
+do to you, and how risky that is. Four answers:
+
+| Answer | What happens |
+|---|---|
+| **Allow once** | Allowed now. You'll be asked again next time. |
+| **Always allow** | Allowed from now on, no more asking. |
+| **Not now** | Refused this time. You'll be asked again. |
+| **Never allow** | Refused permanently. It can never ask again. |
+
+Every answer is recorded, and you can take any of them back in **Marketplace ▸
+Permissions**.
+
+If a plugin asks while nobody's there — an overnight scheduled job, or the phone
+server — the answer is automatically **no**. A plugin can't get permission by waiting
+until you're asleep.
+
+### Paid plugins
+
+Some publishers charge. You buy from **them**, not from ELI, and paste the licence key
+in. ELI has no payment system, takes no cut, and **cannot confirm a purchase happened
+or that a refund is possible**. Treat it exactly like buying software from a stranger's
+website — because that's what it is.
+
+### MCP servers — one thing to know
+
+MCP servers are add-ons that run as **their own separate program** alongside ELI. That
+means ELI's "stay offline" switch **cannot stop them** reaching the internet, and ELI
+can't see what they send. This isn't a flaw in ELI — it's how MCP works. Only add MCP
+servers you'd trust with that.
+
+ELI does make sure they actually work: it checks the required software is installed,
+then genuinely starts the server and talks to it before saving anything. If it can't
+answer, it isn't added.
+
+---
+
+## 21. Making ELI your own: custom agents
+
+🔴 An **agent** is a small specialist that runs alongside ELI's main reply — one that
+watches for a certain kind of request and contributes something extra.
+
+You can write your own. A custom agent needs four things, and ELI won't accept it
+without them:
+
+| | |
+|---|---|
+| **Objective** | One sentence: what is this agent responsible for? |
+| **Instruction** | What it should actually do — the prompt it runs on. |
+| **Triggers** | When it should wake up (a keyword, a pattern, or a type of request). |
+| **How you'd know it worked** | Checks ELI can run on the answer — must mention X, must not say Y, must be at least N characters, must be valid JSON. |
+
+That last one is the part people skip, and it's the reason it's required. Without it,
+an agent either seems fine or doesn't, and you can never tell which. With it, ELI
+**tests** the agent and an agent that fails its own test contributes nothing rather
+than quietly adding noise to your answers.
+
+Agents are created switched off. You can edit one and reload without restarting ELI.
+
+> If you write an agent as actual Python code rather than a specification, ELI treats
+> it as untrusted until you approve it — and it scans the code first, recording what it
+> found and when you approved it. Editing the file afterwards cancels the approval
+> automatically.
+
+---
+
+## 22. Glossary
 
 | Term | Plain meaning |
 |---|---|
@@ -844,7 +1020,7 @@ flowchart TD
 
 ---
 
-## 21. Appendix A — Under the hood: how ELI thinks (the full pipeline)
+## 23. Appendix A — Under the hood: how ELI thinks (the full pipeline)
 
 🔴 *For the curious / technical. You never need this to use ELI — but here is the complete,
 verified path from your words to ELI's reply.*
@@ -976,7 +1152,7 @@ Every path, no matter which, ends at:
 
 ---
 
-## 22. Appendix B — Under the hood: how ELI remembers (the full memory system)
+## 24. Appendix B — Under the hood: how ELI remembers (the full memory system)
 
 🔴 *For the curious / technical. ELI's memory is a genuine hybrid — relational + full-text +
 vector + graph — all local. This is the complete input → storage → recall path (verified against
@@ -1098,7 +1274,7 @@ slate.
 
 ---
 
-## 23. Appendix C — Under the hood: how ELI stays safe and yours (security)
+## 25. Appendix C — Under the hood: how ELI stays safe and yours (security)
 
 🔴 *For the curious / technical. ELI is meant to be safe by construction, not by good
 intentions — every guard below is enforced in code, not left to a setting you might forget to

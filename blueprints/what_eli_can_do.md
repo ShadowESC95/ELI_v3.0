@@ -15,9 +15,9 @@ builds documents, creates images, looks after itself, and learns you over time �
 and **nothing leaves your device unless you explicitly allow it.**
 
 Here's the part most "AI assistants" can't say: it's *yours*. A fully local,
-embodied desktop AI you actually own — **208 capabilities** (174 first-class
-actions), a 14-agent reasoning bus, persistent memory, and full voice/vision/gaze
-control, in ~142,000 lines of Python. One machine, your data, no landlord. (The
+embodied desktop AI you actually own — **216 capabilities** (199 of them routable
+by voice or text), a 14-agent reasoning bus, persistent memory, and full
+voice/vision/gaze control, in ~160,000 lines of Python. One machine, your data, no landlord. (The
 capability count is read live from the manifest each boot, so it grows as ELI
 does.)
 
@@ -151,6 +151,23 @@ Always-listening with a wake word; it **ducks your media volume** to hear you,
 and learns a **per-user voice profile**. Dictation, transcription, and a spoken
 voice (Piper TTS) that never voices garbled fragments.
 
+### 🔊 Voices — accents, characters & your own *(new, 2.1.23)*
+ELI ships with a set of voices and can fetch **166 more, across 45 languages** —
+including 38 English voices (US, British, Scottish, Northern and Southern English).
+Do it by voice or text — *"what voices do you have"*, *"download a British voice"*,
+*"use the alan voice"* — or open **Settings ▸ Runtime ▸ "VOICE / TTS" > "Get more voices /
+accents..."**; either way it downloads (checksum-verified) and becomes selectable
+straight away. A handful of voices carry non-commercial licences, so ELI doesn't
+bundle them — the list says so plainly and still lets you fetch them for personal use.
+**Character voices** — HAL, TARS, Rick, GLaDOS,
+JARVIS — built as a base voice plus a real-time ffmpeg effect chain (no extra
+model), and you can **create your own** (`char:<name>`) by choosing a base voice
+and tuning pitch / speed / effects. Pick any of them from the voice selector, or
+just tell ELI *"speak to me like HAL."* Optional **voice cloning** (`clone:<name>`)
+reproduces a voice from a short audio sample via Coqui XTTS-v2 — an opt-in extra
+(`pip install "eli-v2.0[clone]"`, ~1.8 GB model downloaded on first use); without
+it, a cloned voice falls back to a normal voice rather than going silent.
+
 ### 👁️ See & understand
 Local vision-language models describe any image or your live screen; OCR pulls
 text out of pictures; *"find the button that says X"* locates UI elements on
@@ -235,7 +252,7 @@ than dumping a report or guessing.
 
 ---
 
-## The workspace — your 12 main tabs
+## The workspace — your 13 main tabs
 
 | Tab | What it's for |
 |---|---|
@@ -249,8 +266,9 @@ than dumping a report or guessing.
 | 🧩 **Coding** | Write, run, and have ELI fix/explain code. (All background jobs are listed in the Tasks tab.) |
 | 🗓️ **Tasks** | The single home for all background work — coding jobs + scheduled/overnight tasks (add, edit, cancel). |
 | 📄 **Report Builder** | Evidence-grounded, multi-stage document generation (promoted from Labs). |
+| 🧪 **Experimental** | A read-only workbench over the `experimental/` folder — inventories prototype kits and opens their folders/READMEs. It never runs them. |
 | 🌍 **Eli's World** | The live embodied self-model — ELI's avatar moving through cognitive "rooms" as it reasons. |
-| ⚙️ **Settings** | 11 pages: Model, Runtime, Generation, Reasoning (every mode's budgets/temperature/sampling/algorithm, editable live), Identity, Audio, Application, Agents, Gaze, Web Server, Advanced. |
+| ⚙️ **Settings** | 10 pages: Model, Runtime, Generation, Identity, Audio, Application, Agents, Gaze, Web Server, Advanced. |
 
 *(Orchestration and Test & Review are developer/diagnostic tools — they live as **Labs sub-tabs**, not top-level tabs.)*
 
@@ -303,5 +321,69 @@ broad enough to be a daily companion, not a demo.
 ---
 
 *Honest companion reading (the limits + engineering verdict, deliberately kept
-separate from this capability showcase): `complete_findings.md`,
-`project_overview.md`. Exhaustive technical map: `capability_catalogue.md`.*
+separate from this capability showcase): `project_overview.md`. Exhaustive
+technical map: `capability_catalogue.md`.*
+
+
+## New in 2.3.7 — train it, extend it, and see what it checked
+
+### Train your own model (Labs ▸ 🎓 Training)
+
+ELI can fine-tune a model on **your own conversations with it**, entirely on your
+machine. A four-step wizard: it checks whether your hardware can do it and says so
+plainly, you point it at any Hugging Face base model you have downloaded, you review
+which of your exchanges are worth learning from, and it trains — with live progress
+and a cancel button.
+
+The review step is the point. **Nothing trains on anything you have not personally
+approved.** ELI removes the obviously broken exchanges for you and flags the
+questionable ones, so you are reading the ~40% that need judgement rather than all of
+them.
+
+Works on NVIDIA and AMD. If your card is too small, it tells you exactly how much it
+needed and what would fix it, instead of silently falling back to a CPU run that
+takes days.
+
+### Community plugins (Settings ▸ 🛒 Marketplace)
+
+ELI ships the client for a marketplace the **community** owns — anyone can host a
+registry and anyone can publish to it. ELI takes no cut, holds no keys, and vets
+nothing, so it never tells you a plugin is safe. What it does instead, before a
+single file reaches your disk:
+
+- confirms the download matches the checksum in the listing;
+- checks the signature, if the publisher signed it and you trust their key;
+- reads the code and refuses anything using a capability it did not declare;
+- runs **eleven malware scanners** — reverse shells, credential theft, rootkit
+  persistence, obfuscated payloads, crypto miners, typosquatted dependencies, plus
+  ClamAV and YARA if you have them;
+- shows you the result and lets you decide.
+
+Anything that installs arrives **switched off, with no permissions**.
+
+### Permissions you actually control
+
+Like a phone. When a plugin first wants to reach the internet, read your files, or
+use your microphone, ELI asks — naming the plugin, saying what it can do to you, and
+why that is risky. You answer **Allow once**, **Always allow**, **Not now**, or
+**Never allow**. "Never" means never: it cannot ask again.
+
+Every decision is logged, and you can revoke any of them at any time.
+
+If nobody is there to ask — a scheduled overnight task, the API server — the answer
+is automatically **no**. A plugin cannot get a permission by waiting until you are
+asleep.
+
+### Custom agents that can be judged
+
+Creating an agent now means writing a small specification: what it is **for**, the
+instruction it runs on, **when** it should fire, and **how you would know it
+worked**. That last part is checks ELI can actually run, so an agent that fails its
+own test contributes nothing instead of quietly producing noise. Agents can be
+created, edited and reloaded without restarting ELI.
+
+### One honest limitation, stated plainly
+
+MCP servers run as their own programs, outside ELI. ELI's offline switch cannot stop
+them reaching the internet and ELI cannot see what they send. That is a property of
+how MCP works, not a bug, and every screen that installs one says so.
