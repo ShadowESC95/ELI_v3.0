@@ -1195,7 +1195,7 @@ flowchart TD
 
     subgraph MECH[UPKEEP MECHANISMS]
       direction LR
-      M1[Weight decay<br/>old, low-importance rows fade ×0.98]
+      M1[Weight decay<br/>old, low-importance rows fade by age (half-life stretched by importance)]
       M2[Embedder lock<br/>one-at-a-time embedding]
       M3[recall_log<br/>records what was recalled]
     end
