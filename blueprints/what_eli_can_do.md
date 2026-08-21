@@ -344,7 +344,7 @@ Works on NVIDIA and AMD. If your card is too small, it tells you exactly how muc
 needed and what would fix it, instead of silently falling back to a CPU run that
 takes days.
 
-### Community plugins (Settings ▸ 🛒 Marketplace)
+### Community plugins (🔌 Extensions)
 
 ELI ships the client for a marketplace the **community** owns — anyone can host a
 registry and anyone can publish to it. ELI takes no cut, holds no keys, and vets

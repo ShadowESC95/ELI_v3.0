@@ -275,7 +275,8 @@ terms:
 | **Report Builder** | Generate longer documents/reports with sources (evidence → outline → draft → revise). |
 | **Elis World** | ELI's own world-model view. |
 | **Labs** | Power-user workshop — notebook, Jupyter, calculator, physics, file-chat, **projects/workspaces**, sim-IDE, orchestration, test review, **training** (§14). |
-| **Settings** | Model (incl. the model-switch dropdown), hardware, voice, privacy options (§16), plugins and the **Marketplace** (§20). |
+| **Extensions** | Plugins, MCP servers and the community **Marketplace** — overview, browse, install, permissions, sources and their settings (§20). |
+| **Settings** | Model (incl. the model-switch dropdown), hardware, voice, privacy options (§16), and the built-in plugin registry. |
 
 You rarely need the tabs directly — almost everything is reachable by **asking** in Chat:
 "show my habits", "what do you remember about me", "show background jobs", "make an image of …",
@@ -907,8 +908,11 @@ flowchart TD
 
 ## 20. Add-ons: plugins & the community marketplace
 
-🟡 **Settings ▸ 🛒 Marketplace.** Plugins add abilities to ELI. Some ship with it;
-others are written by **other people in the community**.
+🟡 **The 🔌 Extensions tab.** Plugins add abilities to ELI. Some ship with it;
+others are written by **other people in the community**. Start on **Overview**: it
+says what a plugin is, what an MCP server is, how they differ (one runs inside ELI
+and can be refused a permission; the other is its own program and cannot), what is
+installed right now, and what your machine is able to contain.
 
 ### The honest bit, first
 
@@ -947,8 +951,10 @@ do to you, and how risky that is. Four answers:
 | **Not now** | Refused this time. You'll be asked again. |
 | **Never allow** | Refused permanently. It can never ask again. |
 
-Every answer is recorded, and you can take any of them back in **Marketplace ▸
-Permissions**.
+Every answer is recorded, and you can take any of them back in **Extensions ▸
+Permissions**. To take back *everything* at once, **Extensions ▸ Settings ▸ Revoke
+every plugin permission** — nothing is uninstalled or disabled; each plugin is simply
+asked again the next time it needs something.
 
 If a plugin asks while nobody's there — an overnight scheduled job, or the phone
 server — the answer is automatically **no**. A plugin can't get permission by waiting
@@ -971,6 +977,15 @@ servers you'd trust with that.
 ELI does make sure they actually work: it checks the required software is installed,
 then genuinely starts the server and talks to it before saving anything. If it can't
 answer, it isn't added.
+
+**Adding one:** *Extensions ▸ MCP servers ▸ ➕ Add server…*. Paste the config block
+from the server's own instructions — the whole `mcpServers` block, straight from its
+README — or fill the fields in yourself. Tick *needs network access* only if it truly
+does: on a machine that can enforce it, a server that doesn't ask is started with no
+network at all and genuinely cannot reach anything.
+
+If a server that works elsewhere times out here, it is usually a cold download of the
+server itself. Raise **Extensions ▸ Settings ▸ Server start timeout** and try again.
 
 ---
 

@@ -395,7 +395,7 @@ on the server is not the file the listing promised, or is actively hostile.
 ## A plugin is installed but does nothing
 
 Installed plugins arrive **switched off with no permissions granted** — that is
-deliberate. Enable it in Settings ▸ Marketplace ▸ Installed. It will then ask, one
+deliberate. Enable it in Extensions ▸ Installed. It will then ask, one
 capability at a time, the first time it needs each one.
 
 If you chose **Never allow** for a capability, the plugin is never asked again and
@@ -411,7 +411,7 @@ a capability by running at 3am. Run it once from the desktop GUI and choose
 
 ## An MCP server was added but has no tools
 
-Run the doctor (Settings ▸ Marketplace, or `eli.plugins.mcp.doctor()`). It reports
+Run the doctor (Extensions ▸ MCP servers ▸ Re-check, or `eli.plugins.mcp.doctor()`). It reports
 each configured server with the exact fault:
 
 - **runtime missing** — `npx`/`uvx` is not installed or not on PATH. The message

@@ -521,9 +521,9 @@ bypass the trust chain entirely.
 
 ### `eli/gui/` — three new surfaces
 
-`tabs/training_tab.py` (Labs ▸ Training), `tabs/marketplace_tab.py`
-(Settings ▸ Marketplace), `panels/permission_dialog.py` (consent dialog + worker
-→ GUI-thread bridge).
+`tabs/training_tab.py` (Labs ▸ Training), `tabs/extensions_tab.py` (the top-level
+**Extensions** tab: plugins, MCP servers and the marketplace),
+`panels/permission_dialog.py` (consent dialog + worker → GUI-thread bridge).
 
 ### Paths
 

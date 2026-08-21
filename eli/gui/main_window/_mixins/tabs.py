@@ -29,6 +29,11 @@ class TabsMixin:
         # sub-tabs under Labs (LabsTab), not as prominent top-level tabs.
         # Experimental tab removed — gaze control is wired as a toggle in Settings.
         self.create_eli_world_tab()
+        # Extensions sits immediately left of Settings because that is where it came
+        # from: plugins, MCP servers and the marketplace were sub-tabs of the modal
+        # Advanced Settings dialog, three clicks deep in something most people never
+        # open. Installing someone else's code is a first-class act, not a preference.
+        self.create_extensions_tab()
         self.create_settings_tab()
         self.create_top_toolbar()
         self.status_bar = self.statusBar()
@@ -1053,6 +1058,23 @@ class TabsMixin:
                 self.tabs.addTab(fallback, "🧪 Experimental")
             except Exception as _fallback_err:
                 log.debug(f"[Experimental] fallback tab failed: {_fallback_err}")
+
+    def create_extensions_tab(self):
+        """Plugins, MCP servers and the marketplace as one top-level tab."""
+        try:
+            from eli.gui.tabs.extensions_tab import ExtensionsTab
+            self._extensions_widget = ExtensionsTab(parent_window=self)
+            self.tabs.addTab(self._extensions_widget, "🔌 Extensions")
+            log.debug("[Extensions] tab loaded")
+        except Exception as _ext_err:
+            log.debug(f"[Extensions] failed to load: {_ext_err}")
+            try:
+                fallback = QWidget()
+                QVBoxLayout(fallback).addWidget(
+                    QLabel(f"Extensions tab unavailable: {_ext_err}"))
+                self.tabs.addTab(fallback, "🔌 Extensions")
+            except Exception as _fallback_err:
+                log.debug(f"[Extensions] fallback tab failed: {_fallback_err}")
 
     def create_report_builder_tab(self):
         """Report Builder as a top-level main tab (promoted out of Labs). Grounded,

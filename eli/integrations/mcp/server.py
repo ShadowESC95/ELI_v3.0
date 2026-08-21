@@ -40,7 +40,23 @@ _CONTROL_PREFIXES = (
 
 
 def _allow_control() -> bool:
-    return os.environ.get("ELI_MCP_ALLOW_CONTROL", "0") == "1"
+    """Env first, then the saved setting.
+
+    The env var stays authoritative so a one-off launch can differ from the default,
+    and an explicit `ELI_MCP_ALLOW_CONTROL=0` still means no. Without it the saved
+    setting decides, because this server usually runs as its own process launched by
+    someone else's MCP client — a GUI toggle that only set an env var in ELI's own
+    interpreter would have had no effect on the process that actually serves.
+    """
+    env = os.environ.get("ELI_MCP_ALLOW_CONTROL")
+    if env is not None and env != "":
+        return env.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from eli.core.runtime_settings import load_settings
+        return bool((load_settings() or {}).get("mcp_expose_control", False))
+    except Exception:
+        log.debug("mcp.server: could not read mcp_expose_control", exc_info=True)
+        return False
 
 
 def _exposed_actions() -> List[str]:
@@ -76,7 +92,9 @@ def _describe(action: str) -> Dict[str, Any]:
 
 def _call(action: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if action not in _exposed_actions():
-        hint = "" if _allow_control() else " (set ELI_MCP_ALLOW_CONTROL=1 to expose control actions)"
+        hint = ("" if _allow_control() else
+                " (control actions are withheld — turn them on under Extensions ▸ "
+                "Settings, or set ELI_MCP_ALLOW_CONTROL=1)")
         return {"content": [{"type": "text", "text": f"'{action}' is not exposed{hint}"}],
                 "isError": True}
     try:

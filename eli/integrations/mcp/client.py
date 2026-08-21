@@ -35,8 +35,24 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 _PROTOCOL_VERSION = "2024-11-05"
-_START_TIMEOUT_S = 20.0
 _CALL_TIMEOUT_S = 60.0
+
+
+def _start_timeout() -> float:
+    """How long a server gets to start and answer, read fresh from settings.
+
+    Read per start rather than captured at import: the operator changes this in the
+    GUI precisely because a server timed out, and it would be useless if it only
+    took effect after a restart. `eli.plugins.mcp` owns the setting so both halves
+    of MCP agree on it.
+    """
+    try:
+        from eli.plugins.mcp import start_timeout
+        return start_timeout()
+    except Exception:
+        log.debug("mcp: could not read start timeout; using 20s", exc_info=True)
+        return 20.0
+
 
 _SESSIONS: Dict[str, "_Session"] = {}
 _LOCK = threading.RLock()
@@ -162,7 +178,7 @@ class _Session:
             "protocolVersion": _PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {"name": "ELI", "version": "1"},
-        }, timeout=_START_TIMEOUT_S)
+        }, timeout=_start_timeout())
         if init.get("error"):
             self.error = str(init["error"].get("message") or "initialize failed")
             self.stop()
@@ -173,7 +189,7 @@ class _Session:
         except Exception:
             log.debug("mcp[%s]: initialized notification failed", self.name, exc_info=True)
 
-        listed = self._request("tools/list", {}, timeout=_START_TIMEOUT_S)
+        listed = self._request("tools/list", {}, timeout=_start_timeout())
         if listed.get("error"):
             self.error = str(listed["error"].get("message") or "tools/list failed")
             self.stop()

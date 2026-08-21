@@ -51,16 +51,6 @@ class AdvancedSettingsDialog(QDialog):
         self.inner_tabs.addTab(self._build_models_tab(),  "\U0001f9e0 Models")
         self.inner_tabs.addTab(self._build_cognition_tab(), "\U0001f9e0 Cognition")
         self.inner_tabs.addTab(self._build_plugins_tab(), "\U0001f50c Plugins")
-        # Community marketplace. Separate from the Plugins tab above, which manages
-        # what is already here — this one is the door strangers' code comes through,
-        # so it carries its own verification, scanning and consent surface.
-        try:
-            from eli.gui.tabs.marketplace_tab import MarketplaceTab
-            self._marketplace_tab = MarketplaceTab(parent_window=self)
-            self.inner_tabs.addTab(self._marketplace_tab, "\U0001f6d2 Marketplace")
-        except Exception as _mk_err:
-            from eli.utils.log import get_logger
-            get_logger(__name__).debug(f"[Settings] Marketplace tab unavailable: {_mk_err}")
         self.inner_tabs.addTab(self._build_upgrade_tab(), "\U0001f504 Self-Upgrade")
 
         close_btn = QPushButton("Close")
@@ -393,6 +383,18 @@ class AdvancedSettingsDialog(QDialog):
         lbl = QLabel("Manage ELI plugins. Install from registry, enable, disable, or uninstall.")
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
+
+        # The community marketplace, MCP servers, permission grants and the scanner
+        # report used to be a sub-tab here — a modal, three clicks deep. They are the
+        # top-level Extensions tab now; this stays as the built-in registry view so
+        # the two are not two half-answers to the same question.
+        moved = QLabel(
+            "Community plugins, MCP servers, permissions and sources now live in the "
+            "<b>\U0001f50c Extensions</b> tab in the main window \u2014 close this dialog "
+            "to reach it.")
+        moved.setWordWrap(True)
+        moved.setStyleSheet("color:#8fa1b3;padding:4px 0;")
+        layout.addWidget(moved)
 
         self.plugins_table = QTableWidget()
         self.plugins_table.setColumnCount(5)

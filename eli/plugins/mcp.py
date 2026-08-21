@@ -52,6 +52,24 @@ _RUNTIMES = {
 }
 
 
+def start_timeout(explicit: Optional[float] = None) -> float:
+    """Seconds an MCP server gets to start and answer the handshake.
+
+    An explicit argument always wins, so a caller with a reason (a test, a probe it
+    wants bounded tightly) is never overridden. Otherwise the operator's setting
+    decides, because the right value depends on the server: a resident binary
+    answers instantly, `npx some-server` on a cold npm cache does not.
+    """
+    if explicit is not None:
+        return float(explicit)
+    try:
+        from eli.core.runtime_settings import load_settings
+        return max(1.0, float((load_settings() or {}).get("mcp_start_timeout") or 30))
+    except Exception:
+        log.debug("[MCP] could not read mcp_start_timeout; using 30s", exc_info=True)
+        return 30.0
+
+
 def config_path() -> Path:
     """The one file ELI reads MCP servers from. Never anywhere else."""
     override = os.environ.get("ELI_MCP_CONFIG")
@@ -199,13 +217,14 @@ def _rpc(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False) + "\n"
 
 
-def probe(entry: Dict[str, Any], *, timeout: float = 30) -> Dict[str, Any]:
+def probe(entry: Dict[str, Any], *, timeout: Optional[float] = None) -> Dict[str, Any]:
     """Start the server and complete a real MCP handshake.
 
     initialize → notifications/initialized → tools/list. Returns the tools the
     server actually offers. This is what distinguishes "configured" from "working";
     without it an entry is only a hope.
     """
+    timeout = start_timeout(timeout)
     check = validate_entry(entry)
     if not check["ok"]:
         return {"ok": False, "stage": "config", "problems": check["problems"]}
@@ -341,13 +360,14 @@ def probe(entry: Dict[str, Any], *, timeout: float = 30) -> Dict[str, Any]:
 # ── install / manage ───────────────────────────────────────────────────────────
 
 def install_server(entry: Dict[str, Any], *, verify: bool = True,
-                   enable: bool = False, timeout: float = 30) -> Dict[str, Any]:
+                   enable: bool = False, timeout: Optional[float] = None) -> Dict[str, Any]:
     """Add an MCP server to the one config ELI reads, verifying it first.
 
     Order is deliberate: validate, check the runtime, run the handshake, and only
     then write. A server that cannot answer never reaches the config, so the config
     never contains entries that quietly do nothing.
     """
+    timeout = start_timeout(timeout)
     check = validate_entry(entry)
     if not check["ok"]:
         return {"ok": False, "stage": "config", "problems": check["problems"]}
@@ -416,11 +436,12 @@ def set_enabled(server_id: str, enabled: bool) -> Dict[str, Any]:
     return {"ok": True, "problems": []}
 
 
-def doctor(*, timeout: float = 20) -> Dict[str, Any]:
+def doctor(*, timeout: Optional[float] = None) -> Dict[str, Any]:
     """Check every configured server and say exactly what is wrong with each.
 
     The diagnostic that answers "why isn't my MCP working" without guesswork.
     """
+    timeout = start_timeout(timeout)
     reports = []
     for entry in list_servers():
         sid = entry["id"]
@@ -477,5 +498,5 @@ def network_caveat(allow_network: bool = False) -> str:
 __all__ = [
     "config_path", "list_servers", "get_server", "validate_entry", "check_runtime",
     "probe", "install_server", "remove_server", "set_enabled", "doctor",
-    "network_caveat", "STDIO", "HTTP",
+    "network_caveat", "start_timeout", "STDIO", "HTTP",
 ]

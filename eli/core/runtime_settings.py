@@ -200,6 +200,17 @@ DEFAULTS: Dict[str, Any] = {
     # Allow proactive habit rules to run shell commands. On by default (your own
     # habits); set false to block shell execution from an untrusted/imported habit DB.
     "habit_shell_enabled": True,
+    # ── MCP ────────────────────────────────────────────────────────────────────
+    # How long an MCP server is given to start and answer the handshake. The 20s
+    # this was hard-coded to is fine for a resident binary and far too short for
+    # `npx some-server` on a cold cache, which is the common first-run case — so it
+    # is a setting rather than a constant someone has to patch the source to change.
+    "mcp_start_timeout": 30,
+    # ELI's own MCP server (`python -m eli.integrations.mcp.server`) withholds every
+    # action that drives the machine, runs code, or changes ELI. Turning this on
+    # hands those to whatever client connects. Env ELI_MCP_ALLOW_CONTROL still wins,
+    # so a one-off launch can differ from the saved default.
+    "mcp_expose_control": False,
 }
 
 ENV_TO_KEY = {
@@ -239,6 +250,7 @@ ENV_TO_KEY = {
     "ELI_LOG_TO_FILE": "log_to_file",
     "ELI_AUTO_LOAD": "auto_load",
     "ELI_THEME": "theme",
+    "ELI_MCP_START_TIMEOUT": "mcp_start_timeout",
 }
 
 # Legacy keys to migrate and then remove from the file.
@@ -250,14 +262,14 @@ LEGACY_KEY_MIGRATIONS = {
 INT_KEYS = {
     "n_ctx", "max_tokens", "top_k", "n_gpu_layers", "n_threads", "batch_size",
     "image_default_count", "image_default_width", "image_default_height",
-    "image_steps",
+    "image_steps", "mcp_start_timeout",
 }
 FLOAT_KEYS = {"temperature", "top_p", "repeat_penalty", "image_guidance"}
 BOOL_KEYS = {"use_mmap", "use_mlock", "auto_speak", "mic_enabled",
              "auto_save", "log_to_file", "auto_load", "first_run_complete",
              "image_auto_personalize", "image_auto_open",
              "image_use_chat_context", "image_use_proactive_context",
-             "model_thinking"}
+             "model_thinking", "mcp_expose_control"}
 
 _MIGRATION_LOGGED = False
 _HEAL_LOGGED = False

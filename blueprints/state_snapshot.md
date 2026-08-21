@@ -12,10 +12,10 @@ agent's system python. Deeper detail lives in the companion blueprints
   server `api/server.py`, ~3,884 lines, with an embedded dashboard PWA).
 - **208** manifest capabilities (`capability_manifest.json`); **174** in the
   executor `SUPPORTED_ACTIONS`, plugin/route-backed remainder.
-- **12 main GUI tabs** (Chat, Proactive, Images, Quick Actions, Screen, Files, Labs,
-  Coding, Tasks, Report Builder, Eli's World, Settings — Test & Review + Orchestration are
-  Labs sub-tabs); **15** bus agents + the CodeAgent; **4** SQLite stores
-  (user / agent / system_index / coding_memory).
+- **13 main GUI tabs** (Chat, Proactive, Images, Quick Actions, Screen, Files, Labs,
+  Coding, Tasks, Report Builder, Eli's World, Extensions, Settings — Test & Review +
+  Orchestration + Training are Labs sub-tabs); **15** bus agents + the CodeAgent;
+  **4** SQLite stores (user / agent / system_index / coding_memory).
 - **A second front end:** a local-first **FastAPI web server + dashboard PWA**
   (`api/server.py`) — chat, live telemetry, ELI's own smart-home, research corpora,
   the tamper-evident audit trail, and an admin console. Launchable one-click from

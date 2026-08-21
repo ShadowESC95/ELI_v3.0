@@ -109,14 +109,14 @@ the active user does, surfaced dynamically from their own data).
 | Surface | Where | What it is |
 |---|---|---|
 | 🎓 **Training** | Labs sub-tab (`eli/gui/tabs/training_tab.py`) | four-step LoRA wizard: Hardware → Target → Data → Train |
-| 🛒 **Marketplace** | Settings sub-tab (`eli/gui/tabs/marketplace_tab.py`) | community plugins: browse, verify, scan, install, permissions, sources |
+| 🔌 **Extensions** | main tab (`eli/gui/tabs/extensions_tab.py`) | plugins, MCP servers and the marketplace: overview, browse, verify, scan, install, permissions, sources, settings |
 | **Permission dialog** | anywhere (`eli/gui/panels/permission_dialog.py`) | Android-style consent: Allow once · Always allow · Not now · Never allow |
 | 🎯 **Eval board** / ⚖️ **Eval + judge** | Labs ▸ Test & Review (`eli/gui/labs/test_review_tab.py`) | behaviour regression board, run in-process |
 
 Registration points in the decomposed layout: `eli/gui/labs/container.py` for the
-Training sub-tab, `eli/gui/panels/settings.py` for Marketplace and the **Create
-agent** button, and `eli/gui/main_window/_mixins/tabs.py` for the consent-dialog
-handler.
+Training sub-tab, `eli/gui/main_window/_mixins/tabs.py` for the Extensions tab
+(`create_extensions_tab`) and the consent-dialog handler, and
+`eli/gui/panels/settings.py` for the **Create agent** button.
 
 ### Labs ▸ 🎓 Training
 
@@ -140,13 +140,19 @@ Threading: training reaches the GUI through **signals only** — a queued signal
 the one marshalling primitive that works from a worker, since `QTimer.singleShot`
 called off the GUI thread never fires.
 
-### Settings ▸ 🛒 Marketplace
+### 🔌 Extensions
 
-Four panes matching the four decisions an operator makes: **Browse**, **Installed**,
-**Permissions**, **Sources**. See `security.md` for the verification, scanning and
-runtime-enforcement model — the short version is that the install path is
-deliberately slow, nothing is written to disk before the operator has seen a scan
-result, and what is written arrives switched off with no permissions granted.
+A **top-level tab**, not a sub-tab of the Advanced Settings modal it started in —
+installing someone else's code is a first-class act, not a preference, and the entire
+extension surface (including every MCP server) used to be three clicks inside a dialog
+most operators never open.
+
+Seven pages, in the order the decisions get made: **Overview**, **Browse**,
+**Installed**, **Permissions**, **MCP servers**, **Sources**, **Settings**. See
+`security.md` for the verification, scanning and runtime-enforcement model — the
+short version is that the install path is deliberately slow, nothing is written to
+disk before the operator has seen a scan result, and what is written arrives switched
+off with no permissions granted.
 
 ### The consent dialog
 
@@ -168,9 +174,15 @@ instruction, triggers, and success criteria — instead of the previous free-tex
 `orchestration_and_agents.md`.
 
 
-### Marketplace panes and the one-click path
+### Extension pages and the one-click path
 
-Five panes: **Browse**, **Installed**, **Permissions**, **MCP servers**, **Sources**.
+**Overview** is first because someone arriving here has usually not decided to install
+anything — they are working out what the three words in the tab title mean. It names
+the three things and where each one *runs* (a plugin inside ELI's process under the
+permission gate; an MCP server as its own process where that gate does not reach; the
+marketplace as the source of both), counts what is actually installed by reading the
+subsystems, states what this machine's sandbox can and cannot enforce, and opens the
+shipped docs from disk rather than sending an offline install to a website.
 
 Browse carries two buttons on purpose. **⬇ Install** is the one-click path — it
 downloads to memory, checks the checksum and signature, runs every scanner, and then
@@ -184,3 +196,21 @@ for ELI to scan, only a command. What is checked is that the runtime exists and 
 the server answers a real `initialize` + `tools/list` handshake, and the pane states
 plainly that ELI's offline switch cannot contain a separate process. Re-check runs
 `mcp.doctor()` and reports each server's exact fault.
+
+**➕ Add server…** closed the hole where the pane could enable, disable and remove MCP
+servers but never add one — the only ways in were a chat action or hand-editing JSON.
+The dialog takes a pasted `mcpServers` block (which is how every project's README
+distributes one, and retyping it into four fields is where the transcription errors
+come from) or a filled-in form, then runs `install_server` on a worker: validate,
+runtime preflight, real handshake, and only then write. A server that fails at any
+stage never reaches the config, and the operator is told which stage.
+
+**Settings** carries only knobs something reads. `mcp_start_timeout` is honoured by
+`eli.plugins.mcp` *and* `eli.integrations.mcp.client`, read per server start rather
+than captured at import — the operator changes it because a server timed out, so
+needing a restart would defeat it. `mcp_expose_control` decides whether ELI's own MCP
+server offers its control actions; `ELI_MCP_ALLOW_CONTROL` still wins where set, and
+the checkbox greys itself out and says so when it does. There is deliberately no
+"scan less" switch. The page also lists every config file this tab reads or writes —
+resolved through the owning module, so the paths stay true under `ELI_CONFIG_DIR`, a
+portable install, or a frozen build.

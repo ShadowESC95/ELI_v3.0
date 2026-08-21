@@ -281,7 +281,7 @@ Three rules hold everywhere:
 - **Nothing is granted by installing.** Install consent and use consent are separate
   acts; Android learned this the hard way with install-time permissions.
 - **Every decision is audited** to a JSONL ledger the operator can read back, and
-  any grant can be revoked from Settings ▸ Marketplace ▸ Permissions.
+  any grant can be revoked from Extensions ▸ Permissions.
 
 An unrecognised capability is reported as **critical**, not ignored — a build that
 cannot explain a permission cannot enforce it either.

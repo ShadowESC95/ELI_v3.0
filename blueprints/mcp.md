@@ -71,3 +71,35 @@ two read-only JSON endpoints:
 Both sit behind the same token gate as the rest of `/v1` — tokenless on loopback, token
 required over `--lan`, matching the server's existing posture. The page itself is served
 unauthenticated like the chat UI, and reports the gate plainly if the data is refused.
+
+
+## The GUI
+
+The desktop app carries the same thing in the **🔌 Extensions** tab
+(`eli/gui/tabs/extensions_tab.py`), on the **MCP servers** page: the configured
+servers, whether each is enabled, whether each is *verified*, how many tools it
+offers, and **Re-check**, which is `doctor()` with each server's exact fault printed.
+
+**➕ Add server…** is the way in that did not exist — the pane could enable, disable
+and remove servers but never add one, so the only routes were a chat action or
+hand-editing JSON. The dialog accepts either a pasted config or a filled-in form:
+
+* **Paste** takes the whole `mcpServers` block, a bare name→spec mapping, or a single
+  server object, because all three shapes appear in READMEs and accepting only the
+  canonical one rejects most of what people actually copy. Multi-server blocks offer
+  a picker.
+* **Form** takes name, command, arguments (shell-quoted, so a path with a space
+  survives), `KEY=VALUE` environment pairs, and a *needs network* box that maps to the
+  `network` permission — leaving it unticked is what puts the server in an empty
+  network namespace where this machine can enforce that.
+
+Either way the entry goes through `install_server` on a worker thread: validate,
+runtime preflight, real handshake, then write. A server that fails never reaches the
+config, and the operator is told which of those stages failed.
+
+### Settings that are actually read
+
+| Setting | Read by | Effect |
+|---|---|---|
+| `mcp_start_timeout` | `eli.plugins.mcp.start_timeout()`, `eli.integrations.mcp.client` | seconds a server gets to start and answer the handshake. Read **per server start**, not captured at import — the operator raises it *because* a server timed out, so requiring a restart would defeat it. An explicit argument from a caller still wins. |
+| `mcp_expose_control` | `eli.integrations.mcp.server._allow_control()` | whether ELI-as-a-server offers its control actions. `ELI_MCP_ALLOW_CONTROL` still wins where set (including an explicit `0`), because that half usually runs as its own process launched by someone else's client — a GUI toggle that only set an env var inside ELI's interpreter would have had no effect on the process that actually serves. The checkbox disables itself and says so when the env var is present. |
