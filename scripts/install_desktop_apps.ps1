@@ -1,6 +1,6 @@
-# Install Start Menu shortcuts (Windows) for BOTH ELI surfaces, so they launch like any app:
-#   • ELI v3.0            -> the desktop GUI
-#   • ELI Server (Web App) -> the self-hosted web app for phone/tablet (LAN + token)
+﻿# Install Start Menu shortcuts (Windows) for BOTH ELI surfaces, so they launch like any app:
+#   - ELI v3.0            -> the desktop GUI
+#   - ELI Server (Web App) -> the self-hosted web app for phone/tablet (LAN + token)
 # Run:  powershell -ExecutionPolicy Bypass -File scripts\install_desktop_apps.ps1
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)

@@ -19,6 +19,7 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 from eli.execution.effectors._base import _allow_or_block, _open_in_browser, _run_argv
+import re  # module-level: _PLAYLIST_RE is compiled at import time
 
 
 def _execute_impl(*a, **k):
@@ -224,6 +225,60 @@ def _spotify_search(query: str, prefer: str | None = None) -> bool:
     return _spotify_open_uri(f"spotify:search:{_up2.quote(query)}")
 
 
+_PLAYLIST_RE = re.compile(
+    r"^\s*(?:my|the|a)?\s*(?P<name>.+?)\s*(?:play\s*list|playlist)\s*$", re.I
+)
+
+
+def _spotify_playlist_name(query: str) -> str:
+    """The playlist name in "play my workout playlist", else "".
+
+    A song request and a playlist request need different Spotify contexts: a
+    track plays once and stops, a playlist keeps going. There was no way to
+    ask for the second one at all.
+    """
+    m = _PLAYLIST_RE.match(str(query or ""))
+    if not m:
+        return ""
+    name = (m.group("name") or "").strip(" .,:;-")
+    # "play my playlist" names nothing; treat it as no playlist rather than
+    # searching Spotify for the empty string.
+    return name if len(name) >= 2 else ""
+
+
+def _spotify_loop_status() -> str:
+    """MPRIS LoopStatus: "None", "Track", "Playlist", or "" when unknown."""
+    import subprocess as _sp2
+    try:
+        cp = _sp2.run(["playerctl", "-p", "spotify", "loop"],
+                      capture_output=True, text=True, timeout=5)
+        if cp.returncode == 0:
+            return (cp.stdout or "").strip()
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    return ""
+
+
+def _spotify_clear_track_repeat() -> bool:
+    """Turn repeat-one off so a track can advance. True when a change was made.
+
+    Repeat-one makes every request look like "it just repeats the same song".
+    It was NOT the cause on the reporting machine (LoopStatus read back as
+    None), so this only ever acts when repeat-one is genuinely set — it never
+    changes a setting the user chose for a playlist.
+    """
+    if _spotify_loop_status() != "Track":
+        return False
+    import subprocess as _sp2
+    try:
+        _sp2.run(["playerctl", "-p", "spotify", "loop", "None"],
+                 capture_output=True, timeout=5)
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+        return False
+    return _spotify_loop_status() != "Track"
+
+
 def _spotify_play() -> bool:
     """Start/resume Spotify playback (no Web API). After a spotify:search: OpenUri
     the search results are the active context, so Play starts the top match.
@@ -287,16 +342,58 @@ def _mpv_socket_path() -> str:
     return os.path.join(tempfile.gettempdir(), "eli_youtube_mpv.sock")
 
 
+def _yt_player_clients() -> list:
+    """yt-dlp YouTube clients to try, in order.
+
+    A googlevideo "HTTP error 403 Forbidden" during playback does not mean the
+    video is unavailable — it means yt-dlp resolved a stream URL that is bound
+    to the client which requested it, and ffmpeg (inside mpv) cannot reproduce
+    that request. The live failure carried `c=ANDROID_VR`, whose URLs are tied
+    to the requesting client and reliably 403 when handed to another fetcher.
+
+    The empty string means "whatever yt-dlp picks by default" and it goes
+    FIRST, deliberately. Measured against live YouTube on yt-dlp 2026.03.17,
+    the default client resolved and fetched (HTTP 206) while web_safari, tv,
+    ios, mweb and web_embedded did not resolve at all — pinning a "preferred"
+    client would have broken working playback for everyone to chase an
+    intermittent failure. So the default path is never altered; the ladder is
+    only ever walked after a 403 has actually happened, and it lists the
+    clients that were observed to resolve.
+
+    Which clients work shifts as YouTube changes, so the order is overridable
+    with ELI_YT_PLAYER_CLIENTS (comma-separated) without touching code. A
+    stale yt-dlp is the other common cause and no client can compensate for
+    it, which is why the failure message says so.
+    """
+    raw = (os.environ.get("ELI_YT_PLAYER_CLIENTS") or "").strip()
+    if raw:
+        return [("" if c.strip().lower() == "default" else c.strip())
+                for c in raw.split(",") if c.strip()]
+    return ["", "android", "android_vr"]
+
+
+def _yt_is_client_bound_failure(stderr_tail: str) -> bool:
+    """True when the failure is the kind a different client can fix.
+
+    A 403 is worth retrying with another client. "Video unavailable", a
+    geo-block or an empty search result are not — retrying those just burns
+    seconds before the browser fallback the user was always going to get.
+    """
+    low = str(stderr_tail or "").lower()
+    if "empty playlist" in low or "unavailable" in low or "private video" in low:
+        return False
+    return "403" in low or "forbidden" in low
+
+
 def _mpv_alive() -> bool:
     import socket as _sock
     p = _MEDIA_STATE.get("mpv_sock") or _mpv_socket_path()
     if not os.path.exists(p):
         return False
     try:
-        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(p)
-        s.close()
+        with _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(p)
         return True
     except Exception:
         return False
@@ -311,22 +408,21 @@ def _mpv_ipc(command: list, *, want_response: bool = False):
     if not os.path.exists(p):
         return None if want_response else False
     try:
-        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-        s.settimeout(2.0)
-        s.connect(p)
-        s.sendall((_json.dumps({"command": command}) + "\n").encode())
-        out = None
-        if want_response:
-            buf = s.recv(8192).decode("utf-8", "ignore")
-            for line in buf.splitlines():
-                try:
-                    j = _json.loads(line)
-                    if isinstance(j, dict) and "data" in j:
-                        out = j["data"]
-                        break
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-        s.close()
+        with _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM) as s:
+            s.settimeout(2.0)
+            s.connect(p)
+            s.sendall((_json.dumps({"command": command}) + "\n").encode())
+            out = None
+            if want_response:
+                buf = s.recv(8192).decode("utf-8", "ignore")
+                for line in buf.splitlines():
+                    try:
+                        j = _json.loads(line)
+                        if isinstance(j, dict) and "data" in j:
+                            out = j["data"]
+                            break
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
         return out if want_response else True
     except Exception:
         return None if want_response else False
@@ -349,12 +445,11 @@ def _mpv_load_confirmed(sock_path: str) -> bool:
     if not sock_path or not os.path.exists(sock_path):
         return False
     try:
-        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(sock_path)
-        s.sendall((_json.dumps({"command": ["get_property", "duration"]}) + "\n").encode())
-        buf = s.recv(8192).decode("utf-8", "ignore")
-        s.close()
+        with _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(sock_path)
+            s.sendall((_json.dumps({"command": ["get_property", "duration"]}) + "\n").encode())
+            buf = s.recv(8192).decode("utf-8", "ignore")
         for line in buf.splitlines():
             try:
                 j = _json.loads(line)
@@ -430,6 +525,14 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
     is_yt_web  = is_youtube and bool(_re.search(r"\bweb(?:site)?\b", t))
     is_yt_browser = is_yt_web or bool(_re.search(r"youtube\.com", t, _re.I))
 
+    # "play my workout playlist" with no platform named would be searched for
+    # on YouTube as if it were a song title. A playlist request belongs to the
+    # music player that is actually running. This only fires when NO platform
+    # was named, so an explicit target is still never overridden.
+    if (not is_spotify and not is_youtube
+            and _spotify_playlist_name(query) and _spotify_running()):
+        is_spotify = True
+
     if is_spotify and not is_youtube:
         import time as _time
         search_q = (
@@ -440,6 +543,50 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
         # starts. Playing the specific requested song is the intended behaviour — the
         # earlier 'playlists' filter approach opened a LIST of playlists where Play
         # had nothing to start, which is why playback failed.
+        # A playlist request needs a different Spotify context from a song
+        # request: a track plays once and stops (which is what "it just repeats
+        # instead of going onto similar songs" describes), while a playlist
+        # keeps going on its own. There was previously no way to ask for one.
+        # play_specific() receives (query, target) only -- there is no args dict
+        # in this scope, so the request is read from the phrasing, which is how
+        # users say it anyway ("play my workout playlist").
+        _pl_name = "" if _by_m else _spotify_playlist_name(search_q)
+        if _pl_name:
+            _pl_opened = _spotify_search(_pl_name, prefer="playlists")
+            if not _pl_opened:
+                try:
+                    _open_in_browser(
+                        f"spotify:search:{urllib.parse.quote(_pl_name)}")
+                    for _ in range(8):
+                        _time.sleep(1.0)
+                        if _spotify_running():
+                            break
+                    _pl_opened = _spotify_search(_pl_name, prefer="playlists")
+                except Exception:
+                    _pl_opened = False
+            if _pl_opened:
+                _time.sleep(1.8)     # the playlists tab is slower than tracks
+                _spotify_clear_track_repeat()
+                if _spotify_play():
+                    _set_now_playing("spotify", f"{_pl_name} (playlist)")
+                    msg = f"Playing the \u201c{_pl_name}\u201d playlist on Spotify."
+                    return {"ok": True, "action": "PLAY_MEDIA", "played": True,
+                            "kind": "playlist", "content": msg, "response": msg}
+                # Opened but nothing started: the playlists tab is a LIST of
+                # playlists, and Play has nothing to start until one is opened.
+                # Say that rather than claiming playback.
+                msg = (f"I opened Spotify's playlist results for \u201c{_pl_name}\u201d but "
+                       f"playback didn't start \u2014 the results are a list of playlists, so "
+                       f"open one and I'll take it from there.")
+                return {"ok": True, "action": "PLAY_MEDIA", "played": False,
+                        "search_only": True, "kind": "playlist",
+                        "content": msg, "response": msg}
+            msg = (f"I couldn't reach Spotify to play the \u201c{_pl_name}\u201d playlist \u2014 "
+                   f"is it installed and running?")
+            return {"ok": False, "action": "PLAY_MEDIA", "played": False,
+                    "search_only": True, "target": "spotify", "kind": "playlist",
+                    "content": msg, "response": msg}
+
         _opened = _spotify_search(search_q)
         if not _opened:
             # Spotify not running yet — launch with the search URI, wait, retry.
@@ -454,6 +601,9 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
                 _opened = False
         if _opened:
             _time.sleep(1.6)            # let the results view populate
+            # Repeat-one turns every request into "it plays the same song over
+            # and over". Only touched when it is actually set.
+            _spotify_clear_track_repeat()
             if _spotify_play():
                 _set_now_playing("spotify", search_q)
                 msg = f"Playing “{search_q}” on Spotify."
@@ -508,13 +658,13 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
                 # degrade to DEVNULL (no post-mortem) rather than skipping mpv.
                 log.debug("suppressed exception", exc_info=True)
                 _err_target = _sp.DEVNULL
-            proc = _sp.Popen(
-                ["mpv", f"ytdl://ytsearch1:{yt_search}",
-                 f"--input-ipc-server={ipc}",
-                 "--ytdl-format=bestaudio/best",
-                 "--title=ELI-YouTube"],
-                stdout=_sp.DEVNULL, stderr=_err_target, start_new_session=True,
-            )
+            # One shot with whatever client yt-dlp chose is what produced the
+            # 403: mpv exited rc=3 and the user got the browser fallback with
+            # no explanation. Walk the ladder instead, and only re-try when the
+            # failure is actually client-bound.
+            _yt_clients = _yt_player_clients()
+            _yt_used_client = ""
+            proc = None
             # Popen returns as soon as the process is SPAWNED, which says nothing about
             # whether it plays — that is how "Playing … on YouTube" got reported for a
             # track that never started. Neither the IPC socket (mpv opens it within
@@ -529,18 +679,53 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
             #   duration known→ genuine playback, return as soon as it lands
             #   neither       → still resolving; say so rather than claim it plays
             _verify_s = float(os.environ.get("ELI_YT_VERIFY_SECONDS", "8.0"))
-            # NB: `_time` is bound only inside the Spotify branch above, which makes it a
-            # function-local Python cannot resolve here — use the module-level `time`.
-            _deadline = time.monotonic() + max(0.0, _verify_s)
             _confirmed = False
-            while time.monotonic() < _deadline:
-                if proc.poll() is not None:
+            _rc = None
+            for _yt_client in _yt_clients:
+                _yt_cmd = ["mpv", f"ytdl://ytsearch1:{yt_search}",
+                           f"--input-ipc-server={ipc}",
+                           "--ytdl-format=bestaudio/best"]
+                if _yt_client:
+                    # mpv splits --ytdl-raw-options on commas, so exactly one
+                    # client per attempt — a comma-joined list would be parsed
+                    # as a second, unknown option and mpv would refuse to start.
+                    _yt_cmd.append(
+                        f"--ytdl-raw-options=extractor-args=youtube:player_client={_yt_client}"
+                    )
+                _yt_cmd.append("--title=ELI-YouTube")
+                _yt_used_client = _yt_client or "yt-dlp default"
+                proc = _sp.Popen(
+                    _yt_cmd,
+                    stdout=_sp.DEVNULL, stderr=_err_target, start_new_session=True,
+                )
+                # NB: `_time` is bound only inside the Spotify branch above, which makes it a
+                # function-local Python cannot resolve here — use the module-level `time`.
+                _deadline = time.monotonic() + max(0.0, _verify_s)
+                while time.monotonic() < _deadline:
+                    if proc.poll() is not None:
+                        break
+                    if _mpv_load_confirmed(ipc):
+                        _confirmed = True
+                        break
+                    time.sleep(0.1)
+                _rc = proc.poll()
+                if _confirmed or _rc is None:
+                    break        # playing, or still resolving — either way, stop trying
+                # Died. Only another client can fix a client-bound refusal.
+                _probe = ""
+                if _mpv_err_log is not None:
+                    try:
+                        _mpv_err_log.flush()
+                        _mpv_err_log.seek(0)
+                        _probe = _mpv_err_log.read()
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                if not _yt_is_client_bound_failure(_probe):
                     break
-                if _mpv_load_confirmed(ipc):
-                    _confirmed = True
-                    break
-                time.sleep(0.1)
-            _rc = proc.poll()
+                log.info(
+                    f"[MEDIA] YouTube client {_yt_used_client!r} was refused (403) "
+                    f"for {yt_search!r} — retrying with the next client"
+                )
             if _rc is not None:
                 _tail = ""
                 if _mpv_err_log is not None:
@@ -563,6 +748,9 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
                 # useless to the user. Give them the one fact that changes what they do next.
                 _yt_direct_err = (
                     "no match found on YouTube" if "empty playlist" in _tail.lower()
+                    else "YouTube refused the stream for every player client I tried "
+                         "(this usually means yt-dlp is out of date — `pipx upgrade yt-dlp`)"
+                    if _yt_is_client_bound_failure(_tail)
                     else "mpv could not start playback"
                 )
                 # Fall through to the browser fallback below rather than claiming

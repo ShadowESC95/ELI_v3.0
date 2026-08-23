@@ -340,6 +340,21 @@ def _eli_multi_command_prepass(user_text: str):
         segs = None
     if not segs:
         return None
+    # "open the browser and search QFT" is ONE browser request, not two
+    # commands. Splitting it opened the browser at its home page and then
+    # answered the search in chat — the exact complaint that "you can open a
+    # browser home page, but not run an actual search AND open the browser".
+    # Only decline to split when the whole phrase resolves to a browser search
+    # carrying a query; every other chained utterance still splits.
+    try:
+        from eli.execution.portable_intent_contract import try_route as _pic_route
+        _whole = _pic_route(user_text or "")
+        if (isinstance(_whole, dict)
+                and _whole.get("action") == "OPEN_BROWSER"
+                and (_whole.get("args") or {}).get("query")):
+            return None
+    except Exception:
+        log.debug("multi_command: browser-request probe failed", exc_info=True)
     return {
         "action": "MULTI_COMMAND",
         "args": {"commands": segs, "raw": str(user_text or "")},
@@ -3504,6 +3519,14 @@ def _eli_media_contract_post(raw, result):
                 or name in {"browser", "youtube"}
             )
             if known:
+                # "open browser" listed "browser" as a known app name, so it
+                # tried to launch a program called browser instead of opening
+                # the user's default one.
+                if verb in {"open", "launch", "start"} and name in {
+                    "browser", "web browser", "internet browser",
+                }:
+                    return _mk("OPEN_BROWSER", {}, 0.98,
+                               matched_by="app.wake_prefix_contract.browser")
                 if verb in {"open", "launch", "start"} and name in WEBSITE_ALIASES:
                     return _mk(
                         "OPEN_URL",

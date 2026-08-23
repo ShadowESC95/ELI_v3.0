@@ -211,9 +211,29 @@ def _eli_self_improvement_phrase_guard(text):
             # NOT a fix request — "fix the bugs in foo.py" is FIX_FILE's job; this is the
             # diagnose-only "is there any issues with the files?" form.
             not re.search(r"\b(fix|repair|correct|patch|solve|resolve|debug|rewrite)\b", low)
-            and re.search(r"\b(issues?|errors?|bugs?|problems?|mistakes?|wrong|broken|faults?)\b", low)
-            and re.search(r"\b(file|files|code|codebase|module|modules|script|scripts|"
-                          r"function|functions|class|classes|\.py)\b", low)
+            # The issue word and the code word must be ABOUT each other. They
+            # previously only had to co-occur ANYWHERE in the sentence, so
+            #   "i am not saying close files (the name of the app) ...
+            #    this is the issue"
+            # was routed to a code examination at 0.96 and answered with lint
+            # warnings about unused imports. The user was describing a bug in
+            # ELI, not asking it to audit itself. Requiring the two to sit
+            # within a few words of each other keeps the real form
+            # ("any issues with the files?", "the code has bugs") and drops
+            # incidental co-occurrence.
+            and re.search(
+                r"\b(issues?|errors?|bugs?|problems?|mistakes?|faults?)\b\s+"
+                r"(?:\w+\s+){0,3}?(?:with|in|inside|across|throughout|within)\s+"
+                r"(?:the\s+|my\s+|your\s+|our\s+|any\s+|these\s+|those\s+|that\s+|this\s+)?"
+                r"(?:file|files|code|codebase|module|modules|script|scripts|"
+                # "code of conduct" is a document in this very repo, not code.
+                r"function|functions|class|classes)\b(?!\s+of\s+conduct)"
+                r"|\b(?:file|files|code|codebase|module|modules|script|scripts|"
+                r"function|functions|class|classes)\b\s+"
+                r"(?:\w+\s+){0,2}?\b(issues?|errors?|bugs?|problems?|mistakes?|faults?)\b"
+                r"|\.py\b",
+                low,
+            )
         )
         or re.search(r"\b(check|look\s+(?:at|over|through)|go\s+through)\b[^.?!]*"
                      r"\b(file|files|code|codebase|module|modules|script|scripts)\b[^.?!]*"

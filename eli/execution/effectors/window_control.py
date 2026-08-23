@@ -40,6 +40,26 @@ def _h_restore_windows(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _h_maximise_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    # The router extracts the target correctly ("maximise prime video" →
+    # window_name="prime video"); this branch used to discard it and
+    # maximise :ACTIVE: regardless, so it always acted on whatever window
+    # happened to be focused. A named target is now honoured, and when the
+    # named window cannot be found we say so instead of falling back to
+    # the active window — acting on a different window than the one asked
+    # for is the defect, not a graceful degradation.
+    _mx_name = str(
+        args.get("name") or args.get("target") or args.get("app")
+        or args.get("window_name") or args.get("window") or ""
+    ).strip()
+    from eli.system.portable_app_control import BARE_WINDOW_TARGETS as _BWT
+    if _mx_name.lower() in _BWT:
+        _mx_name = ""
+    if _mx_name:
+        from eli.system.portable_app_control import maximize_app
+        _mx = maximize_app(_mx_name)
+        _mx.setdefault("action", a)
+        return _mx
+
     if shutil.which("wmctrl"):
         ok = _run_ok(["wmctrl", "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"])
         msg = "Maximised current window." if ok else "Failed to maximise window."
@@ -51,6 +71,7 @@ def _h_maximise_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
             "content": "wmctrl or xdotool required to maximise.",
             "response": "wmctrl or xdotool required to maximise."}
+
 
 
 def _h_next_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,18 +135,44 @@ def _h_focus_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _h_close_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    name = str(args.get("name") or args.get("app") or "").strip()
+    # This is the fallback path: portable_app_control.close_app runs first
+    # and only reaches here when it could not find a matching window. It
+    # used to end in a bare `pkill -f <name>` loop, which matches the full
+    # command line of every process as a regex — "close file" matched
+    # `dbus-daemon --session ... --nopidfile` and logged the user out of
+    # their desktop, while still reporting the close as a success.
+    # Every kill now goes through the verified guard, which dry-runs the
+    # pattern and refuses anything that would signal a protected process.
+    from eli.system.process_guard import safe_pkill
+
+    name = str(args.get("name") or args.get("app") or args.get("target") or "").strip()
     if not name:
         return {"ok": False, "action": a, "error": "missing app name", "content": "Specify app to close.", "response": "Specify app to close."}
-    tried = []
-    for cmd in [["wmctrl", "-c", name], ["pkill", "-f", name], ["pkill", name], ["killall", name]]:
-        if shutil.which(cmd[0]):
-            tried.append(cmd[0])
-            if _run_ok(cmd):
-                msg = f"Closed {name} via {cmd[0]}."
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-    msg = f"Could not close {name}. Tried: {', '.join(tried) or 'no tools found'}."
-    return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+
+    # Window-scoped close first — it can only ever affect a real window.
+    if shutil.which("wmctrl") and _run_ok(["wmctrl", "-c", name]):
+        msg = f"Closed {name} via wmctrl."
+        return {"ok": True, "action": a, "content": msg, "response": msg}
+
+    # Then process kills, exact name before command line, both verified.
+    refusals = []
+    for full_cmdline in (False, True):
+        res = safe_pkill(name, full_cmdline=full_cmdline)
+        if res.get("ok"):
+            how = "command-line match" if full_cmdline else "process name"
+            msg = f"Closed {name} ({res.get('killed')} process(es), matched by {how})."
+            return {"ok": True, "action": a, "content": msg, "response": msg,
+                    "kill_plan": res.get("plan")}
+        reason = str(res.get("reason") or "").strip()
+        if reason and reason not in refusals:
+            refusals.append(reason)
+
+    # Nothing was closed. Say why, rather than reporting a phantom success.
+    detail = f" ({refusals[0]})" if refusals else ""
+    msg = f"Could not close {name}{detail}."
+    return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg,
+            "refusals": refusals}
+
 
 
 def _h_tile_windows(a, args):

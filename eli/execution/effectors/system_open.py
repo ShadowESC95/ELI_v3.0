@@ -96,7 +96,16 @@ def _h_open_browser(a, args):
         q = (args.get("query") or "").strip()
         if q:
             import urllib.parse as _up
-            url = "https://duckduckgo.com/?q=" + _up.quote_plus(q)
+            # Safe search applies here too. The API path is filtered in
+            # eli/plugins/web/plugin.py, but this opens a real search page in
+            # the user's browser, which that filter never sees -- kp=1 is
+            # DuckDuckGo's strict setting.
+            try:
+                from eli.plugins.web.plugin import _safe_search_enabled as _sse
+                _kp = "&kp=1" if _sse() else ""
+            except Exception:
+                _kp = "&kp=1"
+            url = "https://duckduckgo.com/?q=" + _up.quote_plus(q) + _kp
         else:
             url = "https://duckduckgo.com"
     return open_browser(url)

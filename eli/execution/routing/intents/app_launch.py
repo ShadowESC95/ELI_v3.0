@@ -23,6 +23,10 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
     _open_m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
     if _open_m:
         target = re.sub(r"\s+app$", "", _open_m.group(2).strip(), flags=re.I)
+        # An article is never part of the target. Without this, "open the
+        # trash" missed the filesystem branch (which knows "trash") and fell
+        # all the way through to OPEN_APP with the literal name "the trash".
+        target = re.sub(r"^(?:a|an|the)\s+", "", target, flags=re.I).strip() or target
         target_low = target.lower()
 
         generic_ide = {
@@ -91,6 +95,17 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
                 0.99,
                 matched_by="open.website.literal_preempt",
             )
+
+        # "open a web browser on quantum field theory" was captured whole as
+        # an app name and offered for installation. It is a browser request
+        # with a search query; OPEN_BROWSER has taken a query all along. The
+        # detector is shared with portable_intent_contract rather than
+        # duplicated, so the two matchers cannot drift apart again.
+        from eli.execution.portable_intent_contract import _browser_open_target
+        _bq = _browser_open_target(target)
+        if _bq is not None:
+            return _mk("OPEN_BROWSER", ({"query": _bq} if _bq else {}), 0.98,
+                       matched_by="open.browser.literal_preempt")
 
         canonical = app_aliases.get(target_low, target)
         return _mk("OPEN_APP", {"name": canonical, "target": canonical}, 0.99,

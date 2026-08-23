@@ -707,19 +707,28 @@ def _eli_phase38_tiny_fragment_post(raw, result):
                             matched_by="window.grid_followup",
                         )
 
-                msg = _json.dumps(
-                    {
-                        "event": "input_fragment_guard",
-                        "heard": str(raw or "").strip(),
-                        "routed_to_cognition": False,
-                        "reason": "fragmentary_input",
-                    },
-                    ensure_ascii=False,
-                )
+                # The structured record belongs in the log and in meta, NOT in
+                # `response`/`content` -- those are what the user reads and
+                # what TTS speaks. Setting them to a JSON blob is why a
+                # mistyped "ply" was answered with
+                #   {"event": "input_fragment_guard", "heard": "ply", ...}
+                # on screen. diagnostic_patterns.py and memory.py both already
+                # carry filters for this exact string, which is a workaround
+                # for a leak that should not happen at source.
+                _heard = str(raw or "").strip()
+                _diag = {
+                    "event": "input_fragment_guard",
+                    "heard": _heard,
+                    "routed_to_cognition": False,
+                    "reason": "fragmentary_input",
+                }
+                msg = (f"I only caught \u201c{_heard}\u201d \u2014 could you say that again?"
+                       if _heard else "I didn't catch that \u2014 could you say it again?")
 
                 return _mk(
                     "NOOP",
-                    {"message": msg, "response": msg, "content": msg},
+                    {"message": msg, "response": msg, "content": msg,
+                     "diagnostic": _diag},
                     0.999,
                     matched_by="eli.tiny_chat_fragment_guard",
                 )
