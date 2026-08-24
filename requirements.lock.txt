@@ -1,3 +1,5 @@
+# ── FastAPI/uvicorn server transitive stack (reproducibility; pinned 2026-06-18) ──
+# ── Server + runtime features (one-click parity; pinned 2026-06-18) ──
 absl-py==2.4.0
 accelerate==1.13.0
 aiohappyeyeballs==2.6.1
@@ -9,6 +11,7 @@ anyio==4.13.0
 arrow==1.4.0
 attrs==26.1.0
 av==17.0.1
+bleak==3.0.2
 build==1.5.0
 certifi==2026.4.22
 cffi==2.0.0
@@ -24,10 +27,13 @@ cuda-pathfinder==1.5.4
 cuda-toolkit==13.0.2
 cycler==0.12.1
 datasets==4.8.5
+dbus-fast==5.0.22 ; sys_platform == "linux"
+ddgs==9.15.0
 diffusers==0.38.0
 dill==0.4.1
 diskcache==5.6.3
 faiss-cpu==1.13.2
+fastapi==0.136.3
 faster-whisper==1.2.1
 filelock==3.29.0
 flatbuffers==25.12.19
@@ -38,6 +44,7 @@ git-filter-repo==2.47.0
 h11==0.16.0
 hf-xet==1.5.1
 httpcore==1.0.9
+httptools==0.8.0
 httpx==0.28.1
 huggingface_hub==1.19.0
 idna==3.15
@@ -46,9 +53,10 @@ iniconfig==2.3.0
 Jinja2==3.1.6
 kiwisolver==1.5.0
 lxml==6.1.0
-Markdown==3.10.2
 markdown-it-py==4.2.0
+Markdown==3.10.2
 MarkupSafe==3.0.3
+matplotlib==3.10.9
 matplotlib==3.10.9
 mdurl==0.1.2
 mediapipe==0.10.35
@@ -61,10 +69,14 @@ networkx==3.6.1
 ninja==1.13.0
 numpy==2.4.4
 onnxruntime==1.26.0
-openwakeword==0.4.0
 opencv-contrib-python==4.13.0.92
 opencv-python==4.13.0.92
+opencv-python==4.13.0.92
+openwakeword==0.4.0
+openwakeword==0.4.0
 packaging==26.2
+paho-mqtt==2.1.0
+pandas==3.0.3
 pandas==3.0.3
 pathspec==1.1.1
 pathvalidate==3.3.1
@@ -82,16 +94,17 @@ pyarrow==24.0.0
 PyAudio==0.2.14
 PyAutoGUI==0.9.54
 pycparser==3.0
-pydantic==2.13.4
 pydantic-settings==2.14.1
+pydantic==2.13.4
 pydantic_core==2.46.4
+pyflakes==3.4.0
 pyflakes==3.4.0
 PyGetWindow==0.0.9
 Pygments==2.20.0
 PyMsgBox==2.0.1
 pyparsing==3.3.2
-pypdf==6.11.0
 PyPDF2==3.0.1
+pypdf==6.11.0
 pypdfium2==5.8.0
 pyperclip==1.11.0
 pyproject_hooks==1.2.0
@@ -101,9 +114,10 @@ PySide6==6.11.1
 PySide6_Addons==6.11.1
 PySide6_Essentials==6.11.1
 pytesseract==0.3.13
-pytest==9.0.3
+pytesseract==0.3.13
 pytest-cov==7.1.0
 pytest-timeout==2.4.0
+pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.2.2
@@ -123,9 +137,13 @@ setuptools==81.0.0
 shellingham==1.5.4
 shiboken6==6.11.1
 six==1.17.0
+sniffio==1.3.1
 sounddevice==0.5.5
 soundfile==0.13.1
 SpeechRecognition==3.16.1
+sse-starlette==3.4.4
+starlette-context==0.5.1
+starlette==1.3.1
 sympy==1.14.0
 tokenizers==0.22.2
 tqdm==4.67.3
@@ -135,32 +153,14 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.2
 urllib3==2.7.0
+uvicorn==0.49.0
+uvloop==0.22.1 ; sys_platform != "win32"
 vulture==2.16
+watchfiles==1.2.0
+websockets==16.0
 wheel==0.47.0
 xxhash==3.7.0
 yarl==1.23.0
-zipp==3.23.1
-
-# ── Server + runtime features (one-click parity; pinned 2026-06-18) ──
-fastapi==0.136.3
-uvicorn==0.49.0
-paho-mqtt==2.1.0
+yt-dlp==2026.8.19
 zeroconf==0.131.0
-bleak==3.0.2
-dbus-fast==5.0.22 ; sys_platform == "linux"
-opencv-python==4.13.0.92
-pytesseract==0.3.13
-openwakeword==0.4.0
-pandas==3.0.3
-matplotlib==3.10.9
-pyflakes==3.4.0
-
-# ── FastAPI/uvicorn server transitive stack (reproducibility; pinned 2026-06-18) ──
-starlette==1.3.1
-sse-starlette==3.4.4
-starlette-context==0.5.1
-httptools==0.8.0
-watchfiles==1.2.0
-websockets==16.0
-sniffio==1.3.1
-uvloop==0.22.1 ; sys_platform != "win32"
+zipp==3.23.1
