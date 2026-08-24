@@ -161,6 +161,39 @@ def _eli_is_rapport_prompt(text: str) -> bool:
 
     return any(re.search(pat, q) for pat in rapport_patterns)
 
+def _ft_summarise_findings(report_text: str, *, max_lines: int = 6) -> str:
+    """The FAILING lines of a status/audit dump, or "" when everything passed.
+
+    A promise to "flag any hiccups" is a promise about problems, not an
+    invitation to paste the whole report -- so PASS lines and healthy probes
+    are dropped and only what actually failed survives. Returns "" when there
+    is nothing to report, which keeps a clean run silent rather than
+    manufacturing reassurance.
+    """
+    import re as _sf_re
+    body = str(report_text or "")
+    if not body.strip():
+        return ""
+    bad = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("FAIL", "\u274c")) or _sf_re.match(r"^-\s+line\s+\d+", stripped):
+            bad.append(stripped)
+        elif stripped.startswith("\u2705") or stripped.startswith("PASS"):
+            continue
+    if not bad:
+        return ""
+    head = bad[:max_lines]
+    more = len(bad) - len(head)
+    out = "I said I'd flag anything — here's what came back:\n" + "\n".join(
+        f"  {b}" for b in head)
+    if more > 0:
+        out += f"\n  (+{more} more)"
+    return out
+
+
 def _eli_rapport_prompt_instruction(text: str) -> str:
     if not _eli_is_rapport_prompt(text):
         return ""
@@ -1498,7 +1531,30 @@ class GenerationMixin:
                 log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' → executed {real_act}")
                 yield "\n\n" + real_txt
             elif real_act in _ft_dump_actions:
-                log.debug(f"[FOLLOWTHROUGH] suppressed status/dump action {real_act} (not a user-requested task)")
+                # Suppressing a dump nobody asked for is right. Suppressing one
+                # ELI just PROMISED to report is breaking its own word: live, it
+                # said "run the full acceleration diagnostics again, and I'll
+                # flag any lingering hiccups", ran RUNTIME_AUDIT, found a real
+                # duplicate-symbol defect, and threw the result away. The user
+                # saw nothing.
+                #
+                # So: when the reply contains an explicit undertaking to report,
+                # surface the FINDINGS only -- never the full PASS/PASS/PASS
+                # listing, which is the data dump the suppression exists to
+                # prevent. Both complaints are satisfied at once.
+                _ft_promised = bool(_ft_re.search(
+                    r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
+                    r"(?:flag|report|tell you|let you know|surface|call out|point out|"
+                    r"highlight|come back to you)\b",
+                    # `full` is the complete streamed reply -- the promise lives
+                    # there, not necessarily in the matched clause alone.
+                    str(commit.get("clause") or "") + " " + str(full or "")))
+                _ft_findings = _ft_summarise_findings(real_txt) if _ft_promised else ""
+                if _ft_findings:
+                    log.debug(f"[FOLLOWTHROUGH] {real_act} was promised — surfacing findings only")
+                    yield "\n\n" + _ft_findings
+                else:
+                    log.debug(f"[FOLLOWTHROUGH] suppressed status/dump action {real_act} (not a user-requested task)")
         except Exception as _ft_err:
             log.debug(f"[FOLLOWTHROUGH] engine-stream skipped: {_ft_err}")
         finally:
