@@ -1871,6 +1871,43 @@ _register()
             # the user at a lower ctx next boot. The load path's smart-fit reduces to
             # fit (and logs) at load time; the effective value lives in hw_profile_*.
             _canonical_ctx = int(_user_pinned_ctx) if _user_pinned_ctx else int(rec.n_ctx)
+            # A pinned layer count belongs to the MODEL it was chosen for. It is an
+            # absolute number of layers, so it means something entirely different on
+            # a different model: 7 was right for a 15.66GB 27B on 8GB of VRAM, and
+            # stranded 25 of 32 layers on the CPU when a 4GB model that fits VRAM
+            # whole was loaded under the same 7 -- the tuner correctly measured 32,
+            # said so, and stood down because "yours" wins. Nothing recorded which
+            # model the pin came from, so it followed the user silently across swaps.
+            # Same rule the headless/server loader applies, from the same helper,
+            # so the desktop app and the API can never disagree about which
+            # layer count is live. "All layers" (99 / -1) is exempt there: it is
+            # a policy, correct on every model, and the loader reduces it to fit.
+            # Same normalisation the matcher uses, or a pin stamped on Windows
+            # would never match the key computed when it is read back.
+            try:
+                from eli.core.runtime_settings import model_identity_key as _mk
+                _this_model = _mk(model_path)
+            except Exception:
+                _this_model = _os_ctx.path.basename(str(model_path)) if model_path else ""
+            try:
+                from eli.core.runtime_settings import (
+                    load_settings as _rs_load_pin,
+                    pinned_gpu_layers_for_model as _pin_for_model,
+                )
+                _live = dict(_rs_load_pin() or {})
+                _pin_model = str(_live.get("n_gpu_layers_model") or "")
+                _live["n_gpu_layers"] = int(_user_pinned_layers or 0)
+                _applies = _pin_for_model(model_path, _live)
+            except Exception:
+                _pin_model, _applies = "", (_user_pinned_layers or None)
+            if _user_pinned_layers and _applies is None:
+                self._hardware_tuning_log(
+                    f"gpu_layers={_user_pinned_layers} was pinned for "
+                    f"{_pin_model or 'an unrecorded model'}, not {_this_model} - using "
+                    f"the tuner's {int(rec.n_gpu_layers)}, measured for this model. "
+                    f"Set the value here to pin it to {_this_model}."
+                )
+                _user_pinned_layers = 0
             _canonical_layers = int(_user_pinned_layers) if _user_pinned_layers else int(rec.n_gpu_layers)
             _min_batch = int(_os_ctx.environ.get("ELI_MIN_BATCH", "128") or "128")
             _apply_batch = max(int(rec.batch_size), _min_batch)
@@ -1896,6 +1933,9 @@ _register()
                 _s = dict(_rs_load() or {})
                 _s["n_ctx"] = _canonical_ctx        # user's chosen ctx, preserved
                 _s["n_gpu_layers"] = _canonical_layers   # user's choice, preserved
+                # Stamp the model the count now belongs to, so the next swap can
+                # tell a deliberate pin from one inherited from another model.
+                _s["n_gpu_layers_model"] = _this_model
                 _s["batch_size"] = _canonical_batch   # user's choice, preserved
                 if int(rec.n_threads) > 0:
                     _s["n_threads"] = int(rec.n_threads)
