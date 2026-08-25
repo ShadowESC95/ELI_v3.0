@@ -15,6 +15,7 @@ from eli.kernel.stages.guards import (
     _strip_reasoning_scaffold,
 )
 from eli.utils.log import get_logger
+from eli.cognition.output_governor import govern_output
 
 log = get_logger(__name__)
 
@@ -681,6 +682,30 @@ class ReasoningModesMixin:
     situation_brief=situation_brief)
             elapsed = time.perf_counter() - started
             log.debug(f'[COGNITIVE][TIMING] chat_pass_{pass_no}={elapsed:.3f}s')
+            # Govern HERE, once, before scoring and before any of this
+            # function's four return paths. The streaming path is governed at
+            # its own choke point, but this non-streaming loop was not: it
+            # served roughly a third of live turns straight out of
+            # _get_chat_response, so every output guard -- invented health,
+            # invented runtime state, invented internals, leaked prompt
+            # labels -- was simply absent from those replies. Live at 2.3.27
+            # "I'm still running on fumes" reached the user this way while the
+            # MEMORY side correctly refused to store the same sentence.
+            #
+            # It cannot go inside _get_chat_response: that helper also produces
+            # private reasoning and internal summaries, which are not speech
+            # and must not be governed as if they were.
+            #
+            # Scoring runs on the governed text deliberately -- confidence
+            # should describe the reply the user actually receives.
+            try:
+                response = govern_output(
+                    response,
+                    is_grounded=bool(evidence),
+                    evidence=evidence if isinstance(evidence, str) else None,
+                )
+            except Exception:
+                log.debug("[COGNITIVE] output governor skipped", exc_info=True)
             score = self._score_response_confidence(
     user_input, response, working_context, intent_conf, evidence)
             log.debug(

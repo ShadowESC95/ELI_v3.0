@@ -615,6 +615,30 @@ def _opens_by_echoing(opening: str, sources) -> bool:
     return False
 
 
+# How many leading words make an opening recognisable as the SAME opening.
+# "You're not wrong" is three; the fourth catches "you're not wrong but".
+_REPEAT_STEM_WORDS = 4
+_REPEAT_STEM_MIN_CHARS = 12
+
+
+def _opening_stem(text: str) -> str:
+    """The first few words of the opening, before any continuation clause.
+
+    The earlier fix compared whole first sentences and worked while the tic WAS
+    the whole sentence ("You're not wrong."). The model since learned to append
+    an em-dash clause, and because the clause varies every time, first-sentence
+    similarity drops to ~0.5 against a 0.92 threshold -- so four replies in one
+    session opened "You're not wrong -" and the guard fired on none of them,
+    while reading to the user as exactly the tic it was written to stop.
+
+    Cutting at the first dash/comma leaves the stem, which is what repeats.
+    """
+    raw = _first_sentence(str(text or "")).strip()
+    stem_raw = re.split(r"[-\u2013\u2014,;:]", raw, 1)[0].strip() or raw
+    stem = _repeat_norm(stem_raw)
+    return " ".join(stem.split()[:_REPEAT_STEM_WORDS])
+
+
 def _is_repeat_of_recent(candidate: str, prior_replies, *,
                          ratio: float = _REPEAT_RATIO) -> bool:
     """True when `candidate` restates something ELI already said.
@@ -633,6 +657,15 @@ def _is_repeat_of_recent(candidate: str, prior_replies, *,
     # differing remainder drags the score under the threshold. Live at v2 2.3.0
     # seven consecutive replies opened "You're not wrong." and the guard fired on
     # only two of them.
+    # Same OPENING STEM is a repeat however the sentence continues (see
+    # _opening_stem). Checked before the whole-sentence test, which the varying
+    # continuation defeats.
+    _cand_stem = _opening_stem(cand)
+    if len(_cand_stem) >= _REPEAT_STEM_MIN_CHARS and len(_cand_stem.split()) >= 3:
+        for _p in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            if _opening_stem(_p) == _cand_stem:
+                return True
+
     _cand_open = _repeat_norm(_first_sentence(cand))
     if len(_cand_open) >= _REPEAT_OPENING_MIN_CHARS:
         for _prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
