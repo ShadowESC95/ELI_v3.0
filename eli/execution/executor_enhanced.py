@@ -4149,6 +4149,7 @@ def _eli_is_identity_memory_query(_args):
 try:
     from eli.execution.media_runtime import install_media_executor as _install_media_executor
     execute_action = _install_media_executor(execute_action)
+    execute = execute_action
 except Exception as _media_runtime_error:
     log.debug(f"[MEDIA_RUNTIME] failed to install media executor wrapper: {_media_runtime_error}")
 
