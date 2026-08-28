@@ -3794,6 +3794,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # Applied before ANY processing so injected text never reaches the LLM
         # or the router in its raw form.
         user_input = _eli_sanitize_user_input(user_input)
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            _ta.note_user_text(user_input or "")
+        except Exception:
+            log.debug("tone note_user_text skipped", exc_info=True)
         # ── End prompt injection guard ─────────────────────────────────────────
 
         # ── Minimal attr guard for __new__-constructed instances (tests) ───────
@@ -5430,6 +5435,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "SELF_ANALYZE",
                             "SELF_IMPROVE",
                             "SELF_IMPROVEMENT_LOG",
+                            "SELF_TEST",
                         }
                         # Quick mode bypasses synthesis for grounded control actions
                         # (returns deterministic evidence directly — fast, no GGUF).
