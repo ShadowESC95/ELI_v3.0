@@ -1,0 +1,43 @@
+# Coding-agent eval board — deterministic stub-generator cases.
+# Run: python tools/eval/run_eval.py --target coding_agent
+# No model required; exercises plan → search → verify → sandbox loop.
+
+- id: coding_fibonacci_solved
+  target: coding_agent
+  prompt: "Write a Python function fib(n) that returns the nth Fibonacci number using iteration."
+  assert:
+    - {type: result_ok, value: true}
+    - {type: solved, value: true}
+    - {type: score_min, value: 0.8}
+    - {type: no_placeholder, value: true}
+
+- id: coding_sum_range_clean
+  target: coding_agent
+  prompt: "Print the sum of integers from 1 to 10 inclusive."
+  assert:
+    - {type: result_ok, value: true}
+    - {type: score_min, value: 0.5}
+    - {type: contains, value: "sum(range"}
+    - {type: gate_not, value: syntax}
+
+- id: coding_crash_repair_attempt
+  target: coding_agent
+  prompt: "Fix this code so it does not crash: x = [1,2]; print(x[9])"
+  assert:
+    - {type: result_ok, value: true}
+    - {type: score_min, value: 0.3}
+    - {type: gate_not, value: syntax}
+
+- id: coding_repo_context_has_defs
+  target: coding_agent
+  prompt: "inspect verify_candidate in eli/coding/verification.py"
+  mode: context_only
+  assert:
+    - {type: contains, value: "def verify_candidate"}
+
+- id: coding_sandbox_capabilities_reported
+  target: coding_agent
+  prompt: ""
+  mode: sandbox_caps
+  assert:
+    - {type: contains, value: "subprocess_isolation"}

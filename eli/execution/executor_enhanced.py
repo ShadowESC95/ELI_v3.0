@@ -1334,6 +1334,7 @@ SUPPORTED_ACTIONS = [
     'MEDIA_CONTROL',
     'MEMORY_RECALL',
     'MESSAGE_TIME_QUERY',
+    'MEMORY_AUDIT',
     'MEMORY_STATS',
     'MEMORY_STATUS',
     'MEMORY_STORE',
@@ -1449,6 +1450,9 @@ SUPPORTED_ACTIONS = [
     'WAKE_ENROLL',
     'WAKE_SET',
     'TRAIN_VOICE',
+    'SPEAKER_ENROLL',
+    'LIST_SPEAKERS',
+    'SPEAKER_STATUS',
     'USER_IDENTITY_SUMMARY',
     'VOLUME',
     'WEB_SEARCH',
@@ -1887,11 +1891,32 @@ def chat(message: str, *, model: Optional[str] = None, skip_router: bool = False
     if not msg:
         return {"ok": False, "action": "CHAT", "error": "empty_message", "content": "", "response": ""}
 
-    # Live audit path for memory-capability questions (real DB/files scan, never template)
+    # Belief / memory audit — route to grounded MEMORY_AUDIT, never raw JSON dump.
+    if (
+        "memory audit" in low_msg
+        or re.search(r"\bwhy\s+did\s+you\s+(?:think|believe|assume|remember|say)\b", low_msg)
+        or re.search(r"\bwhy\s+do\s+you\s+think\s+(?:that|this|i)\b", low_msg)
+    ):
+        try:
+            from eli.runtime.personal_memory_render import render_belief_audit
+            q = message
+            m = re.search(
+                r"\bmemory\s+audit\s+for\s+(.+?)[?.!]*$", message, re.I,
+            )
+            if m:
+                q = m.group(1).strip(" ?.")
+            content = render_belief_audit(q)
+            _convlog_append('assistant', content[:200], {'fn': 'chat', 'path': 'memory_audit'})
+            return {"ok": True, "action": "MEMORY_AUDIT", "content": content, "response": content}
+        except Exception as _ma_err:
+            from eli.core.observability import observe
+            observe(__name__, "memory audit in chat failed", exc=_ma_err)
+
+    # Live audit path for memory-capability questions (architecture, not belief audit)
     if (
         "how your memory" in low_msg or "how does your memory" in low_msg or
         "persistent memory" in low_msg or "across sessions" in low_msg or
-        "continuous memory" in low_msg or "memory audit" in low_msg
+        "continuous memory" in low_msg
     ):
         # Return raw data; the cognitive engine will synthesize a natural answer
         import json
@@ -1928,12 +1953,9 @@ def chat(message: str, *, model: Optional[str] = None, skip_router: bool = False
             intent = route(msg)
             if intent.get("action") and intent["action"] != "CHAT":
                 return execute(intent["action"], intent.get("args", {}))
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    st = _load_state()
-
-    # Enforce lock BEFORE chatting (prevents silent personality drift)
+        except Exception as _route_err:
+            from eli.core.observability import observe
+            observe(__name__, "chat router/execute failed", exc=_route_err)
     ok_lock, reason, details = _verify_persona_lock(st)
     if LOCK_ENFORCED and not ok_lock and (st.get("persona_lock") is not None):
         content = (
@@ -3589,10 +3611,11 @@ def _action_pre_dispatch(
     args = args or {}
 
     # Control contract evidence ------------------------------------------
-    if a in {"SELF_UPDATE", "EXPLAIN_LAST_RESPONSE"}:
+    if a in {"SELF_UPDATE", "EXPLAIN_LAST_RESPONSE", "MEMORY_AUDIT"}:
         try:
             from eli.runtime.control_contracts import build_control_evidence
-            return build_control_evidence(None, a, args, str(args.get("query") or ""))
+            _ui = str(args.get("query") or args.get("message") or args.get("text") or "")
+            return build_control_evidence(None, a, args, _ui)
         except Exception as _e:
             _msg = f"Control evidence failed for {a}: {_e!r}"
             return {"ok": False, "action": a, "error": repr(_e),

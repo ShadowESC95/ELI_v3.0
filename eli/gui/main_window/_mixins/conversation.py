@@ -597,6 +597,13 @@ class ConversationMixin:
             try:
                 from eli.core.paths import get_paths
                 vp_path = _P(get_paths().artifacts_dir) / "runtime" / "voice_profile.json"
+                try:
+                    from eli.kernel.state import get_active_user_id, _user_runtime_dir
+                    uid = str(get_active_user_id("") or "").strip()
+                    if uid and uid not in ("", "default-user"):
+                        vp_path = _user_runtime_dir(uid) / "voice_profile.json"
+                except Exception:
+                    pass
             except Exception:
                 vp_path = _P.home() / ".eli_voice_profile.json"
 
@@ -645,6 +652,25 @@ class ConversationMixin:
                 f"After ~5 confirmed utterances, the threshold biases\n"
                 f"toward your range (50%–90% of mean speech energy)."
             )
+            try:
+                from eli.perception.speaker_id import capabilities, list_speakers, get_active_speaker
+                caps = capabilities()
+                active = get_active_speaker()
+                speakers = list_speakers()
+                text += (
+                    f"\n\n--- Speaker ID ---\n"
+                    f"enabled:            {caps.get('enabled')}\n"
+                    f"enrolled speakers:  {caps.get('enrolled_count')}\n"
+                    f"active speaker:     {active.get('name') or '(none)'} "
+                    f"(conf={active.get('confidence', 0):.2f})\n"
+                )
+                if speakers:
+                    text += "profiles:           " + ", ".join(
+                        s.get("name", "?") for s in speakers[:6]
+                    ) + "\n"
+                text += 'Enroll: say "enroll speaker <name>" with mic on.\n'
+            except Exception:
+                pass
             self._stt_diag_label.setText(text)
         except Exception as e:
             self._stt_diag_label.setText(f"Failed to read STT diagnostics: {e}")
@@ -654,6 +680,13 @@ class ConversationMixin:
             from pathlib import Path as _P
             from eli.core.paths import get_paths
             vp_path = _P(get_paths().artifacts_dir) / "runtime" / "voice_profile.json"
+            try:
+                from eli.kernel.state import get_active_user_id, _user_runtime_dir
+                uid = str(get_active_user_id("") or "").strip()
+                if uid and uid not in ("", "default-user"):
+                    vp_path = _user_runtime_dir(uid) / "voice_profile.json"
+            except Exception:
+                pass
             if vp_path.exists():
                 vp_path.unlink()
             QMessageBox.information(

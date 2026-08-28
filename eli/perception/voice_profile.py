@@ -67,7 +67,15 @@ def get_last_tone(max_age_s: float = 12.0) -> Dict[str, Any]:
     return {}
 
 
-def _dir() -> Path:
+def _dir(user_id: str | None = None) -> Path:
+    if user_id:
+        try:
+            from eli.kernel.state import _user_runtime_dir
+            d = _user_runtime_dir(user_id) / "voice_profile"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except Exception:
+            pass
     try:
         from eli.core.paths import models_dir
         d = models_dir() / "voice_profile"
@@ -77,14 +85,26 @@ def _dir() -> Path:
     return d
 
 
-def _samples_dir() -> Path:
-    d = _dir() / "samples"
+def _resolve_user_id(user_id: str | None = None) -> str | None:
+    if user_id:
+        return str(user_id)
+    try:
+        from eli.perception.speaker_id import get_active_speaker
+        sp = get_active_speaker()
+        uid = str(sp.get("user_id") or "").strip()
+        return uid or None
+    except Exception:
+        return None
+
+
+def _samples_dir(user_id: str | None = None) -> Path:
+    d = _dir(user_id) / "samples"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def _profile_path() -> Path:
-    return _dir() / "profile.json"
+def _profile_path(user_id: str | None = None) -> Path:
+    return _dir(user_id) / "profile.json"
 
 
 def _to_float(audio_int16: np.ndarray) -> np.ndarray:
@@ -188,22 +208,23 @@ def question_or_statement(prosody: Dict[str, Any]) -> Tuple[str, float]:
 
 
 # ── labelled emotion: storage + a prototype (nearest-centroid) classifier ────
-def _labelled_dir() -> Path:
-    d = _dir() / "labelled"
+def _labelled_dir(user_id: str | None = None) -> Path:
+    d = _dir(user_id) / "labelled"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def add_labelled_sample(audio_int16: np.ndarray, sr: int, label: str) -> Optional[Path]:
+def add_labelled_sample(audio_int16: np.ndarray, sr: int, label: str, *, user_id: str | None = None) -> Optional[Path]:
     """Persist one emotion-labelled clip (from the TRAIN_VOICE prompts: 'say this
     happy/angry/excited')."""
+    uid = _resolve_user_id(user_id)
     label = str(label or "neutral").strip().lower()
     try:
         import soundfile as sf
         x = _to_float(audio_int16)
         if sr != SR:
             x = _resample(x, sr, SR)
-        d = _labelled_dir() / label
+        d = _labelled_dir(uid) / label
         d.mkdir(parents=True, exist_ok=True)
         idx = len(list(d.glob("*.wav")))
         p = d / f"{label}_{idx:03d}.wav"
@@ -214,10 +235,11 @@ def add_labelled_sample(audio_int16: np.ndarray, sr: int, label: str) -> Optiona
         return None
 
 
-def labelled_counts() -> Dict[str, int]:
+def labelled_counts(user_id: str | None = None) -> Dict[str, int]:
     out: Dict[str, int] = {}
+    uid = _resolve_user_id(user_id)
     try:
-        for d in _labelled_dir().iterdir():
+        for d in _labelled_dir(uid).iterdir():
             if d.is_dir():
                 out[d.name] = len(list(d.glob("*.wav")))
     except Exception:
@@ -229,11 +251,11 @@ def _feature_vector(prosody: Dict[str, Any]) -> np.ndarray:
     return np.array([float(prosody.get(k, 0.0)) for k in _FEAT_KEYS], dtype=np.float32)
 
 
-def _emotion_model_path() -> Path:
-    return _dir() / "emotion_model.json"
+def _emotion_model_path(user_id: str | None = None) -> Path:
+    return _dir(user_id) / "emotion_model.json"
 
 
-def train_emotion_classifier() -> Dict[str, Any]:
+def train_emotion_classifier(user_id: str | None = None) -> Dict[str, Any]:
     """Train a nearest-centroid emotion classifier on the labelled clips. Robust for
     the small data a quick enrollment yields (no overfitting); upgradeable to a real
     NN later without touching callers. Stores per-dim normalisation + a centroid per
@@ -242,9 +264,10 @@ def train_emotion_classifier() -> Dict[str, Any]:
         import soundfile as sf
     except Exception as e:
         return {"ok": False, "error": f"soundfile unavailable: {e}"}
+    uid = _resolve_user_id(user_id)
     vecs: List[np.ndarray] = []
     labels: List[str] = []
-    for d in sorted(_labelled_dir().glob("*")):
+    for d in sorted(_labelled_dir(uid).glob("*")):
         if not d.is_dir():
             continue
         for f in sorted(d.glob("*.wav")):
@@ -267,23 +290,24 @@ def train_emotion_classifier() -> Dict[str, Any]:
     Xn = (X - mu) / sd
     centroids = {lab: Xn[[i for i, l in enumerate(labels) if l == lab]].mean(axis=0).tolist()
                  for lab in uniq}
-    _emotion_model_path().write_text(json.dumps({
+    _emotion_model_path(uid).write_text(json.dumps({
         "norm_mean": mu.tolist(), "norm_std": sd.tolist(),
         "centroids": centroids, "labels": uniq,
-        "samples": len(vecs), "counts": labelled_counts(),
+        "samples": len(vecs), "counts": labelled_counts(uid),
     }, indent=2))
     return {"ok": True, "labels": uniq, "samples": len(vecs)}
 
 
-def _load_emotion_model() -> Optional[Dict[str, Any]]:
+def _load_emotion_model(user_id: str | None = None) -> Optional[Dict[str, Any]]:
+    uid = _resolve_user_id(user_id)
     try:
-        return json.loads(_emotion_model_path().read_text())
+        return json.loads(_emotion_model_path(uid).read_text())
     except Exception:
         return None
 
 
-def _classify_emotion(prosody: Dict[str, Any]) -> Tuple[str, float]:
-    m = _load_emotion_model()
+def _classify_emotion(prosody: Dict[str, Any], user_id: str | None = None) -> Tuple[str, float]:
+    m = _load_emotion_model(user_id)
     if not m or not prosody.get("ok"):
         return ("neutral", 0.0)
     try:
@@ -302,14 +326,15 @@ def _classify_emotion(prosody: Dict[str, Any]) -> Tuple[str, float]:
         return ("neutral", 0.0)
 
 
-def classify_tone(audio_int16: np.ndarray, sr: int = SR) -> Dict[str, Any]:
+def classify_tone(audio_int16: np.ndarray, sr: int = SR, *, user_id: str | None = None) -> Dict[str, Any]:
     """Prosody-derived tone read. AROUSAL + question/statement are real today; the
     categorical EMOTION label is a scaffold (neutral until a labelled classifier is
     trained — see module docstring). Scored relative to the user's profile if built."""
+    uid = _resolve_user_id(user_id)
     pr = analyze_prosody(audio_int16, sr)
     if not pr.get("ok"):
         return {"ok": False, "reason": pr.get("reason", "no prosody")}
-    prof = get_profile()
+    prof = get_profile(user_id=uid)
     # arousal proxy: z-scored energy + pitch variability vs the user's baseline.
     e0 = prof.get("energy_mean", pr["energy_mean"]) or pr["energy_mean"]
     es = prof.get("energy_std_across", 0.0) or 1e-6
@@ -321,13 +346,14 @@ def classify_tone(audio_int16: np.ndarray, sr: int = SR) -> Dict[str, Any]:
         pass
     arousal = float(max(-1.0, min(1.0, arousal)))
     qs, qconf = question_or_statement(pr)
-    emotion, econf = _classify_emotion(pr)   # trained classifier, or ('neutral',0)
-    trained = _load_emotion_model() is not None
-    return {
+    emotion, econf = _classify_emotion(pr, uid)   # trained classifier, or ('neutral',0)
+    trained = _load_emotion_model(uid) is not None
+    out = {
         "ok": True,
         "arousal": arousal,                 # -1 calm … +1 excited/agitated
         "intent": qs, "intent_confidence": qconf,
         "emotion": emotion, "emotion_confidence": econf,
+        "confidence": econf,                # alias for tone_adaptor System 1
         "emotion_model": trained,
         "prosody": pr,
         "note": ("arousal + question/statement are prosody-derived; categorical "
@@ -335,17 +361,31 @@ def classify_tone(audio_int16: np.ndarray, sr: int = SR) -> Dict[str, Any]:
                  "arousal + question/statement work; emotion is 'neutral' until "
                  "'train my voice' collects labelled samples"),
     }
+    try:
+        from eli.perception.speaker_id import get_active_speaker, get_last_identification
+        sp = get_active_speaker() or get_last_identification()
+        if sp.get("speaker_id") or sp.get("name"):
+            out["speaker"] = {
+                "id": sp.get("speaker_id", ""),
+                "name": sp.get("name", ""),
+                "user_id": sp.get("user_id", ""),
+                "confidence": sp.get("confidence", 0.0),
+            }
+    except Exception:
+        pass
+    return out
 
 
 # ── enrollment + profile ─────────────────────────────────────────────────────
-def add_sample(audio_int16: np.ndarray, sr: int = SR) -> Optional[Path]:
+def add_sample(audio_int16: np.ndarray, sr: int = SR, *, user_id: str | None = None) -> Optional[Path]:
     """Persist one natural-speech sample for the voice baseline."""
+    uid = _resolve_user_id(user_id)
     try:
         import soundfile as sf
         x = _to_float(audio_int16)
         if sr != SR:
             x = _resample(x, sr, SR)
-        d = _samples_dir()
+        d = _samples_dir(uid)
         idx = len(list(d.glob("voice_*.wav")))
         p = d / f"voice_{idx:03d}.wav"
         sf.write(str(p), x, SR)
@@ -362,15 +402,16 @@ def sample_count() -> int:
         return 0
 
 
-def build_profile() -> Dict[str, Any]:
+def build_profile(user_id: str | None = None) -> Dict[str, Any]:
     """Aggregate prosody across the captured samples into a personal baseline so tone
     reads are RELATIVE to how this user normally speaks."""
+    uid = _resolve_user_id(user_id)
     try:
         import soundfile as sf
     except Exception as e:
         return {"ok": False, "error": f"soundfile unavailable: {e}"}
     feats: List[Dict[str, Any]] = []
-    for f in sorted(_samples_dir().glob("voice_*.wav")):
+    for f in sorted(_samples_dir(uid).glob("voice_*.wav")):
         try:
             data, sr = sf.read(str(f), dtype="float32")
             if data.ndim > 1:
@@ -396,23 +437,25 @@ def build_profile() -> Dict[str, Any]:
         "speaking_rate": _m("speaking_rate"),
         "voiced_ratio": _m("voiced_ratio"),
     }
-    _profile_path().write_text(json.dumps(profile, indent=2))
+    _profile_path(uid).write_text(json.dumps(profile, indent=2))
     # Also (re)train the labelled-emotion classifier if labelled samples exist, so a
     # single "train my voice" session builds the baseline AND the emotion model.
     try:
-        em = train_emotion_classifier()
+        em = train_emotion_classifier(uid)
         profile["emotion_model"] = em
     except Exception as e:
         profile["emotion_model"] = {"ok": False, "error": str(e)}
     return profile
 
 
-def get_profile() -> Dict[str, Any]:
+def get_profile(user_id: str | None = None) -> Dict[str, Any]:
+    uid = _resolve_user_id(user_id)
     try:
-        return json.loads(_profile_path().read_text())
+        return json.loads(_profile_path(uid).read_text())
     except Exception:
         return {}
 
 
-def has_profile() -> bool:
-    return _profile_path().exists()
+def has_profile(user_id: str | None = None) -> bool:
+    uid = _resolve_user_id(user_id)
+    return _profile_path(uid).exists()

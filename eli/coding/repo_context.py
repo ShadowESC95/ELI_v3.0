@@ -5,8 +5,8 @@ real names / imports / signatures instead of guessing — the lever that turns "
 own source, supervise it" into "fixes its own source reliably". The agent previously
 planned and implemented BLIND to the codebase.
 
-Deterministic, offline, bounded: the import blocks of any files named in the task, plus
-the definitions of symbols the task mentions. No model, no network. One pass over the tree.
+Uses the persistent ``repo_index`` when available (incremental SQLite index); falls
+back to a one-pass tree scan if indexing fails. Deterministic, offline, bounded.
 """
 from __future__ import annotations
 
@@ -49,11 +49,36 @@ def _symbol_terms(task: str) -> List[str]:
     return terms[:8]
 
 
-def gather_repo_context(task: str, *, max_chars: int = 4000, def_lines: int = 30) -> str:
-    """Return a bounded block of relevant existing project code for `task` (or "")."""
+def _gather_via_index(task: str, *, max_chars: int, def_lines: int) -> str:
+    from eli.coding.repo_index import get_repo_index
+    idx = get_repo_index()
     blocks: List[str] = []
 
-    # 1) Files named in the task → their import blocks (real dependencies to match).
+    for p in _named_files(task):
+        try:
+            rel = str(p.relative_to(_PROJECT_ROOT)).replace("\\", "/")
+            imps = idx.query_imports(rel)
+            if not imps:
+                imps = _imports_of(p.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        blocks.append(f"# {rel} (imports)\n{imps}" if imps else f"# {rel}")
+
+    terms = _symbol_terms(task)
+    if terms:
+        found = idx.query_symbols(terms, def_lines=def_lines)
+        for t in terms:
+            if t in found:
+                blocks.append(found[t])
+                if sum(len(b) for b in blocks) > max_chars:
+                    break
+    return "\n\n".join(blocks).strip()[:max_chars]
+
+
+def _gather_via_scan(task: str, *, max_chars: int, def_lines: int) -> str:
+    """Legacy one-pass scan — fallback when the index is unavailable."""
+    blocks: List[str] = []
+
     for p in _named_files(task):
         try:
             imps = _imports_of(p.read_text(encoding="utf-8", errors="ignore"))
@@ -62,7 +87,6 @@ def gather_repo_context(task: str, *, max_chars: int = 4000, def_lines: int = 30
         rel = p.relative_to(_PROJECT_ROOT)
         blocks.append(f"# {rel} (imports)\n{imps}" if imps else f"# {rel}")
 
-    # 2) Definitions of symbols the task mentions — ONE pass over eli/.
     terms = _symbol_terms(task)
     if terms:
         pats = {t: re.compile(_DEF_TMPL.format(name=re.escape(t))) for t in terms}
@@ -82,10 +106,18 @@ def gather_repo_context(task: str, *, max_chars: int = 4000, def_lines: int = 30
                         found[t] = f"# {rel}\n" + "\n".join(lines[i:i + def_lines])
                         del pats[t]
                         break
-        for t in terms:                       # preserve task order
+        for t in terms:
             if t in found:
                 blocks.append(found[t])
                 if sum(len(b) for b in blocks) > max_chars:
                     break
 
     return "\n\n".join(blocks).strip()[:max_chars]
+
+
+def gather_repo_context(task: str, *, max_chars: int = 4000, def_lines: int = 30) -> str:
+    """Return a bounded block of relevant existing project code for `task` (or "")."""
+    try:
+        return _gather_via_index(task, max_chars=max_chars, def_lines=def_lines)
+    except Exception:
+        return _gather_via_scan(task, max_chars=max_chars, def_lines=def_lines)

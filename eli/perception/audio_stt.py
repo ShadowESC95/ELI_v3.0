@@ -523,9 +523,15 @@ def begin_voice_training(per_emotion: int = 2, wake_reps: int = 3) -> dict:
 
     def _emo_sink(emo):
         def _s(pcm, sr):
-            _vp.add_labelled_sample(pcm, sr, emo)
+            uid = None
+            try:
+                from eli.perception.speaker_id import get_active_speaker
+                uid = str((get_active_speaker() or {}).get("user_id") or "").strip() or None
+            except Exception:
+                pass
+            _vp.add_labelled_sample(pcm, sr, emo, user_id=uid)
             if emo == "neutral":
-                _vp.add_sample(pcm, sr)          # neutral also seeds the voice baseline
+                _vp.add_sample(pcm, sr, user_id=uid)          # neutral also seeds the voice baseline
         return _s
 
     for emo in _vp.EMOTIONS:
@@ -537,8 +543,30 @@ def begin_voice_training(per_emotion: int = 2, wake_reps: int = 3) -> dict:
     def _done():
         try:
             _ww.train_model()
-            r = _vp.build_profile()              # baseline + emotion classifier
+            uid = None
+            try:
+                from eli.perception.speaker_id import get_active_speaker
+                uid = str((get_active_speaker() or {}).get("user_id") or "").strip() or None
+            except Exception:
+                pass
+            r = _vp.build_profile(user_id=uid)
             ok = bool(r.get("ok")) and bool((r.get("emotion_model") or {}).get("ok"))
+            # Speaker ID: enroll from the active user's neutral samples
+            try:
+                from eli.perception.speaker_id import enroll_speaker, get_active_speaker
+                import soundfile as sf
+                sp = get_active_speaker()
+                name = str(sp.get("name") or "default")
+                uid = str(sp.get("user_id") or "")
+                samples_dir = _vp._samples_dir(uid or None)
+                for f in sorted(samples_dir.glob("voice_*.wav"))[:3]:
+                    data, sr = sf.read(str(f), dtype="float32")
+                    if data.ndim > 1:
+                        data = data.mean(axis=1)
+                    enroll_speaker((data * 32767).astype(np.int16), sr, name=name, user_id=uid or None)
+                    break
+            except Exception:
+                log.debug("speaker enroll after voice training skipped", exc_info=True)
             stt._speak_prompt("Done — I've learned your wake word, your voice, and your tone."
                               if ok else "Voice setup finished — wake word and baseline are set.")
         except Exception:
@@ -551,6 +579,87 @@ def begin_voice_training(per_emotion: int = 2, wake_reps: int = 3) -> dict:
             "message": (f"Voice setup started ({len(steps)} short prompts): your wake word, then "
                         f"the same line said neutral / happy / angry / excited / sad so I learn "
                         f"your tone. Just follow the cues.")}
+
+
+def begin_speaker_enrollment(name: str = "", n: int = 4, *, include_emotions: bool = True) -> dict:
+    """Enroll a named speaker: speaker ID fingerprint + per-user tone/emotion baseline."""
+    stt = _require_running_stt()
+    if stt is None:
+        return {"ok": False, "error": "the microphone is not running — enable voice first, then try again"}
+    display = str(name or "Speaker").strip() or "Speaker"
+    from eli.perception import speaker_id as _sid
+    from eli.perception import voice_profile as _vp
+
+    enrolled_uid: dict = {"value": ""}
+
+    def _speaker_sink(pcm, sr):
+        r = _sid.enroll_speaker(
+            pcm, sr, name=display,
+            user_id=enrolled_uid["value"] or None,
+        )
+        if r.get("user_id"):
+            enrolled_uid["value"] = str(r["user_id"])
+        uid = enrolled_uid["value"] or None
+        _vp.add_sample(pcm, sr, user_id=uid)
+
+    n = max(2, min(8, int(n)))
+    steps = [
+        {"prompt": (f"Say: Hello ELI, this is {display}." if i == 0 else "Again, same voice."),
+         "sink": _speaker_sink}
+        for i in range(n)
+    ]
+
+    if include_emotions:
+        def _emo_sink(emo):
+            def _s(pcm, sr):
+                uid = enrolled_uid["value"] or None
+                _vp.add_labelled_sample(pcm, sr, emo, user_id=uid)
+                if emo == "neutral":
+                    _vp.add_sample(pcm, sr, user_id=uid)
+                    _sid.enroll_speaker(pcm, sr, name=display, user_id=uid)
+            return _s
+
+        for emo in _vp.EMOTIONS:
+            steps.append({
+                "prompt": _EMOTION_CUES.get(emo, f"Say it {emo}."),
+                "sink": _emo_sink(emo),
+            })
+
+    def _done():
+        uid = enrolled_uid["value"] or ""
+        try:
+            r = _vp.build_profile(user_id=uid or None)
+            if uid:
+                _sid.rebuild_from_enrollment(uid)
+            em_ok = bool((r.get("emotion_model") or {}).get("ok"))
+            stt._speak_prompt(
+                f"Speaker {display} enrolled — I know your voice and your tone."
+                if r.get("ok") and em_ok else
+                f"Speaker {display} enrolled — I'll recognize your voice on this machine."
+                if r.get("ok") else
+                f"Speaker {display} enrolled."
+            )
+        except Exception:
+            stt._speak_prompt(f"Speaker {display} enrolled.")
+
+    stt.begin_capture_script(
+        steps, _done,
+        prompt_start=(
+            f"Speaker enrollment for {display}. I'll cue your voice fingerprint"
+            + (" and a short emotion baseline." if include_emotions else ".")
+        ),
+    )
+    em_note = (
+        f", then neutral / happy / angry / excited / sad so I learn your tone"
+        if include_emotions else ""
+    )
+    return {
+        "ok": True,
+        "name": display,
+        "samples": len(steps),
+        "emotions": list(_vp.EMOTIONS) if include_emotions else [],
+        "message": f"Enrolling speaker '{display}' — {n} voice samples{em_note}.",
+    }
 
 # Hard override: require wake word for ALL safe-direct commands regardless of media state.
 # Default off — media-aware gating in classify() handles the speaker-bleed case dynamically.
@@ -1294,6 +1403,7 @@ class ELIAudioSTT:
         # actually sounds like, not the SpeechRecognition library's ambient
         # estimate alone.
         self._voice_profile = self._load_voice_profile()
+        self._voice_profile_uid = self._voice_profile_user_id()
 
         # Ambient calibration: adjusts the energy threshold to sit above the
         # current room noise floor. With echo cancellation active (ELI_STT_ECHO_CANCEL=1,
@@ -1395,13 +1505,43 @@ class ELIAudioSTT:
             log.debug("[AUDIO] Mic verify failed", exc_info=True)
 
     # ── Voice profile learning ───────────────────────────────────────────
+    def _voice_profile_user_id(self) -> str:
+        try:
+            from eli.perception.speaker_id import get_active_speaker
+            uid = str((get_active_speaker() or {}).get("user_id") or "").strip()
+            if uid:
+                return uid
+        except Exception:
+            pass
+        try:
+            from eli.kernel.state import get_active_user_id
+            return str(get_active_user_id("") or "").strip()
+        except Exception:
+            return ""
+
     def _voice_profile_path(self):
         from pathlib import Path
+        uid = self._voice_profile_user_id()
+        if uid and uid not in ("", "default-user"):
+            try:
+                from eli.kernel.state import _user_runtime_dir
+                return _user_runtime_dir(uid) / "voice_profile.json"
+            except Exception:
+                pass
         try:
             from eli.core.paths import get_paths
             return get_paths().artifacts_dir / "runtime" / "voice_profile.json"
         except Exception:
             return Path.home() / ".eli_voice_profile.json"
+
+    def _maybe_switch_voice_profile(self, user_id: str) -> None:
+        uid = str(user_id or "").strip()
+        if not uid or uid == getattr(self, "_voice_profile_uid", ""):
+            return
+        self._save_voice_profile()
+        self._voice_profile_uid = uid
+        self._voice_profile = self._load_voice_profile()
+        self._apply_voice_profile_bias()
 
     def _load_voice_profile(self) -> dict:
         import json
@@ -1734,8 +1874,21 @@ class ELIAudioSTT:
         if not cmd:
             return
 
+        try:
+            from eli.perception.voice_intent import on_partial_transcript
+            on_partial_transcript(cmd, is_final=True)
+        except Exception:
+            pass
+
         print(f"🎤 [AUDIO] Command: '{cmd}'")
         self.last_transcript = cmd
+
+        # Feed System 2 so emotion-aware TTS adapts to what the user said (voice path).
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            _ta.note_user_text(cmd)
+        except Exception:
+            pass
 
         if self.callback:
             print("   ↳ CALLBACK IS SET, invoking now")
@@ -1793,6 +1946,12 @@ class ELIAudioSTT:
                 )
 
                 def _eli_is_speaking() -> bool:
+                    try:
+                        from eli.perception.voice_intent import is_tts_speaking
+                        if is_tts_speaking():
+                            return True
+                    except Exception:
+                        pass
                     try:
                         from pathlib import Path as _P
                         p = _P(_speaking_lock_path)
@@ -2120,15 +2279,30 @@ class ELIAudioSTT:
                         )
                         continue
 
-                    # If the lock appeared during the listen() call (TTS
-                    # started while we were still capturing), drop the
-                    # transcript — it is almost certainly ELI's own voice.
+                    # If TTS is active, allow barge-in commands through; drop echo otherwise.
                     if _eli_is_speaking():
-                        _vprint(
-                            f"🔇 [AUDIO_ECHO_GATE] dropped transcript captured during TTS: {transcript!r}",
-                            flush=True,
-                        )
-                        continue
+                        try:
+                            from eli.perception.voice_intent import on_partial_transcript
+                            _pre = _collapse_repeated_phrase(
+                                _eli_fast_command_alias(transcript), strip_punctuation=True,
+                            )
+                            _vi = on_partial_transcript(_pre, is_final=True)
+                            if not _vi.should_barge_in:
+                                _vprint(
+                                    f"🔇 [AUDIO_ECHO_GATE] dropped transcript captured during TTS: {transcript!r}",
+                                    flush=True,
+                                )
+                                continue
+                            _vprint(
+                                f"🛑 [VOICE_BARGE_IN] interrupting TTS: {transcript!r}",
+                                flush=True,
+                            )
+                        except Exception:
+                            _vprint(
+                                f"🔇 [AUDIO_ECHO_GATE] dropped transcript captured during TTS: {transcript!r}",
+                                flush=True,
+                            )
+                            continue
                     # ── Mic-capture SCRIPT (wake enrollment / voice training / emotion) ──
                     # Past the TTS-echo guards = clean user speech. Each clip feeds the
                     # current step's sink, then the next cue is spoken; after the last
@@ -2170,8 +2344,25 @@ class ELIAudioSTT:
                             _raw = audio.get_raw_data()
                             _asr = int(getattr(audio, "sample_rate", 16000) or 16000)
                             if int(getattr(audio, "sample_width", 2) or 2) == 2 and _raw and len(_raw) > 4000:
+                                import numpy as _np_tone
                                 from eli.perception import voice_profile as _vp
-                                _tone = _vp.classify_tone(np.frombuffer(_raw, dtype=np.int16), sr=_asr)
+                                _pcm = _np_tone.frombuffer(_raw, dtype=_np_tone.int16)
+                                # Speaker ID first — scopes tone/emotion to the right user
+                                try:
+                                    from eli.perception.speaker_id import identify, gate_unknown
+                                    _sid = identify(_pcm, _asr)
+                                    if _sid.get("identified") and _sid.get("user_id"):
+                                        self._maybe_switch_voice_profile(_sid["user_id"])
+                                    if gate_unknown() and not _sid.get("identified"):
+                                        _vprint(
+                                            f"🔒 [SPEAKER_GATE] unknown voice — command dropped: "
+                                            f"{transcript!r}",
+                                            flush=True,
+                                        )
+                                        continue
+                                except Exception:
+                                    pass
+                                _tone = _vp.classify_tone(_pcm, sr=_asr)
                                 if _tone.get("ok"):
                                     _vp.set_last_tone(_tone)
                         except Exception:

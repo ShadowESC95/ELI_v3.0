@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+# Re-export unified pipeline — single consumer-boundary contract.
+from eli.runtime.response_pipeline import finalize_response_text, to_user_visible as _pipeline_to_user_visible
+
 
 def _consume_generator(gen: Any) -> str:
     parts: list[str] = []
@@ -30,11 +33,7 @@ def to_user_visible_text(result: Any) -> str:
     """
     Convert CognitiveEngine/process outputs into GUI-safe visible text.
 
-    Boundary contract:
-    - strings remain strings
-    - dicts expose response/content/etc.
-    - generators are consumed into text
-    - raw dict envelopes are not dumped into chat widgets
+    Delegates to the unified response pipeline (response_pipeline.to_user_visible).
     """
     if result is None:
         return ""
@@ -42,25 +41,4 @@ def to_user_visible_text(result: Any) -> str:
     if hasattr(result, "__next__"):
         return _consume_generator(result)
 
-    if isinstance(result, str):
-        return result.strip()
-
-    if isinstance(result, dict):
-        for key in ("response", "content", "message", "text", "result", "answer", "output"):
-            value = result.get(key)
-            if value is None:
-                continue
-            # A streamed field can itself be an UNCONSUMED generator (e.g. process(stream=True)
-            # returning {"response": <gen>} on the keyword-fallback path). str() on it would dump
-            # "<generator object ...>" into the chat — consume it into text instead.
-            if hasattr(value, "__next__"):
-                text = _consume_generator(value)
-            else:
-                text = str(value).strip()
-            if text:
-                return text
-
-        action = str(result.get("action") or "UNKNOWN").strip() or "UNKNOWN"
-        return f"No user-visible response was produced for action {action}."
-
-    return str(result).strip()
+    return _pipeline_to_user_visible(result)

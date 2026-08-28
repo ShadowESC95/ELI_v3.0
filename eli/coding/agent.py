@@ -71,14 +71,18 @@ class CodeResult:
     search: Dict[str, Any]
     bug_class: Optional[str]
     message: str
+    patch: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "ok": self.ok, "solved": self.solved, "code": self.code,
             "language": self.language, "score": round(self.score, 3),
             "plan": self.plan, "search": self.search, "bug_class": self.bug_class,
             "message": self.message,
         }
+        if self.patch is not None:
+            out["patch"] = self.patch
+        return out
 
 
 class CodeAgent:
@@ -230,12 +234,26 @@ class CodeAgent:
 
         msg = (f"solved (score {best.score:.2f})" if solved
                else f"best effort (score {best.score:.2f}, gate: {best.gate_failed or 'none'})")
+
+        patch_result: Optional[Dict[str, Any]] = None
+        if best.code.strip() and language == "python":
+            try:
+                from eli.coding.patches import is_repo_edit_task, try_apply_repo_fix
+                if is_repo_edit_task(task):
+                    patch_result = try_apply_repo_fix(
+                        task, best.code, verify=best.score >= 0.5,
+                    )
+                    if patch_result.get("applied"):
+                        msg += f"; patched {patch_result.get('patches', 0)} hunk(s) in repo"
+            except Exception as _patch_err:
+                log.debug(f"[CODE_AGENT] repo patch pass skipped: {_patch_err}")
+
         return CodeResult(
             ok=bool(best.code.strip()), solved=solved, code=best.code,
             language=language, score=best.score, plan={"approach": plan.approach, "steps": plan.steps},
             tests=tests, search=result.to_dict(),
             bug_class=(best.diagnosis.bug_class.value if best.diagnosis else None),
-            message=msg,
+            message=msg, patch=patch_result,
         )
 
 

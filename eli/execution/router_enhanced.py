@@ -758,6 +758,28 @@ def _route_grounded_runtime_intent(
                    matched_by="router.explain_last_response.provenance",
                    need_grounding=True, allow_chat_without_evidence=False)
 
+    # Belief audit — "why did you think I'm a developer?" → stored memories + ledger.
+    if re.search(
+        r"\bwhy\s+did\s+you\s+(?:think|believe|assume|remember|say)\b"
+        r"|\bwhy\s+do\s+you\s+think\s+(?:that|this|i)\b"
+        r"|\bmemory\s+audit\s+for\b"
+        r"|\bexplain\s+(?:your|the)\s+(?:belief|memory|assumption)\b",
+        raw, re.I,
+    ):
+        q = raw
+        m = re.search(
+            r"\bwhy\s+did\s+you\s+(?:think|believe|assume|remember|say)\s+(.+?)[?.!]*$",
+            raw, re.I,
+        )
+        if m:
+            q = m.group(1).strip(" ?.")
+        m2 = re.search(r"\bmemory\s+audit\s+for\s+(.+?)[?.!]*$", raw, re.I)
+        if m2:
+            q = m2.group(1).strip(" ?.")
+        return _mk("MEMORY_AUDIT", {"query": q or raw}, 0.96,
+                   matched_by="router.memory_audit.belief", need_grounding=True,
+                   allow_chat_without_evidence=False)
+
     if _is_identity and not _has_system_kw:
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="identity.chat_classified")
 

@@ -50,11 +50,13 @@ def _run_case(case):
         return D.route_only(prompt, network=net)
     if target == "executor":
         return D.run_executor(case.get("action"), case.get("args"), network=net)
+    if target == "coding_agent":
+        return D.run_coding_agent(prompt, mode=str(case.get("mode") or ""))
     return D.run_engine(prompt, network=net, reasoning_mode=str(case.get("mode") or "quick"))
 
 
-def run_board(target: str = "router", *, cases_path=None, case_filter: str = "",
-              smoke: bool = False, on_case=None) -> dict:
+def run_board(target: str = "router", *, cases_path=None, coding_cases_path=None,
+              case_filter: str = "", smoke: bool = False, on_case=None) -> dict:
     """Run the eval board and RETURN the results instead of printing them.
 
     Extracted verbatim from main() so the harness has a programmatic entry point —
@@ -63,16 +65,23 @@ def run_board(target: str = "router", *, cases_path=None, case_filter: str = "",
     a subprocess would load a second copy of the chat model into the same VRAM.
     """
     os.environ.setdefault("ELI_HEADLESS", "1")
-    cases = _load_cases(Path(cases_path or Path(__file__).with_name("cases.yaml")))
+    _eval_dir = Path(__file__).parent
+    cases = _load_cases(Path(cases_path or _eval_dir / "cases.yaml"))
+    if target in ("coding_agent", "all"):
+        _cc = Path(coding_cases_path or _eval_dir / "coding_cases.yaml")
+        if _cc.exists():
+            cases = cases + _load_cases(_cc)
+    if target == "coding_agent":
+        cases = [c for c in cases if str(c.get("target", "")).lower() == "coding_agent"]
     if case_filter:
         cases = [c for c in cases if case_filter.lower() in str(c.get("id", "")).lower()]
 
-    want = {"router", "executor", "engine"} if target == "all" else {target}
+    want = {"router", "executor", "engine", "coding_agent"} if target == "all" else {target}
     cases = [c for c in cases if str(c.get("target", "router")).lower() in want]
 
     if smoke:
         cases = [c for c in cases
-                 if str(c.get("target", "router")).lower() in ("router", "executor")
+                 if str(c.get("target", "router")).lower() in ("router", "executor", "coding_agent")
                  or c.get("smoke") is True]
 
     passed = failed = skipped = 0
@@ -113,7 +122,8 @@ def run_board(target: str = "router", *, cases_path=None, case_filter: str = "",
                         "latency_s": res.get("latency_s"),
                         "result": {k: res.get(k) for k in
                                    ("action", "matched_by", "grounding",
-                                    "response_mode", "latency_s")},
+                                    "response_mode", "latency_s", "solved",
+                                    "score", "gate_failed", "ok")},
                         "checks": details})
 
     return {"ok": failed == 0, "target": target, "passed": passed, "failed": failed,
@@ -123,8 +133,10 @@ def run_board(target: str = "router", *, cases_path=None, case_filter: str = "",
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--target", choices=["router", "executor", "engine", "all"], default="router")
+    ap.add_argument("--target", choices=["router", "executor", "engine", "coding_agent", "all"], default="router")
     ap.add_argument("--cases", default=str(Path(__file__).with_name("cases.yaml")))
+    ap.add_argument("--coding-cases", default=str(Path(__file__).with_name("coding_cases.yaml")),
+                    help="Additional coding-agent cases merged when --target coding_agent|all")
     ap.add_argument("--filter", default="")
     ap.add_argument("--json", default="")
     ap.add_argument("--smoke", action="store_true",
@@ -134,7 +146,8 @@ def main(argv=None) -> int:
                          "and write artifacts/eval/regressions.json on any failure")
     args = ap.parse_args(argv)
 
-    board = run_board(args.target, cases_path=args.cases, case_filter=args.filter,
+    board = run_board(args.target, cases_path=args.cases,
+                      coding_cases_path=args.coding_cases, case_filter=args.filter,
                       smoke=args.smoke)
     records = board["records"]
     passed, failed, skipped = board["passed"], board["failed"], board["skipped"]

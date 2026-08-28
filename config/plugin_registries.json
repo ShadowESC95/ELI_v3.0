@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "updated": "2026-08-24T23:12:56",
+  "home": "",
+  "registries": [
+    {
+      "id": "eli-official",
+      "label": "ELI Marketplace",
+      "url": "https://plugins.geteli.tech/index.json",
+      "enabled": true,
+      "curated": true,
+      "official": true
+    },
+    {
+      "id": "x",
+      "url": "http://example.test/index.json",
+      "label": "x",
+      "enabled": true,
+      "allow_private": false,
+      "added": "2026-08-20T20:58:42"
+    },
+    {
+      "id": "pub",
+      "url": "https://example.test/index.json",
+      "label": "pub",
+      "enabled": true,
+      "allow_private": false,
+      "added": "2026-08-24T23:12:56"
+    }
+  ]
+}
