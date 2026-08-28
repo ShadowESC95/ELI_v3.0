@@ -2164,6 +2164,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
     def _get_user_id(self) -> str:
         try:
+            from eli.kernel.state import get_active_user_id
+            uid = str(get_active_user_id("") or "").strip()
+            if uid and uid != "default-user":
+                return uid
+        except Exception:
+            pass
+        try:
             user_id_file = get_paths().config_dir / "user_id"
             user_id_file.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -5701,8 +5708,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             except Exception as _direct_return_err:
                 log.debug(f"[COGNITIVE] direct action return skipped: {_direct_return_err}")
         except Exception as _bus_err:
-            log.debug(
-    f"[COGNITIVE] AgentBus dispatch failed (non-fatal): {_bus_err}")
+            from eli.core.observability import observe
+            observe(__name__, "AgentBus dispatch failed (non-fatal)", exc=_bus_err)
 
         try:
             from eli.runtime.control_contracts import (

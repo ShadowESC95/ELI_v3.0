@@ -98,6 +98,55 @@ def _h_train_voice(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
 
+def _h_speaker_enroll(a, args):
+    try:
+        from eli.perception.audio_stt import begin_speaker_enrollment
+        name = str((args or {}).get("name") or (args or {}).get("speaker") or "").strip()
+        if not name:
+            msg = 'Say: "enroll speaker <your name>" so ELI knows who you are on this machine.'
+            return {"ok": False, "action": a, "content": msg, "response": msg}
+        res = begin_speaker_enrollment(name)
+        if not res.get("ok"):
+            msg = res.get("error") or "Speaker enrollment could not start."
+            return {"ok": False, "action": a, "content": msg, "response": msg}
+        msg = res.get("message") or f"Enrolling speaker {name}."
+        return {"ok": True, "action": a, "content": msg, "response": msg, "result": res}
+    except Exception as e:
+        msg = f"SPEAKER_ENROLL failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
+def _h_list_speakers(a, args):
+    try:
+        from eli.perception.speaker_id import list_speakers, get_active_speaker
+        speakers = list_speakers()
+        active = get_active_speaker()
+        if not speakers:
+            msg = "No speakers enrolled yet. Say: enroll speaker <your name>."
+        else:
+            lines = ["Enrolled speakers on this machine:"]
+            for s in speakers:
+                mark = " (active)" if s.get("speaker_id") == active.get("speaker_id") else ""
+                lines.append(f"  • {s.get('name', '?')}{mark}")
+            msg = "\n".join(lines)
+        return {"ok": True, "action": a, "content": msg, "response": msg, "speakers": speakers}
+    except Exception as e:
+        msg = f"LIST_SPEAKERS failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
+
+def _h_speaker_status(a, args):
+    try:
+        import json
+        from eli.perception.speaker_id import capabilities, list_speakers
+        caps = capabilities()
+        caps["speakers"] = list_speakers()
+        msg = json.dumps(caps, indent=2)
+        return {"ok": True, "action": a, "content": msg, "response": msg, "capabilities": caps}
+    except Exception as e:
+        msg = f"SPEAKER_STATUS failed: {e}"
+        return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
+
 
 from eli.execution.effectors.registry import register as _register
 
@@ -106,5 +155,8 @@ for _action, _fn in {
     "WAKE_SET": _h_wake_set,
     "WAKE_TRAIN": _h_wake_train,
     "TRAIN_VOICE": _h_train_voice,
+    "SPEAKER_ENROLL": _h_speaker_enroll,
+    "LIST_SPEAKERS": _h_list_speakers,
+    "SPEAKER_STATUS": _h_speaker_status,
 }.items():
     _register(_action, _fn)

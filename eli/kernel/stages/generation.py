@@ -1034,6 +1034,31 @@ class GenerationMixin:
             "evidence_used": grounded,
         }
 
+        # ── P0 honesty gate: no ungrounded factual CHAT without hedge/marker ──
+        response_mode = "grounded" if grounded else "synthesized"
+        honesty_meta: Dict[str, Any] = {}
+        try:
+            from eli.runtime.chat_honesty_gate import apply_chat_honesty_gate
+            _gconf = float((trace or {}).get("grounding_confidence") or 0.0)
+            response, response_mode, honesty_meta = apply_chat_honesty_gate(
+                response,
+                user_input=user_input,
+                evidence_used=grounded,
+                grounding_confidence=_gconf,
+                reasoning_mode=reasoning_mode,
+            )
+        except Exception as _hg_err:
+            log.debug(f"[COGNITIVE] chat honesty gate skipped: {_hg_err}")
+
+        # ── Unified response surface: never ship raw JSON/generator repr ──
+        try:
+            from eli.runtime.response_pipeline import finalize_response_text
+            response = finalize_response_text(
+                response, user_input=user_input, mode=str(reasoning_mode or ""), action="CHAT",
+            )
+        except Exception as _rp_err:
+            log.debug(f"[COGNITIVE] response pipeline skipped: {_rp_err}")
+
         try:
             self._publish_last_response_meta(
                 trace,
@@ -1125,7 +1150,13 @@ class GenerationMixin:
             "confidence_score": score,
             "confidence_threshold": threshold,
             "evidence_used": grounded,
-            "meta": {"reasoning": reasoning_meta, "trace": trace},
+            "response_mode": response_mode,
+            "meta": {
+                "reasoning": reasoning_meta,
+                "trace": trace,
+                "response_mode": response_mode,
+                **honesty_meta,
+            },
             "trace": trace,
         }
 

@@ -79,6 +79,57 @@ def sandbox_enabled() -> bool:
     return os.environ.get("ELI_CODING_SANDBOX", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def capabilities() -> Dict[str, object]:
+    """Cross-platform sandbox capability probe — honest about what this machine can enforce."""
+    import platform
+    import shutil
+
+    system = platform.system()
+    caps: Dict[str, object] = {
+        "platform": system,
+        "subprocess_isolation": True,
+        "cpu_rlimit": os.name == "posix",
+        "network_isolation": False,
+        "filesystem_isolation": False,
+        "firejail": bool(shutil.which("firejail")),
+        "nsjail": bool(shutil.which("nsjail")),
+        "bubblewrap": bool(shutil.which("bwrap")),
+        "isolate_opt_in": os.environ.get("ELI_SANDBOX_ISOLATE", "0").strip().lower()
+        in ("1", "true", "yes", "on"),
+        "notes": [],
+    }
+    if system == "Linux":
+        if caps["firejail"] or caps["nsjail"]:
+            caps["network_isolation"] = bool(caps["isolate_opt_in"])
+        if caps["bubblewrap"]:
+            try:
+                from eli.plugins.subprocess_sandbox import capabilities as _plugin_caps
+                pc = _plugin_caps()
+                caps["network_isolation"] = bool(pc.get("network_isolation"))
+                caps["filesystem_isolation"] = bool(pc.get("filesystem_isolation"))
+                caps["notes"] = list(pc.get("notes") or [])
+            except Exception:
+                pass
+        elif not caps["firejail"] and not caps["nsjail"]:
+            caps["notes"] = [
+                "Linux: subprocess + timeout only unless ELI_SANDBOX_ISOLATE=1 and "
+                "firejail/nsjail is installed."
+            ]
+    elif system == "Darwin":
+        caps["notes"] = [
+            "macOS: subprocess isolation with timeout and scrubbed env. "
+            "No OS-level sandbox without sandbox-exec (not wired)."
+        ]
+    elif system == "Windows":
+        caps["notes"] = [
+            "Windows: subprocess isolation with timeout and scrubbed env. "
+            "Job Objects not yet wired — no network/filesystem containment."
+        ]
+    else:
+        caps["notes"] = [f"{system}: subprocess + timeout only."]
+    return caps
+
+
 def _scrubbed_env() -> Dict[str, str]:
     env = {k: v for k, v in os.environ.items()
            if not any(s in k.upper() for s in ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD"))}

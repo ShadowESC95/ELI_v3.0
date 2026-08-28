@@ -757,6 +757,15 @@ def _speak_piper_cli(text, voice_name=None):
             log.debug(f"[TTS_FINAL_PIPER_ONLY] wav missing/empty: {wav}")
             return False
 
+        # Post-synthesis pitch shift — Piper CLI can't do semitone pitch; tone_adaptor
+        # supplies it so ELI's voice carries the empathetic response register.
+        try:
+            pitched = _apply_tone_pitch(wav.read_bytes())
+            if pitched:
+                wav.write_bytes(pitched)
+        except Exception:
+            log.debug("[TTS] tone pitch apply on piper wav skipped", exc_info=True)
+
         log.debug(
             f"[TTS_FINAL_PIPER_ONLY] voice={active} model={_Path(model).name} bytes={wav.stat().st_size}",
         )
@@ -834,6 +843,24 @@ def _speak_pyttsx3(text: str, voice_name: str) -> bool:
 
 
 def _run_tts(text: str, voice_name: str | None = None) -> bool:
+    import os as _os
+
+    try:
+        from eli.perception.voice_intent import set_tts_speaking
+        set_tts_speaking(True)
+    except Exception:
+        pass
+    try:
+        return _run_tts_inner(text, voice_name=voice_name)
+    finally:
+        try:
+            from eli.perception.voice_intent import set_tts_speaking
+            set_tts_speaking(False)
+        except Exception:
+            pass
+
+
+def _run_tts_inner(text: str, voice_name: str | None = None) -> bool:
     import os as _os
 
     active = voice_name or get_active_voice()
@@ -1154,3 +1181,33 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
     chunks = _tts_chunks(text) or [text]
     rendered = [_piper_render_wav(c, model, cfg, piper_bin) for c in chunks]
     return _apply_tone_pitch(_concat_wavs([r for r in rendered if r]))
+
+
+def stop_speaking() -> bool:
+    """Best-effort TTS cancel for barge-in / voice_intent hooks."""
+    import tempfile
+    from pathlib import Path
+    try:
+        from eli.perception.voice_intent import set_tts_speaking
+        set_tts_speaking(False)
+    except Exception:
+        pass
+    lock = Path(os.environ.get("ELI_TTS_SPEAKING_LOCK") or (Path(tempfile.gettempdir()) / "eli_tts_speaking.lock"))
+    try:
+        if lock.exists():
+            lock.unlink()
+    except Exception:
+        log.debug("[TTS] speaking lock clear failed", exc_info=True)
+    return True
+
+
+try:
+    from eli.perception.voice_intent import register_tts_cancel_hook, set_tts_speaking as _vi_set_speaking
+
+    def _voice_intent_cancel() -> None:
+        stop_speaking()
+        _vi_set_speaking(False)
+
+    register_tts_cancel_hook(_voice_intent_cancel)
+except Exception:
+    log.debug("[TTS] voice_intent hook registration skipped", exc_info=True)

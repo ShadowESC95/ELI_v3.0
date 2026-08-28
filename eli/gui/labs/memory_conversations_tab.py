@@ -88,6 +88,11 @@ class _MemoryAndConversationsTab(QWidget):
         self._detail.setPlaceholderText("Select a row to see the full entry.")
         rv.addWidget(self._detail, stretch=1)
 
+        audit_btn = QPushButton("Why did ELI believe this?")
+        audit_btn.setToolTip("Show stored memories and evidence events related to the selected entry.")
+        audit_btn.clicked.connect(self._audit_selection)
+        rv.addWidget(audit_btn)
+
         store_group = QGroupBox("Store new memory")
         sv = QVBoxLayout(store_group)
         self._store_text = QTextEdit()
@@ -223,6 +228,23 @@ class _MemoryAndConversationsTab(QWidget):
             lines.append("")
             lines.append(r.get("text", ""))
             self._detail.setPlainText("\n".join(lines))
+
+    def _audit_selection(self):
+        row = self._table.currentRow()
+        if row < 0 or row >= len(self._rows_data):
+            QMessageBox.information(self, "Memory audit", "Select a row first.")
+            return
+        query = str(self._rows_data[row].get("text") or "").strip()
+        if not query:
+            QMessageBox.information(self, "Memory audit", "Selected entry has no text to audit.")
+            return
+        try:
+            from eli.runtime.personal_memory_render import render_belief_audit
+            report = render_belief_audit(query[:240])
+        except Exception as ex:
+            QMessageBox.warning(self, "Memory audit", str(ex))
+            return
+        self._detail.setPlainText(report)
 
     def _store(self):
         text = self._store_text.toPlainText().strip()

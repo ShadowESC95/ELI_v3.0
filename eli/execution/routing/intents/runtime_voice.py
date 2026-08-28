@@ -62,6 +62,24 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
         if "wake" not in low:
             return _mk("TRAIN_VOICE", {}, 0.93, matched_by="voice.train_profile")
 
+    # Speaker ID — shared-machine enrollment ("enroll speaker Jay")
+    if re.search(
+        r"\b(enroll|register|add|teach)\b.*\b(speaker|speakers)\b"
+        r"|\b(enroll|register)\b.*\b(my\s+)?voice\b.*\b(as|named)\b"
+        r"|\bwho\s+am\s+i\b.*\b(enroll|register|train)\b",
+        low,
+    ):
+        m = re.search(r"\b(?:as|named|name|speaker)\s+([A-Za-z][A-Za-z0-9 _-]{1,30})", raw, re.I)
+        name = (m.group(1).strip() if m else "")
+        if not name:
+            m2 = re.search(r"\benroll\s+speaker\s+([A-Za-z][A-Za-z0-9 _-]{1,30})", raw, re.I)
+            name = (m2.group(1).strip() if m2 else "")
+        return _mk("SPEAKER_ENROLL", {"name": name}, 0.93, matched_by="speaker.enroll")
+    if re.search(r"\b(list|show|who are)\b.*\b(enrolled\s+)?speakers\b", low):
+        return _mk("LIST_SPEAKERS", {}, 0.9, matched_by="speaker.list")
+    if re.search(r"\b(speaker|voice)\s+(id|identification|recognition)\s+(status|capabilities|diagnostic)\b", low):
+        return _mk("SPEAKER_STATUS", {}, 0.9, matched_by="speaker.status")
+
     # ── Voice library: list / download / switch the TTS voice ──────────────────
     # Distinct from persona TONE (SET_COMMUNICATION_STYLE): this changes the actual
     # spoken voice/accent and can fetch new ones from the Piper library. Placed in

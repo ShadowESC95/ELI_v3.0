@@ -186,6 +186,81 @@ def run_engine(
     }
 
 
+def run_coding_agent(
+    prompt: str,
+    *,
+    mode: str = "",
+    stub: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Drive CodeAgent with a stub generator — model-free and deterministic."""
+    import time
+    t0 = time.perf_counter()
+
+    mode = str(mode or "").strip().lower()
+    if mode == "context_only":
+        from eli.coding.repo_context import gather_repo_context
+        text = gather_repo_context(prompt)
+        return {
+            "target": "coding_agent", "text": text, "ok": bool(text.strip()),
+            "solved": False, "score": 0.0, "gate_failed": "",
+            "latency_s": round(time.perf_counter() - t0, 4),
+        }
+    if mode == "sandbox_caps":
+        from eli.coding.sandbox import capabilities
+        import json
+        caps = capabilities()
+        text = json.dumps(caps, indent=2)
+        return {
+            "target": "coding_agent", "text": text, "ok": True,
+            "solved": False, "score": 0.0, "gate_failed": "",
+            "latency_s": round(time.perf_counter() - t0, 4),
+        }
+
+    def _stub_gen(p, system="", max_tokens=1000, temperature=0.2, **k):
+        low = (p or "").lower()
+        if "fibonacci" in low or "fib(n)" in low:
+            return (
+                "def fib(n):\n"
+                "    a, b = 0, 1\n"
+                "    for _ in range(n):\n"
+                "        a, b = b, a + b\n"
+                "    return a\n"
+                "if __name__ == '__main__':\n"
+                "    print(fib(10))\n"
+            )
+        if "sum" in low and "1 to 10" in low:
+            return "print(sum(range(1, 11)))\n"
+        if "x[9]" in low or "index" in low:
+            return "x = [1, 2]\nprint(x[0] if x else None)\n"
+        if "json" in low and "plan" in low:
+            return '{"approach": "direct", "steps": ["implement"]}'
+        return "print('ok')\n"
+
+    from eli.coding.agent import CodeAgent
+    agent = CodeAgent(generate=_stub_gen if stub is not False else None)
+    try:
+        result = agent.solve(str(prompt or ""), beam=2, max_iterations=3, run_timeout=8.0)
+        d = result.to_dict()
+    except Exception as e:
+        return {"target": "coding_agent", "text": f"[error] {e}", "ok": False,
+                "solved": False, "score": 0.0, "gate_failed": "error",
+                "latency_s": round(time.perf_counter() - t0, 4), "error": str(e)}
+
+    search = d.get("search") or {}
+    best = search.get("best") or {}
+    return {
+        "target": "coding_agent",
+        "text": str(d.get("code") or d.get("message") or ""),
+        "ok": bool(d.get("ok")),
+        "solved": bool(d.get("solved")),
+        "score": float(d.get("score") or 0.0),
+        "gate_failed": str(best.get("gate_failed") or ""),
+        "bug_class": d.get("bug_class"),
+        "latency_s": round(time.perf_counter() - t0, 4),
+        "raw": d,
+    }
+
+
 def _maybe_float(v):
     try:
         return float(v)

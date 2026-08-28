@@ -1014,6 +1014,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
                     "USER_IDENTITY_SUMMARY", "SELF_REPORT",
                     "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
                     "PERSONAL_MEMORY_SUMMARY", "PERSONAL_MEMORY_DEEP_EXPLAIN",
+                    "MEMORY_AUDIT",
                     "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT",
                     "EXPLAIN_LAST_RESPONSE", "RUNTIME_AUDIT", "IMPORT_AUDIT",
                     "RESOLVE_RUNTIME_PATHS", "GUI_RUNTIME_AUDIT",

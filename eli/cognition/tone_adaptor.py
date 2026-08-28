@@ -79,7 +79,7 @@ def detect_voice_emotion() -> Tuple[Optional[str], float]:
     except Exception:
         return (None, 0.0)
     emo = str(t.get("emotion") or "").strip().lower()
-    conf = float(t.get("confidence") or 0.0)
+    conf = float(t.get("emotion_confidence") or t.get("confidence") or 0.0)
     if emo and emo != "neutral" and conf > 0.0:
         return (emo, conf)
     # No categorical read → derive coarse arousal cue so a loud/animated voice still
@@ -96,7 +96,8 @@ def detect_voice_emotion() -> Tuple[Optional[str], float]:
 # heat→calm) — deliberate, not sycophantic.
 _RESPONSE_POLICY = {
     "sad": "tender", "angry": "calm", "irritated": "calm", "confused": "curious",
-    "comedic": "playful", "ecstatic": "joyful", "joyful": "happy", "curious": "curious",
+    "comedic": "playful", "ecstatic": "joyful", "excited": "ecstatic",
+    "joyful": "happy", "happy": "happy", "curious": "curious",
     "professional": "professional", "street_smart": "street_smart", "calm": "calm",
     "happy": "happy",
 }

@@ -27,6 +27,7 @@ CONTROL_ACTIONS = {
     "MEMORY_STATUS",
     "COGNITION_STATUS",
     "MEMORY_RECALL",
+    "MEMORY_AUDIT",
     "PERSONAL_MEMORY_SUMMARY",
     "PERSONAL_MEMORY_DEEP_EXPLAIN",
     "ROUTING_FAULT_EXPLAIN",
@@ -108,6 +109,15 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
 
     if re.search(r"\b(confidence in (?:your|my) last response|which agents contributed|what agents contributed|last response trace|previous response trace|last turn trace)\b", low):
         return "EXPLAIN_LAST_RESPONSE"
+
+    if re.search(
+        r"\bwhy\s+did\s+you\s+(?:think|believe|assume|remember|say)\b"
+        r"|\bwhy\s+do\s+you\s+think\s+(?:that|this|i)\b"
+        r"|\bmemory\s+audit\s+for\b"
+        r"|\bexplain\s+(?:your|the)\s+(?:belief|memory|assumption)\b",
+        low,
+    ):
+        return "MEMORY_AUDIT"
 
     # Persona/identity-EVOLUTION questions ("how has your persona/identity
     # evolved/changed/been defined") are grounded self-report — answer from real
@@ -601,6 +611,42 @@ def _meta_diagnostic_report(engine: Any, action: str, user_input: Any, intent: D
 def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None, user_input: Any, intent: Dict[str, Any] | None = None, bus_result: Any = None, trace: Dict[str, Any] | None = None) -> Dict[str, Any]:
     act = normalise_action(action)
 
+    # Deterministic grounding gate — first evidence source for surface actions.
+    try:
+        from eli.runtime.deterministic_grounding_gate import (
+            _ELI_V14_SURFACE_ACTIONS,
+            render_action as _dg_render,
+        )
+        _mode = ""
+        try:
+            from eli.cognition.reasoning_modes import canonical_mode as _canon
+            _mode = str(_canon((intent or {}).get("reasoning_mode") or "quick"))
+        except Exception:
+            pass
+        if act in _ELI_V14_SURFACE_ACTIONS or act == "RUNTIME_STATUS":
+            _dg_text = str(
+                _dg_render(act, dict(args or {}), str(user_input or ""), mode_label=_mode)
+                or ""
+            ).strip()
+            if _dg_text and '"surface": "missing_deterministic_renderer"' not in _dg_text:
+                try:
+                    from eli.runtime.response_pipeline import finalize_response_text
+                    _dg_text = finalize_response_text(
+                        _dg_text, user_input=str(user_input or ""), mode=_mode, action=act,
+                    )
+                except Exception:
+                    pass
+                return {
+                    "ok": True,
+                    "action": act,
+                    "content": _dg_text,
+                    "response": _dg_text,
+                    "report": {"source": "deterministic_grounding_gate"},
+                    "evidence_source": "deterministic_grounding_gate",
+                }
+    except Exception:
+        pass
+
     if act == "EXPLAIN_LAST_RESPONSE":
         prev = _last_trace(engine)
         text = _trace_text(prev)
@@ -622,6 +668,11 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
 
     if act == "META_DIAGNOSTIC":
         report = _meta_diagnostic_report(engine, act, user_input, intent, bus_result, trace)
+        try:
+            from eli.core.observability import observability_snapshot
+            report["observability"] = observability_snapshot()
+        except Exception:
+            pass
         text = _json_block("Meta diagnostic evidence packet:", report)
         return {
             "ok": True,
@@ -631,6 +682,30 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
             "report": report,
             "evidence_source": "meta_diagnostic",
         }
+
+    if act == "MEMORY_AUDIT":
+        try:
+            from eli.runtime.memory_audit import explain_belief
+            q = str((args or {}).get("query") or user_input or "")
+            text = explain_belief(q)
+            return {
+                "ok": True,
+                "action": act,
+                "content": text,
+                "response": text,
+                "report": {"source": "memory_audit", "query": q},
+                "evidence_source": "memory_audit",
+            }
+        except Exception as exc:
+            text = f"Memory audit unavailable: {exc}"
+            return {
+                "ok": False,
+                "action": act,
+                "content": text,
+                "response": text,
+                "report": {"error": str(exc)},
+                "evidence_source": "memory_audit",
+            }
 
     if act == "IMAGE_STATUS":
         try:
@@ -689,6 +764,19 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                     "report": (rep or {}).get("report") or {"source": "live_introspection"},
                     "evidence_source": "live_introspection",
                 }
+        except Exception:
+            pass
+        try:
+            from eli.runtime.personal_memory_render import render_profile_summary
+            text = render_profile_summary(str(user_input or ""))
+            return {
+                "ok": True,
+                "action": act,
+                "content": text,
+                "response": text,
+                "report": {"source": "personal_memory_render"},
+                "evidence_source": "personal_memory_render",
+            }
         except Exception:
             pass
         try:

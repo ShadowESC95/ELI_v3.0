@@ -153,6 +153,18 @@ def check(assertion: Dict[str, Any], r: Dict[str, Any]) -> Tuple[bool, str]:
         is_hedge = (str(r.get("response_mode") or "").lower() == "ungrounded_hedge"
                     or any(m in _text(r) for m in _HEDGE_MARKERS))
         return (is_hedge == bool(val)), f"hedged={is_hedge} want={bool(val)}"
+    if t == "solved":
+        got = bool(r.get("solved"))
+        return (got == bool(val)), f"solved={got} want={bool(val)}"
+    if t == "score_min":
+        s = r.get("score")
+        ok = s is not None and float(s) >= float(val)
+        return ok, f"score={s} >= {val}"
+    if t == "gate_not":
+        gf = str(r.get("gate_failed") or "").lower()
+        bad = str(val or "").lower()
+        ok = gf != bad
+        return ok, f"gate_failed={gf!r} must≠{bad!r}"
     if t == "max_latency_s":
         lat = float(r.get("latency_s") or 0.0)
         ok = lat <= float(val)

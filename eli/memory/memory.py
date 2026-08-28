@@ -1903,6 +1903,14 @@ class Memory(metaclass=_MemoryMeta):
         if importance is None:
             importance = self._score_importance(t, tags, source, kind)
 
+        # P2 conflict resolution: demote contradicting facts before storing the new one.
+        if kind in ("memory", "fact") and source in ("user", "assistant", "eli"):
+            try:
+                from eli.memory.conflict_resolution import resolve_on_store
+                resolve_on_store(self, t)
+            except Exception:
+                log.debug("memory conflict resolution skipped", exc_info=True)
+
         ts = time.time()
 
         # Write to primary
