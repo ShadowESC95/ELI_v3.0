@@ -6142,9 +6142,7 @@ try:
             if str(root):
                 return root
         except Exception:
-            pass
-        try:
-            return _eli_self_Path(__file__).resolve().parents[2]
+            log.debug("executor project_root resolve skipped", exc_info=True)
         except Exception:
             return _eli_self_Path.cwd()
 

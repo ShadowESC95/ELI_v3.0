@@ -830,9 +830,16 @@ class ReasoningModesMixin:
             if _nonquick_depth else
             "For simple command results, answer in one short sentence. "
         )
+        _tone_block = ""
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            _tone_block = _ta.synthesis_directives(query or "")
+        except Exception:
+            log.debug("synthesis tone directives skipped", exc_info=True)
         prompt = (
             f"{persona}\n\n"
-            "INSTRUCTIONS: The data below was gathered by your internal agents. "
+            + (f"{_tone_block}\n\n" if _tone_block else "")
+            + "INSTRUCTIONS: The data below was gathered by your internal agents. "
             "Answer the user's current request only. "
             "Write a clear, natural, first-person answer using ONLY this data. "
             "Do not output raw JSON, bracket labels, or agent metadata. "
@@ -879,7 +886,14 @@ class ReasoningModesMixin:
             )
             _eli_clear_current_action()
             if response and response.strip():
-                return response.strip()
+                out = response.strip()
+                try:
+                    from eli.cognition import tone_adaptor as _ta
+                    out = _ta.repair_coherence(out, query or "")
+                    _ta.sync_world()
+                except Exception:
+                    log.debug("synthesis tone coherence skipped", exc_info=True)
+                return out
         except Exception as e:
             try:
                 _eli_clear_current_action()

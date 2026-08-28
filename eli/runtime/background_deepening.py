@@ -70,8 +70,13 @@ def schedule(engine: Any, user_input: str, intent: Dict[str, Any],
         is_fact = False
     if not is_fact:
         return False  # banter/opinion/command/meta → never deepen
-
-    sig = _sig(user_input)
+    try:
+        from eli.cognition.affect_policy import should_defer_proactive
+        defer, _why = should_defer_proactive()
+        if defer:
+            return False
+    except Exception:
+        log.debug("background_deepening affect gate skipped", exc_info=True)
     now = time.time()
     with _LOCK:
         if len(_INFLIGHT) >= _MAX_INFLIGHT or sig in _INFLIGHT:

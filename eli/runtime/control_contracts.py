@@ -5,6 +5,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 CONTROL_ACTIONS = {
     "SELF_REPORT",
     "RUNTIME_STATUS",
@@ -339,8 +343,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
             data = json.loads(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
     except Exception:
-        pass
-    return {}
+        log.debug("control_contracts json read skipped", exc_info=True)
 
 def _data_dirs() -> tuple[Path, Path]:
     """(artifacts, config) as the running install actually uses them.
@@ -431,7 +434,7 @@ def _last_trace(engine: Any = None) -> Dict[str, Any]:
         if meta:
             return meta
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         from eli.runtime.last_trace import load_last_trace
@@ -554,7 +557,7 @@ def _runtime_telemetry_text(limit: int = 8) -> str:
                     f"confidence={conf_s} elapsed={ms_s} ok={r.get('ok')}"
                 )
     except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
+        log.debug("suppressed exception", exc_info=True)
     try:
         from eli.runtime.evidence_ledger import recent_events
         evs = recent_events(limit=limit)
@@ -570,7 +573,7 @@ def _runtime_telemetry_text(limit: int = 8) -> str:
                     f"{conf_s} request_id={e.get('request_id') or ''}"
                 )
     except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
+        log.debug("suppressed exception", exc_info=True)
     return "\n".join(lines).strip()
 
 
@@ -582,7 +585,7 @@ def _recent_conversation_rows(engine: Any = None, limit: int = 12) -> list[Dict[
             rows = memory.get_recent_conversation(limit=int(limit), user_id=user_id)
             return [dict(row) for row in list(rows or [])]
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return []
 
 def _meta_diagnostic_report(engine: Any, action: str, user_input: Any, intent: Dict[str, Any] | None, bus_result: Any = None, trace: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -625,7 +628,7 @@ def _meta_diagnostic_report(engine: Any, action: str, user_input: Any, intent: D
         if dyn.get("dynamic_status_claims") or dyn.get("challenge_after_dynamic_status_claim"):
             needs_image_status = True
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     if needs_image_status:
         try:
@@ -653,7 +656,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                 from eli.cognition.reasoning_modes import canonical_mode as _canon
                 _mode = str(_canon((intent or {}).get("reasoning_mode") or "quick"))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
             if act in _ELI_V14_SURFACE_ACTIONS or act == "RUNTIME_STATUS":
                 _dg_text = str(
                     _dg_render(act, dict(args or {}), str(user_input or ""), mode_label=_mode)
@@ -666,7 +669,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                             _dg_text, user_input=str(user_input or ""), mode=_mode, action=act,
                         )
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
                     return {
                         "ok": True,
                         "action": act,
@@ -676,7 +679,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                         "evidence_source": "deterministic_grounding_gate",
                     }
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     if act == "EXPLAIN_LAST_RESPONSE":
         prev = _last_trace(engine)
@@ -703,7 +706,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
             from eli.core.observability import observability_snapshot
             report["observability"] = observability_snapshot()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         text = _json_block("Meta diagnostic evidence packet:", report)
         return {
             "ok": True,
@@ -796,7 +799,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                     "evidence_source": "live_introspection",
                 }
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             from eli.runtime.personal_memory_render import render_profile_summary
             text = render_profile_summary(str(user_input or ""))
@@ -809,7 +812,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                 "evidence_source": "personal_memory_render",
             }
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             from eli.runtime.personal_memory_surface import personal_memory_surface
             text = str(personal_memory_surface(user_input))
@@ -822,7 +825,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                 "evidence_source": "personal_memory_surface",
             }
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     try:
         ar = getattr(bus_result, "action_result", None) if bus_result is not None else None
@@ -838,7 +841,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                     "evidence_source": "agent_bus.action_result",
                 }
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         from eli.execution.executor_enhanced import execute
@@ -855,7 +858,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                     "evidence_source": "executor",
                 }
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         from eli.runtime.live_introspection import build_report
@@ -872,7 +875,7 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
                     "evidence_source": "live_introspection",
                 }
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     fail = {
         "ok": False,
@@ -1173,13 +1176,13 @@ def finalise_control_result(engine: Any, user_input: Any, action: str, evidence_
         from eli.runtime.last_trace import save_last_trace
         save_last_trace(meta)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         if hasattr(engine, "_store_assistant_turn"):
             engine._store_assistant_turn(final_text)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     # Keep the structured `report` and full `meta` blocks INSIDE the envelope
     # for downstream telemetry/learning, but ensure `content`/`response` are

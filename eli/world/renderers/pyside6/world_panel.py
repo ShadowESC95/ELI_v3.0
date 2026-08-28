@@ -15,8 +15,12 @@ from eli.gui.qt_compat import (
     QVBoxLayout,
     QWidget,
 )
+from eli.gui.widgets.eli_face import EliFaceWidget
 from eli.world.local_world_bridge import append_event, get_world_state
 from eli.world.renderers.pyside6.world_scene import EliWorldScene
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 
 def _room_name(room: str, state: Dict[str, Any]) -> str:
@@ -86,6 +90,10 @@ class EliWorldPanel(QWidget):
         self.actions = QLabel("")
         self.actions.setWordWrap(True)
         self.bars: Dict[str, QProgressBar] = {}
+        self._tone_label = QLabel("Tone: —")
+        self._tone_label.setWordWrap(True)
+        self._tone_label.setStyleSheet("font-size: 12px; color: #3a4030;")
+        self._eli_face = EliFaceWidget(self, poll_tone=True, size=140)
 
         root = QHBoxLayout(self)
         root.addWidget(self.view, 3)
@@ -105,6 +113,23 @@ class EliWorldPanel(QWidget):
         scroll.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
+
+        face_card = QFrame()
+        face_card.setStyleSheet(
+            "QFrame { background: #f8f5e8; border: 1px solid #c8bea2; border-radius: 12px; padding: 8px; }"
+        )
+        face_layout = QVBoxLayout(face_card)
+        face_heading = QLabel("ELI — Live Expression")
+        face_heading.setStyleSheet("font-weight: 800; font-size: 13px; color: #303620;")
+        face_layout.addWidget(face_heading, alignment=0)
+        face_row = QHBoxLayout()
+        face_row.addWidget(self._eli_face, alignment=0)
+        face_col = QVBoxLayout()
+        face_col.addWidget(self._tone_label)
+        face_col.addStretch(1)
+        face_row.addLayout(face_col, 1)
+        face_layout.addLayout(face_row)
+        layout.addWidget(face_card)
 
         layout.addWidget(self._card("Where ELI Is", self.summary))
         layout.addWidget(self._awareness_card())
@@ -236,6 +261,17 @@ class EliWorldPanel(QWidget):
             self.recent.setText(_recent_lines(state.get("events") or [], limit=6))
             self.actions.setText(_recent_lines(state.get("actions") or [], limit=6))
             self.identity.setText(self._identity_summary(state))
+            try:
+                from eli.cognition import tone_adaptor as _ta
+                cur = _ta.current_tone()
+                self._tone_label.setText(
+                    f"Tone: {cur.get('tone', 'neutral')} "
+                    f"(read: {cur.get('detected', 'neutral')}, "
+                    f"conf {float(cur.get('confidence', 0)):.2f}, "
+                    f"via {cur.get('source', 'auto')})"
+                )
+            except Exception:
+                log.debug("world_panel tone label skipped", exc_info=True)
         except Exception as exc:
             self.status.setText(f"Eli's World error: {type(exc).__name__}: {exc}")
 

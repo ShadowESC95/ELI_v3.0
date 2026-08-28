@@ -2,6 +2,9 @@ from __future__ import annotations
 from pathlib import Path
 from eli.world.agency.autonomy_engine import EliWorldAutonomyEngine
 from eli.world.core.schemas import WorldEvent
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 COMMON_PERSONA_PATHS = [Path("eli/cognition/persona.auto.txt"), Path("eli/cognition/persona.txt")]
 
@@ -12,8 +15,7 @@ def load_persona_text() -> str:
             try:
                 chunks.append(path.read_text(encoding="utf-8", errors="replace")[:12000])
             except Exception:
-                pass
-    return "\n\n".join(chunks)
+                log.debug("reflection_bridge persona read skipped", exc_info=True)
 
 def send_reflection_to_world(summary: str, depth: float = 0.7, source: str = "reflection_bridge"):
     engine = EliWorldAutonomyEngine()

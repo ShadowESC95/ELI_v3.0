@@ -36,7 +36,7 @@ from __future__ import annotations
 QT_API = None
 
 try:
-    from PySide6.QtCore import Qt, QTimer, QThread, QObject, Signal as pyqtSignal
+    from PySide6.QtCore import Qt, QTimer, QThread, QObject, Signal as pyqtSignal, QRectF
     from PySide6.QtGui import (  # noqa: F401
         QColor, QFont, QIcon, QPixmap, QImage, QPainter, QPalette, QKeySequence,
         QTextCursor, QTextCharFormat, QBrush, QPen, QAction, QDesktopServices,
@@ -49,7 +49,7 @@ try:
         QSlider, QProgressBar, QListWidget, QListWidgetItem,
         QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
         QTabWidget, QTabBar, QGroupBox, QFrame, QScrollArea, QSplitter,
-        QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsEllipseItem,
+        QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsRectItem, QGraphicsEllipseItem,
         QGraphicsTextItem, QGraphicsLineItem,
         QMenuBar, QMenu, QToolBar, QStatusBar, QSystemTrayIcon,
         QFileDialog, QMessageBox, QInputDialog, QColorDialog, QFontDialog,
@@ -58,7 +58,7 @@ try:
     QT_API = "PySide6"
 except Exception:
     try:
-        from PyQt6.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal
+        from PyQt6.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal, QRectF
         from PyQt6.QtGui import (  # noqa: F401
             QColor, QFont, QIcon, QPixmap, QImage, QPainter, QPalette, QKeySequence,
             QTextCursor, QTextCharFormat, QBrush, QPen, QAction, QDesktopServices,
@@ -71,7 +71,7 @@ except Exception:
             QSlider, QProgressBar, QProgressDialog, QListWidget, QListWidgetItem,
             QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
             QTabWidget, QTabBar, QGroupBox, QFrame, QScrollArea, QSplitter,
-            QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsEllipseItem,
+            QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsRectItem, QGraphicsEllipseItem,
             QGraphicsTextItem, QGraphicsLineItem,
             QMenuBar, QMenu, QToolBar, QStatusBar, QSystemTrayIcon,
             QFileDialog, QMessageBox, QInputDialog, QColorDialog, QFontDialog,
@@ -80,7 +80,7 @@ except Exception:
         QT_API = "PyQt6"
     except Exception:
         try:
-            from PyQt5.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal
+            from PyQt5.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal, QRectF
             from PyQt5.QtGui import (  # noqa: F401
                 QColor, QFont, QIcon, QPixmap, QImage, QPainter, QPalette, QKeySequence,
                 QTextCursor, QTextCharFormat, QBrush, QPen, QDesktopServices,
@@ -93,7 +93,7 @@ except Exception:
                 QSlider, QProgressBar, QProgressDialog, QListWidget, QListWidgetItem,
                 QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
                 QTabWidget, QTabBar, QGroupBox, QFrame, QScrollArea, QSplitter,
-                QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsEllipseItem,
+                QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsRectItem, QGraphicsEllipseItem,
                 QGraphicsTextItem, QGraphicsLineItem,
                 QMenuBar, QMenu, QToolBar, QStatusBar, QSystemTrayIcon,
                 QFileDialog, QMessageBox, QInputDialog, QColorDialog, QFontDialog,
@@ -128,10 +128,11 @@ except Exception:
             QSlider = QProgressBar = QProgressDialog = QListWidget = QListWidgetItem = _Stub
             QTreeWidget = QTreeWidgetItem = QTableWidget = QTableWidgetItem = _Stub
             QTabWidget = QTabBar = QGroupBox = QFrame = QScrollArea = QSplitter = _Stub
-            QGraphicsView = QGraphicsScene = QGraphicsRectItem = _Stub
+            QGraphicsView = QGraphicsScene = QGraphicsItem = QGraphicsRectItem = _Stub
             QGraphicsEllipseItem = QGraphicsTextItem = QGraphicsLineItem = _Stub
             QMenuBar = QMenu = QToolBar = QStatusBar = QSystemTrayIcon = _Stub
             QFileDialog = QMessageBox = QInputDialog = QColorDialog = QFontDialog = _Stub
             QSizePolicy = QAction = QStyle = _Stub
+            QRectF = _Stub
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]

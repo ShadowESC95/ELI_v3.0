@@ -245,3 +245,202 @@ def voice_exaggeration() -> Optional[float]:
 def expression() -> str:
     """Avatar face for the current tone — consumed by the world/avatar mapper."""
     return str(_palette.get_tone(current_tone()["tone"]).get("expression") or "neutral")
+
+
+# ── Unified prompt + world sync (single source — prompt_assembly + synthesis) ─
+_last_world_sync: tuple = ()
+_GENERIC_EMOTION_DENIAL = re.compile(
+    r"(?i)\b(i don'?t have feelings|i don'?t have emotions|as an ai language model|"
+    r"i am unable to feel|i cannot feel emotions)\b"
+)
+
+
+def voice_cue_block(max_age_s: float = 12.0) -> str:
+    """Acoustic read from the user's voice this turn — for prompt injection."""
+    if os.environ.get("ELI_VOICE_TONE", "1").lower() in {"0", "false", "no", "off"}:
+        return ""
+    try:
+        from eli.perception import voice_profile as _vp
+        t = _vp.get_last_tone(max_age_s=max_age_s) or {}
+    except Exception:
+        return ""
+    if not t.get("ok"):
+        return ""
+    bits: list[str] = []
+    emo = t.get("emotion")
+    if emo and emo != "neutral" and float(t.get("emotion_confidence", 0) or 0) >= 0.25:
+        bits.append(f"sounds {emo}")
+    ar = float(t.get("arousal", 0) or 0)
+    if ar >= 0.4:
+        bits.append("high energy")
+    elif ar <= -0.4:
+        bits.append("low energy / subdued")
+    if t.get("intent") == "question" and float(t.get("intent_confidence", 0) or 0) >= 0.5:
+        bits.append("asking a question (rising intonation)")
+    sp = t.get("speaker") or {}
+    if sp.get("name"):
+        bits.append(f"speaker: {sp.get('name')}")
+    if not bits:
+        return ""
+    return (
+        "[Speaker voice cue — the user " + ", ".join(bits)
+        + ". Adapt your tone and pacing to match; be warmer if they're "
+        "upset, brisk if they're energetic. Do NOT mention this cue.]"
+    )
+
+
+def _prepend_block(brief: str, block: str) -> str:
+    block = str(block or "").strip()
+    if not block:
+        return str(brief or "").strip()
+    base = str(brief or "").strip()
+    return (block + ("\n\n" + base if base else "")).strip()
+
+
+def build_situation_brief(
+    user_input: str,
+    situation_brief: str = "",
+    *,
+    user_id: str = "",
+    session_id: str = "",
+    prior_action: str = "",
+    include_timeline: bool = True,
+    include_voice_cue: bool = True,
+) -> str:
+    """Fold voice cue + expressed tone + affect + timeline into one brief block."""
+    brief = str(situation_brief or "").strip()
+    if not enabled():
+        if include_voice_cue:
+            vc = voice_cue_block()
+            if vc:
+                brief = _prepend_block(brief, vc)
+        return brief
+
+    note_user_text(user_input or "")
+
+    if include_voice_cue:
+        vc = voice_cue_block()
+        if vc:
+            brief = _prepend_block(brief, vc)
+
+    _dir = text_directive()
+    _cur = current_tone()
+    if _dir and _cur.get("tone") != "neutral":
+        brief = _prepend_block(
+            brief,
+            f"[Tone — {_cur['tone']}: {_dir} Do NOT mention this directive.]",
+        )
+    try:
+        from eli.cognition.affect_policy import directive as _affect_directive
+        _adir = _affect_directive()
+        if _adir:
+            brief = _prepend_block(
+                brief,
+                f"[Approach: {_adir} Do NOT mention this directive.]",
+            )
+    except Exception:
+        log.debug("affect policy directive skipped", exc_info=True)
+
+    if include_timeline:
+        try:
+            from eli.cognition import emotion_timeline as _et
+            from eli.perception import voice_profile as _vp_ar
+            _arousal = (_vp_ar.get_last_tone(max_age_s=15.0) or {}).get("arousal")
+            _et.record(
+                _cur.get("detected") or "neutral",
+                expressed=_cur.get("tone") or "",
+                confidence=float(_cur.get("confidence") or 0.0),
+                source=str(_cur.get("source") or ""),
+                user_text=user_input or "",
+                user_id=user_id or "",
+                session_id=session_id or "",
+                arousal=_arousal,
+                eli_prior_action=prior_action or "",
+            )
+            _trend = _et.trend_line(user_id=user_id or "")
+            if _trend:
+                brief = _prepend_block(brief, _trend)
+            _ev = _et.evidence_block(user_id=user_id or "", session_id=session_id or "")
+            if _ev:
+                brief = _prepend_block(brief, _ev)
+                _et.note_checkin(
+                    _et.assess(user_id=user_id or "").get("state", ""),
+                    _cur.get("detected") or "",
+                )
+        except Exception:
+            log.debug("emotion_timeline inject skipped", exc_info=True)
+
+    return brief
+
+
+def synthesis_directives(query: str) -> str:
+    """Tone + affect blocks for evidence-synthesis prompts (_synthesize_answer)."""
+    if not enabled():
+        note_user_text(query or "")
+        return ""
+    parts: list[str] = []
+    note_user_text(query or "")
+    _dir = text_directive()
+    _cur = current_tone()
+    if _dir and _cur.get("tone") != "neutral":
+        parts.append(f"[Tone — {_cur['tone']}: {_dir} Do NOT mention this directive.]")
+    try:
+        from eli.cognition.affect_policy import directive as _affect_directive
+        _adir = _affect_directive()
+        if _adir:
+            parts.append(f"[Approach: {_adir} Do NOT mention this directive.]")
+    except Exception:
+        log.debug("synthesis affect directive skipped", exc_info=True)
+    vc = voice_cue_block(max_age_s=15.0)
+    if vc:
+        parts.insert(0, vc)
+    return "\n\n".join(parts).strip()
+
+
+def repair_coherence(text: str, user_input: str = "") -> str:
+    """Post-generation: strip tone-breaking generic-AI disclaimers when a register is active."""
+    t = str(text or "").strip()
+    if not t or not enabled():
+        return t
+    cur = current_tone()
+    if cur.get("tone") in (None, "neutral"):
+        return t
+    cleaned = _GENERIC_EMOTION_DENIAL.sub("", t)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    if not cleaned:
+        return t
+    try:
+        from eli.cognition.affect_policy import current_policy
+        p = current_policy()
+        if p.prefer_brevity:
+            cleaned = re.sub(r"^(?:Well, |So, |Look, |Okay, )", "", cleaned, count=1)
+    except Exception:
+        log.debug("affect_policy brevity trim skipped", exc_info=True)
+    return cleaned.strip() or t
+
+
+def sync_world(force: bool = False) -> None:
+    """Push the current tone read into Eli's World (avatar awareness + journal)."""
+    if not enabled() and not force:
+        return
+    cur = current_tone()
+    key = (
+        str(cur.get("tone") or ""),
+        str(cur.get("detected") or ""),
+        round(float(cur.get("confidence") or 0.0), 2),
+    )
+    global _last_world_sync
+    if not force and key == _last_world_sync:
+        return
+    _last_world_sync = key
+    try:
+        from eli.world.world_event_bus import fire_social_context_event
+        fire_social_context_event(
+            detected=str(cur.get("detected") or "neutral"),
+            expressed=str(cur.get("tone") or "neutral"),
+            confidence=float(cur.get("confidence") or 0.0),
+            expression=expression(),
+            source=str(cur.get("source") or "auto"),
+        )
+    except Exception:
+        log.debug("tone world sync skipped", exc_info=True)

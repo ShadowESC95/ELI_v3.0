@@ -20,6 +20,10 @@ import queue
 import threading
 from typing import Any, Dict, Optional
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 _event_queue: "queue.Queue[Optional[tuple]]" = queue.Queue(maxsize=512)
 _worker_started = False
 _lock = threading.Lock()
@@ -35,7 +39,7 @@ def _world_worker() -> None:
             from eli.world.local_world_bridge import append_event
             append_event(event_type, source, summary, payload)
         except Exception:
-            pass                  # world unavailable — don't crash runtime
+            log.debug("world_event_bus append_event skipped", exc_info=True)
         finally:
             _event_queue.task_done()
 
@@ -112,6 +116,28 @@ def fire_tool_result_event(action: str, ok: bool, source: str = "executor") -> N
             f"Action {action} failed.",
             {"action": action},
         )
+
+
+def fire_social_context_event(
+    *,
+    detected: str,
+    expressed: str,
+    confidence: float,
+    expression: str,
+    source: str = "tone_adaptor",
+) -> None:
+    """Sync the unified tone read into Eli's World (awareness + avatar expression)."""
+    fire_world_event(
+        "social_context",
+        source,
+        f"User seems {detected}; ELI expressing {expressed} ({expression}).",
+        {
+            "detected": detected,
+            "expressed": expressed,
+            "confidence": confidence,
+            "expression": expression,
+        },
+    )
 
 
 def fire_improvement_event(proposal_count: int, failure_count: int) -> None:

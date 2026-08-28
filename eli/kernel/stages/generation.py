@@ -366,6 +366,11 @@ class GenerationMixin:
                     situation_brief=situation_brief,
                 )
                 log.debug("[COGNITIVE] Generating response with GGUF...")
+                try:
+                    from eli.cognition import expression_state as _es_inf
+                    _es_inf.set_thinking(True)
+                except Exception:
+                    log.debug("expression_state set_thinking skipped", exc_info=True)
                 broker = _get_inference_broker() if _get_inference_broker else None
                 if broker and broker.gguf_ready:
                     log.debug("[COGNITIVE] Using broker path")
@@ -525,9 +530,24 @@ class GenerationMixin:
                             temperature=gen["temperature"],
                         )
                 if response:
+                    try:
+                        from eli.cognition import expression_state as _es_inf
+                        _es_inf.set_thinking(False)
+                    except Exception:
+                        log.debug("expression_state set_thinking skipped", exc_info=True)
                     return _normalize_assistant_text(prompt, response)
+                try:
+                    from eli.cognition import expression_state as _es_inf
+                    _es_inf.set_thinking(False)
+                except Exception:
+                    log.debug("expression_state set_thinking skipped", exc_info=True)
                 raise RuntimeError("GGUF returned empty response")
             except Exception as e:
+                try:
+                    from eli.cognition import expression_state as _es_inf
+                    _es_inf.set_thinking(False)
+                except Exception:
+                    log.debug("expression_state set_thinking skipped", exc_info=True)
                 self._gguf_available = False
                 self._gguf_load_error = str(e)
                 log.debug(f"[COGNITIVE] GGUF chat failed: {e}")
@@ -1058,6 +1078,13 @@ class GenerationMixin:
             )
         except Exception as _rp_err:
             log.debug(f"[COGNITIVE] response pipeline skipped: {_rp_err}")
+
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            response = _ta.repair_coherence(response, user_input or "")
+            _ta.sync_world()
+        except Exception as _tc_err:
+            log.debug(f"[COGNITIVE] tone coherence skipped: {_tc_err}")
 
         try:
             self._publish_last_response_meta(
