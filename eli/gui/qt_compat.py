@@ -42,7 +42,7 @@ try:
         QTextCursor, QTextCharFormat, QBrush, QPen, QAction, QDesktopServices,
     )
     from PySide6.QtWidgets import (  # noqa: F401
-        QApplication, QMainWindow, QWidget, QDialog, QDockWidget,
+        QApplication, QMainWindow, QWidget, QDialog, QDialogButtonBox, QDockWidget,
         QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QStackedLayout,
         QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit,
         QComboBox, QCheckBox, QRadioButton, QSpinBox, QDoubleSpinBox,
@@ -64,7 +64,7 @@ except Exception:
             QTextCursor, QTextCharFormat, QBrush, QPen, QAction, QDesktopServices,
         )
         from PyQt6.QtWidgets import (  # noqa: F401
-            QApplication, QMainWindow, QWidget, QDialog, QDockWidget,
+            QApplication, QMainWindow, QWidget, QDialog, QDialogButtonBox, QDockWidget,
             QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QStackedLayout,
             QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit,
             QComboBox, QCheckBox, QRadioButton, QSpinBox, QDoubleSpinBox,
@@ -86,7 +86,7 @@ except Exception:
                 QTextCursor, QTextCharFormat, QBrush, QPen, QDesktopServices,
             )
             from PyQt5.QtWidgets import (  # noqa: F401
-                QApplication, QMainWindow, QWidget, QDialog, QDockWidget,
+                QApplication, QMainWindow, QWidget, QDialog, QDialogButtonBox, QDockWidget,
                 QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QStackedLayout,
                 QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit,
                 QComboBox, QCheckBox, QRadioButton, QSpinBox, QDoubleSpinBox,
@@ -121,7 +121,7 @@ except Exception:
             QColor = QFont = QIcon = QPixmap = QImage = QPainter = QPalette = _stub
             QKeySequence = QTextCursor = QTextCharFormat = QBrush = QPen = _stub
             QDesktopServices = _stub
-            QApplication = QMainWindow = QWidget = QDialog = QDockWidget = _Stub
+            QApplication = QMainWindow = QWidget = QDialog = QDialogButtonBox = QDockWidget = _Stub
             QVBoxLayout = QHBoxLayout = QGridLayout = QFormLayout = QStackedLayout = _Stub
             QLabel = QPushButton = QLineEdit = QTextEdit = QPlainTextEdit = _Stub
             QComboBox = QCheckBox = QRadioButton = QSpinBox = QDoubleSpinBox = _Stub
