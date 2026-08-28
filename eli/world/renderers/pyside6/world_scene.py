@@ -5,15 +5,90 @@ from typing import Any, Dict, Iterable, List, Tuple
 from eli.gui.qt_compat import (
     QBrush,
     QColor,
+    QFrame,
     QGraphicsEllipseItem,
+    QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsTextItem,
     QPen,
+    QRectF,
+    Qt,
 )
 from eli.world.avatar.locomotion import ROOM_COORDS
 from eli.world.core.ontology import get_default_rooms
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
+
+def _face_params(expression: str) -> dict:
+    try:
+        from eli.gui.widgets.eli_face import face_params
+        return face_params(expression)
+    except Exception:
+        log.debug("world_scene face_params fallback", exc_info=True)
+        return {"brow": 0.0, "slant": 0.0, "eye": 0.8, "curve": 0.05, "open": 0.0, "pupil": 0.0}
+
+
+class AvatarFaceItem(QGraphicsItem):
+    """Mini expressive avatar marker on the world map — mirrors tone_adaptor expression."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._expression = "neutral"
+        self.setZValue(20)
+
+    def set_expression(self, expression: str) -> None:
+        self._expression = str(expression or "neutral").lower()
+        self.update()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return QRectF(-20, -20, 40, 40)
+
+    def paint(self, painter, option, widget=None) -> None:  # noqa: N802
+        c = _face_params(self._expression)
+        skin = QColor("#f4f7cf")
+        ink = QColor("#2d3220")
+        painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(ink, 2))
+        painter.setBrush(QBrush(skin))
+        painter.drawEllipse(QRectF(-16, -16, 32, 32))
+        eye_y = -4
+        eye_w = 6
+        eye_h = max(2.0, 6 * float(c.get("eye", 0.8)))
+        brow_y = eye_y - 8 - float(c.get("brow", 0)) * 3
+        for sign in (-1, 1):
+            ex = sign * 7
+            painter.setBrush(QBrush(QColor("#ffffff")))
+            painter.drawEllipse(QRectF(ex - eye_w / 2, eye_y - eye_h / 2, eye_w, eye_h))
+            if float(c.get("eye", 0)) > 0.25:
+                pr = 2.2
+                painter.setBrush(QBrush(ink))
+                painter.drawEllipse(QRectF(ex - pr / 2, eye_y - pr / 2 + float(c.get("pupil", 0)) * 2, pr, pr))
+            inner_x = ex - sign * 4
+            outer_x = ex + sign * 4
+            inner_y = brow_y - float(c.get("slant", 0)) * 3
+            painter.setPen(QPen(ink, 2))
+            painter.drawLine(int(inner_x), int(inner_y), int(outer_x), int(brow_y))
+        open_amt = float(c.get("open", 0))
+        curve = float(c.get("curve", 0))
+        mouth_w = 14
+        mouth_h = 3 + abs(curve) * 4 + open_amt * 5
+        mx = -mouth_w / 2
+        my = 8
+        painter.setPen(QPen(ink, 2))
+        if open_amt > 0.15:
+            painter.setBrush(QBrush(QColor("#7a2f36")))
+            painter.drawChord(int(mx), int(my - mouth_h / 2), int(mouth_w), int(max(4, mouth_h)), 0, 180 * 16)
+        else:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            span = 140 * 16
+            if curve >= 0:
+                painter.drawArc(int(mx), int(my - mouth_h), int(mouth_w), int(mouth_h * 2), 200 * 16, span)
+            else:
+                painter.drawArc(int(mx), int(my), int(mouth_w), int(mouth_h * 2), 20 * 16, span)
 
 
 ROOM_PALETTE = {
@@ -50,9 +125,7 @@ class EliWorldScene(QGraphicsScene):
         self.setSceneRect(-510, -380, 1020, 760)
         self.room_items: Dict[str, QGraphicsRectItem] = {}
         self.object_items: Dict[str, List[Any]] = {}
-        self.avatar_item = QGraphicsEllipseItem(-14, -14, 28, 28)
-        self.avatar_item.setBrush(QBrush(QColor("#f4f7cf")))
-        self.avatar_item.setPen(QPen(QColor("#2d3220"), 2))
+        self.avatar_item = AvatarFaceItem()
         self._draw_house()
 
     def _palette(self, room: str) -> Tuple[QColor, QColor]:
@@ -202,7 +275,7 @@ class EliWorldScene(QGraphicsScene):
                 try:
                     self.removeItem(item)
                 except Exception:
-                    pass
+                    log.debug("world_scene removeItem skipped", exc_info=True)
         self.object_items.clear()
 
     def _room_object_offset(self, idx: int) -> Tuple[float, float]:
@@ -225,7 +298,7 @@ class EliWorldScene(QGraphicsScene):
             try:
                 dot.setToolTip(str(obj.get("symbolic_meaning") or obj.get("reason") or object_id))
             except Exception:
-                pass
+                log.debug("world_scene setToolTip skipped", exc_info=True)
             self.addItem(dot)
 
             label = self._add_text(_short(obj.get("name") or object_id, 18), rx + ox + 8, ry + oy - 10, "#fff8df", 68)
@@ -236,12 +309,27 @@ class EliWorldScene(QGraphicsScene):
         room = str(avatar.get("room") or "core_room")
         x, y = ROOM_COORDS.get(room, (0.0, 0.0))
         self.avatar_item.setPos(x, y + 34)
+        expr = str(avatar.get("expression") or "neutral")
+        try:
+            if hasattr(self.avatar_item, "set_expression"):
+                self.avatar_item.set_expression(expr)
+        except Exception:
+            log.debug("world_scene avatar expression skipped", exc_info=True)
+        # Live tone wins when non-neutral — same source as TTS + prompt.
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            if _ta.enabled():
+                _cur = _ta.current_tone()
+                if _cur.get("tone") not in (None, "neutral"):
+                    self.avatar_item.set_expression(_ta.expression())
+        except Exception:
+            log.debug("world_scene avatar expression skipped", exc_info=True)
         try:
             self.avatar_item.setToolTip(
                 f"{avatar.get('name', 'ELI')} | {avatar.get('activity')} | {avatar.get('expression')}"
             )
         except Exception:
-            pass
+            log.debug("world_scene avatar expression skipped", exc_info=True)
 
         for r, rect in self.room_items.items():
             _fill, accent = self._palette(r)

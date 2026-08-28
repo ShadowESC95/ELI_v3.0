@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("fastapi")
+
 ROOT = Path(__file__).resolve().parent.parent
 
 _DRIVER = textwrap.dedent(

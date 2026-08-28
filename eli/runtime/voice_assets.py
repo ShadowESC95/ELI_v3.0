@@ -408,6 +408,16 @@ _NAMED_ACCENT_VOICE = {  # a specific catalog voice for a narrower accent word
 }
 
 
+# Legacy spoken names → generic built-in voice styles (no copyrighted character presets).
+_STYLE_SPOKEN_ALIASES = {
+    "hal": "robotic",
+    "jarvis": "refined",
+    "glados": "synthetic",
+    "tars": "robotic",
+    "rick": "energetic",
+}
+
+
 def resolve_voice_query(text: str) -> Dict[str, Any]:
     """Turn a spoken voice request into a concrete choice, without hardcoding ids.
 
@@ -433,7 +443,13 @@ def resolve_voice_query(text: str) -> Dict[str, Any]:
         except Exception:
             log.debug("natural voice match failed", exc_info=True)
 
-    # Character voices first ("hal", "jarvis", "glados"…).
+    # Legacy spoken aliases map to generic built-in styles, not named characters.
+    for alias, style in _STYLE_SPOKEN_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", raw):
+            vid = f"char:{style}"
+            return {"voice": vid, "matches": [vid], "kind": "character"}
+
+    # Character voices first (built-in style names: calm, robotic, …).
     try:
         from eli.perception import voice_fx
         for c in voice_fx.list_characters():

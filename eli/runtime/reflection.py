@@ -242,7 +242,7 @@ def reflect_on_period(hours: int = 24) -> Dict[str, Any]:
             if top_topics:
                 insights.append("Top topics: " + ", ".join(w for w, _ in top_topics))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     # Failure patterns
     try:
@@ -250,7 +250,7 @@ def reflect_on_period(hours: int = 24) -> Dict[str, Any]:
         if failures:
             insights.append(f"Recent issues: {len(failures)} failure-related memories stored")
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     # Runtime evidence ledger: repeated actions, challenges, artifacts.
     try:
@@ -305,9 +305,9 @@ def reflect_on_period(hours: int = 24) -> Dict[str, Any]:
                 if _focus_s:
                     insights.append(f"User model — current focus: {_focus_s}")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     # Store reflection as a memory for future context
     if insights:
@@ -343,6 +343,17 @@ def reflect_on_period(hours: int = 24) -> Dict[str, Any]:
 
     if not insights:
         insights.append("No evidence-backed activity signals recorded for this period.")
+
+    try:
+        from eli.world.world_event_bus import fire_world_event as _wfe
+        _wfe(
+            "reflection",
+            "reflection_engine",
+            "; ".join(insights[:3])[:240],
+            {"period_hours": hours, "insight_count": len(insights)},
+        )
+    except Exception:
+        log.debug("reflection world event skipped", exc_info=True)
 
     return {"insights": insights, "period_hours": hours}
 

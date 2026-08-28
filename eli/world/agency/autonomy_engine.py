@@ -10,6 +10,9 @@ from eli.world.avatar.behaviour_controller import AvatarBehaviourController
 from eli.world.avatar.persona_mapper import PersonaToAvatarMapper
 from eli.world.core.ontology import get_object_template
 from eli.world.core.schemas import EliWorldState, RoomType, WorldAction, WorldActionType, WorldEvent, WorldObject
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 # ── Reasoning-stage room + object routing ────────────────────────────────────
 # Maps (mode, stage_name) → (RoomType value, object_template_id | None).
@@ -260,7 +263,33 @@ class EliWorldAutonomyEngine:
             total = int(event.payload.get("total_stages", 1))
             if total > 1:
                 a.curiosity = _ease_up(a.curiosity, 0.10)
-        a.timestamp = time()
+        elif et == "social_context":
+            detected = str(event.payload.get("detected") or "neutral").lower()
+            expressed = str(event.payload.get("expressed") or "neutral").lower()
+            conf = float(event.payload.get("confidence") or 0.0)
+            expr = str(event.payload.get("expression") or "")
+            if expr:
+                state.avatar.expression = expr
+            if detected in {"angry", "irritated", "frustrated", "annoyed", "sad"}:
+                a.uncertainty = _ease_up(a.uncertainty, 0.08 * min(1.0, conf))
+            elif detected in {"happy", "joyful", "ecstatic", "excited", "comedic"}:
+                a.curiosity = _ease_up(a.curiosity, 0.10 * min(1.0, conf))
+            if expressed in {"calm", "tender", "professional"}:
+                a.focus = _ease_up(a.focus, 0.08)
+            try:
+                from eli.world.persistence.journal import append_journal_entry
+                if conf >= 0.55 and detected not in ("neutral", ""):
+                    append_journal_entry(
+                        title=f"Social read: user {detected} → ELI {expressed}",
+                        body=(
+                            f"Detected: `{detected}` (confidence {conf:.2f})\n"
+                            f"Expressed register: `{expressed}`\n"
+                            f"Avatar expression: `{expr or state.avatar.expression}`"
+                        ),
+                        source="tone_adaptor",
+                    )
+            except Exception:
+                log.debug("autonomy_engine journal entry skipped", exc_info=True)
 
     def _stable_object_id(self, template_id: str, room: str) -> str:
         digest = sha1(f"{template_id}:{room}".encode("utf-8")).hexdigest()[:10]

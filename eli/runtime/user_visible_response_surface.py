@@ -282,9 +282,11 @@ def coerce_user_visible(result: Any, user_input: Any = "", mode: Any = "") -> st
     if isinstance(result, dict):
         action = str(result.get("action") or "").upper()
 
-        # Prefer a clean response/content field.
+        # Prefer a clean response/content field (including streaming iterators).
         for key in ("response", "content", "message", "text"):
             val = result.get(key)
+            if val is not None and hasattr(val, "__next__"):
+                return _consume_generator(val)
             if isinstance(val, str) and val.strip():
                 return val.strip()
 

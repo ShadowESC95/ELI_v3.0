@@ -132,4 +132,6 @@ def test_prompt_assembly_carries_the_behavioural_directive():
     import inspect
     from eli.kernel.stages import prompt_assembly
     src = inspect.getsource(prompt_assembly)
-    assert "affect_policy" in src
+    assert "build_situation_brief" in src
+    from eli.cognition import tone_adaptor
+    assert "affect_policy" in inspect.getsource(tone_adaptor)
