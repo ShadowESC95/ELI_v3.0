@@ -359,8 +359,29 @@ def _data_dirs() -> tuple[Path, Path]:
 
 
 def runtime_paths() -> Dict[str, Any]:
-    root = _root()
-    _artifacts, _config = _data_dirs()
+    """Return canonical runtime paths for the active install (source, wheel, or AppImage).
+
+    User databases, snapshots, and settings live under the per-user data/config
+    dirs from ``get_paths()`` — never under the read-only AppImage mount.
+    """
+    import sys as _sys
+
+    try:
+        from eli.core.paths import get_paths as _gp
+        p = _gp()
+        root = Path(p.project_root).expanduser().resolve()
+        _artifacts = Path(p.artifacts_dir).expanduser().resolve()
+        _config = Path(p.config_dir).expanduser().resolve()
+        _models = Path(p.models_dir).expanduser().resolve()
+        _user_db = Path(p.user_db).expanduser().resolve()
+        _agent_db = Path(p.agent_db).expanduser().resolve()
+    except Exception:
+        root = _root()
+        _artifacts, _config = _data_dirs()
+        _models = root / "models"
+        _user_db = _artifacts / "db" / "user.sqlite3"
+        _agent_db = _artifacts / "db" / "agent.sqlite3"
+
     snap = _read_json(_artifacts / "runtime_snapshot.json")
     cfg = _read_json(_config / "settings.json")
 
@@ -375,20 +396,27 @@ def runtime_paths() -> Dict[str, Any]:
     if model_path and not Path(model_path).expanduser().is_absolute():
         candidates = [
             (root / model_path).resolve(),
+            (_models / model_path).resolve(),
+            (_models / "gguf" / "base" / Path(model_path).name).resolve(),
             (root / "models" / model_path).resolve(),
             (root / "models" / "gguf" / "base" / Path(model_path).name).resolve(),
         ]
-        model_path = str(next((p for p in candidates if p.exists()), candidates[0]))
+        model_path = str(next((c for c in candidates if c.exists()), candidates[0]))
+
+    _venv_py = root / ".venv" / "bin" / "python3"
+    _python = str(_venv_py.resolve()) if _venv_py.exists() else _sys.executable
 
     return {
         "project_root": str(root),
-        "python": str((root / ".venv" / "bin" / "python3").resolve()),
+        "data_dir": str(_artifacts),
+        "config_dir": str(_config),
+        "python": _python,
         "runtime_snapshot": str(_artifacts / "runtime_snapshot.json"),
         "config_settings": str(_config / "settings.json"),
         "model_path": model_path,
-        "models_dir": str(root / "models"),
-        "user_db": str(_artifacts / "db" / "user.sqlite3"),
-        "agent_db": str(_artifacts / "db" / "agent.sqlite3"),
+        "models_dir": str(_models),
+        "user_db": str(_user_db),
+        "agent_db": str(_agent_db),
         "persona_base": str(root / "eli" / "cognition" / "persona.txt"),
         "persona_auto": str(root / "eli" / "cognition" / "persona.auto.txt"),
         "snapshot": snap,
@@ -611,41 +639,44 @@ def _meta_diagnostic_report(engine: Any, action: str, user_input: Any, intent: D
 def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None, user_input: Any, intent: Dict[str, Any] | None = None, bus_result: Any = None, trace: Dict[str, Any] | None = None) -> Dict[str, Any]:
     act = normalise_action(action)
 
-    # Deterministic grounding gate — first evidence source for surface actions.
-    try:
-        from eli.runtime.deterministic_grounding_gate import (
-            _ELI_V14_SURFACE_ACTIONS,
-            render_action as _dg_render,
-        )
-        _mode = ""
+    # Actions with dedicated evidence builders (trace + telemetry, memory audit)
+    # must not be short-circuited by the deterministic grounding gate.
+    _EVIDENCE_BUILDER_ACTIONS = frozenset({"EXPLAIN_LAST_RESPONSE", "MEMORY_AUDIT"})
+    if act not in _EVIDENCE_BUILDER_ACTIONS:
         try:
-            from eli.cognition.reasoning_modes import canonical_mode as _canon
-            _mode = str(_canon((intent or {}).get("reasoning_mode") or "quick"))
+            from eli.runtime.deterministic_grounding_gate import (
+                _ELI_V14_SURFACE_ACTIONS,
+                render_action as _dg_render,
+            )
+            _mode = ""
+            try:
+                from eli.cognition.reasoning_modes import canonical_mode as _canon
+                _mode = str(_canon((intent or {}).get("reasoning_mode") or "quick"))
+            except Exception:
+                pass
+            if act in _ELI_V14_SURFACE_ACTIONS or act == "RUNTIME_STATUS":
+                _dg_text = str(
+                    _dg_render(act, dict(args or {}), str(user_input or ""), mode_label=_mode)
+                    or ""
+                ).strip()
+                if _dg_text and '"surface": "missing_deterministic_renderer"' not in _dg_text:
+                    try:
+                        from eli.runtime.response_pipeline import finalize_response_text
+                        _dg_text = finalize_response_text(
+                            _dg_text, user_input=str(user_input or ""), mode=_mode, action=act,
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "ok": True,
+                        "action": act,
+                        "content": _dg_text,
+                        "response": _dg_text,
+                        "report": {"source": "deterministic_grounding_gate"},
+                        "evidence_source": "deterministic_grounding_gate",
+                    }
         except Exception:
             pass
-        if act in _ELI_V14_SURFACE_ACTIONS or act == "RUNTIME_STATUS":
-            _dg_text = str(
-                _dg_render(act, dict(args or {}), str(user_input or ""), mode_label=_mode)
-                or ""
-            ).strip()
-            if _dg_text and '"surface": "missing_deterministic_renderer"' not in _dg_text:
-                try:
-                    from eli.runtime.response_pipeline import finalize_response_text
-                    _dg_text = finalize_response_text(
-                        _dg_text, user_input=str(user_input or ""), mode=_mode, action=act,
-                    )
-                except Exception:
-                    pass
-                return {
-                    "ok": True,
-                    "action": act,
-                    "content": _dg_text,
-                    "response": _dg_text,
-                    "report": {"source": "deterministic_grounding_gate"},
-                    "evidence_source": "deterministic_grounding_gate",
-                }
-    except Exception:
-        pass
 
     if act == "EXPLAIN_LAST_RESPONSE":
         prev = _last_trace(engine)

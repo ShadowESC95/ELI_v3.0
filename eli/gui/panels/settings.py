@@ -358,8 +358,9 @@ class AdvancedSettingsDialog(QDialog):
         except Exception:
             pass
         try:
+            from eli.integrations.ollama.client import get_active_host
             from eli.gui.gui_eli_original import OllamaModelManager
-            host = "http://localhost:11434"
+            host = get_active_host()
             om = OllamaModelManager()
             ollama_names = om.list_models(host)
             for name in ollama_names:
