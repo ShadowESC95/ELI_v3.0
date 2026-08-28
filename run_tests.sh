@@ -13,16 +13,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests"
 REPORTS_DIR="$SCRIPT_DIR/test_reports"
-PY="${SCRIPT_DIR}/.venv/bin/python"
+VENV="$SCRIPT_DIR/.venv"
+PY="$VENV/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "[..] Creating project virtualenv for tests (.venv)..."
+    python3 -m venv "$VENV"
+fi
 if [ ! -x "$PY" ]; then
     PY="python3"
 fi
 
 mkdir -p "$REPORTS_DIR"
 
-# Ensure subprocess API drivers and lint/MQTT test deps are present on every OS.
+# Ensure subprocess API drivers and lint/MQTT test deps are present (uses project venv).
 if [ -f "$SCRIPT_DIR/requirements-test.txt" ]; then
-    "$PY" -m pip install -q -r "$SCRIPT_DIR/requirements-test.txt" 2>/dev/null || true
+    echo "[..] Ensuring test dependencies (requirements-test.txt)..."
+    "$PY" -m pip install -q --upgrade pip wheel 2>/dev/null || true
+    if ! "$PY" -m pip install -q -r "$SCRIPT_DIR/requirements-test.txt"; then
+        echo "[ERROR] Failed to install test dependencies from requirements-test.txt"
+        echo "        Run: $PY -m pip install -r requirements-test.txt"
+        exit 1
+    fi
 fi
 
 MODE="${1:-full}"

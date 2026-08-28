@@ -179,7 +179,10 @@ fi
 
 if [ -z "${SKIP_TESTS:-}" ]; then
     echo "[pre-flight] Installing test-suite deps (API drivers, pyflakes, paho-mqtt)…"
-    "$PY" -m pip install -q -r "$PROJECT_ROOT/requirements-test.txt" 2>/dev/null || true
+    if ! "$PY" -m pip install -q -r "$PROJECT_ROOT/requirements-test.txt"; then
+        echo "[pre-flight] ERROR: failed to install requirements-test.txt — set SKIP_TESTS=1 to bypass"
+        exit 1
+    fi
     echo "[pre-flight] Running pytest (set SKIP_TESTS=1 to skip)…"
     ( cd "$PROJECT_ROOT" && "$PY" -m pytest -q tests/ )
 fi

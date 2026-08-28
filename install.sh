@@ -532,6 +532,13 @@ if ! "$PIP" install "${_PIP_LINKS[@]}" -r "$REQ" --quiet --ignore-installed; the
     fi
 fi
 
+# Test-suite deps (API/RBAC drivers, pytest, lint gates) — same list as requirements-test.txt.
+if [ -f "$SCRIPT_DIR/requirements-test.txt" ]; then
+    echo "[..] Installing test-suite dependencies..."
+    "$PIP" install -r "$SCRIPT_DIR/requirements-test.txt" --quiet \
+        || warn "Test dependencies failed — run ./run_tests.sh to retry in the project venv."
+fi
+
 # Make launchers executable
 chmod +x "$SCRIPT_DIR/eli.sh" 2>/dev/null || true
 
