@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 def pytest_configure(config):
     """Install all heavy-dep stubs into sys.modules before anything else loads."""
     _install_stubs()
+    _ensure_test_runtime_packages()
     # Test isolation: never write generated artifacts into the user's LIVE
     # artifacts/ tree. Several tests exercise GENERATE_SCRIPT (supernova,
     # quantum-decoherence, ton_618, relative_time) whose deterministic writers
@@ -135,6 +136,22 @@ def _install_stubs():
     for _dep in _OTHER:
         if _dep not in sys.modules:
             sys.modules[_dep] = MagicMock(name=_dep)
+
+
+def _ensure_test_runtime_packages():
+    """API/RBAC subprocess tests need real fastapi — not stubbed, not system-bare."""
+    if "fastapi" in sys.modules and not isinstance(sys.modules["fastapi"], MagicMock):
+        return
+    try:
+        import fastapi  # noqa: F401
+        return
+    except ImportError:
+        pass
+    try:
+        from eli.runtime.package_bootstrap import ensure_test_packages
+        ensure_test_packages()
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

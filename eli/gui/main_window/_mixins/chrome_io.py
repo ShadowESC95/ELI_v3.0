@@ -741,6 +741,13 @@ class ChromeIoMixin:
         try:
             import uvicorn
             from api.server import app as _app
+        except ImportError as _imp_err:
+            from eli.runtime.package_bootstrap import ensure_server_packages
+            if not ensure_server_packages():
+                raise _imp_err from None
+            import uvicorn
+            from api.server import app as _app
+        try:
             # Signal handlers are auto-skipped off the main thread; safe in a Qt app.
             self._srv_uv = uvicorn.Server(uvicorn.Config(_app, host=host, port=port, log_level="warning"))
 

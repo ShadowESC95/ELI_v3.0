@@ -258,6 +258,12 @@ if ($Wheel) {
 Write-Host "[..] Installing dependencies from $(Split-Path $RequirementsFile -Leaf)..."
 Invoke-Pip (@("install") + $PipFindLinksArgs + @("-r", $RequirementsFile, "--quiet"))
 
+$TestReq = Join-Path $ScriptDir "requirements-test.txt"
+if (Test-Path $TestReq) {
+    Write-Host "[..] Installing test-suite dependencies..."
+    Invoke-Pip (@("install", "-r", $TestReq, "--quiet"))
+}
+
 # Seed a clean offline config (never overwrite) + init data dirs/databases.
 $Settings = Join-Path $ScriptDir "config\settings.json"
 $Template = Join-Path $ScriptDir "config\templates\settings.template.json"

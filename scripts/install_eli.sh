@@ -38,6 +38,12 @@ if [ -f requirements-learning.txt ]; then
   python -m pip install -r requirements-learning.txt
 fi
 
+if [ -f requirements-test.txt ]; then
+  echo
+  echo "=== Installing test-suite requirements ==="
+  python -m pip install -r requirements-test.txt
+fi
+
 echo
 echo "=== Preparing launcher ==="
 chmod +x "$ROOT/bin/elix" 2>/dev/null || true
