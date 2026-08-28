@@ -77,6 +77,8 @@ def schedule(engine: Any, user_input: str, intent: Dict[str, Any],
             return False
     except Exception:
         log.debug("background_deepening affect gate skipped", exc_info=True)
+
+    sig = _sig(user_input)
     now = time.time()
     with _LOCK:
         if len(_INFLIGHT) >= _MAX_INFLIGHT or sig in _INFLIGHT:
