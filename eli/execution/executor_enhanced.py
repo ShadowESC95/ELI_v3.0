@@ -2016,6 +2016,7 @@ def chat(message: str, *, model: Optional[str] = None, skip_router: bool = False
         except Exception as _route_err:
             from eli.core.observability import observe
             observe(__name__, "chat router/execute failed", exc=_route_err)
+    st = _load_state()
     ok_lock, reason, details = _verify_persona_lock(st)
     if LOCK_ENFORCED and not ok_lock and (st.get("persona_lock") is not None):
         content = (

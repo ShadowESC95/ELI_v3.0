@@ -94,7 +94,7 @@ def test_no_module_reads_runtime_data_from_its_own_location():
     import re
 
     repo = Path(__file__).resolve().parents[1]
-    canonical = re.compile(r"get_paths|data_dir|user_db_path|memory_db_path|artifacts_dir|ARTIFACTS_DIR")
+    canonical = re.compile(r"get_paths|data_dir|db_dir|project_root|user_db_path|memory_db_path|artifacts_dir|ARTIFACTS_DIR")
     file_rel = re.compile(r"Path\(__file__\)\.resolve\(\)\.parents\[\d\]")
     data_path = re.compile(r'/\s*["\']artifacts["\']')
 
