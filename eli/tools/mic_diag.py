@@ -36,13 +36,28 @@ def _probe_device(idx, seconds=0.6):
 
 
 def _resolve_device():
-    """Prefer the 'pulse' device by name (PulseAudio/PipeWire); fall back to the
-    first input device that opens. Returns (index, name) or (None, None)."""
+    """Prefer ranked USB/headset/Bluetooth hardware — matches mic_resolver on every OS."""
+    try:
+        from eli.perception.mic_resolver import _enumerate_input_devices, _rank_capture_name
+
+        default_idx, devices = _enumerate_input_devices()
+        ranked = sorted(
+            devices,
+            key=lambda t: _rank_capture_name(t[1], is_os_default=(t[0] == default_idx)),
+        )
+        for idx, name in ranked:
+            if _probe_device(idx, seconds=0.3) is not None:
+                return idx, name
+        return None, None
+    except Exception:
+        pass
     names = sr.Microphone.list_microphone_names()
+    for i, n in enumerate(names):
+        if "usb" in (n or "").lower():
+            return i, n
     pulse = next((i for i, n in enumerate(names) if n == "pulse"), None)
     if pulse is not None:
         return pulse, names[pulse]
-    # Otherwise probe in order for the first device that yields a reading.
     for i, n in enumerate(names):
         if _probe_device(i, seconds=0.3) is not None:
             return i, n

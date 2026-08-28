@@ -1,10 +1,10 @@
 """Locks on a greeting not paying for an intent-classification generation.
 
-Ported from v2. From a live 2.2.3 session on a 20.71GB model with 9 GPU layers:
+From a live 2.2.3 session on a 20.71GB model with 9 GPU layers:
 
     user> hey buddy, you better now?
     [GGUF][TIMING] prompt_tokens=1162  nonstream_call_total=45.898s
-    llm_intent: grammar-constrained decode over 187 actions
+    llm_intent: grammar-constrained decode over manifest actions
     [COGNITIVE][TIMING] route=46.884s
 
 Forty-six seconds of inference to conclude "CHAT". The deterministic router
@@ -22,12 +22,10 @@ anchored end to end as pronoun + state adjective + optional temporal tail. There
 is no verb-plus-object slot for a command to hide in, and the existing technical
 -subject guard ("how's the GPU" is a real question, "how's the head" is a hello)
 is extended to the same forms rather than bypassed.
-
-v3 keeps the detector in eli/kernel/stages/_common.py; engine.py re-exports it.
 """
 import pytest
 
-from eli.kernel.stages._common import _is_brief_phatic_prompt as phatic
+from eli.kernel.engine import _is_brief_phatic_prompt as phatic
 
 
 # ── the utterances that were paying 46 seconds ─────────────────────────────
@@ -104,10 +102,3 @@ def test_the_fast_path_can_be_disabled():
 
     src = inspect.getsource(engine)
     assert "ELI_PHATIC_FASTPATH" in src
-
-
-def test_engine_still_re_exports_the_detector():
-    """Callers import it from either place; both must resolve to one function."""
-    from eli.kernel.engine import _is_brief_phatic_prompt as via_engine
-
-    assert via_engine is phatic

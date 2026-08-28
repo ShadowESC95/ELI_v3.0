@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for v2.1.51 (August 2026).** The primary install path is now the
+> **Updated for v2.3.32 (August 2026).** The primary install path is now the
 > prebuilt, CI-launch-tested installers on GitHub Releases (Windows Setup.exe,
 > macOS dmg, Linux AppImage) with first-boot GPU (CUDA/Vulkan/Metal) and
 > starter-model offers; data lives in a per-user `ELI_v2` folder that survives
@@ -9,6 +9,32 @@
 
 A quick reference for the gremlins that actually come up when running ELI. Each one is
 symptom → cause → the exact fix. Add new ones as they surface.
+
+---
+
+## Microphone / voice input silent or "ELI can't hear me" (desktop)
+
+**Symptom:** ELI starts, `[AUDIO] Listening...` appears, but nothing is transcribed — or
+you had to set `ELI_MIC_DEVICE_INDEX` manually on v2.3.30.
+**Cause (v2.3.30 regression):** on Linux/PipeWire, PortAudio's `pulse` wrapper often passed a
+short probe yet stayed silent during real STT; on all platforms a webcam or virtual "Stereo Mix"
+default could win over a connected USB/Bluetooth headset.
+**Fix (v2.3.32+):** upgrade to **v2.3.32** — cross-platform ranked auto-resolve probes USB,
+headset/Chat, and Bluetooth endpoints before built-in/webcam/virtual routes, at each device's
+native sample rate. No env vars required on Linux, macOS, or Windows.
+**Diagnostics:**
+```bash
+python -m eli.tools.mic_diag          # lists devices + measures speech vs ambient
+```
+**Manual override (only if auto-resolve picks the wrong endpoint):**
+```bash
+python -m eli.tools.mic_diag   # note the [N] of your working device
+export ELI_MIC_DEVICE_INDEX=N  # use YOUR index from mic_diag — not a fixed number
+# Linux PipeWire/Pulse pin (optional):
+export ELI_MIC_PULSE_SOURCE="$(pactl get-default-source)"
+```
+On Windows gaming headsets, set the **Chat** mic (not Game) as the default recording device in
+Sound settings. On macOS, pick your AirPods or headset under System Settings → Sound → Input.
 
 ---
 
@@ -158,10 +184,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.11**, so Arc
 Python 3.14 (which has no `llama-cpp-python` wheel) is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v2.0/releases/download/v2.1.51
-wget "$U/ELI_v2-2.1.51-x86_64.AppImage"
-chmod +x ELI_v2-2.1.51-x86_64.AppImage
-./ELI_v2-2.1.51-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v2.0/releases/download/v2.3.32
+wget "$U/ELI_v2-2.3.32-x86_64.AppImage"
+chmod +x ELI_v2-2.3.32-x86_64.AppImage
+./ELI_v2-2.3.32-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -395,7 +421,7 @@ on the server is not the file the listing promised, or is actively hostile.
 ## A plugin is installed but does nothing
 
 Installed plugins arrive **switched off with no permissions granted** — that is
-deliberate. Enable it in Extensions ▸ Installed. It will then ask, one
+deliberate. Enable it in Settings ▸ Marketplace ▸ Installed. It will then ask, one
 capability at a time, the first time it needs each one.
 
 If you chose **Never allow** for a capability, the plugin is never asked again and
@@ -411,7 +437,7 @@ a capability by running at 3am. Run it once from the desktop GUI and choose
 
 ## An MCP server was added but has no tools
 
-Run the doctor (Extensions ▸ MCP servers ▸ Re-check, or `eli.plugins.mcp.doctor()`). It reports
+Run the doctor (Settings ▸ Marketplace, or `eli.plugins.mcp.doctor()`). It reports
 each configured server with the exact fault:
 
 - **runtime missing** — `npx`/`uvx` is not installed or not on PATH. The message
