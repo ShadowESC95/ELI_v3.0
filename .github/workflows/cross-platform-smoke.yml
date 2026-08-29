@@ -77,3 +77,11 @@ jobs:
           tests/claims/test_structural_claims.py
           tests/claims/test_capability_manifest.py::test_manifest_total_matches_capability_count
           tests/claims/test_no_silent_swallow.py
+
+      - name: Eval router cases + socket guard (tools/eval mirror)
+        run: >
+          python -m pytest -q -p no:cacheprovider
+          tests/test_eval_cases.py
+          tests/test_netguard_socket_guard.py
+          tests/test_media_news_regressions.py::test_stt_streaming_play_with_named_service_is_complete
+          tests/test_media_news_regressions.py::test_stt_wake_streaming_play_dispatches_immediately
