@@ -162,13 +162,16 @@ the sound of:
 ## Features
 
 ### Conversation and reasoning
-Five reasoning modes — Quick, Normal, Advanced, Research, Expert — each genuinely multi-pass
-(self-consistency sampling, tree-of-thoughts branches, draft → critique). The mode is auto-selected
-by how deep the question is, and when the supporting evidence is weak ELI deepens on its own: it
-re-gathers harder and escalates one tier to raise its confidence *before* answering. For a quick
-reply it can keep working in the background and surface a better-grounded answer afterwards. A
-12-stage retrieval pipeline (HyDE query expansion → vector + full-text + knowledge-graph retrieval →
-re-rank → synthesis) sits underneath, run by a 14-agent dependency-DAG orchestrator with
+Five reasoning modes — Quick, Normal, Advanced, Research, Expert. Quick uses a **single-pass
+reasoning algorithm** at **light orchestrator depth**; Normal through Expert use genuinely
+multi-pass strategies (self-consistency sampling, tree-of-thoughts branches, draft → critique).
+**Every CHAT mode — including Quick — runs the gradient orchestrator and 15-agent bus** at scaled
+depth; Quick is faster, not a bypass. The mode is auto-selected by how deep the question is, and
+when supporting evidence is weak ELI deepens on its own: it re-gathers harder and escalates one
+tier to raise its confidence *before* answering. For a Quick reply it can keep working in the
+background and surface a better-grounded answer afterwards. Retrieval combines HyDE query expansion
+(when eligible), vector + full-text + knowledge-graph search, re-rank, and synthesis — inside the
+**12-stage cognition pipeline** (S01–S12 in `eli/kernel/pipeline_trace.py`), orchestrated with
 parallelism, retries, caching, and fallback.
 
 ### Memory that persists
