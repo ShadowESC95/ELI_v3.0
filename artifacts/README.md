@@ -15,7 +15,8 @@ artifacts/
 ```
 
 **Dev mode:** `<project>/artifacts/`  
-**Installed:** `~/.local/share/eli/` (Linux), etc.
+**Installed / frozen:** `~/.local/share/ELI_v3/` (Linux), `%LOCALAPPDATA%\\ELI_v3` (Windows),
+`~/Library/Application Support/ELI_v3` (macOS).
 
 Factory reset (GUI Advanced → Clear Memory, or `python tools/clear_memory.py`) wipes
 all learned state, resets `persona.auto.txt`, clears identity from settings, and
