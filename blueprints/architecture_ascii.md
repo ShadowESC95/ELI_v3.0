@@ -1,6 +1,6 @@
 # Blueprint — ELI v3 Full Architecture (ASCII)
 
-> **Updated for 3.0.82.** All CHAT modes → gradient orchestrator; bus composed at S06.
+> **Updated for 3.0.85.** All CHAT modes → gradient orchestrator; bus composed at S06.
 
 The entire system in one drawing, plus the module tree and data layout. Grounded
 in the real source (see `architecture.md` for prose, `diagrams.md` for the
@@ -14,7 +14,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ╔══════════════════════════════════════════════════════════════════════════════════╗
 ║                            ELI v3 — FULL ARCHITECTURE                            ║
 ║                100% local  ·  offline-by-default  ·  model-agnostic                ║
-║               ~190,378 LOC · 593 files · desktop GUI + web app server              ║
+║               ~190,438 LOC · 593 files · desktop GUI + web app server              ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
 
 ┌─ PRESENTATION ────────────────────────────────────────────────────────────────────┐
@@ -133,7 +133,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ## C. Module tree (LOC · key files · role)
 
 ```
-eli/  (~190,378 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard)
+eli/  (~190,438 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │
 ├── __main__.py ················ entry dispatch (GUI | --headless)
 │

@@ -6,16 +6,10 @@ from deep reads of the core + a full structural/code-health sweep — covering e
 package's structure + the algorithm-bearing bodies; claims are grounded in what was
 inspected.
 
-> **Updated for 3.0.82 (August 2026).** Cognition unified with v2.3.40+ (gradient
-> orchestrator, shared retrieval, S01–S12). **~190,378 LOC / 593 `.py` files**,
+> **Updated for 3.0.85 (August 2026).** Cognition unified with v2.3.44+ (gradient
+> orchestrator, shared retrieval, S01–S12). **~190,438 LOC / 593 `.py` files**,
 > **232** capabilities (**215** doc-routable; **211** `SUPPORTED_ACTIONS`). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
-
-Grounded architecture documentation for ELI v3. Each doc reads the real code,
-states what's there, and gives an honest strength/weakness assessment. Written
-from deep reads of the core + a full structural/code-health sweep — covering every
-package's structure + the algorithm-bearing bodies; claims are grounded in what was
-inspected.
-
+>
 > **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
 > (`api/server.py`) with MQTT smart-home, RBAC, tamper-evident audit, browser voice.
 > **[state_snapshot.md](state_snapshot.md)** holds the last full measured sweep.
@@ -51,9 +45,9 @@ inspected.
   verified subsystem facts, the fixes shipped this session, and the honest limits.
   Unbiased, just facts.
 - **[capability_catalogue.md](capability_catalogue.md)** — exhaustive, ground-truth
-  catalogue of all actions (208) + every package's modules (5 parts).
+  catalogue of all actions (232) + every package's modules (5 parts).
 - **[project_overview.md](project_overview.md)** — start here for the engineering
-  view. What ELI is, scale (~142k LOC / 369 files + web app), architecture by layer, the
+  view. What ELI is, scale (~190k LOC / 593 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
   topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.
@@ -91,7 +85,7 @@ inspected.
   + self-upgrade route through the coding agent) and the in-process background task
   manager (heavy work runs on threads; `CHECK_JOB`/`BACKGROUND_JOBS`).
 - **[state_snapshot.md](state_snapshot.md)** — **authoritative current-state snapshot**
-  (measured): scale, capabilities (208), tests, GPU, and every recent change. Start here
+  (measured): scale, capabilities (232), tests, GPU, and every recent change. Start here
   for "what is true right now".
 - **[dag_orchestrator.md](dag_orchestrator.md)** — the DAG elevated to a full execution
   orchestrator (parallel/retries/fallback/cache/telemetry), wired through agents +

@@ -1,4 +1,4 @@
-> **Updated for 3.0.82 (August 2026).** 3.0.82+ unified the cognition pipeline:
+> **Updated for 3.0.85 (August 2026).** 3.0.85+ unified the cognition pipeline:
 > all CHAT modes run a **gradient orchestrator** (Quick = light/fast planner;
 > Expert = full/deep); shared turn retrieval (`eli/memory/retrieval.py`); FAISS
 > tombstones on delete; canonical S01–S12 logging (`pipeline_trace.py`); Stage 12
@@ -13,7 +13,7 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime
 > + assistant GUI (and, as of 2026-06-28, a self-hosted web app — `api/server.py`,
 > documented in `ELI_USER_MANUAL.md`). No cloud, no APIs on the inference path, no hardcoded
-> model. **190,378 LOC** across **593** Python files in `eli/`; **`api/server.py`**
+> model. **190,438 LOC** across **593** Python files in `eli/`; **`api/server.py`**
 > adds **5,303** lines; **232** manifest capabilities (**215** doc-routable;
 > **211** `SUPPORTED_ACTIONS`; **189** router-routable). Measured 2026-08-29.
 
@@ -54,7 +54,7 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 | `eli/coding` | 2.7k | 15 | `CodeAgent` — plan→search→verify→repair |
 | `eli/world` | 1.9k | 26 | EliWorld event bus, autonomy, avatar |
 | `eli/integrations` | 1.8k | 12 | Ollama client, **MCP** client/server |
-| **total (`eli/`)** | **190,378** | **593** | full tree |
+| **total (`eli/`)** | **190,438** | **593** | full tree |
 
 ### Largest modules (post-decomposition — not v2 monoliths)
 

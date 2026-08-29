@@ -3,7 +3,7 @@
 **Read this before adding anything.** Measured from the **v3** tree on
 2026-08-29 — not v2 monolith numbers.
 
-> **Updated for v3.0.82.** Cognition policy matches v2.3.40+ (gradient
+> **Updated for v3.0.85.** Cognition policy matches v2.3.44+ (gradient
 > orchestrator, shared retrieval, S01–S12). Layout differs: decomposed
 > `kernel/stages/`, `gui/main_window/`, `execution/effectors/`.
 
@@ -13,7 +13,7 @@
 
 | | |
 |---|---|
-| `eli/` Python | **190,378 lines** · **593 modules** |
+| `eli/` Python | **190,438 lines** · **593 modules** |
 | `api/server.py` | **5,303 lines** (FastAPI web app + dashboard) |
 | `capability_manifest.json` | **232** total actions |
 | Doc-routable (`routable` ∨ `in_supported_list`) | **215** |

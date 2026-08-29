@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.82 (August 2026).** The primary install path is now the
+> **Updated for 3.0.85 (August 2026).** The primary install path is now the
 > prebuilt, CI-launch-tested installers on GitHub Releases (Windows Setup.exe,
 > macOS dmg, Linux AppImage) with first-boot GPU (CUDA/Vulkan/Metal) and
 > starter-model offers; data lives in a per-user `ELI_v3` folder that survives
@@ -19,7 +19,7 @@ you had to set `ELI_MIC_DEVICE_INDEX` manually on v2.3.30.
 **Cause (v2.3.30 regression):** on Linux/PipeWire, PortAudio's `pulse` wrapper often passed a
 short probe yet stayed silent during real STT; on all platforms a webcam or virtual "Stereo Mix"
 default could win over a connected USB/Bluetooth headset.
-**Fix (3.0.82+):** upgrade to **3.0.82** — cross-platform ranked auto-resolve probes USB,
+**Fix (3.0.85+):** upgrade to **3.0.85** — cross-platform ranked auto-resolve probes USB,
 headset/Chat, and Bluetooth endpoints before built-in/webcam/virtual routes, at each device's
 native sample rate. No env vars required on Linux, macOS, or Windows.
 **Diagnostics:**
@@ -184,10 +184,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.11**, so Arc
 Python 3.14 (which has no `llama-cpp-python` wheel) is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/3.0.82
-wget "$U/ELI_v3-3.0.82-x86_64.AppImage"
-chmod +x ELI_v3-3.0.82-x86_64.AppImage
-./ELI_v3-3.0.82-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/3.0.85
+wget "$U/ELI_v3-3.0.85-x86_64.AppImage"
+chmod +x ELI_v3-3.0.85-x86_64.AppImage
+./ELI_v3-3.0.85-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small

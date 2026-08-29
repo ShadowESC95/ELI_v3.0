@@ -1,6 +1,6 @@
 # ELI GUI
 
-> **Updated for 3.0.82.** v3 decomposed the v2 GUI monolith into packages.
+> **Updated for 3.0.85.** v3 decomposed the v2 GUI monolith into packages.
 > Ollama model selector fixed on packaged builds (`QDialogButtonBox` via
 > `eli/gui/qt_compat.py`).
 
