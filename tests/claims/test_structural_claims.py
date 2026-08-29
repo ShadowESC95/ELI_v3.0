@@ -1,4 +1,4 @@
-"""CLAIM: the headline structural facts hold — the 14-agent bus, 5 reasoning
+"""CLAIM: the headline structural facts hold — the 15-agent bus, 5 reasoning
 modes, 13 main GUI tabs, 4 SQLite stores, and the load-bearing callables the
 blueprints describe (netguard, evidence-planner, report-pipeline, autonomy ticks,
 grounding gate, etc.) all actually exist and are wired.
@@ -11,11 +11,11 @@ import pytest
 
 from . import _helpers as H
 
-# ── 14 bus agents ────────────────────────────────────────────────────────────
+# ── 15 bus agents ────────────────────────────────────────────────────────────
 _EXPECTED_AGENTS = [
     "memory", "knowledge_graph", "system", "habit", "self_improvement",
     "proactive", "frontier", "plugin", "capability", "voice", "orchestrator",
-    "file_code", "introspection", "reflection",
+    "file_code", "introspection", "reflection", "critic",
 ]
 
 
@@ -26,9 +26,9 @@ def test_bus_agent_registered(name):
     assert name in names, f"bus agent '{name}' not registered"
 
 
-def test_bus_has_at_least_14_agents():
+def test_bus_has_at_least_15_agents():
     from eli.cognition.agent_bus import _ALL_AGENTS
-    assert len(_ALL_AGENTS) >= 14
+    assert len(_ALL_AGENTS) >= 15
 
 
 # ── 5 reasoning modes ────────────────────────────────────────────────────────

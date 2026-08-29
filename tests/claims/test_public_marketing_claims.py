@@ -90,8 +90,13 @@ def test_wake_word_training_hook_exists():
 
 
 def test_gender_matched_tts_fallback_exists():
-    src = (REPO / "eli" / "perception" / "tts_router.py").read_text(encoding="utf-8")
-    assert "gender" in src.lower() and "fallback" in src.lower()
+    """v3 documents gender-matched fallbacks in voice_fx; v2 in tts_router."""
+    hits = []
+    for rel in ("eli/perception/tts_router.py", "eli/perception/voice_fx.py"):
+        src = (REPO / rel).read_text(encoding="utf-8").lower()
+        if "gender" in src and "fallback" in src:
+            hits.append(rel)
+    assert hits, "gender-matched TTS fallback not found in tts_router or voice_fx"
 
 
 def test_custom_agent_loader_exists():
