@@ -1,9 +1,15 @@
-# ELI MKXI — Full Project Breakdown & Assessment
+# ELI v3 — Full Project Breakdown & Assessment
+
+> **Updated for 3.0.81 (August 2026).** Cognition pipeline unified: gradient
+> orchestrator for all CHAT modes, shared retrieval, canonical S01–S12 tracing.
+> 3.0.81+ restores cross-platform microphone auto-resolve (USB / Bluetooth /
+> headset before built-in; live subprocess probes). Primary install: CI-launch-tested
+> installers on [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases).
 
 A grounded, total-project read: what ELI is, its scale and shape, the
 architecture layer by layer, what's strong, where it's weak (with numbers), an
 honest verdict, and the highest-leverage work. Companion to
-`orchestration_and_agents.md` (agent/bus detail) and `agent_bus.md`.
+`orchestration_and_agents.md` (agent/bus detail).
 
 > Method note: this is built from deep reads of the core modules (engine,
 > executor, router, agent_bus, orchestrator, planners, memory, grounding gate,
@@ -36,33 +42,31 @@ wrapper.
 
 ## 2. Scale & shape
 
-**143,432 LOC across 370 Python files** (`eli/`), plus the FastAPI web server
-(`api/server.py`, ~3,884 lines with an embedded dashboard PWA) and 205 test files.
-*(measured 2026-06-28.)*
+**190,378 LOC across 593 Python files** (`eli/`), plus the FastAPI web server
+(`api/server.py`, ~2,309 lines with an embedded dashboard PWA) and 389 test files.
+*(measured 2026-08-28.)*
 
 | Subsystem | LOC | Files | Role |
 |---|---|---|---|
-| `execution/` | 23.1k | 14 | router + executor (action dispatch) |
-| `runtime/` | 22.6k | 80 | grounding, evidence, introspection, surfaces |
-| `gui/` | 20.3k | 20 | PySide6 desktop app |
-| `kernel/` | 14.5k | 8 | the engine (pipeline driver) |
-| `cognition/` | 14.0k | 27 | agent bus, orchestrator, inference, persona, modes |
-| `tools/` | 8.9k | 30 | image engine, news, etc. |
-| `memory/` | 7.0k | 13 | SQLite/FTS5 + FAISS + KG |
-| `perception/` | 6.8k | 20 | vision, STT, TTS, OS control |
-| `core/` | 6.6k | 24 | paths, settings, hardware profile |
-| `planning/` | 3.9k | 24 | proactive daemon, task planning |
-| `learning/` | 3.3k | 12 | LoRA self-training |
-| `plugins/` | 1.9k | 28 | runtime plugin manager |
-| `world/` | 1.5k | 26 | world event bus, local world bridge |
+| `runtime/` | 33.6k | 93 | grounding, evidence, introspection, surfaces |
+| `execution/` | 26.2k | 16 | router + executor (action dispatch) |
+| `gui/` | 26.1k | 27 | PySide6 desktop app |
+| `cognition/` | 18.5k | 37 | agent bus, orchestrator, inference, persona, modes |
+| `kernel/` | 16.7k | 8 | the engine (pipeline driver) |
+| `perception/` | 9.5k | 24 | vision, STT, TTS, OS control |
+| `core/` | 9.4k | 30 | paths, settings, hardware profile |
+| `memory/` | 8.0k | 13 | SQLite/FTS5 + FAISS + KG |
+| `tools/` | 7.5k | 29 | image engine, news, etc. |
+| `plugins/` | 5.9k | 34 | runtime plugin manager |
+| `learning/` | 4.3k | 14 | LoRA self-training |
+| `planning/` | 4.2k | 24 | proactive daemon, task planning |
+| `world/` | 1.8k | 26 | world event bus, local world bridge |
 | `integrations/`,`utils/`,`contracts/`,`system/`,`cli/` | ~5.5k | — | misc |
 
-**The former god-files, now largely decomposed in v3:** `executor_enhanced.py`
-(14.6k → 6.4k, 56% strangled), `engine.py` (13.5k → 7.0k, six stage mixins on
-`CognitiveEngine`), `gui/gui_eli_original.py` (11.6k → 7, gutted to a shim),
-`router_enhanced.py` (7.3k → 5.3k, intent families → `execution/routing/`),
-`labs_tab.py` (5.7k → 30, gutted). Next tier unchanged: `memory.py` (4.5k),
-`deterministic_grounding_gate.py` (4.3k). See `MONOLITH_DECOMPOSITION_MAP.md`.
+**Four files carry ~⅓ of the codebase:** `executor_enhanced.py` (~15.9k LOC),
+`engine.py` (~15.2k), `gui/eli_pro_audio_gui_v2_0.py` (~12.6k),
+`router_enhanced.py` (~8.2k). Next tier: `labs_tab.py` (5.7k),
+`memory.py` (4.5k), `deterministic_grounding_gate.py` (4.3k).
 
 ## 3. Architecture, layer by layer
 
@@ -70,23 +74,19 @@ wrapper.
   adapt n_ctx / gpu_layers / batch to whatever model + GPU are present
   (filename→ctx table; VRAM compute-buffer reservation). Model-agnostic.
 - **Routing** — `execution/router_enhanced.py`: regex-first with LLM-intent
-  fallback + an explicit priority pipeline → one of **208 manifest capabilities**
-  (**183 routable**; 174 executor `SUPPORTED_ACTIONS`). Full reference with activation
+  fallback + an explicit priority pipeline → one of **225 manifest capabilities**
+  (**215 routable**; 204 executor `SUPPORTED_ACTIONS`). Full reference with activation
   phrases: `capabilities_and_actions.md`.
-- **Orchestration** — `kernel/engine.py` gates between the 12-stage
-  `cognition/orchestrator.py` `AgentOrchestrator` (non-quick modes) and the
-  parallel 14-agent `cognition/agent_bus.py` `AgentBus` (quick / fallback). ReAct
-  tool-chaining for non-CHAT actions. Selection now flows through one typed
-  `ExecutionPlan` (`execution/execution_planner.py`). See
-  `orchestration_and_agents.md` for full detail.
+- **Orchestration** — `kernel/engine.py` runs **gradient orchestrator** for all
+  CHAT modes (Quick = light/fast; Expert = full/deep); `dispatch_specialists()`
+  composes the 15-agent `cognition/agent_bus.py` after shared retrieval
+  (`memory/retrieval.py`). AgentBus remains a **fallback** if orchestration fails.
+  ReAct tool-chaining for non-CHAT actions. See `orchestration_and_agents.md`.
 - **Inference** — `cognition/gguf_inference.py`: model-path resolved from env /
   settings (no baked model); RLock-serialized; live runtime override; hot-swap
   with vision models.
-- **Memory** — `memory/memory.py` is the shared foundation (FTS5 + FAISS + KG via
-  `recall_memory`); two deliberate retrieval strategies sit on top (lightweight
-  bus `BusMemoryAgent` vs heavyweight orchestrator `OrchestratorMemoryAgent` with
-  HyDE + RAG + rerank). `memory/knowledge_graph.py`, `memory/vector_store.py`
-  (FAISS, JSON meta).
+- **Memory** — `memory/retrieval.py` owns turn retrieval; `memory/memory.py` is
+  the SQLite/FTS5/FAISS/KG foundation; FAISS tombstones on delete.
 - **Grounding / evidence (the crown jewel)** — `runtime/deterministic_grounding_gate.py`
   (4.3k), `runtime/evidence_ledger.py`, `runtime/evidence_arbitration.py`,
   `runtime/control_contracts.py`, `runtime/grounded_remediation.py` (1.6k),
@@ -94,7 +94,7 @@ wrapper.
   system wrapped around the probabilistic model. Most local-LLM projects have
   nothing comparable.
 - **Security** — `runtime/security.py` `SecurityManager`: **fail-closed shell gate**
-  (`ELI_ALLOWED_CMDS` / `ELI_FULL_CONTROL`; unset ⇒ commands blocked), path
+  (`ELI_ALLOWED_CMDS` / the ELI Full Control toggle; unset ⇒ commands blocked), path
   allow-roots (`ELI_ALLOW_ROOTS`, defaults to project + home), app allowlist with
   a default-safe set, **SHA-256 custom-agent trust registry**
   (`config/trusted_agents.json`), prompt-injection guard, SQL identifier
@@ -131,7 +131,7 @@ wrapper.
    an 11k GUI. The executor is a giant if/elif action ladder. High regression
    surface, hard to hold in the head, painful to unit-test.
 3. **Duplication & overlap.** The shadowed standalone image-engine module (1.75k LOC) was
-   removed, leaving the single `eli/tools/image_engine/` package. `runtime/` (80 files) has
+   removed, leaving the single `eli/tools/image_engine/` package. `runtime/` (93 files) has
    many near-duplicate `personal_memory_*` /
    `*_surface` / `*_response` modules doing overlapping grounding work. Several
    plan representations coexisted (partly consolidated). Fingerprint of fast solo
@@ -141,8 +141,8 @@ wrapper.
    `verify_eli_claims*.sh` versions, diag outputs, `.coverage`, and
    `experimental/*.zip` binaries. Makes the repo look less serious than the code
    is.
-5. **Tests are GREEN (measured 2026-07-01).** 205 test files; `pytest tests/` =
-   **7,348 passed / 0 failed / 45 skipped / 2 xfailed** (~8m16s on the `.venv`/GPU). The 5
+5. **Tests are GREEN (measured 2026-08-28).** 389 test files; `pytest tests/` =
+   **10,970 collected / 10,900+ passed / 54 skipped / 2 xfailed** (~13.5 min on the `.venv`/GPU). The 5
    former reds (deprecated `smart_home` plugin, silent-swallow ratchet, stale blueprint
    ref) were all cleared 2026-07-03. The
    `tests/claims/` contract layer makes it a real safety net.
@@ -176,7 +176,7 @@ Ranked by effect-per-effort:
    into stage modules). Reduces regression surface and makes the pipeline
    readable.
 3. **Delete duplication + clutter.** Collapse the overlapping `runtime/` surfaces,
-   remove root junk/one-off scripts. *(The suite is already green — 7,347 passing;
+   remove root junk/one-off scripts. *(The suite is already green — 8,815 passing;
    this is now signal-to-noise hygiene, not a red-test cleanup.)*
 4. **Consolidate the `runtime/` surfaces.** The many `personal_memory_*` /
    `*_surface` / `*_response` modules want to be a handful of well-named ones.
@@ -184,6 +184,7 @@ Ranked by effect-per-effort:
 Do 1–3 and the engineering would match the ideas — which is the only thing
 standing between ELI and the label "frontier, ground-breaking software people
 can rely on."
+
 
 ## Update — 2.3.7
 

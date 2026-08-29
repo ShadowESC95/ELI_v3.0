@@ -134,7 +134,7 @@ loader tunes to the detected hardware). Nothing OS- or machine-specific breaks t
 - [x] Suite green (7,348 / 0)
 - [x] Eval harness + local judge functional
 - [x] Contract layer green
-- [x] Compiles; 208/208 capabilities active; engine runs
+- [x] Compiles; 208/232 capabilities active; engine runs
 - [x] No personal data / secrets in tracked source
 - [x] Fresh clone clean + builds a wheel
 - [x] First-run creates blank DBs, offline-by-default

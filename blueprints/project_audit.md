@@ -248,7 +248,7 @@ Path: `artifacts/db/`. **[L]** (from `EXPLAIN_MEMORY_RUNTIME`)
 - `capability_manifest.json` — **208** capabilities (regenerated at startup; `generated_at`
   2026-06-17). `capability_inventory.generated.json` is the generated inventory.
 - `executor_enhanced.SUPPORTED_ACTIONS` — **185** action strings (`:1899`). The gap between
-  208 capabilities and 185 actions is expected (capabilities include GUI/registry items that
+  232 capabilities and 185 actions is expected (capabilities include GUI/registry items that
   aren't executor actions). **Note:** the maintainer-memory figure "155 actions / 194 caps" is
   **stale**; the verified current numbers are 174 / 208.
 - Full human catalogue: `blueprints/capabilities_and_actions.md`, `capability_catalogue.md`. **[B]**

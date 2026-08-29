@@ -17,7 +17,7 @@ your own evidence, and — uniquely — **improves its own source code and can e
 re-train its own brain on your conversations.** Unlike Siri, Alexa, or
 ChatGPT, nothing you say to ELI has to leave your house: it is **offline by
 default, enforced at the network socket itself**, with a switch *you* control.
-It is not a chatbot bolted onto a cloud API. It is ~156,000 lines of Python that
+It is not a chatbot bolted onto a cloud API. It is ~190,378 lines of Python in `eli/` that
 form a complete **cognitive operating system for one person and one machine** — and, as of
 2026-06-28, a self-hosted **web app** that brings the same local brain (chat, a live
 dashboard, ELI's own smart-home, multi-user accounts, a tamper-evident audit trail, shared
@@ -134,13 +134,14 @@ and gets out of your way.**
 
 ## For the tech head: the architecture, accurately
 
-~156,000 lines of Python across 392 files. A real cognitive runtime — not an API
+~190,378 lines of Python across 593 files (`eli/`). A real cognitive runtime — not an API
 wrapper:
 
-- **Request pipeline.** A deterministic **router** (207 executor actions, 208
+- **Request pipeline.** A deterministic **router** (204 executor dispatch actions, 225
   declared capabilities) backed by a **model-grounded intent resolver** that
   resolves anything the rules miss against that same catalogue (so near-miss
-  phrasings reach real actions instead of a blind chat) → a **14-agent bus** that runs on a *dependency DAG*
+  phrasings reach real actions instead of a blind chat) → a **gradient orchestrator**
+  (all CHAT modes) that composes a **15-agent bus** on a *dependency DAG*
   (topological layers, parallel where independent) with a **calibrated,
   weight-free confidence aggregator** (each agent's contribution = evidence
   quality × payload density × a *learned* per-agent calibration) → a **12-stage
@@ -202,7 +203,7 @@ wrapper:
 
 **Fully real, load-bearing today:** local model-agnostic inference; offline-by-
 default socket enforcement; persistent adaptive memory (vector + FTS + graph);
-the 14-agent calibrated ensemble; the 5 multi-pass reasoning modes; OS control;
+the 15-agent calibrated ensemble; the 5 multi-pass reasoning modes; OS control;
 vision; gaze; STT/TTS; the deterministic self-introspection layer; the coding
 agent (plan → search → verify → repair → bug-memory); safe self-patching; the
 evidence-disciplined Report Builder; proactive briefings + habit offers; plugins

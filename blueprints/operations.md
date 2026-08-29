@@ -11,7 +11,7 @@ source or measured timings.
 ## 1. Startup / cold-start latency
 
 No wall-clock delta is printed at boot (a `window._debug_boot_ts = time.time()`
-hook exists in `gui/gui_eli_original.py` but nothing measures against it),
+hook exists in `gui/eli_pro_audio_gui_v2_0.py` but nothing measures against it),
 so the number below is reasoned from the boot sequence, not measured.
 
 **Cost breakdown (boot order):**
@@ -103,10 +103,11 @@ but real.
 
 ## 5. Testing strategy (two layers + the gaps)
 
-**Layer 1 — code correctness:** **106 pytest files (~2,000+ tests)** — routing
-patterns, contracts, executor gates, memory, kernel. Fast; run on every change.
+**Layer 1 — code correctness:** **281 pytest files (8,815 tests green as of
+2026-08-10)** — routing patterns, contracts, executor gates, memory, kernel,
+perception/voice, packaging. Fast (~9 min); run on every change.
 
-**Layer 2 — behavioural eval:** `tools/eval/` (see `eval_harness.md`) drives the
+**Layer 2 — behavioural eval:** `tools/eval/` (see `tools/eval/README.md`) drives the
 **real pipeline** and asserts on telemetry (action / grounding / response_mode /
 latency) + text. Cases seeded from fixed bug-logs as permanent regression guards.
 
@@ -132,7 +133,7 @@ latency) + text. Cases seeded from fixed bug-logs as permanent regression guards
 | **Coverage profiler over stored conversations** | exact dead/dormant-code map | new `tools/eval/` profiler |
 
 > Companion docs: `architecture.md` · `architecture_ascii.md` · `diagrams.md` ·
-> `eval_harness.md`.
+> `tools/eval/README.md` (the measurement layer).
 ```
 
 ---

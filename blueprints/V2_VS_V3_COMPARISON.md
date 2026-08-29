@@ -14,14 +14,15 @@ a structural and productization upgrade, not a feature rewrite.*
 | Version line | 2.1.x (public, shipping) | 3.0.x (private, in development) |
 | Repository | `ShadowESC95/ELI_v2.0` (public) | `ShadowESC95/ELI_v3.0` (private) |
 | Release installers | Windows exe/Inno, macOS dmg, Linux AppImage, tarball | pipeline ported, builds parked |
-| Cognitive runtime | 12-stage pipeline, DAG orchestrator, layered memory | identical, inherited |
+| Cognitive runtime | gradient orchestrator (all CHAT modes), S01–S12, shared retrieval | same policy, decomposed `kernel/stages/` |
 | Dispatch | monolithic `if action == …` chain | effector **registry** + shrinking if-chain |
 | Productization | none | editions + licensing layer |
 
-Both run the same local GGUF models, the same action/capability surface (174
-`SUPPORTED_ACTIONS`, 205 manifest capabilities), the same offline-by-default
-network guard. Nothing about *what ELI does* changed; v3 changes *how the code
-is organised* and *how it can be sold*.
+Both run the same local GGUF models and the same cognition policy (gradient
+orchestrator, `retrieval.py`, FAISS tombstones, `learning_coordinator`). v3
+currently tracks **232** manifest capabilities (**215** routable). v3 changes
+*how the code is organised* (decomposed engine/GUI/executor) and *how it can
+be sold* (editions/licensing) — not what ELI is allowed to do.
 
 ---
 

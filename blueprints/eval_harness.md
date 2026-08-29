@@ -184,7 +184,7 @@ the CPU latency on this box" becomes a number.
 ## 6. Run commands
 
 ```bash
-cd ~/Desktop/ELI_MKXI-main_MAY_NEWEST && source .venv/bin/activate
+cd ~/Desktop/ELI_v3.0 && source .venv/bin/activate
 
 python tools/eval/run_eval.py                      # router board, ~60ms, no model
 python tools/eval/run_eval.py --target all         # + engine cases (needs a model)

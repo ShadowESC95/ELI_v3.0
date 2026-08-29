@@ -38,7 +38,7 @@ for it, not yet executed — that's exactly what this checklist closes.
 | # | Check | How | Pass |
 |---|-------|-----|:----:|
 | 1.1 | Python ≥ 3.10 | `python3 --version` (Win: `python --version`) | ☐ |
-| 1.2 | git clone succeeds | `git clone <repo> && cd ELI_v2.0` | ☐ |
+| 1.2 | git clone succeeds | `git clone <repo> && cd ELI_v3.0` | ☐ |
 | 1.3 | Disk ≥ 10 GB free (model + deps) | installer prints it | ☐ |
 | 1.4 | (GPU box) driver present | `nvidia-smi` / macOS Metal is automatic | ☐ |
 

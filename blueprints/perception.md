@@ -8,18 +8,21 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 
 | File | LOC | Role |
 |---|---|---|
+| `mic_resolver.py` | ~580 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
 | `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
 | `wakeword.py` | ~450 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head) |
 | `voice_profile.py` | ~420 | **prosody + labelled-emotion** (tone/question detection) |
-| `tts_router.py` | 667 |
+| `tts_router.py` | 1195 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
+| `voice_fx.py` | 257 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
+| `tts_xtts.py` | 351 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
 | `vision.py` | 692 |
 | `os_controller.py` | 573 |
-| `screen_locator.py` | 389 | locate UI elements on screen |
-| `gaze_engine.py` | 298 |
-| `log_rotation.py` | 215 | log housekeeping |
+| `screen_locator.py` | 410 | locate UI elements on screen |
+| `gaze_engine.py` | 358 |
+| `log_rotation.py` | 225 | log housekeeping |
 | `analyze_pdfs/image/mesh/csv.py` | ~600 | file-type analysers |
 | `ambient_vision.py` | 207 | periodic screen glances (off by default) |
-| `local_whisper_stt.py` | 257 |
+| `local_whisper_stt.py` | 316 |
 | `voice_worker(_streaming).py`, `eli_listen.py`, `extract_equations.py` | small | workers/helpers |
 
 ## Vision (`vision.py` + `ambient_vision.py` + `analyze_image.py`)
@@ -41,7 +44,15 @@ The working local-vision stack (see memory `eli-image-analysis`):
   whenever the shared LLM lock is busy** (so it never steals the model
   mid-reply). Stores a short description as memory for rolling awareness.
 
-## Speech-to-text (`audio_stt.py`, `local_whisper_stt.py`)
+## Speech-to-text (`audio_stt.py`, `local_whisper_stt.py`, `mic_resolver.py`)
+
+**Microphone selection (`mic_resolver.py`, 3.0.81).** On every OS, ELI builds a ranked list of
+PortAudio inputs — USB and headset/Bluetooth (AirPods, Turtle Beach Chat, Trust USB, …) before
+built-in, webcam, and virtual loopback routes — and probes each in an isolated subprocess at the
+device's native sample rate until one delivers live audio. Linux additionally tries
+PipeWire/Pulse sources with a process-local `PULSE_SOURCE` pin after direct hardware. Honours
+`ELI_MIC_DEVICE_INDEX` (explicit override) and `ELI_MIC_AUTORESOLVE=0` (OS default only).
+Diagnostic: `python -m eli.tools.mic_diag`.
 
 A large, feature-dense STT module:
 - Mic capture + Whisper transcription (`local_whisper_stt`).
@@ -115,12 +126,130 @@ tone/emotion and question-vs-statement:
   if energetic). `ELI_VOICE_TONE=0` disables. Complementary to the text-based
   `cognition/tone_analyzer` (persona preferences), not a duplicate.
 
+## Tone / emotion adaptor (`cognition/tone_adaptor.py` + `cognition/emotion_palette.py`)
+
+Decides the emotion ELI **expresses** and drives three output channels at once.
+
+- **Two identifiers** (the "2 systems"): *acoustic* (`voice_profile.get_last_tone` — the
+  user's voice this turn) and *semantic* (`detect_text_emotion` — the content of what they
+  said). `_fuse()` combines them (agreement boosts confidence; voice slightly favoured).
+- **Empathetic response policy**, not mimicry: a distressed user → `tender`, heat → `calm`,
+  playful → `playful`. An explicit override (`set_tone("be comedic"/"talk street")` via
+  `SET_TONE`/`CLEAR_TONE`) wins outright and persists.
+- **Extensible palette** (`emotion_palette.py`): 20 built-in tones (comedic, professional,
+  deadpan, street_smart, gremlin, tender, …), each carrying a persona directive, Piper
+  prosody profile, and avatar expression; users add their own in `config/voices/tones.json`.
+- **Three output channels**: text (a directive folded into `_build_enhanced_system`), voice
+  (`tts_router._piper_prosody_args` overlays the tone's pace/expressiveness/pauses **and
+  `_apply_tone_pitch` shifts the actual audio pitch** so sad sounds lower, ecstatic higher —
+  applied on the Piper, natural-neural and clone paths), and face
+  (`world/avatar/persona_mapper` + the animated `gui/widgets/eli_face.py` take the expression).
+- **Core personality is never overwritten** — the directive explicitly shades *how* ELI
+  delivers, not *who* he is (emergent-voice principle). `ELI_TONE_ADAPT=0` disables.
+
+## Animated face liveness (`gui/widgets/eli_face.py` + `cognition/expression_state.py`)
+
+The procedural face reacts in real time to what ELI is *doing*, via three cheap flags
+in `expression_state` (priority: thinking > speaking > tone):
+- **Lip-sync** — the mouth animates while TTS plays (`tts_router._run_tts` sets the
+  `speaking` flag; amplitude-driven when available, else a natural talk oscillation).
+- **Thinking look** — a focused/reflective face while the model generates (the GUI sets
+  `thinking` around `is_generating`).
+- Otherwise it shows the current expressed tone. Pure-Qt, embedded in the world panel.
+
+## Emotional memory + proactive check-in (`cognition/emotion_timeline.py`, v2.1.31)
+
+`tone_adaptor` shades the *current* reply and then forgets: the acoustic read lives in a
+12-second slot, the semantic read is recomputed from the last utterance. That makes ELI
+**reactive**. The emotion timeline is the durable record that makes it **proactive**.
+
+- **Persistence** — every fused read (neutral included, so the baseline isn't built only
+  from bad turns) is appended to `emotion_events` in `user.sqlite3`, with the utterance
+  that produced it, the arousal, and **the action ELI ran on the preceding turn**.
+- **`assess()`** returns EVIDENCE, never a phrase: the sustained run and its dominant
+  emotion, the `neutral→negative` transition, the ELI action at the turn the mood turned,
+  and whether it is *unusual for this user* — measured against their own baseline, so a
+  naturally reserved person is never read as upset.
+- **Gates** (all must pass before ELI raises anything): a run of N reads rather than a
+  single spike, per-read confidence above a floor, a credible baseline, and a cooldown so
+  ELI cannot nag. `assess()` reports its `reason` either way, so a *non*-check-in is
+  explainable too.
+- **Two surfacing paths.** In-conversation, `evidence_block()` is folded into the system
+  prompt and **the model decides whether and how to raise it** — the wording is ELI's, never
+  a template (see [ELI No Hard-Coded Responses]). Unprompted, the proactive daemon runs the
+  same assessment on its tick, LLM-synthesises an opener from the evidence, and pushes an
+  `emotion_checkin` onto the suggestion queue (+ a pending proposal so a plain "yes" routes).
+  With no resident model the daemon emits **nothing** rather than a canned line.
+- **`trend_line()`** runs every turn regardless, giving ELI continuity on how the
+  conversation has been feeling.
+- **User control** — Settings ▸ Cognition ▸ *Emotional awareness*: master toggle, exchanges
+  before a mood counts, minimum confidence, check-in cooldown, recent-mood window, baseline
+  history. All read at call time (no restart), all defaulting to the shipped constants. A
+  *Tone of voice* dropdown in the same tab pins the register ELI answers in (Auto + the 20
+  palette tones) via `tone_adaptor.set_tone`. Kill switch: `ELI_EMOTION_MEMORY=0`.
+
 ## Text-to-speech (`tts_router.py`)
 
-Multi-backend router with graceful fallback: **Piper** (packaged binary under
-`tts_piper/` or `models/tts/piper`, voice-dir resolution) → **espeak-ng /
-espeak**. Resolves voices from several candidate dirs so a packaged build or a
-source checkout both work.
+Multi-backend router with graceful fallback: **XTTS-v2 natural neural** (opt-in) →
+**Piper** (packaged binary under `tts_piper/` or `models/tts/piper`) → **pyttsx3** →
+**espeak-ng / espeak**. Resolves voices from several candidate dirs so a packaged build
+or a source checkout both work.
+
+*Natural neural voice (`natural:<id>`, `tts_xtts.py`).* XTTS-v2 driven by its **built-in
+studio speakers — no clone/reference needed** — is the human-like, expressive,
+punctuation-aware path. `list_natural_voices()`/`synthesize_natural_wav()` are cheap to
+probe (never load the ~1.8GB model just to enumerate) and **fall back to Piper** when the
+neural extra isn't installed, so a `natural:` voice never goes silent. It is selectable at
+the **startup model picker / first-boot wizard** ("Voice engine: Piper vs Natural") — the
+choice is persisted *before* hardware tuning so its VRAM is a deliberate up-front decision
+(`ELI_XTTS_DEVICE` pins the device); low-VRAM boxes keep fast Piper. Enable with
+`pip install -e ".[natural]"` (from the ELI project root).
+
+*Expressive Piper prosody.* Piper at bare defaults sounds flat and clips full stops. The
+router now passes tuned `--sentence_silence` / `--length_scale` / `--noise_scale` /
+`--noise_w` (`_piper_prosody_args()`, env-overridable, `ELI_TTS_PROSODY=0` to disable) so
+`?`/`!`/`.` land as intonation and pauses — the "Amy sounds flat" fix.
+
+*No robotic voices.* `list_voices()` hides the espeak `sys:` voices and Piper `low`/`x_low`
+tiers by default (they sound synthetic), surfacing them only as a genuine last resort when
+the box has nothing better, or when `ELI_TTS_ALLOW_ROBOTIC=1`.
+
+**Voice library** (`runtime/voice_assets.py`) — the shipped pack is a starting point,
+not the limit. The module fetches the upstream Piper index (**166 voices across 45
+languages, 38 of them English** — US/GB, Scottish, Northern and Southern English) and
+exposes it through `list_available_voices()` with per-voice presence, download size and
+licence, cached on disk so the picker still works offline. `download_voice()` streams
+from the index's exact paths and **verifies the published md5** before the file is put
+in place, so a truncated or proxy-mangled download is rejected rather than surfacing
+later as a corrupt-model crash. The GUI path is Settings > VOICE / TTS > *Get more
+voices / accents…* (`gui/widgets/voice_downloader.py`); every voice dropdown repopulates
+on install.
+
+*Redistribution policy.* `RESTRICTED_VOICE_NAMES` (ryan — CC-BY-NC-SA; lessac —
+Blizzard/Lessac, not cleared; cori — pending) are never put in a release asset. The rule
+is keyed on the **voice name, so every quality variant is covered**, and
+`scripts/asset_release_policy.py` imports it so the build and the runtime cannot drift.
+The user may still download them for personal use; the dialog states this rather than
+hiding the voice.
+
+*Config integrity.* A `.onnx` without its `.onnx.json` cannot be loaded by Piper, so it
+is invisible to `list_voices()` while still occupying ~60 MB. `incomplete_voices()` finds
+these and `repair_voice_configs()` fetches just the missing ~5 KB config.
+`tests/test_voice_library.py` guards against shipping the broken state again.
+
+**Character voices** (`voice_fx.py`) are a base voice + an ffmpeg effect chain (pitch /
+speed / filters) — calm, robotic, energetic, synthetic, and refined styles built in, and users create their own
+(`char:<name>`, preset store at `config/voices/characters.json`). Because the ideal bases
+for HAL/TARS/Rick (lessac/joe/ryan) are restricted or unbundled, each preset carries an
+**ordered, gender-matched `fallback` chain**; `resolve_base_voice()` walks base →
+fallbacks → default against the *installed* set, so a character can never fall through to
+an unusable or foreign-language voice (it previously landed on a Czech voice and garbled
+the speech). Download the ideal base and it is used automatically. **Voice cloning**
+(`tts_xtts.py`, `clone:<name>`) reproduces a voice from a short reference clip via Coqui
+XTTS-v2 — an opt-in extra (`eli-v3[clone]`) that falls back to a normal voice when the
+model isn't installed rather than going silent. Both `char:` and `clone:` resolve through
+`synthesize_wav` (browser voice) and `_run_tts` (host playback), and appear in the GUI
+voice picker.
 
 ## OS control (`os_controller.py`)
 

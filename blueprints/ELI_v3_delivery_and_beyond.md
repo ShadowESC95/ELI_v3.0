@@ -90,7 +90,7 @@ means we measure progress against reality, not against the folder name.
 
 - **The v3 spine is absent in code:** a search finds no `Planner`/`Effector` split, no typed
   `Plan` object, no `ModelRouter`, no MCP-style tool registry. The DAG substrate (`core/dag.py`)
-  and the 14-agent bus (`cognition/agent_bus.py`) *do* exist and are the seeds to build on.
+  and the 15-agent bus (`cognition/agent_bus.py`) *do* exist and are the seeds to build on.
 - **Productization machinery already exists:** signed licences with tiers
   (`trial/personal/pro/enterprise`), per-tier EULAs, a plugin registry, and a 208-entry
   capability manifest (though the manifest has no `category` field yet — sector tagging is
@@ -172,7 +172,7 @@ sprawl becomes data; an ecosystem (and per-edition tool sets) becomes possible.
 
 ### 4.3 The DAG as the universal substrate
 
-`core/dag.py` already runs the 14-agent bus. v3 runs *everything* multi-step on it —
+`core/dag.py` already runs the 15-agent bus. v3 runs *everything* multi-step on it —
 declarative, replayable, observable pipelines with retries, fallbacks, caching, telemetry. A
 multi-step task becomes a graph you can inspect and replay, not a call-stack to reverse-
 engineer. This is the substrate the reasoning modes, deep-research, and overnight builds all sit

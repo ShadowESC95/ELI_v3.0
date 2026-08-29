@@ -1,5 +1,8 @@
 # ELI Memory Subsystem
 
+> **Updated for 3.0.81.** Turn retrieval is unified in `eli/memory/retrieval.py`;
+> FAISS deletes use tombstones (`mark_memory_deleted`).
+
 `eli/memory/` — 7.0k LOC, 13 files. The persistent substrate: relational +
 full-text + vector + graph, all local SQLite/FAISS. Companion to
 `project_overview.md`.
@@ -11,7 +14,8 @@ full-text + vector + graph, all local SQLite/FAISS. Companion to
 | `memory.py` | 4.7k | the `Memory` god-class + `DBPaths` + module facade |
 | `knowledge_graph.py` | 643 | entity/relation graph (KG) |
 | `habits_memory_db.py` | 470 |
-| `vector_store.py` | 430 | FAISS vector index + embedder |
+| `vector_store.py` | 430 | FAISS vector index + embedder + tombstones |
+| `retrieval.py` | ~150 | shared turn retrieval (`retrieve_for_turn`) + 8 s cache |
 | `__init__.py` | 0 |
 | `system_index.py` | 278 | indexed apps/executables/files |
 | `memory_truth.py` | 190 |
@@ -75,10 +79,20 @@ Indexed on `ts` and `(user_id, ts)`. Reads come back `ORDER BY ts DESC, id DESC`
 counting would otherwise mis-order. See `blueprints/perception.md` for the assessment
 gates and the proactive surfacing path.
 
+## Shared turn retrieval (`retrieval.py`, 3.0.81+)
+
+**Single owner** for semantic + conversation recall on one turn. Both
+`BusMemoryAgent` and `OrchestratorMemoryAgent` call `retrieve_for_turn()` so the
+same query is not searched twice with divergent budgets. Features:
+
+- 8 s per-process turn cache (`invalidate_turn_cache()` on session change)
+- Optional hop-2 deepening when initial hits are sparse
+- Heuristic rerank via `rerank_candidates()` when enabled
+- Contradiction detection hook from the bus
+
 ## `recall_memory` — the hybrid retriever (memory.py:1722)
 
-The shared retrieval foundation (see `orchestration_and_agents.md` for the two
-strategies on top):
+The low-level primitive that `retrieve_for_turn()` builds on:
 
 1. **FAISS first** (Stage 5 vector primary). FTS5/LIKE runs only as a
    *supplement* when the vector index is empty/cold or returns `< limit//2`
@@ -104,6 +118,9 @@ FAISS `IndexFlat`, embeddings via a local nomic embedder (llama_cpp). Notable:
 - Metadata canonicalized to **`meta.json`** (migrated from legacy `meta.pkl`).
 - Singleton via `get_vector_store()`; shutdown-aware (skips embedding during
   teardown); `reset_vector_store()` for rebuilds.
+- **Tombstones (3.0.81):** `mark_memory_deleted(id)` writes to
+  `.tombstones.json`; search skips tombstoned rows without a full rebuild.
+  `compact_tombstones(live_ids)` reclaims index space when needed.
 
 ## Knowledge graph (`knowledge_graph.py`)
 
@@ -173,18 +190,16 @@ of those ten patterns are `app_cmd` JSON blobs the KG mapper discards.
   foundation; the noise-filtering in `recall_memory` is the right instinct and
   fixed real contamination; embedder serialization correctly avoids the segfault.
 - **Weak:**
-  1. `memory.py` is a **4.5k-line god-class** spanning ~8 unrelated concerns
+  1. `memory.py` is a **5.1k-line god-class** spanning ~8 unrelated concerns
      (semantic, conversation, habits, learning, failures, capabilities, system
      index). Wants to be split along those seams.
   2. **Schema sprawl / redundancy** — `memories` *and* `memory`, `conversations`
      *and* `conversation_turns`, plus a standalone `semantic` table. The inline
      column-detection everywhere is compensating for schema instability.
-  3. **The intake is narrow.** Promotion itself works — turns feed
-     `user_patterns`, which fans out to the semantic tier and the knowledge graph
-     — but it is fed by regex extraction plus one LLM pass per session. On a live
-     v2 store, 619 turns and 441 memories produced only 10 `user_patterns`, and
-     everything downstream inherits that. Widening the extractor, not the
-     pipeline, is the work.
+  3. **The intake is narrow.** Promotion itself works (see above), but it is fed
+     by regex extraction plus one LLM pass per session: a live store of 619 turns
+     and 441 memories produced only 10 `user_patterns`, and the semantic tier and
+     KG inherit that. Widening the extractor, not the pipeline, is the work.
   4. **Retrieval cannot detect nonsense.** Measured on a real 449-vector index,
      the worst genuine query's best hit scored 0.5294 and the best gibberish
      query's scored 0.5377 — the bands overlap, so no absolute similarity floor

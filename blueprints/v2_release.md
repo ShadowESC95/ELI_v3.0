@@ -12,7 +12,7 @@ Companion: root [`RELEASE.md`](../RELEASE.md) (maintainer checklist) ·
 
 | Artifact | Size (typical) | Contains |
 |---|---|---|
-| `ELI_v2-2.0.0-linux-portable.tar.gz` | ~8 MB (no models) | Source tree, wheel, `INSTALL_ELI.sh`, `RUN_ELI.sh`, install scripts |
+| `ELI_v3-2.0.0-linux-portable.tar.gz` | ~8 MB (no models) | Source tree, wheel, `INSTALL_ELI.sh`, `RUN_ELI.sh`, install scripts |
 | Model/voice pack (`local-assets-v2.1`) | ~6+ GB total | nomic embedder, starter GGUFs, cleared Piper voices |
 
 **Not in the tarball:** `.venv`, `artifacts/`, `models/*.gguf` — created at install time.
@@ -33,7 +33,7 @@ Excluded from auto-restore: `en_US-ryan-*`, `en_US-lessac-*`, `en_GB-cori-high`.
 ## Maintainer: build (on your dev machine)
 
 ```bash
-cd /path/to/ELI_v2.0
+cd /path/to/ELI_v3.0
 # Uses project .venv for python-build if system pip is PEP-668 locked
 bash scripts/build_v2_release.sh
 ```
@@ -61,18 +61,18 @@ bash scripts/sync_build.sh
 
 ## Maintainer: publish GitHub Release
 
-**Live release:** [v2.0.0](https://github.com/ShadowESC95/ELI_v2.0/releases/tag/v2.0.0)  
-**Model pack:** [local-assets-v2.1](https://github.com/ShadowESC95/ELI_v2.0/releases/tag/local-assets-v2.1)
+**Live release:** [v2.0.0](https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v2.0.0)  
+**Model pack:** [local-assets-v2.1](https://github.com/ShadowESC95/ELI_v3.0/releases/tag/local-assets-v2.1)
 
 ### First-time publish (new tag)
 
 ```bash
-cd /path/to/ELI_v2.0
+cd /path/to/ELI_v3.0
 PKG=dist/app_packages/ELI_MKXI_v2.0_PRO-2.0.0-linux-portable.tar.gz
 SHA=dist/app_packages/ELI_MKXI_v2.0_PRO-2.0.0-linux-portable.tar.gz.sha256
 
 gh release create v2.0.0 \
-  --repo ShadowESC95/ELI_v2.0 \
+  --repo ShadowESC95/ELI_v3.0 \
   --title "ELI v2.0 — Linux portable (download & run)" \
   --notes "$(cat <<'EOF'
 ## Download & run (Linux)
@@ -89,7 +89,7 @@ cd ELI_MKXI_v2.0_PRO-2.0.0-linux-portable
 ./RUN_ELI.sh
 \`\`\`
 
-**Best tested:** Linux x86_64 + NVIDIA. Rough edges elsewhere — [open an issue](https://github.com/ShadowESC95/ELI_v2.0/issues).
+**Best tested:** Linux x86_64 + NVIDIA. Rough edges elsewhere — [open an issue](https://github.com/ShadowESC95/ELI_v3.0/issues).
 
 **v3** is in active development: https://github.com/ShadowESC95/Eli_v3
 EOF
@@ -106,8 +106,8 @@ binaries with `--clobber` and refresh the notes:
 PKG=dist/app_packages/ELI_MKXI_v2.0_PRO-2.0.0-linux-portable.tar.gz
 SHA=dist/app_packages/ELI_MKXI_v2.0_PRO-2.0.0-linux-portable.tar.gz.sha256
 
-gh release upload v2.0.0 --repo ShadowESC95/ELI_v2.0 --clobber "$PKG" "$SHA"
-gh release edit v2.0.0 --repo ShadowESC95/ELI_v2.0 --title "..." --notes-file RELEASE_NOTES.md
+gh release upload v2.0.0 --repo ShadowESC95/ELI_v3.0 --clobber "$PKG" "$SHA"
+gh release edit v2.0.0 --repo ShadowESC95/ELI_v3.0 --title "..." --notes-file RELEASE_NOTES.md
 ```
 
 Checksum after upload (2026-07-05 rebuild):
@@ -122,7 +122,7 @@ Large files cannot live in git. Upload to a dedicated release tag:
 
 ```bash
 export ELI_ASSET_RELEASE_TAG=v2.0.0-assets
-python3 scripts/upload_github_asset_files.py --repo ShadowESC95/ELI_v2.0 --tag "$ELI_ASSET_RELEASE_TAG"
+python3 scripts/upload_github_asset_files.py --repo ShadowESC95/ELI_v3.0 --tag "$ELI_ASSET_RELEASE_TAG"
 ```
 
 Users restore with:
@@ -135,7 +135,7 @@ Users restore with:
 
 ## End user: download & run
 
-From **[GitHub Releases](https://github.com/ShadowESC95/ELI_v2.0/releases)** (not “Code → Download ZIP” — that’s source without the installer wiring).
+From **[GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases)** (not “Code → Download ZIP” — that’s source without the installer wiring).
 
 ```bash
 tar -xzf ELI_MKXI_v2.0_PRO-2.0.0-linux-portable.tar.gz

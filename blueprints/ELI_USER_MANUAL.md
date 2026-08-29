@@ -148,7 +148,7 @@ Windows, macOS and Linux** before it can publish.
 - **macOS (Apple Silicon):** open the `.dmg`, drag **ELI** into Applications. First launch is
   right-click → **Open** (the app is unsigned). Apple-GPU acceleration is built in — nothing to
   set up.
-- **Linux:** `chmod +x ELI_v2-<version>-x86_64.AppImage` and run it. On first launch it offers
+- **Linux:** `chmod +x ELI_v3-<version>-x86_64.AppImage` and run it. On first launch it offers
   **applications-menu entries** (ELI, ELI Server, and a working Uninstall).
 
 ```mermaid
@@ -179,8 +179,8 @@ flowchart TD
 | **Chat model** | if you accept the model offer | sized to your hardware (e.g. ~4.7 GiB) |
 
 Everything ELI knows and downloads lives in **one per-user folder** that **survives upgrades**
-— like a save-game: `%LOCALAPPDATA%\ELI_v2` (Windows), `~/Library/Application Support/ELI_v2`
-(macOS), `~/.local/share/ELI_v2` (Linux). Databases start as a **true blank slate** — no
+— like a save-game: `%LOCALAPPDATA%\ELI_v3` (Windows), `~/Library/Application Support/ELI_v3`
+(macOS), `~/.local/share/ELI_v3` (Linux). Databases start as a **true blank slate** — no
 personal data ships in any installer.
 
 ### Starting over, or uninstalling
@@ -275,8 +275,7 @@ terms:
 | **Report Builder** | Generate longer documents/reports with sources (evidence → outline → draft → revise). |
 | **Elis World** | ELI's own world-model view. |
 | **Labs** | Power-user workshop — notebook, Jupyter, calculator, physics, file-chat, **projects/workspaces**, sim-IDE, orchestration, test review, **training** (§14). |
-| **Extensions** | Plugins, MCP servers and the community **Marketplace** — overview, browse, install, permissions, sources and their settings (§20). |
-| **Settings** | Model (incl. the model-switch dropdown), hardware, voice, privacy options (§16), and the built-in plugin registry. |
+| **Settings** | Model (incl. the model-switch dropdown), hardware, voice, privacy options (§16), plugins and the **Marketplace** (§20). |
 
 You rarely need the tabs directly — almost everything is reachable by **asking** in Chat:
 "show my habits", "what do you remember about me", "show background jobs", "make an image of …",
@@ -518,7 +517,7 @@ flowchart LR
 - **ELI speaking back:** "say good morning"
 - **A human-like voice:** at the **startup model picker** (before ELI loads its model) pick
   **Voice engine → "Natural neural (XTTS-v2)"** for an expressive, human-sounding voice — or say
-  *"use the natural voice"* any time. It needs a one-time `pip install "eli-v2.0[natural]"`
+  *"use the natural voice"* any time. It needs a one-time `pip install "eli-v3[natural]"`
   (downloads ~1.8 GB on first use) and a reasonable GPU; on a lighter machine leave it on **Piper**,
   which is fast and now noticeably more natural (it pauses on full stops and lifts on questions).
 - **Change ELI's voice:** the voice dropdown next to the chat box, **Settings ▸ Runtime ▸ "VOICE / TTS"**, or
@@ -529,14 +528,14 @@ flowchart LR
   languages** — 38 of them English (US, British, Scottish, Northern and Southern English). Each is
   verified, installed, and selectable immediately. A few voices are marked *personal use only*:
   their licences don't allow ELI to bundle them, but you can still download them yourself.
-- **Character voices:** choose `char:hal`, `char:tars`, `char:rick`, `char:glados` or `char:jarvis`
+- **Character voices:** choose `char:calm`, `char:robotic`, `char:energetic`, `char:synthetic`, or `char:refined`
   from the same dropdown — each is a real voice plus a live effect chain. You can make your own,
   and downloading a character's "ideal base" voice (flagged in the voice library) sharpens it.
 - **Make your own voice:** **Settings ▸ Runtime ▸ "VOICE / TTS"** — either **drop in a clip** (a short, clean
   ~6–20s .wav/.mp3/.mp4 of the voice you want) or click **"Record a voice now"** to capture 12
   seconds from your mic on the spot. You can also say *"create a voice called Nova from clip.mp4"*.
   It sounds like your sample once the neural voice extra is installed
-  (`pip install "eli-v2.0[natural]"`); until then it's saved and ELI uses a normal voice.
+  (`pip install "eli-v3[natural]"`); until then it's saved and ELI uses a normal voice.
 - **ELI's face reacts:** the little animated face shows how ELI feels, **moves its mouth while it
   speaks**, and shows a focused look while it's thinking.
 - **Teach ELI your voice & tone:** "train my voice" — it learns your pitch/energy and even emotion
@@ -908,11 +907,8 @@ flowchart TD
 
 ## 20. Add-ons: plugins & the community marketplace
 
-🟡 **The 🔌 Extensions tab.** Plugins add abilities to ELI. Some ship with it;
-others are written by **other people in the community**. Start on **Overview**: it
-says what a plugin is, what an MCP server is, how they differ (one runs inside ELI
-and can be refused a permission; the other is its own program and cannot), what is
-installed right now, and what your machine is able to contain.
+🟡 **Settings ▸ 🛒 Marketplace.** Plugins add abilities to ELI. Some ship with it;
+others are written by **other people in the community**.
 
 ### The honest bit, first
 
@@ -951,10 +947,8 @@ do to you, and how risky that is. Four answers:
 | **Not now** | Refused this time. You'll be asked again. |
 | **Never allow** | Refused permanently. It can never ask again. |
 
-Every answer is recorded, and you can take any of them back in **Extensions ▸
-Permissions**. To take back *everything* at once, **Extensions ▸ Settings ▸ Revoke
-every plugin permission** — nothing is uninstalled or disabled; each plugin is simply
-asked again the next time it needs something.
+Every answer is recorded, and you can take any of them back in **Marketplace ▸
+Permissions**.
 
 If a plugin asks while nobody's there — an overnight scheduled job, or the phone
 server — the answer is automatically **no**. A plugin can't get permission by waiting
@@ -977,15 +971,6 @@ servers you'd trust with that.
 ELI does make sure they actually work: it checks the required software is installed,
 then genuinely starts the server and talks to it before saving anything. If it can't
 answer, it isn't added.
-
-**Adding one:** *Extensions ▸ MCP servers ▸ ➕ Add server…*. Paste the config block
-from the server's own instructions — the whole `mcpServers` block, straight from its
-README — or fill the fields in yourself. Tick *needs network access* only if it truly
-does: on a machine that can enforce it, a server that doesn't ask is started with no
-network at all and genuinely cannot reach anything.
-
-If a server that works elsewhere times out here, it is usually a cold download of the
-server itself. Raise **Extensions ▸ Settings ▸ Server start timeout** and try again.
 
 ---
 
@@ -1053,36 +1038,24 @@ flowchart TD
     FP -->|Yes · PHASE45 fast-path| FX[execute_action] --> VERB([Reply returned verbatim<br/>no LLM, instant])
     FP -->|No| MODE{Reasoning mode}
 
-    MODE -->|quick · default| BUS[Agent Bus dispatch]
-    BUS --> AG[15 specialist agents run over a DAG<br/>memory · knowledge-graph · system · file-code<br/>introspection · capability · habit · proactive<br/>reflection · self-improve · plugin · voice · frontier · orchestrator · critic]
-    AG --> DR[DispatchResult<br/>grounding_confidence · agents_used · memory_context]
-    DR --> GE{Low grounding on a<br/>factual question?}
-    GE -->|Yes| ESC[Escalate: web tier / local tier / honest hedge] --> GOV
-    GE -->|No| KIND{What kind of result?}
-    KIND -->|self-contained action| GOV
-    KIND -->|grounded control| GSYN[Grounded synthesis] --> GOV
-    KIND -->|conversation / CHAT| SYS[Build enhanced system prompt<br/>persona + memory brief + context] --> GEN
+    MODE -->|Quick · Normal · Advanced · Research · Expert| ORCH[Gradient Orchestrator<br/>depth scales with mode]
 
-    MODE -->|normal/advanced/research/expert · deep| ORCH[12-stage Orchestrator]
-
-    subgraph DEEP[The 12-stage Orchestrator]
+    subgraph DEEP[Orchestrator pipeline — S01–S12]
       direction TB
-      O1[1 · Intent routing] --> O2[2 · Persona lock]
-      O2 --> O3[3 · HyDE query expansion]
-      O3 --> O4[4 · Planner — channels + budgets for the mode]
-      O4 --> O5[5-7 · Parallel retrieval<br/>keyword · FTS5 turns · FAISS vector · RAG · KG]
-      O5 --> O8[8 · Hybrid merge]
-      O8 --> O9[9 · Cross-encoder rerank]
-      O9 --> O10[10 · Context assembly]
-      O10 --> O105[10.5 · Persona handoff]
-      O105 --> O11[11 · LLM generation]
+      O1[S05 · Planner — mode-aware budgets] --> O6[S06 · Shared retrieval + specialist bus]
+      O6 --> O7[S07 · Context assembly + heuristic rerank]
+      O7 --> O8[S08 · LLM generation via broker]
+      O8 --> O9[S09 · Private reasoning algo for mode]
+      O9 --> O12[S12 · Learning / state commit]
     end
     ORCH --> O1
-    O11 --> O12{12 · Confidence vs threshold}
-    O12 -->|pass| GOV
-    O12 -->|too low| REPAIR[Repair / regenerate] --> GOV
+    O12 --> GOV
 
-    GEN[LLM generation<br/>broker.infer / stream] --> GOV[Output governor<br/>+ No-Fake-Actions guard<br/>never claims an action it didn't do]
+    ORCH -.->|fallback if orchestrator fails| BUS[Agent Bus dispatch]
+    BUS --> AG[15 specialist agents over a DAG]
+    AG --> GOV
+
+    GEN[LLM generation<br/>broker.infer / stream] --> GOV[Output governor<br/>+ No-Fake-Actions guard]
     GOV --> OUT([Reply to you])
     VERB --> OUT
 ```
@@ -1100,24 +1073,21 @@ intent classifier** is the fallback. The router emits `{action, args, confidence
 to `CognitiveEngine.process()`. The router also remembers the *last used path* so follow-ups
 ("do it again", "the second one") resolve correctly.
 
-### A.2 — The three paths, and when each is taken
+### A.2 — The paths, and when each is taken (3.0.81+)
 - **Fast-path (PHASE45) — no AI involved.** Plain, deterministic actions (open an app, pause
   music, set volume, report status, check a job) are executed directly and the result is returned
-  **verbatim**. There's no model call, so these are instant and can't be "hallucinated". This is
-  why "pause" never produces a chatty paragraph.
-- **Quick path (the default) — the Agent Bus.** Conversational and lightly-grounded requests go
-  to the **Agent Bus**, which runs up to **15 specialist agents** in parallel over a dependency
-  graph, each contributing evidence (memory hits, knowledge-graph facts, system readings, code
-  search, capability info, …). Their combined result carries a **grounding confidence** — an
-  honest "is this actually backed by anything?" score.
-- **Deep path — the 12-stage Orchestrator.** When you ask for depth (advanced/research/expert
-  modes, or a hard question), ELI runs the full pipeline below: more retrieval, reranking, and a
-  confidence check with automatic repair.
+  **verbatim**. There's no model call, so these are instant and can't be "hallucinated".
+- **CHAT path — gradient orchestrator for every mode.** Quick, Normal, Advanced, Research, and
+  Expert **all** run `AgentOrchestrator` at a depth chosen for that mode: Quick uses a **fast
+  planner** and a **lean specialist fan-out**; Expert uses full retrieval budgets and the broadest
+  agent profile. Quick no longer bypasses the orchestrator for a bare bus dispatch.
+- **Fallback — Agent Bus.** If orchestration fails, the engine falls back to a direct
+  `AgentBus.dispatch()` — the same 15-agent parallel fan-out documented below.
 
-### A.3 — The Agent Bus, in full
-The bus **selects a relevant subset** of agents for your intent (or fans out broadly when
-unsure), runs them concurrently, and **aggregates** their findings into a `DispatchResult`. Key
-agents and what they bring:
+### A.3 — The specialist bus (composed inside orchestration)
+The bus runs **`dispatch_specialists()`** after shared retrieval on CHAT turns (memory agent
+skipped when evidence was already prefetched). It selects a mode-aware subset of agents, runs
+them concurrently over a dependency DAG, and aggregates into context. Key agents:
 
 | Agent | Contributes |
 |---|---|
@@ -1137,26 +1107,24 @@ result is finalised: a self-contained action returns directly, a grounded contro
 short grounded synthesis, and a conversation goes to generation with the full persona + memory
 context.
 
-### A.4 — The 12 stages, one by one (the deep path)
-1. **Intent routing** — settle exactly what you're asking for.
-2. **Persona lock** — fix ELI's identity/voice for this turn so it stays consistent.
-3. **HyDE query expansion** — ELI drafts a *hypothetical answer* and searches with **that** too,
-   which dramatically improves what memory retrieves (you find better matches by searching with an
-   answer-shaped query, not just the bare question). Skipped for very short queries.
-4. **Planner** — decide *which* retrieval channels to use and how big the budgets are, tuned to
-   the reasoning mode (fast / balanced / deep).
-5–7. **Parallel retrieval** — several searches run at once: keyword, **full-text (FTS5)** over your
-   conversation history, **FAISS vector** (semantic) search, optional RAG, and the **knowledge
-   graph**. (This is the seam where Appendix B's memory system feeds in.)
-8. **Hybrid merge** — combine the hits from every channel into one candidate set.
-9. **Cross-encoder rerank** — a smarter model re-scores the merged candidates for true relevance
-   to your question, and the best rise to the top. (Skipped for non-conversational asks.)
-10. **Context assembly** — build the grounded context block that will inform the answer.
-10.5. **Persona handoff** — wrap that context with ELI's live persona brief for generation.
-11. **LLM generation** — the model writes the reply (streaming or one-shot). For the deepest
-   modes this is a two-part private-reasoning-then-condense step.
-12. **Confidence check** — score the answer against a threshold; if it's too low, ELI
-   **repairs/regenerates** rather than shipping a weak answer.
+### A.4 — The 12 stages, one by one (canonical S01–S12)
+Logged via `pipeline_trace.py`; enable with `ELI_PIPELINE_TRACE=1`.
+
+1. **S01 PERCEIVE_INGEST** — normalise voice/text input.
+2. **S02 INPUT_GUARDS** — safety and policy gates.
+3. **S03 ROUTER** — intent → action.
+4. **S04 GROUNDING_GATE** — pre-generation grounding check.
+5. **S05 PLANNER** — mode-aware retrieval budgets (fast / balanced / deep).
+6. **S06 AGENT_BUS** — `retrieve_for_turn()` (shared, 8 s turn cache) then
+   `dispatch_specialists()` fan-out.
+7. **S07 CONTEXT_ASSEMBLY** — merge channels + **heuristic rerank** (lexical × recency ×
+   importance; not a neural cross-encoder today).
+8. **S08 INFERENCE_BROKER** — model generation (stream or one-shot).
+9. **S09 REASONING_SYNTHESIS** — private mode algorithm (CoT / self-consistency / ToT / …).
+10. **S10 OUTPUT_GOVERNOR** — post-generation policy and sanitisation.
+11. **S11 RESPONSE_DELIVERY** — user-visible reply.
+12. **S12 LEARNING_STATE_UPDATE** — `learning_coordinator.finalize_turn()`: store the
+    assistant turn, publish meta, and run `_learn_from_result()`.
 
 ### A.5 — The two end-of-path guarantees
 Every path, no matter which, ends at:
@@ -1210,7 +1178,7 @@ flowchart TD
 
     subgraph MECH[UPKEEP MECHANISMS]
       direction LR
-      M1[Weight decay<br/>old, low-importance rows fade by age (half-life stretched by importance)]
+      M1[Weight decay<br/>fades by AGE, half-life stretched by importance]
       M2[Embedder lock<br/>one-at-a-time embedding]
       M3[recall_log<br/>records what was recalled]
     end
@@ -1220,7 +1188,10 @@ flowchart TD
 **Why it's trustworthy:** the **noise filter** stops ELI's own past replies and reflections from
 resurfacing as if they were *your* facts; the **embedder lock** keeps the vector engine from
 crashing under concurrent use; and **weight decay** is the gentle "forgetting" that lets stale
-topics fade while active ones stay fresh. Nothing here leaves your computer.
+topics fade while active ones stay fresh — a memory fades with its age, and every time one is
+recalled its half-life stretches, so what you keep coming back to keeps its place. Nothing is
+ever deleted by fading, and **consolidation** folds duplicate entries into one rather than
+letting the same thought accumulate. Nothing here leaves your computer.
 
 ### B.1 — What ELI writes (the inputs)
 Everything that flows into memory passes through one **Memory** module, which decides where each

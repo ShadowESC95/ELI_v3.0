@@ -1,5 +1,8 @@
 # MCP — Model Context Protocol
 
+> **Updated for 3.0.81.** MCP tools join the same router/executor surface as the 232
+> manifest capabilities; cognition upgrades (gradient orchestrator) apply to MCP-backed turns.
+
 ELI works both directions here, deliberately separated: it **gains** tools from MCP
 servers you configure, and it **offers** its own actions to any other MCP client. The
 first grows ELI's capability surface without a code change; the second is what makes it
