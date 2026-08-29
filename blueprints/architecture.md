@@ -1,13 +1,19 @@
-# Blueprint — ELI MKXI Architecture
+> **Updated for 3.0.81 (August 2026).** 3.0.81+ unified the cognition pipeline:
+> all CHAT modes run a **gradient orchestrator** (Quick = light/fast planner;
+> Expert = full/deep); shared turn retrieval (`eli/memory/retrieval.py`); FAISS
+> tombstones on delete; canonical S01–S12 logging (`pipeline_trace.py`); Stage 12
+> learning via `learning_coordinator.py`.
 
-The full structural/architectural map of ELI MKXI. Every claim here is grounded
+# Blueprint — ELI v3 Architecture
+
+The full structural/architectural map of ELI v3. Every claim here is grounded
 in the actual source tree (file paths are real and clickable). Where something
 is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime
-> + assistant GUI (and, as of 2026-06-28, a self-hosted web app — see
-> `server_frontier_roadmap.md`). No cloud, no APIs on the inference path, no hardcoded
-> model. ~143k LOC across 370 Python files (+ `api/server.py`); 208 capabilities (2026-07-01).
+> + assistant GUI (and, as of 2026-06-28, a self-hosted web app — `api/server.py`,
+> documented in `ELI_USER_MANUAL.md`). No cloud, no APIs on the inference path, no hardcoded
+> model. ~190,378 LOC across 593 Python files (`eli/`) (+ `api/server.py`); 232 capabilities (2026-08-28).
 
 ---
 
@@ -27,46 +33,40 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 
 ## 1. Repository map (recursive LOC, role)
 
-*Per-package files / LOC measured 2026-07-13 (post main_window/labs/effectors decomposition).*
+*Per-package files / LOC measured 2026-08-28.*
 
 | Package | LOC | Files | Role |
 |---|---:|---:|---|
-| `eli/runtime` | 28.9k | 93 | Grounding spine, evidence, response/introspection surfaces, daemons, self-improvement |
-| `eli/execution` | 25.1k | 48 | Router + executor (shrinking façade) + **effectors** registry: intent → action → side effects |
-| `eli/gui` | 22.0k | 56 | PySide6 desktop app — decomposed `main_window/` + `labs/`, panels, first-boot wizard |
-| `eli/kernel` | 14.7k | 10 | `CognitiveEngine` (the orchestrating core), scheduler, task bus, `stages/` |
-| `eli/cognition` | 14.3k | 27 | Agent bus, 12-stage orchestrator, inference, persona, reasoning |
-| `eli/perception` | 7.6k | 21 | Vision (VL), STT (whisper), TTS, **wake word**, **voice/tone**, OS control, gaze |
-| `eli/core` | 7.6k | 26 | netguard, paths, settings, hardware profile, model download, **full_control** |
-| `eli/tools` | 7.4k | 29 | Image engine, news, registry/capabilities, document tools |
-| `eli/memory` | 7.3k | 13 | SQLite + FTS5 + FAISS + knowledge graph + working memory |
-| `eli/planning` | 4.0k | 24 | Proactive daemon, habit scheduler, job/proposal/attention queues |
-| `eli/learning` | 3.4k | 12 | LoRA self-training pipeline (Phi-3 base), dataset build/eval |
+| `eli/runtime` | 33.6k | 93 | Grounding spine, evidence, response/introspection surfaces, daemons, self-improvement |
+| `eli/execution` | 26.2k | 16 | Router + executor: intent → action → side effects (executor god-file) |
+| `eli/gui` | 26.1k | 27 | PySide6 desktop app, panels, startup/first-boot wizard, animated face |
+| `eli/cognition` | 18.5k | 37 | Agent bus, 12-stage orchestrator, inference, persona, reasoning, tone/emotion adaptor, emotional timeline |
+| `eli/kernel` | 16.7k | 8 | `CognitiveEngine` (the orchestrating core), scheduler, task bus |
+| `eli/perception` | 9.5k | 24 | Vision (VL), STT (whisper), TTS, **wake word**, **voice/tone**, OS control, gaze |
+| `eli/core` | 9.4k | 30 | netguard, paths, settings, hardware profile, model download, **full_control** |
+| `eli/memory` | 8.0k | 13 | SQLite + FTS5 + FAISS + knowledge graph + working memory |
+| `eli/tools` | 7.5k | 29 | Image engine, news, registry/capabilities, document tools |
+| `eli/plugins` | 5.9k | 34 | Plugin manager + bundled plugins |
+| `eli/learning` | 4.3k | 14 | LoRA self-training pipeline (Phi-3 base), dataset build/eval |
+| `eli/planning` | 4.2k | 24 | Proactive daemon, habit scheduler, job/proposal/attention queues |
 | `eli/coding` | 2.1k | 12 | `CodeAgent` — plan→search→verify→repair coding pipeline |
-| `eli/plugins` | 2.0k | 26 | Plugin manager + bundled plugins |
-| `eli/world` | 1.6k | 26 | EliWorld event bus, local world bridge, avatar/ontology |
-| `eli/integrations` | 1.0k | 9 | Optional Ollama client + integration adapters (not on the default path) |
-| `eli/utils` | 0.9k | 3 | logging, shared helpers |
-| `eli/licensing` | 0.8k | 9 | **v3** commercial tier gate (trial/personal/pro/enterprise) |
+| `eli/world` | 1.8k | 26 | EliWorld event bus, local world bridge, avatar/ontology/face |
+| `eli/integrations` | 1.8k | 9 | Optional Ollama client + integration adapters (not on the default path) |
+| `eli/utils` | 1.0k | 3 | logging, shared helpers |
 | `eli/contracts` | 0.7k | 3 | typed pipeline contracts |
-| `eli/editions` | 0.3k | 29 | **v3** shared-core + edition packs (base/coding/content/enterprise/healthcare/legal/research) |
 | `eli/system` | 0.3k | 2 | system-level helpers |
 | `eli/cli` | 0.1k | 2 | headless REPL |
-| **total** | **~153k** | **490** | |
+| **total (listed)** | **~190,378** | **421** | full `eli/` tree |
 
-### The god-files (refactor targets — see §20)
-The two GUI monoliths are **fully decomposed** (gutted to shims); the **engine** is
-decomposed into six stage mixins on `CognitiveEngine`; the executor is **56%
-strangled** and continuing; the **router** lifted its intent families to `routing/`.
-| File | Baseline LOC | Current LOC |
-|---|---:|---:|
-| `kernel/engine.py` | 13,507 | 6,977 (→ `kernel/stages/`, 13 files) |
-| `execution/executor_enhanced.py` | 14,592 | 6,442 |
-| `execution/router_enhanced.py` | 7,267 | 5,315 (→ `execution/routing/`, 13 files) |
-| `gui/gui_eli_original.py` | 11,573 | 7 (→ `gui/main_window/`) |
-| `gui/labs_tab.py` | 5,694 | 30 (→ `gui/labs/`) |
-| `eli/runtime/deterministic_grounding_gate.py` | 4292 |
-| `eli/memory/memory.py` | 4461 |
+### The four god-files (refactor targets — see §20)
+| File | LOC |
+|---|---:|
+| `eli/execution/executor_enhanced.py` | 15923 |
+| `eli/kernel/engine.py` | 15240 |
+| `eli/gui/eli_pro_audio_gui_v2_0.py` | 12605 |
+| `eli/execution/router_enhanced.py` | 8161 |
+| `eli/runtime/deterministic_grounding_gate.py` | 4301 |
+| `eli/memory/memory.py` | 4734 |
 
 ---
 
@@ -82,7 +82,7 @@ strangled** and continuing; the **router** lifted its intent families to `routin
 | `bash install.sh` | — | venv + deps + clean config seed + verify |
 
 Boot path (GUI): `app.py` → (first-boot wizard if no model, `eli/gui/panels/startup.py`)
-→ `gui_eli_original.py:main()` builds `EliMainWindow` → constructs the
+→ `eli_pro_audio_gui_v2_0.py:main()` builds `EliMainWindow` → constructs the
 **`CognitiveEngine` singleton** → loads GGUF per `config/settings.json` →
 starts daemons.
 
@@ -91,11 +91,10 @@ starts daemons.
 ## 3. The request lifecycle (the spine)
 
 Everything funnels through **`CognitiveEngine.process()`** (`eli/kernel/engine.py`).
-`CognitiveEngine` is composed from six **stage mixins** in `eli/kernel/stages/`
-(retrieval, prompt_assembly, reasoning_modes, generation, memory_commit,
-lifecycle); `process()` is the orchestrator that drives them, and it plus
-`__init__` are what remain on the class after the decomposition (see §20). Two
-paths diverge by reasoning mode:
+Since **3.0.81**, CHAT no longer splits into “Quick = bus only / deep =
+orchestrator only”. Every CHAT turn runs the orchestrator at a **mode-scaled
+depth**; the parallel specialist bus is **composed inside** the orchestrator
+(after shared retrieval) or used as a **fallback** if orchestration fails.
 
 ```
 user input
@@ -109,22 +108,22 @@ CognitiveEngine.process(action, args, ...)
    ├─ PHASE45 fast-path?  (deterministic OS/media/status/job actions)
    │      → execute_action() → return VERBATIM (no LLM)         [§10]
    │
-   ├─ non-quick mode OR forced → Internal Orchestrator (full 12-stage)  [§7]
+   ├─ CHAT (any reasoning mode: Quick … Expert)
+   │      → AgentOrchestrator.run() at mode depth               [§7]
+   │         S05 planner (fast/balanced/deep) → shared retrieval [§8]
+   │         → dispatch_specialists() (mode-aware fan-out)      [§6]
+   │         → context assembly → broker.infer() → governor
    │
-   └─ quick mode (default) →
-          AgentBus.dispatch()   [§6]  → bus_result {grounding, agents, ctx}
-              │
-              ├─ Grounding escalation hook  [§9]  (CHAT + low grounding + factual)
-              │      → web tier / local tier / hedge → may RETURN here
-              │
-              ├─ self-contained action? → return executor result verbatim
-              ├─ grounded control action? → grounded synthesis
-              └─ CHAT → _build_enhanced_system() → broker.infer()/stream
-                         → output_governor → response
+   ├─ Non-CHAT action
+   │      → AgentOrchestrator → bus + ReAct tool loop
+   │
+   └─ Orchestrator None / raises → AgentBus.dispatch() fallback
 ```
 
-Pipeline stages logged at runtime: `Stage 1 Intent → … → Stage 12 Confidence`.
-Quick mode short-circuits stages 2–4/HyDE; the orchestrator runs all 12.
+Pipeline stages are logged canonically via `eli/kernel/pipeline_trace.py`:
+**S01 PERCEIVE_INGEST → … → S12 LEARNING_STATE_UPDATE** (mirrors
+`eli/kernel/pipeline.py` STEPS). Enable with `ELI_PIPELINE_TRACE=1` or
+`scripts/eli_startup.sh --trace`.
 
 ---
 
@@ -161,7 +160,7 @@ DAG (falls back to flat parallel), aggregates.
 (agent-evidence only — the honest "is this backed by anything" signal),
 `agents_used`, `confidence_label`, `orchestrator_plan`.
 
-**14 registered bus agents** (`_ALL_AGENTS`):
+**15 registered bus agents** (`_ALL_AGENTS`):
 
 | Agent | Role |
 |---|---|
@@ -188,23 +187,39 @@ GENERATE_SCRIPT, not a bus agent.
 
 ## 7. The Orchestrator — full 12-stage  (`eli/cognition/orchestrator.py`)
 
-Runs for non-quick modes (and forced cases). Stages (as logged):
+Runs for **all CHAT modes** (gradient depth) and for non-CHAT actions. Canonical
+stage names (`pipeline_trace.STAGE_NAMES`):
 
-1. **Intent Routing** → action
-2. **Persona Lock** → persona/identity fixed for the turn
-3. **HyDE** → hypothetical-doc query expansion (`cognition/hyde.py`)
-4. **Planner** → which retrieval channels + limits for the mode
-5/6/7. **Parallel Retrieval** → keyword + **FTS5** (conversation_turns) + **FAISS**
-   vector + RAG + **KG**
-8. **Hybrid Merge** → combine channel hits
-9. **Rerank** → `cognition/reranker.py`
-10. **Context Assembly** → assembled grounded context
-10.5. **Persona Handoff** → persona brief built for generation
-11. **LLM Generation** → stream/oneshot via the broker
-12. **Confidence** → score vs threshold (PASS/repair)
+| Stage | Name | What happens |
+|---|---|---|
+| S01 | PERCEIVE_INGEST | input normalised |
+| S02 | INPUT_GUARDS | safety / policy gates |
+| S03 | ROUTER | intent → action |
+| S04 | GROUNDING_GATE | grounding pre-check |
+| S05 | PLANNER | mode-aware retrieval plan (`PlannerAgent.plan_retrieval`) |
+| S06 | AGENT_BUS | shared `retrieve_for_turn()` + `dispatch_specialists()` fan-out |
+| S07 | CONTEXT_ASSEMBLY | merge retrieval + specialist evidence |
+| S08 | INFERENCE_BROKER | broker.infer() / stream |
+| S09 | REASONING_SYNTHESIS | mode-specific private reasoning (CoT/ToT/…) |
+| S10 | OUTPUT_GOVERNOR | post-generation policy |
+| S11 | RESPONSE_DELIVERY | user-visible reply |
+| S12 | LEARNING_STATE_UPDATE | `learning_coordinator.finalize_turn()` |
 
-Quick mode (default) skips 2–4/HyDE and uses the AgentBus directly; the
-orchestrator is the "deep" path.
+Retrieval details:
+- **Shared owner:** `eli/memory/retrieval.py` — `retrieve_for_turn()` with an
+  8 s per-process turn cache; both `BusMemoryAgent` and the orchestrator call
+  here so the same turn is not searched twice with divergent budgets.
+- **Sequential by design** — the llama_cpp embedder is not thread-safe.
+- **Heuristic rerank** — `cognition/reranker.py` scores lexical overlap ×
+  recency × importance (`scoring.py`); a neural cross-encoder remains a future
+  upgrade, not the current path.
+- **FAISS tombstones** — `vector_store.mark_memory_deleted()` marks stale
+  vectors without a full rebuild; `compact_tombstones()` reclaims space.
+
+Mode scaling (`reasoning_modes.py`): Quick → `fast` planner + lean specialist
+profile; Normal/Advanced/Research/Expert → progressively deeper planner budgets
+and broader `mode_chat_agent_profile()` fan-out. Quick still runs the
+orchestrator — it does **not** bypass it for a bare bus dispatch.
 
 ---
 
@@ -222,7 +237,7 @@ orchestrator is the "deep" path.
   capability that actually exists and can only emit well-formed JSON — an invented
   action is unrepresentable rather than rejected after the fact. Backends without
   grammar support (Ollama, remote) fall back to the free-text path unchanged.
-- Token/context budgeting lives in `kernel/stages/prompt_assembly.py::_build_enhanced_system`
+- Token/context budgeting lives in `engine.py::_build_enhanced_system`
   (budget-aware persona trim) + `core/dynamic_runtime_budget.py`.
 
 ---
@@ -260,22 +275,11 @@ frontier (see §20).
 
 ---
 
-## 10. Execution layer  (`eli/execution/executor_enhanced.py` + `execution/effectors/`)
+## 10. Execution layer  (`eli/execution/executor_enhanced.py`)
 
-- `execute(action, args) -> dict` — **185** `SUPPORTED_ACTIONS`; the runtime
-  capability manifest reports **205 capabilities** *(live, read each boot)*.
-- **v3 dispatch registry** (`execution/effectors/registry.py`) — effector
-  modules register the actions they own; `execute` consults the registry
-  **before** the legacy if-chain. **169 actions** across **34 effector modules**
-  (window control, introspection, coding, media, status reports, plugins,
-  system-open, gaze, self-improve, input control, voice input, datetime/calendar,
-  persona-lock, wake-word, web/info, apps/windows, content analysis, pomodoro,
-  self-maintenance, document analysis/creation, jobs, timers) are registry-owned.
-  Shared primitives (`_run`, `_run_ok`, `_save_artifact`, `_artifacts_dir`,
-  security gate) live in `effectors/_base.py`. The executor has been strangled
-  from a 14,592-line god-file toward a thin façade (currently 6,442, −56%; see
-  `executor_decomposition.md` and `MONOLITH_DECOMPOSITION_MAP.md`). Adding a
-  capability = new effector module + `register()` — no god-file edit.
+- `execute(action, args) -> dict` — **204 dispatch actions (225 manifest)**; runtime capability
+  manifest reports **232 capabilities, 215 of them routable** *(live, read from the
+  manifest each boot)*.
 - **PHASE45 fast-path** (`engine.py`) — deterministic OS/media/status/job actions
   (`VOLUME`, `MEDIA_CONTROL`, `NEXT_MEDIA`, `OPEN_APP`, `DATE`, `SHELL_EXEC`,
   `ANALYZE_IMAGE`, `CHECK_JOB`, `BACKGROUND_JOBS`, …) bypass the LLM and return
@@ -402,23 +406,11 @@ under `artifacts/world/`. Experimental/creative subsystem.
 
 ## 18. GUI  (`eli/gui`)
 
-PySide6 (LGPL — not PyQt/GPL, see `pyproject.toml`). **v3 decomposed both GUI
-monoliths**: the 11k-line main window → `gui/main_window/` (16 files: `window.py`
-assembles `EliMainWindow` from `_mixins/` — chrome/io, conversation, features,
-image, quick actions, screen capture, self-improve, settings/model, tabs — plus
-`adapters.py`, `models.py`, `widgets.py`); the 5.7k-line `labs_tab.py` →
-`gui/labs/` (17 files). `app.py` = entry/boot (pins the checkout's project root).
-Panels in `eli/gui/panels/` (`startup.py` = StartupModelSelectionDialog +
+PySide6 (LGPL — not PyQt/GPL, see `pyproject.toml`). `eli_pro_audio_gui_v2_0.py`
+(main window, 11k LOC), `app.py` (entry/boot), `labs_tab.py` (Experimental),
+panels in `eli/gui/panels/` (`startup.py` = StartupModelSelectionDialog +
 FirstBootWizard with curated download, HardwareTuningDock). EliWorld tab, Operator
 console, Proactive dock. `qt_compat.py` shim allows PyQt fallback from source.
-
-## 18b. Editions & licensing  (`eli/editions`, `eli/licensing` — v3 only)
-
-The productization layer: shared core + composable **edition packs**
-(`base`, `coding`, `content`, `enterprise`, `healthcare`, `legal`, `research`),
-each with `capabilities/ personas/ templates/ tools/`. Manifest-driven discovery;
-a signed licence carries a **tier** (trial/personal/pro/enterprise) and entitles
-editions. Inert until composed — no effect on existing imports. Absent in v2.
 
 ---
 
@@ -444,11 +436,8 @@ voices/  Piper ONNX
 
 ## 20. Known seams & weak points (honest)
 
-1. **God-files** (§1) — the historical refactor target. The two GUI monoliths and
-   the engine are decomposed (engine → six stage mixins on `CognitiveEngine`, with
-   `process()`/`__init__` kept); the executor is 56% strangled; the router lifted
-   its intent families. `process()` (~3k LOC) is the remaining large method — an
-   orchestrator by nature. Hold a size ceiling, keep a repair-log.
+1. **God-files** (§1) — four files ≈ a third of the codebase; the active refactor
+   target. Split by concern, hold a size ceiling, keep a repair-log.
 2. **Internal-state → spoken-output seam** — the recurring failure class
    (identity confabulation, telemetry/packet leaks, ungrounded factual claims).
    The grounding gate + escalation defend it but don't fully close it on the
@@ -456,7 +445,7 @@ voices/  Piper ONNX
 3. **Swallowed errors** — many `except Exception: pass`; convert to logged/raised
    so failures surface instead of hiding.
 4. **No capability eval until now** — `tools/eval/` (see
-   `blueprints/eval_harness.md`) is the new measurement layer; coverage grows by
+   `tools/eval/README.md`) is the new measurement layer; coverage grows by
    turning every bug-log into a case.
 5. **Latency vs model size** — on an 8GB GPU a 24B at Q5 offloads few layers →
    minutes/reply; a 7–9B Q4 is the sweet spot. The model picker should warn on
@@ -479,9 +468,10 @@ voices/  Piper ONNX
 | model loading / inference | `eli/cognition/gguf_inference.py`, `inference_broker.py` |
 | offline/network policy | `eli/core/netguard.py` |
 | paths / settings / model download | `eli/core/{paths,runtime_settings,model_download}.py` |
-| the GUI | `eli/gui/gui_eli_original.py`, `gui/panels/` |
-| eval / regression board | `tools/eval/` (+ `blueprints/eval_harness.md`) |
+| the GUI | `eli/gui/eli_pro_audio_gui_v2_0.py`, `gui/panels/` |
+| eval / regression board | `tools/eval/` (+ `tools/eval/README.md`) |
 ```
+
 
 ## Update — 2.3.7 (new subsystems)
 
@@ -521,9 +511,9 @@ bypass the trust chain entirely.
 
 ### `eli/gui/` — three new surfaces
 
-`tabs/training_tab.py` (Labs ▸ Training), `tabs/extensions_tab.py` (the top-level
-**Extensions** tab: plugins, MCP servers and the marketplace),
-`panels/permission_dialog.py` (consent dialog + worker → GUI-thread bridge).
+`tabs/training_tab.py` (Labs ▸ Training), `tabs/marketplace_tab.py`
+(Settings ▸ Marketplace), `panels/permission_dialog.py` (consent dialog + worker
+→ GUI-thread bridge).
 
 ### Paths
 

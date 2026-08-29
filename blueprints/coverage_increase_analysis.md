@@ -1,4 +1,4 @@
-# ELI MKXI — Coverage Increase Analysis
+# ELI v3 — Coverage Increase Analysis
 
 **Question:** can the 48.1% testable coverage go higher, and if so, where?
 **Short answer:** yes — a focused pass on *testable-but-untested logic* can realistically

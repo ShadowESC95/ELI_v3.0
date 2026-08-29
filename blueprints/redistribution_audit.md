@@ -11,7 +11,7 @@ every module, an engine smoke test, the capability manifest, and the test-suite 
 **Suitable for redistribution — and now fully cleaned up.**
 
 The *repository* (what would actually ship) is clean: no personal data in tracked source, no
-secrets, no user databases, a complete licence + install surface, and 208/208 capabilities
+secrets, no user databases, a complete licence + install surface, and 208/232 capabilities
 active. Everything compiles and the engine runs. Both original findings — the untracked local
 junk and the 5 non-blocking test reds — have since been **resolved** (junk deleted; all reds
 fixed 2026-07-03). The tree is clean and the suite is green on those paths.
@@ -108,6 +108,6 @@ born-locked secret files, RBAC. See `security.md` (updated 2026-07-02).
 
 **The repository is clean and safe to redistribute as-is.** Nothing personal or secret is
 tracked; the licence and install surface are complete; every module compiles; the engine runs;
-all 208 capabilities are active; the suite is green bar 5 documented, non-blocking reds. The
+all 232 capabilities are active; the suite is green bar 5 documented, non-blocking reds. The
 only to-dos are cosmetic (delete untracked junk) and quality debt (the reds) — neither gates a
 release. For a proprietary-licensed internal-use product, this is in good shape.

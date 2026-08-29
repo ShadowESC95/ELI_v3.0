@@ -70,7 +70,7 @@ train **any** model you pick into a GGUF.
 
 ```bash
 # Use the project venv (CUDA already verified there).
-cd ~/Desktop/ELI_MKXI-main_MAY_NEWEST
+cd ~/Desktop/ELI_v3.0
 .venv/bin/python -m pip install --upgrade unsloth trl transformers datasets accelerate bitsandbytes huggingface_hub
 
 # llama.cpp — needed to convert HF -> GGUF and quantize (if not already present):

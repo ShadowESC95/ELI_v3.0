@@ -1,5 +1,8 @@
 # ELI Runtime Surfaces, Planning, World, Tools & Plugins
 
+> **Updated for 3.0.81.** Stage 12 learning via `learning_coordinator.py`; goal
+> autogenesis feeds the proactive stack.
+
 The remaining subsystems: the `runtime/` response/introspection surfaces, the
 proactive planning layer, the "world"/autonomy model, and the tools + plugin
 system.
@@ -77,7 +80,25 @@ The substrate behind ELI's emergent self-state (autonomy pressure, awareness,
 - `core/schemas.py` — `WorldEvent`, `AwarenessState`.
 - `renderers/pyside6/world_scene.py` + `world_panel.py` — a **visual** "ELI's
   World" panel.
-- `persistence/storage.py` — world-state persistence.
+- `persistence/storage.py` — world-state persistence. Three properties were added
+  after live faults (2026-08-09/10) and are load-bearing:
+  * **Absolute paths.** `world_dir()` resolves through `get_paths()`. The journal,
+    provenance ledger and snapshot modules previously kept relative
+    `Path("artifacts/world/...")` constants and wrote wherever ELI was launched
+    from — a different place from `~` than from the project directory, and in a
+    packaged build a failed write to `/artifacts`.
+  * **Schema-tolerant load.** `_fit()` builds each dataclass from the saved dict
+    while ignoring fields it no longer declares. Before it, one unknown key made
+    `AwarenessState(**data)` raise, `load()` caught it, filed the state as
+    `.corrupt_*` and returned a fresh default world — so a single renamed field
+    would silently wipe the user's rooms, objects, goals and habits on upgrade.
+    Two of the five corrupt backups on the dev machine parse as valid JSON; they
+    were condemned by exactly this and nothing else.
+  * **Bounded logs.** `actions.jsonl` reached 41 MB / 80,576 lines because nothing
+    rotated it. `_trim_jsonl` keeps the newest 20,000 lines (counted, not
+    size-capped, so a trim never splits a JSON record) and checks on the first
+    append of each process plus every 250 thereafter — the per-process counter
+    alone meant a short session never trimmed at all.
 
 ## Tools (`eli/tools/`, 8.9k LOC)
 

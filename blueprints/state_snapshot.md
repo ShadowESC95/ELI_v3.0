@@ -1,4 +1,4 @@
-# ELI MKXI — Current State Snapshot (2026-07-01)
+# ELI v3 — Current State Snapshot (2026-07-01)
 
 Authoritative, freshly-measured summary of the whole project as of 2026-07-01.
 Numbers are measured on ELI's real interpreter (`.venv/bin/python`), not the

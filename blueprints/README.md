@@ -1,19 +1,24 @@
 # ELI Blueprints
 
-Grounded architecture documentation for ELI MKXI. Each doc reads the real code,
+Grounded architecture documentation for ELI v3. Each doc reads the real code,
 states what's there, and gives an honest strength/weakness assessment. Written
 from deep reads of the core + a full structural/code-health sweep — covering every
 package's structure + the algorithm-bearing bodies; claims are grounded in what was
 inspected.
 
-> **Current status (2026-07-01):** ELI is now a two-front local-first system — the
-> PySide6 desktop app **and** a self-hosted FastAPI **web app + dashboard PWA**
-> (`api/server.py`) with ELI's own MQTT smart-home, multi-user roles (RBAC), a
-> tamper-evident hash-chained audit trail, collaborative research corpora, browser
-> voice, and a monitored, owner-gated path to the internet. **143,432 LOC / 370 `.py`
-> files**, **208** capabilities, **185** actions, full suite **7,347 passed**. The
-> authoritative, freshly-measured state is **[state_snapshot.md](state_snapshot.md)**;
-> the latest work is in **[session_2026-06-28_web_app_home_security_and_routing.md](session_2026-06-28_web_app_home_security_and_routing.md)**.
+> **Updated for 3.0.81 (August 2026).** Cognition unified with v2.3.40+ (gradient
+> orchestrator, shared retrieval, S01–S12). **~190,378 LOC / 593 `.py` files**,
+> **232** capabilities (**215** routable). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
+
+Grounded architecture documentation for ELI v3. Each doc reads the real code,
+states what's there, and gives an honest strength/weakness assessment. Written
+from deep reads of the core + a full structural/code-health sweep — covering every
+package's structure + the algorithm-bearing bodies; claims are grounded in what was
+inspected.
+
+> **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
+> (`api/server.py`) with MQTT smart-home, RBAC, tamper-evident audit, browser voice.
+> **[state_snapshot.md](state_snapshot.md)** holds the last full measured sweep.
 
 ## Index
 
@@ -51,7 +56,7 @@ inspected.
   view. What ELI is, scale (~142k LOC / 369 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
-  topology: `AgentOrchestrator` (12-stage pipeline) vs the 14-agent `AgentBus`,
+  topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.
   the ReAct loop, the typed `ExecutionPlan`, selection, timeouts, trust.
 - **[memory.md](memory.md)** — SQLite/FTS5 + FAISS + knowledge graph, the
   `recall_memory` hybrid retriever, weight decay, the `Memory` god-class.

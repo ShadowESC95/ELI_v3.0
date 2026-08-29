@@ -1,4 +1,4 @@
-# ELI MKXI — Test Coverage Suite & Results (Full Report)
+# ELI v3 — Test Coverage Suite & Results (Full Report)
 
 A full test-coverage suite was built for ELI and run end-to-end across **four lanes**.
 This document is the complete record: the suite, the methodology, the measured results

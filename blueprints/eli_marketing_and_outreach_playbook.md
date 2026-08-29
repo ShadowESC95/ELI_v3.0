@@ -302,7 +302,7 @@ A good 60-second clip is worth more than everything else in this document combin
 > It's source-available, not OSI open-source: you can read, run, and modify it freely; you just can't
 > redistribute it. I wanted the code open to learn from while keeping stewardship of the project.
 >
-> Repo: https://github.com/ShadowESC95/ELI_v2.0
+> Repo: https://github.com/ShadowESC95/ELI_v3.0
 >
 > It's a solo build and I'd genuinely welcome feedback, criticism, and to hear whether it's useful to
 > anyone but me.
@@ -364,7 +364,7 @@ A good 60-second clip is worth more than everything else in this document combin
 > model on consumer hardware is less capable than a cloud model — the trade is privacy and ownership.
 > Source-available (you can run and modify it, not redistribute).
 >
-> Repo: https://github.com/ShadowESC95/ELI_v2.0 — feedback welcome.
+> Repo: https://github.com/ShadowESC95/ELI_v3.0 — feedback welcome.
 
 ### A5. X/Twitter + Mastodon short post
 

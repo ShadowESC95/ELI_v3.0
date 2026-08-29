@@ -1,5 +1,8 @@
 # ELI Security Posture
 
+> **Updated for 3.0.81.** Fail-closed shell gate, path allow-roots, custom-agent
+> SHA-256 trust registry, prompt-injection sanitisation at engine entry (S02).
+
 ELI runs locally with real OS reach (shell, file, app control) plus a
 user-extensible agent/plugin system — so the security model matters. It is
 **fail-closed** by design. Spans `eli/runtime/security.py`, the executor gate,
@@ -9,9 +12,9 @@ registry.
 ## 1. Shell command gate (`runtime/security.py` `SecurityManager`)
 
 - `is_command_allowed(cmd)`:
-  - `ELI_FULL_CONTROL=1` → allow all.
+  - **ELI Full Control** on (`is_full_control()`) → allow all.
   - `ELI_ALLOWED_CMDS` contains `*` → allow all.
-  - `ELI_ALLOWED_CMDS` unset **and** no full-control → **blocked (fail-closed)**;
+  - `ELI_ALLOWED_CMDS` unset **and** Full Control off → **blocked (fail-closed)**;
     logs a warning explaining how to opt in. (Always allows the project's own
     `.venv/bin/python`.)
 - `safe_subprocess(cmd, timeout)` — validates `cmd[0]` against the allowlist
@@ -20,6 +23,14 @@ registry.
   mirrors this exact logic, so if `SecurityManager` fails to import, the executor
   still fails **closed** (never fail-open). Explicit comment to that effect.
 
+> **ELI Full Control has no environment variable — deliberately.** The single
+> source of truth is the `full_control` setting flipped by the GUI toggle, read
+> live via `core/full_control.py` `is_full_control()`; nothing in the process
+> environment can turn it on, so no stray export can silently unlock the gates,
+> and flipping the toggle off restores every gate at once without a restart. It
+> lifts four barriers together: network gating, self-code patching, autonomy
+> approval, and this command gate.
+
 ## 2. Filesystem & app gates (`SecurityManager`)
 
 - `is_path_allowed(path)` — must resolve within allow-roots
@@ -27,7 +38,7 @@ registry.
   `relative_to`, so `..` traversal can't escape.
 - `is_app_allowed(app)` — explicit `ELI_ALLOWED_APPS`, else a curated
   default-safe set (settings, file manager, editor, calculator, terminal,
-  browser, mail). `ELI_FULL_CONTROL` bypasses.
+  browser, mail). ELI Full Control bypasses.
 
 ## 3. Prompt-injection guard (`kernel/engine.py`)
 
@@ -48,13 +59,35 @@ called before **any** f-string interpolation of a table/column name into SQL
 `ValueError` on anything non-conforming. Closes the one place dynamic SQL is
 unavoidable (parameterised values are used everywhere else).
 
-## 5. Custom-agent trust registry (`cognition/agent_bus.py`)
+## 5. Custom-agent trust chain (`cognition/agent_trust.py`)
 
-Custom agents (GUI wizard / `$ELI_CUSTOM_AGENTS_DIR`) are **SHA-256 hash-gated**
-against `config/trusted_agents.json`. Unknown or modified files are skipped with
-a SECURITY debug line; approve via `eli --trust-agent <path>`. `ELI_TRUST_ALL_AGENTS=1`
-bypasses for dev only. Fail-closed (missing/mismatched hash ⇒ not loaded). See
-`orchestration_and_agents.md`.
+Custom agent code is **SHA-256 gated** and fail-closed: unknown, modified or revoked
+files are not loaded. `ELI_TRUST_ALL_AGENTS=1` bypasses for dev only.
+
+Rebuilt in 2.3.7. The previous registry stored `{basename: sha256}` in
+`config/trusted_agents.json`, which had three defects that look fine until they
+don't:
+
+- **Keyed on the basename.** Two files called `helper.py` in different directories
+  shared one entry, so approving either silently authorised the other. Identity is
+  now the **resolved absolute path**; the basename is kept for display only.
+- **No provenance.** A bare hash cannot answer *who approved this, when, and what
+  did it look like then* — the questions asked after something goes wrong. A grant
+  now records the timestamp, the approver, the file size, the static-analysis
+  verdict at approval, and the spec hash the code was paired with.
+- **Nothing looked at the code.** The gate proved a file was unchanged since
+  approval; it never asked whether approving it was reasonable. `grant()` now runs
+  the same engines as the plugin marketplace and **refuses outright** on a malicious
+  verdict (overridable with `force=True`, which is itself recorded).
+
+Revocation is real: a revoked entry is *kept and marked revoked* rather than
+deleted, so re-adding the same file does not silently re-trust it. A v1 registry is
+migrated rather than discarded, with migrated entries flagged `legacy` so it stays
+visible that they predate these checks.
+
+**Most custom agents need none of this.** An `AgentSpec` is data — objective, system
+prompt, triggers, success criteria — so a spec-driven agent executes no arbitrary
+code and never touches the trust gate. See `orchestration_and_agents.md`.
 
 ## 6. Code generation & self-modification — three paths
 
@@ -111,7 +144,7 @@ matching safeguards:
   1. The injection guard is **pattern-based** — it catches known prefixes, not
      novel/obfuscated injections (no model-side defence). Reasonable for a
      single-user local tool, insufficient if ever multi-tenant.
-  2. `ELI_FULL_CONTROL=1` is a single env var that disables *all* gates at once —
+  2. **ELI Full Control** is a single toggle that disables *all* gates at once —
      convenient, but a blunt instrument; there's no middle "allow file but not
      shell" tier beyond the per-axis env vars.
   3. ~~The default-safe app/command sets are Linux/GNOME-flavoured.~~ **RESOLVED** — the
@@ -208,7 +241,7 @@ commands/files/apps stay fail-closed). The web surface adds:
   born-locked secret files, and a monitored (not absent) network path. For a self-hosted
   local AI this is well above the norm.
 - **Watch:** RBAC is token-based and single-tenant-shaped; the injection guard (§3) is still
-  pattern-based; `ELI_FULL_CONTROL` remains a blunt all-gates-off switch. None new, but they
+  pattern-based; ELI Full Control remains a blunt all-gates-off switch. None new, but they
   matter more once the web app is exposed beyond the owner's machine — keep it bound to
   trusted networks.
 
@@ -236,7 +269,7 @@ ledger all still apply.
 
 - **Token in the URL fragment, never the query string.** Every emitter of the phone link now
   builds `…/#token=…` instead of `…/?token=…`: the server's printed URLs *and* the desktop **Web
-  Server panel** (`eli/gui/gui_eli_original.py:8332/:8391`) *and* both launchers
+  Server panel** (`eli/gui/eli_pro_audio_gui_v2_0.py:8332/:8391`) *and* both launchers
   (`scripts/eli_serve.sh`, `scripts/eli_serve.ps1`). A query string reaches the server — it lands
   in **uvicorn's access log** before any client-side strip can run — whereas a **fragment is never
   sent to the server**, so the token can't leak into the log. The page reads it from
@@ -247,6 +280,7 @@ ledger all still apply.
 - **All 5 standing test reds cleared.** Deprecated `smart_home` plugin removed; 113 silent
   `except: pass` swallows made observable (987→874, ceiling 950→900); stale blueprint references
   fixed. Not a security change per se, but the suite is now fully green.
+
 
 ## Update — 2.3.7 (community plugin marketplace: consent, verification, scanning)
 
@@ -281,7 +315,7 @@ Three rules hold everywhere:
 - **Nothing is granted by installing.** Install consent and use consent are separate
   acts; Android learned this the hard way with install-time permissions.
 - **Every decision is audited** to a JSONL ledger the operator can read back, and
-  any grant can be revoked from Extensions ▸ Permissions.
+  any grant can be revoked from Settings ▸ Marketplace ▸ Permissions.
 
 An unrecognised capability is reported as **critical**, not ignored — a build that
 cannot explain a permission cannot enforce it either.

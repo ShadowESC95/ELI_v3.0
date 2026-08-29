@@ -1,5 +1,9 @@
 # ELI — What It Can Actually Do
 
+> **Updated for 3.0.81.** All CHAT modes run the gradient orchestrator; 15 specialist
+> agents; 232 capabilities (215 routable). Regenerate the action list with
+> `python -m eli.tools.registry.capability_updater`.
+
 *A complete capability showcase, for the layman and the tech-savvy alike. Every
 capability listed here is real and present in the code — nothing is aspirational
 or embellished. This is the "what you get" document.*
@@ -15,11 +19,11 @@ builds documents, creates images, looks after itself, and learns you over time �
 and **nothing leaves your device unless you explicitly allow it.**
 
 Here's the part most "AI assistants" can't say: it's *yours*. A fully local,
-embodied desktop AI you actually own — **228 capabilities** (199 of them routable
-by voice or text), a 14-agent reasoning bus, persistent memory, and full
-voice/vision/gaze control, in ~160,000 lines of Python. One machine, your data, no landlord. (The
+embodied desktop AI you actually own — **232 capabilities** (215 of them routable
+by voice or text), a 15-agent reasoning bus, persistent memory, and full
+voice/vision/gaze control, in ~190,378 lines of Python in `eli/`. One machine, your data, no landlord. (The
 capability count is read live from the manifest each boot, so it grows as ELI
-does.)
+does. Auto-generated action reference: `capabilities_and_actions.md`.)
 
 And as of **2026-06-28** it has a **second face**: a self-hosted **web app + dashboard**
 you can open from any browser on your network — chat, a live system dashboard, **ELI's own
@@ -76,13 +80,13 @@ device on your network:
 These are real, verified mechanisms — the parts that put ELI ahead of typical
 local assistants:
 
-- **A 14-agent reasoning bus on a dependency DAG** with *calibrated, weight-free*
+- **A 15-agent reasoning bus on a dependency DAG** (composed inside the gradient
+  orchestrator after shared retrieval) with *calibrated, weight-free*
   confidence fusion — each agent's contribution is weighted by evidence quality ×
   payload density × a calibration value *learned from its own track record*.
-- **A 12-stage retrieval pipeline** — HyDE query expansion → vector (FAISS) +
-  keyword (FTS5) + knowledge-graph multi-hop + RAG → hybrid merge → a heuristic
-  rerank (lexical-overlap × recency × importance; a neural cross-encoder is the
-  designed upgrade point) → context assembly.
+- **A unified 12-stage pipeline (S01–S12)** — all CHAT modes run the orchestrator
+  at scaled depth (Quick = light/fast; Expert = full/deep): shared
+  `retrieve_for_turn()` → specialist fan-out → heuristic rerank → synthesis.
 - **5 genuinely multi-pass reasoning modes** — chain-of-thought, self-consistency
   (N samples + consensus), tree-of-thoughts (branch/prune), constitutional
   (draft→critique→revise), and quick — and it **auto-escalates** through them as a
@@ -159,13 +163,12 @@ Do it by voice or text — *"what voices do you have"*, *"download a British voi
 accents..."**; either way it downloads (checksum-verified) and becomes selectable
 straight away. A handful of voices carry non-commercial licences, so ELI doesn't
 bundle them — the list says so plainly and still lets you fetch them for personal use.
-**Character voices** — HAL, TARS, Rick, GLaDOS,
-JARVIS — built as a base voice plus a real-time ffmpeg effect chain (no extra
+**Character voices** — calm, robotic, energetic, synthetic, and refined — built as a base voice plus a real-time ffmpeg effect chain (no extra
 model), and you can **create your own** (`char:<name>`) by choosing a base voice
 and tuning pitch / speed / effects. Pick any of them from the voice selector, or
 just tell ELI *"speak to me like HAL."* Optional **voice cloning** (`clone:<name>`)
 reproduces a voice from a short audio sample via Coqui XTTS-v2 — an opt-in extra
-(`pip install "eli-v2.0[clone]"`, ~1.8 GB model downloaded on first use); without
+(`pip install "eli-v3[clone]"`, ~1.8 GB model downloaded on first use); without
 it, a cloned voice falls back to a normal voice rather than going silent.
 
 ### 👁️ See & understand
@@ -344,7 +347,7 @@ Works on NVIDIA and AMD. If your card is too small, it tells you exactly how muc
 needed and what would fix it, instead of silently falling back to a CPU run that
 takes days.
 
-### Community plugins (🔌 Extensions)
+### Community plugins (Settings ▸ 🛒 Marketplace)
 
 ELI ships the client for a marketplace the **community** owns — anyone can host a
 registry and anyone can publish to it. ELI takes no cut, holds no keys, and vets

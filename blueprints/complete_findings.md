@@ -129,8 +129,8 @@
 ## C. Verified subsystem facts (the accurate picture)
 
 **Request pipeline.** Router (`router_enhanced.py`, ~174 actions, regex-first +
-LLM-intent fallback) → engine gate (quick/fast/direct → 14-agent bus fastpath;
-non-quick → 12-stage orchestrator) → reasoning mode → executor (167 dispatch
+LLM-intent fallback) → gradient orchestrator (all CHAT modes, scaled depth) →
+shared retrieval + specialist bus → reasoning mode → executor (167 dispatch
 points) → governed output. `SEQUENCE` chains multiple actions via `_execute_impl`.
 
 **Agent bus.** 15 agents on a dependency DAG (`core/dag.py` topological layers,

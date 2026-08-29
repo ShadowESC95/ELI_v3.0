@@ -1,6 +1,6 @@
 # Session 2026-06-18 — Public-Release Hardening, Distribution, and Scaling
 
-Reference doc for the work done the day ELI MKXI went public. Two threads ran together:
+Reference doc for the work done the day ELI v3 went public. Two threads ran together:
 **(A)** make the repo safe and clean for public distribution, and **(B)** make the whole
 surface — installer, launchers, docs, model path — consistent across **platform, hardware,
 and users**, scaled for the long term (**3B on a laptop → trillion-param on 8× datacenter
@@ -91,7 +91,7 @@ model/user/hardware-agnostic, emergent persona).
   (system report / plan / model offer). Functional, but plainer. *Parity port pending.*
 - **`requirements` pin drift**: `requirements.txt` pins `llama_cpp_python==0.3.20`,
   `requirements-full.txt` uses `>=0.3`. Harmonize to one policy (frozen lock is canonical).
-- **Capability count**: README says "208 capabilities"; runtime manifest reports 208.
+- **Capability count**: README says "232 capabilities"; runtime manifest reports 208.
   Make the README pull the live number or reconcile.
 
 ---
