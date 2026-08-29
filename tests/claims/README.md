@@ -23,7 +23,8 @@ Run: `pytest tests/claims/ -q`
 | `test_documented_actions.py` | every action in `capabilities_and_actions.md` is a real, reachable manifest capability | ~328 |
 | `test_activation_phrases.py` | each router-routable action is reachable by ≥1 of its documented activation phrases (or a documented equivalent) | ~120 |
 | `test_blueprint_refs.py` | every `*.py` / `eli.x.y` reference in the blueprints resolves | ~36 |
-| `test_structural_claims.py` | 14 bus agents, 5 reasoning modes, 12 main tabs, 4 SQLite stores, and the load-bearing callables exist + key behavioural claims (netguard fail-closed, evidence channels, pipeline enabled) | ~70 |
+| `test_structural_claims.py` | 15 bus agents, 5 reasoning modes, 13 main tabs, 4 SQLite stores, and the load-bearing callables exist + key behavioural claims (netguard fail-closed, evidence channels, pipeline enabled) | ~70 |
+| `test_public_marketing_claims.py` | README/persona mechanism claims: 15 agents, 12-stage pipeline, shell denylist, port 8081, Piper 166/45 anchor, wake-word training, HyDE, LoRA, no Quick-orchestrator bypass prose | ~20 |
 
 ## Findings surfaced by the examination
 
