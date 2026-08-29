@@ -20,7 +20,8 @@ a structural and productization upgrade, not a feature rewrite.*
 
 Both run the same local GGUF models and the same cognition policy (gradient
 orchestrator, `retrieval.py`, FAISS tombstones, `learning_coordinator`). v3
-currently tracks **232** manifest capabilities (**215** routable). v3 changes
+currently tracks **232** manifest capabilities (**215** doc-routable; **211**
+`SUPPORTED_ACTIONS`). v3 changes
 *how the code is organised* (decomposed engine/GUI/executor) and *how it can
 be sold* (editions/licensing) — not what ELI is allowed to do.
 

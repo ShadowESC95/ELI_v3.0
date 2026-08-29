@@ -1,6 +1,6 @@
 # Blueprint — ELI v3 Full Architecture (ASCII)
 
-> **Updated for 3.0.81.** All CHAT modes → gradient orchestrator; bus composed at S06.
+> **Updated for 3.0.82.** All CHAT modes → gradient orchestrator; bus composed at S06.
 
 The entire system in one drawing, plus the module tree and data layout. Grounded
 in the real source (see `architecture.md` for prose, `diagrams.md` for the
@@ -19,9 +19,9 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 
 ┌─ PRESENTATION ────────────────────────────────────────────────────────────────────┐
 │  GUI (PySide6)                  CLI headless              Voice I/O                 │
-│  gui/eli_pro_audio_gui_v2_0.py   cli/headless.py           perception/audio_stt (STT)│
+│  gui/main_window/window.py       cli/headless.py           perception/audio_stt (STT)│
 │  gui/app.py · gui/panels/       (python -m eli -H)        perception/tts_router(TTS)│
-│  labs_tab · EliWorld tab        ./eli.sh                  wake-word "computer"       │
+│  gui/labs/ · EliWorld tab       ./eli.sh                  wake-word "computer"       │
 └────────────────────────────────────────┬───────────────────────────────────────────┘
                                           │  text / command
                                           ▼
@@ -32,7 +32,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 └────────────────────────────────────────┬───────────────────────────────────────────┘
                                           ▼  {action, args, confidence, matched_by}
 ┌─ KERNEL ──────────────────────────────────────────────────────────────────────────┐
-│  kernel/engine.py :: CognitiveEngine.process()   ← the orchestrating core (~15k LOC) │
+│  kernel/engine.py :: CognitiveEngine.process()   ← the orchestrating core (~7.4k LOC)│
 │  scheduler · task_bus · pipeline · state · world_model · self_upgrade               │
 └──────┬──────────────────────────────┬───────────────────────────────┬───────────────┘
        ▼                              ▼
@@ -62,7 +62,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
         │              └────────────────────────────┬─────────────────────────────────────┘
         ▼                                           ▼
 ┌─ EXECUTION ───────────────────────────────────────────────────────────────────────┐
-│  execution/executor_enhanced.py  204 dispatch actions (225 manifest) / 232 capabilities (live)    │
+│  execution/executor_enhanced.py  211 SUPPORTED_ACTIONS (232 manifest; 215 doc-routable)           │
 │  media_runtime · operator_actions · tool_execution_authority · background_tasks     │
 │  PLUGINS(10): calendar document_reader media notes pomodoro weather                 │
 │              system_stats tts web web_automation        eli/coding :: CodeAgent     │
@@ -137,21 +137,22 @@ eli/  (~190,378 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard
 │
 ├── __main__.py ················ entry dispatch (GUI | --headless)
 │
-├── kernel/            16.7k ─── the core
-│   ├── engine.py      15.2k     CognitiveEngine.process() — the spine ★god-file
+├── kernel/            17.3k ─── the core (+ kernel/stages/)
+│   ├── engine.py       7.4k     CognitiveEngine.process() — the spine
+│   ├── pipeline_trace.py        canonical S01–S12 logging
 │   ├── scheduler.py             timed jobs
 │   ├── task_bus.py · pipeline.py · state.py · world_model.py · self_upgrade.py
 │
-├── execution/         26.2k ─── route → act
-│   ├── executor_enhanced.py   15.9k   204 dispatch / 225 manifest ★god-file
-│   ├── router_enhanced.py      8.2k   priority pipeline ★god-file
+├── execution/         29.3k ─── route → act (+ 42 effectors)
+│   ├── executor_enhanced.py   6.9k   211 SUPPORTED / 232 manifest
+│   ├── router_enhanced.py     4.5k   priority pipeline
 │   ├── execution_planner.py · route_authority.py · route_contracts.py
 │   ├── tool_execution_authority.py · operator_actions.py · operator_policy.py
 │   ├── media_runtime.py · router_plugin_intents.py · executor_plugin_handlers.py
 │   └── portable_intent_contract.py · execution_intent_packets.py
 │
-├── cognition/         18.5k ─── think
-│   ├── agent_bus.py    2.4k   15 agents + dispatch ★
+├── cognition/         19.1k ─── think
+│   ├── agent_bus.py    3.6k   15 agents + dispatch
 │   ├── orchestrator.py        12-stage deep retrieval
 │   ├── gguf_inference.py 2.1k · inference_broker.py   model-agnostic inference
 │   ├── reasoning_modes.py · hyde.py · reranker.py · llm_intent.py
@@ -160,8 +161,8 @@ eli/  (~190,378 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard
 │   ├── output_governor.py · response_governance.py · response_sanitizer.py
 │   └── grounded_status.py · introspection_agent.py · tone_analyzer.py · chat_model.py
 │
-├── runtime/           33.6k ─── grounding spine + daemons (93 files)
-│   ├── deterministic_grounding_gate.py 4.3k ★ · grounding_escalation.py
+├── runtime/           33.3k ─── grounding spine + daemons (97 files)
+│   ├── deterministic_grounding_gate.py 4.4k · grounding_escalation.py
 │   ├── evidence_ledger/store/arbitration.py · memory_evidence.py
 │   ├── persistence_gate.py · truth_report.py · control_contracts.py
 │   ├── response_contracts/packets/policy.py · final_response_assembly/provider.py
@@ -169,9 +170,10 @@ eli/  (~190,378 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard
 │   ├── background_tasks.py · self_improvement.py · code_monitor.py
 │   └── capability_sync.py · pending_proposal.py · runtime_policy.py
 │
-├── memory/             8.0k ─── remember (13 files)
-│   ├── memory.py       4.5k   Memory · SQLite + FTS5 ★god-file
-│   └── vector_store.py        FAISS index
+├── memory/             8.3k ─── remember (15 files)
+│   ├── memory.py       5.1k   Memory · SQLite + FTS5
+│   ├── retrieval.py             shared turn retrieval + cache
+│   └── vector_store.py          FAISS index
 │
 ├── perception/         9.5k ─── sense (24 files)
 │   ├── vision.py · analyze_image/csv/pdfs/mesh.py · ambient_vision.py
@@ -200,8 +202,8 @@ eli/  (~190,378 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard
 │   ├── hardware_profile.py · startup_hardware_optimizer.py · dynamic_runtime_budget.py
 │   ├── model_download.py · first_run.py · first_run_wizard.py
 │
-├── gui/               26.1k ─── PySide6 desktop
-│   ├── eli_pro_audio_gui_v2_0.py 12.6k ★god-file · app.py · labs_tab.py 5.7k
+├── gui/               27.6k ─── PySide6 desktop (61 files)
+│   ├── main_window/   12.6k   decomposed window + mixins · app.py · labs/ ~6k
 │   └── panels/  (startup.py: model picker + FirstBootWizard, HardwareTuningDock)
 │
 ├── tools/              7.5k ─── image_engine · news · document tools

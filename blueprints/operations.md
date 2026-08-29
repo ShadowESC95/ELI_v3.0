@@ -11,7 +11,7 @@ source or measured timings.
 ## 1. Startup / cold-start latency
 
 No wall-clock delta is printed at boot (a `window._debug_boot_ts = time.time()`
-hook exists in `gui/eli_pro_audio_gui_v2_0.py` but nothing measures against it),
+hook exists in `gui/main_window/` but nothing measures against it),
 so the number below is reasoned from the boot sequence, not measured.
 
 **Cost breakdown (boot order):**
