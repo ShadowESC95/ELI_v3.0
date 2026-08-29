@@ -1,8 +1,8 @@
 # ELI v3 — Full Project Breakdown & Assessment
 
-> **Updated for 3.0.81 (August 2026).** Cognition pipeline unified: gradient
+> **Updated for 3.0.82 (August 2026).** Cognition pipeline unified: gradient
 > orchestrator for all CHAT modes, shared retrieval, canonical S01–S12 tracing.
-> 3.0.81+ restores cross-platform microphone auto-resolve (USB / Bluetooth /
+> 3.0.82+ restores cross-platform microphone auto-resolve (USB / Bluetooth /
 > headset before built-in; live subprocess probes). Primary install: CI-launch-tested
 > installers on [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases).
 
@@ -43,30 +43,32 @@ wrapper.
 ## 2. Scale & shape
 
 **190,378 LOC across 593 Python files** (`eli/`), plus the FastAPI web server
-(`api/server.py`, ~2,309 lines with an embedded dashboard PWA) and 389 test files.
-*(measured 2026-08-28.)*
+(`api/server.py`, **5,303 lines** with an embedded dashboard PWA) and 389 test files.
+*(measured 2026-08-29.)*
 
 | Subsystem | LOC | Files | Role |
-|---|---|---|---|
-| `runtime/` | 33.6k | 93 | grounding, evidence, introspection, surfaces |
-| `execution/` | 26.2k | 16 | router + executor (action dispatch) |
-| `gui/` | 26.1k | 27 | PySide6 desktop app |
-| `cognition/` | 18.5k | 37 | agent bus, orchestrator, inference, persona, modes |
-| `kernel/` | 16.7k | 8 | the engine (pipeline driver) |
-| `perception/` | 9.5k | 24 | vision, STT, TTS, OS control |
-| `core/` | 9.4k | 30 | paths, settings, hardware profile |
-| `memory/` | 8.0k | 13 | SQLite/FTS5 + FAISS + KG |
-| `tools/` | 7.5k | 29 | image engine, news, etc. |
+|---|---:|---:|---|
+| `runtime/` | 33.3k | 97 | grounding, evidence, introspection, surfaces |
+| `execution/` | 29.3k | 81 | router + executor + **42 effectors** |
+| `gui/` | 27.6k | 61 | PySide6 desktop — **`main_window/` + `labs/`** |
+| `cognition/` | 19.1k | 39 | agent bus, orchestrator, inference, persona, modes |
+| `kernel/` | 17.3k | 23 | engine + **`kernel/stages/`** + pipeline_trace |
+| `perception/` | 10.2k | 26 | vision, STT, TTS, OS control |
+| `core/` | 9.7k | 33 | paths, settings, hardware profile, netguard |
+| `memory/` | 8.3k | 15 | SQLite/FTS5 + FAISS + KG + **retrieval.py** |
+| `tools/` | 7.5k | 29 | image engine, capability registry, diagnostics |
 | `plugins/` | 5.9k | 34 | runtime plugin manager |
+| `planning/` | 4.7k | 26 | proactive daemon, habits, scheduled tasks |
 | `learning/` | 4.3k | 14 | LoRA self-training |
-| `planning/` | 4.2k | 24 | proactive daemon, task planning |
-| `world/` | 1.8k | 26 | world event bus, local world bridge |
-| `integrations/`,`utils/`,`contracts/`,`system/`,`cli/` | ~5.5k | — | misc |
+| `coding/` | 2.7k | 15 | CodeAgent |
+| `world/` | 1.9k | 26 | world event bus, local world bridge |
+| `integrations/` | 1.8k | 12 | Ollama, MCP |
+| `utils/`, `contracts/`, `system/`, `cli/` | ~5.5k | — | misc |
 
-**Four files carry ~⅓ of the codebase:** `executor_enhanced.py` (~15.9k LOC),
-`engine.py` (~15.2k), `gui/eli_pro_audio_gui_v2_0.py` (~12.6k),
-`router_enhanced.py` (~8.2k). Next tier: `labs_tab.py` (5.7k),
-`memory.py` (4.5k), `deterministic_grounding_gate.py` (4.3k).
+**Largest modules (v3 decomposed — not v2 monolith sizes):**
+`executor_enhanced.py` (~6.9k), `engine.py` (~7.4k), `gui/main_window/` (~12.6k
+package), `router_enhanced.py` (~4.5k), `gui/labs/` (~6.0k package),
+`memory.py` (~5.1k), `deterministic_grounding_gate.py` (~4.4k).
 
 ## 3. Architecture, layer by layer
 
@@ -74,9 +76,9 @@ wrapper.
   adapt n_ctx / gpu_layers / batch to whatever model + GPU are present
   (filename→ctx table; VRAM compute-buffer reservation). Model-agnostic.
 - **Routing** — `execution/router_enhanced.py`: regex-first with LLM-intent
-  fallback + an explicit priority pipeline → one of **225 manifest capabilities**
-  (**215 routable**; 204 executor `SUPPORTED_ACTIONS`). Full reference with activation
-  phrases: `capabilities_and_actions.md`.
+  fallback + an explicit priority pipeline → one of **232 manifest capabilities**
+  (**215** doc-routable; **211** executor `SUPPORTED_ACTIONS`; **189** router-routable).
+  Full reference with activation phrases: `capabilities_and_actions.md`.
 - **Orchestration** — `kernel/engine.py` runs **gradient orchestrator** for all
   CHAT modes (Quick = light/fast; Expert = full/deep); `dispatch_specialists()`
   composes the 15-agent `cognition/agent_bus.py` after shared retrieval
@@ -171,10 +173,9 @@ Ranked by effect-per-effort:
    table) you can actually watch. Keep the graceful degradation, but record every
    swallow. This alone makes the whole system debuggable and is the precondition
    for trusting any other change.
-2. **Split the two god-files** along their natural seams (executor: action groups
-   into per-domain modules behind the dispatch table; engine: pipeline stages
-   into stage modules). Reduces regression surface and makes the pipeline
-   readable.
+2. **Continue decomposing large modules** — v3 already split GUI (`main_window/`,
+   `labs/`) and executor effectors; next targets: finish `engine.py` stage
+   extraction, shrink `memory.py` and remaining 6k+ modules.
 3. **Delete duplication + clutter.** Collapse the overlapping `runtime/` surfaces,
    remove root junk/one-off scripts. *(The suite is already green — 8,815 passing;
    this is now signal-to-noise hygiene, not a red-test cleanup.)*

@@ -1,4 +1,4 @@
-> **Updated for 3.0.81.** Gradient orchestrator for all CHAT modes; shared
+> **Updated for 3.0.82.** Gradient orchestrator for all CHAT modes; shared
 > `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`.
 
 # ELI Capability Catalogue — every action & module, what it actually does
@@ -8,8 +8,8 @@
 > conversational summaries of a ~180k-LOC (`eli/`, 190,378 measured 2026-08-28) project keep undershooting; this is the
 > persisted, exhaustive map. Built in committed batches.
 >
-> **Method.** Action list comes from the live `capability_manifest.json` (**225**
-> entries as of 2026-08-28; 215 routable or executor-backed),
+> **Method.** Action list comes from the live `capability_manifest.json` (**232**
+> entries as of 2026-08-29; **215** doc-routable; **211** in `SUPPORTED_ACTIONS`),
 > verified against the `executor_enhanced.py` dispatch. **The always-current,
 > auto-generated action list with activation phrases is
 > `capabilities_and_actions.md`** — this catalogue is the deeper module-level read.
@@ -22,9 +22,10 @@
 
 ---
 
-## Headline finding: 225 (215 routable) is real but aliased
+## Headline finding: 232 (215 doc-routable) is real but aliased
 
-The manifest's 225 entries (215 routable) are honest (*measured* by `capability_sync`, not asserted)
+The manifest's 232 entries (**215** doc-routable; **189** router-routable; **211**
+in `SUPPORTED_ACTIONS`) are honest (*measured* by `capability_sync`, not asserted)
 but inflated by **alias families** — multiple action names routing to one
 behaviour. Collapsed, there are roughly **~110 distinct capabilities**. Alias
 families are grouped below so the real surface is visible.
@@ -359,7 +360,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `kernel/` (the engine + boot) — 14.5k LOC
 | Module | LOC | Role |
 |---|---|---|
-| `engine.py` | 15240 | `CognitiveEngine` — the conductor: persona, generation settings, the 5 `_run_*` reasoning passes, grounding overrides, synthesis prompt build + the context-bloat cap, fragment/placeholder guards, dispatch gate to bus vs orchestrator, startup loops (reflection/habit/scheduler/self-improve/proactive). |
+| `engine.py` | 7448 | `CognitiveEngine` — persona, generation settings, reasoning passes, grounding overrides, synthesis, dispatch gate, startup loops. Stages extracted to `kernel/stages/`. |
 | `world_model.py` | 252 | Symbolic self-model: Identity/Runtime/Memory/Goal/Capability states + snapshot/merge. |
 | `state.py` | 367 | User/runtime state + profile (active user id, name, profile text). |
 | `self_upgrade.py` | 535 | Self-upgrade orchestrator (git pull, pip, rebuild FAISS/KG, manifest, system index). |
@@ -458,8 +459,8 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `gui/` (PySide6 desktop) — ~20.3k LOC
 | Module | LOC | Role |
 |---|---|---|
-| `eli_pro_audio_gui_v2_0.py` | 12605 | Main window: 13 tabs + adapters (CentralMemory/LocalModel/Ollama/Executor bridges, the `_GUIEngineAdapter`), chat, drag-drop, reasoning-mode auto-select, all toggles. |
-| `labs_tab.py` | 5694 | Labs workspace: Notebook, Memory browser, Jupyter launcher, Calculator(+constants), Physics tables, **Report Builder** (evidence-grounded docs), File-Chat, Workspaces, Sim-IDE. |
+| `main_window/` (package) | ~12570 | Main window decomposed: mixins, adapters, models, widgets (`EliMainWindow` in `window.py`). |
+| `labs/` (package) | ~5964 | Labs workspace decomposed: Notebook, Memory browser, Jupyter, Calculator, Physics, Report Builder, File-Chat, Workspaces, Sim-IDE, Orchestration, Test & Review. `labs_tab.py` is a 30-line shim. |
 | `app.py` | 817 | Launcher / first-boot auto-tune / `main()`. |
 | `panels/startup.py` | 1305 |
 | `panels/settings.py` | 723 | Advanced Settings (Agents/Models/**Cognition**/Plugins/Self-Upgrade). |
@@ -493,8 +494,8 @@ Read end-to-end this session. The real entry flow, in order:
 
 Note: `engine.py` carries **51 `PHASE…` markers** — the same "added beside, not
 folded in" accretion as the grounding gate. It works and is well-guarded, but the
-interior is layered patches; that residue (engine 15.2k / executor 15.9k / GUI
-12.6k) is documented here at behavioural level, not line-by-line.
+interior is layered patches; that residue (engine ~7.4k / executor ~6.9k / GUI
+main_window ~12.6k package) is documented here at behavioural level, not line-by-line.
 
 ---
 

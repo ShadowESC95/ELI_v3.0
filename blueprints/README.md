@@ -6,9 +6,9 @@ from deep reads of the core + a full structural/code-health sweep — covering e
 package's structure + the algorithm-bearing bodies; claims are grounded in what was
 inspected.
 
-> **Updated for 3.0.81 (August 2026).** Cognition unified with v2.3.40+ (gradient
+> **Updated for 3.0.82 (August 2026).** Cognition unified with v2.3.40+ (gradient
 > orchestrator, shared retrieval, S01–S12). **~190,378 LOC / 593 `.py` files**,
-> **232** capabilities (**215** routable). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
+> **232** capabilities (**215** doc-routable; **211** `SUPPORTED_ACTIONS`). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
 
 Grounded architecture documentation for ELI v3. Each doc reads the real code,
 states what's there, and gives an honest strength/weakness assessment. Written

@@ -269,7 +269,7 @@ ledger all still apply.
 
 - **Token in the URL fragment, never the query string.** Every emitter of the phone link now
   builds `…/#token=…` instead of `…/?token=…`: the server's printed URLs *and* the desktop **Web
-  Server panel** (`eli/gui/eli_pro_audio_gui_v2_0.py:8332/:8391`) *and* both launchers
+  **Web Server panel** (`eli/gui/main_window/_mixins/settings_model.py`) *and* both launchers
   (`scripts/eli_serve.sh`, `scripts/eli_serve.ps1`). A query string reaches the server — it lands
   in **uvicorn's access log** before any client-side strip can run — whereas a **fragment is never
   sent to the server**, so the token can't leak into the log. The page reads it from

@@ -137,8 +137,8 @@ and gets out of your way.**
 ~190,378 lines of Python across 593 files (`eli/`). A real cognitive runtime — not an API
 wrapper:
 
-- **Request pipeline.** A deterministic **router** (204 executor dispatch actions, 225
-  declared capabilities) backed by a **model-grounded intent resolver** that
+- **Request pipeline.** A deterministic **router** (**211** executor `SUPPORTED_ACTIONS`,
+  **232** manifest capabilities; **215** doc-routable) backed by a **model-grounded intent resolver** that
   resolves anything the rules miss against that same catalogue (so near-miss
   phrasings reach real actions instead of a blind chat) → a **gradient orchestrator**
   (all CHAT modes) that composes a **15-agent bus** on a *dependency DAG*
