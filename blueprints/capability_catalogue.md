@@ -1,11 +1,11 @@
-> **Updated for 3.0.82.** Gradient orchestrator for all CHAT modes; shared
+> **Updated for 3.0.85.** Gradient orchestrator for all CHAT modes; shared
 > `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`.
 
 # ELI Capability Catalogue — every action & module, what it actually does
 
 > **Purpose.** A systematic, ground-truth catalogue built by reading the real
 > handlers and modules — not summarised from memory. It exists because
-> conversational summaries of a ~180k-LOC (`eli/`, 190,378 measured 2026-08-28) project keep undershooting; this is the
+> conversational summaries of a ~190k-LOC (`eli/`, 190,438 measured 2026-08-29) project keep undershooting; this is the
 > persisted, exhaustive map. Built in committed batches.
 >
 > **Method.** Action list comes from the live `capability_manifest.json` (**232**

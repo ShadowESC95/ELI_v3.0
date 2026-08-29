@@ -1,8 +1,8 @@
 # ELI v3 — Full Project Breakdown & Assessment
 
-> **Updated for 3.0.82 (August 2026).** Cognition pipeline unified: gradient
+> **Updated for 3.0.85 (August 2026).** Cognition pipeline unified: gradient
 > orchestrator for all CHAT modes, shared retrieval, canonical S01–S12 tracing.
-> 3.0.82+ restores cross-platform microphone auto-resolve (USB / Bluetooth /
+> 3.0.85+ restores cross-platform microphone auto-resolve (USB / Bluetooth /
 > headset before built-in; live subprocess probes). Primary install: CI-launch-tested
 > installers on [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases).
 
@@ -42,7 +42,7 @@ wrapper.
 
 ## 2. Scale & shape
 
-**190,378 LOC across 593 Python files** (`eli/`), plus the FastAPI web server
+**190,438 LOC across 593 Python files** (`eli/`), plus the FastAPI web server
 (`api/server.py`, **5,303 lines** with an embedded dashboard PWA) and 389 test files.
 *(measured 2026-08-29.)*
 
