@@ -1003,6 +1003,7 @@ Answer:"""
 
         try:
             agent_bus_context = ""
+            _verified_evidence_packet = ""
             if bus_result is not None:
                 try:
                     if hasattr(bus_result, "to_context_block"):
@@ -1018,6 +1019,12 @@ Answer:"""
                 agent_bus_context = _eli_sanitize_identity_context_block(str(memory_context or "").strip(), user_input)
         except Exception:
             agent_bus_context = _eli_sanitize_identity_context_block(str(memory_context or "").strip(), user_input)
+        try:
+            from eli.memory.unified_retrieval import split_verified_evidence_packet
+            _verified_evidence_packet, agent_bus_context = split_verified_evidence_packet(
+                agent_bus_context)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
         def _normalise_handoff(result) -> str:
             if result is None:
                 return ""
@@ -1410,16 +1417,22 @@ Answer:"""
         # truncated mid-sentence by a per-injection cap.
         if _extra_blocks:
             brief = "\n\n".join(filter(None, [brief] + _extra_blocks))
-        # Phase 6: single 8 KB ceiling for the full assembled handoff.
-        # A SHARE of the live window, not a fixed 8192 — the persona claimed the
-        # same characters at ctx=4096 as at ctx=32768, squeezing the evidence
-        # _effective_n_ctx exists to balance it against. Reuses _cap_text.
-        brief = self._cap_text(brief, self._persona_handoff_budget(), "persona_handoff")
-        # Real self-status rides ABOVE the cap — if the user asked how ELI is doing,
-        # the measured telemetry must never be the thing truncation drops (that's
-        # what made the model fall back to fabricating CPU/GPU temperatures).
+        _persona_budget = self._persona_handoff_budget()
+        if _verified_evidence_packet:
+            _persona_budget = max(
+                1024,
+                _persona_budget - min(len(_verified_evidence_packet), _persona_budget // 2),
+            )
+        brief = self._cap_text(brief, _persona_budget, "persona_handoff")
         if _live_self_status:
             brief = brief + "\n\n" + _live_self_status
+        if _verified_evidence_packet:
+            brief = (
+                brief
+                + "\n\n[VERIFIED MEMORY EVIDENCE — authoritative for user-specific claims; "
+                "never truncated]\n"
+                + _verified_evidence_packet
+            )
         # Safety steering rides above the cap so it is never truncated.
         brief = self._prepend_crisis_steering(brief)
         # Execution grounding rides above the cap too — it must never be dropped,

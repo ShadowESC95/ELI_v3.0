@@ -6360,6 +6360,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 }
 
             if stream:
+                _fc_hedge = self._maybe_fail_closed_chat(
+                    user_input,
+                    query_class=str(_qclass or ""),
+                    memory_context=bus_memory_context or "",
+                    bus_result=bus_result,
+                )
+                if _fc_hedge:
+                    def _fail_closed_stream():
+                        yield _fc_hedge
+                    self._store_assistant_turn(_fc_hedge)
+                    return self._stream_with_followthrough(
+                        _fail_closed_stream(),
+                        user_input, reasoning_mode)
                 # Pass the bus memory context and bus_result already built above
                 # so _stream_chat does NOT fire a second agent bus dispatch, and
                 # the synthesiser has the full bus_result to work with.
@@ -6413,6 +6426,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             memory_context + "\n\n" + _bus_block
                         ).strip() if memory_context else _bus_block
                 log.debug(f"[COGNITIVE][TIMING] memory_context={time.perf_counter() -t_mem:.3f}s")
+
+                _fc_hedge = self._maybe_fail_closed_chat(
+                    user_input,
+                    query_class=str(_qclass or ""),
+                    memory_context=memory_context,
+                    bus_result=bus_result,
+                )
+                if _fc_hedge:
+                    self._store_assistant_turn(_fc_hedge)
+                    return self._finalize_chat_result(
+                        user_input=user_input,
+                        response=_fc_hedge,
+                        trace=trace,
+                        evidence_used=bool(memory_context),
+                        reasoning_mode=reasoning_mode,
+                    )
 
                 # ── SYNTHESISE: build situation brief from all gathered data ─
                 # Agents (bus) supply context. Synthesiser distils it.
