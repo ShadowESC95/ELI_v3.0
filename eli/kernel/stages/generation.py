@@ -1264,6 +1264,26 @@ class GenerationMixin:
             situation_brief=situation_brief,
         ).strip()
 
+    def _maybe_fail_closed_chat(
+        self,
+        user_input: str,
+        *,
+        query_class: str = "",
+        memory_context: str = "",
+        bus_result: Any = None,
+    ) -> Optional[str]:
+        try:
+            from eli.cognition.chat_grounding_gate import evaluate_chat_grounding_gate
+            return evaluate_chat_grounding_gate(
+                user_input,
+                query_class=query_class,
+                memory_context=memory_context,
+                bus_result=bus_result,
+            )
+        except Exception as _fc_err:
+            log.debug(f"[COGNITIVE] chat fail-closed gate skipped: {_fc_err}")
+            return None
+
     def _govern_visible_response(
         self,
         user_input: str,
@@ -1759,6 +1779,19 @@ class GenerationMixin:
             f"prebuilt_ctx={bool(pre_built_memory_context)} "
             f"prebuilt_bus={bool(pre_built_bus_result)}"
         )
+
+        if pre_built_bus_result is not None or pre_built_memory_context:
+            _qclass = str(getattr(self, "_last_request_meta", {}).get("query_class") or "")
+            _fc_stream = self._maybe_fail_closed_chat(
+                prompt,
+                query_class=_qclass,
+                memory_context=pre_built_memory_context or "",
+                bus_result=pre_built_bus_result,
+            )
+            if _fc_stream:
+                yield _fc_stream
+                return
+
         _eli_pipe_stream(
             "begin",
             mode=(reasoning_mode or "quick"),

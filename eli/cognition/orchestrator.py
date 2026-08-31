@@ -82,6 +82,7 @@ class PlannerAgent:
             else:
                 mode = "balanced"
 
+        # Scale retrieval limits by mode budget (same knob as agent timeouts).
         try:
             from eli.cognition.reasoning_modes import mode_budget_multiplier as _mbm
             _budget = float(_mbm(reasoning_mode or "balanced"))
@@ -96,7 +97,7 @@ class PlannerAgent:
             _kw = max(4, int(round(6 * _budget)))
             return {
                 "need_keyword":   True,
-                "need_semantic":  False,
+                "need_semantic":  False,      # skip FAISS embedding (saves one LLM call)
                 "need_rag":       False,
                 "need_kg":        identity,
                 "keyword_limit":  _kw,
@@ -104,7 +105,7 @@ class PlannerAgent:
                 "rag_limit":      0,
                 "prefer_identity": identity,
                 "prefer_runtime":  runtime,
-                "skip_hyde":       True,
+                "skip_hyde":       True,      # signals MemoryAgent to never run HyDE
                 "max_react_iter":  1,
             }
         elif mode == "deep":
@@ -123,7 +124,7 @@ class PlannerAgent:
                 "skip_hyde":       False,
                 "max_react_iter":  3,
             }
-        else:
+        else:  # balanced (default)
             from eli.core.cognition_tunables import get_tunable as _cog_get
             return {
                 "need_keyword":   True,
@@ -201,13 +202,29 @@ class OrchestratorMemoryAgent:
         rag_hits: List[Dict[str, Any]] = []
         kg_hits: List[Dict[str, Any]] = []
 
-        if retrieval_plan.get("need_keyword"):
-            keyword_hits = self.keyword_search(
-                user_input, retrieval_plan.get("keyword_limit", 12))
-
-        if retrieval_plan.get("need_semantic"):
-            semantic_hits = self.semantic_search(
-                hyde_query or user_input, retrieval_plan.get("semantic_limit", 12))
+        if retrieval_plan.get("need_keyword") or retrieval_plan.get("need_semantic"):
+            try:
+                from eli.memory.unified_retrieval import orchestrator_retrieve
+                keyword_hits, semantic_hits, _tr = orchestrator_retrieve(
+                    self.engine,
+                    user_input,
+                    hyde_query,
+                    retrieval_plan,
+                    session_id=str(getattr(self.engine, "session_id", "") or ""),
+                    user_id=str(getattr(self.engine, "user_id", "") or ""),
+                )
+                log.debug(
+                    "[ORCHESTRATOR] unified retrieval → keyword=%d semantic=%d elapsed=%.0fms",
+                    len(keyword_hits), len(semantic_hits), float(getattr(_tr, "elapsed_ms", 0.0) or 0.0),
+                )
+            except Exception as _ur_err:
+                log.debug(f"[ORCHESTRATOR] unified retrieval failed, falling back: {_ur_err}")
+                if retrieval_plan.get("need_keyword"):
+                    keyword_hits = self.keyword_search(
+                        user_input, retrieval_plan.get("keyword_limit", 12))
+                if retrieval_plan.get("need_semantic"):
+                    semantic_hits = self.semantic_search(
+                        hyde_query or user_input, retrieval_plan.get("semantic_limit", 12))
 
         if retrieval_plan.get("need_rag") and ltm.rag_ready:
             rag_hits = self.document_rag_search(
@@ -831,6 +848,7 @@ class AgentOrchestrator:
         log.debug(f"[ORCHESTRATOR] Stage 9: Heuristic Rerank → {len(wm.reranked_hits)} items")
         _eli_pipe_orch("stage_9", reranked=len(wm.reranked_hits), method="heuristic_rerank")
 
+        # Specialist AgentBus (memory prefetched above — no duplicate recall).
         try:
             from eli.cognition.agent_bus import (
                 dispatch_specialists as _dispatch_spec,
