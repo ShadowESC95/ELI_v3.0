@@ -742,9 +742,31 @@ class ConversationMixin:
         except Exception as ex:
             QMessageBox.warning(self, "TTS test failed", str(ex))
 
-    def send_message(self):
-        if self.is_generating:
+
+    def _on_send_or_stop(self):
+        if getattr(self, "is_generating", False):
+            self.stop_generation()
+        else:
+            self.send_message()
+
+    def stop_generation(self):
+        if not getattr(self, "is_generating", False):
             return
+        self._cancel_stream_requested = True
+        try:
+            from eli.cognition import gguf_inference as _ggi
+            _ggi.request_cancel_generation()
+        except Exception:
+            log.debug("[GUI] request_cancel_generation failed", exc_info=True)
+        try:
+            _ce = getattr(self, "_cognitive_engine", None)
+            if _ce is not None and hasattr(_ce, "cancel_generation"):
+                _ce.cancel_generation()
+        except Exception:
+            log.debug("[GUI] cognitive engine cancel failed", exc_info=True)
+        self.status_signal.emit("Stopping generation…")
+
+    def send_message(self):
         user_message = self.chat_input.toPlainText().strip()
         if not user_message:
             return
@@ -790,8 +812,13 @@ class ConversationMixin:
             return
 
         self.is_generating = True
-        self.status_signal.emit('Send disabled')
-        self.send_btn.setText('Generating...')
+        self._cancel_stream_requested = False
+        try:
+            from eli.cognition import gguf_inference as _ggi
+            _ggi.clear_cancel_generation()
+        except Exception:
+            pass
+        self.status_signal.emit('Generating')
         self.status_signal.emit('🔄 Generating response...')
 
         def generate_worker():
@@ -835,7 +862,17 @@ class ConversationMixin:
 
                 full_tokens = []
                 _response_streamed = False
-                _storage_handled = False  # CognitiveEngine stores turns internally
+                _storage_handled = False
+                _was_cancelled = False
+
+                def _generation_cancelled() -> bool:
+                    if getattr(self, '_cancel_stream_requested', False):
+                        return True
+                    try:
+                        from eli.cognition import gguf_inference as _ggi
+                        return _ggi.is_cancel_requested()
+                    except Exception:
+                        return False
 
                 import types as _types
 
@@ -844,6 +881,9 @@ class ConversationMixin:
                         # ── Streaming CHAT response ──
                         first_token = True
                         for token in result:
+                            if _generation_cancelled():
+                                _was_cancelled = True
+                                break
                             token = str(token or "")
                             if not token:
                                 continue
@@ -863,7 +903,10 @@ class ConversationMixin:
                             _response_streamed = True
                             _storage_handled = True
                         else:
-                            self.chat_response_signal.emit('__STREAM_END__')
+                            if _was_cancelled:
+                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
+                            else:
+                                self.chat_response_signal.emit('__STREAM_END__')
                             _response_streamed = True
                             response = ''.join(full_tokens)
                         if _ce_ok:
@@ -893,12 +936,21 @@ class ConversationMixin:
                             first_token = True
                             for token in backend.chat_stream(
                                     messages, max_tokens=max_tokens, temperature=temperature):
+                                if _generation_cancelled():
+                                    _was_cancelled = True
+                                    break
                                 full_tokens.append(token)
                                 if first_token:
                                     self.chat_response_signal.emit('__STREAM_START__')
                                     first_token = False
                                 self.chat_response_signal.emit(token)
-                            self.chat_response_signal.emit('__STREAM_END__')
+                            if _was_cancelled:
+                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
+                            else:
+                                if _was_cancelled:
+                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
+                            else:
+                                self.chat_response_signal.emit('__STREAM_END__')
                             _response_streamed = True
                             response = ''.join(full_tokens)
                         else:
@@ -929,8 +981,9 @@ class ConversationMixin:
                 except Exception:
                     pass
 
-                self.conversation_history.append({'role': 'assistant', 'content': response})
-                self._last_eli_response = response
+                _hist = ((response.rstrip() + '\n\n[Generation stopped.]') if (_was_cancelled and response) else ('[Generation stopped.]' if _was_cancelled else response))
+                self.conversation_history.append({'role': 'assistant', 'content': _hist})
+                self._last_eli_response = _hist
 
                 # ── Persist to conversation_turns table (skip if CognitiveEngine stored) ──
                 if not _storage_handled:
@@ -975,6 +1028,12 @@ class ConversationMixin:
                     pass
             finally:
                 self.is_generating = False
+                self._cancel_stream_requested = False
+                try:
+                    from eli.cognition import gguf_inference as _ggi
+                    _ggi.clear_cancel_generation()
+                except Exception:
+                    pass
                 self.status_signal.emit('Send enabled')
                 self.status_signal.emit('🟢 Ready')
 

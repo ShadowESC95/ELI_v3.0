@@ -160,6 +160,30 @@ def test_play_specific_video_provider_targets_are_normalized():
     assert prime["args"]["target"] == "primevideo"
 
 
+def test_play_specific_streaming_target_never_falls_through_to_youtube(monkeypatch):
+    """Executor must honour netflix/prime targets — not silently route to YouTube."""
+    calls = []
+
+    def _fake_streaming(target, query):
+        calls.append((target, query))
+        return f"Opened {target.title()} and searched for '{query}'. Pick it from the results to play."
+
+    monkeypatch.setattr("eli.execution.media_runtime._play_on_streaming", _fake_streaming)
+
+    from eli.execution.executor_enhanced import play_specific
+
+    for target, query in (("netflix", "rick and morty"), ("primevideo", "the walking dead")):
+        result = play_specific(query, target)
+        assert "YouTube" not in (result.get("response") or "")
+        assert result.get("target") == target
+        assert query in (result.get("response") or "")
+
+    assert calls == [
+        ("netflix", "rick and morty"),
+        ("primevideo", "the walking dead"),
+    ]
+
+
 def test_find_text_on_screen_routes_to_screen_locator():
     result = route("find status label on the screen")
     assert result["action"] == "SCREEN_LOCATE"
@@ -262,6 +286,7 @@ def test_stt_streaming_play_with_named_service_is_complete():
     assert not _is_potentially_incomplete_media_play("play the walking dead on prime")
     assert not _is_potentially_incomplete_media_play("play the walking dead on prime video")
     assert not _is_potentially_incomplete_media_play("play the tree body problem on netflix")
+    # Ambiguous play-without-service should still wait for completion.
     assert _is_potentially_incomplete_media_play("play blood runs cold")
 
 
@@ -284,6 +309,41 @@ def test_stt_armed_streaming_play_dispatches_without_rewait():
     assert state == "dispatch"
     assert command == "play the tree body problem on netflix"
     assert wake is None
+
+
+def test_stt_volume_percent_is_safe_direct_when_quiet(monkeypatch):
+    from eli.perception.audio_stt import VoiceGate, _is_safe_direct
+
+    monkeypatch.setattr(
+        "eli.perception.audio_stt._eli_media_probably_audible", lambda: False
+    )
+    assert _is_safe_direct("volume 50%")
+    gate = VoiceGate()
+    state, command, _wake = gate.classify("volume 50%")
+    assert state == "dispatch"
+    assert command == "volume 50%"
+
+
+def test_stt_safe_direct_requires_wake_when_media_playing(monkeypatch):
+    from eli.perception.audio_stt import VoiceGate
+
+    monkeypatch.setattr(
+        "eli.perception.audio_stt._eli_media_probably_audible", lambda: True
+    )
+    gate = VoiceGate()
+    state, command, _wake = gate.classify("pause")
+    assert state == "ignore_unarmed"
+    assert command is None
+    gate.classify("computer")
+    state, command, _wake = gate.classify("pause")
+    assert state == "dispatch"
+    assert command == "pause"
+
+
+def test_stt_mishear_volume_down_alias():
+    from eli.perception.audio_stt import _eli_fast_command_alias
+
+    assert _eli_fast_command_alias("find him down") == "volume down"
 
 
 def test_stt_preserves_punctuation_for_chat_display():
@@ -356,7 +416,13 @@ def test_agent_bus_preserves_failed_direct_media_result():
     assert result.action_result["response"] == "No media player running"
 
 
-def test_command_action_result_is_synthesized_in_nonquick_mode():
+def test_news_fetch_is_verbatim_even_in_nonquick_mode():
+    # The executor builds a complete briefing with source tags. Compact synthesis
+    # in non-Quick stripped citations and collapsed depth (live dry-run, 2026-08-29).
+    briefing = (
+        "SiFive unveiled its first server platform [HackerNews — 25 Aug]. "
+        "GLM-5.3 is now open-source [HackerNews — 28 Aug]."
+    )
     with ExitStack() as stack:
         eng = _prepare_engine_for_synthesis_test(
             stack,
@@ -364,16 +430,27 @@ def test_command_action_result_is_synthesized_in_nonquick_mode():
             {
                 "ok": True,
                 "action": "NEWS_FETCH",
-                "content": "Live news raw executor evidence about physics.",
-                "response": "Live news raw executor evidence about physics.",
+                "content": briefing,
+                "response": briefing,
+                "meta": {"response_mode": "news_briefing"},
             },
         )
 
-        eng._synthesize_answer = lambda *_a, **_k: "I checked the live news evidence about physics."
-        result = eng.process("what's the latest news in physics", reasoning_mode="chain_of_thought")
+        def _no_synth(*_a, **_k):
+            raise AssertionError("NEWS_FETCH must not be synthesized")
 
-    content = result.get("content") if isinstance(result, dict) else result
-    assert content == "I checked the live news evidence about physics."
+        eng._synthesize_answer = _no_synth
+        eng._compact_grounded_synthesis = _no_synth
+        eng._run_chat_reasoning_loop = _no_synth
+
+        result = eng.process(
+            "what's the latest news in physics",
+            reasoning_mode="chain_of_thought",
+        )
+
+    assert isinstance(result, dict)
+    assert result.get("content") == briefing
+    assert "[HackerNews" in result.get("content", "")
 
 
 def test_control_action_result_uses_full_pipeline_in_nonquick_mode():
@@ -394,9 +471,6 @@ def test_control_action_result_uses_full_pipeline_in_nonquick_mode():
             "threshold": 0.7,
             "clarified": False,
         }
-        # Grounded control actions synthesise via _compact_grounded_synthesis; mock it so
-        # the test is self-contained (no dependency on a loaded GGUF model / leaked mock).
-        eng._compact_grounded_synthesis = lambda *_a, **_k: "I checked the runtime audit evidence: imports were checked."
 
         result = eng.process("run a full runtime audit", reasoning_mode="chain_of_thought")
 

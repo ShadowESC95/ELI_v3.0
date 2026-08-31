@@ -1,17 +1,17 @@
 # Model & Voice License Manifest — ELI v2.0
 
 ELI distributes **third-party** GGUF, embedding, vision, and Piper voice files
-separately from source (GitHub Release assets — tag `local-assets-v3.0`)
+separately from source (GitHub Release assets — tag `local-assets-v2.1`)
 because they exceed git size limits. **You are responsible for complying with
 each upstream license** when you download or use these files.
 
 This manifest covers the installer catalog (`eli/core/model_download.py`),
-the **`local-assets-v3.0` GitHub Release pack**, default voice assets, and
+the **`local-assets-v2.1` GitHub Release pack**, default voice assets, and
 restore exclusions enforced by `scripts/asset_release_policy.py`.
 
 ---
 
-## GitHub Release pack (`local-assets-v3.0`)
+## GitHub Release pack (`local-assets-v2.1`)
 
 Files at the release root (flat layout). Restore via:
 
@@ -50,8 +50,10 @@ copy your own `.gguf` into `models/`.
 
 ### Voices excluded from auto-restore (`--with-github-assets`)
 
-These may still exist as **manual** downloads on the release page for advanced users,
-but ELI **skips** them during restore (see `EXCLUDED_VOICE_BASENAMES`):
+These are **not published** in the `local-assets-v2.1` asset release at all, and ELI
+**also** skips them during restore if they are ever present — `EXCLUDED_VOICE_BASENAMES`
+in `scripts/asset_release_policy.py` enforces it in code, so the exclusion holds even
+for a hand-placed file:
 
 | Voice | Reason |
 |---|---|
@@ -113,6 +115,18 @@ Weight files for Phi-3 are **not** committed; download separately under Microsof
 | Model | Upstream | License |
 |---|---|---|
 | SSD-1B (fetched on demand) | [segmind/SSD-1B](https://huggingface.co/segmind/SSD-1B) | See HF model card |
+
+---
+
+## Style presets vs character impersonation (public releases)
+
+ELI ships **five built-in style presets** (`char:calm`, `char:robotic`, `char:energetic`, `char:synthetic`, `char:refined`): redistributable Piper voices + ffmpeg effects. We **do not** bundle neural clones or marketing labels for copyrighted characters (HAL 9000, JARVIS, Rick Sanchez, TARS, GLaDOS, etc.) in GitHub releases or installers — that would be legally unsafe and technically misleading (the old named presets used unshippable base voices and sounded identical anyway).
+
+Users who want a specific timbre may:
+- tune or add their own `char:<name>` preset in `config/voices/characters.json`, or
+- use **local voice cloning** (XTTS-v2 opt-in) from **reference audio they have rights to use**.
+
+Persona / communication-style commands change **wording**, not the TTS timbre.
 
 ---
 

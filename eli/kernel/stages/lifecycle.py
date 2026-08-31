@@ -29,6 +29,12 @@ _ELI_NATIVE_TEARDOWN_DONE = False
 
 
 class LifecycleMixin:
+    def cancel_generation(self) -> None:
+        try:
+            gguf_inference.request_cancel_generation()
+        except Exception:
+            log.debug('[COGNITIVE] cancel_generation failed', exc_info=True)
+
     def shutdown(self) -> None:
         """
         Graceful session shutdown.

@@ -434,8 +434,9 @@ GUARDED_EXACT = {
 DUCK_LEVEL = os.environ.get("ELI_STT_DUCK_LEVEL", "15%")
 RESTORE_DELAY_S = float(os.environ.get("ELI_STT_RESTORE_DELAY", "0.20"))
 MAIN_TIMEOUT = float(os.environ.get("ELI_STT_MAIN_TIMEOUT", "1.2"))
+ARMED_MAIN_TIMEOUT = float(os.environ.get("ELI_STT_ARMED_MAIN_TIMEOUT", "4.0"))
 PHRASE_TIME_LIMIT = float(os.environ.get("ELI_STT_PHRASE_TIME_LIMIT", "6.0"))
-WAKE_ARM_TIMEOUT = float(os.environ.get("ELI_STT_WAKE_ARM_TIMEOUT", "12.0"))
+WAKE_ARM_TIMEOUT = float(os.environ.get("ELI_STT_WAKE_ARM_TIMEOUT", "18.0"))
 # Shorter pause when unarmed — wake word is one word, safe-direct is 1-3 words.
 # 0.20s of silence is enough to know a short command ended.
 UNARMED_PAUSE_S = float(os.environ.get("ELI_STT_UNARMED_PAUSE", "0.20"))

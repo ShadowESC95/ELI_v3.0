@@ -58,80 +58,23 @@ class SettingsModelMixin:
         except Exception:
             pass
 
-    def _structured_agent_dialog(self):
-        """Structured create-agent form (clearer + more accurate than free-text
-        chat Q&A). Returns (name, purpose, triggers, data, persona) or None."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Create Custom Agent")
-        form = QFormLayout(dlg)
-
-        name_edit = QLineEdit()
-        name_edit.setPlaceholderText("e.g. WeatherAgent")
-        form.addRow("Name:", name_edit)
-
-        purpose_edit = QLineEdit()
-        purpose_edit.setPlaceholderText("what this agent does / its job")
-        form.addRow("Purpose:", purpose_edit)
-
-        triggers_edit = QLineEdit()
-        triggers_edit.setPlaceholderText("comma-separated keywords, e.g. weather, rain, temperature")
-        form.addRow("Trigger keywords:", triggers_edit)
-
-        data_edit = QLineEdit()
-        data_edit.setPlaceholderText("optional: data sources / when it should fire")
-        form.addRow("Data / behaviour:", data_edit)
-
-        persona_edit = QTextEdit()
-        persona_edit.setPlaceholderText("tone & output style, e.g. brief bullet points, friendly")
-        persona_edit.setFixedHeight(72)
-        form.addRow("Output style:", persona_edit)
-
-        hint = QLabel("Name + at least one trigger keyword are required. You'll see "
-                      "the generated code to review before it's written. Timeout and "
-                      "enable/disable are editable later in Settings → Agents.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#88909c;font-size:10px;")
-        form.addRow(hint)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Generate & Review")
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        form.addRow(buttons)
-
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        name = name_edit.text().strip()
-        triggers = triggers_edit.text().strip()
-        if not name or not triggers:
-            QMessageBox.warning(self, "Missing info",
-                                "Name and at least one trigger keyword are required.")
-            return None
-        return (name, purpose_edit.text().strip(), triggers,
-                data_edit.text().strip(), persona_edit.toPlainText().strip())
-
     def open_agent_wizard(self):
-        """Open the structured create-agent dialog, then generate + review the
-        agent. (Replaces the old free-text 3-question chat flow; the structured
-        fields give the generator more accurate input.)"""
-        vals = self._structured_agent_dialog()
-        if not vals:
-            return
-        name, purpose, triggers, data, persona = vals
-        # Assemble the three fields the generator/template consume.
-        name_purpose = f"{name} — {purpose}" if purpose else name
-        triggers_data = "keywords: " + triggers + (f"; data/behaviour: {data}" if data else "")
-        persona_output = persona or "concise, helpful, plain text"
-        answers = [name_purpose, triggers_data, persona_output]
+        """Open the AgentSpec wizard — same format as Settings ▸ Agents ▸ Create."""
+        from eli.gui.panels.agent_wizard import AgentCreateDialog
+        dlg = AgentCreateDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._wizard_display_message(
+                "Agent specification saved. If it is still disabled, enable it in "
+                "**Settings → Agents**, then try a message that matches its triggers."
+            )
 
-        self.tabs.setCurrentIndex(0)  # Chat tab — generation status streams here
-        self._wizard_display_message(
-            f"🤖 Creating agent “{name}” — generating and validating code, "
-            "you'll get a preview to confirm before it's written."
-        )
-        threading.Thread(
-            target=self._generate_agent_from_answers, args=(answers,), daemon=True,
-        ).start()
+    def _open_prefilled_agent_spec(self, prefill: dict):
+        from eli.gui.panels.agent_wizard import AgentCreateDialog
+        dlg = AgentCreateDialog(parent=self, prefill=prefill)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._wizard_display_message(
+                "Agent specification saved. Enable it in **Settings → Agents** if needed."
+            )
 
     def _wizard_display_message(self, text: str):
         """Append a wizard ELI message to the chat display (must run on main thread)."""
@@ -161,313 +104,14 @@ class SettingsModelMixin:
             # Ask next question
             self.wizard_say_signal.emit(self._WIZARD_QUESTIONS[state["step"]])
         else:
-            # All 3 answers collected — generate the agent
             self._agent_wizard_state = None
-            self._wizard_display_message(
-                "✅ Got all 3 answers! Generating your custom agent…"
-            )
             answers = state["answers"]
-            threading.Thread(
-                target=self._generate_agent_from_answers,
-                args=(answers,),
-                daemon=True,
-            ).start()
-
-    def _agent_wizard_preview_signal_connect(self):
-        """Lazy-create the wizard preview signal/slot (main-thread dialog)."""
-        if getattr(self, "_wizard_preview_sig", None) is not None:
-            return
-
-    def _show_agent_preview_dialog(self, class_base: str, agent_name: str,
-                                    agent_code: str, agent_file: Path) -> bool:
-        """Show the generated agent code in a confirm/cancel preview dialog.
-        Must run on the GUI thread. Returns True if the user accepts."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Agent Preview — {class_base}")
-        dlg.resize(900, 640)
-        v = QVBoxLayout(dlg)
-
-        info = QLabel(
-            f"<b>Class:</b> {class_base} &nbsp;&nbsp; "
-            f"<b>name:</b> {agent_name} &nbsp;&nbsp; "
-            f"<b>file:</b> <code>{agent_file}</code><br>"
-            "Review the generated agent below. Edit the body if you want to "
-            "adjust behaviour before it is written and registered with the bus."
-        )
-        info.setWordWrap(True)
-        info.setStyleSheet("padding:6px; color:#c8d0e0;")
-        v.addWidget(info)
-
-        editor = QPlainTextEdit()
-        editor.setFont(QFont("Courier New", 10))
-        editor.setPlainText(agent_code)
-        v.addWidget(editor, stretch=1)
-
-        btn_row = QHBoxLayout()
-        cancel_btn = QPushButton("Cancel (don't write)")
-        cancel_btn.clicked.connect(dlg.reject)
-        btn_row.addWidget(cancel_btn)
-        btn_row.addStretch(1)
-        write_btn = QPushButton("✅ Write & Register")
-        write_btn.setStyleSheet("background:#3d6b56;color:white;font-weight:bold;padding:6px 14px;")
-        write_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(write_btn)
-        v.addLayout(btn_row)
-
-        accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
-        if accepted:
-            # Use the (possibly edited) source from the dialog's editor.
-            self._wizard_pending_code = editor.toPlainText()
-        else:
-            self._wizard_pending_code = None
-        return accepted
-
-    def _generate_agent_from_answers(self, answers: List[str]):
-        """Parse wizard answers, generate code, show preview, then write."""
-        try:
-            name_purpose = answers[0]
-            triggers_data = answers[1]
-            persona_output = answers[2]
-
-            # Derive a class name (PascalCase, preserve existing caps)
-            raw_name = name_purpose.split("—")[0].split("-")[0].strip()
-            words = [w for w in re.sub(r"[^a-zA-Z0-9 ]", "", raw_name).split() if w]
-            if words:
-                # If a word is already CamelCase keep it; otherwise title-case it
-                def _pascal(w: str) -> str:
-                    return w[0].upper() + w[1:] if w else ""
-                class_base = "".join(_pascal(w) for w in words[:3])
-                if not class_base.lower().endswith("agent"):
-                    class_base += "Agent"
-            else:
-                class_base = "CustomAgent"
-
-            # snake_case agent name: "WeatherAgent" → "weather_agent"
-            agent_name = re.sub(r"(?<!^)(?=[A-Z])", "_", class_base).lower()
-            agent_name = re.sub(r"_+", "_", agent_name).strip("_")
-
-            # Build the agent file content
-            agent_code = self._build_agent_code(
-                class_name=class_base,
-                agent_name=agent_name,
-                name_purpose=name_purpose,
-                triggers_data=triggers_data,
-                persona_output=persona_output,
+            self._wizard_display_message(
+                "Got all 3 answers — opening the agent specification editor for review."
             )
-
-            # Resolve target file path before showing preview.
-            _custom_env = os.environ.get("ELI_CUSTOM_AGENTS_DIR", "").strip()
-            agents_custom_dir = (Path(_custom_env) if _custom_env
-                                 else Path(__file__).resolve().parents[1] / "brain" / "agents" / "custom")
-            agents_custom_dir.mkdir(parents=True, exist_ok=True)
-            (agents_custom_dir / "__init__.py").touch(exist_ok=True)
-            agent_file = agents_custom_dir / f"{agent_name}.py"
-
-            # Marshal the preview dialog onto the main thread; block until
-            # the user decides. Use a one-shot QMetaObject invocation.
-            self._wizard_pending_code = None
-            self._wizard_preview_decided = threading.Event()
-
-            def _show_on_main():
-                try:
-                    accepted = self._show_agent_preview_dialog(
-                        class_base, agent_name, agent_code, agent_file
-                    )
-                    if not accepted:
-                        self.wizard_say_signal.emit(
-                            "🚫 Agent generation cancelled. Nothing was written."
-                        )
-                except Exception as _e:
-                    self.wizard_say_signal.emit(f"❌ Preview dialog failed: {_e}")
-                finally:
-                    self._wizard_preview_decided.set()
-
-            QTimer.singleShot(0, _show_on_main)
-            # Wait up to 5 minutes for the user to confirm/cancel.
-            self._wizard_preview_decided.wait(timeout=300)
-            final_code = self._wizard_pending_code
-            if not final_code:
-                return  # user cancelled
-
-            # Reliability: never write a broken agent. Validate syntax first; a
-            # file that won't parse would just be skipped by the boot loader.
-            import ast as _ast
-            try:
-                _ast.parse(final_code)
-            except SyntaxError as _se:
-                self.wizard_say_signal.emit(
-                    f"❌ The generated agent has a syntax error (line {_se.lineno}: "
-                    f"{_se.msg}). Nothing was written — try rephrasing your answers.")
-                return
-
-            agent_file.write_text(final_code, encoding="utf-8")
-
-            # Register in the live agent bus (this session)…
-            registered = self._register_agent_live(class_base, agent_file)
-            # …and TRUST it so the boot loader auto-loads it on every restart.
-            # Without this the file is treated as untrusted and silently skipped,
-            # so the agent would vanish after a restart.
-            try:
-                from eli.cognition.agent_bus import _trust_custom_agent
-                _trust_custom_agent(agent_file)
-            except Exception as _te:
-                log.debug(f"[WIZARD] trust registration failed: {_te}")
-
-            # Save a record to memory
-            try:
-                if self._central_memory:
-                    self._central_memory.store_memory(
-                        text=(
-                            f"Custom agent created: {class_base} ({agent_name})\n"
-                            f"Purpose: {name_purpose}\n"
-                            f"Triggers: {triggers_data}\n"
-                            f"Persona: {persona_output}"
-                        ),
-                        tags=["agent", "custom", agent_name],
-                        kind="agent_creation",
-                        source="wizard",
-                    )
-            except Exception:
-                pass
-
-            msg = (
-                f"🎉 **Agent `{class_base}` created!**\n\n"
-                f"File: `{agent_file}`\n"
-                f"{'✅ Registered live in agent bus.' if registered else '⚠️ File saved — restart ELI to activate.'}\n\n"
-                f"To make it permanent, it will auto-load on next startup."
-            )
-            self.wizard_say_signal.emit(msg)
-
-        except Exception as e:
-            self.wizard_say_signal.emit(f"❌ Agent generation failed: {e}")
-
-    def _build_agent_code(
-        self,
-        class_name: str,
-        agent_name: str,
-        name_purpose: str,
-        triggers_data: str,
-        persona_output: str,
-    ) -> str:
-        """Return the Python source for a new custom agent."""
-        escaped_purpose = name_purpose.replace('"', '\\"')
-        escaped_triggers = triggers_data.replace('"', '\\"')
-        escaped_persona = persona_output.replace('"', '\\"')
-
-        return f'''"""
-Custom ELI Agent: {class_name}
-Generated by Agent Creator Wizard.
-
-Purpose  : {name_purpose}
-Triggers : {triggers_data}
-Persona  : {persona_output}
-"""
-from __future__ import annotations
-
-from typing import Any, Dict
-from eli.cognition.agent_bus import _BaseAgent, AgentResult
-from eli.runtime.output_sanitizer import sanitize_visible_output
-
-
-
-from eli.utils.log import get_logger
-log = get_logger(__name__)
-
-class {class_name}(_BaseAgent):
-    name = "{agent_name}"
-    timeout_s = 5.0
-
-    # Configuration derived from wizard answers
-    _purpose = "{escaped_purpose}"
-    _triggers_info = "{escaped_triggers}"
-    _persona = "{escaped_persona}"
-
-    def run(
-        self,
-        user_input: str,
-        intent: Dict[str, Any],
-        session_id: str,
-        user_id: str,
-    ) -> AgentResult:
-        """Run the custom agent logic."""
-        try:
-            # Keyword-based trigger check
-            low = user_input.lower()
-            trigger_words = [
-                w.strip().lower()
-                for w in self._triggers_info.replace(",", " ").split()
-                if len(w.strip()) > 2
-            ]
-            if trigger_words and not any(tw in low for tw in trigger_words[:8]):
-                return AgentResult(
-                    agent=self.name,
-                    ok=True,
-                    confidence=0.0,
-                    data={{"skipped": True, "reason": "no trigger match"}},
-                )
-
-            # Build a context block for the LLM
-            context = (
-                f"Agent: {{self.name}}\\n"
-                f"Purpose: {{self._purpose}}\\n"
-                f"Persona/output style: {{self._persona}}\\n"
-                f"User query: {{user_input}}"
-            )
-            return AgentResult(
-                agent=self.name,
-                ok=True,
-                confidence=0.65,
-                data={{
-                    "memory_context": context,
-                    "agent_note": f"Custom agent {{self.name}} matched query.",
-                }},
-            )
-        except Exception as exc:
-            return AgentResult(
-                agent=self.name, ok=False, confidence=0.0,
-                data={{"error": str(exc)}},
-            )
-
-
-# Auto-register when imported
-def _register():
-    from eli.cognition.agent_bus import _ALL_AGENTS
-    if not any(a.name == "{agent_name}" for a in _ALL_AGENTS):
-        _ALL_AGENTS.append({class_name}())
-
-_register()
-'''
-
-    def _register_agent_live(self, class_name: str, agent_file: Path) -> bool:
-        """Dynamically import the generated agent file and append it to the bus."""
-        try:
-            import importlib.util as _ilu
-            from eli.cognition.agent_bus import _ALL_AGENTS
-            _before = {id(a) for a in _ALL_AGENTS}
-            spec = _ilu.spec_from_file_location(class_name, str(agent_file))
-            mod = _ilu.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            # The module's _register() call already appended to _ALL_AGENTS.
-            # Mark the newly-added agent(s) as custom so dispatch always gives
-            # them a slot to self-gate on their triggers (built-in intent
-            # selection won't name them otherwise → they'd never run).
-            for _a in _ALL_AGENTS:
-                if id(_a) not in _before:
-                    try:
-                        _a._custom = True
-                    except Exception:
-                        pass
-            # Expand the thread pool to accommodate
-            from eli.cognition.agent_bus import get_bus
-            bus = get_bus()
-            if hasattr(bus, "_pool"):
-                from concurrent.futures import ThreadPoolExecutor
-                from eli.cognition.agent_bus import _ALL_AGENTS
-                bus._pool._max_workers = len(_ALL_AGENTS)
-            return True
-        except Exception as e:
-            log.debug(f"[WIZARD] Live registration failed: {e}")
-            return False
+            from eli.gui.panels.agent_wizard import AgentCreateDialog
+            prefill = AgentCreateDialog.prefill_from_legacy_wizard(*answers)
+            QTimer.singleShot(0, lambda: self._open_prefilled_agent_spec(prefill))
 
     def open_advanced_settings(self, tab: int = 0):
         dlg = AdvancedSettingsDialog(parent=self, start_tab=tab)
@@ -1433,8 +1077,8 @@ _register()
             "  1. Name &amp; purpose of the new agent\n"
             "  2. Trigger keywords and data sources\n"
             "  3. Persona and output style\n\n"
-            "ELI then generates a Python agent file, registers it live in the agent bus, "
-            "and auto-loads it on every future startup."
+            "Specs are saved under your ELI data directory, registered live on the agent bus, "
+            "and reloaded on startup. Enable/disable in <b>Settings → Agents</b>."
         )
         wizard_label.setWordWrap(True)
         wizard_label.setStyleSheet(

@@ -612,6 +612,7 @@ def _stream_clean_chunks(chunks):
 _llm: Optional[Llama] = None
 _live_runtime_override: Optional[Dict[str, Any]] = None
 _load_failed: bool = False  # sentinel: don't retry after a confirmed failure
+_last_load_error: Optional[str] = None
 try:
     from eli.runtime.native_locks import LLAMA_CPP_NATIVE_LOCK as _LLM_CALL_LOCK
 except Exception:
@@ -637,6 +638,8 @@ _FG_PRIORITY = threading.Event()
 # the shared lock) blocked for 20-30 min. This cooperative abort lets any in-flight call
 # yield at the next token so teardown proceeds immediately.
 _SHUTDOWN = threading.Event()
+# User Stop during chat — cooperative abort at next token.
+_USER_CANCEL = threading.Event()
 _bg_tls = threading.local()
 
 
@@ -648,6 +651,19 @@ def signal_shutdown() -> None:
 
 def clear_shutdown() -> None:
     _SHUTDOWN.clear()
+
+
+def request_cancel_generation() -> None:
+    """Abort the current user-facing generation at the next token."""
+    _USER_CANCEL.set()
+
+
+def clear_cancel_generation() -> None:
+    _USER_CANCEL.clear()
+
+
+def is_cancel_requested() -> bool:
+    return _USER_CANCEL.is_set()
 
 
 def is_shutting_down() -> bool:
@@ -672,7 +688,7 @@ def _should_abort_generation(background: bool) -> bool:
     """True when an in-flight generation should yield at the next token: shutdown is
     signalled (aborts ANY call) or — for BACKGROUND calls with preemption enabled — a
     foreground turn is waiting on the shared lock."""
-    if _SHUTDOWN.is_set():
+    if _SHUTDOWN.is_set() or _USER_CANCEL.is_set():
         return True
     return bool(background) and _fg_preempt_enabled() and _FG_PRIORITY.is_set()
 
@@ -690,23 +706,6 @@ def _make_stopping_criteria(background: bool):
 
     return StoppingCriteriaList([_crit])
 
-
-def _mlock_viable() -> bool:
-    """True only when the OS memlock limit can actually lock a multi-GB model.
-
-    RLIMIT_MEMLOCK is frequently capped low (64 KB-8 MB) regardless of installed
-    RAM. Only gate on POSIX where the limit is inspectable; leave non-POSIX
-    (Windows) behaviour unchanged.
-    """
-    try:
-        import resource
-    except Exception:
-        return True  # non-POSIX - preserve prior behaviour
-    try:
-        soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
-        return soft == -1 or soft >= 4 * 1024 ** 3  # -1 = unlimited; else need >=4 GiB
-    except Exception:
-        return True
 
 def load_model(force_reload: bool = False):
     global _llm
@@ -739,6 +738,17 @@ def load_model(force_reload: bool = False):
     model_path = _Path(model_path).expanduser().resolve()
     if not model_path.exists():
         raise FileNotFoundError(f"GGUF model not found: {model_path}")
+
+    from eli.cognition.model_load_diagnostics import (
+        ModelLoadError as _ModelLoadError,
+        preflight_gguf_model as _preflight_gguf_model,
+    )
+    _preflight_msg = _preflight_gguf_model(model_path)
+    if _preflight_msg:
+        globals()["_last_load_error"] = _preflight_msg
+        _pe = _ModelLoadError(_preflight_msg)
+        _pe.retryable = False
+        raise _pe
 
     n_ctx = _env_int("ELI_GGUF_N_CTX", None)
     if n_ctx is None:
@@ -817,6 +827,7 @@ def load_model(force_reload: bool = False):
                     _mgb, _sf_gpu.free_mb, user_ctx=min(int(n_ctx), _want),
                     user_batch=max(int(n_batch), _min_batch), reserve_mb=_res,
                     kv_quantized=_kvq, min_batch=_min_batch,
+                    model_path=str(model_path),
                 )
                 log.debug(f"[GGUF] smart-fit (free={_sf_gpu.free_mb}MB reserve={_res} "
                           f"coresident={_co_resident_active}): ctx {n_ctx}->{_fc} "
@@ -875,12 +886,7 @@ def load_model(force_reload: bool = False):
     }
 
     kwargs["use_mmap"] = _boolish(use_mmap, True)
-    # Gate use_mlock on the actual OS memlock limit: RAM-based heuristics enable it
-    # at >=16 GB, but RLIMIT_MEMLOCK is often capped low (containers, some distros,
-    # frozen builds), where requesting it only yields 'failed to mlock … Cannot
-    # allocate memory' warnings. mmap still loads the model — so drop mlock rather
-    # than request the impossible.
-    kwargs["use_mlock"] = _boolish(use_mlock, False) and _mlock_viable()
+    kwargs["use_mlock"] = _boolish(use_mlock, False)
 
     if cache_k:
         kwargs["cache_type_k"] = cache_k
@@ -937,9 +943,11 @@ def load_model(force_reload: bool = False):
 
     def _model_load_error(err, lines, layers):
         """Build the error and record whether retrying could ever help, so the
-        adaptive ladder can stop instead of repeating an identical failure
-        through every ctx/layer/batch combination it knows."""
-        _e = ModelLoadError(_explain(err, lines, model_path, gpu_layers=layers))
+        adaptive ladder above can stop instead of repeating an identical
+        failure through every ctx/layer/batch combination it knows."""
+        msg = _explain(err, lines, model_path, gpu_layers=layers)
+        globals()["_last_load_error"] = msg
+        _e = ModelLoadError(msg)
         _e.retryable = _retryable(lines)
         return _e
     _harden()
@@ -1029,6 +1037,7 @@ def load_model(force_reload: bool = False):
         "pid": os.getpid(),
         "ts": _time.time(),
     }
+    globals()["_last_load_error"] = None
 
     try:
         snap_path = _Path(_gp().artifacts_dir) / "runtime_snapshot.json"
@@ -2759,7 +2768,8 @@ try:
                     if not getattr(e, "retryable", True):
                         # A missing tensor / unknown architecture / corrupt file
                         # is a property of the model and this build. Every
-                        # remaining candidate would fail identically.
+                        # remaining candidate would fail identically -- and each
+                        # one used to print its own phantom sampler traceback.
                         log.warning(
                             "[GGUF][ADAPTIVE] unrecoverable on attempt %d; "
                             "skipping the remaining %d candidate(s): %s",

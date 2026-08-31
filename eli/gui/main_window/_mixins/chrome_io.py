@@ -1719,6 +1719,14 @@ class ChromeIoMixin:
         if message == 'Send enabled':
             self.send_btn.setEnabled(True)
             self.send_btn.setText('Send')
+            if hasattr(self, '_send_btn_style'):
+                self.send_btn.setStyleSheet(self._send_btn_style)
+            return
+        if message == 'Generating':
+            self.send_btn.setEnabled(True)
+            self.send_btn.setText('Stop')
+            if hasattr(self, '_stop_btn_style'):
+                self.send_btn.setStyleSheet(self._stop_btn_style)
             return
         if message == 'Send disabled':
             self.send_btn.setEnabled(False)

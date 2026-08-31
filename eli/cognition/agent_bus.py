@@ -521,6 +521,17 @@ class DispatchResult:
                 parts.append(f"ELI architecture/pipeline (grounded):\n{str(d['content'])[:1000]}")
             elif r.agent == "voice" and d.get("content"):
                 parts.append(f"Voice/TTS status:\n{str(d['content'])[:300]}")
+            else:
+                # Spec agents and trusted code agents use the same evidence keys as
+                # built-ins but are not hard-coded by name — inject generically.
+                content = d.get("content") or d.get("memory_context")
+                if content and str(content).strip() and not d.get("skipped"):
+                    label = str(r.agent).replace("_", " ")
+                    objective = str(d.get("objective") or "").strip()
+                    header = f"Custom agent ({label})"
+                    if objective:
+                        header += f" — {objective[:120]}"
+                    parts.append(f"{header}:\n{str(content)[:1200]}")
         return "\n\n".join(p for p in parts if p.strip())
 
 
@@ -641,6 +652,25 @@ def _select_agents_for_intent(user_input: str, action: str) -> Optional[Set[str]
         return selected
 
     if action in {
+        "EXPLAIN_FAILURE_LOG",
+        "EXPLAIN_GGUF_DIAGNOSTICS",
+        "EXPLAIN_LAST_FAILURE",
+    }:
+        return {"system"}
+
+    if action in {
+        "SELF_ANALYZE",
+        "SELF_IMPROVE",
+        "SELF_PATCH",
+        "SELF_UPGRADE",
+        "SELF_TEST",
+        "SELF_IMPROVEMENT_LOG",
+        "SELF_UPDATE",
+        "EXAMINE_CODE",
+    }:
+        return {"system", "self_improvement", "orchestrator", "introspection"}
+
+    if action in {
         "MEMORY_STATUS",
         "MEMORY_RECALL",
         "EXPLAIN_MEMORY_RUNTIME",
@@ -673,10 +703,6 @@ def _select_agents_for_intent(user_input: str, action: str) -> Optional[Set[str]
 # express further dependencies; cycles are rejected at build time.
 _AGENT_DEPENDENCIES: Dict[str, Set[str]] = {
     "knowledge_graph": {"memory"},
-    # critic is the second-tier verifier: it must run AFTER the retrievers it
-    # cross-checks so their results are in intent["_upstream"]. Deps are
-    # intersected with the active set, so on a narrow turn it simply runs after
-    # whichever of these are active (and self-gates if <2 grounded sources).
     "critic": {"memory", "system", "knowledge_graph", "file_code"},
 }
 
@@ -1134,12 +1160,13 @@ class SystemAgent(_BaseAgent):
         "PERSONAL_MEMORY_SUMMARY", "PERSONAL_MEMORY_DEEP_EXPLAIN",
         "RUNTIME_AUDIT", "IMPORT_AUDIT", "RESOLVE_RUNTIME_PATHS", "GUI_RUNTIME_AUDIT",
         "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "EXPLAIN_ALL_REASONING_MODES",
+        "EXPLAIN_FAILURE_LOG", "EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_LAST_FAILURE",
         "NAME_SOURCE_AUDIT", "ROUTING_FAULT_EXPLAIN", "FRONTIER_STATUS", "ELI_IDENTITY_AUDIT",
         "LIST_CAPABILITIES", "AWARENESS_STATUS", "CODE_CHANGES", "SELF_TEST",
         "PERSONA_LOCK_SET", "PERSONA_LOCK_STATUS", "PERSONA_LOCK_CLEAR",
         "CHECK_CHRONAL_ALIGNMENT",
         # ── Self-awareness / self-improvement (read-only or DB-only, no GGUF) ─
-        "SELF_ANALYZE", "SELF_IMPROVE", "SELF_PATCH",
+        "SELF_ANALYZE", "SELF_IMPROVE", "SELF_PATCH", "SELF_UPGRADE", "SELF_UPDATE",
         "HABIT_STATUS",
         # ── Sequencing ───────────────────────────────────────────────────────
         "SEQUENCE",
@@ -1271,8 +1298,9 @@ class SelfImprovementAgent(_BaseAgent):
                                data={"skipped": True})
         try:
             from eli.runtime.self_improvement import get_self_improvement
+            from eli.runtime.self_maintenance_config import DEFAULT_ANALYSIS_DAYS
             engine = get_self_improvement()
-            failures = engine.analyze_failures(limit=10, days=7, min_cluster_size=1)
+            failures = engine.analyze_failures(limit=10, days=DEFAULT_ANALYSIS_DAYS, min_cluster_size=1)
             proposals = []
             try:
                 from eli.memory import get_memory
@@ -1798,6 +1826,10 @@ class OrchestratorAgent(_BaseAgent):
         "SELF_IMPROVE",
         "SELF_IMPROVEMENT_LOG",
         "SELF_UPDATE",
+        "SELF_PATCH",
+        "SELF_UPGRADE",
+        "SELF_TEST",
+        "EXAMINE_CODE",
         "META_DIAGNOSTIC",
         "IMAGE_STATUS",
         "FRONTIER_STATUS",
@@ -2090,17 +2122,6 @@ class AgentBus:
         results: List[AgentResult] = self._run_agents(
             active_agents, user_input, intent, session_id, user_id)
 
-        # ── Frontier: critic-driven converge loop ──
-        # Single-pass fan-out → a converge loop. If the CriticAgent found the retrievers
-        # CONTRADICT each other, re-dispatch the deepening-capable ones with a wider gather
-        # and re-verify; adopt the deeper pass only if it raised agreement. Never worsens a
-        # turn (keeps the better of the two). Bounded / budget-gated / ELI_BUS_CONVERGE=0.
-        try:
-            results = self._maybe_converge(
-                results, active_agents, user_input, intent, session_id, user_id)
-        except Exception:
-            log.debug("bus: converge loop skipped", exc_info=True)
-
         # Assemble memory context: MemoryAgent first, then KnowledgeGraphAgent appended
         memory_context = ""
         for r in results:
@@ -2186,59 +2207,6 @@ class AgentBus:
             orchestrator_plan=orchestrator_plan,
             execution_plan=execution_plan_dict,
         )
-
-    # ── Frontier: critic-driven converge loop ──────────────────────────────
-    def _maybe_converge(self, results: List[AgentResult], active_agents: List["_BaseAgent"],
-                        user_input: str, intent: Dict[str, Any], session_id: str,
-                        user_id: str) -> List[AgentResult]:
-        """When the CriticAgent reports the retrievers CONTRADICT each other (low mutual
-        agreement), give the deepening-capable retrievers a wider gather (reusing the
-        existing `_gather_mult` deepen hook) and re-verify with the critic. Adopt the deeper
-        pass ONLY if it raised agreement — so a converge attempt can never make a turn worse.
-        Bounded (≤2 rounds), and disabled by ELI_BUS_CONVERGE=0."""
-        if os.environ.get("ELI_BUS_CONVERGE", "1").strip().lower() in ("0", "false", "no", "off"):
-            return results
-        critic = next((r for r in results if r.agent == "critic"), None)
-        if not critic or not (critic.data or {}).get("contradiction"):
-            return results  # nothing flagged — the sources already agree
-        deepen = [a for a in active_agents if a.name in ("memory", "knowledge_graph")]
-        if not deepen:
-            return results
-        try:
-            max_rounds = max(1, min(2, int(os.environ.get("ELI_BUS_CONVERGE_ROUNDS", "1") or 1)))
-        except Exception:
-            max_rounds = 1
-        by_name: Dict[str, AgentResult] = {r.agent: r for r in results}
-        best_agreement = float((critic.data or {}).get("agreement", 0.0) or 0.0)
-        mult = float((intent or {}).get("_gather_mult", 1.0) or 1.0)
-        for rnd in range(1, max_rounds + 1):
-            mult = round(mult + 0.75, 2)  # widen the recall net each round
-            conv_intent = {**(intent or {}), "_gather_mult": mult,
-                           "_converge": {"round": rnd, "note": (critic.data or {}).get("content", "")}}
-            deep = self._run_agents(deepen, user_input, conv_intent, session_id, user_id)
-            merged = dict(by_name)
-            for r in deep:
-                if r.ok and not (r.data or {}).get("skipped"):
-                    merged[r.agent] = r
-            crit_intent = {**(intent or {}),
-                           "_upstream": {n: r.data for n, r in merged.items()
-                                         if n != "critic" and r.ok}}
-            try:
-                new_crit = CriticAgent().run(user_input, crit_intent, session_id, user_id)
-            except Exception:
-                log.debug("bus converge: critic re-run failed", exc_info=True)
-                break
-            new_agreement = float((new_crit.data or {}).get("agreement", 0.0) or 0.0)
-            if new_agreement > best_agreement + 0.01:
-                new_crit.data["converged_round"] = rnd  # telemetry: convergence happened
-                merged["critic"] = new_crit
-                by_name = merged
-                best_agreement = new_agreement
-                if not (new_crit.data or {}).get("contradiction"):
-                    break  # sources now agree — converged
-            else:
-                break  # the deeper pass didn't help — keep the prior (better) result
-        return list(by_name.values())
 
     # ── Agent execution (DAG-layered, with flat fallback) ───────────────────
     def _run_agents(self, active_agents: List["_BaseAgent"], user_input: str,
@@ -2670,7 +2638,7 @@ class FileCodeAgent(_BaseAgent):
                 "memory_init":       "memory/__init__.py",
                 "router":            "execution/router_enhanced.py",
                 "executor":          "execution/executor_enhanced.py",
-                "gui_mki":           "gui/gui_eli_original.py",
+                "gui_v2_0":           "gui/eli_pro_audio_gui_v2_0.py",
                 "core_paths":        "core/paths.py",
                 "proactive":         "planning/proactive_daemon.py",
                 "output_governor":   "cognition/output_governor.py",
@@ -2826,7 +2794,7 @@ class FileCodeAgent(_BaseAgent):
                     files_map["agent_bus"],
                     files_map["cognitive_engine"],
                     files_map["orchestrator"],
-                    files_map["gui_mki"],
+                    files_map["gui_v2_0"],
                     files_map["vector_store"],
                 ])
             if any(x in low for x in ("proactive", "daemon", "background")):
@@ -3355,9 +3323,9 @@ def _get_trusted_agents_registry() -> dict:
 
 
 def _trust_custom_agent(py_file: Path) -> None:
-    """Deprecated shim — delegates to eli.cognition.agent_trust.grant.
+    """Deprecated shim — delegates to `eli.cognition.agent_trust.grant`.
 
-    The original wrote {basename: sha256} into the v1 registry with no provenance
+    The original wrote `{basename: sha256}` into the v1 registry with no provenance
     and no look at the code. Kept so any remaining caller keeps working, but it now
     produces a proper grant rather than a legacy entry the loader has to tolerate.
     """
@@ -3365,8 +3333,8 @@ def _trust_custom_agent(py_file: Path) -> None:
         from eli.cognition import agent_trust
         result = agent_trust.grant(py_file, approved_by="legacy-api")
         if not result.get("ok"):
-            log.warning("[AGENTBUS] Refused to approve %s: %s"
-                        % (py_file.name, "; ".join(result.get("problems", []))))
+            log.warning(f"[AGENTBUS] Refused to approve {py_file.name}: "
+                        + "; ".join(result.get("problems", [])))
     except Exception as _e:
         log.debug(f"[AGENTBUS] Failed to register agent trust for {py_file.name}: {_e}")
 
@@ -3574,7 +3542,7 @@ def _load_custom_agents() -> None:
 
                 # ── Trust verification ──────────────────────────────────────
                 # Keyed on the resolved path with recorded provenance, not on the
-                # basename alone — two files with the same name used to share one
+                # basename alone — two files called `helper.py` used to share one
                 # entry, so approving either authorised both.
                 entry = {"kind": "code", "id": py_file.stem, "name": py_file.name,
                          "path": str(py_file), "loaded": False, "reason": ""}
@@ -3584,14 +3552,14 @@ def _load_custom_agents() -> None:
                         verdict = agent_trust.inspect(py_file)
                     except Exception as _te:
                         verdict = {"ok": False, "status": "untrusted",
-                                   "reason": "trust check unavailable: %s" % _te}
+                                   "reason": f"trust check unavailable: {_te}"}
                     if not verdict["ok"]:
                         entry["reason"] = verdict["reason"]
                         entry["status"] = verdict.get("status")
                         _AGENT_LOAD_REPORT.append(entry)
                         log.info(
-                            "[AGENTBUS] Custom agent '%s' not loaded — %s"
-                            % (py_file.name, verdict["reason"]))
+                            f"[AGENTBUS] Custom agent '{py_file.name}' not loaded — "
+                            f"{verdict['reason']}")
                         continue
                 # ── Load ────────────────────────────────────────────────────
                 try:
