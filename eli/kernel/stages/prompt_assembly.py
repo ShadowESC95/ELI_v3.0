@@ -1167,6 +1167,19 @@ Answer:"""
         _extra_blocks = []
         _live_self_status = ""  # real telemetry — emitted ABOVE the cap (never truncated)
         try:
+            _bus_agg = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0) if bus_result else 0.0
+            _bus_gnd = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0) if bus_result else 0.0
+            if _bus_agg < 0.35 or _bus_gnd < 0.35:
+                _extra_blocks.append(
+                    "[LOW GROUNDING this turn — memory evidence is weak. "
+                    "Do NOT attribute specific personal events to the user (wild nights, "
+                    "waking up late, stress, 'been through a lot') unless quoted verbatim "
+                    "from MEMORY SEARCH RESULTS in this prompt. Casual banter is fine; "
+                    "invented user biography is not. If unsure, ask — do not guess.]"
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
             import time as _inj_time
             from eli.core.paths import get_paths as _inj_paths
             _pro_ctx_file = _inj_paths().artifacts_dir / "proactive" / "latest_context.txt"
