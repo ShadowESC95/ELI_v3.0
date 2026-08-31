@@ -159,7 +159,11 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
 
     # --- explicit grounded speech-act route authority ---
     # This is routing authority, not a canned response layer.
-    if re.search(r"\b(i did not ask|i didn't ask|not what i asked|that's not what i asked|that is not what i asked)\b", low):
+    try:
+        from eli.cognition.correction_patterns import is_correction_query as _is_corr_q
+    except Exception:
+        _is_corr_q = lambda t: False  # noqa: E731
+    if _is_corr_q(low):
         return _mk("CHAT", {"message": raw}, 0.92, matched_by="router.correction_chat", allow_chat_without_evidence=True)
 
     if re.search(r"\b(who are you|what are you|what is your name|what's your name)\b", low) and re.search(

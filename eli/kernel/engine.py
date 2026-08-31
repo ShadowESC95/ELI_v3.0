@@ -551,8 +551,13 @@ def _classify_query(text: str, action: str) -> str:
         return "GROUNDED"
 
     # CORRECTION: user is correcting the previous answer; answer the corrected request only.
-    if re.search(r"\b(i did not ask|i didn't ask|not what i asked|that's not what i asked|that is not what i asked|what are you talking about)\b", low):
-        return "CORRECTION"
+    try:
+        from eli.cognition.correction_patterns import is_correction_query as _is_corr_q
+        if _is_corr_q(low):
+            return "CORRECTION"
+    except Exception:
+        if re.search(r"\b(i did not ask|i didn't ask|not what i asked|what are you talking about)\b", low):
+            return "CORRECTION"
 
     # PHATIC: greetings, check-ins, and short acknowledgements
     # _is_brief_phatic_prompt now handles up to 16 words
@@ -3378,6 +3383,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if _prior:
             _corr_system = _prior + _corr_system
 
+        try:
+            from eli.cognition.correction_patterns import is_biographical_dispute as _bio_dispute
+            if _bio_dispute(user_input or ""):
+                _corr_system += (
+                    " The user is disputing a specific claim YOU made about their life, habits, or experiences. "
+                    "Retract it plainly: you have no verified memory of that event unless it appears quoted "
+                    "in the exchange above. Do NOT mention patches, upgrades, packaging, diagnostics, or "
+                    "technical work. Do NOT deflect or ask them to clarify — explain what you wrongly implied "
+                    "and apologize briefly in ELI's voice."
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         # Budget comes from the user's own mode preset, like every other
         # generation path. A fixed 160 here was one of the output caps that
         # truncated real answers regardless of the operator's settings.
@@ -3394,6 +3412,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             _corr_max = 0
         if _corr_max == 0:
             # No preset written yet (pre-first-run / corrupted settings).
+            _corr_max = 512
+        if _corr_max < 0:
+            _corr_max = 384
+        elif _corr_max > 512:
             _corr_max = 512
 
         _corr_response = None
