@@ -224,6 +224,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.setMinimumSize(400, 300)
         self.setGeometry(screen.x() + 20, screen.y() + 20, screen.width() - 40, screen.height() - 40)
         self.is_generating = False
+        self._cancel_stream_requested = False
         self._model_loading = False
         self.conversation_history = []
         self.current_theme = "dark"
@@ -680,13 +681,19 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         )
 
         self.send_btn = QPushButton("Send")
-        self.send_btn.setStyleSheet(
+        self._send_btn_style = (
             _BTN_BASE +
             "QPushButton { background-color:#4CAF50; }"
             "QPushButton:hover { background-color:#45a049; }"
             "QPushButton:disabled { background-color:#5b6470; color:#cfd6e2; }"
         )
-        self.send_btn.clicked.connect(self.send_message)
+        self._stop_btn_style = (
+            _BTN_BASE +
+            "QPushButton { background-color:#c62828; }"
+            "QPushButton:hover { background-color:#e53935; }"
+        )
+        self.send_btn.setStyleSheet(self._send_btn_style)
+        self.send_btn.clicked.connect(self._on_send_or_stop)
         btn_layout.addWidget(self.send_btn)
 
         clear_btn = QPushButton("Clear")

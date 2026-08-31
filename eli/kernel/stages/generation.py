@@ -745,6 +745,11 @@ class GenerationMixin:
                             temperature=gen["temperature"],
                             stream=True,
                         ):
+                            try:
+                                if gguf_inference.is_cancel_requested():
+                                    break
+                            except Exception:
+                                pass
                             if isinstance(chunk, dict):
                                 token = str(
     chunk.get("response") or chunk.get("token") or "")

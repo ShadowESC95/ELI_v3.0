@@ -1,4 +1,4 @@
-"""ELI v3 — Advanced Settings dialog panel."""
+"""ELI v2.0 — Advanced Settings dialog panel."""
 from __future__ import annotations
 
 import threading
@@ -51,6 +51,16 @@ class AdvancedSettingsDialog(QDialog):
         self.inner_tabs.addTab(self._build_models_tab(),  "\U0001f9e0 Models")
         self.inner_tabs.addTab(self._build_cognition_tab(), "\U0001f9e0 Cognition")
         self.inner_tabs.addTab(self._build_plugins_tab(), "\U0001f50c Plugins")
+        # Community marketplace. Separate from the Plugins tab above, which manages
+        # what is already here — this one is the door strangers' code comes through,
+        # so it carries its own verification, scanning and consent surface.
+        try:
+            from eli.gui.tabs.marketplace_tab import MarketplaceTab
+            self._marketplace_tab = MarketplaceTab(parent_window=self)
+            self.inner_tabs.addTab(self._marketplace_tab, "\U0001f6d2 Marketplace")
+        except Exception as _mk_err:
+            from eli.utils.log import get_logger
+            get_logger(__name__).debug(f"[Settings] Marketplace tab unavailable: {_mk_err}")
         self.inner_tabs.addTab(self._build_upgrade_tab(), "\U0001f504 Self-Upgrade")
 
         close_btn = QPushButton("Close")
@@ -193,7 +203,11 @@ class AdvancedSettingsDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        lbl = QLabel("All registered ELI agents. Edit timeout, description, persona, or disable individual agents.")
+        lbl = QLabel(
+            "All registered ELI agents. Built-in agents use runtime overrides; "
+            "custom spec agents are edited as full specifications (objective, triggers, "
+            "success criteria) and persist enable/disable to disk."
+        )
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
 
@@ -228,21 +242,36 @@ class AdvancedSettingsDialog(QDialog):
     def _get_agent_list(self) -> list:
         agents = []
         try:
-            from eli.cognition.agent_bus import _ALL_AGENTS
+            from eli.cognition.agent_bus import SpecAgent, _ALL_AGENTS
             for ag in _ALL_AGENTS:
                 overrides = self._agent_overrides.get(ag.name, {})
-                agents.append({
-                    "name": ag.name,
-                    "class": type(ag).__name__,
-                    "description": overrides.get("description", getattr(ag, "__doc__", "") or ""),
-                    "timeout_s": overrides.get("timeout_s", getattr(ag, "timeout_s", 5.0)),
-                    "enabled": overrides.get("enabled", getattr(ag, "_enabled", True)),
-                    "persona": overrides.get("persona", ""),
-                })
+                kind = "spec" if isinstance(ag, SpecAgent) else "builtin"
+                if isinstance(ag, SpecAgent):
+                    spec = ag.spec
+                    agents.append({
+                        "name": ag.name,
+                        "class": "SpecAgent",
+                        "kind": kind,
+                        "spec_id": spec.id,
+                        "description": spec.objective,
+                        "timeout_s": overrides.get("timeout_s", spec.timeout_s),
+                        "enabled": overrides.get("enabled", getattr(ag, "_enabled", spec.enabled)),
+                        "persona": spec.system_prompt,
+                    })
+                else:
+                    agents.append({
+                        "name": ag.name,
+                        "class": type(ag).__name__,
+                        "kind": kind,
+                        "description": overrides.get("description", getattr(ag, "__doc__", "") or ""),
+                        "timeout_s": overrides.get("timeout_s", getattr(ag, "timeout_s", 5.0)),
+                        "enabled": overrides.get("enabled", getattr(ag, "_enabled", True)),
+                        "persona": overrides.get("persona", ""),
+                    })
         except Exception as e:
             agents.append({
-                "name": f"(unavailable: {e})", "class": "", "description": "",
-                "timeout_s": 5.0, "enabled": True, "persona": "",
+                "name": f"(unavailable: {e})", "class": "", "kind": "builtin",
+                "description": "", "timeout_s": 5.0, "enabled": True, "persona": "",
             })
         return agents
 
@@ -252,7 +281,10 @@ class AdvancedSettingsDialog(QDialog):
         self._agent_rows = agents
 
         for row, ag in enumerate(agents):
-            self.agents_table.setItem(row, 0, QTableWidgetItem(ag["name"]))
+            label = ag["name"]
+            if ag.get("kind") == "spec":
+                label = f"{ag['name']} (spec)"
+            self.agents_table.setItem(row, 0, QTableWidgetItem(label))
             desc = (ag["description"] or "").strip().replace("\n", " ")[:80]
             self.agents_table.setItem(row, 1, QTableWidgetItem(desc))
             self.agents_table.setItem(row, 2, QTableWidgetItem(str(ag["timeout_s"])))
@@ -269,7 +301,17 @@ class AdvancedSettingsDialog(QDialog):
             edit_btn = QPushButton("\u270f\ufe0f Edit")
             edit_btn.setProperty("agent_name", ag["name"])
             edit_btn.clicked.connect(lambda _, r=row, a=ag: self._edit_agent(r, a))
-            self.agents_table.setCellWidget(row, 4, edit_btn)
+
+            actions = QWidget()
+            actions_layout = QHBoxLayout(actions)
+            actions_layout.setContentsMargins(4, 0, 4, 0)
+            actions_layout.addWidget(edit_btn)
+            if ag.get("kind") == "spec":
+                del_btn = QPushButton("\U0001f5d1")
+                del_btn.setToolTip("Delete this custom agent spec")
+                del_btn.clicked.connect(lambda _, a=ag: self._delete_spec_agent(a))
+                actions_layout.addWidget(del_btn)
+            self.agents_table.setCellWidget(row, 4, actions)
 
         self.agents_table.resizeRowsToContents()
 
@@ -280,6 +322,19 @@ class AdvancedSettingsDialog(QDialog):
             self._populate_agents_table()
 
     def _edit_agent(self, row: int, agent_info: dict):
+        if agent_info.get("kind") == "spec":
+            from eli.cognition.agent_spec import load_spec_by_id
+            spec = load_spec_by_id(agent_info.get("spec_id") or agent_info["name"])
+            if spec is None:
+                QMessageBox.warning(
+                    self, "Edit agent",
+                    f"Could not load spec for {agent_info['name']!r}.")
+                return
+            dlg = AgentCreateDialog(parent=self, existing=spec.to_dict())
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._populate_agents_table()
+            return
+
         dlg = AgentEditDialog(agent_info, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             result = dlg.get_result()
@@ -293,9 +348,33 @@ class AdvancedSettingsDialog(QDialog):
                 if chk:
                     chk.setChecked(result["enabled"])
 
+    def _delete_spec_agent(self, agent_info: dict):
+        agent_id = agent_info.get("spec_id") or agent_info.get("name")
+        reply = QMessageBox.question(
+            self, "Delete agent",
+            f"Delete custom agent spec {agent_id!r}? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from eli.cognition.agent_spec import delete_spec
+            from eli.cognition.agent_bus import reload_custom_agents
+            result = delete_spec(agent_id)
+            if not result.get("ok"):
+                QMessageBox.warning(self, "Delete agent", "; ".join(result.get("problems", [])))
+                return
+            reload_custom_agents()
+            self._agent_overrides.pop(agent_info.get("name", ""), None)
+            self._populate_agents_table()
+            QMessageBox.information(self, "Delete agent", f"Removed {agent_id!r}.")
+        except Exception as e:
+            QMessageBox.warning(self, "Delete agent", str(e))
+
     def _apply_agent_changes(self):
         try:
-            from eli.cognition.agent_bus import _ALL_AGENTS
+            from eli.cognition.agent_bus import SpecAgent, _ALL_AGENTS, reload_custom_agents
+            from eli.cognition.agent_spec import save_spec
             applied = []
             for ag in _ALL_AGENTS:
                 overrides = self._agent_overrides.get(ag.name, {})
@@ -314,9 +393,20 @@ class AdvancedSettingsDialog(QDialog):
                         for ag in _ALL_AGENTS:
                             if ag.name == name:
                                 ag._enabled = chk.isChecked()
+            # Persist spec-agent fields to JSON so enable/timeout survive restart.
+            for ag in _ALL_AGENTS:
+                if isinstance(ag, SpecAgent):
+                    spec = ag.spec
+                    spec.enabled = bool(getattr(ag, "_enabled", spec.enabled))
+                    spec.timeout_s = float(getattr(ag, "timeout_s", spec.timeout_s))
+                    save_spec(spec)
+                    if ag.name not in applied:
+                        applied.append(ag.name)
+            reload_custom_agents()
             QMessageBox.information(
                 self, "Agents",
-                f"Applied overrides to: {', '.join(applied) or 'none'}.\nChanges are live until restart."
+                f"Applied overrides to: {', '.join(applied) or 'none'}.\n"
+                "Spec agents were saved to disk; changes survive restart."
             )
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not apply changes: {e}")
@@ -350,7 +440,7 @@ class AdvancedSettingsDialog(QDialog):
     def _populate_models_table(self):
         rows = []
         try:
-            from eli.gui.gui_eli_original import discover_gguf_models
+            from eli.gui.eli_pro_audio_gui_v2_0 import discover_gguf_models
             models = discover_gguf_models()
             for m in models:
                 size_str = f"{m.get('size_gb', 0.0):.2f} GB"
@@ -359,7 +449,7 @@ class AdvancedSettingsDialog(QDialog):
             pass
         try:
             from eli.integrations.ollama.client import get_active_host
-            from eli.gui.gui_eli_original import OllamaModelManager
+            from eli.gui.eli_pro_audio_gui_v2_0 import OllamaModelManager
             host = get_active_host()
             om = OllamaModelManager()
             ollama_names = om.list_models(host)
@@ -384,18 +474,6 @@ class AdvancedSettingsDialog(QDialog):
         lbl = QLabel("Manage ELI plugins. Install from registry, enable, disable, or uninstall.")
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
-
-        # The community marketplace, MCP servers, permission grants and the scanner
-        # report used to be a sub-tab here — a modal, three clicks deep. They are the
-        # top-level Extensions tab now; this stays as the built-in registry view so
-        # the two are not two half-answers to the same question.
-        moved = QLabel(
-            "Community plugins, MCP servers, permissions and sources now live in the "
-            "<b>\U0001f50c Extensions</b> tab in the main window \u2014 close this dialog "
-            "to reach it.")
-        moved.setWordWrap(True)
-        moved.setStyleSheet("color:#8fa1b3;padding:4px 0;")
-        layout.addWidget(moved)
 
         self.plugins_table = QTableWidget()
         self.plugins_table.setColumnCount(5)
