@@ -46,7 +46,6 @@ from typing import Any, Dict, List, Optional
 _KV_BYTES_PER_TOKEN_PER_LAYER = 6_000
 _CUDA_OVERHEAD_MB = 350
 
-
 # Headroom left unallocated on the GPU, and the ONE default for it.
 #
 # This knob had two different defaults in four places: the startup dialog's
@@ -125,6 +124,21 @@ def _layers_for_size(size_gb: float) -> int:
     if size_gb < 55.0:  return 64   # ~34–70B
     if size_gb < 90.0:  return 80   # ~70–100B
     return 96                       # 100B+
+
+
+def layers_for_model(model_path: Optional[str] = None, size_gb: Optional[float] = None) -> int:
+    """Layer count for VRAM fit — GGUF ``block_count`` when readable, else size heuristic."""
+    if model_path:
+        try:
+            from eli.cognition.model_load_diagnostics import gguf_model_profile
+            prof = gguf_model_profile(model_path)
+            if prof.block_count and prof.block_count > 0:
+                return int(prof.block_count)
+        except Exception:
+            log.debug("gguf layer count unavailable for %s", model_path, exc_info=True)
+    if size_gb is not None and size_gb > 0:
+        return _layers_for_size(float(size_gb))
+    return 32
 
 
 @dataclass
@@ -301,20 +315,6 @@ def _derive_mode_presets(_base_n_ctx: int, base_max_tokens: int,
     }
 
 
-def _memlock_can_lock_model() -> bool:
-    """RLIMIT_MEMLOCK high enough (>=4 GiB or unlimited) to mlock a model? POSIX
-    only; non-POSIX (Windows) keeps prior behaviour."""
-    try:
-        import resource
-    except Exception:
-        return True
-    try:
-        soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
-        return soft == -1 or soft >= 4 * 1024 ** 3
-    except Exception:
-        return True
-
-
 def nvidia_smi_path() -> Optional[str]:
     """Absolute path to nvidia-smi, PATH or not.
 
@@ -438,8 +438,8 @@ def _nvidia_driver_loaded() -> bool:
     """True when the NVIDIA kernel driver is loaded — using kernel-provided signals
     that exist identically on every Linux distro (Ubuntu/Debian/Arch/Fedora/RHEL/
     openSUSE), independent of whether nvidia-smi is installed or well-behaved:
-    /proc/driver/nvidia/version, /sys/module/nvidia, or a PCI device whose vendor
-    id is NVIDIA (0x10de)."""
+    ``/proc/driver/nvidia/version``, ``/sys/module/nvidia``, or a PCI device whose
+    vendor id is NVIDIA (0x10de)."""
     try:
         if Path("/proc/driver/nvidia/version").is_file() or Path("/sys/module/nvidia").is_dir():
             return True
@@ -515,10 +515,10 @@ def detect_hardware() -> HardwareProfile:
         pass
 
     # NVIDIA driver-loaded fallback — if nvidia-smi is missing or its query failed
-    # (a broken/partial userspace, an Optimus laptop dGPU the tool couldn't read)
-    # but the kernel driver is clearly loaded, still report the GPU so the smart
-    # loader and the GPU pack engage. _nvidia_driver_loaded reads kernel-provided
-    # signals identical on every distro. VRAM isn't exposed without nvidia-smi, so
+    # (a broken/partial userspace, an Optimus card the tool couldn't read) but the
+    # kernel driver is clearly loaded, still report the GPU so the smart loader and
+    # the GPU pack engage. ``_nvidia_driver_loaded`` reads kernel-provided signals
+    # that are identical on every distro. VRAM isn't exposed without nvidia-smi, so
     # use a conservative estimate the loader's reduce-to-fit corrects.
     if not hw.has_gpu and sys.platform.startswith("linux") and _nvidia_driver_loaded():
         hw.total_vram_mb = 4096       # conservative; loader refines / OOM-falls-back
@@ -637,42 +637,6 @@ def detect_hardware() -> HardwareProfile:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    # AMD on Windows — no CLI ships with the driver; VRAM total + name live in
-    # the display-class registry keys. Free VRAM is not exposed, so estimate
-    # conservatively (85% of total on an idle desktop); the loader's
-    # reduce-to-fit attempts and live tuner correct any optimism at load time.
-    if not hw.has_gpu and sys.platform == "win32":
-        try:
-            import winreg
-            base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as cls:
-                i = 0
-                while True:
-                    try:
-                        sub = winreg.EnumKey(cls, i)
-                    except OSError:
-                        break
-                    i += 1
-                    if not sub.isdigit():
-                        continue
-                    try:
-                        with winreg.OpenKey(cls, sub) as k:
-                            desc = str(winreg.QueryValueEx(k, "DriverDesc")[0])
-                            if not any(t in desc.lower() for t in ("amd", "radeon")):
-                                continue
-                            qw = int(winreg.QueryValueEx(k, "HardwareInformation.qwMemorySize")[0])
-                    except OSError:
-                        continue
-                    if qw > 0:
-                        hw.total_vram_mb = qw // (1024 * 1024)
-                        hw.free_vram_mb = int(hw.total_vram_mb * 0.85)
-                        hw.gpu_name = desc
-                        hw.vram_gb = hw.free_vram_mb / 1024.0
-                        hw.has_gpu = True
-                        break
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
     # Discrete Intel Arc (Linux) — same HardwareProfile pipeline as NVIDIA/AMD so
     # the smart loader and the Vulkan GPU pack see it. Only DISCRETE Arc (the newer
     # `xe` driver, or an Arc-family PCI device id) — an Intel iGPU (Iris/UHD) is left
@@ -708,23 +672,41 @@ def detect_hardware() -> HardwareProfile:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    # Apple Silicon (Metal) — macOS ships no nvidia-smi/rocm-smi, and the GPU shares
-    # UNIFIED memory with the CPU instead of having separate VRAM. llama-cpp built
-    # with Metal (install.sh: -DGGML_METAL=on) offloads to that GPU, so detect it
-    # here or the smart loader sizes zero GPU layers and runs CPU-only on a Mac.
-    if not hw.has_gpu and sys.platform == "darwin":
+    # AMD (and discrete Intel Arc) on Windows — no CLI ships with the driver; VRAM
+    # total + name live in the display-class registry keys. Free VRAM is not
+    # exposed, so estimate conservatively (85% of total on an idle desktop); the
+    # loader's reduce-to-fit attempts and live tuner correct any optimism at load
+    # time. Intel iGPUs (Iris/UHD) are skipped — only Arc is offered a GPU pack.
+    if not hw.has_gpu and sys.platform == "win32":
         try:
-            import platform as _plat
-            _arm = _plat.machine().lower() in ("arm64", "aarch64")
-            # Usable Metal working set is a fraction of unified RAM; keep headroom
-            # for the OS + CPU-side tensors. reduce-to-fit corrects any optimism at
-            # load time. Intel Macs have Metal too but weaker GPUs — be conservative.
-            _frac = 0.70 if _arm else 0.40
-            hw.total_vram_mb = int(hw.ram_gb * 1024)
-            hw.free_vram_mb = int(hw.available_ram_gb * 1024 * _frac)
-            hw.vram_gb = hw.free_vram_mb / 1024.0
-            hw.gpu_name = "Apple Silicon GPU (Metal)" if _arm else "Apple GPU (Metal)"
-            hw.has_gpu = True
+            import winreg
+            base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as cls:
+                i = 0
+                while True:
+                    try:
+                        sub = winreg.EnumKey(cls, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if not sub.isdigit():
+                        continue
+                    try:
+                        with winreg.OpenKey(cls, sub) as k:
+                            desc = str(winreg.QueryValueEx(k, "DriverDesc")[0])
+                            _dl = desc.lower()
+                            if not (("amd" in _dl or "radeon" in _dl) or "arc" in _dl):
+                                continue
+                            qw = int(winreg.QueryValueEx(k, "HardwareInformation.qwMemorySize")[0])
+                    except OSError:
+                        continue
+                    if qw > 0:
+                        hw.total_vram_mb = qw // (1024 * 1024)
+                        hw.free_vram_mb = int(hw.total_vram_mb * 0.85)
+                        hw.gpu_name = desc
+                        hw.vram_gb = hw.free_vram_mb / 1024.0
+                        hw.has_gpu = True
+                        break
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -782,7 +764,8 @@ def discover_models(models_dir: Optional[Path] = None,
 
 
 def _gpu_layers_for_model(size_gb: float, free_vram_mb: int, n_ctx: int,
-                          kv_quantized: bool = False) -> int:
+                          kv_quantized: bool = False,
+                          model_path: Optional[str] = None) -> int:
     """Compute n_gpu_layers from FREE VRAM minus KV-cache and CUDA overhead.
 
     When kv_quantized=True, the KV cache uses ~25% of fp16 size (q4_0 K
@@ -796,7 +779,7 @@ def _gpu_layers_for_model(size_gb: float, free_vram_mb: int, n_ctx: int,
     """
     if free_vram_mb <= 0:
         return 0
-    total_layers = _layers_for_size(size_gb)
+    total_layers = layers_for_model(model_path, size_gb)
     kv_mb = _kv_cache_mb(n_ctx, total_layers, quant=kv_quantized)
     # Reserve the decode-time compute/graph buffer too, not just model+KV+overhead.
     # Without this, full offload (99) gets chosen at max ctx, loads fine, then
@@ -821,6 +804,7 @@ def smart_fit_config(
     reserve_mb: int = 700,
     kv_quantized: bool = False,
     total_layers: Optional[int] = None,
+    model_path: Optional[str] = None,
     ctx_grain: int = 2048,
     min_ctx: int = 2048,
     min_batch: int = 128,
@@ -848,7 +832,7 @@ def smart_fit_config(
     Returns (n_ctx, n_gpu_layers, n_batch). n_gpu_layers is the 99 sentinel when
     all layers fit, 0 for CPU-only. Pure/deterministic — no hardware calls.
     """
-    total = int(total_layers or _layers_for_size(model_size_gb))
+    total = int(total_layers or layers_for_model(model_path, model_size_gb))
     budget = max(0, int(free_vram_mb) - int(reserve_mb))
     mb_per_layer = (model_size_gb * 1024.0) / max(1, total + 2)
 
@@ -1005,6 +989,7 @@ def recommend(hw: Optional[HardwareProfile] = None,
         if hw.has_gpu:
             layers = _gpu_layers_for_model(
                 m["size_gb"], hw.free_vram_mb, rec.n_ctx, kv_quantized=kv_q,
+                model_path=m["path"],
             )
             if layers > 0:
                 chosen = m
@@ -1020,6 +1005,7 @@ def recommend(hw: Optional[HardwareProfile] = None,
         chosen = models_sorted[0]
         chosen_layers = (_gpu_layers_for_model(
             chosen["size_gb"], hw.free_vram_mb, rec.n_ctx, kv_quantized=kv_q,
+            model_path=chosen["path"],
         ) if hw.has_gpu else 0)
         rec.reasoning.append(
             f"Falling back to smallest: {chosen['name']} ({chosen['size_gb']:.1f}GB)"
@@ -1051,7 +1037,7 @@ def recommend(hw: Optional[HardwareProfile] = None,
     # means the recommendation is a prediction of the load rather than a second
     # opinion about it.
     if hw.has_gpu and hw.free_vram_mb > 0 and chosen_layers > 0:
-        _total_layers_est = _layers_for_size(chosen["size_gb"])
+        _total_layers_est = layers_for_model(chosen["path"], chosen["size_gb"])
         # Mirror the loader's own batch floor so the compute-graph reserve — and
         # therefore the layer count — is costed against the same batch it will use.
         import os as _os_fit
@@ -1060,7 +1046,8 @@ def recommend(hw: Optional[HardwareProfile] = None,
             chosen["size_gb"], hw.free_vram_mb,
             user_ctx=rec.n_ctx, user_batch=_fit_batch_in,
             reserve_mb=vram_reserve_mb(), kv_quantized=kv_q,
-            total_layers=_total_layers_est, min_batch=_fit_batch_in,
+            model_path=chosen["path"], total_layers=_total_layers_est,
+            min_batch=_fit_batch_in,
         )
         # 99 is the "all layers" sentinel; this profile reports a real count.
         _fit_layers_real = _total_layers_est if int(_fit_layers) >= 99 else int(_fit_layers)
@@ -1075,7 +1062,7 @@ def recommend(hw: Optional[HardwareProfile] = None,
             f"— was ctx={_old_ctx} gpu_layers={_old_layers} before the fit"
         )
 
-    total_layers = _layers_for_size(chosen["size_gb"])
+    total_layers = layers_for_model(chosen["path"], chosen["size_gb"])
     _full_offload = chosen_layers >= total_layers  # 99 >= actual layer count → all layers on GPU
     if _full_offload:
         rec.reasoning.append(
@@ -1161,10 +1148,7 @@ def recommend(hw: Optional[HardwareProfile] = None,
         rec.reasoning.append(f"batch capped to {rec.batch_size} by ELI_TARGET_BATCH={_env_batch_cap}")
 
     rec.use_mmap = True
-    # Only recommend mlock where the OS memlock limit can actually lock a multi-GB
-    # model — RLIMIT_MEMLOCK is often capped low (containers, frozen builds) no
-    # matter how much RAM is installed, and requesting it there just warns.
-    rec.use_mlock = (hw.available_ram_gb >= 16) and _memlock_can_lock_model()
+    rec.use_mlock = (hw.available_ram_gb >= 16)
     rec.max_tokens = -1   # unlimited — use full remaining context
     rec.temperature = 0.7
 
@@ -1222,14 +1206,14 @@ def apply_recommendation(rec: ModelRecommendation) -> Dict[str, Any]:
         save_settings(settings)
 
         # Keep the GUI's hw-profile artifact in sync.
-        # gui_eli_original.py reads artifacts/runtime_hardware_profile.json
+        # eli_pro_audio_gui_v2_0.py reads artifacts/runtime_hardware_profile.json
         # (keys: n_ctx, n_gpu_layers, batch_size) as its hw-profile fallback.
         # Without this write the GUI would show stale values from a previous
         # optimizer run, making it look like the profile wasn't updated.
         try:
             import json as _json
-            from eli.core.paths import project_root as _project_root
-            _art_path = _project_root() / "artifacts" / "runtime_hardware_profile.json"
+            from eli.core.paths import artifacts_dir as _artifacts_dir
+            _art_path = _artifacts_dir() / "runtime_hardware_profile.json"
             _art_path.parent.mkdir(parents=True, exist_ok=True)
             _art_path.write_text(
                 _json.dumps(

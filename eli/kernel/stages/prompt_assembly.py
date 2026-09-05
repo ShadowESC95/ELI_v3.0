@@ -1219,6 +1219,19 @@ Answer:"""
         # anti-confabulation guard.
         _ui_low = str(user_input or "").lower()
 
+        try:
+            from eli.cognition.user_claim_validator import extract_current_user_activity
+            _turn_activity = extract_current_user_activity(user_input or "")
+            if _turn_activity:
+                _extra_blocks.append(
+                    "[CURRENT TURN — authoritative] The user just said they are "
+                    f"{_turn_activity}. Do NOT substitute a different show, movie, "
+                    "game, or hobby from memory or profile. Respond to what they "
+                    "actually said they are doing right now."
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         # ── World awareness state injection ──────────────────────────────────
         # Inject ELI's live AwarenessState so synthesis knows its own internal
         # confidence / uncertainty / focus. Only injected when world state
@@ -1354,11 +1367,18 @@ Answer:"""
             # A greeting gets a greeting; the name alone is enough. Substantive turns still
             # get the full recall.
             _phatic_turn = False
+            _low_grounding_casual = False
             try:
                 _phatic_turn = _is_brief_phatic_prompt(str(user_input or "").strip().lower())
             except Exception:
                 _phatic_turn = False
-            if not _phatic_turn:
+            try:
+                _bus_agg_pf = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0) if bus_result else 0.0
+                _bus_gnd_pf = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0) if bus_result else 0.0
+                _low_grounding_casual = (_bus_agg_pf < 0.35 or _bus_gnd_pf < 0.35)
+            except Exception:
+                _low_grounding_casual = False
+            if not _phatic_turn and not _low_grounding_casual:
                 for _label, _key in (("project", "active_projects"),
                                       ("research", "research"),
                                       ("preference", "preferences")):

@@ -3631,6 +3631,16 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final = "".join(parts).strip()
                 if final:
                     try:
+                        _wm_ctx = str(getattr(self, "_last_orchestrator_memory_context", "") or "")
+                        final = self._govern_visible_response(
+                            user_input,
+                            final,
+                            memory_context=_wm_ctx,
+                            is_grounded=bool(_wm_ctx),
+                        )
+                    except Exception as _gov_err:
+                        log.debug(f"[COGNITIVE] orchestrator stream governance skipped: {_gov_err}")
+                    try:
                         self.enqueue_post_response_storage(user_input, final, {"action": "CHAT"}, command=False)
                     except Exception as _store_err:
                         log.debug(f"[COGNITIVE] orchestrator stream storage failed: {_store_err}")
@@ -5000,9 +5010,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # ("that's not what I asked"). Try a direct steered repair before the
         # heavy pipeline; on failure fall through as GENERAL.
         if _qclass == 'CORRECTION':
-            _corr_result = self._correction_repair(user_input, trace)
-            if _corr_result is not None:
-                return _corr_result
+            try:
+                from eli.cognition.correction_patterns import correction_shortcut_allowed
+                _corr_ok = correction_shortcut_allowed(user_input, action)
+            except Exception:
+                _corr_ok = str(action or "").upper() == "CHAT"
+            if _corr_ok:
+                _corr_result = self._correction_repair(user_input, trace)
+                if _corr_result is not None:
+                    return _corr_result
             _qclass = 'GENERAL'
         # Router-owned RUNTIME_STATUS must not be rewritten into SELF_REPORT.
         # SELF_REPORT is identity/persona evidence; RUNTIME_STATUS is live runtime evidence.
@@ -6231,6 +6247,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         "2) You MAY add a brief comment or piece of context if it genuinely helps.\n"
                         "3) You MAY end with ONE short, relevant follow-up question or proposal "
                         "for what the user might want next — only when it adds real value.\n"
+                        "4) If the user asks whether something IS a 'classic', distinguish that "
+                        "from quotes about 'classic elements' or 'classic Spidey' — a release "
+                        "only weeks or months old is too new to call an established classic; "
+                        "cite the release date and say the 'classic' label is premature unless "
+                        "results explicitly use it that way.\n"
                         "Keep it tight and conversational. Never state facts not present in the "
                         "results below.]\n\n"
                         + evidence

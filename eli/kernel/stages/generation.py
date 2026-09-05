@@ -1309,10 +1309,20 @@ class GenerationMixin:
                 from eli.cognition.user_claim_validator import (
                     validate_user_claims_against_evidence,
                 )
+                _recent_user_turns: List[str] = []
+                try:
+                    for _t in (self.memory.get_recent_conversation(limit=8, user_id=self.user_id) or []):
+                        if str((_t or {}).get("role", "")).lower() == "user":
+                            _c = str((_t or {}).get("content", "") or "").strip()
+                            if _c:
+                                _recent_user_turns.append(_c)
+                except Exception:
+                    _recent_user_turns = []
                 _claim_verdict = validate_user_claims_against_evidence(
                     response,
                     memory_context,
                     user_input=user_input,
+                    recent_user_turns=_recent_user_turns,
                 )
                 if _claim_verdict.get("unsafe") or _claim_verdict.get("violations"):
                     _san = str(_claim_verdict.get("sanitized") or "").strip()
@@ -2129,7 +2139,12 @@ class GenerationMixin:
                     yield piece
 
             if yielded:
-                final_text = "".join(full_tokens).strip()
+                final_text = self._govern_visible_response(
+                    prompt,
+                    "".join(full_tokens).strip(),
+                    memory_context=memory_context or situation_brief,
+                    is_grounded=bool(memory_context or situation_brief),
+                )
                 if final_text:
                     try:
                         self._store_assistant_turn(final_text)
