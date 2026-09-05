@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import subprocess
 
-from eli.execution import executor_enhanced as ex
+from eli.execution.effectors import media as ex
 
 
 def _install_capture(monkeypatch, *, run_rc=0, run_stdout="Playing"):
@@ -78,7 +78,7 @@ def test_spotify_unreachable_reports_search_only_not_youtube(monkeypatch):
 
 # ── YouTube continuous play: watch URL becomes a Mix/radio so it autoplays ────
 def test_yt_mix_url_adds_radio_playlist():
-    from eli.execution.executor_enhanced import _yt_mix_url
+    from eli.execution.effectors.media import _yt_mix_url
     assert _yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == \
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ"
     # extra params preserved-but-reseeded to the video id
@@ -86,3 +86,31 @@ def test_yt_mix_url_adds_radio_playlist():
     # non-watch URLs and None pass through unchanged
     assert _yt_mix_url(None) is None
     assert "list=RD" not in _yt_mix_url("https://www.youtube.com/results?search_query=x")
+
+
+def test_yt_apply_browser_autoplay_adds_start_params():
+    from eli.execution.effectors.media import _yt_apply_browser_autoplay, _yt_mix_url
+    mix = _yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    url = _yt_apply_browser_autoplay(mix)
+    assert "autoplay=1" in url
+    assert "start_radio=1" in url
+
+
+def test_youtube_dot_com_uses_autoplay_mix_in_browser(monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        ex,
+        "_yt_resolve_watch_url",
+        lambda q: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    )
+    monkeypatch.setattr(ex, "_open_in_browser", lambda url: opened.append(url))
+    monkeypatch.setattr(ex, "_yt_autoplay_enabled", lambda: True)
+
+    res = ex.play_specific("real slim shady", "youtube website")
+
+    assert res["action"] == "PLAY_MEDIA"
+    assert opened, "browser was not opened"
+    url = opened[0]
+    assert "list=RD" in url
+    assert "autoplay=1" in url
+    assert "start_radio=1" in url

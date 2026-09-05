@@ -1142,6 +1142,7 @@ class SystemAgent(_BaseAgent):
         "SWITCH_WORKSPACE",
         # ── Media ─────────────────────────────────────────────────────────────
         "STOP_MEDIA", "PAUSE_MEDIA", "PLAY_MEDIA", "NEXT_MEDIA", "PREVIOUS_MEDIA",
+        "NOW_PLAYING",
         "MEDIA_CONTROL", "SHUFFLE_MEDIA", "REPEAT_MEDIA",
         # ── Input / output ────────────────────────────────────────────────────
         "VOLUME", "SCREENSHOT", "KEYBOARD", "MOUSE_CONTROL",
