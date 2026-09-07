@@ -30,18 +30,14 @@ def _full_control() -> bool:
         return False
 
 
-def _open_in_browser(url: str) -> None:
-    """Open a URL in the default browser, cross-platform (xdg-open on Linux,
-    `open` on macOS, the default handler on Windows) via platform_compat —
-    raw xdg-open silently no-ops off Linux."""
+def _open_in_browser(url: str) -> bool:
+    """Open a URL in the default browser. Returns True on success."""
     try:
         from eli.utils.platform_compat import open_url as _open_url
-        _open_url(url)
+        return bool(_open_url(url))
     except Exception:
-        import subprocess as _sp2
-        if shutil.which("xdg-open"):
-            _sp2.Popen(["xdg-open", url], stdout=_sp2.DEVNULL, stderr=_sp2.DEVNULL,
-                       start_new_session=True)
+        log.debug("suppressed exception", exc_info=True)
+    return False
 
 
 def _allowed_cmds_set():

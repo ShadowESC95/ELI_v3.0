@@ -7,35 +7,17 @@ import re
 import subprocess
 
 from eli.utils.log import get_logger
+from eli.execution.effectors.system_helpers import (
+    open_app_with_timeout,
+    open_browser,
+    open_file_system,
+)
 
 log = get_logger(__name__)
 
 
-
-def _browser_user_dir(*a, **k):
-    from eli.execution.executor_enhanced import _browser_user_dir as _f
-    return _f(*a, **k)
-
-def _execute_impl(*a, **k):
-    from eli.execution.executor_enhanced import _execute_impl as _f
-    return _f(*a, **k)
-
-def _open_app_with_timeout(*a, **k):
-    from eli.execution.executor_enhanced import _open_app_with_timeout as _f
-    return _f(*a, **k)
-
-def open_browser(*a, **k):
-    from eli.execution.executor_enhanced import open_browser as _f
-    return _f(*a, **k)
-
-def open_file_system(*a, **k):
-    from eli.execution.executor_enhanced import open_file_system as _f
-    return _f(*a, **k)
-
-
 def _h_open_audio_settings(a, args):
     try:
-        # Try common Linux audio mixers/settings panels.
         candidates = [
             ["pavucontrol"],
             ["gnome-control-center", "sound"],
@@ -59,7 +41,6 @@ def _h_open_audio_settings(a, args):
 
 
 def _h_open_browser(a, args):
-    import re as _re2
     _site_map = {
         "wikipedia": "https://www.wikipedia.org",
         "google": "https://www.google.com",
@@ -74,19 +55,17 @@ def _h_open_browser(a, args):
     }
     raw_q = (args.get("query") or args.get("url") or args.get("link") or "").lower()
 
-    # YouTube with a search query → use YouTubeController for proper search URL
     _yt_query = (args.get("query") or "").strip()
     if "youtube" in raw_q and _yt_query and "youtube.com" not in raw_q:
         try:
-            from eli.tools.media.youtube import YouTubeController
-            _cfg_obj = type("_Cfg", (), {"browser": "chromium", "browser_user_dir": str(_browser_user_dir())})()
-            _yt = YouTubeController(_cfg_obj)
-            result = _yt.open(_yt_query)
-            if result.ok:
-                msg = f"Opened YouTube search: {_yt_query}"
+            from eli.execution.effectors._base import _open_in_browser
+            from eli.integrations.media.youtube_playback import yt_browser_play_url
+            yt_url = yt_browser_play_url(_yt_query)
+            if _open_in_browser(yt_url):
+                msg = f"Opened YouTube: {_yt_query}"
                 return {"ok": True, "action": a, "content": msg, "response": msg}
         except Exception:
-            log.debug("suppressed exception", exc_info=True)  # fall through to generic browser open
+            log.debug("suppressed exception", exc_info=True)
 
     found_urls = [v for k, v in _site_map.items() if k in raw_q]
     if len(found_urls) > 1:
@@ -96,10 +75,6 @@ def _h_open_browser(a, args):
         q = (args.get("query") or "").strip()
         if q:
             import urllib.parse as _up
-            # Safe search applies here too. The API path is filtered in
-            # eli/plugins/web/plugin.py, but this opens a real search page in
-            # the user's browser, which that filter never sees -- kp=1 is
-            # DuckDuckGo's strict setting.
             try:
                 from eli.plugins.web.plugin import _safe_search_enabled as _sse
                 _kp = "&kp=1" if _sse() else ""
@@ -132,7 +107,6 @@ def _h_open_system_settings(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
-
 def _h_open_power_settings(a, args):
     try:
         candidates = [
@@ -152,7 +126,6 @@ def _h_open_power_settings(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
-
 def _h_open_file_system(a, args):
     try:
         raw_target = str(
@@ -165,7 +138,7 @@ def _h_open_file_system(a, args):
         low_target = raw_target.lower()
 
         if low_target in {"trash", "/trash"}:
-            probe = _open_app_with_timeout(["xdg-open", "trash:///"])
+            probe = open_app_with_timeout(["xdg-open", "trash:///"])
             if probe.get("ok") or probe.get("spawned"):
                 msg = "Opened folder: trash:///"
                 return {"ok": True, "action": a, "content": msg, "response": msg, "probe": probe}
@@ -220,9 +193,6 @@ def _h_open_file_system(a, args):
                 msg = f"Could not open folder: {raw_target}"
                 return {"ok": False, "action": a, "error": "path_not_found", "content": msg, "response": msg}
 
-        # Cross-platform folder open: xdg-open (Linux) / open (macOS) /
-        # os.startfile (Windows) via platform_compat — raw xdg-open was
-        # Linux-only and silently failed elsewhere.
         from eli.utils.platform_compat import open_file as _open_file
         if _open_file(resolved):
             msg = f"Opened folder: {resolved}"
@@ -231,7 +201,7 @@ def _h_open_file_system(a, args):
         return {
             "ok": False,
             "action": a,
-            "error": probe.get("stderr") or probe.get("error") or "xdg_open_failed",
+            "error": "open_file_failed",
             "content": f"Could not open folder: {resolved}",
             "response": f"Could not open folder: {resolved}",
         }
@@ -242,12 +212,12 @@ def _h_open_file_system(a, args):
 
 def _h_open_media_hub(a, args):
     try:
-        # Try Spotify client first; otherwise open YouTube Music; otherwise open local Music folder.
-        opened = False
-        # Optional: also open audio settings (requested by voice phrase "initiate audio interface")
         if (args or {}).get("open_settings"):
             try:
-                _ = _execute_impl(action="OPEN_AUDIO_SETTINGS", args={})
+                from eli.execution.effectors.registry import get as _reg_get
+                fn = _reg_get("OPEN_AUDIO_SETTINGS")
+                if fn:
+                    fn("OPEN_AUDIO_SETTINGS", {})
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
@@ -258,29 +228,18 @@ def _h_open_media_hub(a, args):
         for cmd in candidates:
             try:
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                opened = True
                 msg = f"Opened media: {' '.join(cmd)}"
                 return {"ok": True, "action": a, "content": msg, "response": msg}
             except FileNotFoundError:
                 continue
 
-        # Browser fallbacks
-        try:
-            url = "https://music.youtube.com"
-            open_browser(url)
-            msg = f"Opened media: {url}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+        url = "https://music.youtube.com"
+        result = open_browser(url)
+        if result.get("ok"):
+            return result
 
-        # Local folder fallback
-        try:
-            music_dir = os.path.expanduser("~/Music")
-            open_file_system(music_dir)
-            msg = f"Opened media folder: {music_dir}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            raise e
+        music_dir = os.path.expanduser("~/Music")
+        return open_file_system(music_dir)
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

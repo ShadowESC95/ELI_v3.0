@@ -4,13 +4,38 @@ ELI is **model-, user-, and hardware-agnostic** and runs on **Linux, macOS, Wind
 Android/Termux**, plus **headless / via the web server (FastAPI)**. This document is the honest
 map of how each capability family behaves on each target.
 
-## Tested on — what's actually been run (2026-07-04)
+## Tested on — what's actually been run (2026-08-28)
 
 The matrix below is **code coverage** — how each capability is *implemented* per OS. This bit is
 separate and more honest: what I've genuinely **run**.
 
 - **Run-verified, end to end:** **Linux (x86_64) + NVIDIA.** Install, first-run, the full test
-  suite (10,078+ passing), voice, vision, the server — all of it. This is the tested path.
+  suite (**11,358 collected / 11,300+ passing**), voice (cross-platform mic auto-resolve),
+  vision, the server — all of it. This is the tested path.
+- **AppImage engine run-verified across the mainstream distros (2026-07-18, v2.1.18):** the shipped
+  `.AppImage` was extracted and driven through a **real chat turn** (full router → agent bus →
+  memory → persona → streaming pipeline, bundled embedder loaded) in fresh containers of
+  **Arch, Ubuntu, Debian, Fedora, and openSUSE Tumbleweed** — all pass, all on the AppImage's own
+  bundled Python 3.11 (so Arch's system Python 3.14 is irrelevant), no generator-repr leak. The
+  AppImage is self-contained; it does not use the host's Python or package manager. *Note: this was
+  the **headless engine** path — it never loads the Qt GUI's xcb platform plugin, which is why the
+  GUI-only `libxcb-cursor` gap below went unnoticed until v2.1.20.*
+- **AppImage desktop GUI verified on Arch (2026-07-21, v2.1.21):** ran the graphical app on a clean
+  Arch VM (XFCE). Confirmed the engine loads and the local database initialises with no error. Found
+  and fixed a real gap: the Qt 6.5+ **xcb platform plugin (`libqxcb.so`) links the whole xcb-util
+  family** — `libxcb-cursor`, `libxcb-icccm`, `libxcb-image`, `libxcb-keysyms`, `libxcb-render-util`,
+  `libxcb-util` — none of which a lean Arch/Debian install ships, and which PyInstaller's PySide6 hook
+  does not bundle. Qt's error is **misleading**: it always says *"libxcb-cursor0 is needed"* whichever
+  member is actually missing (on this VM the real culprit was `libxcb-icccm.so.4`). v2.1.20 bundled
+  only `libxcb-cursor` and put it in the wrong directory, so it still failed; **v2.1.21 bundles the
+  full family into `PySide6/Qt/lib`** (the dir the plugin's RUNPATH searches) and CI asserts each
+  member is present there + runs a virtual-X GUI selftest, so it can't regress. The AppImage now
+  launches out of the box on minimal distros with no `pacman`/`apt` needed.
+- **Database on WAL-hostile filesystems fixed (2026-07-20, v2.1.19):** the portable build stores its
+  database under the folder it is extracted to. On filesystems that don't support SQLite's
+  write-ahead-log locking — **NTFS/exFAT/FAT, and network mounts** (common for a `~/Downloads` on a
+  dual-boot data drive) — this failed with *"attempt to write a readonly database"*. ELI now detects
+  a WAL-hostile filesystem and falls back to a rollback journal, so it works wherever it is placed.
 - **Code-verified, not yet run on real hardware:** **AMD (ROCm), Windows, macOS, Android.** The
   installers, per-OS requirements, paths, GPU detection (NVIDIA / AMD / Apple), and the abstraction
   layer below are all present and read line-by-line — but "correct in the code" isn't the same as
@@ -18,6 +43,19 @@ separate and more honest: what I've genuinely **run**.
   result (working or broken) — that's the fastest way to close the gap for everyone.
 
 A few edges worth knowing going in:
+- **musl distros (Alpine) need a glibc shim.** The Linux `.AppImage` is glibc-linked (built on
+  Ubuntu), like essentially every AppImage. On a musl-libc distro such as **Alpine** the bundled
+  binary won't start — you get a misleading `no such file or directory` on the launcher (that's the
+  glibc dynamic linker being absent, not a missing file). Install the `gcompat` glibc-compat layer,
+  or run ELI from source in a `python:3.11` (glibc) environment instead. Every mainstream desktop
+  distro (Arch, Ubuntu/Debian, Fedora, openSUSE, Mint, Pop!_OS, …) is glibc and runs the AppImage
+  directly — see the run-verified list above.
+- **Running from source (not the AppImage) needs the Qt xcb libs** — the self-contained AppImage
+  bundles the full xcb-util family as of v2.1.21, but a **source / portable** install uses your
+  system's Qt libraries. On a minimal desktop the GUI may need the xcb-util family installed:
+  Debian/Ubuntu `libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0
+  libxcb-util1`; Arch `xcb-util-cursor xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil
+  xcb-util`. The AppImage does not — it ships them itself.
 - **AMD voice is CPU-only** — the speech-to-text engine (CTranslate2) has no ROCm support, so on an
   AMD GPU it stays on the CPU (works, just not accelerated). The main model + vision use the AMD GPU
   via hipBLAS.
@@ -55,7 +93,8 @@ input) — not on a headless server or Android · ➖ N/A on that platform
 | Open URL / file / app | ✅ | ✅ | ✅ | ✅ (termux) | ✅ (URL/file) |
 | Desktop notifications | ✅ | ✅ | ✅ (plyer) | ✅ (termux) | ➖ |
 | Clipboard get/set | ✅ | ✅ | ✅ | ✅ (termux) | ➖ |
-| Volume / mute | ✅ (pactl) | ✅ (osascript) | ✅ (pycaw) | ➖ | ➖ |
+| Volume / mute | ✅ (wpctl/pactl/amixer) | ✅ (osascript) | ✅ (pycaw) | ➖ | ➖ |
+| YouTube background (mpv+yt-dlp) | ✅ | ⚠️ (needs mpv) | ⚠️ (needs mpv) | ➖ | ➖ |
 | Play sound | ✅ | ✅ | ✅ | ✅ (termux) | ➖ |
 | Screenshot | ✅ | ✅ | ✅ | 🖥️ | ➖ |
 | Type text / key press | ✅ | ✅ (pyautogui) | ✅ (pyautogui) | 🖥️ | ➖ |
@@ -69,9 +108,16 @@ input) — not on a headless server or Android · ➖ N/A on that platform
 | LoRA fine-tuning (`training/`) | ✅ | ⚠️ (CPU/MPS) | ✅ | ➖ | ✅ |
 
 ## Notes on the ⚠️ rows (honest limitations)
-- **Media control** uses `playerctl` (MPRIS) on Linux; on macOS/Windows/Android it falls back to
-  best-effort and may report "no player" rather than controlling a specific app. (Media *playback*
-  via `play_sound` is fully cross-platform.)
+- **Startup capability report** — at boot, ELI logs what works on *this* machine (GPU,
+  YouTube mpv readiness, browsers found, volume backend, window-control tools). Visible
+  in logs and via `SELF_TEST` / awareness briefing. Configure media with `ELI_BROWSER`,
+  `ELI_YT_PLAYER_CLIENTS`, etc. (see `.env.full.example`).
+- **Media control** uses `playerctl` (MPRIS) on Linux; macOS uses AppleScript + URI
+  schemes for Spotify and virtual media keys for transport; Windows uses URI schemes +
+  virtual media keys; Android/Termux uses `termux-open-url` / intents for Spotify and
+  browser YouTube. Deep playlist control is best on Linux; other platforms open the
+  correct Spotify context and nudge play via native hooks. (Media *playback* via
+  `play_sound` is fully cross-platform.)
 - **Window management** (`wmctrl`/`xdotool`) is X11/Linux-centric; on macOS/Windows these actions
   degrade gracefully (return "not available") — they don't crash.
 - **Gaze/AR** needs a camera + display and `opencv`; desktop-only, Linux-tested.
@@ -93,7 +139,7 @@ OS-level binaries; the installers handle these best-effort:
 | Feature | System dep | Linux (`install.sh`) | macOS (`install.sh`) | Windows (`install.ps1`) |
 |---|---|---|---|---|
 | Screen OCR | `tesseract` | apt/dnf/pacman | brew | winget (UB-Mannheim) |
-| Voice input (mic) | PortAudio | apt/dnf/pacman | brew | bundled in the PyAudio wheel |
+| Voice input (mic) | PortAudio + ranked auto-resolve (`mic_resolver.py`) | apt/dnf/pacman | brew | bundled in PyAudio wheel; ranks USB/headset/Bluetooth before built-in |
 | Media playback / Whisper | `ffmpeg`, `mpv` | apt/dnf/pacman | brew | winget (FFmpeg) |
 | Desktop control | xdotool, wmctrl, scrot, xclip/wl-clipboard, libnotify | apt/dnf/pacman | native APIs | native APIs |
 | GPU offload | CUDA / **AMD ROCm** / Metal | CUDA `--install-cuda`; **AMD auto-detected → ROCm/hipBLAS build** | Metal (built in) | CUDA `/cuda` (winget) |
@@ -103,28 +149,6 @@ OS-level binaries; the installers handle these best-effort:
 The installer installs these **when a package manager + sudo/admin is available**; otherwise it
 **prints the exact command** so you can run it. None are required for ELI to start — missing ones
 only disable that one optional feature (gracefully).
-
-## Portable-build robustness (lean distros / awkward filesystems)
-
-- **GUI is self-contained on lean distros.** Qt 6.5+'s xcb platform plugin links the whole
-  **xcb-util family** (`libxcb-cursor/icccm/image/keysyms/render-util/util`) at runtime; a minimal
-  desktop (bare Arch, Debian netinst) missing any member fails to open the window — Qt reports it
-  misleadingly as *"libxcb-cursor0 is needed"* whichever one is actually absent (on Arch the real
-  culprit was `libxcb-icccm`). The **AppImage bundles the full family** into `PySide6/Qt/lib` — the
-  dir the plugin actually searches via its RUNPATH (`ELI.spec`) — and CI asserts each member landed
-  there, plus gates a real-X GUI launch under `xvfb` (`QT_QPA_PLATFORM=xcb`) so it can't regress. A
-  **source / portable** install uses your system Qt instead, so on a minimal desktop the GUI may
-  need those packages (Debian: `libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
-  libxcb-render-util0 libxcb-util1`; Arch: `xcb-util-cursor xcb-util-wm xcb-util-image
-  xcb-util-keysyms xcb-util-renderutil`).
-- **Database survives WAL-hostile filesystems.** The portable build keeps its SQLite databases under
-  the folder it is extracted to. On filesystems that lack SQLite's write-ahead-log locking —
-  **NTFS/exFAT/FAT and network mounts** (e.g. a `~/Downloads` on a dual-boot data drive) — WAL fails
-  with *"attempt to write a readonly database"*. `eli.core.sqlite_util.apply_pragmas` detects this
-  and falls back to a rollback (DELETE) journal, so ELI works wherever it is placed.
-- **Rolling distros (Arch) with a newer Python than upstream wheels.** `install.sh` detects when no
-  prebuilt `llama-cpp-python` wheel exists for the host Python and installs a build toolchain +
-  falls back from the frozen lock to version ranges, instead of aborting.
 
 ## Verifying on your platform
 - `python -c "from eli.utils.platform_compat import normalize_platform; print(normalize_platform())"`

@@ -109,11 +109,8 @@ def add_memory(text, tags=""):
 
 
 def _browser_user_dir() -> Path:
-    try:
-        base = Path(get_paths().config_dir)
-    except Exception:
-        base = Path.home() / ".config" / "eli"
-    return (base / "browser").expanduser().resolve()
+    from eli.execution.effectors.system_helpers import browser_user_dir
+    return browser_user_dir()
 
 # === CONVERSATION LOGGING (append-only) ===
 
@@ -1881,53 +1878,8 @@ from eli.execution.effectors._base import _run_ok  # noqa: F401
 
 
 def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) -> Dict[str, Any]:
-    direction = (direction or '').strip().lower()
-    try:
-        if direction == 'set' and level is not None:
-            if shutil.which('wpctl') and _run_ok(['wpctl', 'set-volume', '@DEFAULT_AUDIO_SINK@', f'{int(level)}%']):
-                msg = f'Volume set to {int(level)}%'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('pactl') and _run_ok(['pactl', 'set-sink-volume', '@DEFAULT_SINK@', f'{int(level)}%']):
-                msg = f'Volume set to {int(level)}%'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-        if direction in ('up', 'raise'):
-            if shutil.which('wpctl') and _run_ok(['wpctl', 'set-volume', '@DEFAULT_AUDIO_SINK@', f'{int(delta)}%+']):
-                msg = 'Volume up'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('pactl') and _run_ok(['pactl', 'set-sink-volume', '@DEFAULT_SINK@', f'+{int(delta)}%']):
-                msg = 'Volume up'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('amixer') and _run_ok(['amixer', '-D', 'pulse', 'sset', 'Master', f'{int(delta)}%+']):
-                msg = 'Volume up'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-        if direction in ('down', 'lower'):
-            if shutil.which('wpctl') and _run_ok(['wpctl', 'set-volume', '@DEFAULT_AUDIO_SINK@', f'{int(delta)}%-']):
-                msg = 'Volume down'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('pactl') and _run_ok(['pactl', 'set-sink-volume', '@DEFAULT_SINK@', f'-{int(delta)}%']):
-                msg = 'Volume down'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('amixer') and _run_ok(['amixer', '-D', 'pulse', 'sset', 'Master', f'{int(delta)}%-']):
-                msg = 'Volume down'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-        if direction == 'mute':
-            if shutil.which('wpctl') and _run_ok(['wpctl', 'set-mute', '@DEFAULT_AUDIO_SINK@', '1']):
-                msg = 'Muted'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('pactl') and _run_ok(['pactl', 'set-sink-mute', '@DEFAULT_SINK@', '1']):
-                msg = 'Muted'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-        if direction == 'unmute':
-            if shutil.which('wpctl') and _run_ok(['wpctl', 'set-mute', '@DEFAULT_AUDIO_SINK@', '0']):
-                msg = 'Unmuted'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-            if shutil.which('pactl') and _run_ok(['pactl', 'set-sink-mute', '@DEFAULT_SINK@', '0']):
-                msg = 'Unmuted'
-                return {'ok': True, 'action': 'VOLUME', 'content': msg, 'response': msg}
-    except Exception as e:
-        return {'ok': False, 'action': 'VOLUME', 'error': str(e), 'content': str(e), 'response': str(e)}
-    msg = 'Volume control failed'
-    return {'ok': False, 'action': 'VOLUME', 'content': msg, 'response': msg}
+    from eli.execution.effectors.system_helpers import volume_fallback
+    return volume_fallback(direction, delta=delta, level=level)
 
 
 # ----------------------------

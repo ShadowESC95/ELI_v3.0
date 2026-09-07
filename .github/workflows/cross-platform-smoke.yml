@@ -1,21 +1,40 @@
 name: cross-platform-smoke
 
-#   Manual only — avoids metered Actions on every push (private repo). Releases are
-#   built locally via scripts/build_grandma_release.sh (no CI required).
+# Asserts that ELI imports, the FastAPI server starts headless, and the OS-agnostic code
+# paths load + pass their tests on Linux, macOS, AND Windows. Deliberately LIGHTWEIGHT —
+# it installs the core + server (CPU), not the heavy GPU/image stack, so it stays fast.
+#
+# This ran as workflow_dispatch ONLY, on the reasoning that it "avoids metered Actions on
+# every push". That reasoning does not apply to this repository: ShadowESC95/ELI_v2.0 is
+# PUBLIC, and GitHub Actions on standard runners is free and unmetered for public repos.
+# The cost was therefore zero and the gate was off anyway — nothing verified a merge on
+# Windows or macOS unless somebody remembered to click the button.
+#
+# Scope note, so the claim stays honest: this is a curated cross-platform gate, not the
+# full 8.6k-test suite. Most of that suite needs a GGUF model, a display, or generated
+# artifacts, none of which exist on a runner. What is listed below is what can be
+# meaningfully asserted on all three OSes.
+#
+# Every pytest step below MUST be `python -m pytest`, never the bare `pytest` console
+# script. `-m` puts the working directory on sys.path; the console script does not. The
+# top-level `api` package is not installed by `pip install -e .`, so under bare `pytest`
+# `import api.server` fails, tests/test_api_server.py hits its own module-level skip
+# guard, and the step reports "collected 0 items / 1 skipped" — pytest exit code 5. That
+# is what this workflow's first ever run did on all six jobs. The identical mistake once
+# aborted a release from scripts/build_packages.sh; it is easy to reintroduce and it
+# fails in a way that reads like an environment problem rather than a command error.
 
-# Manual only, and deliberately NOT matched to v2.
-#
-# v2 (ShadowESC95/ELI_v2.0) is a PUBLIC repo, where Actions on standard runners is
-# free and unmetered, so its copy of this workflow was moved to `pull_request` +
-# `push: main` — the gate there costs nothing and now actually blocks a bad merge.
-#
-# This repo is PRIVATE, so every minute is metered, and Actions is currently
-# billing-blocked: each release run has died in 3-4 seconds since v3.0.48. Adding
-# push/PR triggers here would queue runs that cannot start, and would silently
-# begin consuming paid minutes the moment billing is restored. Leave it manual
-# until billing is sorted, then mirror the v2 trigger block.
 on:
   workflow_dispatch:
+  pull_request:
+    paths-ignore: ['**/*.md', '**/*.pdf', 'blueprints/**', 'docs/**']
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', '**/*.pdf', 'blueprints/**', 'docs/**']
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
@@ -23,9 +42,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python: ["3.12"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
+    # Windows runners default to PowerShell, which cannot parse the `python - <<'PY'`
+    # heredoc the dashboard step is built on — it failed with a .ps1 ParserError on both
+    # Windows jobs the first time this workflow ever ran. Pinning bash everywhere also
+    # means a step that passes on Linux is running the identical command on Windows,
+    # which is the entire point of a cross-platform gate.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
 
@@ -52,14 +79,59 @@ jobs:
         run: |
           python -c "from fastapi.testclient import TestClient; from api.server import app; c=TestClient(app); assert c.get('/health').status_code==200; assert c.get('/').status_code==200; print('server endpoints reachable (health + web UI)')"
 
+      - name: Dashboard read-endpoint smoke — every widget's data source answers (no model)
+        # The web dashboard is only as alive as the read endpoints it fetches. A blank
+        # cognition mesh / broken home-mesh shipped this way once (backend fine, endpoint
+        # not exercised in CI). Hit every OV_SRC source as the operator (tokenless
+        # loopback) and assert each returns 200 — this is the class of bug the trivial
+        # /health check above can't see.
+        env:
+          ELI_API_ALLOW_TOKENLESS: "1"
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from api.server import app
+          c = TestClient(app)
+          eps = [
+              "/v1/cognition/orchestration", "/v1/home/mesh/status", "/v1/home/mesh/ping",
+              "/v1/system", "/v1/tasks", "/v1/autonomy/goals", "/v1/net", "/v1/net/egress",
+              "/v1/capabilities", "/v1/devices", "/v1/home/scenes", "/v1/home/sun",
+              "/v1/research/corpora", "/v1/audit", "/v1/connect", "/v1/media",
+          ]
+          bad = []
+          for e in eps:
+              try:
+                  r = c.get(e)
+                  if r.status_code != 200:
+                      bad.append(f"{e} -> HTTP {r.status_code}")
+              except Exception as ex:
+                  bad.append(f"{e} -> raised {type(ex).__name__}: {ex}")
+          if bad:
+              raise SystemExit("dashboard endpoints FAILED:\n  " + "\n  ".join(bad))
+          # the mesh specifically must carry real agent data, not an empty shell
+          o = c.get("/v1/cognition/orchestration").json()
+          assert o.get("ok") and o.get("agents"), f"cognition mesh returned no agents: {o}"
+          print(f"all {len(eps)} dashboard read-endpoints OK; mesh has {len(o['agents'])} agents")
+          PY
+
+      - name: Real server-endpoint suite (mesh, home-mesh, config-merge, RBAC — the full API smoke)
+        # test_api_server.py drives the real FastAPI app end-to-end (78 cases). It needs
+        # --noconftest because the repo conftest mocks pydantic/PySide6 for the fast unit
+        # suite, which makes the server un-importable. This is where the home-mesh config
+        # merge fix and the orchestration/mesh contracts are actually enforced.
+        run: python -m pytest -q -p no:cacheprovider --noconftest tests/test_api_server.py
+
       - name: First-run DB autobuild (cross-platform paths)
         run: python -m eli.core.init_data
 
       - name: Verify blank DB templates match live schema
         run: python tools/seed_template_dbs.py --check
 
-      - name: Bootstrap claims artifacts (manifest + blueprint PDFs)
+      - name: Bootstrap claims artifacts (manifest + blueprints — fresh-clone path)
         run: python tools/bootstrap_claims_artifacts.py
+
+      - name: Cross-platform audit (Linux-only path / subprocess patterns)
+        run: python tools/audit_cross_platform.py
 
       - name: Cross-platform unit tests (explicit self-contained files — no GGUF / display / generated artifacts)
         run: >
@@ -73,15 +145,23 @@ jobs:
           tests/test_pyproject_packaging.py
           tests/test_device_names.py
           tests/test_install_script.py
+          tests/test_document_formats.py
+          tests/test_cross_platform_apps.py
+          tests/test_gpu_detection_cross_platform.py
+          tests/test_media_cross_platform_smoke.py
+          tests/test_media_capabilities.py
+          tests/test_open_url_linux.py
+          tests/test_volume_linux.py
 
       - name: Claims structural smoke (manifest ↔ executor)
         run: >
           python -m pytest -q -p no:cacheprovider
-          tests/claims/test_structural_claims.py
-          tests/claims/test_capability_manifest.py::test_manifest_total_matches_capability_count
           tests/claims/test_no_silent_swallow.py
+          tests/claims/test_structural_claims.py
+          tests/claims/test_readme_counts.py
+          tests/claims/test_capability_manifest.py::test_manifest_total_matches_capability_count
 
-      - name: Eval router cases + socket guard (tools/eval mirror)
+      - name: Eval router cases (tools/eval mirror)
         run: >
           python -m pytest -q -p no:cacheprovider
           tests/test_eval_cases.py

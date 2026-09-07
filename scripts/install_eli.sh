@@ -7,7 +7,7 @@ cd "$ROOT"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
 
-echo "=== ELI v3 installer ==="
+echo "=== ELI v2.0 installer ==="
 echo "Project: $ROOT"
 echo "Python : $($PYTHON_BIN --version 2>&1)"
 
@@ -38,12 +38,6 @@ if [ -f requirements-learning.txt ]; then
   python -m pip install -r requirements-learning.txt
 fi
 
-if [ -f requirements-test.txt ]; then
-  echo
-  echo "=== Installing test-suite requirements ==="
-  python -m pip install -r requirements-test.txt
-fi
-
 echo
 echo "=== Preparing launcher ==="
 chmod +x "$ROOT/bin/elix" 2>/dev/null || true
@@ -51,6 +45,13 @@ chmod +x "$ROOT/bin/elix.real" 2>/dev/null || true
 
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$ROOT/bin/elix" "$HOME/.local/bin/elix"
+
+echo
+echo "=== Optional media playback (YouTube background audio, Spotify transport) ==="
+echo "Linux:   sudo apt install mpv yt-dlp playerctl  # or your distro equivalent"
+echo "macOS:   brew install mpv yt-dlp"
+echo "Windows: install mpv + yt-dlp and add to PATH"
+echo "Set ELI_BROWSER=chromium (or firefox, msedge, etc.) if the default browser fails."
 
 echo
 echo "=== Installer complete ==="
