@@ -947,9 +947,6 @@ class ConversationMixin:
                             if _was_cancelled:
                                 self.chat_response_signal.emit('__STREAM_CANCELLED__')
                             else:
-                                if _was_cancelled:
-                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
-                            else:
                                 self.chat_response_signal.emit('__STREAM_END__')
                             _response_streamed = True
                             response = ''.join(full_tokens)

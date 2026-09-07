@@ -87,7 +87,7 @@ def _load_persona_text() -> str:
         if _ca:
             return _ca
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     root = Path(__file__).resolve().parents[2]
 
@@ -114,7 +114,7 @@ def _load_persona_text() -> str:
                     base = cleaned
                     break
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     overlay = ""
     for cand in overlay_candidates:
@@ -126,7 +126,7 @@ def _load_persona_text() -> str:
                     overlay = cleaned
                     break
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     if base and overlay:
         return base + "\n\n" + overlay
@@ -140,14 +140,14 @@ def _load_persona_text() -> str:
         if forced:
             return forced
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         configured = (config.get_persona() or "").strip()
         if configured:
             return configured
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     return (
         "You are ELI — Enhanced Learning Interface. You run locally on this "

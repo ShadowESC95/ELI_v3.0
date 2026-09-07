@@ -369,46 +369,13 @@ def _mpv_socket_path() -> str:
 
 
 def _yt_player_clients() -> list:
-    """yt-dlp YouTube clients to try, in order.
-
-    A googlevideo "HTTP error 403 Forbidden" during playback does not mean the
-    video is unavailable — it means yt-dlp resolved a stream URL that is bound
-    to the client which requested it, and ffmpeg (inside mpv) cannot reproduce
-    that request. The live failure carried `c=ANDROID_VR`, whose URLs are tied
-    to the requesting client and reliably 403 when handed to another fetcher.
-
-    The empty string means "whatever yt-dlp picks by default" and it goes
-    FIRST, deliberately. Measured against live YouTube on yt-dlp 2026.03.17,
-    the default client resolved and fetched (HTTP 206) while web_safari, tv,
-    ios, mweb and web_embedded did not resolve at all — pinning a "preferred"
-    client would have broken working playback for everyone to chase an
-    intermittent failure. So the default path is never altered; the ladder is
-    only ever walked after a 403 has actually happened, and it lists the
-    clients that were observed to resolve.
-
-    Which clients work shifts as YouTube changes, so the order is overridable
-    with ELI_YT_PLAYER_CLIENTS (comma-separated) without touching code. A
-    stale yt-dlp is the other common cause and no client can compensate for
-    it, which is why the failure message says so.
-    """
-    raw = (os.environ.get("ELI_YT_PLAYER_CLIENTS") or "").strip()
-    if raw:
-        return [("" if c.strip().lower() == "default" else c.strip())
-                for c in raw.split(",") if c.strip()]
-    return ["android", "tv", "ios", "mweb", ""]
+    from eli.integrations.media.youtube_playback import yt_player_clients
+    return yt_player_clients()
 
 
 def _yt_is_client_bound_failure(stderr_tail: str) -> bool:
-    """True when the failure is the kind a different client can fix.
-
-    A 403 is worth retrying with another client. "Video unavailable", a
-    geo-block or an empty search result are not — retrying those just burns
-    seconds before the browser fallback the user was always going to get.
-    """
-    low = str(stderr_tail or "").lower()
-    if "empty playlist" in low or "unavailable" in low or "private video" in low:
-        return False
-    return "403" in low or "forbidden" in low
+    from eli.integrations.media.youtube_playback import yt_is_client_bound_failure
+    return yt_is_client_bound_failure(stderr_tail)
 
 
 def _mpv_alive() -> bool:
@@ -451,7 +418,7 @@ def _prune_mpv_logs(keep: int = 5) -> None:
             try:
                 os.unlink(stale)
             except OSError:
-                pass
+                log.debug("suppressed exception", exc_info=True)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 
@@ -1075,15 +1042,11 @@ def _h_media_control(a, args):
 
 
 def _h_skip_youtube_ad(a, args):
-    try:
-        from eli.tools.media.youtube import YouTubeController
-        _cfg_obj = type("_Cfg", (), {"browser": (args or {}).get("browser", "chromium"), "browser_user_dir": str(_browser_user_dir())})()
-        _yt = YouTubeController(_cfg_obj)
-        result = _yt.skip_ad()
-        msg = "YouTube ad skipped." if result.ok else f"Ad skip failed: {result.data.get('error', 'unknown')}"
-        return {"ok": result.ok, "action": a, "content": msg, "response": msg}
-    except Exception as e:
-        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+    msg = (
+        "YouTube ad skip is not available in this build — use the browser "
+        "skip button, or say 'play on youtube.com' to open YouTube in your browser."
+    )
+    return {"ok": False, "action": a, "content": msg, "response": msg}
 
 
 def _h_volume(a, args):

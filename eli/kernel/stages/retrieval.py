@@ -537,7 +537,7 @@ class RetrievalMixin:
                     if row:
                         hits.append(row)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         if not hits:
             try:
@@ -582,7 +582,7 @@ class RetrievalMixin:
                             hits.append(
                                 f"[{target_date}] {role}: {content[:220]}")
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         if not hits and target_date:
             try:

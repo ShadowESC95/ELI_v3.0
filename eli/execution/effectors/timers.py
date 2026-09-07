@@ -13,7 +13,7 @@ def notify(*a, **k):
     return _f(*a, **k)
 
 def play_sound(*a, **k):
-    from eli.execution.executor_enhanced import play_sound as _f
+    from eli.utils.platform_compat import play_alarm_sound as _f
     return _f(*a, **k)
 
 
@@ -33,7 +33,7 @@ def _h_set_alarm(a, args):
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
                 try:
-                    play_sound("/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga")
+                    play_sound()
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
             t = threading.Thread(target=_timer_fire, daemon=True)
@@ -84,7 +84,7 @@ def _h_set_alarm(a, args):
                     except Exception:
                         log.debug("suppressed exception", exc_info=True)
                     try:
-                        play_sound("/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga")
+                        play_sound()
                     except Exception:
                         log.debug("suppressed exception", exc_info=True)
                 t = threading.Thread(target=_alarm_fire, daemon=True)

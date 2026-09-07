@@ -22,7 +22,7 @@ import pytest
 from eli.core.hardware_profile import (HardwareProfile, _layers_for_size, recommend,
                                        smart_fit_config, vram_reserve_mb)
 
-MODEL = pathlib.Path("/home/jay/.local/share/ELI_v2/models/Qwen_Qwen3-8B-Q4_K_M.gguf")
+MODEL = pathlib.Path("/tmp/test_models/Qwen_Qwen3-8B-Q4_K_M.gguf")
 
 
 def _hw(free_mb: int, total_mb: int = 7752) -> HardwareProfile:

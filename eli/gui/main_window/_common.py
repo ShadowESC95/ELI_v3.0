@@ -175,7 +175,7 @@ def _eli_app_version() -> str:
         if v:
             return v
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         from importlib.metadata import version, PackageNotFoundError
         for _pkg in ("eli-v3", "eli_v3", "eli"):
@@ -184,7 +184,7 @@ def _eli_app_version() -> str:
             except PackageNotFoundError:
                 continue
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return "3.0"
 
 
@@ -220,7 +220,7 @@ if CENTRAL_IMPORTS_AVAILABLE and get_paths:
                     if p.is_file():
                         return str(p)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return ""
     DEFAULT_MODEL_PATH = str(_paths.model) if _paths.model and _paths.model.exists() else _eli_pick_any_bundled_model()
     BUNDLED_MODEL_DIR = PROJECT_ROOT / "models"
@@ -237,7 +237,7 @@ else:
                     if p.is_file():
                         return str(p)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return ""
     DEFAULT_MODEL_PATH = _eli_pick_any_bundled_model()
     BUNDLED_MODEL_DIR = PROJECT_ROOT / "models"
@@ -306,7 +306,7 @@ def classify_gguf_source(path: str) -> str:
             # Models dropped directly into project `models/` are user-managed.
             return "custom"
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return "custom"
 
 
@@ -370,7 +370,7 @@ def recommend_model_setup(models, sysinfo, ollama_models=None):
                     "reason": f"Fallback selection: {Path(chosen_path).name}",
                 }
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     if ollama_models:
         return {
@@ -443,7 +443,7 @@ def detect_system_capabilities() -> Dict[str, Any]:
         info['total_ram_gb'] = vm.total / (1024 ** 3)
         info['available_ram_gb'] = vm.available / (1024 ** 3)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         import shutil
         info['ollama_cli'] = shutil.which('ollama') is not None
@@ -467,7 +467,7 @@ def detect_system_capabilities() -> Dict[str, Any]:
             info['has_gpu'] = True
             info['gpu_name'] = "ROCm GPU"
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return info
 
 

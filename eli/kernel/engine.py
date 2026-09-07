@@ -156,7 +156,7 @@ def _eli_direct_grounded_answer(user_text: str):
         if any(t in _q_guard for t in _persona_terms) and not any(t in _q_guard for t in _explicit_file_scan_terms):
             return None
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     """
     Deterministic answers for questions that must not be delegated to the LLM:
@@ -167,7 +167,7 @@ def _eli_direct_grounded_answer(user_text: str):
         if persona_answer is not None:
             return persona_answer
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     try:
         from eli.cognition.grounded_status import direct_grounded_answer
@@ -682,7 +682,7 @@ def _mw_rs_is_runtime_status_question(text) -> bool:
         if isinstance(routed, dict):
             return str(routed.get("action") or "").strip().upper() == "RUNTIME_STATUS"
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return bool(
         _re.search(r"\b(what are you actually running on|runtime status|context size|gpu layers|gpu|ctx)\b", low)
         and _re.search(r"\b(running|runtime|model|context|ctx|gpu|layers|provider|everything)\b", low)
@@ -766,7 +766,7 @@ def _mw_rs_generate(prompt, system, mode) -> str:
                 if txt:
                     return txt
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         raise RuntimeError("No usable GGUF synthesis surface produced text")
     except Exception as e:
         raise RuntimeError(f"runtime-status non-Quick synthesis failed: {e}") from e
@@ -1657,7 +1657,7 @@ def _eli_recent_mem_v3_mode(args, kwargs):
         if args:
             return str(args[0] or "quick").strip().lower()
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return "quick"
 
 
@@ -1743,7 +1743,7 @@ def _eli_mc_counts_v4():
                 counts["user_patterns"] = _eli_mc_table_count_v4(conn, "user_patterns")
                 counts["recall_log_rows"] = _eli_mc_table_count_v4(conn, "recall_log")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return str(db_path), counts
 
 
@@ -1794,7 +1794,7 @@ def _eli_mc_mode_v4(args, kwargs):
             if isinstance(args[0], str):
                 mode = args[0]
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return str(mode or "quick").strip().lower()
 
 
@@ -1879,7 +1879,7 @@ def _eli_phase13c_bus_action_result(bus_result, action):
                 str(ar.get("action") or action_u).upper().strip() == action_u:
             candidates.append(dict(ar))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         for r in list(getattr(bus_result, "agent_results", []) or []):
             if str(getattr(r, "agent", "") or "") not in {"system", "plugin"}:
@@ -1890,7 +1890,7 @@ def _eli_phase13c_bus_action_result(bus_result, action):
             if str(data.get("action") or action_u).upper().strip() == action_u:
                 candidates.append(dict(data))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     if not candidates:
         return None
@@ -2137,7 +2137,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _rot.get("archived") or _rot.get("deleted"):
                 log.debug(f"[COGNITIVE] Log rotation: archived={len(_rot['archived'])} deleted={len(_rot['deleted'])}")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # ── Register shutdown hooks for non-GUI / CLI sessions ─────────────
         if not _eli_test_mode():
@@ -2183,7 +2183,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if uid and uid != "default-user":
                 return uid
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             user_id_file = get_paths().config_dir / "user_id"
             user_id_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2232,7 +2232,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                     floor=max(512, requested),
                                     ceiling=max(2048, int(n_ctx)))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         try:
             gpu_layers = int(
@@ -2308,7 +2308,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _c > 0:
                 return _c
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             import json as _j
             from eli.core.paths import project_root as _r
@@ -2319,7 +2319,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if _c > 0:
                     return _c
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         # Conservative last-resort only (no runtime ctx published yet) — never a
         # tuned ceiling; the real ctx comes from the live runtime snapshot above.
         return 4096
@@ -2341,7 +2341,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if _c > 0:
                     return _c
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return int(self._effective_n_ctx())
 
     def _compact_persona(self) -> str:
@@ -2543,7 +2543,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if "max_tokens_final" not in profile:
                     profile["max_tokens_final"] = int(settings.get("max_tokens") or max(1536, int(profile.get("max_tokens", 1536))))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         return profile
 
     def _next_trace(self, user_input: str,
@@ -2630,7 +2630,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     more = f", +{len(names) - 12} more" if len(names) > 12 else ""
                     return f"I have {len(names)} capabilities: {preview}{more}."
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return ""
 
 

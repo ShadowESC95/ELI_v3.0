@@ -160,9 +160,9 @@ class HardwareTuningLogRelay(logging.Handler):
             try:
                 logging.getLogger().removeHandler(self)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
 
 class HardwareTuningDock(QDockWidget):
@@ -527,7 +527,7 @@ class StartupModelSelectionDialog(QDialog):
                                 "size_gb": _sz / 1e9,
                             }]
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
                 # Honour the user's "Direct context window" choice (ELI_FORCE_CTX,
                 # just set by _apply_env) so the regenerated profile reflects what
                 # they asked for — not the DEFAULT_N_CTX target.
@@ -826,7 +826,7 @@ class FirstBootWizard(QDialog):
             if _icon is not None:
                 self.setWindowIcon(_icon)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         self._selected_path: str = ""
         self._selected_provider: str = "bundled_gguf"
@@ -883,7 +883,7 @@ class FirstBootWizard(QDialog):
                 _logo.setAlignment(Qt.AlignmentFlag.AlignHCenter)
                 v.addWidget(_logo)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         title = QLabel("Welcome to ELI v3")
         title.setStyleSheet("font-size:18px;font-weight:bold;color:#88c0d0;")
         v.addWidget(title)
@@ -1110,7 +1110,7 @@ class FirstBootWizard(QDialog):
                         "size_gb": sz / 1e9,
                     }]
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         return discover_models()
 
     def _go_next(self):
@@ -1327,7 +1327,7 @@ class FirstBootWizard(QDialog):
                     if _layers == 0:
                         self._dl_status.setStyleSheet("color:#ebcb8b;font-size:11px;")
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         else:
             self._dl_progress.setVisible(False)
             err = res.get("error", "unknown error")

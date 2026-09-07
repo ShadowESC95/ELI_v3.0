@@ -68,7 +68,7 @@ def fire_world_event(
     try:
         _event_queue.put_nowait((event_type, source, summary, payload or {}))
     except queue.Full:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
 
 # ── Convenience helpers used by the engine ───────────────────────────────────

@@ -75,7 +75,7 @@ def _dir(user_id: str | None = None) -> Path:
             d.mkdir(parents=True, exist_ok=True)
             return d
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     try:
         from eli.core.paths import models_dir
         d = models_dir() / "voice_profile"
@@ -243,7 +243,7 @@ def labelled_counts(user_id: str | None = None) -> Dict[str, int]:
             if d.is_dir():
                 out[d.name] = len(list(d.glob("*.wav")))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return out
 
 
@@ -280,7 +280,7 @@ def train_emotion_classifier(user_id: str | None = None) -> Dict[str, Any]:
                     vecs.append(_feature_vector(pr))
                     labels.append(d.name)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
     uniq = sorted(set(labels))
     if len(vecs) < 4 or len(uniq) < 2:
         return {"ok": False, "error": f"need ≥2 emotions with samples (have {len(vecs)} clips, {len(uniq)} labels)"}
@@ -343,7 +343,7 @@ def classify_tone(audio_int16: np.ndarray, sr: int = SR, *, user_id: str | None 
     try:
         arousal = 0.5 * ((pr["energy_mean"] - e0) / (es + 1e-6)) + 0.5 * ((pr["f0_std"] - f0v0) / (f0v0 + 1e-6))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     arousal = float(max(-1.0, min(1.0, arousal)))
     qs, qconf = question_or_statement(pr)
     emotion, econf = _classify_emotion(pr, uid)   # trained classifier, or ('neutral',0)
@@ -372,7 +372,7 @@ def classify_tone(audio_int16: np.ndarray, sr: int = SR, *, user_id: str | None 
                 "confidence": sp.get("confidence", 0.0),
             }
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return out
 
 
@@ -420,7 +420,7 @@ def build_profile(user_id: str | None = None) -> Dict[str, Any]:
             if pr.get("ok"):
                 feats.append(pr)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     if not feats:
         return {"ok": False, "error": "no usable voice samples — run 'train my voice' first"}
 

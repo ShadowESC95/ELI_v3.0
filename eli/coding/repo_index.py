@@ -156,7 +156,7 @@ class RepoIndex:
                     if not force and row and float(row["mtime"]) >= py.stat().st_mtime:
                         continue
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
                 self._index_file(py)
                 stats["updated"] += 1
             with self._connect() as con:

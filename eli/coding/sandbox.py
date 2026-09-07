@@ -109,7 +109,7 @@ def capabilities() -> Dict[str, object]:
                 caps["filesystem_isolation"] = bool(pc.get("filesystem_isolation"))
                 caps["notes"] = list(pc.get("notes") or [])
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         elif not caps["firejail"] and not caps["nsjail"]:
             caps["notes"] = [
                 "Linux: subprocess + timeout only unless ELI_SANDBOX_ISOLATE=1 and "
@@ -148,7 +148,7 @@ def _cpu_limit_preexec(cpu_seconds: int):
             try:
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 5))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         return _limits
     except Exception:
         return None
@@ -173,7 +173,7 @@ def _maybe_harden(argv: List[str]) -> List[str]:
         if nj:
             return [nj, "-Mo", "--disable_proc", "--really_quiet", "--", *argv]
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return argv
 
 
@@ -207,7 +207,7 @@ def run_code(
     try:
         timeout = float(os.environ.get("ELI_CODING_RUN_TIMEOUT", "") or timeout)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     preexec = _cpu_limit_preexec(cpu_seconds)
     env = _scrubbed_env()
 

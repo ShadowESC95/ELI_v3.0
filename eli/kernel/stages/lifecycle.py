@@ -143,7 +143,7 @@ class LifecycleMixin:
             from eli.runtime.reflection import reflect_on_memories
             reflect_on_memories(days=1)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # 5. (removed) Self-improvement analysis on exit.
         #    signal_shutdown() has already fired above, so the broker short-circuits
@@ -216,7 +216,7 @@ class LifecycleMixin:
                     if _devnull is not None:
                         _os_sd.close(_devnull)
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
             log.debug("[COGNITIVE] Shutdown: GGUF model unloaded")
         except Exception as _gguf_err:
             log.debug(f"[COGNITIVE] Shutdown: GGUF unload failed (non-fatal): {_gguf_err}")

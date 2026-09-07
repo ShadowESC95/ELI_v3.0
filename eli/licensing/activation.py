@@ -55,7 +55,7 @@ def activation_required() -> bool:
         if load_settings().get("retail_build") is True:
             return True
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         from eli.core.paths import is_frozen, _is_dev_mode
 
@@ -64,7 +64,7 @@ def activation_required() -> bool:
         if _is_dev_mode():
             return False
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return False
 
 

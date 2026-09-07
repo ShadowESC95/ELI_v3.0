@@ -222,7 +222,7 @@ class SelfImprovementEngine:
         try:
             self.memory.log_failure(input_text, error=error, confidence=confidence, context=ctx)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         conn = self.memory._get_connection()
         try:
             _ensure_failure_tables(conn)
@@ -432,7 +432,7 @@ class SelfImprovementEngine:
             try:
                 conn.close()
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
     def analyze_and_improve(self, *, repair: bool = False) -> Dict[str, Any]:
         """Analyse recent failures and log improvement records.
@@ -460,11 +460,11 @@ class SelfImprovementEngine:
                 ).fetchall()
                 existing_descs = {str(r[0]).strip().lower() for r in rows if r[0]}
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
             finally:
                 conn.close()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         for f in failures[:10]:
             ui = _safe_str(f.get("user_input"))
@@ -508,7 +508,7 @@ class SelfImprovementEngine:
             try:
                 self.log_improvement(imp["category"], imp["description"], area=imp.get("area", "runtime"))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         # Frontier self-repair: when there are NEW (un-investigated) failures and the model
         # is resident, route them through the coding agent (decompose→solve→VERIFY) and
@@ -536,7 +536,7 @@ class SelfImprovementEngine:
             from eli.cognition.persona_updater import update_persona_overlay
             update_persona_overlay(memory=self.memory)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         return {"improvements": improvements, "proposals_made": proposals_made}
 
@@ -602,7 +602,7 @@ class SelfImprovementEngine:
                     file_content = cand.read_text(encoding="utf-8")[:max_file_chars]
                     file_ref = str(cand.relative_to(PROJECT_ROOT))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         parts = [f"Fix the bug that causes this failure: {err[:500]}"]
         if cmd:
             parts.append(f"Triggered by command: {cmd[:150]}")
@@ -720,7 +720,7 @@ class SelfImprovementEngine:
                     except Exception:
                         file_content = full_src[:max_file_chars]
             except (ValueError, Exception):
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         # Only patch failures we can ground to a REAL in-project file. Without a file
         # from the traceback the model invents a path (observed: phantom api_client.py /
@@ -997,7 +997,7 @@ class SelfImprovementEngine:
             finally:
                 conn.close()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         rel = str(p.relative_to(PROJECT_ROOT))
         log.debug(f"[SELF-IMPROVE] Patch applied: {rel} — {description}")
@@ -1089,7 +1089,7 @@ class SelfImprovementEngine:
                     if Path(_b).exists():
                         shutil.copy2(str(_b), str(_p))
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
         # ── Phase 3: write all ──────────────────────────────────────────────────
         try:
@@ -1363,7 +1363,7 @@ class SelfImprovementEngine:
                 from eli.cognition.gguf_inference import set_background_inference as _set_bg
                 _set_bg(True)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
             while True:
                 try:
                     # The one legitimate autonomous repair path: already marked
@@ -1405,7 +1405,7 @@ def _read_notices() -> List[Dict[str, Any]]:
             d = json.loads(p.read_text(encoding="utf-8"))
             return d if isinstance(d, list) else []
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return []
 
 
@@ -1421,7 +1421,7 @@ def _push_self_heal_notice(notice: Dict[str, Any]) -> None:
         data.append(notice)
         p.write_text(json.dumps(data[-12:], indent=2), encoding="utf-8")
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
 
 def consume_self_heal_notice() -> Optional[Dict[str, Any]]:

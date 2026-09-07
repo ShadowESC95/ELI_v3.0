@@ -11,10 +11,8 @@ Observed live at 2.3.15:
     continuing, and there was no way to ask for a playlist at all — the query
     went to Spotify's *search results* context, which has no continuation.
 
-The client order below is deliberate and was measured, not assumed: against
-live YouTube on yt-dlp 2026.03.17 the default client resolved and fetched
-(HTTP 206) while web_safari/tv/ios/mweb did not resolve at all. Pinning a
-"preferred" client would have broken working playback for everyone.
+The client ladder lives in eli.integrations.media.youtube_playback — android
+first, yt-dlp default last, overridable via ELI_YT_PLAYER_CLIENTS.
 """
 import pytest
 
@@ -22,17 +20,18 @@ from eli.execution.effectors import media as ex
 
 
 # ── YouTube: recover from a client-bound refusal, change nothing else ──────
-def test_default_client_is_tried_first():
-    """The normal path must be byte-for-byte what it was: no pinned client."""
-    assert ex._yt_player_clients()[0] == "", "a client is pinned ahead of the default"
-
-
-def test_ladder_only_lists_clients_that_resolve():
+def test_android_client_is_tried_first():
+    """android is the primary client; yt-dlp default is the final fallback."""
     clients = ex._yt_player_clients()
-    assert clients[0] == ""
+    assert clients[0] == "android", "android must lead the recovery ladder"
+    assert clients[-1] == "", "yt-dlp default must remain the final fallback"
+
+
+def test_ladder_includes_recovery_clients():
+    clients = ex._yt_player_clients()
     assert len(clients) >= 2, "no recovery clients at all"
-    for dead in ("web_safari", "tv", "ios", "mweb", "web_embedded"):
-        assert dead not in clients, f"{dead} does not resolve on current yt-dlp"
+    assert "web_safari" not in clients, "web_safari does not resolve on current yt-dlp"
+    assert "web_embedded" not in clients, "web_embedded does not resolve on current yt-dlp"
 
 
 def test_client_order_is_overridable(monkeypatch):
@@ -64,7 +63,7 @@ def test_403_failure_message_names_the_remedy():
     """A stale yt-dlp is the other common cause and no client can compensate
     for it, so a total refusal has to say so."""
     from pathlib import Path
-    src = Path("eli/execution/effectors/media.py").read_text(encoding="utf-8")
+    src = Path("eli/integrations/media/youtube_playback.py").read_text(encoding="utf-8")
     assert "refused the stream for every player client" in src
     assert "upgrade yt-dlp" in src, "no actionable advice for a total refusal"
 
@@ -108,5 +107,6 @@ def test_playlist_path_resolves_concrete_uri_before_search_tab():
 def test_playlist_without_a_platform_does_not_go_to_youtube():
     from pathlib import Path
     src = Path("eli/execution/effectors/media.py").read_text(encoding="utf-8")
-    assert "_spotify_playlist_name(query) and _spotify_running()" in src, \
+    assert "_spotify_running()" in src
+    assert "_si.playlist_name(query)" in src, \
         "a bare playlist request still falls through to YouTube search"

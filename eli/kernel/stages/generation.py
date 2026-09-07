@@ -749,7 +749,7 @@ class GenerationMixin:
                                 if gguf_inference.is_cancel_requested():
                                     break
                             except Exception:
-                                pass
+                                log.debug("suppressed exception", exc_info=True)
                             if isinstance(chunk, dict):
                                 token = str(
     chunk.get("response") or chunk.get("token") or "")

@@ -149,8 +149,9 @@ def _h_close_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not name:
         return {"ok": False, "action": a, "error": "missing app name", "content": "Specify app to close.", "response": "Specify app to close."}
 
-    # Window-scoped close first — it can only ever affect a real window.
-    if shutil.which("wmctrl") and _run_ok(["wmctrl", "-c", name]):
+    # Window-scoped close first — Linux only; portable_app_control handles all OSes upstream.
+    from eli.utils import platform_compat as _pc_close
+    if _pc_close.LINUX and shutil.which("wmctrl") and _run_ok(["wmctrl", "-c", name]):
         msg = f"Closed {name} via wmctrl."
         return {"ok": True, "action": a, "content": msg, "response": msg}
 
@@ -176,47 +177,10 @@ def _h_close_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _h_tile_windows(a, args):
-    if shutil.which("wmctrl"):
-        try:
-            listing = subprocess.run(
-                ["wmctrl", "-l"], capture_output=True, text=True, timeout=4
-            )
-            window_ids = [line.split()[0] for line in (listing.stdout or "").splitlines() if line.strip()]
-            count = len(window_ids)
-            if count == 0:
-                msg = "No visible windows to tile."
-                return {"ok": False, "action": a, "content": msg, "response": msg}
-            geom = subprocess.run(
-                ["xdpyinfo"], capture_output=True, text=True, timeout=4
-            ).stdout if shutil.which("xdpyinfo") else ""
-            m = re.search(r"dimensions:\s*(\d+)x(\d+)", geom or "")
-            if m:
-                sw, sh = int(m.group(1)), int(m.group(2))
-            else:
-                sw, sh = 1920, 1080
-            cols = 2 if count <= 4 else 3
-            rows = (count + cols - 1) // cols
-            cw = sw // cols
-            rh = sh // rows
-            for i, wid in enumerate(window_ids):
-                row = i // cols
-                col = i % cols
-                x, y = col * cw, row * rh
-                subprocess.run([
-                    "wmctrl", "-i", "-r", wid, "-b", "remove,maximized_vert,maximized_horz"
-                ], check=False, capture_output=True, timeout=4)
-                subprocess.run([
-                    "wmctrl", "-i", "-r", wid, "-e", f"0,{x},{y},{cw},{rh}"
-                ], check=False, capture_output=True, timeout=4)
-            msg = f"Tiled {count} window{'s' if count != 1 else ''} into a {cols}×{rows} grid."
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "count": count, "grid": [cols, rows]}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e),
-                    "content": str(e), "response": str(e)}
-    return {"ok": False, "action": a, "error": "wmctrl not installed",
-            "content": "wmctrl not installed; cannot tile windows.",
-            "response": "wmctrl not installed; cannot tile windows."}
+    from eli.system.portable_app_control import tile_windows
+    out = tile_windows()
+    out.setdefault("action", a)
+    return out
 
 
 def _h_open_in_ide(a, args):

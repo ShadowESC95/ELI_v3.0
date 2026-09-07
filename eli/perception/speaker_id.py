@@ -242,7 +242,7 @@ def enroll_speaker(
         from eli.kernel.state import set_active_user_id
         set_active_user_id(uid)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     return {"ok": True, "speaker_id": sid, "name": display, "user_id": uid}
 
@@ -295,7 +295,7 @@ def identify(audio_int16: np.ndarray, sr: int = SR) -> Dict[str, Any]:
             from eli.kernel.state import set_active_user_id
             set_active_user_id(best_uid)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return result
 
 
@@ -339,7 +339,7 @@ def capabilities() -> Dict[str, Any]:
         from eli.perception import wakeword  # noqa: F401
         oww = True
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return {
         "enabled": enabled(),
         "gate_unknown": gate_unknown(),

@@ -2892,15 +2892,16 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             }
 
             def _desktop_entry_exists(app_label: str) -> bool:
+                from eli.system.portable_app_control import _linux_desktop_dirs
+
                 token = str(app_label or "").strip().lower()
                 if not token:
                     return False
 
-                roots = [
-                    Path("/usr/share/applications"),
-                    Path.home() / ".local/share/applications",
-                    Path("/var/lib/snapd/desktop/applications"),
-                ]
+                roots = list(_linux_desktop_dirs())
+                snap_apps = Path("/var/lib/snapd/desktop/applications")
+                if snap_apps not in roots:
+                    roots.append(snap_apps)
 
                 for root in roots:
                     try:
@@ -4886,7 +4887,10 @@ def _eli_second_execute(action, args=None, *pargs, **kwargs):
         return {"ok": True, "action": "REASONING_MODE_STATUS", "content": msg, "response": msg}
 
     if action_name == "TILE_WINDOWS":
-        return _eli_tile_windows(args)
+        from eli.system.portable_app_control import tile_windows
+        out = tile_windows()
+        out.setdefault("action", action_name)
+        return out
 
     if callable(_ELI_TILE_ORIG_EXECUTE):
         return _ELI_TILE_ORIG_EXECUTE(action, args, *pargs, **kwargs)
