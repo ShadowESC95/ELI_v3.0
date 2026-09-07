@@ -5153,7 +5153,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             and (_eli_is_chat_action or _eli_force_orch_all_actions or _eli_force_orch_all)
             and (
                 not _eli_is_chat_action
-                or not _is_brief_phatic_prompt(user_input)
+                or (_qclass != "PHATIC" and not _is_brief_phatic_prompt(user_input))
             )
         )
         try:

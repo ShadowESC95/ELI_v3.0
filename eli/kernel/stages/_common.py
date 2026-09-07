@@ -107,6 +107,9 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         "whats the story", "what's the story", "what is the story", "story bud", "story pal",
         "whats the craic", "what's the craic", "hows the craic", "how's the craic", "any craic",
         "whats new", "what's new", "whats happening", "what's happening",
+        # Irish / colloquial — same rapport class as "how's things"
+        "hows tricks", "how's tricks", "how are tricks",
+        "hows the form", "how's the form", "hows the head", "how's the head",
         # Gratitude / closers — purely phatic, never an action (a substantive remainder
         # like "thanks, now fix X" is caught by the follow-up guard / falls through).
         "thanks", "thank you", "thanks a lot", "thanks so much", "thank you so much",
