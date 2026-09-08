@@ -1,7 +1,7 @@
 # ELI — What It Can Actually Do
 
-> **Updated for 3.0.85.** All CHAT modes run the gradient orchestrator; 15 specialist
-> agents; **232** capabilities (**215** doc-routable; **211** `SUPPORTED_ACTIONS`). Regenerate the action list with
+> **Updated for v2.3.92.** All CHAT modes run the gradient orchestrator; 15 specialist
+> agents; 225 capabilities (208 routable). Regenerate the action list with
 > `python -m eli.tools.registry.capability_updater`.
 
 *A complete capability showcase, for the layman and the tech-savvy alike. Every
@@ -19,9 +19,9 @@ builds documents, creates images, looks after itself, and learns you over time �
 and **nothing leaves your device unless you explicitly allow it.**
 
 Here's the part most "AI assistants" can't say: it's *yours*. A fully local,
-embodied desktop AI you actually own — **232 capabilities** (**215** doc-routable;
-**211** executor-backed), reachable by voice or text, a 15-agent reasoning bus, persistent memory, and full
-voice/vision/gaze control, in ~190,438 lines of Python in `eli/`. One machine, your data, no landlord. (The
+embodied desktop AI you actually own — **225 capabilities** (208 of them routable
+by voice or text), a 14-agent reasoning bus, persistent memory, and full
+voice/vision/gaze control, in ~181,530 lines of Python in `eli/`. One machine, your data, no landlord. (The
 capability count is read live from the manifest each boot, so it grows as ELI
 does. Auto-generated action reference: `capabilities_and_actions.md`.)
 
@@ -163,13 +163,7 @@ Do it by voice or text — *"what voices do you have"*, *"download a British voi
 accents..."**; either way it downloads (checksum-verified) and becomes selectable
 straight away. A handful of voices carry non-commercial licences, so ELI doesn't
 bundle them — the list says so plainly and still lets you fetch them for personal use.
-**Character voices** — calm, robotic, energetic, synthetic, and refined — built as a base voice plus a real-time ffmpeg effect chain (no extra
-model), and you can **create your own** (`char:<name>`) by choosing a base voice
-and tuning pitch / speed / effects. Pick any of them from the voice selector, or
-just tell ELI *"speak to me like HAL."* Optional **voice cloning** (`clone:<name>`)
-reproduces a voice from a short audio sample via Coqui XTTS-v2 — an opt-in extra
-(`pip install "eli-v3[clone]"`, ~1.8 GB model downloaded on first use); without
-it, a cloned voice falls back to a normal voice rather than going silent.
+**Character voices** — calm, robotic, energetic, synthetic, and refined — are **generic style presets** built as a redistributable Piper base voice plus a real-time ffmpeg effect chain (no extra model). They are **not** impersonations of movie or TV characters (HAL, JARVIS, Rick, TARS, etc.) — those cannot be bundled in a public release. Pick a style from the voice selector (`Style: Robotic assistant`, …), or **create your own** (`char:<name>`) by choosing a base voice and tuning pitch / speed / effects. For a close match to a specific timbre you already have rights to use, **voice cloning** (`clone:<name>`) reproduces from **your** short audio sample via Coqui XTTS-v2 — an opt-in extra (`pip install "eli-v2.0[clone]"`, ~1.8 GB model downloaded on first use); without it, a cloned voice falls back to a normal Piper voice rather than going silent. Persona tone (*"be funnier"*, *"respond as a terse engineer"*) changes **wording**, not the speaker timbre.
 
 ### 👁️ See & understand
 Local vision-language models describe any image or your live screen; OCR pulls
@@ -191,6 +185,9 @@ to another.
 ### 🌐 Web & news (toggle-gated)
 Flip the Net switch on and ELI fetches web answers, weather, and **synthesised
 news** (a rolling 3-hourly digest matched to your interests — not raw headlines).
+After a briefing, **“go deeper into …”** re-runs a **topic-scoped `NEWS_FETCH`**
+from live feeds — it does not guess from model weights. If you call out a guessed
+story, ELI recovers the topic from recent chat and fetches again.
 Switch it off and it's sealed at the network socket.
 
 ### 📁 Files & documents
@@ -327,6 +324,34 @@ broad enough to be a daily companion, not a demo.
 separate from this capability showcase): `project_overview.md`. Exhaustive
 technical map: `capability_catalogue.md`.*
 
+
+## New in 2.3.92 — cross-OS media + local screen intelligence
+
+- **YouTube visible playback:** plain “play X on YouTube” → local mpv window (not headless audio-only); `youtube.com` still opens the browser when asked.
+- **Native streaming apps:** Spotify/Netflix/etc. launch native apps, not browser tabs, unless you explicitly ask for the website.
+- **Bundled-python deps:** `yt-dlp` ships via pip into ELI's interpreter — users never manage a venv manually; AppImage/PyInstaller bundles Python outright.
+- **Grounded install offers:** missing mpv, tesseract, ydotool, etc. → ELI tries first, then offers apt/brew/winget/pip install via remediation (cross-OS).
+- **Local UI grounding:** optional Phi-Ground/OS-Atlas/UGround/UI-TARS via GGUF in `models/` — no HTTP URLs, no cloud.
+- **Deep screen audit:** “analyze my screen in depth”, research-linked and prior-session memory fusion on `SCREEN_READ_ANALYZE`.
+- **Screen tab settings:** one-click depth, ambient watch, precision click, computer-use agent — all local.
+
+## New in 2.3.73 — conversation grounding
+
+- **Thread-aware web queries:** underspecified follow-ups (“reviews for season 3”) expand with the active show/topic before search.
+- **Proactive web on corrections:** grounding demands and explicit search requests route to `WEB_SEARCH` with a distilled query, not CHAT confabulation.
+- **Single intent path:** orchestrator reuses the engine’s resolved intent — no second parse that disagrees with Phase-13 vetoes or proactive routing.
+- **Consolidated escalation gates:** shared factual exclusion logic across `classify_factual` and `classify_web_candidate`.
+
+---
+
+## New in 2.3.72 — live-session honesty
+
+- **News topic deepen:** “go deeper into X” after a briefing → topic-scoped `NEWS_FETCH`, not CHAT guesswork.
+- **News complaint redo:** calling out a guessed story recovers the topic and re-fetches.
+- **Mounted-model authority:** every turn’s system prompt states the loaded GGUF; model-identity disputes route to `RUNTIME_STATUS`.
+- **Phatic fast path:** greetings/check-ins skip agent bus and heavy persona handoff (seconds, not minutes).
+
+---
 
 ## New in 2.3.7 — train it, extend it, and see what it checked
 

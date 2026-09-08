@@ -132,6 +132,8 @@ _APP_TAIL_REJECT_TOKENS = frozenset({
     # absent — plenty of real applications are named "<x> of <y>".
     "on", "in", "into", "onto", "with", "from", "via", "using",
     "search", "searching", "find", "google", "lookup",
+    # Deictic / meta words — "run that command" is not an app named "that command".
+    "that", "this", "it", "command",
 })
 
 
@@ -378,6 +380,16 @@ def try_route(text: str) -> Optional[dict]:
                 "meta": {"matched_by": "portable_intent_contract.shell_exec"},
             }
 
+    # Voice/STT diagnostics — defer to core_router (STT_DIAGNOSTICS), not OPEN_APP.
+    if re.search(
+        r"\b(voice|stt|speech|whisper|microphone|mic)\s+diagnostics?\b"
+        r"|\bdiagnostics?\s+(voice|stt|speech|whisper|microphone|mic)\b"
+        r"|\brun\s+voice\s+diagnostics?\b"
+        r"|\bcheck\s+(the\s+)?(microphone|mic)\b",
+        norm,
+    ):
+        return None
+
     # "please open the browser and search for QFT" never reached this matcher
     # because of the leading politeness marker, so it fell through to a plain
     # web search and opened nothing — twice, while the user was shouting for a
@@ -393,7 +405,7 @@ def try_route(text: str) -> Optional[dict]:
         # literally named "it".
         if target.lower().strip() in {
             "it", "that", "this", "these", "those", "here", "there", "them",
-        }:
+        } or re.fullmatch(r"(?:that|this|the|it)\s+command", target.lower().strip()):
             pass
         elif (
             target.lower().strip() in {
@@ -514,6 +526,16 @@ def try_route(text: str) -> Optional[dict]:
             "confidence": 0.995,
             "meta": {"matched_by": "portable_intent_contract.play_query_on_target"},
         }
+
+    # Desktop control — defer to core router (MOUSE_CONTROL / SCREEN_LOCATE).
+    if re.search(
+        r"\b(?:move|nudge|shift|scroll|click|tap|press)\b.*\b(?:mouse|cursor|pointer)\b"
+        r"|\b(?:mouse|cursor|pointer)\b.*\b(?:move|nudge|shift|click|scroll)\b"
+        r"|\bscroll\s+(?:up|down)\b"
+        r"|\b(?:click|tap|press)\s+(?:the\s+)?\w+\s+button\b",
+        norm,
+    ):
+        return None
 
     m = re.fullmatch(r"(.+?)\s+by\s+(.+)", norm)
     if m and len(norm.split()) >= 4:

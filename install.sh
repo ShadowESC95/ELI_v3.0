@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ELI v3 — Linux / macOS installer
+# ELI v2.0 — Linux / macOS installer
 # Usage: bash install.sh [--cpu-only] [--skip-torch]
 set -euo pipefail
 
@@ -38,6 +38,7 @@ for arg in "$@"; do
     esac
 done
 [ -t 0 ] || ASSUME_YES=1   # not a TTY (piped install) → never block on prompts
+# Non-interactive: VRAM-sized default chat model unless --no-model.
 if [ "$ASSUME_YES" -eq 1 ] && [ "$NO_MODEL" -eq 0 ] && [ -z "$FETCH_MODEL" ]; then
     FETCH_MODEL="--auto"
 fi
@@ -99,11 +100,10 @@ attempt_cuda_toolkit() {
 attempt_runtime_tools() {
     # Desktop-control + media-playback tools ELI uses at runtime. Best-effort: uses
     # the system package manager when sudo is available, else prints the command.
-    # yt-dlp goes in the venv (cross-distro) so "play X" can actually play audio
-    # (mpv finds the venv's yt-dlp on PATH at runtime). Also installs the clipboard
-    # backends (xclip / wl-clipboard) so GET_CLIPBOARD has a working fallback.
+    # yt-dlp goes into ELI's bundled Python (pip) so "play X" works without a
+    # separate user-managed virtualenv. Also installs clipboard backends.
     echo "[..] Installing runtime tools (media + desktop control + OCR + audio)..."
-    "$PIP" install --quiet yt-dlp 2>/dev/null && echo "[OK] yt-dlp (venv)" \
+    "$PIP" install --quiet yt-dlp 2>/dev/null && echo "[OK] yt-dlp (bundled Python)" \
         || echo "     pip install yt-dlp   (direct media playback)"
     # Per-manager package names differ. tesseract = OCR (screen reading); portaudio = mic
     # (voice input); ffmpeg = media + whisper; libnotify = notifications; xclip/wl-clipboard
@@ -115,10 +115,10 @@ attempt_runtime_tools() {
     #   • grim + slurp are the Wayland screenshot path (os_controller uses them).
     #     Wayland is the default on Arch/Hyprland and modern GNOME, so without
     #     these, screenshots fail on a stock install.
-    local APT="mpv playerctl wmctrl xdotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract-ocr portaudio19-dev libnotify-bin"
-    local DNF="mpv playerctl wmctrl xdotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract tesseract-langpack-eng portaudio-devel libnotify"
-    local PAC="mpv playerctl wmctrl xdotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract tesseract-data-eng portaudio libnotify"
-    local ZYP="mpv playerctl wmctrl xdotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract-ocr tesseract-ocr-traineddata-english portaudio-devel libnotify-tools"
+    local APT="mpv playerctl wmctrl xdotool ydotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract-ocr at-spi2-core libatspi2.0-0 portaudio19-dev libnotify-bin"
+    local DNF="mpv playerctl wmctrl xdotool ydotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract tesseract-langpack-eng at-spi2-core portaudio-devel libnotify"
+    local PAC="mpv playerctl wmctrl xdotool ydotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract tesseract-data-eng at-spi at-spi2-core portaudio libnotify"
+    local ZYP="mpv playerctl wmctrl xdotool ydotool scrot grim slurp ffmpeg xclip wl-clipboard tesseract-ocr tesseract-ocr-traineddata-english at-spi2-core portaudio-devel libnotify-tools"
     local BREW="mpv playerctl ffmpeg tesseract portaudio"
     if [ "$OS" = "Darwin" ]; then
         if command -v brew &>/dev/null; then brew install $BREW 2>/dev/null || true; echo "[OK] runtime tools (brew)"
@@ -152,7 +152,7 @@ attempt_runtime_tools() {
 }
 
 echo "${B}${CYN}╔══════════════════════════════════════════════╗${R}"
-echo "${B}${CYN}║  ELI v3 · Installer                           ║${R}"
+echo "${B}${CYN}║  ELI v2.0 · Installer                         ║${R}"
 echo "${B}${CYN}║  ${R}${D}100% local · private · offline-by-default${R}${B}${CYN}    ║${R}"
 echo "${B}${CYN}╚══════════════════════════════════════════════╝${R}"
 
@@ -233,8 +233,7 @@ if [ "$ASSUME_YES" -eq 0 ]; then
         # NO_MODEL, or the tiny REQUIRED embedder (nomic, ~85 MB; memory/RAG can't
         # work without it) is skipped too. NO_MODEL stays reserved for the explicit
         # `--no-model` CLI flag (a deliberate fully-offline install).
-        # Default skip — wizard offers a VRAM-sized download; saying Y runs --auto
-        # (one hardware-fit model), not the full multi-select menu.
+        # Saying Y opens the full catalog picker (--choose); decline skips chat model only.
         case "${_m:-n}" in [Yy]*) FETCH_MODEL="--choose" ;; *) FETCH_MODEL="" ;; esac
     fi
 fi
@@ -336,6 +335,91 @@ _llama_wheel_available() {
     "$PIP" install --only-binary=:all: --dry-run llama-cpp-python >/dev/null 2>&1
 }
 
+# Prebuilt CUDA wheels ship a libggml-cpu.so tuned for newer CPUs (AVX-VNNI and
+# friends). Importing llama_cpp succeeds, but llama_backend_init() SIGILLs on
+# older chips (e.g. Intel 8th-gen). Measure init, not import — same policy as GPU.
+_cpu_trusts_prebuilt_llama_wheel() {
+    local _m
+    _m="$(uname -m 2>/dev/null || echo unknown)"
+    case "$_m" in
+        x86_64|amd64) ;;
+        *) return 1 ;;
+    esac
+    if [ -r /proc/cpuinfo ]; then
+        grep -qE '(^|[[:space:]])(avx_vnni|avx512vnni|avx512_vnni)([[:space:]]|$)' /proc/cpuinfo
+        return $?
+    fi
+    # Unknown CPU feature set — allow wheel attempt; smoke test is the backstop.
+    return 0
+}
+
+_llama_runtime_smoke() {
+    "$PYTHON_VENV" -c "
+from llama_cpp import llama_cpp as _lc
+_lc.llama_backend_init()
+print('llama-runtime-smoke-ok')
+" >/dev/null 2>&1
+}
+
+_llama_safe_cpu_cmake_flags() {
+    # x86-64-v3 = AVX2/FMA — covers most 2013+ desktops; avoids VNNI-only wheels.
+    if [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo; then
+        echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3"
+    elif [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])sse4_2([[:space:]]|$)' /proc/cpuinfo; then
+        echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2"
+    else
+        echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64 -DCMAKE_CXX_FLAGS=-march=x86-64"
+    fi
+}
+
+_llama_rebuild_for_this_cpu() {
+    local _min="${LLAMA_MIN:-0.3.30}"
+    warn "llama-cpp runtime failed on this CPU (Illegal instruction in ggml_cpu_init)."
+    warn "Rebuilding llama-cpp-python from source with CPU-safe flags…"
+    ensure_build_toolchain
+    local _safe
+    _safe="$(_llama_safe_cpu_cmake_flags)"
+    if [ "$OS" = "Darwin" ]; then
+        CMAKE_ARGS="-DLLAMA_METAL=on $_safe" \
+            "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet || return 1
+    elif [ "$CPU_ONLY" -eq 1 ]; then
+        CMAKE_ARGS="$_safe" \
+            "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet || return 1
+    elif [ "$HAS_AMD" -eq 1 ]; then
+        if CMAKE_ARGS="-DGGML_HIPBLAS=on $_safe" \
+            "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet 2>/dev/null; then
+            :
+        elif CMAKE_ARGS="-DGGML_VULKAN=on $_safe" \
+            "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet 2>/dev/null; then
+            :
+        else
+            CMAKE_ARGS="$_safe" \
+                "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet || return 1
+        fi
+    else
+        local _NVCC _ARCHS
+        _NVCC="$(command -v nvcc || true)"
+        if [ -z "$_NVCC" ]; then
+            for _c in /usr/local/cuda/bin/nvcc /usr/local/cuda-*/bin/nvcc; do
+                [ -x "$_c" ] && { _NVCC="$_c"; break; }
+            done
+        fi
+        if [ -n "$_NVCC" ]; then
+            export PATH="$(dirname "$_NVCC"):$PATH"
+            export CUDACXX="$_NVCC"
+            _ARCHS="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+                      | tr -d '.' | sort -u | paste -sd';' -)"
+            [ -z "$_ARCHS" ] && _ARCHS="native"
+            CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$_ARCHS $_safe" \
+                "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet || return 1
+        else
+            CMAKE_ARGS="$_safe" \
+                "$PIP" install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet || return 1
+        fi
+    fi
+    _llama_runtime_smoke
+}
+
 ensure_build_toolchain() {
     # pip's cmake/ninja wheels need no sudo and cover the build system; only the
     # C++ compiler has to come from the OS.
@@ -374,28 +458,29 @@ if ! _llama_wheel_available; then
     ensure_build_toolchain
 fi
 if [ "$OS" = "Darwin" ]; then
-    # Metal is the default backend in macOS wheels; the flag only matters for a
-    # source build. GGML_METAL is the current name (llama.cpp renamed LLAMA_METAL).
-    echo "     (with Metal GPU acceleration — Apple Silicon unified memory)"
-    CMAKE_ARGS="-DGGML_METAL=on" "$PIP" install llama-cpp-python --prefer-binary --quiet || true
+    echo "     (with Metal GPU acceleration)"
+    CMAKE_ARGS="-DLLAMA_METAL=on" "$PIP" install llama-cpp-python --prefer-binary --quiet || true
 elif [ "$CPU_ONLY" -eq 1 ]; then
-    "$PIP" install llama-cpp-python --prefer-binary --quiet || true
+    if _cpu_trusts_prebuilt_llama_wheel; then
+        "$PIP" install llama-cpp-python --prefer-binary --quiet || true
+    else
+        warn "CPU lacks AVX-VNNI — skipping prebuilt llama-cpp wheel (SIGILL risk); building from source."
+        ensure_build_toolchain
+        CMAKE_ARGS="$(_llama_safe_cpu_cmake_flags)" \
+            "$PIP" install "llama-cpp-python>=0.3.30" --no-cache-dir --quiet || true
+    fi
 elif [ "$HAS_AMD" -eq 1 ]; then
-    echo "     (AMD — ROCm/HIP, then Vulkan, then CPU)"
-    # llama.cpp renamed the ROCm option GGML_HIPBLAS -> GGML_HIP; try the current
-    # name first, then the legacy one, so the build works on new AND old sources.
-    if CMAKE_ARGS="-DGGML_HIP=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
-        echo "[OK] llama-cpp built with ROCm/HIP (GGML_HIP)."
-    elif CMAKE_ARGS="-DGGML_HIPBLAS=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
-        echo "[OK] llama-cpp built with ROCm/HIP (legacy GGML_HIPBLAS)."
+    echo "     (AMD — ROCm/hipBLAS, then Vulkan, then CPU)"
+    if CMAKE_ARGS="-DGGML_HIPBLAS=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
+        :
     elif CMAKE_ARGS="-DGGML_VULKAN=on" "$PIP" install llama-cpp-python --no-cache-dir --quiet 2>/dev/null; then
         echo "[OK] llama-cpp built with Vulkan (AMD GPU via Mesa/Vulkan)."
     else
         echo "[WARN] AMD GPU builds failed (ROCm toolkit or Vulkan dev libs missing)."
         echo "       Installing CPU build. For AMDGPU later:"
-        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIP=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
+        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIPBLAS=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
         echo "         Vulkan: CMAKE_ARGS=\"-DGGML_VULKAN=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
-        "$PIP" install llama-cpp-python --prefer-binary --quiet || true
+        "$PIP" install llama-cpp-python --prefer-binary --quiet
     fi
 else
     # NVIDIA. The prebuilt CUDA wheel index is fast but STALE: it stops at
@@ -407,11 +492,18 @@ else
     # CUDA from source.
     echo "     (NVIDIA — CUDA)"
     LLAMA_MIN="0.3.30"
-    if "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --only-binary=:all: \
-            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 --quiet 2>/dev/null; then
-        echo "[OK] llama-cpp-python CUDA wheel installed."
+    _LLAMA_WHEEL_OK=0
+    if _cpu_trusts_prebuilt_llama_wheel; then
+        if "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --only-binary=:all: \
+                --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 --quiet 2>/dev/null; then
+            echo "[OK] llama-cpp-python CUDA wheel installed."
+            _LLAMA_WHEEL_OK=1
+        fi
     else
-        warn "No CUDA wheel >= $LLAMA_MIN for this python — building from source with CUDA."
+        warn "CPU lacks AVX-VNNI — skipping prebuilt CUDA llama-cpp wheel (libggml-cpu SIGILL risk)."
+    fi
+    if [ "$_LLAMA_WHEEL_OK" -eq 0 ]; then
+        warn "Building llama-cpp-python from source with CUDA + CPU-safe flags for this machine."
         warn "This takes several minutes but yields a runtime that can read current GGUFs."
         ensure_build_toolchain
         # Locate nvcc: the CUDA toolkit is frequently installed but not on PATH.
@@ -421,6 +513,7 @@ else
                 [ -x "$_c" ] && { _NVCC="$_c"; break; }
             done
         fi
+        _safe="$(_llama_safe_cpu_cmake_flags)"
         if [ -n "$_NVCC" ]; then
             export PATH="$(dirname "$_NVCC"):$PATH"
             export CUDACXX="$_NVCC"
@@ -428,17 +521,50 @@ else
             _ARCHS="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
                       | tr -d '.' | sort -u | paste -sd';' -)"
             [ -z "$_ARCHS" ] && _ARCHS="native"
-            if CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$_ARCHS" \
+            if CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$_ARCHS $_safe" \
                     "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --no-cache-dir --quiet; then
                 echo "[OK] llama-cpp-python built with CUDA (arch $_ARCHS)."
             else
-                warn "CUDA source build failed — installing the CPU build so ELI still runs."
-                "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --prefer-binary --quiet || true
+                warn "CUDA source build failed — installing CPU-safe source build so ELI still runs."
+                CMAKE_ARGS="$_safe" \
+                    "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --no-cache-dir --quiet || true
             fi
         else
-            warn "CUDA toolkit (nvcc) not found — installing the CPU build."
+            warn "CUDA toolkit (nvcc) not found — installing CPU-safe source build."
             warn "  Install the CUDA toolkit and re-run to get GPU acceleration."
-            "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --prefer-binary --quiet || true
+            CMAKE_ARGS="$_safe" \
+                "$PIP" install "llama-cpp-python>=$LLAMA_MIN" --no-cache-dir --quiet || true
+        fi
+    fi
+fi
+
+# llama-cpp IS the inference engine — without it ELI has no local model at all, so
+# say precisely what went wrong instead of dying on a raw pip traceback.
+if ! "$PYTHON_VENV" -c "import llama_cpp" 2>/dev/null; then
+    warn "llama-cpp-python is NOT installed — ELI cannot run a local model yet."
+    if ! _llama_wheel_available; then
+        warn "Cause: no prebuilt wheel for $("$PYTHON_VENV" -V 2>&1), and the source build failed."
+        warn "Fix (fastest): re-run with a python that has wheels —"
+        warn "    PYTHON=python3.12 bash install.sh"
+        warn "Fix (build here): install a toolchain, then re-run —"
+        if command -v pacman &>/dev/null; then warn "    sudo pacman -S --needed base-devel cmake git"
+        elif command -v dnf &>/dev/null; then warn "    sudo dnf install -y gcc-c++ make cmake git"
+        elif command -v zypper &>/dev/null; then warn "    sudo zypper install gcc-c++ make cmake git"
+        else warn "    sudo apt-get install -y build-essential cmake git"; fi
+    else
+        warn "A wheel exists for this python — re-run: \"$PIP\" install llama-cpp-python"
+    fi
+    VERIFY_LLAMA=0
+else
+    ok "llama-cpp-python ready ($("$PYTHON_VENV" -c 'import llama_cpp;print(llama_cpp.__version__)' 2>/dev/null))."
+    VERIFY_LLAMA=1
+    if ! _llama_runtime_smoke; then
+        if _llama_rebuild_for_this_cpu; then
+            ok "llama-cpp-python rebuilt for this CPU ($("$PYTHON_VENV" -c 'import llama_cpp;print(llama_cpp.__version__)' 2>/dev/null))."
+        else
+            warn "llama-cpp-python imports but crashes at runtime — ELI cannot load models."
+            warn "Install a C++ toolchain and re-run install.sh, or run: bash install.sh"
+            VERIFY_LLAMA=0
         fi
     fi
 fi
@@ -452,7 +578,7 @@ if [ "$SKIP_TORCH" -eq 0 ] && [ "$CPU_ONLY" -eq 0 ] && [ "$OS" != "Darwin" ]; th
     elif [ "$HAS_AMD" -eq 1 ]; then
         echo "[WARN] llama-cpp is CPU-only — ROCm/Vulkan GPU builds did not compile."
         echo "       ELI runs on CPU for now. For AMD GPU offload:"
-        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIP=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
+        echo "         ROCm:  CMAKE_ARGS=\"-DGGML_HIPBLAS=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
         echo "         Vulkan: CMAKE_ARGS=\"-DGGML_VULKAN=on\" \"$PIP\" install --force-reinstall --no-cache-dir llama-cpp-python"
     elif [ "$INSTALL_CUDA" -eq 1 ]; then
         echo "[WARN] prebuilt llama-cpp is CPU-only — installing CUDA toolkit and rebuilding from source..."
@@ -473,35 +599,25 @@ if [ "$SKIP_TORCH" -eq 0 ] && [ "$CPU_ONLY" -eq 0 ] && [ "$OS" != "Darwin" ]; th
     fi
 fi
 
-# llama-cpp IS the inference engine — without it ELI has no local model at all, so
-# say precisely what went wrong instead of dying on a raw pip traceback.
-if ! "$PYTHON_VENV" -c "import llama_cpp" 2>/dev/null; then
-    warn "llama-cpp-python is NOT installed — ELI cannot run a local model yet."
-    if ! _llama_wheel_available; then
-        warn "Cause: no prebuilt wheel for $("$PYTHON_VENV" -V 2>&1), and the source build failed."
-        warn "Fix (fastest): re-run with a python that has wheels —"
-        warn "    PYTHON=python3.12 bash install.sh"
-        warn "Fix (build here): install a toolchain, then re-run —"
-        if command -v pacman &>/dev/null; then warn "    sudo pacman -S --needed base-devel cmake git"
-        elif command -v dnf &>/dev/null; then warn "    sudo dnf install -y gcc-c++ make cmake git"
-        elif command -v zypper &>/dev/null; then warn "    sudo zypper install gcc-c++ make cmake git"
-        else warn "    sudo apt-get install -y build-essential cmake git"; fi
-    else
-        warn "A wheel exists for this python — re-run: \"$PIP\" install llama-cpp-python"
-    fi
-else
-    ok "llama-cpp-python ready ($("$PYTHON_VENV" -c 'import llama_cpp;print(llama_cpp.__version__)' 2>/dev/null))."
-fi
-
-# Install ELI v3 wheel (or editable from source checkout)
-echo "[..] Installing ELI v3..."
+# Install ELI v2.0 wheel (or editable from source checkout)
+# NOT --quiet: this step resolves the full dependency tree (torch, PySide6, faiss, …)
+# and can take several minutes. Suppressing output made it look frozen, so users killed
+# it here — before the requirements install below (which brings in PySide6) ever ran,
+# leaving a GUI-less venv ("please install PySide6"). Show progress instead.
+echo "[..] Installing ELI v2.0 (editable) — resolving dependencies, this can take a few minutes..."
 WHEEL=""
 # Pick the HIGHEST version wheel (sort -V), not the first — a plain glob returns the
 # oldest first, which would install a stale version if several wheels are present.
-WHEEL="$(ls "$SCRIPT_DIR"/dist/eli_v3-*.whl 2>/dev/null | sort -V | tail -1)"
-# Editable install → the tree is the SINGLE runtime authority (no shadowed wheel copy).
-if ! ( cd "$SCRIPT_DIR" && "$PIP" install -e ".[full]" --quiet ); then
-    [ -n "$WHEEL" ] && "$PIP" install "${WHEEL}[full]" --quiet
+WHEEL="$(ls "$SCRIPT_DIR"/dist/eli_v2_0-*.whl 2>/dev/null | sort -V | tail -1)"
+# Install ELI EDITABLE from the source tree, so the tree is the SINGLE runtime authority
+# (site-packages links to it — nothing shadows a duplicate wheel copy; the launchers'
+# PYTHONPATH becomes redundant belt-and-suspenders). Fall back to the bundled wheel only
+# if an editable install can't be created on this machine. The `|| true` keeps `set -e`
+# from aborting the install if neither path succeeds — the pinned requirements install
+# below is the real dependency gate and still runs.
+if ! ( cd "$SCRIPT_DIR" && "$PIP" install -e ".[full]" ); then
+    echo "[!] Editable install failed; falling back to the bundled wheel, then the pinned lock."
+    { [ -n "$WHEEL" ] && "$PIP" install "${WHEEL}[full]"; } || true
 fi
 
 # Install remaining runtime requirements. Default = the FROZEN LOCK (exact known-good
@@ -515,6 +631,9 @@ else
 fi
 
 echo "[..] Installing dependencies from $(basename "$REQ")$([ "$REQ" = "$SCRIPT_DIR/requirements.lock.txt" ] && echo ' (frozen, reproducible)')..."
+# ${_PIP_LINKS[@]} points pip at the bundled wheelhouse (--find-links) when the release
+# shipped one, so a full-wheelhouse build installs with zero network; otherwise it's empty.
+#
 # The frozen lock pins exact versions captured on ONE python/distro. A rolling distro
 # (Arch) or any newer interpreter can lack a wheel for even one of those pins — and under
 # `set -e` that aborted the whole install, so ELI simply would not install there. The lock
@@ -530,13 +649,6 @@ if ! "$PIP" install "${_PIP_LINKS[@]}" -r "$REQ" --quiet --ignore-installed; the
     else
         warn "Some dependencies failed to install — ELI may be missing features."
     fi
-fi
-
-# Test-suite deps (API/RBAC drivers, pytest, lint gates) — same list as requirements-test.txt.
-if [ -f "$SCRIPT_DIR/requirements-test.txt" ]; then
-    echo "[..] Installing test-suite dependencies..."
-    "$PIP" install -r "$SCRIPT_DIR/requirements-test.txt" --quiet \
-        || warn "Test dependencies failed — run ./run_tests.sh to retry in the project venv."
 fi
 
 # Make launchers executable
@@ -562,9 +674,9 @@ mkdir -p "$SCRIPT_DIR/models"
 # Local copy of the desktop icon under blueprints/ (PDF-only in git; icon lives in packaging/)
 _ICON_SRC="$SCRIPT_DIR/packaging/desktop/Eli_Icon.png"
 _ICON_DST="$SCRIPT_DIR/blueprints/Eli_Icon.png"
-if [ -f "$_ICON_SRC" ] && [ ! -f "$_ICON_DST" ]; then
+if [ -f "$_ICON_SRC" ]; then
     mkdir -p "$SCRIPT_DIR/blueprints"
-    cp "$_ICON_SRC" "$_ICON_DST"
+    cp "$_ICON_SRC" "$_ICON_DST" 2>/dev/null || true
 fi
 
 # ── Runtime tools (media playback + desktop control) ─────────────────────────
@@ -594,18 +706,17 @@ else
     echo "[WARN] Some stores deferred to first launch (they self-build on first use)."
 fi
 
-
 # Capability manifest + command reference (idempotent — refreshes if code changed)
 echo "[..] Ensuring capability manifest and command reference..."
 if "$PYTHON_VENV" -c "from eli.tools.registry.capability_updater import update_capability_manifest; r=update_capability_manifest(); assert r.get('ok'), r; print(f\"[OK] {r.get('total',0)} capabilities indexed\")"; then
     :
-else
-    if [ -f "$SCRIPT_DIR/capability_manifest.json" ]; then
-        echo "[OK] Using shipped capability_manifest.json (regeneration skipped)."
     else
-        echo "[WARN] Capability manifest missing — run: .venv/bin/python -m eli.tools.registry.capability_updater"
+        if [ -f "$SCRIPT_DIR/capability_manifest.json" ]; then
+            echo "[OK] Using shipped capability_manifest.json (regeneration skipped)."
+        else
+            echo "[WARN] Capability manifest missing — run: .venv/bin/python -m eli.tools.registry.capability_updater"
+        fi
     fi
-fi
 
 # ── Verify the install actually imports and the entry point resolves ─────────
 echo "[..] Verifying installation..."
@@ -656,7 +767,9 @@ if [ "$NO_MODEL" -eq 0 ]; then
     fi
 fi
 
-# Voice weights (browser voice + TTS): always fetch when online — not gated on chat model.
+# Voice weights (browser voice + TTS): the faster-whisper STT model and a Piper
+# voice. Required for web-server mic (phone/PC browser) — always fetch, not gated
+# on chat-model download. Best-effort + idempotent — never fatal.
 VOICE_STATUS="skipped"
 info "Ensuring voice models (local STT + TTS, for browser/desktop voice) are present..."
 if "$PYTHON_VENV" -m eli.runtime.voice_assets; then
@@ -670,11 +783,11 @@ fi
 echo
 if [ "$VERIFY_OK" -eq 1 ]; then
     echo "${B}${GRN}╔══════════════════════════════════════════════╗${R}"
-    echo "${B}${GRN}║  ELI v3 — installation complete               ║${R}"
+    echo "${B}${GRN}║  ELI v2.0 — installation complete             ║${R}"
     echo "${B}${GRN}╚══════════════════════════════════════════════╝${R}"
 else
     echo "${B}${YEL}╔══════════════════════════════════════════════╗${R}"
-    echo "${B}${YEL}║  ELI v3 — finished WITH ERRORS (see above)    ║${R}"
+    echo "${B}${YEL}║  ELI v2.0 — finished WITH ERRORS (see above)  ║${R}"
     echo "${B}${YEL}╚══════════════════════════════════════════════╝${R}"
 fi
 
@@ -685,10 +798,19 @@ ok "Voice       ${B}${VOICE_STATUS}${R}   ${D}(local STT + TTS weights)${R}"
 ok "Data        ${B}fresh local databases${R}, offline-by-default"
 
 section "Launch"
+if [ "$OS" = "Linux" ] && [ -x "$PYTHON_VENV" ]; then
+    info "Installing app-menu icons (ELI v2.0 + ELI Server)…"
+    if bash "$SCRIPT_DIR/scripts/install_desktop_apps.sh"; then
+        ok "Desktop launchers installed with ELI icon."
+    else
+        warn "Desktop icons deferred — run: ./scripts/install_desktop_apps.sh"
+    fi
+fi
+echo "  ${B}./scripts/eli_setup.sh${R}               ${D}# first-time one-click setup (grandparent-ready)${R}"
 echo "  ${B}./scripts/eli_launch.sh${R}              ${D}# desktop app (GUI)${R}"
-echo "  ${B}./scripts/eli_launch.sh serve --lan${R}  ${D}# web app for phone / tablet${R}"
+echo "  ${B}./scripts/eli_launch.sh serve --lan --https${R}  ${D}# web app for phone / tablet (mic)${R}"
 echo "  ${B}./eli.sh${R}                             ${D}# also launches the desktop app${R}"
-echo "  ${B}./scripts/install_desktop_apps.sh${R}    ${D}# add ELI Pro + ELI Server to your app menu (Linux/macOS)${R}"
+echo "  ${B}./scripts/install_desktop_apps.sh${R}    ${D}# ELI Setup + ELI v2.0 + ELI Server icons${R}"
 echo
 if [ "$MODEL_STATUS" = "none yet" ] || [ "$MODEL_STATUS" = "download failed (fetch later)" ]; then
     echo "  ${D}No model yet — the first-run wizard offers a download, or run:${R}"

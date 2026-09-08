@@ -68,7 +68,7 @@ SETTINGS_FILE = _settings_file()
 
 # Single source of truth for the n_ctx default.
 # config.py and engine.py reference this so changing it here is sufficient.
-DEFAULT_N_CTX: int = 16384
+DEFAULT_N_CTX: int = 12288
 
 # Canonical keys. Legacy duplicates (`gpu_layers`, `cpu_threads`) are migrated
 # into these on first load and then removed from the file.
@@ -133,6 +133,7 @@ DEFAULTS: Dict[str, Any] = {
     "cache_type_v": "",
     "auto_speak": False,
     "tts_voice": "en_US-amy-medium",
+    "tts_engine": "piper",
     # Smart-home hub identity on Bluetooth pairing screens (TVs, speakers). Empty
     # bluetooth_display_name → "Eli · {hub_zone}". Override for a fixed label.
     "hub_zone": "Home",
@@ -203,20 +204,22 @@ DEFAULTS: Dict[str, Any] = {
     # model, so keep the interval generous (seconds).
     "ambient_vision_enabled": False,
     "ambient_vision_interval": 300,
+
+    # Optional UI grounding — 100% local GGUF (Phi-Ground/OS-Atlas/UGround/UI-TARS).
+    "ui_ground_backend": "none",
+    "ui_ground_model_path": "",
+    "computer_use_backend": "none",
+    "computer_use_model_path": "",
+    "allow_remote_grounding": False,
+    "screen_locate_backends": ["atspi", "vl_ground", "ocr"],
+    # Screen analysis depth + context fusion (all local).
+    "screen_analysis_depth": "standard",
+    "screen_analysis_use_memory": True,
+    "screen_analysis_use_research": True,
+    "screen_analysis_always_memory": False,
     # Allow proactive habit rules to run shell commands. On by default (your own
     # habits); set false to block shell execution from an untrusted/imported habit DB.
     "habit_shell_enabled": True,
-    # ── MCP ────────────────────────────────────────────────────────────────────
-    # How long an MCP server is given to start and answer the handshake. The 20s
-    # this was hard-coded to is fine for a resident binary and far too short for
-    # `npx some-server` on a cold cache, which is the common first-run case — so it
-    # is a setting rather than a constant someone has to patch the source to change.
-    "mcp_start_timeout": 30,
-    # ELI's own MCP server (`python -m eli.integrations.mcp.server`) withholds every
-    # action that drives the machine, runs code, or changes ELI. Turning this on
-    # hands those to whatever client connects. Env ELI_MCP_ALLOW_CONTROL still wins,
-    # so a one-off launch can differ from the saved default.
-    "mcp_expose_control": False,
 }
 
 # The codebase's "offload everything" idiom (see vision_n_gpu_layers = 99 above);
@@ -317,7 +320,6 @@ ENV_TO_KEY = {
     "ELI_LOG_TO_FILE": "log_to_file",
     "ELI_AUTO_LOAD": "auto_load",
     "ELI_THEME": "theme",
-    "ELI_MCP_START_TIMEOUT": "mcp_start_timeout",
 }
 
 # Legacy keys to migrate and then remove from the file.
@@ -329,14 +331,14 @@ LEGACY_KEY_MIGRATIONS = {
 INT_KEYS = {
     "n_ctx", "max_tokens", "top_k", "n_gpu_layers", "n_threads", "batch_size",
     "image_default_count", "image_default_width", "image_default_height",
-    "image_steps", "mcp_start_timeout",
+    "image_steps",
 }
 FLOAT_KEYS = {"temperature", "top_p", "repeat_penalty", "image_guidance"}
 BOOL_KEYS = {"use_mmap", "use_mlock", "auto_speak", "mic_enabled",
              "auto_save", "log_to_file", "auto_load", "first_run_complete",
              "image_auto_personalize", "image_auto_open",
              "image_use_chat_context", "image_use_proactive_context",
-             "model_thinking", "mcp_expose_control"}
+             "model_thinking"}
 
 _MIGRATION_LOGGED = False
 _HEAL_LOGGED = False
@@ -515,10 +517,6 @@ def _load_settings_unsanitized() -> Dict[str, Any]:
 
     # Canonical coercion (no more dual-key fallbacks)
     settings["n_threads"] = int(settings.get("n_threads", DEFAULTS["n_threads"]))
-    # Anything the operator has NOT pinned comes from THIS machine's measured
-    # profile rather than the shipped defaults.
-    settings = _apply_hardware_derived_defaults(settings)
-
     settings["n_gpu_layers"] = int(settings.get("n_gpu_layers", DEFAULTS["n_gpu_layers"]))
     settings["gpu_layers"] = settings["n_gpu_layers"]
 
@@ -607,65 +605,9 @@ def save_settings(settings: Dict[str, Any]) -> None:
     _secure_write(settings_file, json.dumps(existing, indent=2, ensure_ascii=False), mode=0o600)
 
 
-# ── Provenance: which hardware settings the OPERATOR actually chose ──────────
-#
-# n_ctx / n_gpu_layers / batch_size are documented as "the user's" and are never
-# rewritten by the profiler. But nothing recorded whether the operator ever
-# chose them, so the shipped DEFAULTS (n_ctx=16384, n_gpu_layers=0,
-# batch_size=512 — the same numbers on a 4 GB laptop and a 24 GB workstation)
-# became "the user's explicit choice" on first run and won attempt 1 of the load
-# ladder for ever after, on any machine.
-#
-# Live consequence: a persisted n_ctx=10384 / n_gpu_layers=99 loaded full offload
-# on a 6.2 GB card, past the 29 layers the fit measured, and generation came back
-# empty. Changing hardware did not help — the profiler deliberately refreshes
-# hw_profile_* and deliberately leaves these alone.
-#
-# So: a value the operator has not pinned is DERIVED from this machine (the
-# hw_profile_* keys, which the profiler already recomputes when the hardware
-# fingerprint changes). An explicit edit pins the key and is honoured for ever.
-OPERATOR_PINNED_KEY = "operator_pinned"
-HARDWARE_DERIVED_KEYS = ("n_ctx", "n_gpu_layers", "batch_size")
-
-
-def operator_pinned_keys(settings: Dict[str, Any]) -> set:
-    """Canonical keys the operator has explicitly set."""
-    raw = settings.get(OPERATOR_PINNED_KEY) or []
-    return {str(k) for k in raw} if isinstance(raw, (list, tuple, set)) else set()
-
-
-def _apply_hardware_derived_defaults(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Use this machine's measured profile for any key the operator has not pinned.
-
-    Does nothing when the profile has not been computed yet, so a first run
-    before profiling still falls back to DEFAULTS rather than to zero.
-    """
-    pinned = operator_pinned_keys(settings)
-    for key in HARDWARE_DERIVED_KEYS:
-        if key in pinned:
-            continue
-        try:
-            derived = int(settings.get(f"hw_profile_{key}", 0) or 0)
-        except Exception:
-            continue
-        if derived > 0 and int(settings.get(key, 0) or 0) != derived:
-            settings[key] = derived
-    return settings
-
-
 def update_settings(**kwargs: Any) -> Dict[str, Any]:
-    """Convenience: save specific keys, return the full new state.
-
-    This is the operator-facing write path (settings pages, the startup dialog,
-    the API), so a hardware key set through it is PINNED: from here on it is the
-    operator's choice and is never re-derived from the machine.
-    """
-    delta = dict(kwargs)
-    touched = [k for k in HARDWARE_DERIVED_KEYS if k in delta]
-    if touched:
-        current = operator_pinned_keys(_load_settings_unsanitized())
-        delta[OPERATOR_PINNED_KEY] = sorted(current | set(touched))
-    save_settings(delta)
+    """Convenience: save specific keys, return the full new state."""
+    save_settings(kwargs)
     return load_settings()
 
 
@@ -835,7 +777,7 @@ def _eli_runtime_physical_project_root():
     Frozen builds are the one exception: there the physical location is the
     read-only PyInstaller bundle (_internal / AppImage mount) and
     ELI_PROJECT_ROOT is pinned in-process by the bundle's own runtime hook
-    (not inherited from a shell), pointing at the per-user ELI_v3 root.
+    (not inherited from a shell), pointing at the per-user ELI_v2 root.
     Anchoring on the bundle made this guard strip the correct root and sent
     every PROJECT_ROOT-relative write to the read-only mount.
     """

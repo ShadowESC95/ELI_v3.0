@@ -141,7 +141,7 @@ class ScreenCaptureMixin:
         self._sc_ocr_text.setPlainText(text.strip() or "(no text detected)")
         self._sc_analyse_btn.setEnabled(bool(text.strip()))
 
-    def _sc_ask_eli(self):
+    def _sc_ask_eli(self, deep: bool = False):
         backend = self._text_backend_ready(notify=False)
         if backend is None:
             self._sc_response.setPlainText("⚠️ Load a model first.")
@@ -155,32 +155,30 @@ class ScreenCaptureMixin:
             return
         self._sc_analyse_btn.setEnabled(False)
         self._sc_analyse_btn.setText("Analysing…")
+        if hasattr(self, "_sc_deep_btn"):
+            self._sc_deep_btn.setEnabled(False)
         self._sc_response.setPlainText(
-            "🤖 ELI is looking at the screen…" if _has_shot
-            else "🤖 ELI is analysing the text…")
+            "🤖 ELI is performing a deep local screen audit…" if deep
+            else ("🤖 ELI is looking at the screen…" if _has_shot
+                  else "🤖 ELI is analysing the text…"))
 
         def worker():
             try:
-                # Treat OCR text as ground truth, drop the "no OCR engine" notice.
                 _ocr = ocr_text
                 if _ocr.startswith("⚠") or "No OCR engine" in _ocr:
                     _ocr = ""
                 if _has_shot:
-                    # Use the VISION model (Moondream/Qwen-VL) to actually SEE the
-                    # screenshot — hot-swap + OCR fusion via ANALYZE_IMAGE. This
-                    # is the grounded screen pipeline; OCR-only text-model analysis
-                    # could not read images, charts, or UI layout.
                     from eli.execution.executor_enhanced import execute as _vexec
-                    _prompt = (
-                        "You are ELI looking at the user's screen. Describe what's on screen — "
-                        "the focused app, what the user is doing, and any important text, code, "
-                        "errors, or UI state — then give a short, helpful summary and flag "
-                        "anything that needs attention. Be specific; never invent."
-                    )
+                    from eli.perception.screen_analysis import build_screen_analysis_prompt
+                    depth = "deep" if deep else "standard"
+                    _prompt = build_screen_analysis_prompt("", depth=depth)
                     if _ocr:
                         _prompt += f"\n\nOCR text already extracted (use as ground truth):\n{_ocr[:2500]}"
-                    res = _vexec("ANALYZE_IMAGE",
-                                 {"path": ss_path, "prompt": _prompt, "prefer_fast": True}) or {}
+                    res = _vexec("ANALYZE_IMAGE", {
+                        "path": ss_path,
+                        "prompt": _prompt,
+                        "prefer_fast": depth == "quick",
+                    }) or {}
                     resp = str(res.get("content") or res.get("response") or "").strip()
                     if not resp:
                         resp = "I captured the screen but couldn't produce a description."
@@ -204,6 +202,8 @@ class ScreenCaptureMixin:
     def _sc_eli_done(self, text: str):
         self._sc_analyse_btn.setEnabled(True)
         self._sc_analyse_btn.setText("🤖 Ask ELI")
+        if hasattr(self, "_sc_deep_btn"):
+            self._sc_deep_btn.setEnabled(True)
         self._sc_response.setPlainText(text)
 
     def _sc_clear(self):

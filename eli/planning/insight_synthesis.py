@@ -14,8 +14,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-_MIN_REFRESH_INTERVAL = 1800.0  # 30 min — don't re-synthesise more often than this
+from eli.utils.log import get_logger
 
+log = get_logger(__name__)
+
+_MIN_REFRESH_INTERVAL = 1800.0  # 30 min — don't re-synthesise more often than this
 
 # What counts as ELI's own record-keeping lives in ONE place. This module used
 # to carry a private category set and prefix list; see eli/core/self_provenance.
@@ -32,12 +35,18 @@ def _cache_path() -> Path:
     return Path(get_paths().artifacts_dir) / "runtime" / "reflection_insight.json"
 
 
-def get_cached_insight() -> str:
-    """Return the most recently synthesised insight (fast, no LLM). '' if none."""
+_INSIGHT_MAX_AGE_S = 4 * 3600  # stale insight must not drive greetings
+
+
+def get_cached_insight(max_age_s: float = _INSIGHT_MAX_AGE_S) -> str:
+    """Return the most recently synthesised insight (fast, no LLM). '' if none/stale."""
     try:
         p = _cache_path()
         if p.exists():
             d = json.loads(p.read_text(encoding="utf-8"))
+            ts = float(d.get("ts") or 0)
+            if max_age_s and ts and (time.time() - ts) > float(max_age_s):
+                return ""
             return str(d.get("insight") or "").strip()
     except Exception:
         pass
@@ -119,6 +128,11 @@ def refresh_insight(memory: Any = None, force: bool = False) -> str:
                          encoding="utf-8")
         except Exception:
             pass
+        try:
+            from eli.world.agency.reflection_bridge import send_reflection_to_world
+            send_reflection_to_world(out, depth=0.7, source="insight_synthesis")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
         return out
     except Exception:
         return get_cached_insight()

@@ -1,8 +1,25 @@
 # Installation — one-click setup, cross-platform (2026-07-05)
 
-> **Updated for 3.0.85 (August 2026).** **AUDIO IS BACK** — cross-platform microphone
+> **Updated for v2.3.92 (September 2026).** **AUDIO IS BACK** — cross-platform microphone
 > auto-resolve. Primary install: prebuilt GitHub Releases (Windows Setup.exe, Linux AppImage,
 > macOS dmg); CI launch-tested on all three platforms. Source installs below remain supported.
+
+## Runtime OS tools (installed best-effort by `install.sh` / `install.ps1`)
+
+These are **not** Python packages — ELI installs them when a package manager is available, or offers the exact command after a failed action:
+
+| Tool | Purpose | Linux | macOS | Windows |
+|---|---|---|---|---|
+| `mpv` + `yt-dlp` | YouTube visible playback | apt/dnf/pacman + pip | brew + pip | winget mpv + pip |
+| `tesseract` | Screen OCR | apt/dnf/pacman | brew | winget |
+| `xdotool` / `ydotool` | Mouse/keyboard (X11 / Wayland) | apt/dnf/pacman | — | PyAutoGUI (pip) |
+| `grim`/`slurp` | Wayland screenshots | apt/dnf/pacman | — | native |
+| `playerctl` | Media transport (MPRIS) | apt/dnf/pacman | brew | media keys |
+| `ffmpeg` | Media/Whisper | apt/dnf/pacman | brew | winget |
+
+**Wayland:** `ydotool` needs the `ydotoold` daemon (uinput). `xdotool` only reaches XWayland clients.
+
+See `docs/CROSS_PLATFORM.md` for the full per-OS desktop matrix.
 
 
 One command per platform sets up Python deps, the **full SQLite architecture** (blank
@@ -20,15 +37,15 @@ slate — schema only, no personal data), the **nomic embedder**, and the defaul
 
 Every release ships **five downloads plus a checksum file** — one per platform, with a
 second option on Windows (installer vs. unzip-and-run) and on Linux (frozen app vs.
-source). Sizes below are the real 3.0.85 assets.
+source). Sizes below are the real v2.3.73 assets.
 
 | Download | Size | Platform | What's inside | First run needs internet for | Best for |
 |---|---|---|---|---|---|
 | `ELI-Setup-<v>.exe` | ~1.2 GB | Windows | Guided one-click installer (Inno Setup, per-user, no admin) | chat model | Most Windows users |
-| `ELI_v3-<v>-windows-x64.zip` | ~1.36 GB | Windows | The same prebuilt app, no install step | chat model | Windows, unzip-and-run |
-| `ELI_v3-<v>-macos-arm64.dmg` | ~1.39 GB | macOS (Apple Silicon) | App bundle, drag to Applications (ad-hoc signed) | chat model | Mac users |
-| `ELI_v3-<v>-x86_64.AppImage` | ~1.39 GB | Linux | Double-click app, nothing to install | chat model | Most Linux users |
-| `ELI_v3-<v>-linux-portable.tar.gz` | ~690 MB | Linux | **Source tree** + `INSTALL_ELI.sh` / `RUN_ELI.sh` | Python deps **+** chat model | Linux, running from source |
+| `ELI_v2-<v>-windows-x64.zip` | ~1.36 GB | Windows | The same prebuilt app, no install step | chat model | Windows, unzip-and-run |
+| `ELI_v2-<v>-macos-arm64.dmg` | ~1.39 GB | macOS (Apple Silicon) | App bundle, drag to Applications (ad-hoc signed) | chat model | Mac users |
+| `ELI_v2-<v>-x86_64.AppImage` | ~1.39 GB | Linux | Double-click app, nothing to install | chat model | Most Linux users |
+| `ELI_v2-<v>-linux-portable.tar.gz` | ~690 MB | Linux | **Source tree** + `INSTALL_ELI.sh` / `RUN_ELI.sh` | Python deps **+** chat model | Linux, running from source |
 | `SHA256SUMS.txt` | tiny | — | SHA-256 for every file above | — | verifying your download |
 
 **In plain terms:**
@@ -61,10 +78,10 @@ Arch's system Python 3.14, which has no `llama-cpp-python` wheel, is irrelevant)
 packages. Download and run it **directly**:
 
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/3.0.85
-wget "$U/ELI_v3-3.0.85-x86_64.AppImage"
-chmod +x ELI_v3-3.0.85-x86_64.AppImage
-./ELI_v3-3.0.85-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v2.0/releases/download/v2.3.55
+wget "$U/ELI_v2-2.3.73-x86_64.AppImage"
+chmod +x ELI_v2-2.3.73-x86_64.AppImage
+./ELI_v2-2.3.73-x86_64.AppImage
 ```
 
 Two fixes worth knowing, both resolved in current builds and verified on a clean Arch VM:
@@ -97,8 +114,8 @@ This works when you run the **`.AppImage` directly** *or* via `--appimage-extrac
 set the `APPIMAGE` path the launcher needs. Force it any time with:
 
 ```bash
-./ELI_v3-3.0.85-x86_64.AppImage --integrate      # add/refresh menu entries
-./ELI_v3-3.0.85-x86_64.AppImage --uninstall       # remove them
+./ELI_v2-2.3.73-x86_64.AppImage --integrate      # add/refresh menu entries
+./ELI_v2-2.3.73-x86_64.AppImage --uninstall       # remove them
 ```
 
 Running the **manually extracted `./squashfs-root/AppRun`** does *not* create menu icons — there's

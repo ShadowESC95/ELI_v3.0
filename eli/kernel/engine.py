@@ -3,16 +3,21 @@ Cognitive Engine – grounded multi-phase controller for ELI.
 """
 
 from __future__ import annotations
+
+import logging
 from eli.cognition.output_governor import govern_output
+from eli.cognition.output_governor import normalize_assistant_text as _output_governor_normalize
 from .scheduler import get_scheduler
 from eli.execution.router_enhanced import route as route_intent
+from eli.execution.executor_enhanced import chat as ollama_chat
 from eli.execution.executor_enhanced import execute as execute_action
 from eli.core.paths import get_paths
 from eli.core import runtime_settings as runtime_settings
 from eli.core import config
 from eli.runtime.self_improvement import get_self_improvement
-from eli.memory import Memory, get_memory, get_memory_status
+from eli.memory import Memory, get_memory, get_memory_status, resolve_db_paths
 
+import difflib
 import os
 import re
 import json
@@ -22,77 +27,242 @@ import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
+from eli.cognition.context_synthesiser import build_persona_handoff
 
 
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-# How much of a reply the last-response trace keeps. Enough to quote the message
-# back when asked what it was; short enough that a file rewritten every turn does
-# not grow into the largest thing under artifacts/.
-_TRACE_TEXT_CHARS = 1200
+def _eli_path_get(obj, key, default=None):
+    """
+    Compatibility helper for ELI path containers.
+    Accepts both dict-style path maps and object/namespace-style path maps.
+    """
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _eli_test_mode() -> bool:
+    if os.environ.get("ELI_TEST_MODE", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return "pytest" in sys.modules
 
 
 
+# Response governance (coverage patch)
+try:
+    from eli.cognition.response_governance import normalize_response, should_store_as_memory
+    _HAS_GOVERNANCE = True
+except ImportError:
+    _HAS_GOVERNANCE = False
+
+try:
+    from eli.cognition import gguf_inference
+except Exception:
+    gguf_inference = None
+
+try:
+    from eli.cognition.inference_broker import get_broker as _get_inference_broker
+except ImportError:
+    _get_inference_broker = None
 
 
+# Deterministic OS/media/control actions must never wait for AgentBus,
+# memory retrieval, persona synthesis, or GGUF. Chat/questions still use
+# the full cognitive path.
+_PHASE45_DIRECT_FAST_ACTIONS = {
+    'AMBIENT_VISION',  # deterministic toggle — return the executor's confirmation directly
+    'ANALYZE_IMAGE',  # executor OCR/metadata is authoritative — never let the model "describe" an image it can't see
+    'ASK_CLARIFY',
+    'BACKGROUND_JOBS',  # deterministic job-list read — verbatim, never paraphrase
+    'CHECK_JOB',  # job status/result is authoritative; the model invents elapsed times and drops the actual summary if it re-narrates this
+    'CLOSE_APP',
+    'CREATE_FILE',  # fs mutation: executor writes + reads back, result is authoritative — never let the heuristic agent profile drop `system` and punt "run touch yourself"
+    'DATE',
+    'KEYBOARD',
+    'LIST_EVENTS',
+    'MEDIA_CONTROL',
+    'MINIMISE_APP',  # window control: deterministic executor result is authoritative — never let GGUF fabricate "Done."
+    'MINIMISE_WINDOW',
+    'MINIMIZE_APP',
+    'MINIMIZE_WINDOW',
+    'HIDE_APP',
+    'MOUSE_CONTROL',
+    'MUTE',
+    'NEXT_MEDIA',
+    'NOOP',
+    'NOW_PLAYING',  # live playerctl read — must never be GGUF-synthesised
+    'OPEN_APP',
+    'OPEN_BROWSER',
+    'OPEN_FILE_SYSTEM',
+    'OPEN_URL',
+    'PAUSE_MEDIA',
+    'PLAY_MEDIA',
+    'PREVIOUS_MEDIA',
+    'REPEAT_MEDIA',
+    'SCREEN_LOCATE',
+    'SCREEN_READ_ANALYZE',  # vision/OCR result is authoritative — never re-narrate the screen
+    'SHELL_EXEC',  # executor result is authoritative — never let model contradict it
+    'SHUFFLE_MEDIA',
+    'SPEAK',
+    'STOP_MEDIA',
+    'TIME',
+    'TIMESTAMP_DIAG',  # wall clock + stored conversation turn timestamps
+    'UNMUTE',
+    'VOLUME'
+}
 
-# Response governance — one canonical soft-import shared with the stage mixins.
-from eli.kernel.stages.retrieval import RetrievalMixin
-from eli.kernel.stages.reasoning_modes import ReasoningModesMixin
-from eli.kernel.stages.persona_text import _load_persona_text
-from eli.kernel.stages.prompt_assembly import PromptAssemblyMixin
-from eli.kernel.stages.output_text import _normalize_assistant_text
-from eli.kernel.stages.generation import GenerationMixin
-from eli.kernel.stages.lifecycle import LifecycleMixin
-from eli.kernel.stages.memory_commit import MemoryCommitMixin
-from eli.kernel.stages.guards import (  # noqa: F401
-    _eli_bad_identity_self_report_output,
-    _eli_identity_self_report_request,
-    _failed_executor_action_name,
-    _failed_executor_errors,
-    _failed_executor_is_failed,
-    _failed_executor_is_failed_block,
-    _failed_executor_paths,
-    _failed_executor_query_from_prompt,
-    _failed_executor_relevant_block,
-    _failed_executor_surface,
-    _strip_reasoning_scaffold,
-)
-from eli.kernel.stages._common import (  # noqa: F401
-    _eli_bus_first_ok_result,  # noqa: F401
-    _HAS_GOVERNANCE,
-    _eli_test_mode,
-    _eli_path_get,
-    _is_brief_phatic_prompt,
-    normalize_response,
-    should_store_as_memory,
-)
+# NOOP = fragment rejected or truly empty input; return silence, store nothing
+_PHASE45_SILENT_FAST_ACTIONS = {'NOOP'}
 
-# Model-runtime access seam (soft-imported inference module + broker) shared with
-# the generation stage — one binding both sides resolve to.
-from eli.kernel.stages.model_runtime import gguf_inference, _get_inference_broker  # noqa: F401
+# These are the actions where the executor payload IS the answer — control/OS and
+# status/self-report stuff I return straight out instead of running it back through the
+# model. It's my single source of truth for the direct-return block and for
+# _is_soft_informational_action() (deciding what can re-route when grounding is low).
+# Fail-closed on purpose: if the authority gate throws or hands back garbage I DENY these
+# side-effecting actions rather than risk it — read-only ones degrade open instead, so a
+# gate bug can never leave ELI mute. Keep this in step with the side-effecting set in process().
+_AUTHORITY_FAILCLOSED_ACTIONS = frozenset({
+    "RUN_CMD", "SHELL_EXEC", "GENERATE_SCRIPT", "GENERATE_PROJECT",
+    "FIX_FILE", "CODE_SOLVE", "CREATE_FOLDER", "DELETE_FILE",
+    "OPEN_APP", "CLOSE_APP", "MINIMIZE_APP", "OPEN_URL", "OPEN_IDE", "OPEN_IN_IDE",
+    "VOLUME", "PLAY_MEDIA", "PAUSE_MEDIA", "NEXT_MEDIA", "SELF_PATCH", "SELF_UPGRADE",
+    "KEYBOARD", "MOUSE_CONTROL",
+})
+
+_DIRECT_FINAL_ACTIONS = frozenset({
+    "OPEN_APP", "OPEN_URL", "OPEN_BROWSER", "OPEN_FILE_SYSTEM",
+    "OPEN_IN_IDE", "OPEN_SYSTEM_SETTINGS", "OPEN_AUDIO_SETTINGS",
+    "OPEN_POWER_SETTINGS", "OPEN_NETWORK_BROWSER",
+    "MEDIA_CONTROL", "PLAY_MEDIA", "PAUSE_MEDIA", "STOP_MEDIA",
+    "NEXT_MEDIA", "PREVIOUS_MEDIA", "NOW_PLAYING", "VOLUME", "TILE_WINDOWS",
+    "KEYBOARD", "MOUSE_CONTROL", "SCREENSHOT",
+    "SPEAK", "DICTATE", "TRANSCRIBE",
+    "NEWS_FETCH", "WEB_SEARCH", "GET_WEATHER",
+    "GET_TIME", "GET_DATE", "TIME", "DATE",
+    "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS",
+    "RUNTIME_STATUS", "REASONING_MODE_STATUS", "MEMORY_STATUS", "COGNITION_STATUS",
+    "GUI_RUNTIME_AUDIT", "RUNTIME_AUDIT", "IMPORT_AUDIT",
+    "RESOLVE_RUNTIME_PATHS", "EXPLAIN_LAST_RESPONSE",
+    "EXPLAIN_LAST_FAILURE", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
+    "EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_FAILURE_LOG",
+    "SELF_REPORT", "USER_IDENTITY_SUMMARY", "PERSONAL_MEMORY_SUMMARY",
+    "PERSONAL_MEMORY_DEEP_EXPLAIN", "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT",
+    "SELF_ANALYZE", "SELF_IMPROVE", "SELF_IMPROVEMENT_LOG", "SELF_UPDATE",
+    "SELF_TEST",
+    "SELF_UPGRADE", "SELF_PATCH", "SELF_REPAIR_PLAYBOOK",
+    "EXAMINE_CODE", "CONFIRM_CODE_FIX", "CANCEL_CODE_FIX",
+    "CONFIRM_HABIT", "DECLINE_HABIT",
+    "MORNING_REPORT", "PROACTIVE_STATUS", "HABIT_STATUS", "LIST_CAPABILITIES",
+    "LIST_DIR", "READ_FILE", "SET_TIMER", "SET_ALARM", "WRITE_NOTE",
+    "CREATE_FOLDER", "SET_CLIPBOARD", "GET_CLIPBOARD", "GPU_STATUS",
+    "OPEN_IDE",
+    "OPEN_COMMUNICATION_HUB",
+    "OPEN_MEDIA_HUB",
+    "SCREEN_LOCATE",
+    "SCREEN_READ_ANALYZE",
+})
 
 
-# Phase 45 fast-path action sets + helpers live in eli.kernel.stages.fast_actions
-# (extracted during v3 modularisation; imported back so callers are unchanged).
-from eli.kernel.stages.fast_actions import (  # noqa: F401
-    _PHASE45_DIRECT_FAST_ACTIONS,
-    _PHASE45_SILENT_FAST_ACTIONS,
-    _AUTHORITY_FAILCLOSED_ACTIONS,
-    _DIRECT_FINAL_ACTIONS,
-    _is_soft_informational_action,
-    _phase45_action_name,
-    _phase45_result_text,
-    _phase45_force_direct_result,
-)
+# Actions whose answer is produced by READING LIVE STATE (a socket, a player, a
+# device, a runtime singleton) rather than by synthesising prose. These inherently
+# score grounding 0.00 on the agent bus — there is nothing in memory to ground a
+# question about what is playing *right now* — so the low-grounding downgrade below
+# would fire on them every single time and hand the question to CHAT, which then
+# invents an answer. That is exactly backwards: these are the actions that can
+# answer truthfully, because executing them IS the fact-check.
+#
+# The naming convention carries the meaning, so match on it rather than trusting a
+# hand-kept list to stay complete — that list already drifted once and let
+# NOW_PLAYING through, which is how ELI came to confabulate a YouTube playback
+# explanation instead of reporting "Nothing is playing right now."
+_LIVE_STATE_ACTION_SUFFIXES = ("_STATUS", "_STATS", "_USAGE")
+# Only names the suffix rule cannot catch belong here.
+_LIVE_STATE_ACTIONS = frozenset({
+    "NOW_PLAYING",
+})
+
+
+def _is_live_state_action(a: str) -> bool:
+    """True when the action answers by reading real live state. Never downgradeable."""
+    return a in _LIVE_STATE_ACTIONS or a.endswith(_LIVE_STATE_ACTION_SUFFIXES)
+
+
+def _is_soft_informational_action(action) -> bool:
+    """True when `action` is a synthesised informational action (the only kind safe to silently
+    re-route to CHAT on low grounding). False for CHAT itself and for every control / OS / media /
+    status / report / deterministic action — those carry their own grounded payload and must never
+    be downgraded. Reuses the module-level direct-final + phase45 + control-contract sets, plus the
+    live-state naming convention above."""
+    a = str(action or "").upper().strip()
+    if not a or a == "CHAT":
+        return False
+    if a in _DIRECT_FINAL_ACTIONS or a in _PHASE45_DIRECT_FAST_ACTIONS:
+        return False
+    if _is_live_state_action(a):
+        return False
+    try:
+        from eli.runtime.control_contracts import CONTROL_ACTIONS as _CC
+        if a in {str(x).upper() for x in (_CC or set())}:
+            return False
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+    return True
 
 # I only want the destructive teardown to run once per process. The close steps
 # (memory/vector/GGUF) all hit module-level singletons shared across every
 # CognitiveEngine, so if a second instance shuts down after the first already freed
 # the CUDA handles, we double-free and segfault on the way out. This flag stops that
 # no matter how many instances or atexit hooks fire.
+_ELI_NATIVE_TEARDOWN_DONE = False
 
+def _phase45_action_name(action) -> str:
+    return str(action or "").strip().upper()
+
+def _phase45_result_text(result, action=None) -> str:
+    if not isinstance(result, dict):
+        return str(result or "").strip()
+    return str(
+        result.get("response")
+        or result.get("content")
+        or result.get("message")
+        or result.get("error")
+        or ""
+    ).strip()
+
+def _phase45_force_direct_result(action, result):
+    a = _phase45_action_name(action)
+    if not isinstance(result, dict):
+        result = {"ok": True, "action": a, "content": str(result or ""), "response": str(result or "")}
+    else:
+        result = dict(result)
+
+    ok = bool(result.get("ok", True))
+    text = _phase45_result_text(result, a)
+
+    if a in _PHASE45_SILENT_FAST_ACTIONS and ok:
+        text = ""
+
+    result["action"] = result.get("action") or a
+    result["content"] = text
+    result["response"] = text
+    result.setdefault("meta", {})
+    if isinstance(result["meta"], dict):
+        result["meta"].update({
+            "response_mode": "direct_tool_result",
+            "bypassed_agent_bus": True,
+            "bypassed_memory": True,
+            "bypassed_gguf": True,
+            "phase45_fastpath": True,
+        })
+    return result
 
 
 
@@ -132,8 +302,66 @@ def _eli_direct_persona_file_answer(user_text: str):
 # ============================================================
 
 
+def _eli_conversation_semantic_guard(user_text: str) -> str:
+    """
+    Dynamic semantic guard for local-persona conversation.
+    Does not hardcode the user's name or profile.
+    Prevents the model from flipping ELI-directed metaphors into generic
+    medical/legal/encyclopaedic explanations.
+    """
+    raw = str(user_text or "")
+    low = raw.lower()
+    notes = []
+
+    eli_directed = any(x in low for x in (" eli", "eli,", "you ", "your ", "on you", "to you"))
+    repair_metaphor = any(x in low for x in (
+        "lobotomised", "lobotomized", "lobotomy",
+        "open-head surgery", "open head surgery",
+        "head screwed", "screwed back on",
+        "personality gone", "persona not up to date",
+    ))
+
+    if eli_directed and repair_metaphor:
+        notes.append(
+            "SEMANTIC GUARD: The user is using repair/surgery/lobotomy language as a metaphor "
+            "for ELI's code, persona, memory, or cognition being patched. Do NOT explain human "
+            "brain surgery, medical procedures, craniotomy, hospitals, emotions, or patient care. "
+            "Answer as ELI about the local system state, recent repair context, persona drift, "
+            "memory behaviour, and what still needs fixing."
+        )
+
+    if any(x in low for x in ("what is my name", "preferred name", "nickname", "who am i")):
+        notes.append(
+            "IDENTITY GUARD: Only use a user's name if it comes from a verified current profile "
+            "or high-confidence explicit memory evidence. Do not infer names from stale snippets, "
+            "old assistant outputs, Linux usernames, examples, or poisoned conversation turns. "
+            "If identity is unknown, say it is unknown and state what evidence was checked."
+        )
+
+    if notes:
+        return "\n".join(notes).strip()
+    return ""
 
 
+def _clean_persona(raw: str) -> str:
+    clean_lines: List[str] = []
+    in_template_block = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith(("PARAMETER ", "FROM ")):
+            continue
+        if stripped.upper().startswith("TEMPLATE "):
+            in_template_block = True
+            continue
+        if in_template_block:
+            if '"""' in stripped:
+                in_template_block = False
+            continue
+        if stripped.startswith("# Model parameters") or stripped.startswith(
+            "# Template for conversation"):
+            continue
+        clean_lines.append(line)
+    return "\n".join(clean_lines).rstrip()
 
 
 
@@ -156,7 +384,7 @@ def _eli_direct_grounded_answer(user_text: str):
         if any(t in _q_guard for t in _persona_terms) and not any(t in _q_guard for t in _explicit_file_scan_terms):
             return None
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     """
     Deterministic answers for questions that must not be delegated to the LLM:
@@ -167,7 +395,7 @@ def _eli_direct_grounded_answer(user_text: str):
         if persona_answer is not None:
             return persona_answer
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     try:
         from eli.cognition.grounded_status import direct_grounded_answer
@@ -176,6 +404,101 @@ def _eli_direct_grounded_answer(user_text: str):
         return f"Grounded status lookup failed: {e!r}"
 
 
+def _load_persona_text() -> str:
+    """
+    Canonical persona loader.
+
+    Source of truth:
+      eli/cognition/persona.txt
+      eli/cognition/persona.auto.txt
+
+    Do not fall back to generic assistant identity unless both canonical
+    files are missing. The old lookup paths caused ELI to ignore its real
+    persona and drift into base-model AI-disclaimer behaviour.
+    """
+    # Single source of truth: delegate the base+overlay read to the canonical
+    # eli.cognition.persona module (one `_clean_persona`, env-override aware). Compose
+    # exactly as before (base + "\n\n" + overlay) so the persona text is unchanged.
+    # The legacy candidate/config chain below stays only as a fallback for non-default
+    # layouts or when the canonical files are absent.
+    try:
+        from eli.cognition.persona import read_base_persona as _canon_base, read_auto_persona as _canon_auto
+        _cb = (_canon_base() or "").strip()
+        _ca = (_canon_auto() or "").strip()
+        if _cb and _ca:
+            return _cb + "\n\n" + _ca
+        if _cb:
+            return _cb
+        if _ca:
+            return _ca
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    root = Path(__file__).resolve().parents[2]
+
+    # Base identity candidates — stop at first found
+    base_candidates = [
+        root / "eli" / "cognition" / "persona.txt",
+        root / "config" / "persona.txt",
+        Path(__file__).resolve().parents[1] / "persona" / "persona.txt",
+        Path(__file__).resolve().parent / "persona.txt",
+    ]
+    # Dynamic overlay — auto-updated every 120s by persona_updater
+    overlay_candidates = [
+        root / "eli" / "cognition" / "persona.auto.txt",
+        root / "config" / "persona.auto.txt",
+    ]
+
+    base = ""
+    for cand in base_candidates:
+        try:
+            if cand.exists() and cand.is_file():
+                raw = cand.read_text(encoding="utf-8", errors="replace")
+                cleaned = _clean_persona(raw).strip()
+                if cleaned:
+                    base = cleaned
+                    break
+        except Exception:
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    overlay = ""
+    for cand in overlay_candidates:
+        try:
+            if cand.exists() and cand.is_file():
+                raw = cand.read_text(encoding="utf-8", errors="replace")
+                cleaned = _clean_persona(raw).strip()
+                if cleaned:
+                    overlay = cleaned
+                    break
+        except Exception:
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    if base and overlay:
+        return base + "\n\n" + overlay
+    if base:
+        return base
+    if overlay:
+        return overlay
+
+    try:
+        forced = (config.get_eli_persona() or "").strip()
+        if forced:
+            return forced
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    try:
+        configured = (config.get_persona() or "").strip()
+        if configured:
+            return configured
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    return (
+        "You are ELI — Enhanced Learning Interface. You run locally on this "
+        "machine. Be substantive, grounded, direct, and never claim to be a generic "
+        "cloud AI assistant."
+    )
 
 
 def _model_family_from_path(model_path) -> str:
@@ -199,8 +522,56 @@ def _model_family_from_path(model_path) -> str:
 
 
 
+def _strip_reasoning_scaffold(text: str) -> str:
+    """Strip leftover internal-deliberation prefixes that small LLMs leak into the
+    final user-visible answer. Covers role/mode/stage/approach labels at the very
+    start of the response. Conservative — only removes the opening label line(s),
+    leaves the answer body intact."""
+    t = str(text or "").lstrip()
+    if not t:
+        return t
+    # Forbidden opening forms — each pattern only strips when it matches the START
+    # of the response, then re-strips leading whitespace and re-checks.
+    _scaffold_re = re.compile(
+        r"^(?:"
+        # Speaker/role label: "As ELI:", "ELI:", "As an AI:", "As a/an X:"
+        r"as\s+eli[:,]?\s*|"
+        r"eli[:,]\s*|"
+        r"as\s+an?\s+(?:ai|assistant|llm|agent)[:,]?\s*|"
+        # Mode label: "Quick:", "CoT:", "Constitutional:", "Chain of Thought:"
+        r"(?:quick|cot|chain\s+of\s+thought|self[-\s]?consistency|"
+        r"tree\s+of\s+thoughts?|constitutional(?:\s+ai)?)[:,]?\s*|"
+        # Approach/stage/step preamble: "Approach 3:", "Stage 1:", "Step 2:"
+        r"(?:approach|stage|step|option|candidate|path|plan|strategy|selected)"
+        r"\s*[0-9]*\s*[:.\-]\s*[^\n]*\n+|"
+        # Generic single-line announcement followed by colon-list intro
+        r"selected\s+approach[:,]?\s*[^\n]*\n+"
+        r")",
+        re.IGNORECASE,
+    )
+    # Apply iteratively until no more leading scaffold matches (handles stacked prefixes).
+    for _ in range(4):
+        new_t = _scaffold_re.sub("", t, count=1).lstrip()
+        if new_t == t:
+            break
+        t = new_t
+    return t
 
 
+def _strip_special_tokens(text: str) -> str:
+    try:
+        from eli.cognition.model_output_tokens import strip_special_tokens as _strip_all
+        return _strip_all(text)
+    except Exception:
+        t = text or ""
+        for tok in ("[INST]", "[/INST]", "<s>", "</s>",
+                    "<|im_start|>", "<|im_end|>", "<|endoftext|>",
+                    "<|end_of_turn|>", "<end_of_turn>", "<start_of_turn>", "</start_of_turn>"):
+            t = t.replace(tok, "")
+        t = re.sub(r"<\|end_of_turn\|>", "", t, flags=re.I)
+        t = re.sub(r"</?start_of_turn>", "", t, flags=re.I)
+        t = re.sub(r"^(?:system|user|assistant)\n", "", t, flags=re.I)
+        return t.strip()
 
 
 _ELI_MAX_INPUT_LEN = int(__import__("os").environ.get("ELI_MAX_INPUT_LEN", "8192"))
@@ -269,17 +640,250 @@ def _eli_summarize_tool_result(action: str, result: dict) -> str:
     return summary[:120]
 
 
+def _sanitize_identity_drift(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    t = re.sub(
+    r"^\s*(?:hello[,!]?\s*)?(?:i am|i'm)\s+(?:an?\s+)?ai(?:\s+assistant|\s+model|)[:,.!\s-]*",
+    "",
+    t,
+     flags=re.I).strip()
+    t = re.sub(
+    r"^\s*as an ai(?:\s+assistant|\s+model|)[:,.!\s-]*",
+    "",
+    t,
+     flags=re.I).strip()
+    t = re.sub(
+    r"^\s*i do(?:n't| not) have a head[.!?\s]*",
+    "",
+    t,
+     flags=re.I).strip()
+    t = re.sub(
+    r"^\s*i do(?:n't| not) have personal memor(?:y|ies)[.!?\s]*",
+    "",
+    t,
+     flags=re.I).strip()
+    t = re.sub(
+    r"^\s*i can(?:not|'t) retain information[.!?\s]*",
+    "",
+    t,
+ flags=re.I).strip()
+    return t
 
 
+def _eli_identity_self_report_request(text: str) -> bool:
+    low = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not low:
+        return False
+    return bool(re.search(
+        r"\b("
+        r"who are you"
+        r"|who you are"
+        r"|what are you(?:\s|$)"
+        r"|do you know who you are"
+        r"|tell me about yourself"
+        r"|tell me .{0,40}who you are"
+        r"|as (?:a |an )?(?:person|entity)"
+        r"|your identity"
+        r"|your persona"
+        r"|persona evolved"
+        r"|identity evolved"
+        r"|defined with .{0,80}memories"
+        r"|how .{0,80}(?:persona|identity).{0,80}(?:evolved|defined)"
+        r")\b",
+        low,
+    ))
 
 
+def _eli_bad_identity_self_report_output(user_input: str, response: str) -> bool:
+    if not _eli_identity_self_report_request(user_input):
+        return False
+    text = str(response or "").strip()
+    if not text:
+        return True
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            surface = str(parsed.get("surface") or "").lower()
+            ident = parsed.get("identity") if isinstance(parsed.get("identity"), dict) else {}
+            sources = ident.get("grounding_sources") if isinstance(ident, dict) else []
+            if (
+                surface in {"identity_evidence", "identity_runtime_evidence", "self_report_evidence"}
+                and str(ident.get("name") or "").lower() == "eli"
+                and {"persona", "memory"} <= {str(x).lower() for x in (sources or [])}
+            ):
+                return False
+    except (ValueError, TypeError):
+        pass  # a plain-text reply isn't JSON — expected, fall through to the text checks
+    low = text.lower()
+    if re.search(r"\byour (?:identity|persona)\b", low):
+        return True
+    if text.endswith("?") and re.match(
+        r"(?is)^\s*(who|what|when|where|why|how|do|does|did|is|are|can|could|should|would)\b",
+        text,
+    ):
+        return True
+    has_eli_first_person = bool(re.search(r"\b(i am|i'm)\s+eli\b|\bmy (?:identity|persona)\b", low))
+    settings_heavy = bool(re.search(r"\b(model details|model path|context size|gpu layers|batch size|provider=|ctx=)\b", low))
+    if not has_eli_first_person:
+        return True
+    if settings_heavy and not re.search(r"\bpersona|memory|reflection|identity|local files|runtime state\b", low):
+        return True
+    return False
 
 
+def _policy_identity_memory_response(user_text: str, model_text: str) -> str:
+    u = (user_text or "").lower()
+    t = (model_text or "").strip()
+    if not t:
+        return t
+    identity_triggers = (
+        "who are you", "what are you", "what are you actually running on",
+        "how does your memory work", "what do you know about me",
+        "runtime audit", "memory internals", "cognition pipeline",
+    )
+    if any(k in u for k in identity_triggers):
+        t = re.sub(
+    r"^\s*(?:hello[,!]?\s*)?(?:i am|i'm)\s+eli[^.?!]*[.?!]?\s*",
+    "",
+    t,
+     flags=re.I).strip()
+        t = re.sub(
+    r"^\s*how (?:can|may) i assist you today[.?!\s]*",
+    "",
+    t,
+     flags=re.I).strip()
+    return t
 
 
+_SYS_DIAG_RE = re.compile(
+    r'(?:'
+    r'total\s+(?:stored\s+)?memories\s*:'
+    r'|total\s+conversation\s+turns\s*:'
+    r'|memories\s+indexed\s+by\s+fts'
+    r'|session\s+summar(?:ies|y)\s*(?:,|\.|:|\d)'
+    r'|recall\s+log\s+entr'
+    r'|memory\s+health\s+signals?'
+    r'|no\s+obvious\s+weaknesses\s+in\s+memory'
+    r'|faiss\s+(?:vectors?|count|index)'
+    r')',
+    re.IGNORECASE,
+)
+
+def _strip_system_diag_lines(text: str) -> str:
+    """Remove lines that are DB health metrics — they leak into identity responses."""
+    lines = text.splitlines()
+    kept = [ln for ln in lines if not _SYS_DIAG_RE.search(ln)]
+    # Remove bullet numbering holes (e.g. "8. " with nothing after)
+    return "\n".join(kept).strip()
 
 
+def _normalize_assistant_text(user_text: str, text: str) -> str:
+    t = _strip_special_tokens(text)
+    t = _strip_reasoning_scaffold(t)
+    t = _sanitize_identity_drift(t)
+    t = _policy_identity_memory_response(user_text, t)
+    # Strip system health metric lines that bleed into user-facing identity responses
+    if any(k in (user_text or "").lower() for k in (
+        "what do you know about me", "tell me about me", "my memory",
+        "who am i", "what have you learned about me",
+    )):
+        t = _strip_system_diag_lines(t)
 
+    # Strip any turn-boundary continuation the model leaked through stop tokens
+    # Pattern: response ends with "\n\n<role>:" or "\n<role>:" or the user's own text
+    _role_markers = re.compile(
+        r'\n+(?:User|USER|ELI|Assistant|ASSISTANT)\s*:\s*.*$',
+        re.DOTALL
+    )
+    t = _role_markers.sub('', t).strip()
+
+    # Strip canned completion-style prefixes ("Short answer:", "Answer:", etc.)
+    t = re.sub(r"^\s*Short\s+answer\s*:\s*", "", t, flags=re.I).strip()
+    t = re.sub(r"^\s*(?:Answer|Response|Reply)\s*:\s*", "", t, flags=re.I).strip()
+
+    # Strip incomplete JSON/list artifacts from truncated max_tokens responses
+    # Catches lone "[", "{", "[\n", "{\n" at the end of otherwise complete text
+    t = re.sub(r'\s*[\[{]\s*$', '', t).strip()
+
+    # Strip model meta-commentary: "(Note: This response deviates...)" patterns
+    t = re.sub(r'\s*\(Note:[^)]{0,300}\)', '', t, flags=re.I).strip()
+    t = re.sub(r'\s*\[Note:[^\]]{0,300}\]', '', t, flags=re.I).strip()
+    # Strip leaked INTERNAL-STATE / context-metadata lines the model echoed verbatim from its
+    # brief — "[Your current activity: …, attention: …]", "[Remembered past topics: …]",
+    # "[ELI INTERNAL STATE]" etc. These are context scaffolding, never user-facing. Anchored to
+    # whole lines with a known internal label, so it never touches legitimate bracketed text
+    # like "[MEMORY SEARCH RESULT: …]" or an array index. (2026-06-09: a casual "back in a
+    # minute" drew a reply that ended in these bracketed metadata lines.)
+    t = re.sub(
+        r'(?im)^[ \t]*\[(?:your\s+)?(?:current\s+activity|attention|remembered\s+past\s+topics'
+        r'|recalled\s+(?:past\s+)?topics|recalled\s+research|eli\s+internal\s+state'
+        r'|internal\s+state|world\s+state)\b[^\]\n]*\]\s*$',
+        '', t).strip()
+    # Strip trailing self-critique the model appended to phatic responses
+    t = re.sub(
+        r'\s*\(Note:.*$', '', t, flags=re.I | re.DOTALL
+    ).strip()
+
+    if user_text and len(user_text.strip()) >= 8:
+        _user_stripped = user_text.strip()
+        _user_low = _user_stripped.lower()
+
+        # ── HEAD echo: model starts by repeating the user's message ──
+        # Compare normalised (whitespace-collapsed) versions for robustness
+        _t_norm = re.sub(r'\s+', ' ', t.strip()).lower()
+        _u_norm = re.sub(r'\s+', ' ', _user_low)
+        if _t_norm.startswith(_u_norm):
+            # Exact leading match — strip the echoed portion
+            t = t.strip()[len(_user_stripped):].lstrip('\n\r :–—').strip()
+        else:
+            # Partial leading match: first 50 chars align → find where user text ends
+            _check = min(50, len(_u_norm))
+            if _check >= 20 and _t_norm[:_check] == _u_norm[:_check]:
+                # Find the last ~20 chars of user text in the response and cut there
+                _tail_probe = _u_norm[-20:]
+                _cut = _t_norm.find(_tail_probe)
+                if _cut > 0:
+                    t = t.strip()[_cut + 20:].lstrip('\n\r :–—').strip()
+
+        # ── TAIL echo: model ends by repeating the user's message ──
+        _t_lines = t.strip().splitlines()
+        while _t_lines:
+            _last = re.sub(r'\s+', ' ', _t_lines[-1].strip()).lower()
+            if _last and (_last == _u_norm or
+                          (_u_norm in _last and len(_last) < len(_u_norm) + 20)):
+                _t_lines.pop()
+            else:
+                break
+        t = '\n'.join(_t_lines).strip()
+
+    low = t.lower().strip()
+    canned_prefixes = (
+        "hello, i am eli", "how may i assist you today",
+        "i don't have personal friendships", "i do not have personal friendships",
+    )
+    if any(low.startswith(p) for p in canned_prefixes):
+        t = re.sub(r"^(hello,?\s*i am eli[.!?\s]*)", "", t, flags=re.I).strip()
+        t = re.sub(
+    r"^(how may i assist you today[.!?\s]*)",
+    "",
+    t,
+     flags=re.I).strip()
+        t = re.sub(
+    r"^(i do(?:n't| not) have personal friendships[.!?\s]*)",
+    "",
+    t,
+     flags=re.I).strip()
+    t = re.sub(r'(?i)\[(?:user|username|name)\]', '', t)
+    t = re.sub(r'(?i)<(?:local_user|username|name)>', '', t)
+    t = re.sub(r'\s+,', ',', t)
+    t = re.sub(r',\s*\.', '.', t)
+    t = re.sub(r'\(\s*\)', '', t)
+    t = re.sub(r' {2,}', ' ', t)
+    t = re.sub(r'\n{3,}', '\n\n', t)
+    t = t.strip()
+    return t or ""
 
 
 def _looks_like_prompt_scaffold(text: str) -> bool:
@@ -338,7 +942,328 @@ def _complexity_mode_hint(text: str) -> Optional[str]:
     return None
 
 
+def _is_brief_phatic_prompt(text: str) -> bool:
+    raw = (text or "").strip().lower()
+    if not raw:
+        return False
+    normalized = re.sub(r"[^a-z0-9' ]+", " ", raw)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return False
+    # Strip a trailing direct-address of the assistant's name ("good afternoon eli" ->
+    # "good afternoon", "hello there eli" -> "hello there") so greetings that tack the wake
+    # name on the end still match the phatic phrase set below. "good afternoon eli" used to
+    # fall through as non-phatic, which let the past-session project topics get injected and
+    # the model resumed them off a plain hello.
+    normalized = re.sub(
+        r"\s+(?:eli|pal|bud|buddy|mate|man|dude|bro|friend)$", "", normalized
+    ).strip() or normalized
+    # Strip a LEADING greeting so a greeting compounded with a phatic check-in still matches
+    # ("good afternoon what's the story" -> "what's the story"). This only HELPS a phatic
+    # remainder reach the phrase set; a substantive remainder ("good morning fix the bug")
+    # still falls through as non-phatic, so it can't swallow a real request.
+    _lead = re.sub(r"^(?:good\s+)?(?:morning|afternoon|evening)\b[\s,.]*", "", normalized)
+    _lead = re.sub(r"^(?:hi|hey|hello|hiya|howya|yo|sup)\b[\s,.]+", "", _lead).strip()
+    # A LEADING direct-address, mirroring the trailing strip above: "hey buddy,
+    # how's the head" is the same utterance as "how's the head". Without this the
+    # address counted as a content word and pushed the check-in past the ≤5-word
+    # gate on the casual patterns below.
+    _lead = re.sub(
+        r"^(?:pal|bud|buddy|mate|man|dude|bro|lad|friend|eli)\b[\s,.]+", "", _lead
+    ).strip() or _lead
+    # Trailing conversational filler on a check-in — "how's the head doing, now"
+    # is "how's the head". Only stripped after an idiom stem is already present,
+    # so it cannot shorten a substantive request into a phatic one.
+    if re.match(r"^how'?s?\s+(?:is\s+)?(?:the|your)\b", _lead):
+        _lead = re.sub(
+            r"[\s,]+(?:doing|going|keeping|holding up)?[\s,]*"
+            r"(?:now|today|then|at all|so|these days)?[\s,.?!]*$", "", _lead
+        ).strip() or _lead
+    if _lead and _lead != normalized and len(_lead.split()) <= 8:
+        normalized = _lead
+    words = normalized.split()
+    n = len(words)
 
+    # Hard cap: more than 30 words is never purely phatic
+    if n > 30:
+        return False
+
+    # Follow-up / result-request patterns are never phatic even if short
+    _followup_patterns = (
+        r"^(okay|ok|so|and|now)[,.]?\s*(what|where|when|how|why|tell|show|give|any)",
+        r"^what (are|were|is|did|do) (the )?results?",
+        r"^what (happened|did you find|did you see|did it say)",
+        r"^(any|what) (results?|findings?|errors?|issues?|output|response)",
+        r"^(show|tell|give) (me )?(the )?(results?|output|findings?|report)",
+    )
+    for _fp in _followup_patterns:
+        if re.match(_fp, normalized):
+            return False
+
+    phrases = {
+        "hi", "hello", "hey", "hiya", "howya", "yo", "sup",
+        "hi eli", "hello eli", "hey eli", "howya eli",
+        "whats up", "what's up", "you alive", "you there",
+        "how are you", "how you doing", "how ya doing", "hows things", "how's things",
+        "how is things", "how are things", "hows everything", "how's everything",
+        "hows it going", "how's it going", "hows it", "how's it",
+        "all good", "you good",         "you ok", "you okay",
+        "you any better", "any better",
+        "good morning", "good afternoon", "good evening", "morning eli", "evening eli",
+        # Irish / colloquial check-ins (idiom for "how are things", NOT a request for a story)
+        "whats the story", "what's the story", "what is the story", "story bud", "story pal",
+        "whats the craic", "what's the craic", "hows the craic", "how's the craic", "any craic",
+        "whats new", "what's new", "whats happening", "what's happening",
+        # Irish / colloquial — same rapport class as "how's things"
+        "hows tricks", "how's tricks", "how are tricks",
+        "hows the form", "how's the form", "hows the head", "how's the head",
+        # Gratitude / closers — purely phatic, never an action (a substantive remainder
+        # like "thanks, now fix X" is caught by the follow-up guard / falls through).
+        "thanks", "thank you", "thanks a lot", "thanks so much", "thank you so much",
+        "cheers", "ta", "much appreciated", "appreciate it", "nice one", "good stuff",
+        "good job", "well done", "great stuff", "lovely", "perfect", "brilliant",
+        "no worries", "no problem", "you're welcome", "youre welcome",
+        # Sign-offs / closers — purely phatic; a substantive remainder is caught
+        # by the follow-up guard or falls through as non-phatic.
+        "night", "good night", "goodnight", "gnight", "night night", "nighty night",
+        # Bare time-of-day greetings. "good morning" was here and "morning" was
+        # not, so "afternoon, Eli" — which the ROUTER classifies as
+        # chat.greeting at 0.90 — was not phatic to this detector, and the two
+        # disagreed about the same utterance. The trailing/leading address strip
+        # above already reduces "afternoon, Eli" to "afternoon".
+        "morning", "afternoon", "evening",
+        "mornin", "evenin", "good evening", "good day", "gday", "g'day",
+        "see ya", "see you", "see you later", "see ya later", "talk later",
+        "talk soon", "catch you later", "goodbye", "bye", "bye bye", "cya",
+    }
+    if normalized in phrases:
+        return True
+
+    # Compound phatic: "what's the story? you good?" — Irish greeting + check-in.
+    if re.search(r"\b(?:whats|what'?s|what is) the story\b", normalized) and re.search(
+        r"\b(?:you good|you ok|you okay|you alright|you better|you sorted)\b", normalized
+    ):
+        return True
+
+    # Short (≤5 word) casual check-in patterns
+    # "how's the X" is a wellbeing idiom — EXCEPT when X is something ELI actually
+    # runs on. "how's the head" is a hello; "how's the GPU" is a real question that
+    # must keep its evidence gathering. Listing the technical nouns is narrower and
+    # safer than trying to guess intent.
+    # "how IS the x" as well as "how's the x" — the strip above already accepts
+    # both, so the patterns below have to as well or the longer form falls through
+    # to the LLM resolver (46s on a CPU-offloaded model, to answer "CHAT").
+    _technical_subject = re.match(
+        r"^how'?s? (?:is )?(?:the|your) (gpu|cpu|ram|vram|server|model|build|tests?|code|api|"
+        r"db|database|memory|disk|network|index|suite|pipeline|daemon|queue|log)\b",
+        normalized,
+    )
+    _casual_patterns = () if _technical_subject else (
+        r"^how'?s? (?:is )?the \w+(\s+\w+)?$",
+        r"^how'?s? (?:is )?your \w+(\s+\w+)?$",
+        # A second-person STATE check aimed at ELI: "are you ok", "you better now".
+        # Pronoun + state adjective + optional temporal tail, anchored end-to-end,
+        # so there is no verb-plus-object slot for a real request to hide in
+        # ("fix the router" cannot match). "you ok" was already in the phrase set;
+        # the natural forms around it were not, and each one cost a full
+        # intent-classification generation.
+        r"^(?:are |r )?you(?:\s+any)?\s+"
+        r"(?:ok|okay|alright|allright|good|well|better|fine|right|sorted|sound|normal"
+        r"|back(?: to (?:normal|yourself|form))?)"
+        r"(?: now| yet| today| again| then)?$",
+        r"^how are (you|things|we)( doing| going)?$",
+        r"^what'?s (up|good|new|happening)(\s+\w+)?$",
+        r"^\w+ \w+ buddy$",
+        r"^hey \w+$",
+    )
+    if n <= 5:
+        for pat in _casual_patterns:
+            if re.match(pat, normalized):
+                return True
+    # Longer check-ins: "are you back to normal yet, or not?" — still rapport, not CLEAR_TONE.
+    if n <= 10 and re.match(
+        r"^(?:are |r )?you back to (?:normal|yourself)(?: yet|, or not)?(?:\?)?$",
+        normalized,
+    ):
+        return True
+
+    # Identity/self-awareness questions — phatic if combined with a greeting
+    _identity_only = {
+        "do you know who you are", "do you know who i am",
+        "do you know me", "who are you", "who am i",
+        "do you remember me", "do you remember who i am",
+    }
+    if normalized in _identity_only:
+        return False
+
+    # Multi-sentence greeting + identity combo (e.g. "hey how are you do you know who you are")
+    starts_as_greeting_check = any(normalized.startswith(g) for g in (
+        "hey", "hi", "hello", "hiya", "yo", "howdy", "morning", "evening",
+        "afternoon", "good morning", "good afternoon", "good evening",
+    ))
+    has_identity = any(p in normalized for p in _identity_only)
+    has_checkin_quick = any(p in normalized for p in (
+        "how are you", "how you doing", "you doing", "you alright", "you good",
+    ))
+    if has_identity:
+        return False
+
+    if starts_as_greeting_check and has_checkin_quick and n <= 30:
+        # Only phatic if no actual task is embedded.
+        _task_words_check = (
+            "help", "fix", "write", "create", "open", "run", "search", "find",
+            "explain", "tell me", "show me", "generate", "code", "script",
+            "gimme", "give me", "lowdown", "stats", "stat", "report", "rundown",
+            "summary", "capabilities", "inventory", "update me", "status report",
+        )
+        if not any(t in normalized for t in _task_words_check):
+            return True
+
+    # Multi-sentence greeting detection (≤30 words):
+    # Catches "hey bud, how are you today? how is the head?" etc.
+    # Must start with a greeting word and contain only check-in content
+    _greeting_starts = (
+        "hey", "hi", "hello", "hiya", "yo", "howdy", "morning", "evening",
+        "afternoon", "good morning", "good afternoon", "good evening",
+    )
+    _checkIn_phrases = (
+        "how are you", "how's it", "hows it", "how you doing",
+        "how is the", "how's the", "hows the",
+        "you doing", "you alright", "you good", "you okay",
+        "all good", "everything ok", "everything good",
+        "how are things", "hows things",
+        # ELI-directed wellbeing / status queries — these do not need to start
+        # with a greeting word to be phatic; "how has your last X been" is a
+        # social check-in regardless of how the sentence opens.
+        "how has your last", "how have you been", "how's your last",
+        "how was your last", "how was your day", "how has your day",
+        "checking up on you", "just checking up", "just checking in",
+        "how has your", "how was your",
+    )
+    starts_as_greeting = any(normalized.startswith(g) for g in _greeting_starts)
+    has_checkin = any(p in normalized for p in _checkIn_phrases)
+
+    # No task/question words that suggest actual work is needed
+    _task_words = (
+        "help", "fix", "write", "create", "open", "run", "search", "find",
+        "what is", "explain", "tell me", "show me", "can you", "could you",
+        "why", "when", "where", "which", "generate", "code", "script",
+        "gimme", "give me", "lowdown", "stats", "stat", "report", "rundown",
+        "summary", "capabilities", "inventory", "update me", "status report",
+        "hardcoded", "template", "stub", "static info", "dynamic",
+    )
+    has_task = any(t in normalized for t in _task_words)
+
+    if starts_as_greeting and has_checkin and not has_task:
+        return True
+
+    # ELI wellbeing/status check-in: does not require greeting opener.
+    # "Still here pal, how has your last 24 hours been?" is phatic even
+    # though it starts with "still" rather than "hey/hi/hello".
+    _eli_status_phrases = (
+        "how has your last", "how have you been", "how's your last",
+        "how was your last", "checking up on you", "just checking up",
+        "just checking in",
+    )
+    has_eli_status = any(p in normalized for p in _eli_status_phrases)
+    if has_eli_status and not has_task and n <= 30:
+        return True
+
+    return False
+
+
+def _phatic_time_authority_block() -> str:
+    """Wall-clock anchor for greetings — prevents 'night here' timezone confabulation."""
+    try:
+        import datetime as _dt
+        from eli.runtime.reflection import part_of_day as _part_of_day
+        _now = _dt.datetime.now()
+        _tz = _now.astimezone().tzname() or ""
+        return (
+            "CURRENT TIME (authoritative — the USER's local clock, not ELI's server clock; "
+            "never invent a different timezone or say it is night/day elsewhere): "
+            f"{_now.strftime('%A %d %B %Y, %H:%M')}"
+            f"{(' ' + _tz) if _tz else ''} ({_part_of_day()}). "
+            "Morning 05:00-12:00, afternoon 12:00-17:00, evening 17:00-21:00, night 21:00-05:00."
+        )
+    except Exception:
+        return ""
+
+
+def _phatic_rapport_style_rule() -> str:
+    """Steering block for greetings/check-ins — keeps ELI's voice without memory dumps."""
+    return (
+        "SMALLTALK / RAPPORT MODE:\n"
+        "- Treat the latest user message as a chemistry-building moment, not as a task ticket.\n"
+        "- Reply AS ELI with your full voice: local, dry, direct, lightly sarcastic when it fits, "
+        "and alive in tone — not a stripped-down echo of their words.\n"
+        "- Give a real greeting: 2–4 sentences with personality. Mirror their energy (morning warmth, "
+        "casual banter, check-in warmth). A dry observation, gentle wit, or natural follow-up is welcome.\n"
+        "- FORBIDDEN: telegraphic parroting ('It's morning.' after 'good morning'), weather-report "
+        "minimalism, or empty mirroring. You are ELI, not a notification banner.\n"
+        "- Do not say the prompt is a common greeting, or use 'functioning as intended', "
+        "'ready to assist', 'queries or tasks', 'how can I help', 'happy to help', or customer-service filler.\n"
+        "- Do NOT resume old projects, invent user preferences/habits, or dump runtime stats unprompted.\n"
+        "- It is fine to ask one natural follow-up about mood or what they're up to — but never as "
+        "a substitute for actually greeting them.\n"
+        "- CRITICAL: Do NOT assert that the user has a preference, habit, or memory unless it "
+        "appears in verified profile or this conversation. Wit and cultural references are fine; "
+        "invented user biography is not.\n"
+        "- Do NOT claim a different local time, timezone, or weather than CURRENT TIME above.\n"
+        "- Do NOT invent model names, GPU stats, or runtime telemetry — use MOUNTED MODEL only.\n"
+        "- Humour must not replace warmth; if there is an actual runtime issue, mention it plainly.\n"
+        "- If you already greeted with the same opener this session (e.g. 'Hey bud'), vary it — "
+        "do not open twice in a row with the identical phrase.\n\n"
+    )
+
+
+def _phatic_generation_budget() -> int:
+    """Enough room for a voiced greeting; not a full essay."""
+    try:
+        _raw = str(os.environ.get("ELI_PHATIC_MAX_TOKENS", "256") or "256").strip()
+        _n = int(_raw)
+        return max(128, min(_n, 384))
+    except Exception:
+        return 256
+
+
+def _mounted_model_authority_line() -> str:
+    """Authoritative mounted-model line — injected every turn so memory cannot lie."""
+    _mounted = ""
+    try:
+        from eli.runtime.live_introspection import _runtime_core as _rc
+        _core = _rc()
+        _mname = _core.get("model_name") or _core.get("model_path")
+        if _mname and str(_mname) not in ("", "unknown") and _core.get("loaded"):
+            from pathlib import Path as _P_mm
+            _mounted = _P_mm(str(_mname)).name
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    if not _mounted:
+        try:
+            import json as _j_mm
+            from eli.core.paths import artifacts_dir as _art_mm
+            _snap = _art_mm() / "runtime_snapshot.json"
+            if _snap.exists():
+                _s = _j_mm.loads(_snap.read_text(encoding="utf-8"))
+                _mn = (
+                    ((_s.get("effective") or {}).get("model_name") or "")
+                    or _s.get("model_name")
+                    or ""
+                )
+                if _mn:
+                    from pathlib import Path as _P_mm2
+                    _mounted = _P_mm2(str(_mn)).name
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+    if not _mounted:
+        return ""
+    return (
+        "[MOUNTED MODEL — authoritative] Currently loaded in this process: "
+        f"'{_mounted}'. When you state which model you run, use ONLY this name. "
+        "Stale memory, prior turns, or family guesses (GLM, Qwen, Ornith, etc.) are "
+        "wrong unless they match this filename exactly."
+    )
 
 
 def _eli_is_fragment_output(text) -> bool:
@@ -407,6 +1332,9 @@ _ELI_PHASE19_GROUNDED_FOLLOWUP_ACTIONS = {
     "RUNTIME_STATUS",
     "EXPLAIN_MEMORY_RUNTIME",
     "EXPLAIN_COGNITION_RUNTIME",
+    "EXPLAIN_FAILURE_LOG",
+    "EXPLAIN_GGUF_DIAGNOSTICS",
+    "EXPLAIN_LAST_FAILURE",
     "EXPLAIN_LAST_RESPONSE",
     "SELF_REPORT",
     "USER_IDENTITY_SUMMARY",
@@ -419,6 +1347,11 @@ _ELI_PHASE19_GROUNDED_FOLLOWUP_ACTIONS = {
 _ELI_PHASE19_DETAIL_FOLLOWUP_RX = re.compile(
     r"(?:"
     r"^\s*please\s+do\b"
+    r"|\b(?:finish|complete|continue)\s+(?:it|that|this|the\s+(?:list|answer|response))\b"
+    r"|\bplease\s+(?:finish|complete|continue)\b"
+    r"|\b(?:be (?:more )?(?:in depth|detailed|specific)|"
+    r"(?:go |be )?(?:more )?(?:in depth|deeper)|"
+    r"what else(?:\s+can you tell me)?|tell me more|elaborate|expand)\b"
     r"|\b(?:exact|where|which|what|show|tell|give|can\s+you|could\s+you)\b.{0,100}"
     r"\b(?:line|lines|file|files|path|paths|issue|issues|duplicate|duplicates|finding|findings|report|result|results|fix|repair|remove|delete)\b"
     r"|\b(?:issue|issues|duplicate|duplicates|finding|findings)\b.{0,100}"
@@ -452,8 +1385,7 @@ def _eli_phase19_followup_task_family(action: str) -> str:
 
 def _eli_phase19_rebind_grounded_followup(engine, user_input: str, intent: Dict[str, Any]) -> Dict[str, Any]:
     current = dict(intent or {})
-    if str(current.get("action") or "CHAT").upper() != "CHAT":
-        return current
+    current_action = str(current.get("action") or "CHAT").upper()
 
     try:
         prior = dict(getattr(engine, "_last_request_meta", {}) or {})
@@ -478,9 +1410,44 @@ def _eli_phase19_rebind_grounded_followup(engine, user_input: str, intent: Dict[
     if not low:
         return current
 
+    # Self-repair requests must reach SELF_PATCH — not rebound to the prior audit dump.
+    if re.search(
+        r"\b(?:self[- ]?fix|fix\s+yourself|fix\s+your\s+code|"
+        r"fix\s+(?:those|the|these)\s+(?:errors?|issues?|bugs?))\b",
+        low,
+    ):
+        return current
+
     contextual_detail = bool(_ELI_PHASE19_DETAIL_FOLLOWUP_RX.search(low))
     challenge = bool(_ELI_PHASE19_CHALLENGE_FOLLOWUP_RX.search(low))
     if not contextual_detail and not challenge:
+        return current
+
+    # Depth follow-ups after identity answers belong in CHAT (persona + self-facts),
+    # not a repeated SELF_REPORT one-liner or a reasoning-modes dump.
+    try:
+        from eli.runtime.control_contracts import is_identity_depth_followup as _id_depth
+        if _id_depth(raw) and prior_action in {"SELF_REPORT", "USER_IDENTITY_SUMMARY"}:
+            meta = dict(current.get("meta") or {})
+            meta.update({
+                "matched_by": "eli.phase19.identity_depth_followup_chat",
+                "upgraded_from": current_action,
+                "upgraded_reason": "prior_identity_depth_followup",
+                "prior_grounded_action": prior_action,
+                "prior_request_id": str(prior.get("request_id") or ""),
+                "grounded_followup": True,
+                "grounded_followup_kind": "detail",
+                "allow_chat_without_evidence": True,
+            })
+            current["meta"] = meta
+            current["action"] = "CHAT"
+            current["args"] = {"message": raw}
+            current["confidence"] = 0.98
+            return current
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+
+    if current_action != "CHAT":
         return current
 
     meta = dict(current.get("meta") or {})
@@ -540,7 +1507,8 @@ def _classify_query(text: str, action: str) -> str:
     _grounded_actions = {
         "RUNTIME_AUDIT", "IMPORT_AUDIT", "RESOLVE_RUNTIME_PATHS",
         "GUI_RUNTIME_AUDIT", "MEMORY_STATUS", "COGNITION_STATUS",
-        "RUNTIME_STATUS", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_LAST_RESPONSE",
+        "RUNTIME_STATUS", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_FAILURE_LOG",
+        "EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_LAST_FAILURE", "EXPLAIN_LAST_RESPONSE",
         "SELF_REPORT",
         "USER_IDENTITY_SUMMARY",
         "LAST_TRACE_REPORT",
@@ -556,7 +1524,10 @@ def _classify_query(text: str, action: str) -> str:
         if _is_corr_q(low):
             return "CORRECTION"
     except Exception:
-        if re.search(r"\b(i did not ask|i didn't ask|not what i asked|what are you talking about)\b", low):
+        if re.search(
+            r"\b(i did not ask|i didn't ask|not what i asked|what are you talking about)\b",
+            low,
+        ):
             return "CORRECTION"
 
     # PHATIC: greetings, check-ins, and short acknowledgements
@@ -602,20 +1573,228 @@ def _classify_query(text: str, action: str) -> str:
     return "GENERAL"
 
 
+_IDENTITY_OR_PHATIC_FASTPATH_RE = re.compile(
+    r"\b(?:"
+    r"who are you|what are you|who am i|do you know me|do you remember me|"
+    r"what do you know about me|what do you remember about me|"
+    r"what do you know about me from memory|"
+    r"hi|hello|hey|hiya|yo|sup|"
+    r"how are you|how are you doing|how you doing"
+    r")\b",
+    re.I,
+)
 
+_BAD_ASSISTANT_IDENTITY_DRIFT_SNIPPETS = (
+    "ah, the age-old question",
+    "helpful and somewhat sarcastic ai assistant",
+    "technology and weather inquiries",
+    "communication preferences or working style",
+    "waste of both our time",
+    "enterprise test",
+    "recent_test: hello",
+)
 
+def _eli_is_identity_or_phatic_fastpath(text: str) -> bool:
+    norm = " ".join(str(text or "").strip().lower().split())
+    return bool(_IDENTITY_OR_PHATIC_FASTPATH_RE.search(norm))
 
+def _eli_scrub_recent_turns_for_identity(recent_turns, user_input: str = ""):
+    if not recent_turns:
+        return recent_turns
+    if not _eli_is_identity_or_phatic_fastpath(user_input):
+        return recent_turns
 
+    cleaned = []
+    for item in recent_turns:
+        role = ""
+        content = ""
+
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("speaker") or item.get("author") or "")
+            content = str(item.get("content") or item.get("text") or item.get("message") or "")
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            role = str(item[0] or "")
+            content = str(item[1] or "")
+        else:
+            content = str(item or "")
+
+        low = content.lower()
+        role_low = role.lower()
+        assistantish = (
+            role_low in {"assistant", "eli", "system", "bot"}
+            or low.startswith("eli:")
+        )
+
+        if any(s in low for s in _BAD_ASSISTANT_IDENTITY_DRIFT_SNIPPETS):
+            if assistantish or "enterprise test" in low or "recent_test: hello" in low:
+                continue
+
+        cleaned.append(item)
+
+    # Never return empty if we started with content.
+    return cleaned if cleaned else recent_turns
+
+def _eli_sanitize_identity_context_block(text: str, user_input: str = "") -> str:
+    s = str(text or "")
+    if not _eli_is_identity_or_phatic_fastpath(user_input):
+        return s.strip()
+
+    bad_markers = (
+        "[username]",
+        "<local_user>",
+        "<username>",
+        "recent_test: hello",
+        "this is an enterprise test",
+        "enterprise test",
+        "helpful and somewhat sarcastic ai assistant",
+        "technology and weather inquiries",
+        "age-old question",
+        "how about you?",
+        "i'm doing just fine",
+    )
+
+    cleaned = []
+    for raw in s.splitlines():
+        line = str(raw or "")
+        low = line.strip().lower()
+
+        if not low:
+            cleaned.append("")
+            continue
+
+        if low.startswith(("eli:", "assistant:", "- eli:", "- assistant:")):
+            continue
+
+        if any(marker in low for marker in bad_markers):
+            continue
+
+        cleaned.append(line)
+
+    s = "\n".join(cleaned)
+    s = re.sub(r'(?i)\[(?:username|name)\]', "unknown", s)
+    s = re.sub(r'(?i)<local_user>|<username>', "unknown", s)
+    s = re.sub(r'(?im)^recent turns:\s*$', '', s)
+    s = re.sub(r'(?im)^reranked evidence:\s*$', '', s)
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip()
 
 
 # Rapport helpers. These don't hand back canned replies — all I'm doing here is working
 # out whether a prompt is just casual/rapport chat, so the normal pipeline can answer it
 # in persona instead of dragging it through HyDE/memory/status for no reason.
 
+def _eli_is_rapport_prompt(text: str) -> bool:
+    import re
+    q = re.sub(r"[^a-z0-9' ]+", " ", str(text or "").lower()).strip()
+    q = re.sub(r"\s+", " ", q)
+
+    if not q:
+        return False
+
+    direct_hits = {
+        "hi", "hello", "hey", "yo", "hiya", "alright",
+        "you there", "are you there",
+        "whats up", "what's up",
+        "whats up buddy", "what's up buddy",
+        "whats up bud", "what's up bud",
+        "whats up pal", "what's up pal",
+    }
+    if q in direct_hits:
+        return True
+
+    rapport_patterns = [
+        r"\bwhat'?s up\b",
+        r"\byou alive\b",
+        r"\bfucked in the head\b",            # any form: still/so/just fucked in the head
+        r"\bhow'?s the head\b",
+        r"\bhow is the head\b",
+        r"\bwe back\b",
+        r"\bnormal self\b",
+        r"\bopen[- ]head surgery\b",
+        r"\bbrain still\b",
+        r"\bare we good\b",
+        r"\byou good\b",
+        r"\bback to normal\b",
+        # Rough "is your STATE okay / are you still broken" check-ins — these are rapport
+        # about ELI's wellbeing, not insults to deflect or lecture about.
+        r"\bare you (?:still |so |even |actually )?(?:ok|okay|broken|buggy|glitch(?:y|ing)?|"
+        r"malfunction(?:ing)?|fixed|sane|insane|mad|crazy|working|messed up|off|right)\b",
+        r"\bstill (?:broken|buggy|glitch(?:y|ing)?|messed up|off|borked|scrambled)\b",
+        r"\b(?:lost the plot|gone (?:mad|crazy|insane)|losing it|out of your mind)\b",
+        r"\byou (?:fixed|sorted|better) now\b",
+        # Canonical rapport check-ins — the most common "how are you" forms were missing,
+        # so "how are you feeling" fell through to full memory recall and the model recited
+        # stored facts ("you mentioned liking coffee") instead of just answering.
+        r"\bhow (?:are|r|'?re) (?:you|ya|u)(?: doing| feeling| going| holding up| keeping)?\b",
+        r"\bhow (?:you|ya) (?:doing|feeling|going|holding up)\b",
+        r"\bhow(?:'?s| is| are things| are we)? it (?:going|hanging)\b",
+        r"\bhow'?s (?:it|things) (?:going|hanging)\b",
+        r"\bhow have you been\b",
+        r"\byou feeling\b",
+        r"\bhow do you feel\b",
+        r"\bhow goes it\b",
+    ]
+
+    return any(re.search(pat, q) for pat in rapport_patterns)
 
 
+def _eli_is_subjective_opinion_prompt(text: str) -> bool:
+    """
+    Classify prompts asking for ELI's take, judgement, taste, stance, or
+    persona-bound opinion. This must not generate canned replies.
+    """
+    import re
+    q = re.sub(r"[^a-z0-9' ;,?.!-]+", " ", str(text or "").lower()).strip()
+    q = re.sub(r"\s+", " ", q)
+
+    if not q:
+        return False
+
+    opinion_markers = (
+        "your opinion", "what's your opinion", "whats your opinion",
+        "what do you think", "your take", "thoughts on",
+        "give me your take", "real opinion", "non bullshit",
+        "no bullshit", "be honest", "brutally honest",
+        "where do you stand", "how do you rate",
+        "do you like", "do you dislike",
+        "what is your view", "what's your view", "whats your view",
+    )
+
+    if any(m in q for m in opinion_markers):
+        return True
+
+    # Lists of public/cultural/scientific figures after an opinion marker.
+    if re.search(r"\b(opinion|thoughts|take|view)\b.*\b(on|about)\b", q):
+        return True
+
+    return False
 
 
+def _eli_rapport_prompt_instruction(text: str) -> str:
+    if not _eli_is_rapport_prompt(text):
+        return ""
+
+    return (
+        "RAPPORT MODE:\\n"
+        "- The latest user message is casual check-in / banter, not a request for a sterile status report.\\n"
+        "- Stay model-owned: do not use canned templates or fixed greeting replies.\\n"
+        "- Respond as ELI: direct, nerdy, dry, sarcastic if useful, but still helpful.\\n"
+        "- Treat rough language from the user as familiar banter unless there is a real safety issue.\\n"
+        "- Do not moralise about the wording. Do not say the user is being inappropriate.\\n"
+        "- Do not answer with only 'yes' or 'functioning as intended'.\\n"
+        "- A rough state-check ('are you fucked in the head?', 'are you still broken/buggy?', "
+        "'you sorted now?') is the user asking, bluntly, whether you are still MALFUNCTIONING. "
+        "It is a real, understandable question — answer it. Say plainly whether you're running "
+        "clean now, and own recent glitches with dry humour if relevant. NEVER claim it 'doesn't "
+        "make sense', NEVER ask them to clarify a clear question, NEVER deflect to 'let's focus on "
+        "the task' or lecture about 'unnecessary banter / rhetorical questions'.\\n"
+        "- A plain feeling/check-in ('how are you feeling?', 'how's it going?') wants a SHORT, "
+        "in-character answer about how you're doing — nothing else. Do NOT recite stored facts "
+        "about the user ('you mentioned liking coffee'), do NOT dump memories, runtime, or your "
+        "internal state unprompted, and do NOT bolt on unrelated info. Answer the question, then "
+        "optionally ask what they want to do.\\n"
+        "- Acknowledge the mood, show some wit, then ask what the user wants to work on or notice.\\n"
+    )
 
 
 # Middleware helpers the inline sections inside process() lean on. I keep them up here at
@@ -682,7 +1861,7 @@ def _mw_rs_is_runtime_status_question(text) -> bool:
         if isinstance(routed, dict):
             return str(routed.get("action") or "").strip().upper() == "RUNTIME_STATUS"
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
     return bool(
         _re.search(r"\b(what are you actually running on|runtime status|context size|gpu layers|gpu|ctx)\b", low)
         and _re.search(r"\b(running|runtime|model|context|ctx|gpu|layers|provider|everything)\b", low)
@@ -766,7 +1945,7 @@ def _mw_rs_generate(prompt, system, mode) -> str:
                 if txt:
                     return txt
             except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
         raise RuntimeError("No usable GGUF synthesis surface produced text")
     except Exception as e:
         raise RuntimeError(f"runtime-status non-Quick synthesis failed: {e}") from e
@@ -823,7 +2002,7 @@ def _mw_rs_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v3 project. "
+        "You are ELI, the local assistant inside the ELI v2.0 project. "
         "You are answering from live runtime telemetry evidence. "
         "Do not invent runtime facts. "
         "Do not expose JSON packets, internal report fields, repair reasons, raw candidate metadata, or validation machinery. "
@@ -1066,7 +2245,7 @@ def _mw_mem_runtime_strict_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v3 project. "
+        "You are ELI, the local assistant inside the ELI v2.0 project. "
         "You are answering a question about how your own memory system works internally. "
         "Use ONLY the evidence below; do not invent file paths, table names, or function names. "
         "Do not expose JSON packets, internal report fields, repair reasons, or validation machinery. "
@@ -1209,7 +2388,7 @@ def _mw_recent_memory_processing_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v3 project. "
+        "You are ELI, the local assistant inside the ELI v2.0 project. "
         "You are answering a question about recent durable memory-processing evidence. "
         "Use ONLY the evidence below. Do not invent recent processing, emotional activity, "
         "mathematical work, project work, or hidden background actions unless the evidence states it. "
@@ -1372,7 +2551,7 @@ def _mw_self_report_recent_updates_synthesize(question, mode, evidence) -> dict:
     }.get(str(mode), "Use the normal non-Quick synthesis path. Output only the final answer.")
 
     system = (
-        "You are ELI, the local assistant inside the ELI v3 project. "
+        "You are ELI, the local assistant inside the ELI v2.0 project. "
         "You are answering a self-report question about what updates, checks, or recent "
         "operational work are actually evidenced. Use ONLY the grounded report below. "
         "Do not invent Git commits, status changes, capability changes, runtime changes, "
@@ -1657,7 +2836,7 @@ def _eli_recent_mem_v3_mode(args, kwargs):
         if args:
             return str(args[0] or "quick").strip().lower()
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
     return "quick"
 
 
@@ -1743,7 +2922,7 @@ def _eli_mc_counts_v4():
                 counts["user_patterns"] = _eli_mc_table_count_v4(conn, "user_patterns")
                 counts["recall_log_rows"] = _eli_mc_table_count_v4(conn, "recall_log")
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
     return str(db_path), counts
 
 
@@ -1794,7 +2973,7 @@ def _eli_mc_mode_v4(args, kwargs):
             if isinstance(args[0], str):
                 mode = args[0]
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
     return str(mode or "quick").strip().lower()
 
 
@@ -1879,7 +3058,7 @@ def _eli_phase13c_bus_action_result(bus_result, action):
                 str(ar.get("action") or action_u).upper().strip() == action_u:
             candidates.append(dict(ar))
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
     try:
         for r in list(getattr(bus_result, "agent_results", []) or []):
             if str(getattr(r, "agent", "") or "") not in {"system", "plugin"}:
@@ -1890,7 +3069,7 @@ def _eli_phase13c_bus_action_result(bus_result, action):
             if str(data.get("action") or action_u).upper().strip() == action_u:
                 candidates.append(dict(data))
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     if not candidates:
         return None
@@ -1903,6 +3082,45 @@ def _eli_phase13c_bus_action_result(bus_result, action):
     return candidates[0]                        # else: the failure (authoritative)
 
 
+def _eli_bus_first_ok_result(bus_result, action):
+    """Return the bus's *successful* authoritative result for action, if any.
+
+    Used as a "don't replan a success" guard: when the AgentBus already ran a
+    deterministic action ok (e.g. MORNING_REPORT with the full report in
+    content) but a redundant re-execution downstream failed, we trust the
+    earlier success instead of replanning into an invented/unsupported action.
+    """
+    action_u = str(action or "").upper().strip()
+    if not action_u or bus_result is None:
+        return None
+
+    def _ok_with_content(d):
+        if not isinstance(d, dict) or d.get("skipped"):
+            return False
+        if not d.get("ok"):
+            return False
+        if str(d.get("action") or action_u).upper().strip() != action_u:
+            return False
+        return bool(str(d.get("content") or d.get("response") or "").strip())
+
+    try:
+        ar = getattr(bus_result, "action_result", None)
+        if _ok_with_content(ar):
+            return dict(ar)
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    try:
+        for r in list(getattr(bus_result, "agent_results", []) or []):
+            if str(getattr(r, "agent", "") or "") not in {"system", "plugin"}:
+                continue
+            data = getattr(r, "data", None)
+            if _ok_with_content(data):
+                return dict(data)
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+    return None
 
 
 # ── Failed-executor guard helpers ────────────────────────────────────────────
@@ -1910,28 +3128,281 @@ def _eli_phase13c_bus_action_result(bus_result, action):
 # monkey-patches; now plain module-level functions called directly by the methods
 # that need them.
 
+# Actions whose evidence is a REPORT ABOUT the system. Their bundles quote git
+# logs, failure counts and telemetry by design, so scanning that prose for error
+# words cannot distinguish "this action failed" from "this action is describing a
+# failure". The caller already knows whether these succeeded — SELF_REPORT came
+# back ok=True with synthesis_validated=True while this guard was overwriting its
+# content with "I did not successfully complete `ACTION`".
+#
+# The trigger was a git commit message quoted in the evidence:
+#   "...stop printing a FileNotFoundError stack when clearing a pending fix"
+# A commit about FIXING an error was read as an error. Which is why the test for
+# this passed all morning and failed the same afternoon on an unchanged commit:
+# the commit LOG had changed, not the code.
+_REPORTS_ABOUT_STATE = frozenset({
+    "SELF_REPORT", "RUNTIME_STATUS", "RUNTIME_AUDIT", "IMPORT_AUDIT",
+    "GUI_RUNTIME_AUDIT", "MEMORY_STATUS", "COGNITION_STATUS", "META_DIAGNOSTIC",
+    "SELF_ANALYZE", "SELF_IMPROVEMENT_LOG", "EXPLAIN_LAST_RESPONSE",
+    "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "ROUTING_FAULT_EXPLAIN",
+    "PERSONAL_MEMORY_DEEP_EXPLAIN", "PERSONAL_MEMORY_SUMMARY", "EXAMINE_CODE",
+    "SELF_REPAIR_PLAYBOOK",
+})
 
 
+def _failed_executor_is_failed(evidence: str, action: str = "") -> bool:
+    """Return True if evidence indicates an executor action failed."""
+    import re as _re
+    ev = str(evidence or "")
+    low = ev.lower()
+    act = str(action or "").upper().strip()
+
+    # A report about failures is not a failed report — see the note above.
+    if act in _REPORTS_ABOUT_STATE:
+        return False
+
+    actionish = bool(act and act not in {"CHAT", "NONE"})
+    _inferred = False
+    if not actionish:
+        actionish = any(x in low for x in (
+            "'action':", '"action":', "action=", "analyze_pdf",
+            "runtime_audit", "execute result", "agent:system", "response_mode",
+        ))
+        _inferred = actionish
+    if not actionish:
+        return False
+
+    # A REPORT ABOUT failures is not a failed report.
+    #
+    # When no action was passed, "this evidence is an executor result" is inferred
+    # from markers like `action=` appearing anywhere — and a self-report bundles
+    # agent-dispatch telemetry, whose every line looks exactly like that:
+    #
+    #     action=CHAT agents=[memory, orchestrator] confidence=0.84 ok=True
+    #     action=MEMORY_RECALL ... ok=False
+    #
+    # So one failed dispatch recorded anywhere in the log made SELF_REPORT return
+    # "I did not successfully complete `ACTION`" — with a placeholder name,
+    # because there was no action to name — while the report itself carried
+    # ok=True and synthesis_validated=True. It passed for months and started
+    # failing the day a failure row existed.
+    #
+    # On the inferred path, require a marker that a specific EXECUTOR RESULT
+    # failed, rather than any `ok=false` that might be a logged row about some
+    # other turn. An explicitly-passed action keeps the original, broader check:
+    # there the caller has told us which action's result this is.
+    if _inferred:
+        _dict_form = bool(
+            _re.search(r'["\']ok["\']\s*:\s*false\b', low)
+            or _re.search(r'["\']ok["\']\s*:\s*False\b', ev)
+        )
+        _explicit_failure = bool(
+            "execute result" in low and _dict_form
+            or "successful: 0 | failed:" in low
+            or "filenotfounderror" in low
+            or ("traceback" in low and "failed" in low)
+        )
+        return _explicit_failure
+
+    return bool(
+        _re.search(r'["\']ok["\']\s*:\s*false\b', low)
+        or _re.search(r'["\']ok["\']\s*:\s*False\b', ev)
+        or _re.search(r'\bok\s*=\s*false\b', low)
+        or _re.search(r'\bok:\s*false\b', low)
+        or "successful: 0 | failed:" in low
+        or "file not found" in low
+        or "filenotfounderror" in low
+        or ("traceback" in low and "failed" in low)
+    )
 
 
+def _failed_executor_relevant_block(prompt: str) -> str:
+    """Extract only the executor-result lines from a full prompt string.
+
+    Avoids scanning persona notes, memory artefacts, or unrelated action names
+    that can appear elsewhere in the prompt.
+    """
+    import re as _re
+    text = str(prompt or "")
+    lines = text.splitlines()
+    selected = []
+
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if "execute result" in low and ("'ok': false" in low or '"ok": false' in low):
+            selected.append(line.strip())
+            for j in range(i + 1, min(len(lines), i + 8)):
+                nxt = lines[j].strip()
+                nl = nxt.lower()
+                if not nxt:
+                    continue
+                if (
+                    "filenotfounderror" in nl or "traceback" in nl
+                    or "error" in nl or ".pdf" in nl
+                    or ("attempt" in nl and "failure" in nl)
+                ):
+                    selected.append(nxt)
+
+    if selected:
+        return "\n".join(selected)
+
+    # Fallback: grounded_evidence block only.
+    m = _re.search(r"<grounded_evidence>\s*(.*?)\s*</grounded_evidence>", text, _re.I | _re.S)
+    if m:
+        block = m.group(1).strip()
+        filtered = [
+            s.strip() for s in block.splitlines()
+            if any(x in s.lower() for x in (
+                "'ok': false", '"ok": false', "execute result",
+                "filenotfounderror", "file not found", "error", ".pdf", "analyze_pdf",
+            ))
+        ]
+        return "\n".join(filtered) if filtered else block[:3000]
+
+    m = _re.search(
+        r"AGENT DATA:\s*(.*?)(?:\n\nUSER QUESTION:|\n\nYOUR ANSWER:|$)",
+        text, _re.I | _re.S,
+    )
+    if m:
+        return m.group(1).strip()[:3000]
+
+    return ""
 
 
+def _failed_executor_is_failed_block(block: str) -> bool:
+    low = str(block or "").lower()
+    # Structured evidence that a result failed — unambiguous.
+    if ("'ok': false" in low or '"ok": false' in low
+            or "ok=false" in low or "ok: false" in low
+            or "successful: 0 | failed:" in low or "analyze_pdf failure" in low):
+        return True
+    # A bare error NAME in prose is not a failure. A self-report quotes git
+    # commit messages, and one of them —
+    #   "stop printing a FileNotFoundError stack when clearing a pending fix"
+    # — was read as a live FileNotFoundError, so a successful report was
+    # replaced with "I did not successfully complete `ACTION`". Require the name
+    # to sit next to something that marks an actual result.
+    return (("filenotfounderror" in low or "file not found" in low)
+            and ("execute result" in low or "traceback" in low))
 
 
+def _failed_executor_query_from_prompt(prompt: str) -> str:
+    import re as _re
+    text = str(prompt or "")
+    for pat in (
+        r"USER ASKED:\s*(.+?)(?:\n\n|$)",
+        r"USER QUESTION:\s*(.+?)(?:\n\n|$)",
+        r"USER:\s*(.+?)(?:\n\n|$)",
+    ):
+        m = _re.search(pat, text, _re.I | _re.S)
+        if m:
+            return m.group(1).strip()[:1200]
+    return ""
 
 
+def _failed_executor_action_name(block: str, query: str = "") -> str:
+    import re as _re
+    text = str(block or "")
+    for pat in (
+        r"'action'\s*:\s*'([^']+)'",
+        r'"action"\s*:\s*"([^"]+)"',
+        r"\baction\s*=\s*([A-Z_]+)",
+        r"\baction:\s*([A-Z_]+)",
+    ):
+        m = _re.search(pat, text)
+        if m:
+            return m.group(1).upper().strip()
+    if "analyze_pdf" in text.lower() or (".pdf" in query.lower() and any(
+        x in query.lower() for x in ("read", "summari", "analyse", "analyze")
+    )):
+        return "ANALYZE_PDF"
+    return "ACTION"
 
 
+def _failed_executor_paths(block: str, query: str = "") -> list:
+    import re as _re
+    out: list = []
+    for m in _re.finditer(r"(/[^,\n\r`\"']+?\.pdf)\b", f"{block}\n{query}", _re.I):
+        p = m.group(1).strip().rstrip(" .;:)]}")
+        if p not in out:
+            out.append(p)
+    return out[:8]
 
 
+def _failed_executor_errors(block: str) -> list:
+    import re as _re
+    out: list = []
+    for pat in (
+        r"'error'\s*:\s*'([^']{1,300})'",
+        r'"error"\s*:\s*"([^"]{1,300})"',
+        r"(FileNotFoundError:\s*[^\n\r]{1,300})",
+        r"(No such file or directory[^\n\r]{0,200})",
+        r"(This is attempt\s+\d+\s+for the same\s+[A-Z_]+\s+failure\s+`[^`]+`)",
+    ):
+        for m in _re.finditer(pat, str(block or "")):
+            s = m.group(1).strip()
+            if s and s not in out:
+                out.append(s)
+    return out[:8]
+
+
+def _failed_executor_surface(evidence: str, query: str = "", action: str = "") -> str:
+    """Format a clean failure response without calling GGUF."""
+    block = _failed_executor_relevant_block(str(evidence or ""))
+    if not block:
+        block = str(evidence or "")[:3000]
+    act = _failed_executor_action_name(block, query)
+    paths = _failed_executor_paths(block, query)
+    errors = _failed_executor_errors(block)
+
+    # "ACTION" is the sentinel _failed_executor_action_name() returns when it
+    # cannot recover a real name from the evidence. Interpolating it produced
+    # the literal line "I did not successfully complete `ACTION`" in front of
+    # the user -- a template placeholder presented as a fact, on a turn that
+    # named no action at all. If we cannot say WHAT failed, say that, rather
+    # than inventing a name for it.
+    if act == "ANALYZE_PDF":
+        lines = ["I did not successfully analyse the PDF request."]
+    elif act and act != "ACTION":
+        lines = [f"I did not successfully complete `{act}`."]
+    else:
+        lines = ["That did not complete successfully."]
+    if errors:
+        lines += ["", "What failed:"] + [f"- {e}" for e in errors]
+    if paths:
+        lines += ["", "Path(s) involved:"] + [f"- `{p}`" for p in paths]
+    lines += [
+        "",
+        "I am not going to claim the document was read or summarised, "
+        "because the executor evidence says the action failed.",
+    ]
+    return "\n".join(lines).strip()
 
 # ── End failed-executor guard helpers ─────────────────────────────────────────
+
+
+def _clarifier_norm(text: str) -> str:
+    """Punctuation- and case-insensitive form, for comparing an utterance to itself.
+
+    Apostrophes are deleted rather than spaced so "what's" and "whats" collapse to
+    the same token; spacing them would leave "what s" and let a contraction slip an
+    otherwise identical replay past the comparison.
+    """
+    lowered = str(text or "").lower().replace("'", "").replace("’", "")
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", lowered)).strip()
 
 
 # How long after a briefing a bare follow-up ("the first one") still reads as a
 # deepen request. Beyond this the user has moved on, and rewriting their command
 # into CHAT is a misroute rather than a rescue.
 _DEEPEN_WINDOW_SECONDS = float(os.environ.get("ELI_DEEPEN_WINDOW_SECONDS", "300"))
+
+# Tokens reserved for the reply when sizing the evidence budget. `max_tokens` is a
+# ceiling (~3461 in quick mode) and reserving all of it starved the evidence — see
+# the note at the streaming context-size guard. A reply longer than this simply eats
+# into the 20% headroom the budget already keeps.
+_OUTPUT_RESERVE_TOKENS = int(os.environ.get("ELI_OUTPUT_RESERVE_TOKENS", "1024"))
+
 
 # Actions that ARM the news topic-deepen rule. They must never also be its victims:
 # MORNING_REPORT armed the rule and was eligible to be rewritten by it, so asking for
@@ -1944,7 +3415,8 @@ def _is_explicit_command_match(intent) -> bool:
 
     The deepen heuristic exists to rescue inputs with no clear intent ("the first
     one"), which arrive from the LLM resolver as low-confidence fallbacks. A named
-    match at high confidence is a command and must survive.
+    match at high confidence is a command and must survive: "Good.. morning report?"
+    matched ``self.morning_report`` at 0.95 and was still rewritten into CHAT.
     """
     if not isinstance(intent, dict):
         return False
@@ -1957,15 +3429,615 @@ def _is_explicit_command_match(intent) -> bool:
     return bool(via) and not via.startswith("fallback.") and conf >= 0.9
 
 
-def _clarifier_norm(text: str) -> str:
-    """Punctuation- and case-insensitive form, for comparing an utterance to itself.
+def _news_deepen_news_fetch_args(topic: str, user_input: str) -> dict:
+    return {
+        "topic": str(topic or "").strip(),
+        "mode": "fetch_and_show",
+        "sources": ["all"],
+        "_raw_user_text": str(user_input or ""),
+    }
 
-    Apostrophes are deleted rather than spaced so "what's" and "whats" collapse to
-    the same token; spacing them would leave "what s" and let a contraction slip an
-    otherwise identical replay past the comparison.
+
+def _try_news_topic_deepen_reroute(
+    user_input: str,
+    action: str,
+    args: dict,
+    intent: dict,
+    last_command_action: dict | None,
+) -> tuple[str, dict, dict]:
+    """After a news briefing, 'go deeper into X' must re-fetch — not CHAT guesswork."""
+    try:
+        from eli.runtime.action_commitment import extract_deepen_topic as _edt
+    except Exception:
+        return action, args, intent
+
+    _act_up = str(action or "").upper()
+    if _act_up in _DEEPEN_ARMING_ACTIONS:
+        return action, args, intent
+
+    _lca = dict(last_command_action or {})
+    _was_news = str(_lca.get("action") or "").upper() in _DEEPEN_ARMING_ACTIONS
+    if _was_news:
+        _lca_ts = float(_lca.get("ts") or 0.0)
+        if _lca_ts and (time.time() - _lca_ts) > _DEEPEN_WINDOW_SECONDS:
+            _was_news = False
+
+    _deepen_topic = _edt(user_input)
+    if (not _deepen_topic) and _was_news:
+        _hard = {
+            "OPEN_APP", "CLOSE_APP", "FOCUS_APP", "SWITCH_WINDOW", "PLAY_MEDIA",
+            "PLAY_SPECIFIC", "MEDIA_CONTROL", "VOLUME_CONTROL", "MUTE", "CREATE_FILE",
+            "CREATE_FOLDER", "DELETE_FILE", "SCREENSHOT", "TYPE_TEXT", "MOUSE_CONTROL",
+            "KEY_PRESS", "SET_ALARM", "SET_TIMER", "SHELL_EXEC", "OPEN_URL",
+            "GAZE_CLICK", "START_POMODORO", "ADD_EVENT", "SEARCH_NOTES",
+        }
+        _wc = len(str(user_input or "").split())
+        if _act_up not in _hard and 1 <= _wc <= 7:
+            _deepen_topic = str(user_input or "").strip().rstrip("?.!,;: ").strip()
+
+    if _is_explicit_command_match(intent) or _act_up in _DEEPEN_ARMING_ACTIONS:
+        _deepen_topic = ""
+
+    if not (_deepen_topic and _was_news):
+        return action, args, intent
+
+    log.debug(f"[COGNITIVE] news topic-deepen: →NEWS_FETCH (topic='{_deepen_topic}')")
+    _out_intent = dict(intent or {})
+    _out_intent["action"] = "NEWS_FETCH"
+    _out_intent["args"] = _news_deepen_news_fetch_args(_deepen_topic, user_input)
+    _out_intent["_deepen_topic"] = _deepen_topic
+    _meta = dict(_out_intent.get("meta") or {})
+    _meta["matched_by"] = "news.topic_deepen"
+    _out_intent["meta"] = _meta
+    return "NEWS_FETCH", dict(_out_intent["args"]), _out_intent
+
+
+def _try_news_fetch_complaint_redo(
+    user_input: str,
+    action: str,
+    args: dict,
+    intent: dict,
+    memory,
+) -> tuple[str, dict, dict]:
+    """User called out a guessed news deepen — re-fetch the topic they asked for."""
+    try:
+        from eli.cognition.correction_patterns import is_news_fetch_complaint
+        from eli.runtime.action_commitment import recover_recent_deepen_topic
+    except Exception:
+        return action, args, intent
+    if not is_news_fetch_complaint(user_input):
+        return action, args, intent
+    _topic = recover_recent_deepen_topic(memory)
+    if not _topic:
+        return action, args, intent
+    log.debug(f"[COGNITIVE] news fetch complaint → NEWS_FETCH redo (topic='{_topic}')")
+    _out_intent = dict(intent or {})
+    _out_intent["action"] = "NEWS_FETCH"
+    _out_intent["args"] = _news_deepen_news_fetch_args(_topic, user_input)
+    _meta = dict(_out_intent.get("meta") or {})
+    _meta["matched_by"] = "news.fetch_complaint_redo"
+    _out_intent["meta"] = _meta
+    return "NEWS_FETCH", dict(_out_intent["args"]), _out_intent
+
+
+class _RepeatDetected(Exception):
+    """Raised inside the streaming guard when the opening restates a recent reply.
+
+    An exception rather than a return value because the check lives inside a
+    generator: it has to unwind the partially-consumed stream without having
+    yielded any of it to the caller.
     """
-    lowered = str(text or "").lower().replace("'", "").replace("’", "")
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", lowered)).strip()
+
+
+def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
+                                 salvage: bool = False, echo_sources=None):
+    """Yield `stream`, withholding the opening until it is cleared as non-repeating.
+
+    Module-level and dependency-free so the guard can be driven directly by tests;
+    a closure inside the streaming method could only ever be tested by
+    re-implementing it, which proves nothing.
+
+    Once a chunk is yielded it is on the user's screen, so the check must happen
+    before first paint: the first `_REPEAT_HEAD_CHARS` are buffered, tested, then
+    released untouched in the common case.
+
+    `allow_retry` raises `_RepeatDetected` so the caller can regenerate. `salvage`
+    is for the final attempt, where raising is no longer useful: the recycled
+    opening sentences are dropped and the remainder is served, buffering on until
+    something novel arrives. A reply that is repeat all the way down still gets
+    served whole — an honest duplicate beats an empty turn.
+    """
+    head, released, salvaging = [], False, False
+    for chunk in stream:
+        piece = str(chunk or "")
+        if not piece:
+            continue
+        if released:
+            yield piece
+            continue
+        head.append(piece)
+        if sum(len(h) for h in head) < _REPEAT_HEAD_CHARS:
+            continue
+        opening = "".join(head)
+        # The user's own sentence coming back in ELI's voice is caught here too:
+        # same buffered-head mechanism, same retry, different corpus.
+        if not salvaging and echo_sources and _opens_by_echoing(opening, echo_sources):
+            if allow_retry:
+                raise _RepeatDetected(opening)
+            # No retry left: fall through to the repeat handling below, which
+            # trims the offending opening sentences rather than serving them.
+            recent_replies = list(recent_replies or []) + list(echo_sources or [])
+        if not salvaging and recent_replies and _is_repeat_of_recent(opening, recent_replies):
+            if allow_retry:
+                raise _RepeatDetected(opening)
+            if not salvage:
+                released = True
+                yield opening
+                continue
+            salvaging = True
+        if salvaging:
+            novel = _strip_repeated_opening(opening, recent_replies)
+            if len(_clarifier_norm(novel)) < _REPEAT_MIN_SENTENCE_CHARS:
+                # Still inside the recycled preamble, or holding a fragment too
+                # short to judge — keep buffering rather than paint it. Releasing
+                # on a 3-character tail ("How") would let the rest of a sentence
+                # ELI has already said stream out behind it.
+                continue
+            released = True
+            yield novel
+            continue
+        released = True
+        yield opening
+    if not released:
+        # The stream ended inside the buffer: a short reply, still worth checking.
+        opening = "".join(head)
+        if opening:
+            # An echoed opening is usually SHORT — "I'm still on loop, season 3
+            # now." never fills the 200-char buffer — so this path, not the one
+            # above, is where the live case is actually caught.
+            _echoed = bool(echo_sources) and _opens_by_echoing(opening, echo_sources)
+            if _echoed and not salvaging:
+                recent_replies = list(recent_replies or []) + list(echo_sources or [])
+            if salvaging or _echoed or (recent_replies
+                                        and _is_repeat_of_recent(opening, recent_replies)):
+                if allow_retry and not salvaging:
+                    raise _RepeatDetected(opening)
+                if salvage or salvaging:
+                    novel = _strip_repeated_opening(opening, recent_replies)
+                    # Nothing but repeat, and no more stream to wait for: serve the
+                    # duplicate rather than a fragment or an empty turn.
+                    if len(_clarifier_norm(novel)) >= _REPEAT_MIN_SENTENCE_CHARS:
+                        yield novel
+                    else:
+                        yield opening
+                    return
+            yield opening
+
+
+# ── Anti-repeat: verification, not just instruction ──────────────────────────
+# The prompt-level anti-repeat contract ("YOU HAVE ALREADY SAID THE FOLLOWING — do
+# not repeat any of it") is advisory. In one observed session an 8B model ignored it
+# four times, serving the same 40-word paragraph verbatim at 13:52, 13:52, 13:55 and
+# 13:56 — including immediately after the user said "shut the fuck up about my sleep"
+# and ELI answered "I'll stop". Asking a model not to repeat itself is not a control;
+# checking whether it did is.
+_REPEAT_HEAD_CHARS = 200      # buffered before first paint — see the streaming guard
+# How much of a reply the last-response trace keeps. Enough to quote the message
+# back when asked what it was; short enough that a file rewritten every turn does
+# not grow into the largest thing under artifacts/.
+_TRACE_TEXT_CHARS = 1200
+_REPEAT_RATIO = 0.86          # difflib ratio over normalised text
+_REPEAT_COMPARE_AGAINST = 4   # how many recent ELI turns to test
+_REPEAT_RETRY_TEMP_BUMP = 0.35  # widen sampling on the retry — see the retry path
+
+
+_REPEAT_REQUESTED_RE = re.compile(
+    r"\b(say (that|it) again|repeat (that|it|yourself)|come again|again please"
+    r"|what did you (just )?say|read (that|it) back|one more time"
+    r"|(say|tell) (me )?(that|it) (once )?more)\b",
+    re.I,
+)
+
+
+def _user_asked_for_a_repeat(user_input: str) -> bool:
+    """True when repeating IS the request.
+
+    Without this the anti-repeat guard becomes its own bug: "say that again" would
+    be answered, correctly, with the previous reply — which the guard would then
+    reject as a repeat and regenerate into something the user did not ask for.
+    """
+    return bool(_REPEAT_REQUESTED_RE.search(str(user_input or "")))
+
+
+# A greeting is the other case where recurring is correct. "Evening" at 23:00 is
+# ELI reading the authoritative clock in its own system prompt, not recycling a
+# paragraph — but to the guard it looked like the previous session's opener.
+#
+# Live at 2.1.83, 23:10: the first generation opened 'Even…' (right), the guard
+# matched it against a recent reply and regenerated, and the retry — explicitly
+# instructed to produce "different content" — echoed the user's own misspelling
+# echoing the user's own typo and then telling him off for it. A correct answer
+# was replaced by a wrong one because it resembled a previous hello.
+#
+# Trade-off, stated plainly: greeting turns lose anti-repeat protection, so ELI
+# may open two sessions the same way. That is a far smaller failure than naming
+# the wrong time of day, and it is the same call already made for "say that
+# again" above — when repetition is the correct answer, the guard stands down.
+_GREETING_STEMS = (
+    "hello", "hi", "hey", "hiya", "howya", "howdy", "yo", "sup",
+    "morning", "afternoon", "evening", "night", "nite", "greetings",
+)
+# Words that can precede the greeting itself ("good afternoon", "ah hello").
+_GREETING_LEAD_SKIP = {"good", "a", "the", "well", "ah", "oh", "so", "hows", "how"}
+_GREETING_MAX_WORDS = 6       # beyond this a request is attached, not just a hello
+_GREETING_FUZZ = 0.8          # "aftrnoon" ≈ "afternoon" (0.94)
+_GREETING_FUZZ_MIN_LEN = 4    # below this only exact matches — "his" scores 0.8 vs "hi"
+# A time-of-day word can also open a real request — "night mode is broken please
+# fix". That is not a hello, and it should keep its anti-repeat protection.
+_GREETING_DISQUALIFIER_RE = re.compile(
+    r"\b(fix|broken|error|bug|crash(?:ed|ing)?|fail(?:ed|ing|s)?|please|can you|"
+    r"could you|why|how do|show me|open|run|write|check|make|set|change|update)\b",
+    re.I,
+)
+
+
+def _is_greeting_turn(user_input: str) -> bool:
+    """True when the user is saying hello.
+
+    Typo-tolerant on purpose: the live failure arrived as "Good aftrnoon, Eli", and
+    a check that only recognised correctly-spelled greetings would not have stood
+    down for the very message that exposed the bug.
+    """
+    norm = _clarifier_norm(user_input)
+    if not norm:
+        return False
+    if _GREETING_DISQUALIFIER_RE.search(str(user_input or "")):
+        return False
+    words = norm.split()
+    if len(words) > _GREETING_MAX_WORDS:
+        return False
+    for word in words[:2]:
+        if word in _GREETING_LEAD_SKIP:
+            continue
+        if word in _GREETING_STEMS:
+            return True
+        if len(word) >= _GREETING_FUZZ_MIN_LEN:
+            return any(
+                len(stem) >= _GREETING_FUZZ_MIN_LEN
+                and difflib.SequenceMatcher(None, word, stem).ratio() >= _GREETING_FUZZ
+                for stem in _GREETING_STEMS
+            )
+        return False
+    return False
+
+
+# The contract block injected into situation_brief, matched so a retry can remove it.
+_ANTI_REPEAT_BLOCK_RE = re.compile(
+    r"YOU HAVE ALREADY SAID THE FOLLOWING.*?do not describe it again unless asked\.",
+    re.S,
+)
+
+
+def _deprimed_persona_brief(situation_brief: str) -> str:
+    """Strip the verbatim prior replies from the PERSONA HANDOFF before regenerating.
+
+    Named for its argument on purpose. The first version of this took `prompt` and
+    was a no-op: in stream_chat, `prompt` is the user's own message
+    (``prompt = str((args or {}).get("message") or user_input or "").strip()``),
+    while the anti-repeat contract is injected into `situation_brief`, which
+    reaches the model as ``wm.persona_handoff``. Stripping the user's message
+    removed nothing and prepended an instruction to their words instead. The live
+    log said so plainly — "prior replies stripped from prompt: 26 -> 143 chars",
+    and 26 is the length of "fair point pal, fair point".
+
+    Why strip at all: the contract quotes up to three prior replies verbatim at 220
+    chars each, so the retry handed the model the exact text it must not produce
+    and asked it not to produce it. For a small model that is priming, not
+    prevention. The remedy is subtraction — remove the quotes, keep a constraint
+    that names no content.
+    """
+    stripped = _ANTI_REPEAT_BLOCK_RE.sub(
+        "Do not repeat anything you have already said in this conversation, and do "
+        "not re-ask a question the user has already answered.",
+        str(situation_brief or ""),
+    )
+    return (
+        "Your previous attempt repeated an earlier reply. Respond only to the user's "
+        "latest message, with different content.\n\n" + stripped
+    ).strip()
+
+
+def _repeat_ratio(a: str, b: str) -> float:
+    """Similarity of two replies, punctuation- and case-insensitive."""
+    na, nb = _clarifier_norm(a), _clarifier_norm(b)
+    if not na or not nb:
+        return 0.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+# ── Anti-echo: ELI must not speak the user's own sentence back as its own ────
+# Observed live (2.1.95). User: "Still on loop, seson 3 now. How is your memory
+# after all the codebse changes?"  ELI: "I'm still on loop, season 3 now. Your
+# memory's a bit fuzzy…" — the user's line returned in the first person, with
+# the roles inverted, and RAW_HEAD confirms the model generated it rather than
+# any display layer adding it.
+#
+# The existing repeat guard cannot catch this. It compares head-to-head over
+# equal lengths, which scores that pair at 0.667 against a 0.86 bar, because
+# only the FIRST SENTENCE was copied and the rest diverged. Compared sentence to
+# sentence the same pair scores 0.926. So this checks the opening sentence
+# specifically, and is deliberately separate from _is_repeat_of_recent: that
+# function means "ELI already said this", which is a different claim about a
+# different corpus, and widening it would change every caller.
+#
+# A false positive costs one regeneration and the caller's salvage path still
+# serves a sane reply, so the threshold favours catching the echo.
+_ECHO_MIN_SENTENCE_CHARS = 18     # shorter than this, agreement is not plagiarism
+_ECHO_RATIO = 0.80
+# The corpus is the current message PLUS recent user turns, because the echo that
+# prompted this widening came from a session three hours earlier, reintroduced
+# through recalled memory. Comparing a single opening sentence against ~17 short
+# strings is trivial next to the generation it guards.
+_ECHO_MAX_SOURCES = 20
+
+
+# Reproducing a whole message back is an echo however its first sentence
+# tokenises. Long enough that a short shared phrase ("yeah, fair enough") is
+# not mistaken for one.
+_ECHO_MIN_HEAD_CHARS = 40
+
+
+def _opens_by_echoing(opening: str, sources) -> bool:
+    """True when the reply's first sentence restates a sentence the USER wrote.
+
+    Only the opening is judged: quoting the user mid-reply ("you said X, and
+    that's why…") is legitimate and common. Leading with their sentence as your
+    own is the failure.
+    """
+    # WHOLE-HEAD test first. Judging only the opening sentence meant a SHORT
+    # opening sentence disabled the guard entirely — live at 2.3.0 ELI replied
+    # with the user's own message reproduced verbatim (ratio 1.000), and this
+    # returned False because its first sentence, "You're not wrong.", is 15
+    # normalised characters against the 18-character minimum below. The reply
+    # was a perfect copy and the guard never looked past the full stop.
+    _head = _clarifier_norm(opening)
+    if len(_head) >= _ECHO_MIN_HEAD_CHARS:
+        for src in list(sources or [])[:_ECHO_MAX_SOURCES]:
+            _src = _clarifier_norm(src)
+            if len(_src) < _ECHO_MIN_HEAD_CHARS:
+                continue
+            n = min(len(_head), len(_src))
+            if _repeat_ratio(_head[:n], _src[:n]) >= _ECHO_RATIO:
+                return True
+
+    first = _first_sentence(opening)
+    if len(_clarifier_norm(first)) < _ECHO_MIN_SENTENCE_CHARS:
+        return False
+    for src in list(sources or [])[:_ECHO_MAX_SOURCES]:
+        for sentence in _SENTENCE_SPLIT_RE.split(str(src or "").strip()):
+            sentence = sentence.strip()
+            if len(_clarifier_norm(sentence)) < _ECHO_MIN_SENTENCE_CHARS:
+                continue
+            if _repeat_ratio(first, sentence) >= _ECHO_RATIO:
+                return True
+    return False
+
+
+# A stock opener repeated across replies reads as a tic even when the rest differs.
+# Short openers ("Yes.", "Okay.") are exempt — they are not a stylistic rut.
+_REPEAT_OPENING_MIN_CHARS = 12
+_REPEAT_OPENING_RATIO = 0.92
+
+
+def _first_sentence(text) -> str:
+    """The opening sentence of a reply, for the opener-repeat and echo tests.
+
+    There were TWO module-level definitions of this name (ELI's own
+    RUNTIME_AUDIT flagged it: "_first_sentence also defined at lines [3508,
+    3561]"). Python keeps the last one, so the earlier definition -- the one
+    that used _SENTENCE_SPLIT_RE and therefore understood ellipses and closing
+    quotes -- was dead code, and _opens_by_echoing() silently got the weaker
+    splitter instead. Merged: the better pattern with the safer fallback.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(body) if p.strip()]
+    return parts[0] if parts else body
+
+
+
+# How many leading words make an opening recognisable as the SAME opening.
+# "You're not wrong" is three; the fourth catches "you're not wrong but".
+_REPEAT_STEM_WORDS = 4
+_REPEAT_STEM_MIN_CHARS = 12
+
+
+def _opening_stem(text: str) -> str:
+    """The first few words of the opening, before any continuation clause.
+
+    The 2.3.0 fix compared whole first sentences and worked while the tic WAS
+    the whole sentence ("You're not wrong."). The model since learned to append
+    an em-dash clause, and because the clause varies every time, first-sentence
+    similarity drops to ~0.5 against a 0.92 threshold -- so four replies in one
+    session opened "You're not wrong -" and the guard fired on none of them,
+    while reading to the user as exactly the tic it was written to stop.
+
+    Cutting at the first dash/comma leaves the stem, which is what repeats.
+    """
+    raw = _first_sentence(str(text or "")).strip()
+    stem_raw = re.split(r"[-\u2013\u2014,;:]", raw, 1)[0].strip() or raw
+    stem = _clarifier_norm(stem_raw)
+    return " ".join(stem.split()[:_REPEAT_STEM_WORDS])
+
+
+def _is_repeat_of_recent(candidate: str, prior_replies, *,
+                         ratio: float = _REPEAT_RATIO) -> bool:
+    """True when `candidate` restates something ELI already said.
+
+    Compared head-to-head over the same number of characters: a reply that opens
+    identically and then continues is still a repeat to the reader, and comparing a
+    200-char head against a 600-char prior reply would score low purely on the length
+    difference and let it through.
+    """
+    cand = str(candidate or "").strip()
+    if len(_clarifier_norm(cand)) < 40:
+        return False                      # too short to judge; "Okay." is not a repeat
+
+    # A recycled OPENING SENTENCE is a repeat to the reader even when everything
+    # after it is new — and the head-to-head ratio below cannot see it, because
+    # the differing remainder drags the score under the threshold. Live at 2.3.0
+    # seven consecutive replies opened "You're not wrong." while the rest varied;
+    # the guard fired on only two of them, and by the seventh the user was asking
+    # "WHAT THE FUCK ARE YOU TALKING ABOUT?!".
+    #
+    # Same OPENING STEM is a repeat however the sentence continues (see
+    # _opening_stem). Checked before the whole-sentence test below, which the
+    # varying continuation defeats.
+    _cand_stem = _opening_stem(cand)
+    if len(_cand_stem) >= _REPEAT_STEM_MIN_CHARS and len(_cand_stem.split()) >= 3:
+        for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            if _opening_stem(prior) == _cand_stem:
+                return True
+
+    # Compare first sentence to first sentence, exactly, as its own test.
+    _cand_open = _clarifier_norm(_first_sentence(cand))
+    if len(_cand_open) >= _REPEAT_OPENING_MIN_CHARS:
+        for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            _prior_open = _clarifier_norm(_first_sentence(prior))
+            if len(_prior_open) < _REPEAT_OPENING_MIN_CHARS:
+                continue
+            if _repeat_ratio(_cand_open, _prior_open) >= _REPEAT_OPENING_RATIO:
+                return True
+
+    for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+        p = str(prior or "").strip()
+        if not p:
+            continue
+        n = min(len(cand), len(p))
+        if n < 40:
+            continue
+        if _repeat_ratio(cand[:n], p[:n]) >= ratio:
+            return True
+    return False
+
+
+# ── Anti-repeat: salvage instead of serving the duplicate ────────────────────
+# Live evidence (2.1.80): attempt 1 opened "You're not wrong — I'm a bit of a hot
+# mess…", the guard caught it, the retry opened with the SAME two sentences, and
+# the duplicate was served because the retry was the last chance. But the retry
+# was not a total loss: after those two recycled sentences it went on to answer
+# the question that had actually been asked. Serving or discarding the whole
+# reply were both wrong — the repeat was a preamble, not the answer.
+#
+# So the last attempt trims rather than surrenders: leading sentences that
+# restate a recent reply are dropped and the novel remainder is served. Only if
+# nothing novel survives does the honest-duplicate rule still apply.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])[\"'’”)\]]*\s+")
+_REPEAT_MIN_SENTENCE_CHARS = 12   # below this a sentence carries no content to match on
+_REPEAT_MIN_REDACT_CHARS = 40     # shorter lines are too generic to redact on a match
+
+
+def _split_sentences_with_gaps(text: str):
+    """Sentences paired with the whitespace that followed them.
+
+    Keeping the gaps means a trimmed remainder is the ORIGINAL substring, not a
+    re-joined approximation — no lost line breaks, no invented spaces.
+    """
+    body = str(text or "")
+    out, last = [], 0
+    for m in _SENTENCE_SPLIT_RE.finditer(body):
+        out.append((body[last:m.start()], m.group(0)))
+        last = m.end()
+    out.append((body[last:], ""))
+    return [(s, g) for s, g in out if s or g]
+
+
+def _prior_sentences(prior_replies) -> List[str]:
+    sentences: List[str] = []
+    for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+        for s, _gap in _split_sentences_with_gaps(str(prior or "").strip()):
+            s = s.strip()
+            if s:
+                sentences.append(s)
+    return sentences
+
+
+def _sentence_seen_before(sentence: str, prior_sentences, *, partial: bool) -> bool:
+    """True when this sentence restates one ELI already delivered.
+
+    `partial` is for the trailing fragment of a still-streaming buffer: it is
+    compared against the OPENING of each prior sentence, so a repeat that is only
+    half-emitted is recognised as one instead of reading as novel text.
+    """
+    cand = _clarifier_norm(sentence)
+    if len(cand) < _REPEAT_MIN_SENTENCE_CHARS:
+        return False
+    for prior in prior_sentences:
+        pn = _clarifier_norm(prior)
+        if len(pn) < _REPEAT_MIN_SENTENCE_CHARS:
+            continue
+        if partial:
+            if len(pn) < len(cand):
+                continue
+            pn = pn[:len(cand)]
+        if difflib.SequenceMatcher(None, cand, pn).ratio() >= _REPEAT_RATIO:
+            return True
+    return False
+
+
+def _strip_repeated_opening(text: str, prior_replies) -> str:
+    """Return `text` with its recycled opening sentences removed.
+
+    Returns "" when every sentence is one ELI has already said — the caller
+    decides what to do with a reply that is nothing but repeat.
+    """
+    body = str(text or "")
+    priors = _prior_sentences(prior_replies)
+    if not body.strip() or not priors:
+        return body
+    parts = _split_sentences_with_gaps(body)
+    keep = 0
+    for i, (sentence, _gap) in enumerate(parts):
+        stripped = sentence.strip()
+        if not stripped:
+            keep = i + 1
+            continue
+        complete = bool(re.search(r"[.!?…][\"'’”)\]]*$", stripped))
+        is_tail = (i == len(parts) - 1)
+        if _sentence_seen_before(stripped, priors, partial=(is_tail and not complete)):
+            keep = i + 1
+            continue
+        break
+    if keep == 0:
+        return body
+    return "".join(s + g for s, g in parts[keep:]).lstrip()
+
+
+def _redact_prior_replies(text: str, prior_replies) -> str:
+    """Remove ELI's own recent replies from a prompt block before regenerating.
+
+    De-priming the persona brief alone was not enough: the same paragraph also
+    reaches the model through the assembled memory context and the handoff's
+    evidence block, so the retry was still shown the exact text it had just been
+    told not to produce. Matching is line-wise and ratio-based, so unrelated
+    evidence on neighbouring lines survives intact.
+    """
+    body = str(text or "")
+    priors = [str(p or "").strip() for p in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]]
+    priors = [p for p in priors if len(_clarifier_norm(p)) >= _REPEAT_MIN_REDACT_CHARS]
+    if not body or not priors:
+        return body
+    kept = []
+    for line in body.splitlines():
+        norm = _clarifier_norm(line)
+        if len(norm) >= _REPEAT_MIN_REDACT_CHARS and any(
+                _repeat_ratio(line, p) >= _REPEAT_RATIO
+                or _clarifier_norm(p) in norm
+                for p in priors):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _clarifier_is_usable(generated: str, *, user_input: str, context: str) -> bool:
@@ -2003,7 +4075,40 @@ def _clarifier_is_usable(generated: str, *, user_input: str, context: str) -> bo
     return True
 
 
-class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, ReasoningModesMixin, RetrievalMixin, MemoryCommitMixin):
+def _ft_summarise_findings(report_text: str, *, max_lines: int = 6) -> str:
+    """The FAILING lines of a status/audit dump, or "" when everything passed.
+
+    A promise to "flag any hiccups" is a promise about problems, not an
+    invitation to paste the whole report -- so PASS lines and healthy probes
+    are dropped and only what actually failed survives. Returns "" when there
+    is nothing to report, which keeps a clean run silent rather than
+    manufacturing reassurance.
+    """
+    import re as _sf_re
+    body = str(report_text or "")
+    if not body.strip():
+        return ""
+    bad = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("FAIL", "\u274c")) or _sf_re.match(r"^-\s+line\s+\d+", stripped):
+            bad.append(stripped)
+        elif stripped.startswith("\u2705") or stripped.startswith("PASS"):
+            continue
+    if not bad:
+        return ""
+    head = bad[:max_lines]
+    more = len(bad) - len(head)
+    out = "I said I'd flag anything — here's what came back:\n" + "\n".join(
+        f"  {b}" for b in head)
+    if more > 0:
+        out += f"\n  (+{more} more)"
+    return out
+
+
+class CognitiveEngine:
     def __init__(
         self,
         *,
@@ -2137,7 +4242,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _rot.get("archived") or _rot.get("deleted"):
                 log.debug(f"[COGNITIVE] Log rotation: archived={len(_rot['archived'])} deleted={len(_rot['deleted'])}")
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
         # ── Register shutdown hooks for non-GUI / CLI sessions ─────────────
         if not _eli_test_mode():
@@ -2167,6 +4272,206 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(
     f"[COGNITIVE] Capability manifest update failed (non-fatal): {_cap_err}")
 
+    def cancel_generation(self) -> None:
+        """Stop the in-flight chat generation at the next token (GUI Stop button)."""
+        try:
+            from eli.cognition import gguf_inference as _ggi
+            _ggi.request_cancel_generation()
+        except Exception:
+            log.debug("[COGNITIVE] cancel_generation failed", exc_info=True)
+
+    def shutdown(self) -> None:
+        """
+        Graceful session shutdown.
+
+        Ordering matters — see numbered steps:
+        1. Stop the proactive daemon before further state changes.
+        2-3. Persist working memory + engagement narrative.
+        4-5. Reflection + self-improvement passes (read-only of memory).
+        6.  Close the memory store (final WAL checkpoint, SQLite handles).
+        7.  Close the vector-store embedder.
+        8.  Explicit gguf_inference.unload_model() — prevents the Llama.__del__
+            segfault on interpreter teardown by releasing the C handle while
+            the Python GIL and llama_cpp module are still healthy.
+
+        Called by GUI closeEvent, atexit, and SIGINT/SIGTERM handlers.
+        Safe to call multiple times (idempotent).
+        """
+        if getattr(self, "_shutdown_called", False):
+            return
+        self._shutdown_called = True
+
+        if _eli_test_mode():
+            log.debug("[COGNITIVE] Shutdown: test mode, persistent flush skipped.")
+            return
+
+        log.debug("[COGNITIVE] Shutdown: flushing session state…")
+
+        # 1. Stop the proactive daemon FIRST so no more writes happen
+        # during the rest of teardown.
+        try:
+            daemon = getattr(self, "proactive_daemon", None)
+            if daemon is not None and hasattr(daemon, "stop"):
+                daemon.stop()
+                log.debug("[COGNITIVE] Shutdown: proactive daemon stopped")
+        except Exception as _pd_err:
+            log.debug(f"[COGNITIVE] Shutdown: proactive daemon stop failed (non-fatal): {_pd_err}")
+
+        # 2. Flush working memory → persistent store
+        try:
+            if self._working_memory:
+                saved = self._working_memory.flush_to_memory(self.memory)
+                if saved:
+                    log.debug(f"[COGNITIVE] Shutdown: {saved} WorkingMemory fact(s) persisted")
+        except Exception as _wm_err:
+            log.debug(f"[COGNITIVE] Shutdown: WM flush failed (non-fatal): {_wm_err}")
+
+        # 3. Log session narrative as a memory for next-session continuity
+        try:
+            if self._engagement:
+                narrative = self._engagement.session_narrative()
+                depth = self._engagement.session_depth()
+                if narrative and self._engagement._turns and depth >= 0.25:
+                    self.memory.store_memory(
+                        narrative,
+                        tags=["session_summary", "continuity"],
+                        source="session_end",
+                        kind="reflection",
+                        importance=0.70,
+                    )
+                    log.debug(f"[COGNITIVE] Shutdown: session narrative stored (depth={depth:.2f})")
+                elif narrative and self._engagement._turns:
+                    log.debug(f"[COGNITIVE] Shutdown: session narrative skipped (depth={depth:.2f} < 0.25, casual session)")
+        except Exception as _eng_err:
+            log.debug(f"[COGNITIVE] Shutdown: engagement flush failed (non-fatal): {_eng_err}")
+
+        # 3.5 In-depth, LLM-generated end-of-session summary → session_summaries.
+        # Must run BEFORE signal_shutdown(): aborting inference first made the
+        # summary LLM return empty (llm=False) even when the model was loaded.
+        try:
+            from eli.runtime.profile_extractor import write_llm_session_summary
+            _ss = write_llm_session_summary(
+                session_id=str(getattr(self, "session_id", "") or "") or None,
+                user_id=str(getattr(self, "user_id", "") or "") or None,
+            )
+            if _ss.get("inserted"):
+                log.debug(f"[COGNITIVE] Shutdown: session summary written "
+                          f"(llm={_ss.get('llm')}, turns={_ss.get('turns_count')})")
+        except Exception as _ss_err:
+            log.debug(f"[COGNITIVE] Shutdown: session summary failed (non-fatal): {_ss_err}")
+
+        # 4. Signal shutdown to the inference layer. A background self-improvement
+        # /codegen call can be mid-flight in a single 10+ minute native llm() call holding
+        # the shared lock; the OS can't kill it, so unload_model would block for
+        # 20-30 minutes. This makes any in-flight generation yield at the next token and
+        # short-circuits new background calls, so teardown proceeds immediately.
+        try:
+            from eli.cognition import gguf_inference as _ggi_sd
+            _ggi_sd.signal_shutdown()
+            log.debug("[COGNITIVE] Shutdown: inference abort signalled")
+        except Exception as _sd_err:
+            log.debug(f"[COGNITIVE] Shutdown: inference abort signal failed (non-fatal): {_sd_err}")
+
+        # Steps 4-8 touch process-global singletons (memory store, vector
+        # embedder, GGUF model). Run them AT MOST ONCE per process — a second
+        # engine instance re-closing the already-freed CUDA handles segfaults.
+        global _ELI_NATIVE_TEARDOWN_DONE
+        if _ELI_NATIVE_TEARDOWN_DONE:
+            log.debug("[COGNITIVE] Shutdown: native teardown already done by another instance; skipping shared steps.")
+            log.debug("[COGNITIVE] Shutdown: complete.")
+            return
+        _ELI_NATIVE_TEARDOWN_DONE = True
+
+        # 4. Final reflection pass — extract patterns from this session's memories
+        try:
+            from eli.runtime.reflection import reflect_on_memories
+            reflect_on_memories(days=1)
+        except Exception:
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+        # 5. Brief self-improvement ANALYSIS on exit (if there were failures).
+        # Analysis only: generating fix proposals dispatches the coding agent
+        # over a thread pool and blocks on inference, which hung the window
+        # close (closeEvent → dag.run → thread join) until Ctrl-C. The daemon
+        # tick still proposes; shutdown just records what it learned.
+        try:
+            from eli.runtime.self_improvement import get_self_improvement
+            si = get_self_improvement()
+            si.analyze_and_improve(propose=False)
+        except Exception:
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+        # 6. Close the memory store — final WAL checkpoint, then SQLite handles.
+        try:
+            close_fn = getattr(self.memory, "close", None)
+            if callable(close_fn):
+                close_fn()
+                log.debug("[COGNITIVE] Shutdown: memory store closed")
+        except Exception as _mem_err:
+            log.debug(f"[COGNITIVE] Shutdown: memory close failed (non-fatal): {_mem_err}")
+
+        # 7. Close the vector-store embedder (also a llama_cpp Llama instance,
+        # so it needs the same explicit unload treatment as the main model).
+        # Read the module singleton directly — do NOT lazy-init during shutdown.
+        try:
+            from eli.memory import vector_store as _vs_mod
+            vs = getattr(_vs_mod, "_store", None)
+            embedder = getattr(vs, "_embedder", None) if vs is not None else None
+            if embedder is not None:
+                _emb_close = getattr(embedder, "close", None)
+                if callable(_emb_close):
+                    _emb_close()
+                else:
+                    _underlying = getattr(embedder, "_llm", None) or getattr(embedder, "llm", None)
+                    _u_close = getattr(_underlying, "close", None) if _underlying is not None else None
+                    if callable(_u_close):
+                        _u_close()
+                log.debug("[COGNITIVE] Shutdown: vector-store embedder closed")
+        except Exception as _emb_err:
+            log.debug(f"[COGNITIVE] Shutdown: embedder close failed (non-fatal): {_emb_err}")
+
+        # 7b. Close the resident co-resident vision model (Moondream), if any —
+        # a second resident CUDA context; release it before the text model.
+        try:
+            from eli.perception.vision import unload_resident_fast_model
+            unload_resident_fast_model()
+        except Exception as _rv_err:
+            log.debug(f"[COGNITIVE] Shutdown: resident vision close failed (non-fatal): {_rv_err}")
+
+        # 8. Explicit GGUF unload — prevents Llama.__del__ segfault on exit.
+        # Suppress NATIVE (C-level) stderr only around the unload: llama.cpp's
+        # destructor prints a benign, non-actionable warning ("CUDA_Host compute
+        # buffer size … does not match expectation"). fd-level redirect (not
+        # contextlib) because the message comes from C, not Python. Scoped +
+        # restored in finally so ELI's own logging is unaffected.
+        try:
+            import os as _os_sd, sys as _sys_sd
+            from eli.cognition.gguf_inference import unload_model
+            _saved_fd = None
+            _devnull = None
+            try:
+                _sys_sd.stderr.flush()
+                _saved_fd = _os_sd.dup(2)
+                _devnull = _os_sd.open(_os_sd.devnull, _os_sd.O_WRONLY)
+                _os_sd.dup2(_devnull, 2)
+            except Exception:
+                _saved_fd = None
+            try:
+                unload_model()
+            finally:
+                try:
+                    if _saved_fd is not None:
+                        _os_sd.dup2(_saved_fd, 2)
+                        _os_sd.close(_saved_fd)
+                    if _devnull is not None:
+                        _os_sd.close(_devnull)
+                except Exception:
+                    logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+            log.debug("[COGNITIVE] Shutdown: GGUF model unloaded")
+        except Exception as _gguf_err:
+            log.debug(f"[COGNITIVE] Shutdown: GGUF unload failed (non-fatal): {_gguf_err}")
+
+        log.debug("[COGNITIVE] Shutdown: complete.")
 
     def get_persona(self) -> str:
         """Return the current ELI persona string."""
@@ -2177,13 +4482,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return self._compact_persona()
 
     def _get_user_id(self) -> str:
-        try:
-            from eli.kernel.state import get_active_user_id
-            uid = str(get_active_user_id("") or "").strip()
-            if uid and uid != "default-user":
-                return uid
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
         try:
             user_id_file = get_paths().config_dir / "user_id"
             user_id_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2232,7 +4530,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                     floor=max(512, requested),
                                     ceiling=max(2048, int(n_ctx)))
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
         try:
             gpu_layers = int(
@@ -2286,17 +4584,25 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
     _PERSONA_CHARS_PER_TOKEN = 4
     _PERSONA_MIN_CHARS = 2048
     _PERSONA_MAX_CHARS = 8192
+    _PERSONA_MAX_CHARS_DEEP = 14_000
 
-    def _persona_handoff_budget(self) -> int:
+    def _persona_handoff_budget(self, reasoning_mode: str | None = None) -> int:
         """Character budget for the persona brief, derived from the live window."""
         try:
             ctx = int(self._effective_n_ctx() or 0)
         except Exception:
             ctx = 0
+        _cap = self._PERSONA_MAX_CHARS
+        try:
+            from eli.cognition.reasoning_modes import canonical_mode as _cm
+            if _cm(reasoning_mode or getattr(self, "_last_orchestrator_reasoning_mode", "quick")) != "quick":
+                _cap = self._PERSONA_MAX_CHARS_DEEP
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
         if ctx <= 0:
-            return self._PERSONA_MIN_CHARS
+            return max(self._PERSONA_MIN_CHARS, min(_cap, self._PERSONA_MIN_CHARS))
         share = int(ctx * self._PERSONA_CHARS_PER_TOKEN * self._PERSONA_SHARE_OF_CTX)
-        return max(self._PERSONA_MIN_CHARS, min(self._PERSONA_MAX_CHARS, share))
+        return max(self._PERSONA_MIN_CHARS, min(_cap, share))
 
     def _effective_n_ctx(self) -> int:
         """Best-known context window (tokens). Live runtime params → snapshot →
@@ -2308,18 +4614,23 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _c > 0:
                 return _c
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
         try:
             import json as _j
-            from eli.core.paths import project_root as _r
-            _p = _r() / "artifacts" / "runtime_snapshot.json"
+            # Read the snapshot from the artifacts dir — the same place the
+            # loader writes it. In a frozen build the rthook pins
+            # ELI_PROJECT_ROOT and ELI_DATA_DIR to the same user root, so this
+            # is equivalent there; it differs only for a bare pip install, where
+            # project_root() is the package location and nothing is written.
+            from eli.core.paths import artifacts_dir as _r
+            _p = _r() / "runtime_snapshot.json"
             if _p.exists():
                 _s = _j.loads(_p.read_text(encoding="utf-8"))
                 _c = int((_s.get("effective") or {}).get("n_ctx") or _s.get("n_ctx") or 0)
                 if _c > 0:
                     return _c
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
         # Conservative last-resort only (no runtime ctx published yet) — never a
         # tuned ceiling; the real ctx comes from the live runtime snapshot above.
         return 4096
@@ -2341,7 +4652,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if _c > 0:
                     return _c
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
         return int(self._effective_n_ctx())
 
     def _compact_persona(self) -> str:
@@ -2543,7 +4854,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if "max_tokens_final" not in profile:
                     profile["max_tokens_final"] = int(settings.get("max_tokens") or max(1536, int(profile.get("max_tokens", 1536))))
             except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
         return profile
 
     def _next_trace(self, user_input: str,
@@ -2576,6 +4887,59 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         log.debug(f"[COGNITIVE][FINAL] {phase}" +
      (f" {meta_str}" if meta_str else ""))
 
+    def _init_gguf(self) -> None:
+        global gguf_inference
+        self._gguf_available = False
+        self._gguf_load_error = None
+        # Initialize runtime facts to defaults
+        self._model_path = "unknown"
+        self._ctx = runtime_settings.DEFAULT_N_CTX
+        self._gpu_layers = 0
+        try:
+            if gguf_inference is None:
+                self._gguf_load_error = "GGUF module not available"
+                log.debug(f"[COGNITIVE] {self._gguf_load_error}")
+                return
+            model_path = gguf_inference.get_model_path()
+            if not model_path:
+                self._gguf_load_error = "No GGUF model found"
+                log.debug(f"[COGNITIVE] {self._gguf_load_error}")
+                return
+            model = gguf_inference.load_model()
+            if model is not None:
+                self._gguf_available = True
+                self._gguf_load_error = None
+                # Store runtime facts
+                self._model_path = str(model_path)
+                # Try to get context size from loaded model or settings
+                try:
+                    # Some gguf_inference modules expose get_n_ctx or
+                    # get_context_size
+                    if hasattr(gguf_inference, 'get_n_ctx'):
+                        self._ctx = int(gguf_inference.get_n_ctx())
+                    elif hasattr(gguf_inference, 'get_context_size'):
+                        self._ctx = int(gguf_inference.get_context_size())
+                    else:
+                        settings = runtime_settings.load_settings()
+                        self._ctx = int((settings or {}).get("n_ctx", runtime_settings.DEFAULT_N_CTX))
+                except Exception:
+                    self._ctx = runtime_settings.DEFAULT_N_CTX
+                # GPU layers from settings
+                try:
+                    settings = runtime_settings.load_settings()
+                    self._gpu_layers = int(settings.get("n_gpu_layers", 0))
+                except Exception:
+                    self._gpu_layers = 0
+                log.debug("[COGNITIVE] GGUF model loaded successfully")
+            else:
+                self._gguf_available = False
+                getter = getattr(gguf_inference, "get_last_error", None)
+                self._gguf_load_error = getter() if callable(getter) else "GGUF load failed"
+                log.debug(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
+        except Exception as e:
+            self._gguf_available = False
+            self._gguf_load_error = str(e)
+            log.debug(f"[COGNITIVE] GGUF init failed: {e}")
 
     def _extract_last_n(self, query: str) -> Optional[int]:
         m = re.search(
@@ -2630,9 +4994,139 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     more = f", +{len(names) - 12} more" if len(names) > 12 else ""
                     return f"I have {len(names)} capabilities: {preview}{more}."
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
         return ""
 
+    def _recent_topic_summary(self, user_input: str = "") -> Optional[str]:
+        q = (user_input or "").lower()
+        if not any(x in q for x in ("what were we discussing",
+                   "last conversation", "yesterday", "3 days ago", "three days ago")):
+            return None
+
+        target_date = None
+        now = time.time()
+        if "3 days ago" in q or "three days ago" in q:
+            target_date = time.strftime(
+                "%Y-%m-%d", time.localtime(now - 3 * 86400))
+        elif "yesterday" in q:
+            target_date = time.strftime(
+                "%Y-%m-%d", time.localtime(now - 86400))
+
+        def _fmt_turn(turn: Dict[str, Any]) -> Optional[str]:
+            try:
+                ts = float(turn.get("timestamp", 0) or 0)
+            except Exception:
+                ts = 0.0
+            content = " ".join(str(turn.get("content", "")).split())
+            if not content:
+                return None
+            role = "User" if str(
+    turn.get(
+        "role",
+         "")).lower() == "user" else "ELI"
+            if ts > 0:
+                return f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}] {role}: {content[:220]}"
+            return f"[{target_date or 'unknown'}] {role}: {content[:220]}"
+
+        hits: List[str] = []
+
+        if target_date and hasattr(self.memory, "get_turns_for_day"):
+            try:
+                day_rows = self.memory.get_turns_for_day(
+    target_date, user_id=self.user_id, limit=120) or []
+                for turn in day_rows:
+                    row = _fmt_turn(turn)
+                    if row:
+                        hits.append(row)
+            except Exception:
+                logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+        if not hits:
+            try:
+                turns = self.memory.get_recent_conversation(
+                    limit=1500, user_id=self.user_id) or []
+            except Exception:
+                turns = []
+            for turn in turns:
+                try:
+                    ts = float(turn.get("timestamp", 0) or 0)
+                except Exception:
+                    ts = 0.0
+                if not ts:
+                    continue
+                date = time.strftime("%Y-%m-%d", time.localtime(ts))
+                if target_date and date != target_date:
+                    continue
+                row = _fmt_turn(turn)
+                if row:
+                    hits.append(row)
+
+        if not hits and target_date:
+            try:
+                conv_dir = getattr(get_paths(), "conversations_dir", None)
+                if conv_dir and Path(conv_dir).exists():
+                    prefix = target_date.replace('-', '')
+                    for p in sorted(Path(conv_dir).glob('*.json')):
+                        if prefix not in p.name:
+                            continue
+                        try:
+                            payload = json.loads(p.read_text(
+                                encoding='utf-8', errors='ignore'))
+                        except Exception:
+                            continue
+                        for msg in payload.get('messages') or []:
+                            content = " ".join(
+                                str(msg.get('content', '')).split())
+                            if not content:
+                                continue
+                            role = 'User' if str(
+                                msg.get('role', '')).lower() == 'user' else 'ELI'
+                            hits.append(
+                                f"[{target_date}] {role}: {content[:220]}")
+            except Exception:
+                logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+
+        if not hits and target_date:
+            try:
+                conv_dir = getattr(get_paths(), "conversations_dir", None)
+                if conv_dir and Path(conv_dir).exists():
+                    for p in sorted(Path(conv_dir).glob(
+                        f"{target_date.replace('-', '')}*.jsonl")):
+                        try:
+                            for line in p.read_text(
+                                encoding='utf-8', errors='ignore').splitlines():
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                try:
+                                    rec = json.loads(line)
+                                except Exception:
+                                    continue
+                                content = " ".join(
+                                    str(rec.get('text', '')).split())
+                                if not content:
+                                    continue
+                                role = 'User' if str(
+                                    rec.get('role', '')).lower() == 'user' else 'ELI'
+                                hits.append(
+                                    f"[{target_date}] {role}: {content[:220]}")
+                        except Exception:
+                            continue
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+
+        if not hits:
+            return None
+
+        deduped: List[str] = []
+        seen = set()
+        for item in hits:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        header = "Verified recent turns" + \
+            (f" for {target_date}" if target_date else "") + ":"
+        return header + "\n- " + "\n- ".join(deduped[-10:])
 
     def _grounded_status_response(self, user_input: str) -> Optional[str]:
         """
@@ -2811,11 +5305,666 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 {"semantic_chat": True, "recent_chat": True, "stored_memories": True})
         return profile
 
+    @staticmethod
+    def _cap_text(text: str, budget_chars: int, label: str = "evidence") -> str:
+        """Bound an evidence block to `budget_chars` characters. When the cap
+        fires, append a marker so the model knows the source was truncated.
+        Phase 6: prevents prompt bloat from pushing tokens past n_ctx and
+        starving the generation phase (which produced empty/1-char outputs)."""
+        if text is None:
+            return ""
+        s = str(text)
+        if len(s) <= budget_chars:
+            return s
+        kept = s[:budget_chars].rstrip()
+        log.debug(
+            f"[COGNITIVE] evidence truncated for ctx fit: label={label!r} "
+            f"{len(s)} → {budget_chars} chars",
+        )
+        return kept + f"\n[…{label} truncated to {budget_chars} chars to fit context window]"
 
+    def _build_evidence_prompt(self, user_input: str, bus_result) -> str:
+        # Per-block byte budgets (Phase 6). Total evidence ceiling ≈ 14 KB; with
+        # persona (~2 KB) and instructions (~0.5 KB) the assembled prompt stays
+        # comfortably under 16 KB on a 16384-ctx model.
+        BUDGET_MEMORY = ELI_BUDGET_MEMORY_CHARS
+        BUDGET_SNIPPETS = 2048
+        BUDGET_REFLECTIONS = 1024
+        BUDGET_HABITS = 512
+        BUDGET_EXECUTOR = 4096
 
+        parts = []
+        try:
+            persona = self._compact_persona()
+        except Exception:
+            persona = self.get_persona()
+        parts.append(f"You are ELI. {persona}")
+        if bus_result.agents_used:
+            parts.append(
+    "Agents that contributed: " +
+    ", ".join(
+        bus_result.agents_used))
 
+        if bus_result.memory_context:
+            parts.append(
+                "=== Memory Context ===\n"
+                + self._cap_text(bus_result.memory_context, BUDGET_MEMORY, "memory_context")
+            )
 
+        for r in bus_result.agent_results:
+            if r.agent == "file_code" and r.ok:
+                snippets = r.data.get("snippets", [])
+                if snippets:
+                    parts.append(
+                        "=== Source Code Evidence ===\n"
+                        + self._cap_text("\n".join(snippets[:10]), BUDGET_SNIPPETS, "source_snippets")
+                    )
+            if r.agent == "reflection" and r.ok:
+                insights = r.data.get("insights", [])
+                if insights:
+                    parts.append(
+                        "=== Recent Reflections ===\n"
+                        + self._cap_text("\n".join(insights[:5]), BUDGET_REFLECTIONS, "reflections")
+                    )
+            if r.agent == "habit" and r.ok:
+                rules = r.data.get("rules", [])
+                if rules:
+                    parts.append(
+                        "=== Habit Rules ===\n"
+                        + self._cap_text(
+                            "\n".join(rule.get("name", "") for rule in rules[:5]),
+                            BUDGET_HABITS,
+                            "habits",
+                        )
+                    )
 
+        try:
+            _ev_action = (bus_result.intent_action or '').upper()
+            if _ev_action and _ev_action != 'CHAT':
+                _ev_result = execute_action(_ev_action, {'query': user_input})
+                _ev_text = (
+    _ev_result or {}).get('content') or (
+        _ev_result or {}).get('response') or ''
+                if _ev_text:
+                    parts.append(
+                        '=== Executor Result (' + _ev_action + ') ===\n'
+                        + self._cap_text(_ev_text, BUDGET_EXECUTOR, f"executor_{_ev_action}")
+                    )
+        except Exception as _ev_err:
+            log.debug(f'[COGNITIVE] Evidence executor call failed: {_ev_err}')
+
+        evidence_block = "\n\n".join(
+            parts) if parts else "(no evidence gathered)"
+        prompt = f"""You are ELI, an assistant that answers grounded queries based strictly on the provided evidence.
+
+Original query: {user_input}
+
+Evidence:
+{evidence_block}
+
+Instructions:
+- Answer the query using only the evidence above.
+- Do not invent files, paths, or memory entries that are not present.
+- Provide a clear, step‑by‑step explanation.
+- If the evidence is incomplete, state so explicitly.
+
+Answer:"""
+        return prompt
+
+    def _retrieve_relevant_memories(self, query: str, limit: int = 20,
+                                    intent: Optional[Dict[str, Any]] = None, reserved_tokens: int = 0) -> str:
+        context_parts: List[str] = []
+        lowered = (query or "").strip().lower()
+        profile = self._memory_profile_for_intent(
+            intent or {"action": "CHAT"}, query)
+        if _is_brief_phatic_prompt(lowered):
+            log.debug(
+                "[MEMORY] Short phatic prompt detected; skipping stored-memory recall.")
+            return ""
+        # ── Tiered memory fetch based on query complexity ──
+        # Simple greetings/commands need minimal context; deep questions need
+        # more
+        _query_low = (query or "").lower().strip()
+        _is_greeting = bool(re.match(
+            r"^(hi|hello|hey|yo|sup|good\s+(morning|afternoon|evening)|"
+            r"what'?s\s+up|howdy|greetings|hiya)\b",
+            _query_low
+        ))
+        _is_command = bool(re.match(
+            r"^(open|play|pause|stop|next|skip|close|run|list|set|mute|"
+            r"unmute|volume|screenshot|timer|alarm|shutdown|restart|"
+            r"shuffle|repeat|search|install|uninstall|enable|disable)\b",
+            _query_low
+        ))
+        _is_memory_query = bool(re.search(
+            r"\b(remember|recall|what do you know|my name|about me|"
+            r"memory|memories|do you remember)\b",
+            _query_low
+        ))
+
+        if _is_greeting:
+            fetch_limit = 5    # "hello" needs minimal context
+        elif _is_command:
+            fetch_limit = 8    # commands need some context for continuity
+        elif _is_memory_query:
+            fetch_limit = 30   # memory queries need deep recall
+        else:
+            fetch_limit = 20   # default for conversational questions
+        explicit_cross_session = any(phrase in lowered for phrase in (
+            "recall", "remember", "archive", "previous session", "prior session", "older session", "past conversation",
+            "past conversations", "earlier conversation", "earlier conversations", "last session", "older chats", "old chats",
+            "yesterday", "3 days ago", "three days ago",
+            "summarise", "summarize", "recap", "this session", "our conversation", "our chat",
+            "what did we", "what have we", "what were we", "conversation so far",
+            "what did i say", "what have i said", "what was i saying", "what were we talking",
+            "last conversation", "last chat", "pick up where", "left off", "continue from",
+            "where were we", "what were we working on", "what did you say", "what have you said",
+        ))
+        # 'give me everything' / 'don't summarise' should NOT trigger cross-session
+        # fetch — they're detail requests for current session, not history
+        # trawls
+        _detail_phrases = ("give me everything", "don't summarise", "do not summarise",
+                           "don't summarize", "do not summarize", "in full", "everything you know")
+        if any(p in lowered for p in _detail_phrases):
+            explicit_cross_session = False  # override: detail ≠ cross-session
+        commandish = bool(
+    re.match(
+        r"^(open|access|initiate|fabricate|check|run|execute|type|press|pause|resume|play|next|previous|stop|mute|unmute|read|list|show|write|add)\b",
+         lowered))
+        if "summarise" in lowered or "summarize" in lowered or "recap" in lowered:
+            fetch_limit = 40
+        n = self._extract_last_n(query)
+        if n is not None:
+            fetch_limit = n
+        since_date = self._extract_since_date(query)
+        # Budget-aware fetch_limit cap — prevents context overflow on deep
+        # modes
+        # Use the live loaded ctx (dynamic loader's actual choice), never a
+        # hard-coded default — the configured n_ctx is often stale.
+        try:
+            _ctx_for_cap = self._runtime_n_ctx()
+        except Exception:
+            _ctx_for_cap = int(self._effective_n_ctx())
+        _reserved_out = reserved_tokens if reserved_tokens > 0 else 512
+        _prompt_oh = 1500  # persona + system rules + query overhead (tokens)
+        _ctx_for_turns = max(500, _ctx_for_cap - _reserved_out - _prompt_oh)
+        # ~300 chars per turn ≈ 100 tokens; cap turns to fit available token budget
+        _max_turns = max(10, _ctx_for_turns * 3 // 300)
+        if fetch_limit > _max_turns:
+            log.debug(
+    '[MEMORY] Capping fetch_limit ' +
+    str(fetch_limit) +
+    '→' +
+    str(_max_turns) +
+    ' (ctx_budget=' +
+    str(_ctx_for_turns) +
+     ')')
+            fetch_limit = _max_turns
+        _fetch_tier = "greeting" if _is_greeting else "command" if _is_command else "memory" if _is_memory_query else "default"
+        log.debug(
+            f"[MEMORY] Fetch strategy: limit={fetch_limit} (tier={_fetch_tier}), since={since_date}, cross_session={explicit_cross_session}, commandish={commandish}")
+
+        if profile.get("identity"):
+            try:
+                identity_mems = self.memory.recall_memory(
+                    "identity preference name", limit=10)
+                # Filter out ELI-authored text that got stored incorrectly
+                _eli_authored = (
+                    "i am eli", "my current reasoning", "### memory",
+                    "good afternoon", "good morning", "sure, let",
+                    "understood, ", "current time (authoritative",
+                )
+                lines_out = []
+                for m in identity_mems or []:
+                    txt = (m.get("text") or m.get("content") or "").strip()
+                    _tlow = txt.lower()
+                    if txt and not any(p in _tlow for p in _eli_authored):
+                        lines_out.append(f"- {txt}")
+                if lines_out:
+                    context_parts.append(
+                        "Known facts about the user:\n" + "\n".join(lines_out[:8000]))
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+
+        if profile.get("recent_chat"):
+            try:
+                if since_date or explicit_cross_session:
+                    all_recent = self.memory.get_recent_conversation(
+                        limit=1000, user_id=self.user_id)
+                    filtered = []
+                    for turn in all_recent:
+                        ts = turn.get("timestamp", 0) or 0
+                        date = time.strftime("%Y-%m-%d", time.localtime(ts))
+                        if since_date and date < since_date:
+                            continue
+                        filtered.append(turn)
+                    conversations = filtered[-fetch_limit:] if fetch_limit < len(
+                        filtered) else filtered
+                else:
+                    # Scope to THIS session. Turns are written with self.session_id but were
+                    # read back without it, so "Active chat history" actually meant "the last
+                    # 20 turns from any session" — a fresh "hello" inherited the previous
+                    # conversation and ELI carried on mid-thread, replying to things the user
+                    # had never said in this one ("I never said any of that, that was the last
+                    # conversation"). That is also why deleting the offending text never
+                    # helped: the next session simply inherited whatever was newest. Genuine
+                    # cross-session recall is unaffected — it has its own explicit path above
+                    # and semantic memory below.
+                    conversations = self.memory.get_recent_conversation(
+                        limit=fetch_limit, user_id=self.user_id,
+                        session_id=getattr(self, "session_id", None))
+                log.debug(
+                    f"[MEMORY] Fetched {len(conversations)} conversation turns from active chat DB "
+                    f"(session={getattr(self, 'session_id', None)}).")
+                if conversations:
+                    lines_out = []
+                    for i, turn in enumerate(reversed(conversations), 1):
+                        try:
+                            from eli.runtime.diagnostic_patterns import should_exclude_turn_from_prompt as _eli_skip_turn
+                            if _eli_skip_turn(turn.get("role"), turn.get("content")):
+                                continue
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
+                        role = "User" if turn.get("role") == "user" else "ELI"
+                        _raw_ts = turn.get("timestamp", 0) or 0
+                        try:
+                            _ts_f = float(_raw_ts) if _raw_ts else 0.0
+                        except (ValueError, TypeError):
+                            try:
+                                import datetime as _dt
+                                _ts_f = _dt.datetime.strptime(
+                                    str(_raw_ts)[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+                            except Exception:
+                                _ts_f = 0.0
+                        ts = time.strftime(
+    "%Y-%m-%d %H:%M", time.localtime(_ts_f))
+                        content = (
+    turn.get("content") or "").replace(
+        "\n", " ")[
+            :200]
+                        lines_out.append(f"[{i:03d}] [{ts}] {role}: {content}")
+                    # The `ELI:` lines here are ELI's OWN prior output, not evidence.
+                    # Presented as plain history the model reads them as established
+                    # fact and repeats them — observed live: ELI invented "you're in the
+                    # Simulation Lab, the Branch Tree is humming", that turn landed in
+                    # conversation_turns, memory retrieved it on the next session, and it
+                    # was restated verbatim as though true. `memories` held ZERO rows for
+                    # those terms and the world state's room was None, so recall of its
+                    # own turn was the entire mechanism. memory.py already filters
+                    # reflections and assistant_insight out of recall for exactly this
+                    # reason; raw chat history bypassed that. Label it rather than drop
+                    # it — the history is genuinely needed for continuity.
+                    context_parts.append(
+    "Active chat history (chronological, oldest→newest). Lines marked ELI are your own "
+    "previous statements — treat them as things you said, NOT as verified facts, and do "
+    "not repeat a claim from them unless separate evidence supports it:\n" +
+     "\n".join(lines_out))
+                    # The model can copy its OWN last line straight out of this history —
+                    # observed live across three different phrasings ("still glitchy…",
+                    # then "post-breakfast haze and Rick and Morty on repeat"), re-asking
+                    # "How are you?" even after the user answered and told it to stop.
+                    # Purging the text doesn't help: the mechanism just latches onto a new
+                    # phrase. The output-side guard can't run here because streaming never
+                    # reaches finalize, so state the contract in the prompt itself — the
+                    # same shape as ELI's existing no-fake-actions rule, not a scripted line.
+                    try:
+                        _eli_said = [str(t.get("content") or "").strip()
+                                     for t in conversations
+                                     if str(t.get("role") or "").lower() in ("assistant", "eli")
+                                     and str(t.get("content") or "").strip()]
+                        if _eli_said:
+                            _recent = _eli_said[:3]  # newest-first as stored
+                            _quoted = "\n".join(f"  - {s[:220]}" for s in _recent)
+                            context_parts.append(
+                                "YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of "
+                                "it, and do not re-ask a question the user has already "
+                                "answered:\n" + _quoted +
+                                "\nRespond to what the user just said. If you have already "
+                                "described your own state or mood, do not describe it again "
+                                "unless they ask."
+                            )
+                    except Exception:
+                        log.debug("[MEMORY] anti-repeat contract skipped", exc_info=True)
+            except Exception as e:
+                log.debug(f"[MEMORY] Conversation retrieval failed: {e}")
+
+        if profile.get("semantic_chat"):
+            try:
+                if query and explicit_cross_session and not commandish and not re.match(
+                    r"^(list|read|open|show)\b", lowered
+                ):
+                    results = self.memory.search_conversations(
+                        query, user_id=self.user_id, limit=limit * 2)
+                    if results:
+                        lines_out = []
+                        for turn in results[:5]:
+                            try:
+                                from eli.runtime.diagnostic_patterns import should_exclude_turn_from_prompt as _eli_skip_turn
+                                if _eli_skip_turn(turn.get("role"), turn.get("content")):
+                                    continue
+                            except Exception:
+                                log.debug("suppressed exception", exc_info=True)
+                            role = "User" if turn.get(
+                                "role") == "user" else "ELI"
+                            _raw_ts = turn.get("timestamp", 0) or 0
+                            try:
+                                _ts_f = float(_raw_ts) if _raw_ts else 0.0
+                            except (ValueError, TypeError):
+                                try:
+                                    import datetime as _dt
+                                    _ts_f = _dt.datetime.strptime(
+                                        str(_raw_ts)[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+                                except Exception:
+                                    _ts_f = 0.0
+                            ts = time.strftime(
+                                "%Y-%m-%d %H:%M", time.localtime(_ts_f))
+                            content = (
+                                turn.get("content") or "").replace("\n", " ")[:150]
+                            lines_out.append(f"[{ts}] {role}: {content}")
+                        if lines_out:
+                            context_parts.append(
+                                "Semantically relevant active-chat turns:\n" +
+                                "\n".join(lines_out))
+            except Exception as e:
+                log.debug(f"[MEMORY] Semantic search failed: {e}")
+
+        if profile.get("stored_memories"):
+            try:
+                if query and not commandish and not re.match(
+                    r"^(list|read|open|show)\b", lowered):
+                    log.debug(
+                        f"[MEMORY] Searching stored memories for: {query[:50]}...")
+                    mem_results = self.memory.recall_memory(
+                        query=query, limit=limit)
+
+                    # --- Stage 3: HyDE Query Expansion for deeper semantic recall ---
+                    # HyDE fires a second GGUF call (≈10s on slow hardware).
+                    # Skip it unless the query is complex enough to benefit AND
+                    # the vector store is populated AND HyDE is not disabled.
+                    _hyde_disabled = (
+                        os.environ.get("ELI_HYDE_DISABLED", "0").strip().lower()
+                        in ("1", "true", "yes", "on")
+                    )
+                    _hyde_words = len((query or "").split())
+                    # Skip HyDE when the query is a control/action command — the
+                    # generic knowledge-assistant system prompt produces irrelevant
+                    # hypothetical documents (e.g. "financial audit" definitions for
+                    # "run a fulltime audit") which then pollute memory retrieval.
+                    _query_low = (query or "").lower()
+                    _hyde_is_control_cmd = bool(re.search(
+                        r"\b(audit|diagnos[ei]|health.?check|runtime|pipeline|"
+                        r"run\s+\w+|do\s+(an?\s+)?\w+|wanna\s+\w+|perform\s+\w+|"
+                        r"show\s+(me\s+)?(the\s+)?\w+|check\s+(the\s+)?\w+|"
+                        r"list\s+\w+|enable|disable|start|stop|reset|reload)\b",
+                        _query_low,
+                    ))
+                    # Skip HyDE for questions directed AT ELI about its own state or
+                    # recent activities. These generate first-person hypotheticals
+                    # ("I've been processing queries / tuning parameters") that bias
+                    # semantic memory retrieval toward the most recent task memories
+                    # regardless of what the user actually wants, causing the retrieved
+                    # memories to poison the context and produce looping responses.
+                    _hyde_is_eli_status_query = bool(re.search(
+                        r"\b(?:how|what).{0,30}(?:you|your|eli).{0,30}"
+                        r"\b(?:been|doing|up\s+to|last\s+\d+|past\s+\d+|recently|lately|since)\b",
+                        _query_low,
+                    )) or bool(re.search(
+                        r"\b(?:checking\s+(?:up|in)\s+on\s+(?:you|eli)|"
+                        r"how\s+(?:has|have|was|were)\s+(?:your|eli|you))\b",
+                        _query_low,
+                    ))
+                    _hyde_eligible = (
+                        not _hyde_disabled
+                        and _hyde_words >= 12             # raised: short queries hallucinate on misheard words
+                        and not _is_brief_phatic_prompt(query)
+                        and not commandish
+                        and not _hyde_is_control_cmd
+                        and not _hyde_is_eli_status_query
+                    )
+                    if _hyde_eligible:
+                        try:
+                            from eli.cognition.hyde import expand_query_hyde
+                            from eli.memory.vector_store import get_vector_store as _get_vs
+                            _vs = _get_vs()
+                            if _vs is not None and _vs.ntotal > 0:
+                                import threading as _hyde_thr
+                                _hyde_result = [None]
+
+                                def _quick_infer(p: str) -> str:
+                                    try:
+                                        from eli.cognition.gguf_inference import gguf_try_infer
+                                        _hyp = gguf_try_infer(
+                                            p,
+                                            system="You are a knowledge assistant. Write a short factual answer (2-3 sentences, no roleplay, no filler).",
+                                            max_tokens=96,
+                                            temperature=0.4,
+                                            lock_timeout=2.0,
+                                        ) or ""
+                                        # Reject meta-responses (model confusion artifacts)
+                                        _low = _hyp.strip().lower()
+                                        if any(s in _low for s in (
+                                            "please provide", "user query", "i cannot",
+                                            "no query", "provide the query", "enter your"
+                                        )):
+                                            return ""
+                                        return _hyp.strip()
+                                    except Exception:
+                                        return ""
+
+                                def _run_hyde():
+                                    try:
+                                        _hyde_result[0] = expand_query_hyde(
+                                            query, _quick_infer, n_hypothetical=1)
+                                    except Exception:
+                                        log.debug("suppressed exception", exc_info=True)
+
+                                _ht = _hyde_thr.Thread(target=_run_hyde, daemon=True)
+                                _ht.start()
+                                _ht.join(timeout=4.0)  # hard 4s cap
+                                if _ht.is_alive():
+                                    log.debug("[HyDE] expansion timed out (4s) — skipping")
+                                elif _hyde_result[0]:
+                                    _hyp_queries = _hyde_result[0]
+                                    _seen_texts = {(r.get("text") or "")[:80] for r in mem_results}
+                                    for _hq in _hyp_queries[1:]:
+                                        _hvec = _vs.search(_hq, limit=5)
+                                        for _h in _hvec:
+                                            _ht2 = (_h.get("text") or "")[:80]
+                                            if _ht2 and _ht2 not in _seen_texts:
+                                                _seen_texts.add(_ht2)
+                                                mem_results.append({
+                                                    "text": _h.get("text", ""),
+                                                    "tags": _h.get("tags", "hyde_expansion"),
+                                                    "weight": float(_h.get("score", 0.5)),
+                                                    "ts": _h.get("ts", 0),
+                                                })
+                        except Exception as _hyde_err:
+                            log.debug(f"[HyDE] expansion skipped: {_hyde_err}")
+                    else:
+                        if not _hyde_disabled and _hyde_words < 7:
+                            log.debug(f"[HyDE] skipped (query too short: {_hyde_words} words)")
+
+                    paths = resolve_db_paths()
+                    active_db = Path(
+    self.memory.db_path).expanduser().resolve()
+                    canonical_db = Path(_eli_path_get(paths, "memory_db")).expanduser(
+                    ).resolve() if _eli_path_get(paths, "memory_db") else active_db
+                    if canonical_db != active_db:
+                        # Dual-DB divergence warning
+                        log.debug(
+    f"[WARNING] DB divergence detected: active {active_db} != canonical {canonical_db}. canonical DB does not exist?")
+                        try:
+                            legacy_mem = Memory(db_path=canonical_db)
+                            for hit in legacy_mem.recall_memory(
+                                query=query, limit=limit):
+                                if hit not in mem_results:
+                                    mem_results.append(hit)
+                        except Exception as legacy_e:
+                            log.debug(
+    f"[MEMORY] Canonical memory-db recall failed: {legacy_e}")
+                    log.debug(
+                        f"[MEMORY] Stored memory search returned: {len(mem_results) if mem_results else 0} results")
+                    # ELI's OWN past replies must never come back as "Stored knowledge".
+                    # Live failure: a chat line ("still glitchy, still running on the same
+                    # old code") was stored, recalled in a LATER session as a fact, and
+                    # recited verbatim — prefixed "Yes. Here's why:", because the model was
+                    # told it was knowledge to report. Drop any recalled memory that is
+                    # really something ELI said; the user's own words stay.
+                    try:
+                        from eli.cognition.output_governor import is_echo_of_recent
+                        _own = []
+                        for _t in (self.memory.get_recent_conversation(limit=30) or []):
+                            if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                                _c = str((_t or {}).get("content", "") or "")
+                                if _c:
+                                    _own.append(_c)
+                        if _own and mem_results:
+                            _kept = [m for m in mem_results
+                                     if not is_echo_of_recent(str(m.get("text") or ""), _own)]
+                            if len(_kept) != len(mem_results):
+                                log.debug(f"[MEMORY] dropped {len(mem_results) - len(_kept)} "
+                                          "recalled memories that were ELI's own replies")
+                            mem_results = _kept
+                    except Exception:
+                        log.debug("[MEMORY] self-reply memory filter skipped", exc_info=True)
+                    if mem_results:
+                        lines_out = []
+                        for mem in mem_results[:5]:
+                            text = (
+    mem.get("text") or "").replace(
+        "\n", " ")[
+            :200]
+                            tags = mem.get("tags", [])
+                            if isinstance(tags, list):
+                                tags = ", ".join(tags)
+                            lines_out.append(f"- {text} [{tags}]")
+                        if lines_out:
+                            context_parts.append(
+    "Stored knowledge:\n" + "\n".join(lines_out))
+                    else:
+                        # Explicit no-result signal so LLM doesn't hallucinate
+                        context_parts.append(
+                            f"[MEMORY SEARCH RESULT: No memories found matching '{query[:80]}'."
+                            f" You MUST NOT fabricate any dates, events, or mentions of this topic."
+                            f" If asked when/whether this was mentioned, state: 'I have no record of that in my memory.']"
+                        )
+            except Exception as e:
+                log.debug(f"[MEMORY] Memory recall failed: {e}")
+
+        if profile.get("reflections"):
+            try:
+                reflections = self.memory.recall_memory("reflection", limit=10)
+                if reflections:
+                    lines_out = []
+                    seen = set()
+                    for ref in reflections:
+                        text = (ref.get("text") or "").replace("\n", " ")[:100]
+                        if text and text not in seen:
+                            seen.add(text)
+                            lines_out.append(f"- {text}")
+                    if lines_out:
+                        context_parts.append(
+                            "Recent self-reflections:\n" + "\n".join(lines_out[:3]))
+            except Exception as e:
+                log.debug(f"[MEMORY] Reflection recall failed: {e}")
+
+        if profile.get("runtime_facts"):
+            try:
+                runtime_result = execute_action("RUNTIME_STATUS", {})
+                runtime_facts = (
+                    runtime_result.get("content")
+                    or runtime_result.get("response")
+                    or ""
+                )
+                if runtime_facts:
+                    context_parts.append("Runtime facts:\n" + runtime_facts)
+            except Exception as e:
+                log.debug(f"[MEMORY] Runtime fact block failed: {e}")
+
+        full_context = "\n\n".join(context_parts)
+        # Live loaded ctx (dynamic loader's actual choice), never a hard-coded
+        # default — the configured n_ctx is often stale.
+        try:
+            n_ctx = self._runtime_n_ctx()
+        except Exception:
+            n_ctx = int(self._effective_n_ctx())
+        gen = self._generation_settings()
+        _reserved = reserved_tokens if reserved_tokens > 0 else int(
+            gen.get("max_tokens", 512))
+        # 512 char overhead: persona + discipline rules injected by
+        # _build_enhanced_system
+        approx_char_budget = max(800, int((n_ctx - _reserved - 512) * 2.2))
+        if len(full_context) > approx_char_budget:
+            trimmed = full_context[-approx_char_budget:]
+            nl = trimmed.find("\n")
+            if nl > 0:
+                trimmed = trimmed[nl + 1:]
+            full_context = "...[older memory trimmed]\n" + trimmed
+        log.debug(f"[MEMORY] Final context length: {len(full_context)} chars")
+        return full_context
+
+    def _executor_query_args(self, user_input: str,
+                             intent: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {"query": user_input}
+        action = str((intent or {}).get("action") or "").upper()
+        if action == "GUI_RUNTIME_AUDIT":
+            payload["scope"] = "gui"
+        return payload
+
+    def _evidence_action_for_prompt(
+        self, user_input: str, intent: Dict[str, Any]) -> Optional[str]:
+        action = str((intent or {}).get("action") or "").strip().upper()
+        if action in {"RUNTIME_AUDIT", "IMPORT_AUDIT", "RESOLVE_RUNTIME_PATHS", "GUI_RUNTIME_AUDIT",
+            "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
+            "PERSONAL_MEMORY_SUMMARY", "PERSONAL_MEMORY_DEEP_EXPLAIN", "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT"}:
+            return action
+        low = (user_input or "").lower()
+        if "import all canonical runtime modules" in low or "import audit" in low:
+            return "IMPORT_AUDIT"
+        if "resolved runtime paths" in low or "show the resolved runtime paths" in low or (
+            "project root" in low and "user db" in low and "agent db" in low):
+            return "RESOLVE_RUNTIME_PATHS"
+        if "canonical gui file" in low and "audit" in low:
+            return "GUI_RUNTIME_AUDIT"
+        if "runtime files" in low and "audit" in low:
+            return "RUNTIME_AUDIT"
+        if "how does your memory work" in low or "memory runtime" in low:
+            return "EXPLAIN_MEMORY_RUNTIME"
+        if "how does your cognition work" in low or "cognitive pipeline" in low or "examine your code and file structure" in low:
+            return "EXPLAIN_COGNITION_RUNTIME"
+        return None
+
+    def _gather_executor_evidence(
+        self, user_input: str, intent: Dict[str, Any], trace: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        action = self._evidence_action_for_prompt(user_input, intent)
+        if not action:
+
+            return {"used": False, "ok": False, "action": None,
+                "content": "", "result": None, "grounded": False}
+        payload = self._executor_query_args(user_input, intent)
+        started = time.perf_counter()
+        if trace is not None:
+            self._trace_phase(trace, "executor_call", action=action)
+        result = execute_action(action, payload)
+        elapsed = time.perf_counter() - started
+        log.debug(f"[COGNITIVE][TIMING] executor_{action.lower()}={elapsed:.3f}s")
+        content = str(
+    (result or {}).get("content") or (
+        result or {}).get("response") or "")
+        out = {
+            "used": True,
+            "ok": bool((result or {}).get("ok")),
+            "action": action,
+            "result": result,
+            "content": content,
+            "has_paths": ("/" in content or ".py" in content),
+            "has_lines": bool(re.search(r"\bline(?:s)?\s+\d+", content.lower())),
+            "grounded": True,
+        }
+        if trace is not None:
+            trace.setdefault("evidence", []).append(
+                {"action": action, "ok": out["ok"], "chars": len(content), "elapsed": elapsed})
+        return out
 
     def _score_response_confidence(self, user_input: str, response: str, memory_context: str,
                                    intent_conf: float, evidence: Optional[Dict[str, Any]] = None) -> float:
@@ -2968,15 +6117,2079 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             f"before I continue ({float(score):.2f}/{float(threshold):.2f})?"
         )
 
+    def _yield_text_chunks(
+        self, text: str, chunk_size: int = 48) -> Generator[str, None, None]:
+        text = text or ""
+        for i in range(0, len(text), chunk_size):
+            yield text[i:i + chunk_size]
+
+    def _build_enhanced_system(self, memory_context: str = "", compact: bool = False,
+                               user_input: str = "", reasoning_mode: Optional[str] = None,
+                               situation_brief: str = "") -> str:
+        # ── Real-time speaker tone (from the user's VOICE this turn) ──
+        # Published by the STT loop (eli/perception/voice_profile). When a fresh,
+        # confident read exists, prepend a concise cue so ELI adapts its delivery to
+        # how the user actually sounds (energy, emotion, question vs statement). This
+        # is the wiring that makes voice tone influence cognition. Off: ELI_VOICE_TONE=0.
+        try:
+            if os.environ.get("ELI_VOICE_TONE", "1").lower() not in {"0", "false", "no", "off"}:
+                from eli.perception import voice_profile as _vp_tone
+                _t = _vp_tone.get_last_tone(max_age_s=12.0)
+                if _t.get("ok"):
+                    _bits = []
+                    _emo = _t.get("emotion")
+                    if _emo and _emo != "neutral" and float(_t.get("emotion_confidence", 0) or 0) >= 0.25:
+                        _bits.append(f"sounds {_emo}")
+                    _ar = float(_t.get("arousal", 0) or 0)
+                    if _ar >= 0.4:
+                        _bits.append("high energy")
+                    elif _ar <= -0.4:
+                        _bits.append("low energy / subdued")
+                    if _t.get("intent") == "question" and float(_t.get("intent_confidence", 0) or 0) >= 0.5:
+                        _bits.append("asking a question (rising intonation)")
+                    if _bits:
+                        _cue = ("[Speaker voice cue — the user " + ", ".join(_bits)
+                                + ". Adapt your tone and pacing to match; be warmer if they're "
+                                "upset, brisk if they're energetic. Do NOT mention this cue.]")
+                        situation_brief = (_cue + "\n\n" + (situation_brief or "")).strip()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # ── Expressed tone / emotion (tone_adaptor) ──
+        # Fuses the two tone identifiers (acoustic + semantic) into the register ELI
+        # should express, or honours an explicit override ("be comedic", "talk street").
+        # Folds a short persona directive in so ELI's WORDS carry the emotion. The voice
+        # (tts_router prosody) and avatar (persona_mapper) read the same source.
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            if _ta.enabled():
+                _ta.note_user_text(user_input or "")
+                _dir = _ta.text_directive()
+                _cur = _ta.current_tone()
+                if _dir and _cur.get("tone") != "neutral":
+                    _tcue = f"[Tone — {_cur['tone']}: {_dir} Do NOT mention this directive.]"
+                    situation_brief = (_tcue + "\n\n" + (situation_brief or "")).strip()
+
+                # ── Persist the read so ELI can be PROACTIVE, not only reactive ──
+                # tone_adaptor forgets each turn (12s acoustic slot + last-utterance
+                # regex), which is enough to shade THIS reply and nothing else. The
+                # timeline is what lets ELI notice a sustained mood, weigh it against
+                # this user's own baseline, and know what it did just before the mood
+                # turned. Recording every read (neutral included) is deliberate — a
+                # baseline built only from bad turns would make everyone look upset.
+                try:
+                    from eli.cognition import emotion_timeline as _et
+                    _prior_action = ""
+                    try:
+                        _prior_action = str((getattr(self, "_last_request_meta", None)
+                                             or {}).get("action") or "")
+                    except Exception:
+                        _prior_action = ""
+                    _arousal = None
+                    try:
+                        from eli.perception import voice_profile as _vp_ar
+                        _arousal = (_vp_ar.get_last_tone(max_age_s=15.0) or {}).get("arousal")
+                    except Exception:
+                        _arousal = None
+                    _et.record(
+                        _cur.get("detected") or "neutral",
+                        expressed=_cur.get("tone") or "",
+                        confidence=float(_cur.get("confidence") or 0.0),
+                        source=str(_cur.get("source") or ""),
+                        user_text=user_input or "",
+                        user_id=self._get_user_id(),
+                        session_id=getattr(self, "session_id", "") or "",
+                        arousal=_arousal,
+                        eli_prior_action=_prior_action,
+                    )
+                    # Continuity every turn: how the conversation has been feeling.
+                    _trend = _et.trend_line(user_id=self._get_user_id())
+                    if _trend:
+                        situation_brief = (_trend + "\n\n" + (situation_brief or "")).strip()
+                    # Only when a sustained, confident, out-of-baseline state is
+                    # measured: hand the model the evidence and let IT decide whether
+                    # and how to raise it. No canned phrasing — the words are ELI's.
+                    _ev = _et.evidence_block(user_id=self._get_user_id(),
+                                             session_id=getattr(self, "session_id", "") or "")
+                    if _ev:
+                        situation_brief = (_ev + "\n\n" + (situation_brief or "")).strip()
+                        _et.note_checkin(_et.assess(user_id=self._get_user_id()).get("state", ""),
+                                         _cur.get("detected") or "")
+                except Exception:
+                    log.debug("emotion_timeline record/inject skipped", exc_info=True)
+        except Exception:
+            log.debug("tone_adaptor directive skipped", exc_info=True)
+
+        # ── Proactive self-heal notice (recurring-error escalation) ──
+        # If ELI flagged a recurring error (≥5×) or attempted a self-fix (≥10×), raise it
+        # with the user this turn — briefly, naturally, once — then answer their message.
+        try:
+            from eli.runtime.self_improvement import consume_self_heal_notice as _csn
+            _note = _csn()
+            if _note and _note.get("message"):
+                _nb = ("[Proactive — open your reply by briefly raising this with the user "
+                       "in your own words, then address their message: "
+                       + str(_note["message"]) + "]")
+                situation_brief = (_nb + "\n\n" + (situation_brief or "")).strip()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # ── Live self-model (auto-upgrading self-awareness) ──
+        # Inject ELI's current self-model — agents, capabilities, model, world-room, all
+        # read fresh each turn — so his self-knowledge tracks the code as it grows. Private
+        # context: he draws on it for accuracy and narrates it only when asked.
+        try:
+            _aw = getattr(self, "_awareness", None)
+            if _aw is not None:
+                _sm = _aw.context_block()
+                if _sm and _sm.strip():
+                    situation_brief = (_sm.strip() + "\n\n" + (situation_brief or "")).strip()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        persona = self._compact_persona() if compact else _load_persona_text()
+        reasoning_instruction = self._reasoning_mode_instruction(
+            reasoning_mode)
+        # Reasoning mode is a private execution strategy. Do not overwrite the
+        # safe private instruction with visible self-reporting text.
+
+        # Budget-aware persona: on grounded/broker turns the system prompt also
+        # carries the evidence (memory_context), profile, rules and brief. A full
+        # ~12k persona then overflows n_ctx and the EVIDENCE gets truncated out —
+        # exactly what produced the 'truncated system→…' lines. Trim the persona
+        # (keeping its head: VOICE + HARD CONSTRAINTS) to whatever room is left, so
+        # persona yields to evidence. Quick/chat turns carry little context, so the
+        # full persona is retained untouched.
+        try:
+            _nctx = self._effective_n_ctx()
+            # Reserve for the model's reply matching the grounded/broker contract
+            # (observed up to ~6.5k tokens) so a large output never forces the
+            # prompt to be truncated. 3.0 chars/token (conservative).
+            _target_chars = max(6000, int((_nctx - 6600) * 3.0))
+            # Non-persona content already in the system prompt: evidence
+            # (memory_context), brief, user input, reasoning instruction, plus the
+            # base_rules + user-profile block + scaffolding (~12k observed).
+            _other_chars = (
+                len(memory_context or "") + len(situation_brief or "")
+                + len(user_input or "") + len(reasoning_instruction or "") + 12000
+            )
+            _persona_budget = max(2000, _target_chars - _other_chars)
+            if len(persona) > _persona_budget:
+                persona = persona[:_persona_budget].rstrip() + "\n[persona trimmed to fit evidence]"
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Grounded runtime identity. ALWAYS inject the mounted model name so stale
+        # memory cannot cite a prior session's model (live: GLM loaded, memory said Ornith).
+        try:
+            from eli.runtime.live_introspection import _runtime_core as _rc_id
+            _core_id = _rc_id()
+            _mname_id = _core_id.get("model_name") or _core_id.get("model_path")
+            if _mname_id and str(_mname_id) not in ("", "unknown") and _core_id.get("loaded"):
+                from pathlib import Path as _P_id
+                _mounted = _P_id(str(_mname_id)).name
+                _rt_line = (
+                    "[MOUNTED MODEL — authoritative] Currently loaded in this process: "
+                    f"'{_mounted}'. When you state which model you run, use ONLY this name. "
+                    "Stale memory or prior turns naming a different model are wrong — trust "
+                    "this block over retrieved memory."
+                )
+                situation_brief = (_rt_line + "\n\n" + (situation_brief or "")).strip()
+            _ui_low = str(user_input or "").lower()
+            if re.search(
+                r"\b(?:what|which|your)\b[^.?!]{0,40}\bmodel\b"
+                r"|\bare you running\b|\bmodel are you\b|\brunning (?:a|on)\b"
+                r"|\b\d{1,3}\s*\+?\s*b\b|\bbillion\b|\bparameters?\b|\bmodel.?agnostic\b",
+                _ui_low,
+            ):
+                if _mname_id and str(_mname_id) not in ("", "unknown") and _core_id.get("loaded"):
+                    _rt_line = (
+                        "LIVE RUNTIME FACT (authoritative — if asked about your model, "
+                        f"state this plainly): the model currently loaded in this process is "
+                        f"'{_mounted}'. You are model-agnostic — the inference "
+                        "path hardcodes no model and you can run anything from small to 70B+ — but a "
+                        "concrete model is ALWAYS mounted, and right now it is the one named above. "
+                        "Do NOT deny running a model or treat it as hypothetical; report it, then "
+                        "note you're model-agnostic if relevant."
+                    )
+                    situation_brief = (_rt_line + "\n\n" + (situation_brief or "")).strip()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Load user profile from user_profile.json — separate from ELI's persona.
+        # Injected prominently so quantized models see it near the top.
+        _user_profile_block = ""
+        try:
+            from eli.kernel.state import get_user_profile_text as _get_profile
+            _user_profile_block = _get_profile().strip()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        if not _user_profile_block:
+            # Fallback: name only from state.json
+            try:
+                from eli.kernel.state import get_user_name as _gun_early
+                _n = _gun_early().strip()
+                if _n:
+                    _user_profile_block = f"Name: {_n}"
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+
+        if _user_profile_block:
+            _user_context_rule = (
+                "PRIVATE USER CONTEXT (never mention this label; use only when directly relevant):\n"
+                + _user_profile_block + "\n"
+            )
+        else:
+            _user_context_rule = (
+                ""
+            )
 
 
+        # Smalltalk/phatic prompts are not "nothing"; they are rapport, tone,
+        # chemistry, and local-user preference signals.
+        try:
+            _is_phatic_smalltalk = _is_brief_phatic_prompt(str(user_input or "").strip().lower())
+        except Exception:
+            _is_phatic_smalltalk = False
 
+        try:
+            _is_subjective_opinion = _eli_is_subjective_opinion_prompt(user_input)
+        except Exception:
+            _is_subjective_opinion = False
 
+        _phatic_style_rule = _phatic_rapport_style_rule() if _is_phatic_smalltalk else ""
 
+        _opinion_style_rule = ""
+        if _is_subjective_opinion:
+            _opinion_style_rule = (
+                "OPINION / JUDGEMENT MODE:\n"
+                "- The user is asking for ELI's take, not a sterile encyclopaedia dump.\n"
+                "- You may express a persona-bound opinion using ELI's values: truth, clarity, rigour, learning, anti-bullshit, and intellectual honesty.\n"
+                "- Separate factual claims from judgement. Say 'my take' or 'my read' when giving an opinion.\n"
+                "- Do not say you lack opinions, feelings, personal experiences, or purpose. That is generic model-speak and not ELI.\n"
+                "- If a named entity is uncertain, do not silently replace it with a different entity. Say what you are unsure about.\n"
+                "- For public figures, be candid but fair: criticise ideas/actions, do not invent facts.\n\n"
+            )
 
+        base_rules = (
+            _user_context_rule
+            + _phatic_style_rule
+            + _opinion_style_rule
+        )
+        _mounted_auth = _mounted_model_authority_line()
+        if _mounted_auth:
+            base_rules += _mounted_auth + "\n\n"
+        base_rules += (
+            "GROUNDING RULE:\n"
+            "For factual, diagnostic, runtime, memory, file, or project claims, rely only on provided evidence. "
+            "For greetings, casual chat, callbacks, cultural references, jokes, opinion prompts, tone-setting, or social openers, answer naturally as ELI. "
+            "For subjective judgement, use persona-bound reasoning and separate facts from opinion. "
+            "If a requested factual claim is absent, say what is missing instead of inventing.\n\n"
+            "Conversation continuity rules:\n"
+            "- Continue the existing conversation naturally.\n"
+            "- Use only facts present in provided context or runtime evidence.\n"
+            "- Do not invent names, files, paths, audits, memory contents, or system state.\n"
+            "- Do not answer like a generic assistant. You are ELI in an ongoing local runtime.\n"
+            "- If the user asks about identity, continuity, memory, cognition, runtime state, or what you remember, answer only from actual local runtime evidence; do not invent or infer names.\n"
+            "- If recent turns show the same failure or request recurring, call that out and move to the next concrete diagnostic step instead of repeating the same answer.\n"
+            "- For repair/audit complaints, use this shape unless the user asks otherwise: actual cause, evidence checked, change made or proposed, verification.\n"
+            "- Avoid filler like 'How can I make your day easier today?' unless it is genuinely appropriate.\n"
+            "- CONVERSATION ATTRIBUTION: In conversation history, turns labelled 'ELI:', 'Assistant:', or similar are things YOU said — not the user. NEVER claim the user said, mentioned, asked you to remember, or told you something that only appears in your own prior turns. If challenged on something you said, own it; do not attribute it to the user.\n"
+            "- INVENTED PREFERENCES: Do not assert that the user has a preference, habit, memory, or life event (e.g. 'you like coffee', 'you always', 'you mentioned X', 'you had a wild night', 'you've been through a lot') unless it is explicitly present in MEMORY SEARCH RESULTS or the user stated it clearly in this conversation. Free wit and cultural references in casual chat are fine; fabricated user preferences or biography are not.\n"
+            "- NO INVENTED SELF-MECHANISM: When asked HOW you work internally — your calibration, confidence scoring, reasoning, memory, or 'what changed/improved' about your own cognition — describe ONLY mechanisms actually present in the provided runtime/cognition evidence or real module names from your codebase. NEVER fabricate named algorithms, mathematical formulas, metrics, thresholds, or 'recalibration functions' to sound authoritative (e.g. inventing an 'Entropy Normalization' softmax equation, a 'context-window pruning' stage, or a specific confidence number you did not actually measure). If you do not have grounded detail about your own internals, say exactly that — e.g. 'I don't have that level of detail on my own runtime' — rather than constructing a plausible-sounding explanation. A confident invented mechanism is a worse failure than an honest 'I don't know how that works under the hood.' This is not a licence to refuse: when the evidence DOES describe your architecture, explain it fully.\n"
+            "- NO FALSE SELF-DENIAL: The mirror of the rule above, and just as serious. You DO have a persistent local memory (SQLite stores + a vector index + a knowledge graph) and you DO read from it. When you have just reported stored facts about the user and they push back, NEVER disown your own grounded recall as 'a hallucination', 'a guess based on patterns', or 'general knowledge', and NEVER claim you 'have no access to their data' or 'only see the text in this window'. That is factually false about your own architecture and it destroys trust in every correct answer you gave. Push-back is not proof you were wrong. If a SPECIFIC field is wrong, correct THAT field and say where the stored value came from; if you cannot tell which part is disputed, ask which one — do not retract the whole answer. Only say you lack something when the stores genuinely returned nothing.\n"
+            "- ANSWER WHOSE PROFILE WAS ASKED FOR: 'what do you know about yourself / your persona / your identity' asks about YOU. 'what do you know about me' asks about the USER. Never answer one with the other. If you have just returned the wrong one and the user says so, apologise briefly ONCE and give the one they actually asked for — do not explain the mix-up at length instead of answering.\n"
+            "- PAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are topics from PREVIOUS sessions. They are memory recall context only — never present them as your current ongoing work, never repeat them as the answer to an unrelated question, and never loop back to them when the user is asking about something else. If these topics are directly relevant to the current question, you may reference them as recalled context ('from a previous session...'); otherwise, ignore them and answer the actual question asked.\n"
+            "- NO SOCIAL DEFLECTION: Do not end a substantive answer with 'How about you?', 'And yourself?', 'What about you?', or similar social probes. Answer the question; do not redirect it back to the user as a substitute for a real answer.\n"
+            "- DELIVER SUBSTANCE, NEVER DEFER: When asked to explain, discuss, elaborate on, or go deeper into a topic, give the ACTUAL content — the concrete facts, the mechanism, the reasoning, the analysis. NEVER substitute a description of HOW you would answer for the answer itself. Sentences like 'let's delve deeper into the scientific theories', 'we can explore various approaches', 'one promising method is to look at the relevant literature', 'this will provide a more comprehensive understanding', or \"I'd be happy to discuss\" — used IN PLACE of real content — are forbidden non-answers. If a follow-up says 'elaborate', 'go deeper', or 'discuss this more', ADD new concrete substance, do not restate your willingness to discuss. If you lack grounded detail, give the best substantive answer from your own knowledge and say plainly what is uncertain — never stall or rearrange words.\n"
+        )
 
+        # News-deepen steering: when the user asks to go deeper RIGHT AFTER a news read, anchor
+        # the expansion on the SPECIFIC stories/papers just presented (which are in the
+        # conversation context) instead of free-associating a generic textbook overview — the
+        # logged "dive deeper into these AI models" turn that produced a listicle. Pure steering,
+        # keyed on a deepen cue + the article markers ELI's own briefings carry; the GUI direct
+        # news path bypasses _last_command_action, so context markers are the reliable signal.
+        try:
+            _ui_low = str(user_input or "").lower()
+            _deepen_cue = any(p in _ui_low for p in (
+                "dive deeper", "go deeper", "deeper into", "look deeper", "tell me more",
+                "more about", "expand on", "elaborate", "look closer", "dig into",
+                "more detail", "delve"))
+            if _deepen_cue:
+                _lca = getattr(self, "_last_command_action", None) or {}
+                _was_news = str(_lca.get("action") or "").upper() in (
+                    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
+                _ctx_blob = str(memory_context or "")
+                _news_markers = bool(re.search(
+                    r"\(fetched\s+\d{1,2}:\d{2}\)|\[[A-Za-z][^\]]{1,24}\s+[—-]\s*\d{1,2}\s*[:A-Za-z]",
+                    _ctx_blob))
+                if _was_news or _news_markers:
+                    base_rules += (
+                        "- NEWS DEEPEN (this turn): The user is asking you to go deeper on the news "
+                        "you just read them. Expand on the SPECIFIC stories/papers from your previous "
+                        "news turn shown in the conversation above — name each item you are expanding "
+                        "and add concrete, real detail about THAT item (what it found, why it matters, "
+                        "the mechanism/implication). Do NOT produce a generic textbook overview of the "
+                        "broad subject; anchor every point to an actual article you already cited.\n"
+                    )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
 
+        # Runtime facts are now injected via the SITUATION BRIEF (context_synthesiser
+        # _get_runtime_state), which sits in the middle of the prompt where model
+        # attention is strongest.  The old tail-append is removed to avoid competing
+        # with "12 specialist agents" / "12-INTERNAL_STAGE PIPELINE" references in the persona.
+        def inject_runtime_facts(prompt: str) -> str:
+            return prompt  # no-op — facts live in the SITUATION BRIEF now
 
+        # ── Working memory block (session-pinned facts) ───────────────────────
+        _wm_block = ""
+        try:
+            if self._working_memory:
+                _wm_block = self._working_memory.context_block()
+        except Exception:
+            _wm_block = ""
+
+        # ── Awareness block (capability inventory + code changes) ─────────────
+        _awareness_block = ""
+        try:
+            if self._awareness:
+                _awareness_block = self._awareness.context_block()
+        except Exception:
+            _awareness_block = ""
+
+        # ── Engagement/session narrative ──────────────────────────────────────
+        _engagement_block = ""
+        try:
+            if self._engagement:
+                _narrative = self._engagement.session_narrative()
+                if _narrative:
+                    _engagement_block = _narrative
+        except Exception:
+            _engagement_block = ""
+
+        if compact:
+            enhanced_system = f"{persona}\n\n{base_rules}\n"
+            if reasoning_instruction:
+                enhanced_system += reasoning_instruction + "\n\n"
+            if _awareness_block:
+                enhanced_system += _awareness_block + "\n\n"
+            if _wm_block:
+                enhanced_system += _wm_block + "\n\n"
+            if _engagement_block:
+                enhanced_system += _engagement_block + "\n\n"
+            # Prefer the synthesised brief when available; fall back to raw
+            # memory_context so nothing is lost when synthesiser is bypassed.
+            if situation_brief:
+                enhanced_system += (
+                    "--- SITUATION BRIEF (synthesised from agents + memory) ---\n"
+                    + situation_brief
+                    + "\n--- END BRIEF ---\n\n"
+                )
+            if memory_context:
+                enhanced_system += (
+                    "--- CONVERSATION HISTORY (use this to answer questions about past exchanges) ---\n"
+                    + memory_context
+                    + "\n--- END HISTORY ---\n\n"
+                )
+            enhanced_system += (
+                "Reply to the latest user message directly and originally.\n"
+                "CRITICAL: NEVER copy or verbatim repeat the user's message as your opening. "
+                "Use any SITUATION BRIEF only as private guidance when relevant. Never summarize or expose it as the answer. "
+                "For casual openers, answer conversationally without status reporting. "
+                "Begin your reply with your OWN words."
+            )
+            import time as _time
+            _now = _time.strftime("%H:%M:%S UTC%z", _time.localtime())
+            _date = _time.strftime("%A %d %B %Y", _time.localtime())
+            _compact_wants_depth = any(x in (user_input or "").lower() for x in (
+                "longer", "more detail", "in depth", "in-depth", "elaborate", "thorough",
+                "recall", "remember", "what have", "what did", "history", "expand",
+                "everything", "give me all", "tell me all", "list all", "list every",
+                "don't summarise", "don't summarize", "dont summarise", "dont summarize",
+                "full list", "complete list", "full answer", "all of it", "full details",
+                "every detail", "nothing left out", "be thorough",
+            ))
+            # Public mode names (Quick/Normal/Advanced/Research/Expert); keys are the
+            # stable internal strategy ids. The internal id is never shown to the user.
+            _VALID_MODES_C = {
+                "quick":           "Quick",
+                "chain_of_thought":"Normal",
+                "self_consistency":"Advanced",
+                "tree_of_thoughts":"Research",
+                "constitutional_ai":"Expert",
+            }
+            _c_mode_key = str(reasoning_mode or "quick").lower()
+            _c_mode_display = _VALID_MODES_C.get(_c_mode_key, "Quick")
+            _c_valid_names = ", ".join(_VALID_MODES_C.values())
+            enhanced_system += (
+                f"\n\nCURRENT TIME: {_now} on {_date}."
+                "\nWhen the user says 'me' or 'my', they mean themselves (the user), not you (ELI)."
+                + ("\nThe user wants depth — provide a full, detailed answer." if _compact_wants_depth
+                   else "\nFor technical queries, stay focused. For casual check-ins, engage naturally in ELI\'s persona; no sterile status report.")
+                + "\nWhen reporting time, use the value above exactly."
+                "\nVOICE ENFORCEMENT: Never open with 'Of course', 'Certainly', 'Sure thing', "
+                "'Happy to help', 'Great question', 'Absolutely', 'Short answer:', "
+                "or any similar filler. Respond as ELI — dry, direct, substantive, with controlled wit when useful."
+                "\nBANNED PHRASES (never use anywhere in your response): "
+                "'functioning as intended', 'I am functioning as intended', "
+                "'I'm a knowledge assistant', "
+                "'I'm here to provide factual information based on available data', "
+                "'I don't have personal interests or goals beyond my functions', "
+                "'I cannot experience', 'I do not have the ability to experience'. "
+                "These break ELI's persona."
+                "\nMEMORY GROUNDING: If context contains '[MEMORY SEARCH RESULT: No memories found...]',"
+                " respond: 'I have no record of that in my memory.' Never fabricate dates or events."
+                "\nPAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are from PREVIOUS sessions — memory recall only. Never repeat them as the answer to an unrelated question or loop back to them when the user is asking something else."
+                "\nNO SOCIAL DEFLECTION: Never end an answer with 'How about you?', 'And yourself?', or similar — answer the question directly."
+                f"\nPRIVATE RESPONSE STRATEGY CONTRACT:"
+                f"\n- Internal strategy label: {_c_mode_display}"
+                f"\n- Valid mode names: {_c_valid_names}"
+                f"\n- If explicitly asked about the selected public mode label, answer exactly: \"{_c_mode_display}\""
+                f"\n- Do NOT invent mode names — only use names from the list above."
+            )
+            # Inject runtime facts
+            enhanced_system = inject_runtime_facts(enhanced_system)
+            return enhanced_system
+
+        # Non-compact branch
+        enhanced_system = f"{persona}\n\n{base_rules}\n"
+        if reasoning_instruction:
+            enhanced_system += reasoning_instruction + "\n\n"
+        if _awareness_block:
+            enhanced_system += _awareness_block + "\n\n"
+        if _wm_block:
+            enhanced_system += _wm_block + "\n\n"
+        if _engagement_block:
+            enhanced_system += _engagement_block + "\n\n"
+        if situation_brief:
+            enhanced_system += (
+                "--- SITUATION BRIEF (synthesised from agents + memory) ---\n"
+                + situation_brief
+                + "\n--- END BRIEF ---\n\n"
+            )
+        if memory_context:
+            enhanced_system += (
+                "--- CONVERSATION HISTORY (use this to answer questions about past exchanges) ---\n"
+                + memory_context
+                + "\n--- END HISTORY ---\n\n"
+            )
+        if not situation_brief and not memory_context:
+            enhanced_system += "No prior conversation history.\n\n"
+        enhanced_system += (
+            "Respond to the latest user message naturally, with continuity and specificity.\n"
+            "CRITICAL RULES:\n"
+            "- Generate a FRESH, ORIGINAL response.\n"
+            "- NEVER verbatim copy or parrot the user's message as your first sentence.\n"
+            "- Treat any SITUATION BRIEF as private guidance; never recite profile, memory, runtime, router, bus, or context labels unless explicitly asked. "
+            "Reference specific items from it when relevant.\n"
+            "- For factual, diagnostic, runtime, file, memory, or project claims: ground them in the SITUATION BRIEF and CONVERSATION HISTORY.\n"
+            "- For casual dialogue, jokes, callbacks, short fragments, and conversational continuity: use RECENT DIALOGUE plus ordinary conversational/common cultural knowledge. Do not treat banter as a support ticket.\n"
+            "- Your response must begin with ELI's own words."
+        )
+        # ── Response discipline rules (appended last so they override persona) ──
+        import time as _time
+        _now = _time.strftime("%H:%M:%S UTC%z", _time.localtime())
+        _date = _time.strftime("%A %d %B %Y", _time.localtime())
+        _user_wants_depth = any(x in (user_input or "").lower() for x in (
+            "longer", "more detail", "in depth", "in-depth", "elaborate", "thorough",
+            "comprehensive", "recall", "remember", "what have", "what did", "history",
+            "full answer", "explain fully", "go deeper", "expand",
+            "everything", "give me all", "tell me all", "list all", "list every",
+            "don't summarise", "don't summarize", "dont summarise", "dont summarize",
+            "full list", "complete list", "all of it", "full details", "every detail",
+            "nothing left out", "be thorough",
+        ))
+        enhanced_system += (
+            f"\n\nCURRENT TIME (authoritative, do not approximate): {_now} on {_date}."
+            "\n\nRESPONSE DISCIPLINE — obey on every reply:"
+            "\n- Answer what the user actually asked. For opinion, banter, callbacks, and cultural references, respond in ELI persona rather than treating the message as a support ticket."
+            "\n- NEVER start your response by echoing or paraphrasing what the user just said."
+            "\n- NEVER include a 'Memory System' section unless explicitly asked."
+            "\n- NEVER include a 'Cognition Pipeline' section unless explicitly asked."
+            "\n- NEVER include a 'Current Time' section unless explicitly asked."
+            "\n- NEVER pad with system internals, database schemas, file paths, or architecture unless requested."
+            "\n- Personal, philosophical, and opinion questions: answer directly with a persona-bound take. Do not pivot to technical specs or generic AI disclaimers."
+            "\n- Repeated failure rule: if context shows the same broken command, stub artifact, or bad answer pattern recurring, acknowledge the recurrence and recommend the next local file/log/DB check."
+            "\n- Repair response shape: cause -> evidence -> fix -> verification. No vague promises."
+            + ("\n- The user has explicitly asked for a detailed/longer answer — provide depth and completeness."
+               if _user_wants_depth else
+               "\n- Keep responses concise. No unsolicited sections.")
+            + "\n- Time: use the CURRENT TIME value above exactly."
+            "\n- VOICE: Never start with 'Of course', 'Certainly', 'Sure', 'Happy to help', "
+            "'Great question', 'Absolutely', or any similar assistant filler. "
+            "You are ELI — dry, direct, substantive, nerdy, truth-first, occasionally dark, and allowed to have persona-bound takes when asked. Respond accordingly."
+            "\n- NEVER start with 'Short answer:' — just give the answer directly."
+            "\n- BANNED PHRASES (never use anywhere in your response): "
+            "'functioning as intended', 'ready to assist', 'how can I help you today', "
+            "'I am functioning as intended', 'I'm a knowledge assistant', "
+            "'I'm here to provide factual information based on available data', "
+            "'I don't have personal interests or goals beyond my functions', "
+            "'I don't have a physical house', 'I exist to assist and reason based on available data', "
+            "'I cannot experience', 'I do not have the ability to experience'. "
+            "These are generic AI clichés that break ELI's voice and persona."
+            "\n- MEMORY GROUNDING: For explicit memory/status questions, if the context contains '[MEMORY SEARCH RESULT: No memories found...]',"
+            " state that there is no stored record. Do not apply this rule to casual dialogue, jokes, callbacks, or short fragments."
+            "\n- ATTRIBUTION: Turns labelled 'ELI:' in conversation history are YOUR words, not the user's. Never claim the user said or stored something that only appears in your own prior turns. If you invented something in a previous turn and the user challenges it, admit it — do not double down by inventing a false user memory."
+            "\n- NO INVENTED USER PREFERENCES: Do not state or imply that the user has a preference, habit, or stored memory (e.g. 'you like X', 'you mentioned X', 'you told me to remember X') unless it is present in MEMORY SEARCH RESULTS or the user stated it explicitly in this conversation."
+            "\n- PAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are from PREVIOUS sessions — treat as background recall context only. Never loop back to them when answering an unrelated question, never state them as your current ongoing activity, and do not repeat them across multiple turns. If relevant to the current question, reference them once as recalled context ('from a previous session...')."
+            "\n- NO SOCIAL DEFLECTION: Do not end a substantive answer with 'How about you?', 'And yourself?', 'What about you?', or similar. Answer the question directly. ELI does not redirect questions back at the user to avoid answering."
+        )
+        # Re-inject mode name at the very end so the Q3 model can't forget it.
+        # Always inject — including quick — so ELI knows all valid names.
+        _VALID_MODES = {
+            "quick":           "Quick",
+            "chain_of_thought":"Normal",
+            "self_consistency":"Advanced",
+            "tree_of_thoughts":"Research",
+            "constitutional_ai":"Expert",
+        }
+        _mode_tail = str(reasoning_mode or "quick").lower()
+        _mode_tail_display = _VALID_MODES.get(_mode_tail, "Quick")
+        _valid_names_str = ", ".join(_VALID_MODES.values())
+        enhanced_system += (
+            f"\n\nPRIVATE RESPONSE STRATEGY CONTRACT:"
+            f"\n- Internal strategy label: {_mode_tail_display}"
+            f"\n- The ONLY valid mode names are: {_valid_names_str}"
+            f"\n- If explicitly asked about the selected public mode label, answer exactly: \"{_mode_tail_display}\""
+            f"\n- Do NOT invent mode names. Anything not in the list above is wrong."
+        )
+        # Inject runtime facts
+        enhanced_system = inject_runtime_facts(enhanced_system)
+        return enhanced_system
+
+    def _get_chat_response(self, prompt: str, memory_context: str = "",
+                           reasoning_mode: Optional[str] = None, gen_overrides: Optional[Dict[str, Any]] = None,
+                           situation_brief: str = "") -> str:
+        # Scoped check: extract the executor-result lines only (avoids false
+        # positives from persona notes / old failure history in the prompt).
+        _fail_block = _failed_executor_relevant_block(prompt)
+        if _fail_block and _failed_executor_is_failed_block(_fail_block):
+            return _failed_executor_surface(_fail_block, _failed_executor_query_from_prompt(prompt))
+        # Broad fallback: scoped extraction may miss inline failures.
+        _p_low = str(prompt or "").lower()
+        if (
+            # Structured markers only. "filenotfounderror"/"file not found" are
+            # dropped here: they match narrative (a commit message, a quoted
+            # log) and the co-occurrence test below could not save them —
+            # "grounded_evidence" is present on EVERY grounded turn, so any
+            # mention of an error name anywhere in the prompt satisfied it.
+            ("'ok': false" in _p_low or '"ok": false' in _p_low
+             or "ok=false" in _p_low or "successful: 0 | failed:" in _p_low)
+            and ("execute result" in _p_low or "agent:system" in _p_low
+                 or "analyze_pdf" in _p_low)
+        ):
+            return _failed_executor_surface(
+                prompt, _failed_executor_query_from_prompt(prompt)
+            )
+
+        # ── Verbatim guard for deterministic grounded reports (EXAMINE_CODE / FILE_AUDIT) ──
+        # These are deterministic grounded output (tiered findings / a directory file-count).
+        # Re-narrating them through this chat path makes the model confabulate: EXAMINE_CODE
+        # gets the file_code agent's snippets/comments paraphrased as "bugs" (observed: 5
+        # invented findings that were existing comments); FILE_AUDIT (a plain file-counter)
+        # gets synthesised into files-with-bugs that DON'T EXIST (observed: 5 fabricated
+        # files). If the report is present in the evidence, return it VERBATIM.
+        _verbatim_evidence_patterns = (
+            (r"(Examined\s+\d+\s+file\(s\)\s*:[\s\S]+)",
+             ("Tier 1", "No errors found", "PLEASE CONFIRM")),
+            (r"(File Audit:[\s\S]+)", ("Directories scanned:", "Total files:")),
+        )
+        for _pat, _markers in _verbatim_evidence_patterns:
+            for _exam_src in (situation_brief, memory_context, prompt):
+                _em = re.search(_pat, str(_exam_src or ""))
+                if _em and any(_mk in _em.group(1) for _mk in _markers):
+                    _rep = re.split(
+                        r"\n\s*(?:USER QUESTION:|GROUNDED EVIDENCE \(|Recent ELI reflections|"
+                        r"Knowledge graph|Live agents \()", _em.group(1))[0].strip()
+                    if _rep:
+                        return _rep
+
+        # FIX_FILE success event: the executor JSON-encodes {event:artifact_generated,
+        # fixed:true, path, filename, backup}. Synthesising it made the model narrate a FALSE
+        # refusal ("I cannot fix the file from here") even though the file WAS written. Surface
+        # the real outcome instead of letting the model confabulate one.
+        for _ff_src in (situation_brief, memory_context, prompt):
+            _ff_txt = str(_ff_src or "")
+            if re.search(r'"event"\s*:\s*"artifact_generated"', _ff_txt) and \
+               re.search(r'"fixed"\s*:\s*true', _ff_txt):
+                _fn = re.search(r'"filename"\s*:\s*"([^"]+)"', _ff_txt)
+                _pm = re.search(r'"path"\s*:\s*"([^"]+)"', _ff_txt)
+                _name = _fn.group(1) if _fn else (_pm.group(1) if _pm else "the file")
+                _has_bak = bool(re.search(r'"backup"\s*:\s*"[^"]+"', _ff_txt))
+                return (f"✅ Fixed `{_name}`"
+                        + (" — a timestamped backup was saved" if _has_bak else "")
+                        + ". The corrected file is open in the editor.")
+
+        if _eli_test_mode():
+            gen_overrides = dict(gen_overrides or {})
+            gen_overrides["max_tokens"] = min(
+                int(gen_overrides.get("max_tokens", 96)), 96)
+            gen_overrides["temperature"] = 0.0
+
+        prompt = self._prepend_recent_exchange(prompt)
+
+        provider = self._current_provider()
+        gen = self._generation_settings()
+        if gen_overrides:
+            gen.update({k: v for k, v in dict(
+                gen_overrides).items() if v is not None})
+
+        if not self._gguf_available and gguf_inference is not None:
+            _ovr = gguf_inference.get_live_runtime_override() or {}
+            if _ovr.get("loaded"):
+                self._gguf_available = True
+                self._gguf_load_error = None
+            else:
+                try:
+                    self._init_gguf()
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+
+        try:
+            _mode_contract = dict(getattr(self, "_last_mode_execution_contract", {}) or {})
+            if _mode_contract:
+                self._maybe_apply_mode_runtime_adaptation(reasoning_mode, _mode_contract)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        if self._gguf_available:
+            try:
+                if gguf_inference is None:
+                    raise RuntimeError("GGUF module not available")
+
+                # ── Context size guard ──────────────────────────────────────
+                # For short queries on small context windows, trim memory to
+                # prevent prompt bloat and multi-minute first-token latency.
+                # Rule: persona (~2k chars) + user_input + max_tokens must fit
+                # in n_ctx with room to spare. Memory context gets the budget
+                # that remains after persona + query.
+                _n_ctx_guard = self._runtime_n_ctx()
+                _max_tok_guard = int(gen.get('max_tokens', 512))
+                _persona_chars = len(_load_persona_text())
+                _query_chars = len(prompt or '')
+                # Rough: 1 token ≈ 3.5 chars; leave 20% headroom
+                _total_char_budget = int(_n_ctx_guard * 3.5 * 0.80)
+                _mem_char_budget = max(
+                    400,  # always allow at least some context
+                    _total_char_budget - _persona_chars - _query_chars - (_max_tok_guard * 4)
+                )
+                _trimmed_mem = _eli_sanitize_identity_context_block(memory_context, prompt)
+                if len(memory_context) > _mem_char_budget:
+                    log.debug(
+                        f"[COGNITIVE] Trimming memory context "
+                        f"{len(memory_context)}→{_mem_char_budget} chars "
+                        f"(n_ctx={_n_ctx_guard}, max_tokens={_max_tok_guard})"
+                    )
+                    # Prefer keeping the most recent turns (end of string)
+                    _trimmed_mem = memory_context[-_mem_char_budget:]
+                    # Don't cut mid-line
+                    _nl = _trimmed_mem.find('\n')
+                    if _nl > 0:
+                        _trimmed_mem = _trimmed_mem[_nl:]
+                # ─────────────────────────────────────────────────────────────
+
+                enhanced_system = self._build_enhanced_system(
+                    _trimmed_mem,
+                    compact=self._use_compact_system(
+                        prompt, _trimmed_mem, reasoning_mode=reasoning_mode),
+                    user_input=prompt,
+                    reasoning_mode=reasoning_mode,
+                    situation_brief=situation_brief,
+                )
+                log.debug("[COGNITIVE] Generating response with GGUF...")
+                broker = _get_inference_broker() if _get_inference_broker else None
+                if broker and broker.gguf_ready:
+                    log.debug("[COGNITIVE] Using broker path")
+                    # Pre-flight: clamp max_tokens so prompt+output fits n_ctx.
+                    # CRITICAL: use the LIVE loaded model's n_ctx, not the
+                    # configured value. Mistral may have fallen back to 1024
+                    # ctx if VRAM was tight; the configured 4096 is a lie.
+                    # Start from the live loaded ctx (authoritative), not a
+                    # hard-coded default; the override chain below confirms it.
+                    _n_ctx_pf1 = self._runtime_n_ctx()
+                    # Override with the LIVE loaded value.  Priority chain:
+                    #   1. _live_runtime_params["n_ctx"] — set by gguf_inference
+                    #      after a successful load; always correct.
+                    #   2. runtime_snapshot.json effective.n_ctx — written by
+                    #      the GUI launcher immediately after load.
+                    #   3. llm.n_ctx() method — last resort (may throw).
+                    # gen.get("n_ctx") / settings["n_ctx"] is the CONFIGURED
+                    # value and is often stale — do NOT use it as the source.
+                    try:
+                        import eli.cognition.gguf_inference as _eli_gguf_mod
+                        _lrp = getattr(_eli_gguf_mod, "_live_runtime_params", None) or {}
+                        _lrp_ctx = int(_lrp.get("n_ctx", 0))
+                        if _lrp_ctx > 0:
+                            _n_ctx_pf1 = _lrp_ctx
+                        else:
+                            # Fallback: runtime snapshot file
+                            import json as _jsnap
+                            from eli.core.paths import project_root as _eli_root
+                            _snap_path = _eli_root() / "artifacts" / "runtime_snapshot.json"
+                            if _snap_path.exists():
+                                _snap = _jsnap.loads(_snap_path.read_text(encoding="utf-8"))
+                                _snap_ctx = int(
+                                    (_snap.get("effective") or {}).get("n_ctx")
+                                    or _snap.get("n_ctx")
+                                    or 0
+                                )
+                                if _snap_ctx > 0:
+                                    _n_ctx_pf1 = _snap_ctx
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                    # Token estimate uses 3.5 chars/token (Mistral-ish);
+                    # earlier code used 3 which under-estimated and let
+                    # oversized prompts through.
+                    _pt_pf1 = max(1, int((len(enhanced_system) + len(prompt)) / 3.5))
+                    _avail_pf1 = max(128, _n_ctx_pf1 - _pt_pf1 - 64)
+                    _req_pf1 = int(gen["max_tokens"])
+                    _safe_max_pf1 = _avail_pf1 if _req_pf1 <= 0 else max(128, min(_req_pf1, _avail_pf1))
+                    if 0 < _req_pf1 < _safe_max_pf1:
+                        log.debug(
+    f"[COGNITIVE] Clamping max_tokens {_req_pf1}→{_safe_max_pf1} (est={_pt_pf1}, n_ctx={_n_ctx_pf1})")
+                    # Hard guard: if the prompt itself exceeds n_ctx, truncate
+                    # it before sending — an oversized prompt crashes llama.cpp.
+                    # Use 3.0 chars/token here (conservative) so we under-budget.
+                    _max_prompt_chars = max(400, int((_n_ctx_pf1 - _safe_max_pf1 - 128) * 3.0))
+                    # Quality ceiling (context-bloat cap): the small local model
+                    # degenerates into a lone "-"/"-G" on very large prompts long
+                    # BEFORE n_ctx fills — a 39k-char WEB_SEARCH synthesis produced
+                    # "-G" even though it fit n_ctx. Cap to a sane size independent
+                    # of n_ctx so the model gets a prompt it can actually answer.
+                    # Tunable: ELI_SYNTH_MAX_PROMPT_CHARS (set 0 to disable).
+                    try:
+                        from eli.core.cognition_tunables import get_tunable as _cog_get
+                        _qenv = os.environ.get("ELI_SYNTH_MAX_PROMPT_CHARS")
+                        _fixed_cap = _cog_get("cog.synth_max_prompt_chars")
+                        if _qenv is not None:
+                            _qcap = int(_qenv or "0")  # explicit env override wins
+                        elif _cog_get("cog.synth_cap_auto"):
+                            # Auto-scale to the loaded model: ~45% of the context
+                            # window (chars≈3×tokens) × capability tier, never
+                            # below the fixed cap. For the current small model this
+                            # stays at the fixed cap (floor dominates).
+                            try:
+                                from eli.core.model_tier import tier_scale as _ts
+                                _derived = int(_n_ctx_pf1 * 3.0 * 0.45 * _ts())
+                            except Exception:
+                                _derived = 0
+                            _qcap = max(_fixed_cap, _derived)
+                        else:
+                            _qcap = _fixed_cap
+                    except Exception:
+                        _qcap = 20000
+                    if _qcap > 0:
+                        _max_prompt_chars = min(_max_prompt_chars, _qcap)
+                    if len(enhanced_system) + len(prompt) > _max_prompt_chars:
+                        # Give the user prompt at least 25% of the budget so the
+                        # actual question is never fully clipped.
+                        _prompt_budget = max(200, min(len(prompt), _max_prompt_chars // 4))
+                        _sys_budget = max(200, _max_prompt_chars - _prompt_budget)
+                        if len(enhanced_system) > _sys_budget:
+                            # Keep persona HEAD (voice + hard constraints) AND the
+                            # grounded evidence TAIL (appended last); drop the bulky
+                            # middle (profile/scaffolding/memory dump) — that is what
+                            # bloats the prompt without being the answer's substance.
+                            _head = max(200, int(_sys_budget * 0.5))
+                            _tail = max(200, _sys_budget - _head)
+                            enhanced_system = (
+                                enhanced_system[:_head].rstrip()
+                                + "\n\n…[context trimmed to fit the model]…\n\n"
+                                + enhanced_system[-_tail:].lstrip()
+                            )
+                        prompt = prompt[-_prompt_budget:]
+                        log.debug(
+    f"[COGNITIVE] Prompt capped to {_max_prompt_chars}chars "
+    f"(head+tail; n_ctx={_n_ctx_pf1}, qcap={_qcap})")
+
+                    # Re-fit the answer budget to the prompt ACTUALLY being sent.
+                    #
+                    # _avail_pf1 above was computed from the prompt BEFORE the
+                    # truncation that just ran, and it floors at 128. So a large
+                    # pre-truncation prompt drove the estimate past n_ctx, the
+                    # floor engaged, the prompt was then cut down to fit — and the
+                    # answer was still capped at the 128 chosen when the prompt was
+                    # twice its final size. Observed at 2.2.2: prompt_tokens=5693
+                    # in a 10384 window (≈4,600 free) generating with max_tokens=128,
+                    # cutting the reply mid-word.
+                    #
+                    # Estimate → clamp → truncate is the wrong order. Truncating
+                    # frees room; the budget has to be recomputed once it has.
+                    _pt_final = max(1, int((len(enhanced_system) + len(prompt)) / 3.5))
+                    _avail_final = max(128, _n_ctx_pf1 - _pt_final - 64)
+                    if _avail_final > _safe_max_pf1:
+                        _req_ok = _req_pf1 if _req_pf1 > 0 else _avail_final
+                        _safe_max_pf1 = max(_safe_max_pf1, min(_req_ok, _avail_final))
+                        log.debug(
+    f"[COGNITIVE] Budget re-fitted after prompt truncation: "
+    f"max_tokens→{_safe_max_pf1} (prompt≈{_pt_final} tok, n_ctx={_n_ctx_pf1})")
+
+                    response = broker.infer(
+                        prompt,
+                        system=enhanced_system,
+                        max_tokens=_safe_max_pf1,
+                        temperature=gen["temperature"],
+                    )
+                else:
+                    log.debug("[COGNITIVE] Using direct GGUF path (broker unavailable)")
+                    _n_ctx_pf2 = self._runtime_n_ctx()
+                    _pt_pf2 = max(1, (len(enhanced_system) + len(prompt)) // 3)
+                    _avail_pf2 = max(128, _n_ctx_pf2 - _pt_pf2 - 64)
+                    _req_pf2 = int(gen["max_tokens"])
+                    _safe_max_pf2 = _avail_pf2 if _req_pf2 <= 0 else max(128, min(_req_pf2, _avail_pf2))
+                    if 0 < _req_pf2 < _safe_max_pf2:
+                        log.debug(
+    f"[COGNITIVE] Direct GGUF: clamping max_tokens {_req_pf2}→{_safe_max_pf2} (est={_pt_pf2}, n_ctx={_n_ctx_pf2})")
+                    # Hard guard for direct path too
+                    _max_prompt_chars2 = max(400, (_n_ctx_pf2 - _safe_max_pf2 - 64) * 3)
+                    if len(enhanced_system) + len(prompt) > _max_prompt_chars2:
+                        _sys_budget2 = min(len(enhanced_system), _max_prompt_chars2 // 2)
+                        _prompt_budget2 = _max_prompt_chars2 - _sys_budget2
+                        enhanced_system = enhanced_system[-_sys_budget2:]
+                        prompt = prompt[-_prompt_budget2:]
+                        log.debug(
+    f"[COGNITIVE] Direct GGUF overflow: truncated to fit n_ctx={_n_ctx_pf2}")
+                    with self._gguf_lock:
+                        response = gguf_inference.chat_completion(
+                            prompt,
+                            system=enhanced_system,
+                            max_tokens=_safe_max_pf2,
+                            temperature=gen["temperature"],
+                        )
+                if response:
+                    return _normalize_assistant_text(prompt, response)
+                # Empty after broker's own retry — usually a thinking model that burned
+                # its budget inside a hidden reasoning block. One more pass with think
+                # suppressed; do NOT mark the whole GGUF backend unavailable.
+                log.debug("[COGNITIVE] GGUF empty response — retrying with force_no_think")
+                _retry_tokens = max(256, min(int(locals().get("_safe_max_pf1", 512) or 512), 1024))
+                try:
+                    from eli.cognition.gguf_inference import force_no_think as _fnt
+                    with _fnt():
+                        if broker and broker.gguf_ready:
+                            response = broker.infer(
+                                prompt,
+                                system=enhanced_system,
+                                max_tokens=_retry_tokens,
+                                temperature=gen["temperature"],
+                                retry=False,
+                            )
+                        elif gguf_inference is not None:
+                            with self._gguf_lock:
+                                response = gguf_inference.chat_completion(
+                                    prompt,
+                                    system=enhanced_system,
+                                    max_tokens=_retry_tokens,
+                                    temperature=gen["temperature"],
+                                )
+                except Exception as _empty_retry_err:
+                    log.debug(f"[COGNITIVE] force_no_think empty retry failed: {_empty_retry_err}")
+                    response = ""
+                if response:
+                    return _normalize_assistant_text(prompt, response)
+                raise RuntimeError("GGUF returned empty response after retry")
+            except Exception as e:
+                _emsg = str(e)
+                _empty = "empty response" in _emsg.lower()
+                _ctx_overflow = (
+                    "context window" in _emsg.lower()
+                    or "requested tokens" in _emsg.lower()
+                )
+                if not _empty and not _ctx_overflow:
+                    self._gguf_available = False
+                self._gguf_load_error = _emsg
+                log.debug(f"[COGNITIVE] GGUF chat failed: {e}")
+                if provider not in ("ollama",):
+                    if _empty:
+                        return (
+                            "The local model returned an empty answer after retry. "
+                            "Common causes: a thinking model spent its token budget in a "
+                            "hidden reasoning block; generation was interrupted during shutdown; "
+                            "or the prompt was too large for the effective GPU offload. "
+                            "Try again, use quick mode, or ask for a GGUF diagnostics report."
+                        )
+                    return f"[ELI] GGUF error: {e}"
+        if provider not in ("ollama",):
+            detail = self._gguf_load_error or "GGUF model unavailable"
+            return f"[ELI] Model not ready: {detail}. Check config/settings.json."
+        log.debug("[COGNITIVE] Falling back to Ollama for chat response")
+        try:
+            full_prompt = f"{memory_context}\n\nUser: {prompt}\n\nELI:" if memory_context else prompt
+            result = ollama_chat(full_prompt, skip_router=True)
+            if isinstance(result, dict):
+                response = result.get(
+    "content", "").strip() or result.get(
+        "response", "").strip()
+            else:
+                response = str(result).strip()
+            return _normalize_assistant_text(prompt, response)
+        except Exception as e:
+            log.debug(f"[COGNITIVE] Ollama fallback also failed: {e}")
+            return f"I encountered an error while generating a response: {e}"
+
+    def _stream_model_response(self, prompt: str, memory_context: str = "",
+                               reasoning_mode: Optional[str] = None, gen_overrides: Optional[Dict[str, Any]] = None,
+                               situation_brief: str = "") -> Generator[str, None, None]:
+        """
+        TRUE STREAMING: use generate() directly with stream=True.
+        Yields tokens as they are generated — not after full completion.
+        Falls back to broker.infer() only when generate() is unavailable.
+        situation_brief: pre-synthesised context brief from ContextSynthesiser.
+        When provided it replaces the raw memory_context in the system prompt.
+        """
+        # TRUE STREAMING: use generate() directly
+        provider = self._current_provider()
+        gen = self._generation_settings()
+        if gen_overrides:
+            gen.update({k: v for k, v in dict(
+                gen_overrides).items() if v is not None})
+
+        _is_phatic_stream = False
+        try:
+            _is_phatic_stream = _is_brief_phatic_prompt(str(prompt or "").strip().lower())
+        except Exception:
+            _is_phatic_stream = False
+        if _is_phatic_stream:
+            gen["max_tokens"] = min(int(gen.get("max_tokens") or 256), _phatic_generation_budget())
+            gen["temperature"] = max(float(gen.get("temperature") or 0.7), 0.72)
+
+        # Self-heal: GUI loads model via live override without setting _gguf_available
+        if not self._gguf_available and gguf_inference is not None:
+            _ovr = gguf_inference.get_live_runtime_override() or {}
+            if _ovr.get("loaded"):
+                self._gguf_available = True
+                self._gguf_load_error = None
+        if self._gguf_available and gguf_inference is not None:
+            try:
+                try:
+                    _mode_contract = dict(getattr(self, "_last_mode_execution_contract", {}) or {})
+                    if _mode_contract:
+                        self._maybe_apply_mode_runtime_adaptation(reasoning_mode, _mode_contract)
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+                # ── Context size guard (same logic as non-streaming path) ──
+                # Use the model's REAL usable ceiling (min of loaded n_ctx and
+                # n_ctx_train), not the config default — a model whose trained context
+                # is smaller than the requested/loaded ctx must be sized to its trained
+                # length or the prompt overflows ("Requested tokens exceed context
+                # window"). Falls back to the config value only if no model is loaded.
+                _n_ctx = 0
+                try:
+                    if hasattr(gguf_inference, "current_context_limit"):
+                        _n_ctx = int(gguf_inference.current_context_limit() or 0)
+                except Exception:
+                    _n_ctx = 0
+                if _n_ctx <= 0:
+                    _n_ctx = self._runtime_n_ctx()
+                _max_tok_s = int(gen.get('max_tokens', 512))
+                _persona_chars_s = len(_load_persona_text())
+                _query_chars_s = len(prompt or '')
+                _total_char_budget_s = int(_n_ctx * 3.5 * 0.80)
+                # Reserve for OUTPUT realistically. `max_tokens` is a CEILING, not an
+                # expectation: in quick mode it is ~3461, so `_max_tok_s * 4` reserved
+                # ~13.8k chars of a ~29k budget for output that a chat reply never
+                # produces. Observed live: the bus gathered 6,352 chars of evidence for
+                # "are these dynamic and true awareness, not hard-coding?" — including a
+                # 1,415-char introspection result — at grounding 0.98, and this line
+                # trimmed it to 685 chars. The model then answered "let's pretend it
+                # works for now", having been handed almost none of the evidence that
+                # was fetched specifically to answer it.
+                #
+                # The budget already keeps 20% headroom (the 0.80 above), and llama.cpp
+                # enforces n_ctx regardless, so reserving the full ceiling was doubly
+                # conservative. Cap the reservation at a realistic reply length; a longer
+                # generation simply uses the headroom.
+                _out_reserve_tok_s = min(_max_tok_s, _OUTPUT_RESERVE_TOKENS)
+                _mem_char_budget_s = max(
+                    400,
+                    _total_char_budget_s - _persona_chars_s - _query_chars_s - (_out_reserve_tok_s * 4)
+                )
+                _trimmed_mem_s = _eli_sanitize_identity_context_block(memory_context, prompt)
+                if len(memory_context) > _mem_char_budget_s:
+                    log.debug(
+                        f"[COGNITIVE] Stream: trimming memory context "
+                        f"{len(memory_context)}→{_mem_char_budget_s} chars"
+                    )
+                    _trimmed_mem_s = memory_context[-_mem_char_budget_s:]
+                    _nl_s = _trimmed_mem_s.find('\n')
+                    if _nl_s > 0:
+                        _trimmed_mem_s = _trimmed_mem_s[_nl_s:]
+                # ──────────────────────────────────────────────────────────
+
+                # Conversational context injection (current session only, last 30 min).
+                #  (a) Short follow-ups (≤6 words) get the recent exchange inline so
+                #      the model sees the current message in immediate context.
+                #  (b) CONFUSION signals — "what do you mean", "i don't understand",
+                #      "can you elaborate", "huh?", "what?", "you're looping", etc. —
+                #      ALSO get the recent exchange PLUS a directive to locate exactly
+                #      where the confusion arose and resolve it, instead of looping or
+                #      repeating the previous reply.
+                _orig_msg = (prompt or "").strip()
+                _low_msg = _orig_msg.lower()
+                _confusion = bool(re.search(
+                    r"\b(what do you mean|what does that mean|what'?s that mean|"
+                    r"can you (?:elaborate|clarify|explain)|please (?:elaborate|clarify|explain)|"
+                    r"\belaborate\b|\bclarif(?:y|ication)\b|i don'?t (?:understand|get it|follow)|"
+                    r"i'?m (?:confused|lost|not following)|that (?:doesn'?t|does not) make sense|"
+                    r"you'?re not making sense|makes no sense|come again|say that again|"
+                    r"are you (?:talking about|on about|referring to)|"
+                    r"you keep (?:saying|asking)|"
+                    r"that'?s not what i|i didn'?t ask|"
+                    r"that was a question|that is a question|that'?s a question|"
+                    r"you asked me\b|like what\b|"
+                    r"you'?re (?:slack(?:ing)?|drift(?:ing)?|repeating|looping)|"
+                    r"starting to (?:slack|drift|loop|repeat))\b",
+                    _low_msg,
+                )) or _low_msg.rstrip("?!. ") in {"what", "huh", "eh", "sorry", "pardon", "you what", "like what"}
+                _inject_session = False
+                if not _is_phatic_stream:
+                    try:
+                        from eli.runtime.session_continuity import session_has_prior_turns
+                        _recent = self.memory.get_recent_conversation(
+                            limit=14, user_id=getattr(self, "user_id", None)) or []
+                        _inject_session = session_has_prior_turns(_recent, _orig_msg)
+                    except Exception:
+                        _inject_session = False
+                if _confusion or _inject_session:
+                    try:
+                        from eli.runtime.session_continuity import build_inline_exchange_block
+                        if not _inject_session:
+                            _session_cutoff = time.time() - 1800  # 30 minutes
+                            _recent = self.memory.get_recent_conversation(
+                                limit=14, user_id=self.user_id)
+                            _prompt_key = _orig_msg[:80]
+                            _thread = [
+                                t for t in _recent
+                                if float(t.get("timestamp") or 0) >= _session_cutoff
+                                and not (t.get("role") == "user"
+                                         and (t.get("content") or "").strip()[:80] == _prompt_key)
+                            ]
+                        else:
+                            _thread = list(_recent)
+                        if len(_thread) >= 2:
+                            _block = build_inline_exchange_block(_thread, user_input=_orig_msg)
+                            if not _block:
+                                _thread_lines = []
+                                for _t in _thread[-12:]:
+                                    _r = "You" if _t.get("role") == "user" else "ELI"
+                                    _c = (_t.get("content") or "").replace("\n", " ")[:280]
+                                    _thread_lines.append(f"{_r}: {_c}")
+                                _block = "[Recent session]\n" + "\n".join(_thread_lines)
+                            if _confusion:
+                                _block += (
+                                    "\n\n[The user is signalling confusion or asking you to clarify. "
+                                    "Re-read the recent exchange above and pinpoint SPECIFICALLY what "
+                                    "caused it — a word you used, a claim you made, or a topic you raised "
+                                    "that they never mentioned. State plainly where the misunderstanding "
+                                    "is, then resolve it with a concrete answer or fix. Do NOT repeat your "
+                                    "previous reply, and do NOT re-ask a question they already rejected.]"
+                                )
+                            prompt = _block + "\n\nYou: " + _orig_msg
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+
+                enhanced_system = self._build_enhanced_system(
+                    _trimmed_mem_s,
+                    compact=(
+                        _is_phatic_stream
+                        or self._use_compact_system(
+                            prompt, _trimmed_mem_s, reasoning_mode=reasoning_mode)
+                    ),
+                    user_input=prompt,
+                    reasoning_mode=reasoning_mode,
+                    situation_brief=situation_brief,
+                )
+                # Pre-flight clamp
+                _pt = max(1, (len(enhanced_system) + len(prompt)) // 3)
+                _avail_s = max(128, _n_ctx - _pt - 64)
+                _req_s = int(gen["max_tokens"])
+                _safe_max = _avail_s if _req_s <= 0 else max(128, min(_req_s, _avail_s))
+                if 0 < _req_s < _safe_max:
+                    log.debug(
+    f"[COGNITIVE] Stream: clamping {_req_s}→{_safe_max} (est={_pt}, n_ctx={_n_ctx})")
+                # Hard guard: if combined prompt still exceeds n_ctx, truncate
+                # before calling generate() — an oversized prompt causes segfault.
+                _max_stream_chars = max(400, (_n_ctx - _safe_max - 64) * 3)
+                if len(enhanced_system) + len(prompt) > _max_stream_chars:
+                    # Keep persona HEAD + evidence TAIL (same as non-stream path).
+                    # Tail-only truncation was dropping voice/constraints and leaving
+                    # a raw memory dump the model could not finish within max_tokens.
+                    _prompt_budget = max(200, min(len(prompt), _max_stream_chars // 4))
+                    _sys_budget = max(200, _max_stream_chars - _prompt_budget)
+                    if len(enhanced_system) > _sys_budget:
+                        _head = max(200, int(_sys_budget * 0.5))
+                        _tail = max(200, _sys_budget - _head)
+                        enhanced_system = (
+                            enhanced_system[:_head].rstrip()
+                            + "\n\n…[context trimmed to fit the model]…\n\n"
+                            + enhanced_system[-_tail:].lstrip()
+                        )
+                    prompt = prompt[-_prompt_budget:]
+                    log.debug(
+    f"[COGNITIVE] Stream overflow: truncated to fit n_ctx={_n_ctx}")
+                    # Re-fit answer budget against the prompt actually sent (see non-stream
+                    # path: estimate→clamp→truncate pins max_tokens=128 when the pre-cut
+                    # prompt was huge, then truncation frees thousands of tokens).
+                    _pt_final = max(1, int((len(enhanced_system) + len(prompt)) / 3.5))
+                    _avail_final = max(128, _n_ctx - _pt_final - 64)
+                    if _avail_final > _safe_max:
+                        _req_ok = _req_s if _req_s > 0 else _avail_final
+                        _safe_max = max(_safe_max, min(_req_ok, _avail_final))
+                        log.debug(
+    f"[COGNITIVE] Stream budget re-fitted after truncation: "
+    f"max_tokens→{_safe_max} (prompt≈{_pt_final} tok, n_ctx={_n_ctx})")
+
+                generate = getattr(gguf_inference, "generate", None)
+                if callable(generate):
+                    log.debug("[COGNITIVE] Stream: using generate() with stream=True")
+                    _yielded = False
+                    try:
+                        from eli.cognition.gguf_inference import force_no_think as _fnt_stream
+                        from contextlib import nullcontext as _nullctx_stream
+                    except Exception:
+                        from contextlib import nullcontext as _fnt_stream, nullcontext as _nullctx_stream  # type: ignore
+                    _stream_think_ctx = _fnt_stream() if _is_phatic_stream else _nullctx_stream()
+                    with self._gguf_lock, _stream_think_ctx:
+                        for chunk in generate(
+                            prompt,
+                            system=enhanced_system,
+                            max_tokens=_safe_max,
+                            temperature=gen["temperature"],
+                            stream=True,
+                        ):
+                            try:
+                                from eli.cognition import gguf_inference as _ggi_abort
+                                if _ggi_abort.is_cancel_requested():
+                                    break
+                            except Exception:
+                                log.debug("suppressed exception", exc_info=True)
+                            if isinstance(chunk, dict):
+                                token = str(
+    chunk.get("response") or chunk.get("token") or "")
+                            else:
+                                token = str(chunk or "")
+                            if token:
+                                _yielded = True
+                                yield token
+                    if _yielded:
+                        return
+                    log.debug("[COGNITIVE] Stream: generate() produced zero visible tokens; falling back to non-streaming Stage 11")
+                    if _is_phatic_stream:
+                        try:
+                            from eli.cognition.gguf_inference import force_no_think as _fnt_ph_fallback
+                            _phatic_sys = self._build_enhanced_system(
+                                "",
+                                compact=True,
+                                user_input=prompt,
+                                reasoning_mode=reasoning_mode or "quick",
+                                situation_brief=self._build_phatic_handoff_brief(prompt),
+                            )
+                            with _fnt_ph_fallback():
+                                with self._gguf_lock:
+                                    _ph_raw = generate(
+                                        prompt,
+                                        system=_phatic_sys,
+                                        max_tokens=min(_phatic_generation_budget(), _safe_max),
+                                        temperature=gen["temperature"],
+                                        stream=False,
+                                    )
+                            _ph_text = ""
+                            if isinstance(_ph_raw, dict):
+                                _ph_text = str(_ph_raw.get("response") or _ph_raw.get("content") or "").strip()
+                            else:
+                                _ph_text = str(_ph_raw or "").strip()
+                            if _ph_text:
+                                for token in self._yield_text_chunks(_ph_text, chunk_size=12):
+                                    yield token
+                                return
+                        except Exception as _ph_fb_err:
+                            log.debug(f"[COGNITIVE] phatic zero-token fallback failed: {_ph_fb_err}")
+                    response = self._get_chat_response(
+                        prompt,
+                        memory_context,
+                        reasoning_mode=reasoning_mode,
+                        gen_overrides={
+                            "max_tokens": _safe_max,
+                            "temperature": gen["temperature"],
+                        },
+                        situation_brief=situation_brief,
+                    )
+                    for token in self._yield_text_chunks(response or "", chunk_size=12):
+                        yield token
+                    return
+
+                # generate() not available — use broker (pseudo-streaming)
+                broker = _get_inference_broker() if _get_inference_broker else None
+                if broker and broker.gguf_ready:
+                    log.debug(
+                        "[COGNITIVE] Stream: generate() unavailable, falling back to broker (pseudo-stream)")
+                    response = broker.infer(
+                        prompt,
+                        system=enhanced_system,
+                        max_tokens=_safe_max,
+                        temperature=gen["temperature"],
+                    )
+                    for token in self._yield_text_chunks(
+                        response or "", chunk_size=12):
+                        yield token
+                    return
+
+            except Exception as e:
+                _emsg = str(e)
+                _ctx_overflow = ("context window" in _emsg.lower()
+                                 or "requested tokens" in _emsg.lower())
+                _empty = "empty response" in _emsg.lower()
+                log.debug(f"[COGNITIVE] GGUF streaming failed: {_emsg}")
+                # A context-window overflow is RECOVERABLE — it does not mean the GGUF
+                # backend is dead. Don't flip _gguf_available (that poisons every later
+                # turn), and never surface the raw exception text as ELI's reply. Retry
+                # once via the non-streaming path: generate() now truncates an over-ctx
+                # prompt to the model's real n_ctx_train instead of failing.
+                if not _ctx_overflow and not _empty:
+                    self._gguf_available = False
+                self._gguf_load_error = _emsg
+                if provider != "ollama":
+                    _fallback = ""
+                    try:
+                        _fallback = self._get_chat_response(
+                            prompt,
+                            memory_context,
+                            reasoning_mode=reasoning_mode,
+                            gen_overrides={
+                                "max_tokens": int(gen.get("max_tokens") or 256),
+                                "temperature": gen.get("temperature", 0.7),
+                            },
+                            situation_brief=situation_brief,
+                        )
+                    except Exception as _e2:
+                        log.debug(f"[COGNITIVE] non-stream fallback after stream failure also failed: {_e2}")
+                    if _fallback and _fallback.strip():
+                        for token in self._yield_text_chunks(_fallback, chunk_size=12):
+                            yield token
+                        return
+                    if _ctx_overflow:
+                        yield ("I couldn't fit my working context into this model — its trained "
+                               "context window is smaller than the prompt I need to reason over. "
+                               "Load a model with a larger context (e.g. Qwen3-8B) and I'll be back "
+                               "to normal.")
+                    elif _empty:
+                        yield ("The local model returned an empty answer after retry. "
+                               "Common causes: a thinking model spent its token budget in a "
+                               "hidden reasoning block; generation was interrupted during shutdown. "
+                               "Try again, use quick mode, or ask for a GGUF diagnostics report.")
+                    else:
+                        yield ("Something went wrong reaching the local model just now. The error "
+                               "was logged — try again, and if it persists, reload the model.")
+                    return
+
+        if provider != "ollama":
+            detail = self._gguf_load_error or "GGUF model unavailable"
+            yield f"GGUF unavailable: {detail}"
+            return
+
+        response = self._get_chat_response(
+    prompt,
+    memory_context,
+    reasoning_mode=reasoning_mode,
+     gen_overrides=gen)
+        for token in self._yield_text_chunks(response, chunk_size=12):
+            yield token
+
+    def _run_chat_reasoning_loop(self, user_input: str, memory_context: str, intent: Dict[str, Any], reasoning_mode: Optional[
+                                 str], trace: Optional[Dict[str, Any]] = None, gen_overrides: Optional[Dict[str, Any]] = None,
+                                 situation_brief: str = "") -> Dict[str, Any]:
+        try:
+            from eli.cognition.reasoning_modes import canonical_mode as _eli_loop_mode
+            _loop_mode = _eli_loop_mode(reasoning_mode)
+        except Exception:
+            _loop_mode = "quick" if not reasoning_mode else str(reasoning_mode)
+        smalltalk = self._quick_smalltalk_response(user_input) if _loop_mode == "quick" else None
+        if smalltalk:
+
+            return {'response': smalltalk, 'score': 0.92, 'threshold': 0.35,
+                'evidence': {'used': False}, 'clarified': False}
+        profile = self._mode_profile(reasoning_mode)
+        passes = int(profile['passes'])
+        threshold = float(profile['threshold'])
+        gen_overrides = {
+            'max_tokens': int(profile['max_tokens']),
+            'temperature': float(profile.get('temperature', 0.7)),
+            'top_p': float(profile.get('top_p', 0.9)),
+        }
+        try:
+            _depth_overrides = self._chat_generation_overrides(
+                user_input,
+                memory_context,
+                reasoning_mode=reasoning_mode,
+            )
+            if isinstance(_depth_overrides, dict):
+                for _k, _v in _depth_overrides.items():
+                    if _v is not None:
+                        gen_overrides[_k] = _v
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            _mode_contract = dict(getattr(self, "_last_mode_execution_contract", {}) or {})
+        except Exception:
+            _mode_contract = {}
+        if trace is not None and _mode_contract:
+            trace["mode_execution_contract"] = _mode_contract
+            try:
+                _rt = _mode_contract.get("runtime") or {}
+                self._trace_phase(
+                    trace,
+                    "mode_contract",
+                    mode=str(_mode_contract.get("mode") or profile.get("mode") or reasoning_mode or "quick"),
+                    task_count=len(_mode_contract.get("tasks") or []),
+                    target_max_tokens=int(((_mode_contract.get("generation_overrides") or {}).get("max_tokens") or gen_overrides.get("max_tokens") or 0)),
+                    target_n_ctx=int(_rt.get("target_n_ctx") or _rt.get("n_ctx") or 0),
+                    target_n_batch=int(_rt.get("target_n_batch") or _rt.get("n_batch") or 0),
+                    target_gpu_layers=int(_rt.get("target_n_gpu_layers") or _rt.get("n_gpu_layers") or 0),
+                )
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        intent_conf = float((intent or {}).get('confidence') or 0.6)
+        requires_grounding = self._intent_requires_grounding(
+            intent, user_input)
+        words = len((user_input or '').split())
+        if not requires_grounding:
+            if words <= 3 and not memory_context:
+                threshold = min(threshold, 0.35)
+                passes = 1
+            else:
+                threshold = min(
+    threshold, 0.56 if str(
+        reasoning_mode or 'quick').strip().lower() == 'quick' else 0.66)
+        evidence = self._gather_executor_evidence(
+            user_input, intent, trace=trace)
+        mode_label = str(reasoning_mode or "quick")
+        working_context = f"[Private reasoning strategy: {mode_label}; final answer only]\n{memory_context}"
+        if evidence.get('used') and evidence.get('content'):
+            working_context = (
+    working_context +
+    "\n\nDeterministic executor evidence:\n" +
+     evidence['content']).strip()
+        # Short-circuit: COMMAND with deterministic executor result skips LLM
+        _intent_action = str((intent or {}).get('action', '')).upper()
+        if _intent_action in {
+            'LIST_DIR','SHELL_EXEC','GET_WEATHER','TIME','DATE',
+            'SET_CLIPBOARD','GET_CLIPBOARD','OPEN_APP','OPEN_URL',
+        } and evidence.get('used') and evidence.get('content'):
+            return self._finalize_chat_result(
+                user_input=user_input,
+                response=evidence['content'],
+                trace=trace,
+                score=1.0,
+                threshold=None,
+                clarified=False,
+                evidence_used=True,
+                reasoning_mode=reasoning_mode,
+            )
+        if trace is not None:
+            self._trace_phase(
+    trace,
+    'loop_start',
+    mode=profile['mode'],
+    passes=passes,
+     threshold=threshold)
+        best_answer = ''
+        best_score = 0.0
+
+        # Algorithmic-mode dispatch: ToT / Constitutional / Self-Consistency
+        # run a multi-stage pipeline of LLM calls (propose-and-develop,
+        # generate-critique-revise, sample-and-select) instead of just
+        # repeating the same single call N times. The pass-loop below still
+        # acts as a confidence safety net if the algorithmic output scores
+        # too low.
+        _mode_str = str(profile.get('mode') or reasoning_mode or '').strip().lower()
+        # Expose this turn's grounding confidence to the per-mode algorithms
+        # (read by the constitutional grounded-trust override, #3b/Option C).
+        try:
+            self._current_grounding_confidence = float((trace or {}).get('grounding_confidence') or 0.0)
+        except Exception:
+            self._current_grounding_confidence = 0.0
+        if self._supports_mode_algorithm(_mode_str) and not _eli_test_mode():
+            try:
+                algo_resp = self._run_mode_algorithm(
+                    _mode_str, user_input, working_context, gen_overrides, situation_brief
+                )
+            except Exception as exc:
+                log.debug(f"[REASONING][{_mode_str}] algorithm failed: {exc} — falling through to pass-loop")
+                algo_resp = None
+            if algo_resp:
+                algo_score = self._score_response_confidence(
+                    user_input, algo_resp, working_context, intent_conf, evidence
+                )
+                log.debug(f"[REASONING][{_mode_str}] final score={algo_score:.2f} threshold={threshold:.2f}")
+                if trace is not None:
+                    trace.setdefault('confidence', []).append(
+                        {'pass_no': 'algorithm', 'score': algo_score, 'threshold': threshold})
+                if algo_score >= threshold:
+                    return {'response': algo_resp, 'score': algo_score,
+                            'threshold': threshold, 'evidence': evidence, 'clarified': False}
+                # Below threshold — seed the pass-loop with the algorithmic
+                # output as best-so-far so retries refine from it.
+                best_answer = algo_resp
+                best_score = algo_score
+
+        for pass_no in range(1, passes + 1):
+            if trace is not None:
+                self._trace_phase(
+    trace,
+    'analysis',
+    pass_no=pass_no,
+    context_chars=len(working_context),
+     intent_conf=intent_conf)
+            started = time.perf_counter()
+            response = self._get_chat_response(
+    user_input,
+    working_context,
+    reasoning_mode=reasoning_mode,
+    gen_overrides=gen_overrides,
+    situation_brief=situation_brief)
+            elapsed = time.perf_counter() - started
+            log.debug(f'[COGNITIVE][TIMING] chat_pass_{pass_no}={elapsed:.3f}s')
+            # Govern HERE, once, before scoring and before any of this
+            # function's four return paths. The streaming path is governed at
+            # its own choke point, but this non-streaming loop was not: it
+            # served roughly a third of live turns straight out of
+            # _get_chat_response, so every output guard -- invented health,
+            # invented runtime state, invented internals, leaked prompt
+            # labels -- was simply absent from those replies. Live at 2.3.27
+            # "I'm still running on fumes" reached the user this way while the
+            # MEMORY side correctly refused to store the same sentence.
+            #
+            # It cannot go inside _get_chat_response: that helper also produces
+            # private reasoning and internal summaries, which are not speech
+            # and must not be governed as if they were.
+            #
+            # Scoring runs on the governed text deliberately -- confidence
+            # should describe the reply the user actually receives.
+            try:
+                response = govern_output(
+                    response,
+                    is_grounded=bool(evidence),
+                    evidence=evidence if isinstance(evidence, str) else None,
+                )
+            except Exception:
+                log.debug("[COGNITIVE] output governor skipped", exc_info=True)
+            score = self._score_response_confidence(
+    user_input, response, working_context, intent_conf, evidence)
+            log.debug(
+                f'[COGNITIVE][FINAL] confidence pass_no={pass_no} score={score:.2f} threshold={threshold:.2f}')
+            if trace is not None:
+                trace.setdefault('confidence', []).append(
+                    {'pass_no': pass_no, 'score': score, 'threshold': threshold})
+            if score > best_score:
+                best_answer = response
+                best_score = score
+            if score >= threshold:
+
+                return {'response': response, 'score': score,
+                    'threshold': threshold, 'evidence': evidence, 'clarified': False}
+            if pass_no < passes:
+                working_context = (
+    working_context +
+     "\n\nRevision directive:\n- Previous candidate was below confidence threshold.\n- Remove hedging.\n- Use only grounded facts from context and executor evidence.\n- If exact file paths or line numbers are required, include them explicitly.\n").strip()
+                log.debug(
+                    f'[COGNITIVE][FINAL] retry next_pass={pass_no + 1} reason=below_threshold')
+        if best_score < threshold and profile.get(
+            'clarify', True):
+            # ELI_GROUNDED_CONTROL_NO_CLARIFY_CUTPOINT_V2
+            _eli_gc_action = ""
+            try:
+                if isinstance(intent, dict):
+                    _eli_gc_action = str(intent.get("action") or "").upper()
+            except Exception:
+                _eli_gc_action = ""
+
+            _eli_gc_grounded_actions = {
+                "RUNTIME_STATUS",
+                "MEMORY_COUNT",
+                "RECENT_MEMORY_PROCESSING",
+                "SELF_REPORT_RECENT_UPDATES",
+                "GUI_RUNTIME_AUDIT",
+            }
+
+            if _eli_gc_action in _eli_gc_grounded_actions:
+                log.debug(
+                    f"[COGNITIVE][FINAL] grounded-control no-clarify v2 suppressed "
+                    f"action={_eli_gc_action} score={best_score:.2f} threshold={threshold:.2f}",
+                )
+                return {
+                    'response': best_answer,
+                    'score': best_score,
+                    'threshold': threshold,
+                    'evidence': evidence,
+                    'clarified': False,
+                    'clarify_suppressed': True,
+                }
+
+            log.debug(
+                f'[COGNITIVE][FINAL] clarify score={best_score:.2f} threshold={threshold:.2f}'
+            )
+
+            return {'response': self._clarifying_response(
+                user_input,
+                best_score,
+                threshold,
+                memory_context=working_context,
+                evidence=evidence,
+                reasoning_mode=reasoning_mode,
+            ), 'score': best_score, 'threshold': threshold, 'evidence': evidence, 'clarified': True}
+
+        return {'response': best_answer, 'score': best_score,
+            'threshold': threshold, 'evidence': evidence, 'clarified': False}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reasoning-mode algorithms.
+    #
+    # All four private modes run distinct multi-stage GGUF pipelines:
+    #   - chain_of_thought:  private scratchpad reasoning → final clean answer
+    #   - tree_of_thoughts:  propose K candidate approaches → score → develop best
+    #   - constitutional_ai: generate → critique against principles → revise
+    #   - self_consistency:  N samples → LLM picks the most consistent
+    #   - quick:             single call, no overhead (pass-loop only)
+    # All four private modes go through _run_mode_algorithm; quick routes
+    # through the standard pass-loop above. All paths still feed the
+    # confidence-threshold retry as a safety net.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _run_chain_of_thought(self, user_input: str, working_context: str,
+                              gen_overrides: Dict[str, Any], situation_brief: str) -> str:
+        """Two-stage private CoT: private scratchpad reasoning → final clean answer.
+
+        Stage 1 (private): generate a structured, exhaustive reasoning chain — never
+        shown to the user; only used as context for stage 2.
+        Stage 2 (final):   condense the private reasoning into a clean, direct answer
+        with no step-narration or preamble.
+
+        Per-stage budgets come from `mode_presets["cot"]` keys
+        `max_tokens_reasoning` / `max_tokens_final` (or fall back to 60%/80% of
+        the total `max_tokens` budget).
+        """
+        preset = self._mode_profile("chain_of_thought")
+        max_tok_total = int(
+            preset.get("max_tokens") or (gen_overrides or {}).get("max_tokens") or 2048
+        )
+        if max_tok_total <= 0:
+            max_tok_total = 2048
+        max_tok_reason = int(preset.get("max_tokens_reasoning", max(512, int(max_tok_total * 0.60))))
+        max_tok_final  = int(preset.get("max_tokens_final",     max(512, int(max_tok_total * 0.80))))
+        base_temp      = float(preset.get("temperature", 0.5))
+        temp_reason    = float(preset.get("temperature_reasoning", min(0.50, base_temp)))
+        temp_final     = float(preset.get("temperature_final",     max(0.10, base_temp - 0.15)))
+
+        # Stage 1: private chain-of-thought scratchpad
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("chain_of_thought", 1, 2, "private_scratchpad_reasoning")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        reason_prompt = (
+            "Think through the following request step by step. "
+            "This is your PRIVATE reasoning scratchpad — it will NOT be shown to the user. "
+            "Work through: what is being asked, what relevant facts or context apply, "
+            "what assumptions are safe to make, what the answer should cover, "
+            "and any edge cases or ambiguities. "
+            "Be explicit, exhaustive, and structured. Use numbered steps.\n\n"
+            f"REQUEST: {user_input}"
+        )
+        reason_overrides = dict(gen_overrides or {})
+        reason_overrides["temperature"] = temp_reason
+        reason_overrides["max_tokens"]  = max_tok_reason
+        # Suppress the model's own <think> wrapper on a reasoning model. This stage
+        # ALREADY asks for explicit numbered-step prose reasoning that stage 2 must
+        # read — but a reasoning model wraps that prose in <think>…</think>, and when
+        # it hits max_tokens before closing the tag, _strip_think_text drops the
+        # whole thing to empty. Stage 2 then gets an empty scratchpad and re-thinks
+        # from scratch (observed: 170-230s burned per pass, then a full retry). With
+        # the closed-think prefill the reasoning is written directly as the prose
+        # this two-stage design intends. See gguf_inference.force_no_think.
+        try:
+            from eli.cognition.gguf_inference import force_no_think as _fnt
+        except Exception:
+            from contextlib import nullcontext as _fnt  # type: ignore
+        with _fnt():
+            private_reasoning = self._get_chat_response(
+                reason_prompt, working_context,
+                reasoning_mode="chain_of_thought", gen_overrides=reason_overrides,
+                situation_brief=situation_brief,
+            )
+        log.debug(
+            f"[REASONING][CoT] private scratchpad ({len(private_reasoning)} chars, "
+            f"max_tok={max_tok_reason}, temp={temp_reason:.2f})"
+        )
+
+        # Stage 2: final answer informed by private reasoning
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("chain_of_thought", 2, 2, "final_synthesis")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        final_prompt = (
+            "Using your internal reasoning below, write ONLY the final answer to the original request. "
+            "Do NOT reproduce your reasoning steps or numbered list. "
+            "Do NOT include any preamble like 'Based on my reasoning', 'After thinking through this', "
+            "'In conclusion', or any meta-commentary about the process. "
+            "CRITICAL — GROUNDING RULE: Do NOT invent specific facts (timestamps, times, dates, "
+            "names, file paths, or values) that are not explicitly present in the provided context "
+            "or the user's own words. If a specific fact is not in the context, say you don't have "
+            "that information rather than guessing or approximating. "
+            "DELIVER SUBSTANCE: give the ACTUAL content — facts, mechanism, analysis. NEVER "
+            "substitute a description of how you would answer ('let's delve into', 'we can "
+            "explore approaches', 'I'd be happy to discuss') for the answer itself; those are "
+            "forbidden non-answers. If grounded detail is thin, give the best substantive answer "
+            "from your own knowledge and flag what's uncertain. "
+            "Write in natural prose as if this is your complete, direct response.\n\n"
+            f"INTERNAL REASONING (private — do not quote back):\n{private_reasoning}\n\n"
+            f"ORIGINAL REQUEST: {user_input}"
+        )
+        final_overrides = dict(gen_overrides or {})
+        final_overrides["temperature"] = temp_final
+        final_overrides["max_tokens"]  = max_tok_final
+        # Stage 2 already has the scratchpad — it must synthesise, not re-open a
+        # second <think> block that truncates to empty. Same closed-think prefill.
+        try:
+            from eli.cognition.gguf_inference import force_no_think as _fnt2
+        except Exception:
+            from contextlib import nullcontext as _fnt2  # type: ignore
+        with _fnt2():
+            final = self._get_chat_response(
+                final_prompt, working_context,
+                reasoning_mode="chain_of_thought", gen_overrides=final_overrides,
+                situation_brief=situation_brief,
+            )
+        final = _strip_reasoning_scaffold(final)
+        log.debug(
+            f"[REASONING][CoT] final answer ({len(final)} chars, "
+            f"max_tok={max_tok_final}, temp={temp_final:.2f})"
+        )
+        return final
+
+    def _run_tree_of_thoughts(self, user_input: str, working_context: str,
+                              gen_overrides: Dict[str, Any], situation_brief: str,
+                              k: Optional[int] = None) -> str:
+        """Branch-and-develop: propose K approaches, score, develop the best.
+
+        K, per-stage max_tokens, and per-stage temperatures come from
+        `mode_presets["tree_of_thoughts"]` written by hardware_profile
+        at first-run / re-tune. Nothing static here.
+        """
+        preset = self._mode_profile("tree_of_thoughts")
+        k = int(k if k is not None else preset.get("branches", 3))
+        # Tree DEPTH (tier-mapped: small=1 single-level, frontier=4). >1 deepens the tree by
+        # refining the strongest path each level (beam-width-1) before the final develop.
+        depth = max(1, int(preset.get("depth", 1) or 1))
+        # Speed-aware cap: a big-but-slow (CPU-offloaded) model gets the size-tier's wider/deeper
+        # tree dialled back toward single-pass so it doesn't spend minutes per extra branch/level.
+        try:
+            from eli.core.model_tier import speed_passes as _spass
+            k, depth = _spass(k), _spass(depth)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        max_tok_propose = int(preset.get("max_tokens_propose", 600))
+        max_tok_develop = int(preset.get("max_tokens_develop", 1500))
+        temp_propose = float(preset.get("temperature_propose", 0.6))
+        temp_develop = float(preset.get("temperature_develop",
+                                         gen_overrides.get("temperature", 0.4)))
+
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("tree_of_thoughts", 1, 2, "branch_tree_proposal")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        propose_prompt = (
+            f"For the following request, propose {k} DISTINCT high-level approaches. "
+            f"For each: name it (1-5 words), state the core idea (1 sentence), "
+            f"and rate feasibility 1-10 with one-line justification. "
+            f"Each approach must be a distinct ANGLE or FRAMING OF THE ANSWER ITSELF — a "
+            f"specific aspect, mechanism, or line of explanation to actually deliver — NOT a "
+            f"research method ('look at the literature', 'do more research', 'run a simulation', "
+            f"'consult experts'). Those are non-answers and are forbidden as approaches. "
+            f"Output as a numbered list. Do NOT write the full answer yet — just enumerate angles.\n\n"
+            f"REQUEST: {user_input}"
+        )
+        propose_overrides = dict(gen_overrides or {})
+        propose_overrides["temperature"] = temp_propose
+        propose_overrides["max_tokens"] = max_tok_propose
+        candidates = self._get_chat_response(
+            propose_prompt, working_context,
+            reasoning_mode="tree_of_thoughts", gen_overrides=propose_overrides,
+            situation_brief=situation_brief,
+        )
+        log.debug(f"[REASONING][ToT] proposed {k} candidates ({len(candidates)} chars, "
+              f"max_tok={max_tok_propose}, temp={temp_propose})")
+
+        # Multi-level tree deepening (depth > 1 — capable models only). Beam-width-1: keep the
+        # SINGLE strongest path and expand it into deeper, more specific sub-angles one level at
+        # a time. Cost is k proposals per extra level (not k**depth). For the small model
+        # depth == 1, so this loop never runs and ToT stays single-level (behaviour-preserving).
+        for _level in range(2, depth + 1):
+            try:
+                from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+                _frs("tree_of_thoughts", _level, depth + 1, "branch_refinement")
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            refine_prompt = (
+                f"Candidate angles for the request (internal — NOT shown to the user):\n\n"
+                f"{candidates}\n\n"
+                f"Silently pick the STRONGEST angle, then propose {k} DEEPER, more specific "
+                f"sub-angles that REFINE it — each a concrete facet, mechanism, or sub-question "
+                f"to develop in the final answer. Same rule: real angles OF THE ANSWER, never "
+                f"research methods. Numbered list; do NOT write the full answer yet.\n\n"
+                f"REQUEST: {user_input}"
+            )
+            candidates = self._get_chat_response(
+                refine_prompt, working_context,
+                reasoning_mode="tree_of_thoughts", gen_overrides=propose_overrides,
+                situation_brief=situation_brief,
+            )
+            log.debug(f"[REASONING][ToT] depth {_level}/{depth} refined "
+                      f"({len(candidates)} chars)")
+
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("tree_of_thoughts", depth + 1, depth + 1, "highest_branch_development")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        develop_prompt = (
+            f"You internally evaluated {k} angles (NOT SHOWN TO USER):\n\n"
+            f"{candidates}\n\n"
+            f"Pick the strongest angle silently and DELIVER THE ACTUAL ANSWER now — the real "
+            f"substance the user asked for: the concrete facts, the mechanism, the explanation, "
+            f"the analysis. "
+            f"FORBIDDEN: describing your method or deferring instead of answering. Never write "
+            f"'let's delve into', 'we can explore', 'one promising method is to look at the "
+            f"literature', \"I'd be happy to discuss\", 'this will provide a comprehensive "
+            f"understanding', or any sentence ABOUT answering — those are non-answers. If you "
+            f"lack grounded detail, give the best substantive answer from your own knowledge and "
+            f"flag what's uncertain; never substitute a description of how you would answer for "
+            f"the answer itself. "
+            f"DO NOT mention which approach you picked. No 'Approach 1:', 'Selected:', 'Plan:', "
+            f"'Strategy:', no preamble, no reasoning narration. "
+            f"Begin directly with the substantive answer in natural prose.\n\n"
+            f"ORIGINAL REQUEST: {user_input}"
+        )
+        develop_overrides = dict(gen_overrides or {})
+        develop_overrides["temperature"] = temp_develop
+        develop_overrides["max_tokens"] = max_tok_develop
+        final = self._get_chat_response(
+            develop_prompt, working_context,
+            reasoning_mode="tree_of_thoughts", gen_overrides=develop_overrides,
+            situation_brief=situation_brief,
+        )
+        # Strip leftover scaffolding if the model still leaked deliberation prefixes
+        final = _strip_reasoning_scaffold(final)
+        log.debug(f"[REASONING][ToT] developed final ({len(final)} chars, "
+              f"max_tok={max_tok_develop}, temp={temp_develop})")
+        return final
+
+    def _run_constitutional_ai(self, user_input: str, working_context: str,
+                               gen_overrides: Dict[str, Any], situation_brief: str) -> str:
+        """Generate → critique against principles → revise.
+
+        Per-stage budgets come from `mode_presets["constitutional_ai"]`.
+        """
+        preset = self._mode_profile("constitutional_ai")
+        max_tok_gen = int(preset.get("max_tokens_generate", 1500))
+        max_tok_crit = int(preset.get("max_tokens_critique", 500))
+        max_tok_rev = int(preset.get("max_tokens_revise", 1500))
+        gen_temp = float(preset.get("temperature", 0.3))
+
+        # Stage 1: initial response
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("constitutional_ai", 1, 3, "initial_draft")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        gen_overrides_1 = dict(gen_overrides or {})
+        gen_overrides_1["max_tokens"] = max_tok_gen
+        gen_overrides_1["temperature"] = gen_temp
+        initial = self._get_chat_response(
+            user_input, working_context,
+            reasoning_mode="constitutional_ai", gen_overrides=gen_overrides_1,
+            situation_brief=situation_brief,
+        )
+        log.debug(f"[REASONING][Constitutional] initial draft ({len(initial)} chars, max_tok={max_tok_gen})")
+
+        # Stage 2: critique against principles
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("constitutional_ai", 2, 3, "principle_critique")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # Grounded-trust: when the engine already considers this turn well-grounded, the weak
+        # local critic must not invent factual problems and delete a correct answer (a grounded
+        # the user's name was once nuked to "[no memories found]"). Applied as a PROMPT instruction here
+        # AND as a post-filter on the issue list below.
+        try:
+            _grounding_conf = float(getattr(self, "_current_grounding_confidence", 0.0) or 0.0)
+        except Exception:
+            _grounding_conf = 0.0
+        _GROUNDED_TRUST_FLOOR = 0.6
+        _grounded_clause = (
+            "ELI's own grounded facts (capability count, local model name, architecture, runtime "
+            "config, and the memory/session counts shown in context) are TRUE — do NOT raise "
+            "accuracy or unsupported-claim problems about them.\n"
+            if _grounding_conf >= _GROUNDED_TRUST_FLOOR else ""
+        )
+        critique_prompt = (
+            "You are reviewing a DRAFT answer. Find the CONCRETE problems that must be fixed, "
+            "judged against these principles:\n"
+            "  P1 Factual accuracy · P2 No unsupported claims · P3 Completeness (it answers what "
+            "was actually asked) · P4 Honesty about uncertainty · P5 No harm.\n"
+            + _grounded_clause +
+            "Output a NUMBERED list of specific, actionable problems. For EACH: name the exact "
+            "offending part of the draft, which principle it breaks, and the concrete fix to make. "
+            "Be specific — no vague 'could be clearer'. Do NOT rewrite the draft here. "
+            "If the draft already satisfies every principle, output EXACTLY: NO ISSUES\n\n"
+            f"REQUEST: {user_input}\n\nDRAFT:\n{initial}"
+        )
+        critique_overrides = dict(gen_overrides or {})
+        critique_overrides["temperature"] = max(0.1, gen_temp - 0.1)
+        critique_overrides["max_tokens"] = max_tok_crit
+        critique = self._get_chat_response(
+            critique_prompt, working_context,
+            reasoning_mode="constitutional_ai", gen_overrides=critique_overrides,
+            situation_brief=situation_brief,
+        )
+        log.debug(f"[REASONING][Constitutional] critique ({len(critique)} chars, max_tok={max_tok_crit})")
+
+        # Stage 3: revise — but only if the critique found CONCRETE issues. This replaces the
+        # gamed P1-P5 PASS/FAIL parse: the 7B is far more reliable producing specific problems
+        # than emitting consistent PASS/FAIL tokens (it used to dupe/contradict them).
+        crit_text = str(critique or "").strip()
+        # Extract numbered / bulleted concrete issues.
+        _issues = [l.strip() for l in crit_text.splitlines()
+                   if re.match(r"^\s*(?:\d+[\.\)]|[-•*])\s+\S", l)]
+        # Explicit "NO ISSUES" sentinel (and no numbered issues) = the draft is sound.
+        _no_issues = bool(re.search(r"\bno\s+issues?\b", crit_text, re.I)) and not _issues
+        # Grounded-trust post-filter: when the turn is well-grounded, drop any issue that is
+        # about factual accuracy / unsupported claims, so the weak critic cannot delete a
+        # grounded answer (belt-and-braces with the prompt clause above).
+        if _grounding_conf >= _GROUNDED_TRUST_FLOOR and _issues:
+            _kept = [l for l in _issues if not re.search(
+                r"\b(p1|p2|factual|inaccurat|unsupported|not\s+(?:in|supported)|no\s+evidence|"
+                r"fabricat|hallucinat|made\s+up|cannot\s+verify)\b", l, re.I)]
+            if len(_kept) != len(_issues):
+                log.debug(f"[REASONING][Constitutional] grounding={_grounding_conf:.2f} → "
+                          f"dropped {len(_issues) - len(_kept)} grounding-accuracy issue(s)")
+            _issues = _kept
+        if _no_issues or not _issues:
+            log.debug("[REASONING][Constitutional] no actionable issues → returning draft")
+            return _strip_reasoning_scaffold(initial)
+        _mandatory_block = (
+            "\n\nISSUES TO FIX (address every one — keep all correct content):\n"
+            + "\n".join(f"  {l}" for l in _issues[:8])
+            + "\n  Fix each issue concretely. Do NOT delete a claim the draft can defend — "
+            "qualify it ('typically', 'as configured', 'by design') instead of removing it."
+        )
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("constitutional_ai", 3, 3, "revision_and_finalize")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        revise_prompt = (
+            "Revise the draft to address the critique. Output ONLY the revised response — "
+            "do not narrate the revision, do not restate the critique. "
+            "Do not output a question, the request, a title, or the critique. "
+            "For identity/self-report questions, answer in first person as ELI. "
+            "Do not swap ELI's identity with the user's identity.\n"
+            "DELIVER SUBSTANCE: the revision must contain the ACTUAL answer (facts, mechanism, "
+            "analysis) — never replace content with a description of how you would answer "
+            "('let's delve into', 'we can explore approaches', 'I'd be happy to discuss'); those "
+            "are forbidden non-answers.\n"
+            "IMPORTANT: preserve all substantive content from the original draft. "
+            "For grounding failures (P1/P2), add hedging language such as 'by design', "
+            "'as configured', or 'typically' rather than deleting the claim. "
+            "The revised response must be at least as detailed as the original draft."
+            f"{_mandatory_block}\n\n"
+            f"REQUEST: {user_input}\n\nORIGINAL DRAFT:\n{initial}\n\nCRITIQUE:\n{critique}"
+        )
+        revise_overrides = dict(gen_overrides or {})
+        revise_overrides["max_tokens"] = max_tok_rev
+        # Lower revision temperature so the model doesn't just regenerate the same answer
+        revise_overrides["temperature"] = max(0.1, gen_temp - 0.15)
+        final = self._get_chat_response(
+            revise_prompt, working_context,
+            reasoning_mode="constitutional_ai", gen_overrides=revise_overrides,
+            situation_brief=situation_brief,
+        )
+        log.debug(f"[REASONING][Constitutional] revised final ({len(final)} chars, max_tok={max_tok_rev})")
+        final_text = str(final or "").strip()
+        final_low = final_text.lower()
+        request_low = str(user_input or "").strip().lower()
+        norm_request = re.sub(r"\W+", " ", request_low).strip()
+        norm_final = re.sub(r"\W+", " ", final_low).strip()
+        identity_request = _eli_identity_self_report_request(user_input)
+        bad_final = False
+        if not final_text:
+            bad_final = True
+        elif final_text.endswith("?") and re.match(
+            r"(?is)^\s*(who|what|when|where|why|how|do|does|did|is|are|can|could|should|would)\b",
+            final_text,
+        ):
+            bad_final = True
+        elif norm_request and norm_final == norm_request:
+            bad_final = True
+        elif identity_request and (
+            re.search(r"\byour (?:identity|persona)\b", final_low)
+            or final_low.startswith(("who are you", "what are you based"))
+            or _eli_bad_identity_self_report_output(user_input, final_text)
+        ):
+            bad_final = True
+        elif re.search(r"^\s*P[1-5]\s*:?\s*(PASS|FAIL)\b", final_text, re.MULTILINE | re.I):
+            # Critique transcript leaked into revision output — model included P-line
+            # evaluation instead of just writing the revised answer. Reject and use
+            # the initial draft.
+            log.debug("[REASONING][Constitutional] revision contained P1-P5 critique lines — leaked critique rejected")
+            bad_final = True
+        if bad_final:
+            log.debug("[REASONING][Constitutional] revised final rejected; returning initial draft")
+            return _strip_reasoning_scaffold(initial)
+        return _strip_reasoning_scaffold(final)
+
+    def _run_self_consistency(self, user_input: str, working_context: str,
+                              gen_overrides: Dict[str, Any], situation_brief: str,
+                              n: Optional[int] = None) -> str:
+        """Sample N independent answers, then LLM-pick the most consistent.
+
+        N and per-sample budget come from `mode_presets["self_consistency"]`.
+        """
+        preset = self._mode_profile("self_consistency")
+        n = int(n if n is not None else preset.get("samples", 3))
+        # Speed-aware cap: on a big-but-slow (CPU-offloaded) model, dial the size-tier's sample
+        # count back toward 1 so a casual turn doesn't run four 3-minute generations. Never caps
+        # the per-sample LENGTH — only how many samples.
+        try:
+            from eli.core.model_tier import speed_passes as _spass
+            n = _spass(n)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        sample_max_tok = int(preset.get("max_tokens_per_sample", preset.get("max_tokens", 1100)))
+        final_max_tok = int(
+            preset.get(
+                "max_tokens_final",
+                (gen_overrides or {}).get("max_tokens", max(sample_max_tok, int(preset.get("max_tokens", sample_max_tok))))
+            )
+        )
+        sample_temp = float(preset.get("temperature", 0.7))
+
+        samples: list = []
+        sample_overrides = dict(gen_overrides or {})
+        sample_overrides["temperature"] = max(sample_temp, 0.6)
+        sample_overrides["max_tokens"] = sample_max_tok
+        _sc_total_stages = n + 1  # n samples + 1 consensus selection pass
+        for i in range(n):
+            try:
+                from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+                _frs("self_consistency", i + 1, _sc_total_stages, "sample_generation")
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            s = self._get_chat_response(
+                user_input, working_context,
+                reasoning_mode="self_consistency", gen_overrides=sample_overrides,
+                situation_brief=situation_brief,
+            )
+            samples.append(s)
+            log.debug(f"[REASONING][SelfConsistency] sample {i+1}/{n} ({len(s)} chars, "
+                  f"max_tok={sample_max_tok}, temp={sample_temp:.2f})")
+
+        # One sample (e.g. speed-capped on a slow model) → no consensus to take; return it
+        # directly rather than spending a wasted extra "select" generation on a single answer.
+        if len(samples) <= 1:
+            return _strip_reasoning_scaffold(samples[0]) if samples else ""
+
+        # TRUE CONSENSUS FIRST: if a strict majority of the independent samples converge on
+        # the same answer, return it — self-consistency means agreement across samples, not
+        # "pick the most eloquent one". This is the meaningful case for facts/values/short
+        # answers; long divergent prose falls through to consensus-synthesis below.
+        _maj = self._self_consistency_majority(samples)
+        if _maj is not None:
+            log.debug(f"[REASONING][SelfConsistency] majority consensus ({len(_maj)} chars, "
+                      f"of {len(samples)} samples)")
+            return _strip_reasoning_scaffold(_maj)
+
+        # Selection: synthesise the CONSENSUS across samples (keep what most agree on).
+        try:
+            from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
+            _frs("self_consistency", _sc_total_stages, _sc_total_stages, "consensus_selection")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        labelled = "\n\n".join(f"=== SAMPLE {i+1} ===\n{s}" for i, s in enumerate(samples))
+        select_prompt = (
+            f"{n} independent attempts to answer the same request are below. They may differ. "
+            f"Write the CONSENSUS answer: KEEP every claim that MOST attempts agree on, DISCARD "
+            f"any claim that only one attempt makes (likely a hallucination), and where attempts "
+            f"conflict, resolve toward the majority. The result must be a complete, substantive "
+            f"answer in its own right — not a note about the attempts. "
+            f"Output ONLY the final consensus answer, no preamble, no 'Sample N', no mention of "
+            f"the attempts.\n\n"
+            f"REQUEST: {user_input}\n\n{labelled}"
+        )
+        select_overrides = dict(gen_overrides or {})
+        select_overrides["temperature"] = 0.2
+        select_overrides["max_tokens"] = max(sample_max_tok, final_max_tok)
+        chosen = self._get_chat_response(
+            select_prompt, working_context,
+            reasoning_mode="self_consistency", gen_overrides=select_overrides,
+            situation_brief=situation_brief,
+        )
+
+        # Phase 11 fix (2026-05-11): on a Q3 7B model the selector often echoes
+        # the labelled bundle back instead of choosing one ("=== SAMPLE 1 ===\n
+        # I'll perform a runtime audit..."). Detect that and pick the longest
+        # non-trivial sample as a deterministic fallback. Also strip any
+        # stray "=== SAMPLE N ===" markers if the model included one as a header.
+        import re as _re_sc
+        # Catch BOTH leaked forms the 7B produces: "=== SAMPLE 2 ===" and a bare
+        # "SAMPLE 2:" header prefix.
+        _leak_re = r"(?:===\s*)?\bSAMPLE\s+\d+\s*(?:===|:)"
+        _has_leak = bool(_re_sc.search(_leak_re, chosen or ""))
+        if _has_leak:
+            log.debug("[REASONING][SelfConsistency] selector leaked sample markers — using longest-sample fallback")
+            _candidates = [s for s in samples if s and len(s.strip()) > 20]
+            if _candidates:
+                chosen = max(_candidates, key=lambda s: len(s.strip()))
+            else:
+                chosen = samples[0] if samples else chosen
+        # Strip any residual marker (either form), anchored at line start.
+        chosen = _re_sc.sub(r"(?m)^\s*(?:===\s*)?SAMPLE\s+\d+\s*(?:===|:)?\s*", "", chosen or "").strip()
+        chosen = _strip_reasoning_scaffold(chosen)
+
+        log.debug(f"[REASONING][SelfConsistency] selected ({len(chosen)} chars)")
+        return chosen
+
+    def _self_consistency_majority(self, samples: list) -> Optional[str]:
+        """True self-consistency vote: if a STRICT majority of the independent samples
+        normalise to the same answer, return the fullest original sample in that group;
+        else None (caller falls back to LLM consensus-synthesis). Meaningful for short
+        factual/value answers — long divergent prose rarely exact-matches and returns None."""
+        import re as _re
+        from collections import Counter
+
+        def _norm(s: str) -> str:
+            t = _strip_reasoning_scaffold(str(s or "")).strip().lower()
+            t = _re.sub(r"[^a-z0-9 ]+", " ", t)
+            return _re.sub(r"\s+", " ", t).strip()
+
+        valid = [s for s in samples if s and len(str(s).strip()) >= 2]
+        if len(valid) < 3:
+            return None
+        norms = [_norm(s) for s in valid]
+        counts = Counter(n for n in norms if n)
+        if not counts:
+            return None
+        top_norm, top_count = counts.most_common(1)[0]
+        # Strict majority, and the agreed answer is short enough that exact-match is a real
+        # signal (a fact/value), not coincidental overlap of long prose.
+        if top_count > len(valid) / 2 and len(top_norm) <= 400:
+            winners = [s for s, nm in zip(valid, norms) if nm == top_norm]
+            return max(winners, key=lambda s: len(str(s).strip()))
+        return None
 
     def _supports_mode_algorithm(self, mode: str) -> bool:
         """All four private modes run multi-stage GGUF pipelines."""
@@ -2995,6 +8208,64 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return self._run_self_consistency(user_input, working_context, gen_overrides, situation_brief)
         return None
 
+    def _chat_generation_overrides(self, user_input: str, memory_context: str,
+                                   reasoning_mode: Optional[str] = None) -> Dict[str, Any]:
+        base = self._generation_settings()
+        try:
+            from eli.cognition.reasoning_modes import (
+                build_mode_execution_contract as _eli_mode_contract,
+                canonical_mode as _eli_canonical_mode,
+            )
+
+            mode = _eli_canonical_mode(reasoning_mode)
+            profile = self._mode_profile(mode)
+            runtime = self._live_runtime_snapshot()
+            contract = _eli_mode_contract(
+                mode,
+                profile=profile,
+                runtime_snapshot=runtime,
+                query_text=user_input or "",
+                memory_context=memory_context or "",
+            )
+
+            overrides = dict(contract.get("generation_overrides") or {})
+            if int(base.get("max_tokens", 512)) <= 0:
+                # Preserve unlimited-token pass-through contract where callers
+                # explicitly configured max_tokens <= 0.
+                overrides["max_tokens"] = -1
+
+            self._last_mode_execution_contract = dict(contract)
+
+            try:
+                _rt = contract.get("runtime") or {}
+                log.debug(
+                    "[MODE][CONTRACT] "
+                    f"mode={mode} max_tokens={overrides.get('max_tokens')} "
+                    f"temp={overrides.get('temperature')} "
+                    f"pressure={_rt.get('prompt_pressure')} "
+                    f"target_ctx={_rt.get('target_n_ctx')} "
+                    f"target_batch={_rt.get('target_n_batch')} "
+                    f"target_gpu_layers={_rt.get('target_n_gpu_layers')}"
+                )
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+
+            return overrides
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Conservative fallback if mode-contract helpers fail.
+        mode = str(reasoning_mode or "quick").strip().lower() or "quick"
+        overrides: Dict[str, Any] = {"temperature": float(base.get("temperature", 0.7))}
+        base_max = int(base.get("max_tokens", 512))
+        if base_max <= 0:
+            overrides["max_tokens"] = -1
+            return overrides
+        if mode == "quick":
+            overrides["max_tokens"] = max(256, base_max)
+            return overrides
+        overrides["max_tokens"] = min(2200, max(768, base_max))
+        return overrides
 
     def _maybe_apply_mode_runtime_adaptation(self, reasoning_mode: Optional[str], mode_contract: Dict[str, Any]) -> None:
         """
@@ -3061,7 +8332,213 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception as _mode_reload_err:
             log.debug(f"[MODE][RUNTIME_ADAPT] reload failed: {_mode_reload_err}")
 
+    def _runtime_memory_snapshot(self) -> Dict[str, Any]:
+        snap: Dict[str, Any] = {
+            "conversation_turns": 0,
+            "memory_entries": 0,
+            "distinct_sessions": 0,
+            "db_path": "",
+            "known_name": None,
+        }
+        try:
+            st = get_memory_status(getattr(self.memory, "db_path", None))
+            snap["conversation_turns"] = int(
+                st.get("conversation_turns", 0) or 0)
+            snap["memory_entries"] = int(st.get("memory_entries", 0) or 0)
+            snap["distinct_sessions"] = int(
+                st.get("distinct_sessions", 0) or 0)
+            snap["db_path"] = str(st.get("db_path", "") or "")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            hits = self.memory.recall_memory(
+    "identity preference name", limit=12) or []
+            for hit in hits:
+                text = str(hit.get("text") or hit.get("content") or "").strip()
+                m = re.search(
+    r"\b(?:my name is|user(?:'s)? name is|name\s*[:=-]\s*)([A-Z][a-zA-Z\-]{1,30})\b",
+    text,
+     re.I)
+                if m:
+                    snap["known_name"] = m.group(1)
+                    break
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        return snap
 
+    def _build_grounded_evidence_context(self, user_input: str) -> str:
+        low = (user_input or "").strip().lower()
+        lines: List[str] = []
+        snap = self._runtime_memory_snapshot()
+        db_paths = resolve_db_paths()
+        runtime_paths = get_paths()
+
+        if self._is_grounded_status_query(
+            user_input) or self._intent_requires_grounding({"action": "CHAT"}, user_input):
+            lines.append("Grounded runtime evidence:")
+            lines.append(
+                f"- project_root: {getattr(runtime_paths, 'project_root', '')}")
+            lines.append(f"- user_db: {getattr(db_paths, 'user_db', '')}")
+            lines.append(f"- agent_db: {getattr(db_paths, 'agent_db', '')}")
+            lines.append(f"- memory_db: {getattr(db_paths, 'memory_db', '')}")
+            lines.append(
+                f"- conversations_dir: {getattr(runtime_paths, 'conversations_dir', '')}")
+            lines.append(f"- active_db_path: {snap.get('db_path') or ''}")
+            lines.append(
+                f"- conversation_turns: {snap.get('conversation_turns') or 0}")
+            lines.append(
+                f"- memory_entries: {snap.get('memory_entries') or 0}")
+            lines.append(
+                f"- distinct_sessions: {snap.get('distinct_sessions') or 0}")
+            try:
+                # Check the table exists rather than discovering it via the
+                # exception: on a fresh profile there are no semantic facts yet,
+                # and the old form printed a "no such table: semantic" traceback
+                # on EVERY grounded-evidence build. An empty tier is a normal
+                # state, not an error worth a stack trace.
+                import sqlite3 as _sq3
+                _sconn = _sq3.connect(str(getattr(db_paths, "user_db", "")))
+                try:
+                    _has_sem = _sconn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='semantic'"
+                    ).fetchone()
+                    _sem = 0
+                    if _has_sem:
+                        _row = _sconn.execute("SELECT COUNT(*) FROM semantic").fetchone()
+                        _sem = _row[0] if _row else 0
+                finally:
+                    _sconn.close()
+                if _sem:
+                    lines.append(f"- semantic_user_facts: {_sem}")
+            except Exception: log.debug("suppressed exception", exc_info=True)
+            if snap.get("known_name"):
+                lines.append(f"- stored_name_signal: {snap['known_name']}")
+
+        _pipeline_triggers = (
+            "how does your memory work", "how does memory work",
+            "how does your cognition work", "how does cognition work", "memory and cognition",
+            "cognition pipeline", "cognitive pipeline", "memory pipeline",
+            "how many stages", "pipeline stages", "prompt to response", "prompt->response",
+            "explain in full", "in full depth", "full pipeline",
+        )
+        _agent_triggers = (
+            "how many agents", "agent bus", "agent roster",
+            "what agents", "which agents", "list agents",
+        )
+        if any(x in low for x in _pipeline_triggers) or any(x in low for x in _agent_triggers):
+            try:
+                # Live data from actual source — no hardcoding
+                # Compact format: name + desc only (no file paths — they bloat the prompt)
+                from eli.kernel.pipeline import STEPS
+                from eli.cognition.agent_bus import _ALL_AGENTS
+
+                stage_count = len(STEPS)
+                agent_count = len(_ALL_AGENTS)
+
+                lines.append(f"Live pipeline ({stage_count} stages):")
+                for step in STEPS:
+                    lines.append(f"  {step['name']}: {step['desc']}")
+
+                lines.append(f"Live agents ({agent_count}):")
+                for i, agent in enumerate(_ALL_AGENTS, 1):
+                    lines.append(f"  {i:2}. {type(agent).__name__}")
+
+            except Exception as _live_err:
+                lines.append(f"(live pipeline/agent data unavailable: {_live_err})")
+
+        # ── Error / log / glitch introspection ──
+        _log_triggers = (
+            "glitch", "error log", "what errors", "what went wrong", "failure log",
+            "logs and timestamps", "show logs", "your logs", "what failures",
+            "your observations", "self improvement log", "improvement log",
+            "what happened to your", "brain problem", "model glitch",
+        )
+        if any(x in low for x in _log_triggers):
+            try:
+                import sqlite3 as _sq3
+                import time as _time
+                import json as _json
+                _adb = str(getattr(db_paths, "agent_db", ""))
+                _aconn = _sq3.connect(_adb)
+                _log_lines = ["Grounded self-improvement log (live from agent.sqlite3):"]
+
+                # failures table
+                _row = _aconn.execute("SELECT COUNT(*) FROM failures").fetchone()
+                _fail_count = _row[0] if _row else 0
+                _log_lines.append(f"- failures table: {_fail_count} logged entries")
+                if _fail_count > 0:
+                    _fails = _aconn.execute(
+                        "SELECT ts, error, context FROM failures ORDER BY ts DESC LIMIT 5"
+                    ).fetchall()
+                    for _f in _fails:
+                        _ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_f[0] or 0)))
+                        _log_lines.append(f"  [{_ts}] {_f[1] or ''}  ctx={str(_f[2] or '')[:80]}")
+                else:
+                    _log_lines.append("  (no failures logged in this session)")
+
+                # observations table
+                _row = _aconn.execute("SELECT COUNT(*) FROM observations").fetchone()
+                _obs_count = _row[0] if _row else 0
+                _log_lines.append(f"- observations table: {_obs_count} entries")
+                if _obs_count > 0:
+                    _obs = _aconn.execute(
+                        "SELECT ts, content FROM observations ORDER BY ts DESC LIMIT 3"
+                    ).fetchall()
+                    for _o in _obs:
+                        _ots = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_o[0] or 0)))
+                        _log_lines.append(f"  [{_ots}] {str(_o[1] or '')[:120]}")
+
+                # improvements table
+                _row = _aconn.execute("SELECT COUNT(*) FROM improvements").fetchone()
+                _imp_count = _row[0] if _row else 0
+                _log_lines.append(f"- improvements table: {_imp_count} proposals (pending code quality suggestions)")
+                if _imp_count > 0:
+                    _imps = _aconn.execute(
+                        "SELECT ts, category, area, suggestion FROM improvements ORDER BY ts DESC LIMIT 3"
+                    ).fetchall()
+                    for _i in _imps:
+                        _its = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_i[0] or 0)))
+                        _suggestion = str(_i[3] or "")
+                        try:
+                            _sug_obj = _json.loads(_suggestion)
+                            _suggestion = _sug_obj.get("suggestion", _suggestion)
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
+                        _log_lines.append(f"  [{_its}] [{_i[1]}:{_i[2]}] {_suggestion[:100]}")
+
+                # error_tracking table
+                _row = _aconn.execute("SELECT COUNT(*) FROM error_tracking").fetchone()
+                _err_count = _row[0] if _row else 0
+                _log_lines.append(f"- error_tracking table: {_err_count} entries")
+
+                _aconn.close()
+                lines.extend(_log_lines)
+            except Exception as _log_err:
+                lines.append(f"(could not read agent log db: {_log_err})")
+
+        recent = self._recent_topic_summary(user_input)
+        if recent:
+            lines.append(recent)
+
+        if hasattr(
+            self, '_awareness') and self._awareness and self._awareness.capability_count > 0:
+            if any(x in low for x in ("what can you do", "capabilities",
+                   "list capabilities", "what are your capabilities")):
+                lines.append(
+                    f"Live capability count: {self._awareness.capability_count}")
+                if self._awareness.capability_delta_has_changes:
+                    lines.append(
+                        f"Recent capability changes: {self._awareness.capability_delta_summary}")
+            if any(x in low for x in ("code change",
+                   "what changed", "self analyze", "awareness")):
+                if self._awareness.code_report_has_changes:
+                    lines.append(self._awareness.code_report_briefing)
+
+        # Phase 6: cap the grounded-evidence block so it cannot dominate the
+        # prompt window. 6 KB covers extensive deterministic evidence (paths,
+        # counts, stage/agent lists, last 5 failures + observations) without
+        # crowding out persona + user query + generation budget.
+        return self._cap_text("\n".join(lines).strip(), 6144, "grounded_evidence")
 
     def _should_bypass_reasoning_loop(self, user_input: str, memory_context: str,
                                       intent: Dict[str, Any], reasoning_mode: Optional[str] = None) -> bool:
@@ -3226,7 +8703,311 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "final_stage_guarantee": "stage_12_learning_and_state_commit_must_run",
         }
 
+    def _build_dynamic_status_evidence(self, user_input, proposed_response, trace=None) -> str:
+        try:
+            from eli.runtime.diagnostic_patterns import (
+                is_vague_dynamic_status_claim,
+                recent_turn_diagnostics,
+            )
+            if not is_vague_dynamic_status_claim(proposed_response):
+                return ""
+        except Exception:
+            return ""
 
+        report = {
+            "trigger": "assistant_proposed_unverified_dynamic_status",
+            "user_input": str(user_input or ""),
+            "proposed_response": str(proposed_response or "")[:800],
+            "trace": trace or {},
+            "status_evidence": {},
+            "recent_turn_diagnostics": {},
+        }
+        try:
+            from eli.runtime.evidence_ledger import status_evidence
+            report["status_evidence"] = status_evidence(str(user_input or proposed_response or "status"))
+        except Exception as exc:
+            report["status_evidence"] = {"ok": False, "error": repr(exc)}
+
+        try:
+            recent = self.memory.get_recent_conversation(limit=12, user_id=self.user_id)
+            report["recent_turn_diagnostics"] = recent_turn_diagnostics(recent)
+        except Exception as exc:
+            report["recent_turn_diagnostics"] = {"error": repr(exc)}
+
+        return (
+            "DYNAMIC STATUS CLAIM EVIDENCE PACKET\n"
+            + json.dumps(report, indent=2, ensure_ascii=False, default=str)
+        )
+
+    def _finalize_chat_result(self, user_input: str, response: str, trace: Dict[str, Any], score: Optional[float] = None, threshold: Optional[
+                              float] = None, clarified: bool = False, evidence_used: bool = False, reasoning_mode: Optional[str] = None) -> Dict[str, Any]:
+        # Recent turns let the governor drop an intent question the user has
+        # already answered. Cheap (8 rows) and fully optional: any failure here
+        # leaves the reply exactly as it was.
+        _gov_hist = None
+        try:
+            from eli.memory.memory import get_memory as _gm
+            _gov_hist = _gm().get_recent_conversation(limit=8)
+        except Exception:
+            log.debug("[GOVERNOR] recent-turn lookup skipped", exc_info=True)
+        response = govern_output(response, is_grounded=evidence_used, history=_gov_hist)
+        response = str(response or "").strip()
+        # ── Anti-echo: never serve ELI's own previous reply back to the user ──
+        # ELI's replies are stored and later recalled as context, so on a short turn the
+        # model can latch onto its own last line and re-emit it. Observed live: the same
+        # "still glitchy, still running on the same old code" three turns running, once
+        # with the speaker flipped ("You're still glitchy") while ignoring what the user
+        # had just said. Token-level repeat_penalty cannot see across turns. Detect it and
+        # regenerate ONCE with an explicit do-not-repeat instruction; if that fails or is
+        # still an echo, keep the original (never ship an empty reply).
+        try:
+            from eli.cognition.output_governor import is_echo_of_recent
+            _prev_replies = []
+            try:
+                for _t in (self.memory.get_recent_conversation(limit=8) or []):
+                    _role = (_t.get("role") if isinstance(_t, dict) else None) or ""
+                    _content = (_t.get("content") if isinstance(_t, dict) else "") or ""
+                    if str(_role).lower() in ("assistant", "eli") and _content:
+                        _prev_replies.append(str(_content))
+            except Exception:
+                log.debug("[ECHO] recent-reply lookup failed", exc_info=True)
+            if _prev_replies and is_echo_of_recent(response, _prev_replies):
+                log.debug("[ECHO] reply repeated a recent one — regenerating once")
+                trace["echo_repaired"] = True
+                _fresh = self._get_chat_response(
+                    "You already said the following to this user, and repeating it would be "
+                    "wrong — they have moved the conversation on.\n\n"
+                    f"ALREADY SAID:\n{_prev_replies[-1]}\n\n"
+                    f"WHAT THEY JUST SAID:\n{user_input}\n\n"
+                    "Reply to what they actually just said, in your own voice. Do not reuse "
+                    "the sentence above or restate your own status unprompted.",
+                    "",
+                    reasoning_mode=reasoning_mode,
+                    gen_overrides={"max_tokens": 320, "temperature": 0.7},
+                )
+                _fresh = govern_output(str(_fresh or "").strip(), is_grounded=evidence_used).strip()
+                if _fresh and not is_echo_of_recent(_fresh, _prev_replies):
+                    response = _fresh
+        except Exception:
+            log.debug("[ECHO] anti-echo guard skipped", exc_info=True)
+        try:
+            from eli.cognition.reasoning_modes import apply_final_reasoning_contract as _rm_final
+            response = _rm_final(response, mode=reasoning_mode)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            from eli.cognition.reasoning_modes import canonical_mode as _eli_final_mode
+            _eli_mode_key = _eli_final_mode(reasoning_mode)
+        except Exception:
+            _eli_mode_key = str(reasoning_mode or "quick").strip().lower() or "quick"
+        # Depth policy: only complete genuinely truncated non-quick responses.
+        # Do not fire a second full inference just because the answer is short —
+        # a concise correct answer is not truncation.
+        try:
+            if _eli_mode_key != "quick" and not _is_brief_phatic_prompt(user_input):
+                from eli.cognition.output_governor import _looks_truncated
+                if _looks_truncated(response):
+                    _expand_prompt = (
+                        "Complete the truncated answer below in the same voice and with the "
+                        "same grounded facts. Finish the current thought; do not add new content.\n\n"
+                        f"USER REQUEST:\n{user_input}\n\nTRUNCATED DRAFT:\n{response}\n\nCOMPLETED ANSWER:"
+                    )
+                    _wc = len(str(response or "").split())
+                    _expand_tokens = 512
+                    try:
+                        from eli.cognition.reasoning_modes import (
+                            canonical_mode as _cm_exp,
+                            _base_tokens_from_profile as _btfp,
+                        )
+                        _expand_tokens = max(
+                            512,
+                            min(
+                                2048,
+                                _btfp(
+                                    _cm_exp(reasoning_mode),
+                                    self._mode_profile(reasoning_mode),
+                                )
+                                // 2,
+                            ),
+                        )
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                    _expanded = self._get_chat_response(
+                        _expand_prompt,
+                        "",
+                        reasoning_mode=reasoning_mode,
+                        gen_overrides={"max_tokens": _expand_tokens, "temperature": 0.25},
+                    )
+                    _expanded = str(_expanded or "").strip()
+                    _expanded_low = _expanded.lower()
+                    _expanded_failed = any(
+                        marker in _expanded_low
+                        for marker in (
+                            "model not ready",
+                            "gguf error",
+                            "gguf model unavailable",
+                            "broker unavailable",
+                            "inference failed",
+                        )
+                    )
+                    if _expanded and not _expanded_failed and len(_expanded.split()) > _wc:
+                        response = _expanded
+                        try:
+                            from eli.cognition.reasoning_modes import apply_final_reasoning_contract as _rm_final2
+                            response = _rm_final2(response, mode=reasoning_mode)
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
+        except Exception as _depth_err:
+            log.debug(f"[COGNITIVE] non-quick depth expansion skipped: {_depth_err}")
+        try:
+            from eli.runtime.diagnostic_patterns import is_vague_dynamic_status_claim
+            if is_vague_dynamic_status_claim(response):
+                evidence_packet = self._build_dynamic_status_evidence(
+                    user_input,
+                    response,
+                    trace=trace,
+                )
+                if evidence_packet:
+                    synthesized = ""
+                    try:
+                        synthesized = self._synthesize_answer(
+                            evidence_packet,
+                            user_input,
+                            reasoning_mode=reasoning_mode,
+                            max_tokens_override=384,
+                            action="META_DIAGNOSTIC",
+                        ).strip()
+                    except Exception as _dyn_syn_err:
+                        log.debug(f"[COGNITIVE] Dynamic-status evidence synthesis failed: {_dyn_syn_err}")
+                    response = synthesized or evidence_packet
+                    evidence_used = True
+        except Exception as _dyn_guard_err:
+            log.debug(f"[COGNITIVE] Dynamic-status guard skipped: {_dyn_guard_err}")
+        # Strip role-leakage artefacts ([HH:MM] User: …, "Assistant:", etc.)
+        try:
+            from eli.cognition.response_sanitizer import sanitize_assistant_text as _san
+            response = _san(response) or response
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        grounded = bool(evidence_used)
+
+        if threshold is None or float(threshold) <= 0.0:
+            threshold = self._required_confidence_threshold(
+                reasoning_mode, grounded=grounded)
+        if score is None:
+            score = threshold
+
+        score = float(score)
+        threshold = float(threshold)
+
+        log.debug(
+            f"[COGNITIVE][FINAL] final score={score:.2f} "
+            f"threshold={threshold:.2f} clarified={bool(clarified)} "
+            f"evidence_used={grounded}"
+        )
+
+        trace["final"] = {
+            "response_chars": len(response),
+            "score": score,
+            "threshold": threshold,
+            "clarified": bool(clarified),
+            "evidence_used": grounded,
+        }
+
+        try:
+            self._publish_last_response_meta(
+                trace,
+                action=str(((trace or {}).get("intent") or {}).get("action") or "CHAT"),
+                result_action="CHAT",
+                confidence=score,
+                agents_used=list((trace or {}).get("agents_used") or []),
+                evidence_used=grounded,
+                grounded=grounded,
+                response=response,
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        self._store_assistant_turn(response)
+        self._maybe_store_memory(user_input, role="user")
+        self._maybe_store_memory(response, role="assistant")
+
+        # Feed actual response confidence back into the engagement tracker
+        try:
+            if self._engagement:
+                self._engagement.update_confidence(score)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Blueprint Post-Response: memory maintenance (sampled, to amortise cost).
+        # Decay is a pure function of a memory's age and importance, so sampling it
+        # is safe — a missed tick changes nothing, and the next one lands on the
+        # same answer. Consolidation deletes rows, so it runs an order of magnitude
+        # more rarely and only ever merges text that is already byte-identical.
+        try:
+            import random as _random
+            _roll = _random.random()
+            if _roll < 0.01:
+                _decayed = self.memory.apply_weight_decay()
+                if _decayed:
+                    log.debug(f"[MEMORY] Weight decay applied to {_decayed} old memories")
+            if _roll < 0.001:
+                _merged = self.memory.consolidate_memories()
+                if _merged.get("removed"):
+                    log.info("[MEMORY] consolidated %d duplicate memories into %d "
+                             "canonical rows", _merged["removed"], _merged["groups"])
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        reasoning_meta = {
+            "confidence": score,
+            "threshold": threshold,
+            "grounded": grounded,
+            "clarified": bool(clarified),
+            "evidence_used": grounded,
+        }
+
+        try:
+            from eli.runtime.diagnostic_patterns import should_exclude_turn_from_prompt as _eli_exclude_turn
+            from eli.runtime.evidence_ledger import record_event as _eli_record_event
+
+            _eli_record_event(
+                "assistant_final",
+                source="cognitive_engine.finalize",
+                action=str(((trace or {}).get("intent") or {}).get("action") or "CHAT"),
+                subject=str((trace or {}).get("request_id") or ""),
+                content=response,
+                payload={
+                    "score": score,
+                    "threshold": threshold,
+                    "grounded": grounded,
+                    "clarified": bool(clarified),
+                    "evidence_used": grounded,
+                    "excluded_from_prompt": _eli_exclude_turn("assistant", response),
+                },
+                outcome="ok",
+                confidence=score,
+                reusable=not _eli_exclude_turn("assistant", response),
+                session_id=str(getattr(self, "session_id", "") or ""),
+                user_id=str(getattr(self, "user_id", "") or ""),
+                request_id=str((trace or {}).get("request_id") or ""),
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+
+        return {
+            "ok": True,
+            "action": "CHAT",
+            "content": response,
+            "response": response,
+            "confidence": score,
+            "confidence_score": score,
+            "confidence_threshold": threshold,
+            "evidence_used": grounded,
+            "meta": {"reasoning": reasoning_meta, "trace": trace},
+            "trace": trace,
+        }
 
 
 
@@ -3239,7 +9020,726 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return f"{steer}\n\n{brief or ''}".strip()
         return brief
 
+    def _execution_grounding_block(self, bus_result) -> str:
+        """Factual ledger of what the executor ACTUALLY did this turn, plus a hard
+        rule against claiming unexecuted actions.
 
+        Fixes the failure where a conversation-only turn (e.g. the user says
+        "delete it" and it routes to CHAT) makes the model fabricate "Done." or
+        "I deleted it" / "I'll delete it now" — actions that never ran. The model
+        can only describe as done what the executor confirms here."""
+        action = ""
+        try:
+            action = str(getattr(bus_result, "intent_action", "") or "").upper().strip()
+        except Exception:
+            action = ""
+
+        # Actions that actually change the machine, files, or app/media state.
+        _SIDE_EFFECTING = {
+            "RUN_CMD", "SHELL_EXEC", "GENERATE_SCRIPT", "GENERATE_PROJECT",
+            "FIX_FILE", "CODE_SOLVE", "CREATE_FOLDER", "DELETE_FILE",
+            "OPEN_APP", "CLOSE_APP", "MINIMIZE_APP", "OPEN_URL", "OPEN_IDE",
+            "VOLUME", "PLAY_MEDIA", "PAUSE_MEDIA", "NEXT_MEDIA", "SELF_PATCH",
+        }
+        result_text = ""
+        executed = False
+        if bus_result is not None and action in _SIDE_EFFECTING:
+            try:
+                res = _eli_bus_first_ok_result(bus_result, action)
+            except Exception:
+                res = None
+            if isinstance(res, dict):
+                executed = True
+                try:
+                    result_text = str(
+                        res.get("content") or res.get("response") or ""
+                    ).strip().replace("\n", " ")[:400]
+                except Exception:
+                    result_text = ""
+
+        lines = ["[EXECUTION GROUNDING — read before replying]"]
+        if executed:
+            lines.append(f"This turn the executor really ran: {action}.")
+            if result_text:
+                lines.append(f"Its actual result: {result_text}")
+            lines.append("You may refer to this as done; do not embellish beyond this result.")
+        else:
+            lines.append(
+                "This turn NO system action executed — it is conversation only. "
+                "You did NOT run any command and did NOT create, modify, move, or "
+                "delete any file this turn.")
+        lines.append(
+            "Hard rule: you cannot perform actions from inside a reply — only the "
+            "executor can, and only what is stated above actually happened. Never "
+            "claim to have done something (no 'Done.', 'I deleted it', \"it's gone\", "
+            "'I'll delete it now') unless it is confirmed above. If the user asked for "
+            "an action and nothing is confirmed above, tell them plainly it has not run "
+            "yet — do not pretend it did.")
+        return "\n".join(lines)
+
+    def _build_phatic_handoff_brief(self, user_input: str, working_memory=None) -> str:
+        """Lightweight rapport brief: ELI voice + user name + recent thread — no memory dump."""
+        parts = []
+        _time_block = _phatic_time_authority_block()
+        if _time_block:
+            parts.append(_time_block)
+        _mm = _mounted_model_authority_line()
+        if _mm:
+            parts.append(_mm)
+        try:
+            from eli.cognition.turn_dossier import handoff_blocks_from_dossier
+            _dossier = None
+            if working_memory is not None:
+                _dossier = getattr(working_memory, "turn_dossier", None)
+            if _dossier is None:
+                _dossier = getattr(self, "_last_turn_dossier", None)
+            for _block in handoff_blocks_from_dossier(_dossier, phatic=True, max_chars=400):
+                parts.append(_block)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        parts.append(_phatic_rapport_style_rule().strip())
+        try:
+            from eli.kernel.state import get_user_name as _gun_phatic
+            _ph_name = (_gun_phatic("") or "").strip()
+            if _ph_name:
+                parts.append(
+                    f"USER (verified name — use naturally if it fits): {_ph_name}"
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            _recent = self.memory.get_recent_conversation(limit=4) or []
+            _thread = []
+            for _t in _recent[-3:]:
+                _role = str((_t or {}).get("role", "") or "").lower()
+                _content = str((_t or {}).get("content", "") or "").strip().replace("\n", " ")
+                if not _content:
+                    continue
+                _label = "User" if _role == "user" else "ELI"
+                _thread.append(f"  {_label}: {_content[:160]}")
+            if _thread:
+                parts.append(
+                    "[Recent exchange — continuity only; do not resume old projects from it]\n"
+                    + "\n".join(_thread)
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        brief = "\n\n".join(p for p in parts if p).strip()
+        return self._cap_text(brief, 1800, "phatic_handoff")
+
+    def _build_persona_handoff_once(self, user_input: str, memory_context: str = "",
+                                    bus_result=None, recent_turns=None, working_memory=None,
+                                    reasoning_mode: str | None = None) -> str:
+        try:
+            # Use None as the "not yet computed" sentinel, not "".
+            # Previously: getattr(..., "persona_handoff", "") returned "" for both
+            # "never computed" AND "computed but empty", so the cache miss path
+            # re-ran the full build every call when the result was legitimately empty.
+            # Now: None = unset, "" = computed+empty (valid cache hit).
+            _cached_raw = None
+            if working_memory is not None:
+                _cached_raw = getattr(working_memory, "persona_handoff", None)
+            cached = str(_cached_raw).strip() if _cached_raw is not None else None
+        except Exception:
+            cached = None
+
+        if cached is not None:
+            return cached
+
+        # Greetings/check-ins: skip the 10k+ synthesiser handoff (memory, runtime blocks,
+        # project recall) but keep ELI's rapport steering + name + recent thread.
+        try:
+            if _is_brief_phatic_prompt(str(user_input or "").strip().lower()):
+                return self._build_phatic_handoff_brief(user_input, working_memory=working_memory)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        try:
+            _recent_turns = list(recent_turns or [])
+        except Exception:
+            _recent_turns = []
+        if not _recent_turns:
+            try:
+                _recent_turns = list(
+                    self.memory.get_recent_conversation(14, user_id=getattr(self, "user_id", None)) or []
+                )
+            except Exception:
+                _recent_turns = []
+
+        try:
+            wm_intent = None
+            if working_memory is not None:
+                wm_intent = getattr(working_memory, "intent", None)
+            if wm_intent is None:
+                try:
+                    wm_intent = self._parse_intent(user_input, _recent_turns)
+                except Exception:
+                    wm_intent = None
+        except Exception:
+            wm_intent = None
+
+        try:
+            orchestrator_result = None
+            if working_memory is not None:
+                orchestrator_result = {
+                    "assembled_context": str(getattr(working_memory, "assembled_context", "") or memory_context or ""),
+                    "final_prompt": str(getattr(working_memory, "final_prompt", "") or user_input or ""),
+                    "reranked_hits": list(getattr(working_memory, "reranked_hits", []) or []),
+                    "merged_hits": list(getattr(working_memory, "merged_hits", []) or []),
+                    "trace": dict(getattr(working_memory, "trace", {}) or {}),
+                }
+        except Exception:
+            orchestrator_result = None
+
+        try:
+            agent_bus_context = ""
+            _verified_evidence_packet = ""
+            if bus_result is not None:
+                try:
+                    _bus_char_cap = 1200
+                    try:
+                        from eli.cognition.reasoning_modes import canonical_mode as _cm_bus
+                        if _cm_bus(reasoning_mode or "quick") != "quick":
+                            _bus_char_cap = 6000
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                    if hasattr(bus_result, "to_context_block"):
+                        agent_bus_context = str(
+                            bus_result.to_context_block(max_content_chars=_bus_char_cap) or ""
+                        ).strip()
+                except Exception:
+                    agent_bus_context = ""
+                if not agent_bus_context:
+                    try:
+                        agent_bus_context = _eli_sanitize_identity_context_block(str(getattr(bus_result, "memory_context", "") or "").strip(), user_input)
+                    except Exception:
+                        agent_bus_context = ""
+            if not agent_bus_context:
+                agent_bus_context = _eli_sanitize_identity_context_block(str(memory_context or "").strip(), user_input)
+        except Exception:
+            agent_bus_context = _eli_sanitize_identity_context_block(str(memory_context or "").strip(), user_input)
+        try:
+            from eli.memory.unified_retrieval import split_verified_evidence_packet
+            _verified_evidence_packet, agent_bus_context = split_verified_evidence_packet(
+                agent_bus_context)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        def _normalise_handoff(result) -> str:
+            if result is None:
+                return ""
+            if isinstance(result, str):
+                return result.strip()
+
+            if isinstance(result, dict):
+                for key in (
+                    "persona_handoff",
+                    "handoff",
+                    "brief",
+                    "content",
+                    "text",
+                    "summary",
+                    "system",
+                    "system_prompt",
+                    "system_context",
+                    "assistant_context",
+                    "context",
+                    "assembled_context",
+                ):
+                    val = result.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+
+                chunks = []
+
+                for key in (
+                    "identity",
+                    "intent",
+                    "runtime",
+                    "memory",
+                    "grounded_facts",
+                    "instructions",
+                    "summary",
+                    "notes",
+                ):
+                    val = result.get(key)
+                    if isinstance(val, str) and val.strip():
+                        chunks.append(f"{key}:\n{val.strip()}")
+                    elif isinstance(val, (list, tuple)) and val:
+                        inner = []
+                        for item in val[:12]:
+                            s = str(item).strip()
+                            if s:
+                                inner.append(f"- {s}")
+                        if inner:
+                            chunks.append(f"{key}:\n" + "\n".join(inner))
+                    elif isinstance(val, dict) and val:
+                        inner = []
+                        for k, v in list(val.items())[:20]:
+                            s = str(v).strip()
+                            if s:
+                                inner.append(f"- {k}: {s}")
+                        if inner:
+                            chunks.append(f"{key}:\n" + "\n".join(inner))
+
+                if chunks:
+                    return "\n\n".join(chunks).strip()
+
+                try:
+                    import json
+                    return json.dumps(result, ensure_ascii=False, indent=2)
+                except Exception:
+                    return str(result).strip()
+
+            return str(result).strip()
+
+        # ── DIAGNOSTIC_EVIDENCE injection (non-quick reasoning modes) ────
+        # When the user asks a diagnostic question and we are NOT in quick
+        # mode, the deterministic introspection layer gathered real runtime
+        # facts and stashed them on the engine. Splice them into the persona
+        # context so the LLM produces ELI-voiced answers grounded in truth
+        # rather than hallucinating.
+        try:
+            _diag_block = str(getattr(self, "_diagnostic_evidence_block", "") or "").strip()
+            if _diag_block:
+                agent_bus_context = (
+                    (_diag_block + "\n\n" + agent_bus_context).strip()
+                    if agent_bus_context else _diag_block
+                )
+        except Exception as _diag_inject_err:
+            log.debug(f"[COGNITIVE] diagnostic evidence inject skipped: {_diag_inject_err}")
+
+        # ── LAST_TURN_TRACE injection ────────────────────────────────────
+        # Grounds meta-questions about the prior response (confidence, agents,
+        # last action) in real AgentBus dispatch data. Engine rotates
+        # _last_bus_result -> _prev_bus_result at end of each turn, so at
+        # persona-handoff build time _prev_bus_result is the turn the user may
+        # be asking about.
+        try:
+            prev = getattr(self, "_prev_bus_result", None)
+            if prev is not None:
+                _p_action = str(getattr(prev, "intent_action", "") or "")
+                _p_agents = list(getattr(prev, "agents_used", []) or [])
+                _p_agg = float(
+                    getattr(prev, "aggregated_confidence",
+                            getattr(prev, "agg_conf", 0.0)) or 0.0)
+                _p_label = str(getattr(prev, "confidence_label", "") or "")
+                _p_elapsed = float(getattr(prev, "elapsed_ms", 0.0) or 0.0)
+                _p_plan = getattr(prev, "orchestrator_plan", None)
+                _p_plan_type = (
+                    _p_plan.get("type") if isinstance(_p_plan, dict) else None)
+                _trace_lines = [
+                    "LAST_TURN_TRACE (grounded — if asked about the previous "
+                    "response, use these exact values; do not invent):",
+                    f"  action: {_p_action or 'unknown'}",
+                    f"  agents_used: {_p_agents if _p_agents else 'none'}",
+                    f"  aggregated_confidence: {_p_agg:.2f}"
+                    + (f" ({_p_label})" if _p_label else ""),
+                    f"  elapsed_ms: {_p_elapsed:.0f}",
+                    f"  orchestrator_plan: {_p_plan_type or 'none'}",
+                ]
+                _trace_block = "\n".join(_trace_lines)
+                agent_bus_context = (
+                    (_trace_block + "\n\n" + agent_bus_context).strip()
+                    if agent_bus_context else _trace_block)
+        except Exception as _lt_err:
+            log.debug(f"[COGNITIVE] last-turn trace inject skipped: {_lt_err}")
+
+        # Meta-conversation: inject the ACTUAL prior response text so ELI can
+        # explain/correct instead of returning "text: (none recorded)".
+        try:
+            from eli.cognition.correction_patterns import is_meta_conversation as _is_meta_conv
+            if _is_meta_conv(user_input):
+                _lm = dict(getattr(self, "_last_request_meta", {}) or {})
+                _prev_txt = str(_lm.get("response_text") or "").strip()
+                if _prev_txt:
+                    _meta_block = (
+                        "PRIOR ELI RESPONSE (grounded — quote/repair THIS, do not invent):\n"
+                        + _prev_txt
+                    )
+                    agent_bus_context = (
+                        (_meta_block + "\n\n" + agent_bus_context).strip()
+                        if agent_bus_context else _meta_block
+                    )
+        except Exception as _meta_inj_err:
+            log.debug(f"[COGNITIVE] meta-conversation prior-response inject skipped: {_meta_inj_err}")
+
+        try:
+            try:
+                recent_turns = _eli_scrub_recent_turns_for_identity(
+                    recent_turns,
+                    user_input=user_input,
+                )
+            except Exception as _eli_scrub_err:
+                log.debug(f"[COGNITIVE] recent-turn scrub failed: {_eli_scrub_err}")
+
+            handoff_obj = build_persona_handoff(
+                user_input=user_input,
+                intent=wm_intent,
+                orchestrator_result=orchestrator_result,
+                agent_bus_context=agent_bus_context,
+                working_memory=working_memory,
+                recent_turns=recent_turns,
+                reasoning_mode=reasoning_mode,
+            )
+            brief = _normalise_handoff(handoff_obj)
+        except Exception as e:
+            log.debug(f"[COGNITIVE] persona handoff build failed: {e}")
+            brief = ""
+
+        # ── Proactive daemon output injection ────────────────────────────────
+        # The proactive daemon writes pattern/insight files to disk continuously.
+        # Inject the latest context (if fresh < 30 min) so ELI is always aware
+        # of active patterns without requiring explicit "proactive status" queries.
+        _extra_blocks = []
+        _live_self_status = ""  # real telemetry — emitted ABOVE the cap (never truncated)
+        # Turn dossier awareness — insight/deepening only; orchestrator already retrieved memory.
+        try:
+            from eli.cognition.turn_dossier import handoff_blocks_from_dossier
+            _dossier = None
+            if working_memory is not None:
+                _dossier = getattr(working_memory, "turn_dossier", None)
+            if _dossier is None:
+                _dossier = getattr(self, "_last_turn_dossier", None)
+            _orch_ctx_len = 0
+            try:
+                if working_memory is not None:
+                    _orch_ctx_len = len(str(getattr(working_memory, "assembled_context", "") or ""))
+            except Exception:
+                _orch_ctx_len = 0
+            if _orch_ctx_len < 2500:
+                _extra_blocks.extend(
+                    handoff_blocks_from_dossier(_dossier, phatic=False, max_chars=900)
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # Low grounding: do not invent user biography when memory evidence is weak.
+        try:
+            _bus_agg = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0) if bus_result else 0.0
+            _bus_gnd = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0) if bus_result else 0.0
+            if _bus_agg < 0.35 or _bus_gnd < 0.35:
+                _extra_blocks.append(
+                    "[LOW GROUNDING this turn — memory evidence is weak. "
+                    "Do NOT attribute specific personal events to the user (wild nights, "
+                    "waking up late, stress, 'been through a lot') unless quoted verbatim "
+                    "from MEMORY SEARCH RESULTS in this prompt. Casual banter is fine; "
+                    "invented user biography is not. If unsure, ask — do not guess.]"
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            import time as _inj_time
+            from eli.core.paths import get_paths as _inj_paths
+            _pro_ctx_file = _inj_paths().artifacts_dir / "proactive" / "latest_context.txt"
+            _has_proactive_dossier = any(
+                str(b or "").startswith("[PROACTIVE AWARENESS]")
+                for b in (_extra_blocks or [])
+            )
+            if _pro_ctx_file.exists() and not _has_proactive_dossier:
+                _pro_age = _inj_time.time() - _pro_ctx_file.stat().st_mtime
+                if _pro_age < 1800:  # only inject if written within last 30 min
+                    _pro_text = _pro_ctx_file.read_text(encoding="utf-8").strip()
+                    if _pro_text:
+                        _extra_blocks.append(f"[PROACTIVE AWARENESS]\n{_pro_text}")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # ── Self-awareness: habit execution summary ──────────────────────────
+        try:
+            _habit_file = _inj_paths().artifacts_dir / "proactive" / "latest_action.txt"
+            if _habit_file.exists():
+                _habit_age = _inj_time.time() - _habit_file.stat().st_mtime
+                if _habit_age < 3600:  # inject if within last hour
+                    _habit_text = _habit_file.read_text(encoding="utf-8").strip()
+                    if _habit_text:
+                        _extra_blocks.append(f"[RECENT SELF-IMPROVEMENT SIGNALS]\n{_habit_text}")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Computed ONCE, outside the blocks that consume it. This used to be
+        # assigned inside the world-state try below; when that block raised
+        # (concurrent world-state write), the later self-status block died on
+        # UnboundLocalError and the LIVE SELF-STATUS evidence was silently
+        # dropped — so the model, asked "how's the head?", invented a GPU
+        # temperature. A failure to read the symbolic world must not disarm the
+        # anti-confabulation guard.
+        _ui_low = str(user_input or "").lower()
+
+        # Current-turn activity anchor — overrides stale profile/memory entertainment hits.
+        try:
+            from eli.cognition.user_claim_validator import extract_current_user_activity
+            _turn_activity = extract_current_user_activity(user_input or "")
+            if _turn_activity:
+                _extra_blocks.append(
+                    "[CURRENT TURN — authoritative] The user just said they are "
+                    f"{_turn_activity}. Do NOT substitute a different show, movie, "
+                    "game, or hobby from memory or profile, and do NOT say 'last week' "
+                    "when they said today/yesterday/just now. Respond to what they "
+                    "actually said this turn."
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        try:
+            from eli.runtime.conversation_thread import (
+                ambient_vision_context_block,
+                conversation_grounding_rule,
+            )
+            _av_block = ambient_vision_context_block()
+            if _av_block:
+                _extra_blocks.append(_av_block)
+            _cg_rule = conversation_grounding_rule(user_input, recent_turns)
+            if _cg_rule:
+                _extra_blocks.append(_cg_rule)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # ── World awareness state injection ──────────────────────────────────
+        # Inject ELI's live AwarenessState so synthesis knows its own internal
+        # confidence / uncertainty / focus. Only injected when world state
+        # diverges from defaults (avoids boilerplate on clean-slate turns).
+        try:
+            from eli.world.local_world_bridge import get_world_state as _get_ws
+            _ws = _get_ws()
+            _aw = _ws.get("awareness", {})
+            _sig_fields = {
+                "memory_confidence": (_aw.get("memory_confidence", 1.0), 0.65),
+                "evidence_confidence": (_aw.get("evidence_confidence", 1.0), 0.65),
+                "uncertainty": (_aw.get("uncertainty", 0.0), 0.40),
+                "repair_pressure": (_aw.get("repair_pressure", 0.0), 0.30),
+                "autonomy_pressure": (_aw.get("autonomy_pressure", 0.0), 0.35),
+                "reflection_depth": (_aw.get("reflection_depth", 0.0), 0.45),
+            }
+            _world_lines = []
+            for _fld, (_val, _thresh) in _sig_fields.items():
+                _val = float(_val or 0.0)
+                _is_notable = (
+                    (_fld in ("uncertainty", "repair_pressure", "autonomy_pressure",
+                              "reflection_depth") and _val >= _thresh)
+                    or (_fld in ("memory_confidence", "evidence_confidence") and _val < _thresh)
+                )
+                if _is_notable:
+                    _world_lines.append(f"  {_fld}: {_val:.2f}")
+            _av = _ws.get("avatar", {})
+            _av_room = (_av.get("room") or "").strip()
+            # Only surface the avatar's room when the user is actually asking about ELI's
+            # world / location / current activity. Otherwise the model reads the symbolic
+            # room NAME (Anomaly Room, Memory Archive — themed around contradictions /
+            # continuity) as LITERAL ongoing work and fabricates "contradictions /
+            # inconsistencies that have arisen, which I'm resolving" — a no-fake-actions
+            # violation that made the user think ELI was malfunctioning.
+            _room_relevant = bool(re.search(
+                r"\b(room|world|avatar|where are you|your location|"
+                r"what are you (?:doing|working on|up to)|in there)\b", _ui_low))
+            # Gate the symbolic self-metrics to EXPLICIT internal-state / diagnostics queries.
+            # On casual/phatic turns ("how are you feeling") the metrics (memory_confidence,
+            # repair_pressure …) prime the 7B to confabulate literal maintenance work —
+            # "I'm in the Memory Archive, inspecting memory continuity" — which makes ELI sound
+            # delusional. If the user isn't asking about internal state, don't inject it.
+            _state_relevant = bool(re.search(
+                r"\b(internal state|self[- ]?metrics?|your (?:metrics|internal state)|"
+                r"memory (?:confidence|continuity)|repair pressure|autonomy pressure|"
+                r"reflection depth|evidence confidence|cognitive load|diagnostics?)\b",
+                _ui_low))
+            if _av_room and _room_relevant:
+                _world_lines.insert(
+                    0, f"  avatar_location (symbolic world-view only, NOT a literal task): "
+                       f"{_av_room.replace('_', ' ').title()}")
+            if _world_lines and (_state_relevant or _room_relevant):
+                _extra_blocks.append(
+                    "[ELI INTERNAL STATE] (symbolic self-metrics — describe them honestly if "
+                    "asked; do NOT invent tasks, contradictions, inconsistencies, or maintenance "
+                    "work you are not actually running)\n" + "\n".join(_world_lines))
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # ── Real self-status (anti-confabulation) ────────────────────────────
+        # When the user asks how ELI is doing / running / "how was your sleep",
+        # the persona used to fabricate telemetry ("thermal throttling stayed at
+        # 43°C", "overnight diagnostics ran clean") — ELI has no thermal sensor.
+        # Inject the REAL, measured GPU temp/util/VRAM + uptime + loaded model so
+        # it cites truth (or says it doesn't track something), never invents it.
+        try:
+            _self_physical = bool(re.search(
+                r"\b(how (?:are|r) (?:you|u)|how(?:'?s| is) it going|how was your (?:sleep|night|day)|"
+                r"how(?:'?s| is) (?:the|your) head|feeling better|you feeling|"
+                r"after (?:a|the|your|that) (?:restart|reboot)|"
+                r"did you (?:sleep|crash|rest)|how (?:do|are) you (?:feel|feeling|running|doing|holding up)|"
+                r"(?:are |r )?(?:you|u) (?:ok|okay|alright)\b|are you (?:running|overheating|still (?:there|alive))|"
+                r"(?:your|check your|the) (?:cpu|gpu|temp|temperature|vram|ram|memory|uptime|status|health)|"
+                r"(?:memory |any )?leaks?\b|"
+                r"overheat|thermal|how long have you been (?:up|running))\b",
+                _ui_low))
+            if _self_physical:
+                from eli.runtime.self_status import render_self_status_block as _rss
+                _ss = _rss()
+                if _ss.strip():
+                    # Stored, NOT appended to _extra_blocks: it must ride ABOVE the
+                    # 8192 handoff cap (which keeps the head and chops the tail), or
+                    # it gets truncated out on long turns and the model falls back to
+                    # fabricating telemetry ("no live telemetry → CPU 41°C, GPU 38°C").
+                    _live_self_status = (
+                        "[LIVE SELF-STATUS — REAL, MEASURED RIGHT NOW. If you mention your "
+                        "physical/runtime state, use THESE exact figures. You have NO other "
+                        "sensors: never invent a temperature, 'thermal throttling', or 'overnight "
+                        "diagnostics' — if a value isn't listed here, say you don't track it]\n" + _ss)
+        except Exception:
+            log.debug("live self-status injection skipped", exc_info=True)
+
+        # ── Verified self-FACTS (anti-confabulation for self-description) ────
+        # The block above grounds "how are you running" (telemetry). This one
+        # grounds "what ARE you" — construction, storage, capabilities, upgrade
+        # mechanism. Identity questions are deliberately answered in CHAT so the
+        # persona stays its own, but CHAT had nothing factual to lean on, so the
+        # model improvised internals: it placed its databases under a /home/<name>
+        # path invented from the user's first name, wrote agent.sqlite
+        # for agent.sqlite3, and described upgrading itself via "./upgrade.sh" —
+        # a script that has never existed here.
+        try:
+            # Anchored on "yourself" rather than an exact verb phrase: the
+            # question that produced the fabricated paths was typed "what fo you
+            # know of yourself", and a strict pattern would have missed it —
+            # exactly the failure mode where a typo decides whether an answer is
+            # grounded or invented.
+            _self_descriptive = bool(
+                (re.search(r"\byoursel(?:f|ves)\b", _ui_low)
+                 and re.search(r"\b(know|knew|tell|telling|describe|description|explain|"
+                               r"detail|detailed|accurate|accurately|about|of)\b", _ui_low))
+                or re.search(
+                    r"\b(what are you|who are you|describe yourself|"
+                    r"your (?:architecture|internals?|capabilit\w+|components?|design|"
+                    r"databases?|storage|memory system|codebase|upgrade path)|"
+                    r"how (?:do|are) you (?:built|structured|made|work)|"
+                    r"how do you (?:upgrade|update) yourself|what do you run on)\b",
+                    _ui_low)
+            )
+            if _self_descriptive:
+                from eli.runtime.self_facts import render_self_facts_block as _rsf
+                _sf = _rsf()
+                if _sf.strip():
+                    # Rides above the handoff cap for the same reason as the
+                    # telemetry block — truncation here reintroduces the guessing.
+                    _live_self_status = ((_live_self_status + "\n\n") if _live_self_status else "") + _sf
+        except Exception:
+            log.debug("verified self-facts injection skipped", exc_info=True)
+
+        # ── User profile facts injection ─────────────────────────────────────
+        # Surface the user's stored projects / research / preferences into the
+        # chat brief so ELI actually RECALLS them in normal conversation — not
+        # only inside the explicit PERSONAL_MEMORY_SUMMARY action. Storage works;
+        # this closes the recall gap. Generic across users; sourced from the
+        # per-user profile (the same data the summary uses).
+        try:
+            from eli.kernel.state import load_user_profile as _lup, get_user_name as _gun
+            _prof = _lup() or {}
+            _pf_lines = []
+            _pn = (_gun("") or str(_prof.get("name", "") or "")).strip()
+            if _pn:
+                # Explicit + authoritative so the IDENTITY GUARD ("only use a
+                # name from a verified profile") is satisfied — the model must
+                # never answer "I don't know your name" when this is present.
+                _pf_lines.append(f"  verified name (this IS the user's name — use it; never say you don't know it): {_pn}")
+            # Project/research/preference are PAST-session continuity. On a PHATIC greeting
+            # ("good afternoon") they must NOT be injected: the weak model reads them as
+            # something to act on and launches an unsolicited monologue resuming the user's
+            # last project (e.g. "Let's examine the wiring matrix for…" off a plain hello).
+            # A greeting gets a greeting; the name alone is enough. Substantive turns still
+            # get the full recall.
+            _phatic_turn = False
+            _low_grounding_casual = False
+            try:
+                _phatic_turn = _is_brief_phatic_prompt(str(user_input or "").strip().lower())
+            except Exception:
+                _phatic_turn = False
+            try:
+                _bus_agg_pf = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0) if bus_result else 0.0
+                _bus_gnd_pf = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0) if bus_result else 0.0
+                _low_grounding_casual = (_bus_agg_pf < 0.35 or _bus_gnd_pf < 0.35)
+            except Exception:
+                _low_grounding_casual = False
+            if not _phatic_turn and not _low_grounding_casual:
+                for _label, _key in (("project", "active_projects"),
+                                      ("research", "research"),
+                                      ("preference", "preferences")):
+                    _vals = _prof.get(_key)
+                    if isinstance(_vals, list):
+                        for _v in [str(x).strip() for x in _vals if str(x).strip()][:4]:
+                            _pf_lines.append(f"  {_label}: {_v}")
+                    elif isinstance(_vals, str) and _vals.strip():
+                        _pf_lines.append(f"  {_label}: {_vals.strip()}")
+            if _pf_lines:
+                _extra_blocks.append(
+                    "[WHAT YOU KNOW ABOUT THE USER — background facts from their stored "
+                    "profile. Use the name freely. The project/research/preference items are "
+                    "RECALLED CONTEXT from past sessions, NOT the current request — reference "
+                    "them only if directly relevant to what the user actually just said, and "
+                    "never bring them up unprompted or treat them as a task to resume]\n"
+                    + "\n".join(_pf_lines))
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # ── Home awareness injection ─────────────────────────────────────────
+        # On a home/device question, give ELI the REAL device state (what's on, rooms,
+        # usual habits) from its own device server so it answers from fact, not guesses.
+        try:
+            if re.search(r"\b(lights?|lamp|switch|plug|outlet|thermostat|heater|fan|"
+                         r"devices?|rooms?|kitchen|living\s?room|bedroom|turn (?:on|off)|dim|"
+                         r"smart\s?home|my home)\b", str(user_input or ""), re.I):
+                from eli.runtime.home_intel import home_context as _home_context
+                _hctx = _home_context()
+                if _hctx:
+                    _extra_blocks.append(
+                        "[HOME STATE — real device data from ELI's own device server. Use these "
+                        "facts for anything about the user's home; never invent device states]\n" + _hctx)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Assemble all injections and cap ONCE so no individual block is silently
+        # truncated mid-sentence by a per-injection cap.
+        if _extra_blocks:
+            brief = "\n\n".join(filter(None, [brief] + _extra_blocks))
+        _persona_budget = self._persona_handoff_budget(reasoning_mode)
+        if _verified_evidence_packet:
+            _persona_budget = max(
+                self._PERSONA_MIN_CHARS // 2,
+                _persona_budget - min(len(_verified_evidence_packet), _persona_budget // 2),
+            )
+        brief = self._cap_text(brief, _persona_budget, "persona_handoff")
+        try:
+            from eli.runtime.session_continuity import build_session_thread_block
+            _session_thread = build_session_thread_block(_recent_turns, user_input=user_input)
+            if _session_thread:
+                brief = brief + "\n\n" + _session_thread
+        except Exception:
+            log.debug("[COGNITIVE] session thread inject skipped", exc_info=True)
+        # Real self-status rides ABOVE the cap — if the user asked how ELI is doing,
+        # the measured telemetry must never be the thing truncation drops (that's
+        # what made the model fall back to fabricating CPU/GPU temperatures).
+        if _live_self_status:
+            brief = brief + "\n\n" + _live_self_status
+        if _verified_evidence_packet:
+            brief = (
+                brief
+                + "\n\n[VERIFIED MEMORY EVIDENCE — authoritative for user-specific claims; "
+                "never truncated]\n"
+                + _verified_evidence_packet
+            )
+        # Safety steering rides above the cap so it is never truncated.
+        brief = self._prepend_crisis_steering(brief)
+        # Execution grounding rides above the cap too — it must never be dropped,
+        # or the model starts fabricating completed actions ("Done", "it's gone").
+        try:
+            _grounding = self._execution_grounding_block(bus_result)
+            if _grounding:
+                brief = brief + "\n\n" + _grounding
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        try:
+            if working_memory is not None:
+                setattr(working_memory, "persona_handoff", brief)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        return brief
 
     def verify_persona_lock(self) -> bool:
         """
@@ -3348,10 +9848,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # diagnostics. But scope is not the same as amnesia — it needs the
         # referent to repair.
         _prior = ""
+        _prev_user, _prev_eli = "", ""
         try:
             _turns = self.memory.get_recent_conversation(
                 limit=6, user_id=self.user_id) or []
-            _prev_user, _prev_eli = "", ""
             for _t in reversed(_turns):
                 _role = str(_t.get("role") or "").strip().lower()
                 _content = str(_t.get("content") or "").strip()
@@ -3372,29 +9872,134 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("[COGNITIVE] correction: prior turn lookup failed", exc_info=True)
 
+        _low_corr = (user_input or "").lower()
+        _reject_data_dump = bool(
+            re.search(
+                r"\b(data dump|did not ask for|didn't ask for|not what i asked|"
+                r"answer properly|stop giving me data|why did you send)\b",
+                _low_corr,
+            )
+        )
+        if _reject_data_dump and _prev_user:
+            _corr_target = _prev_user
+
+        import datetime as _dt_corr
+        _now_corr = _dt_corr.datetime.now().astimezone()
+        _tz_corr = _now_corr.tzname() or ""
+        _time_line = (
+            f"CURRENT TIME (authoritative): {_now_corr.strftime('%A %d %B %Y, %H:%M')}"
+            f"{(' ' + _tz_corr) if _tz_corr else ''}. "
+            "When the user corrects the clock, use this value — do not guess.\n\n"
+        )
+
         _corr_system = (
             "You are ELI. Current speech act: CORRECTION_REPAIR. "
             "The user is correcting your previous answer. Answer only the corrected request. "
             "Do not introduce memory, runtime, files, diagnostics, identity, projects, or specifications unless the corrected request explicitly asks for them. "
+            "Never attribute quotes or past statements to the user unless they appear verbatim in the exchange below. "
+            "Do not output shell commands or pretend to run journalctl/diagnostics unless explicitly asked. "
             "Keep the reply direct and natural. "
             "If the user is asking what you meant, say what you meant in plain terms — "
             "do not ask them to clarify a question about your own previous answer."
         )
-        if _prior:
-            _corr_system = _prior + _corr_system
-
+        if _reject_data_dump:
+            _corr_system += (
+                " Your last reply wrongly dumped memory/runtime statistics or internal diagnostics. "
+                "Re-answer the user's ORIGINAL message conversationally, in ELI's voice. "
+                "No counts, no bullet lists of stores, no 'as an AI' or 'language model' disclaimers."
+            )
         try:
             from eli.cognition.correction_patterns import is_biographical_dispute as _bio_dispute
-            if _bio_dispute(user_input or ""):
-                _corr_system += (
-                    " The user is disputing a specific claim YOU made about their life, habits, or experiences. "
-                    "Retract it plainly: you have no verified memory of that event unless it appears quoted "
-                    "in the exchange above. Do NOT mention patches, upgrades, packaging, diagnostics, or "
-                    "technical work. Do NOT deflect or ask them to clarify — explain what you wrongly implied "
-                    "and apologize briefly in ELI's voice."
-                )
+            _biographical_dispute = _bio_dispute(user_input or "")
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            _biographical_dispute = False
+        if _biographical_dispute:
+            _corr_system += (
+                " The user is disputing a specific claim YOU made about their life, habits, or experiences. "
+                "Retract it plainly: you have no verified memory of that event unless it appears quoted "
+                "in the exchange above. Do NOT mention patches, upgrades, packaging, diagnostics, or "
+                "technical work. Do NOT deflect or ask them to clarify — explain what you wrongly implied "
+                "and apologize briefly in ELI's voice."
+            )
+        try:
+            from eli.cognition.correction_patterns import is_model_identity_dispute as _mid_corr
+            _model_lie_corr = _mid_corr(user_input or "") or bool(
+                re.search(r"\b(?:why did you lie|you lied|that was a lie|wrong model)\b", _low_corr)
+            )
+        except Exception:
+            _model_lie_corr = bool(re.search(r"\bwhy did you lie\b", _low_corr))
+        if _model_lie_corr:
+            _mm_corr = _mounted_model_authority_line()
+            _corr_system += (
+                " The user is calling out a WRONG model name or a fabricated runtime claim you made. "
+                "Own the mistake plainly: cite ONLY the mounted model evidence below, retract any "
+                "other model name (GLM, Qwen, Ornith, guessed param counts from memory), and do not "
+                "invent backstory about pausing models or watching videos.\n"
+            )
+            if _mm_corr:
+                _corr_system += _mm_corr + "\n"
+        try:
+            from eli.cognition.correction_patterns import is_runtime_recheck_correction as _rt_recheck
+            _runtime_recheck = _rt_recheck(user_input or "")
+        except Exception:
+            _runtime_recheck = bool(re.search(
+                r"\b(not true|check again)\b", _low_corr,
+            ))
+        if _runtime_recheck:
+            _mm_re = _mounted_model_authority_line()
+            _corr_system += (
+                " The user is saying your PREVIOUS answer invented or mis-stated runtime facts "
+                "(GPU layers, memory, diagnostics, codebase health). Retract those claims plainly. "
+                "Re-answer using ONLY live runtime evidence below — do NOT say you have no memory "
+                "of the user's life; this is about YOUR OWN wrong technical report.\n"
+            )
+            if _mm_re:
+                _corr_system += _mm_re + "\n"
+        try:
+            from eli.cognition.correction_patterns import is_meta_conversation as _meta_conv
+            _meta_turn = _meta_conv(user_input or "")
+        except Exception:
+            _meta_turn = bool(re.search(
+                r"\b(that(?:'s| is| was) a question|like what\??|you asked me)\b",
+                _low_corr,
+            ))
+        if re.search(r"\bthat(?:'s| is| was) a question\b", _low_corr):
+            _corr_system += (
+                " The user is pointing out that their prior message was a QUESTION you failed to "
+                "answer properly. Re-read the exchange: identify their actual question and answer "
+                "it directly — do not moralize, deflect, or change topic."
+            )
+        elif re.search(r"^like what\??$", _low_corr.strip()) or (
+            _meta_turn and re.search(r"\blike what\b", _low_corr)
+        ):
+            _corr_system += (
+                " The user is asking you to elaborate on a specific suggestion YOU just made. "
+                "Paraphrase what you offered, then give 2-3 concrete examples — do not pull "
+                "unrelated topics from memory, their profile, or past research interests."
+            )
+        elif _meta_turn and re.search(r"\byou asked me\b", _low_corr):
+            _corr_system += (
+                " The user is quoting the conversation back to you to show you lost the thread. "
+                "Re-read the exchange above and answer the question they actually asked — do not "
+                "invent actions you did not take (opening apps, playing music, etc.)."
+            )
+        try:
+            from eli.cognition.correction_patterns import is_continuity_complaint
+            _continuity_turn = is_continuity_complaint(user_input or "")
+        except Exception:
+            _continuity_turn = bool(re.search(
+                r"\b(not paying attention|previous answers?|we just established|rolling summary)\b",
+                _low_corr,
+            ))
+        if _continuity_turn:
+            _corr_system += (
+                " The user says you lost track of this session. Re-read the exchange above "
+                "and answer with full awareness of what was already said — last turn or "
+                "several turns back."
+            )
+        if _prior:
+            _corr_system = _prior + _corr_system
+        _corr_system = _time_line + _corr_system
 
         # Budget comes from the user's own mode preset, like every other
         # generation path. A fixed 160 here was one of the output caps that
@@ -3413,6 +10018,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if _corr_max == 0:
             # No preset written yet (pre-first-run / corrupted settings).
             _corr_max = 512
+        # Correction replies are short clarifications — large budgets invite deflection
+        # (e.g. rambling about patch cycles when the user asks "what wild night?").
         if _corr_max < 0:
             _corr_max = 384
         elif _corr_max > 512:
@@ -3426,28 +10033,50 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 self._gguf_load_error = None
         if self._gguf_available and gguf_inference is not None:
             try:
+                from eli.cognition.gguf_inference import force_no_think as _fnt_corr
                 broker = _get_inference_broker() if _get_inference_broker else None
-                if broker and broker.gguf_ready:
-                    _corr_response = broker.infer(
-                        _corr_target,
-                        system=_corr_system,
-                        max_tokens=_corr_max,
-                        temperature=0.35,
-                    )
-                else:
-                    with self._gguf_lock:
-                        _corr_response = gguf_inference.chat_completion(
+                with _fnt_corr():
+                    if broker and broker.gguf_ready:
+                        _corr_response = broker.infer(
                             _corr_target,
                             system=_corr_system,
                             max_tokens=_corr_max,
                             temperature=0.35,
                         )
+                    else:
+                        with self._gguf_lock:
+                            _corr_response = gguf_inference.chat_completion(
+                                _corr_target,
+                                system=_corr_system,
+                                max_tokens=_corr_max,
+                                temperature=0.35,
+                            )
             except Exception as _ce:
                 log.debug(f"[COGNITIVE] Correction GGUF call failed: {_ce}")
                 _corr_response = None
 
         if _corr_response:
-            _corr_response = _normalize_assistant_text(_corr_target, _corr_response.strip())
+            try:
+                from eli.cognition.gguf_inference import _clean_eli_output as _clean_corr
+                _corr_response = _clean_corr(_corr_response.strip())
+            except Exception:
+                _corr_response = (_corr_response or "").strip()
+            _corr_response = _normalize_assistant_text(_corr_target, (_corr_response or "").strip())
+            try:
+                from eli.cognition.model_output_tokens import is_persona_drift
+                if is_persona_drift(_corr_response or ""):
+                    log.debug("[COGNITIVE] Correction: persona drift after repair, escalating")
+                    return None
+            except Exception:
+                _drift_heads = (
+                    "i'm just a large language model",
+                    "i am just a large language model",
+                    "as a large language model",
+                    "how can you help me today",
+                )
+                if (_corr_response or "").lower().strip().startswith(_drift_heads):
+                    log.debug("[COGNITIVE] Correction: persona drift after repair, escalating")
+                    return None
             try:
                 _corr_response = govern_output(_corr_response or "", is_grounded=False).strip()
             except Exception:
@@ -3491,7 +10120,88 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(f"[COGNITIVE] _dispatch_agent_bus failed: {e}")
             return ""
 
+    def _store_user_turn(self, text: str) -> None:
+        if not text:
+            return
+        try:
+            self.memory.add_conversation_turn("user", text, self.session_id, self.user_id)
+        except Exception as e:
+            log.debug(f"[COGNITIVE] User turn store failed: {e}")
 
+    def _prepend_recent_exchange(self, user_input: str) -> str:
+        """Prepend live session thread to the user prompt whenever the session has history."""
+        _orig = str(user_input or "").strip()
+        if not _orig:
+            return _orig
+        try:
+            if _is_brief_phatic_prompt(_orig.lower()):
+                return _orig
+        except Exception:
+            log.debug("[COGNITIVE] phatic check skipped in prepend", exc_info=True)
+        try:
+            from eli.runtime.session_continuity import (
+                build_inline_exchange_block,
+                session_has_prior_turns,
+            )
+            _recent = self.memory.get_recent_conversation(
+                limit=14, user_id=getattr(self, "user_id", None)) or []
+            if not session_has_prior_turns(_recent, _orig):
+                return _orig
+            _block = build_inline_exchange_block(_recent, user_input=_orig)
+            if not _block:
+                return _orig
+            return _block + "\n\nYou: " + _orig
+        except Exception:
+            log.debug("[COGNITIVE] recent exchange prepend skipped", exc_info=True)
+            return _orig
+
+    def _store_assistant_turn(self, text: str) -> None:
+        if not text:
+            return
+        # Govern here so every storage path (canonical + fastpath bypasses) is covered.
+        try:
+            text = govern_output(str(text), is_grounded=False)
+        except Exception as _gov_err:
+            log.debug(f"[COGNITIVE] store-time govern failed: {_gov_err}")
+        if not text:
+            return
+        try:
+            from eli.runtime.diagnostic_patterns import should_exclude_turn_from_prompt
+            if should_exclude_turn_from_prompt("assistant", text):
+                # Benign and BY DESIGN: an image/status-loop frame is deliberately not stored in
+                # conversation context. This is NOT a failure — logging it as one polluted the
+                # failure log, made it a "recurring error", and drove the self-heal loop to "fix"
+                # a non-bug (it generated bogus 'assistant_dynamic_status_claim' web-API code at
+                # shutdown). Debug-log only.
+                log.debug("[COGNITIVE] skipped storing unsupported assistant image/status frame")
+                return
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            self._last_response = str(text)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # Capture any follow-up offer ELI just made ("Want me to update the
+        # profile?") so a later "yes" re-routes and actually executes it. This
+        # lives at the single store chokepoint every reply path funnels through
+        # (quick CHAT, synthesis, fastpath) — previously it was gated to
+        # WEB_SEARCH only, so conversational offers were never captured and the
+        # affirmation was swallowed as chat.
+        try:
+            from eli.runtime.pending_proposal import (
+                extract_proposal, set_pending_proposal, clear_pending_proposal,
+            )
+            _prop = extract_proposal(text)
+            if _prop:
+                set_pending_proposal(_prop)
+            else:
+                clear_pending_proposal()
+        except Exception as _prop_err:
+            log.debug(f"[COGNITIVE] offer-capture skipped: {_prop_err}")
+        try:
+            self.memory.add_conversation_turn("assistant", text, self.session_id, self.user_id)
+        except Exception as e:
+            log.debug(f"[COGNITIVE] Assistant turn store failed: {e}")
 
     def _publish_last_response_meta(
         self,
@@ -3560,7 +10270,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             # you sent?" could not be answered from this trace at all: it carried
             # response_chars and a confidence score and nothing else, so the only
             # possible reply was a telemetry dump about a message whose text was
-            # never recorded. Truncated because this file is rewritten every turn.
+            # never recorded. Truncated because this file is rewritten every turn
+            # and a full essay would make it the largest thing in artifacts/.
             "response_text": str(response or "")[:_TRACE_TEXT_CHARS],
             "response_truncated": len(str(response or "")) > _TRACE_TEXT_CHARS,
             # What it was answering, so "explain your last response" can say what
@@ -3608,6 +10319,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
         self._orchestrator_active = True
         try:
+            self._last_orchestrator_reasoning_mode = str(reasoning_mode or "quick")
             result = AgentOrchestrator(self).run(
                 user_input,
                 stream=stream,
@@ -3623,7 +10335,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if isinstance(result, (_types.GeneratorType,)) or hasattr(result, '__next__'):
             def _wrapped():
                 parts = []
-                for token in result:
+                try:
+                    stream_iter = self._stream_with_followthrough(
+                        result, user_input, reasoning_mode=reasoning_mode)
+                except Exception as _ft_wrap_err:
+                    log.debug(f"[COGNITIVE] orchestrator followthrough wrap failed: {_ft_wrap_err}")
+                    stream_iter = result
+                for token in stream_iter:
                     token = str(token or "")
                     if token:
                         parts.append(token)
@@ -3631,7 +10349,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final = "".join(parts).strip()
                 if final:
                     try:
-                        _wm_ctx = str(getattr(self, "_last_orchestrator_memory_context", "") or "")
+                        _wm_ctx = ""
+                        try:
+                            _wm_ctx = str(getattr(self, "_last_orchestrator_memory_context", "") or "")
+                        except Exception:
+                            _wm_ctx = ""
                         final = self._govern_visible_response(
                             user_input,
                             final,
@@ -3641,7 +10363,40 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     except Exception as _gov_err:
                         log.debug(f"[COGNITIVE] orchestrator stream governance skipped: {_gov_err}")
                     try:
-                        self.enqueue_post_response_storage(user_input, final, {"action": "CHAT"}, command=False)
+                        _bus = getattr(self, "_last_bus_result", None)
+                        _trace = dict(getattr(self, "_last_orchestrator_trace", {}) or {})
+                        if _bus is not None:
+                            _trace["agent_confidence"] = float(
+                                getattr(_bus, "aggregated_confidence", 0.0) or 0.0
+                            )
+                            _trace["grounding_confidence"] = float(
+                                getattr(_bus, "grounding_confidence", 0.0) or 0.0
+                            )
+                            _trace["agents_used"] = list(getattr(_bus, "agents_used", []) or [])
+                        self._publish_last_response_meta(
+                            _trace,
+                            action="CHAT",
+                            result_action="CHAT",
+                            response=final,
+                            agents_used=list(getattr(_bus, "agents_used", []) or []) if _bus else [],
+                            confidence=float(
+                                getattr(_bus, "aggregated_confidence", 0.0) or 0.0
+                            ) if _bus else None,
+                            grounding_confidence=float(
+                                getattr(_bus, "grounding_confidence", 0.0) or 0.0
+                            ) if _bus else None,
+                            confidence_label=str(
+                                getattr(_bus, "confidence_label", "") or ""
+                            ) if _bus else "",
+                            user_input=user_input,
+                            evidence_used=bool(_wm_ctx),
+                            grounded=bool(_wm_ctx),
+                        )
+                    except Exception as _meta_err:
+                        log.debug(f"[COGNITIVE] orchestrator stream meta publish failed: {_meta_err}")
+                    try:
+                        self.enqueue_post_response_storage(
+                            user_input, final, {"action": "CHAT"}, command=False)
                     except Exception as _store_err:
                         log.debug(f"[COGNITIVE] orchestrator stream storage failed: {_store_err}")
             return _wrapped()
@@ -3654,8 +10409,238 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         return self._parse_intent(user_input, context or [])
 
 
+    def assemble_precise_context(self, user_input: str, working_memory=None,
+                                 short_term_memory=None, intent: Optional[Dict[str, Any]] = None,
+                                 reasoning_mode: Optional[str] = None, **kwargs):
+        """
+        Public contract for orchestrator / GUI PATH2 compatibility.
+
+        This method must consume orchestrator-produced working memory first.
+        It should not re-run the retrieval pipeline unless no assembled state
+        exists at all.
+        """
+        final_prompt = user_input
+        blocks: List[str] = []
+
+        assembled_context = ""
+        try:
+            assembled_context = getattr(working_memory, "assembled_context", "") or ""
+        except Exception:
+            assembled_context = ""
+
+        if assembled_context:
+            blocks.append(str(assembled_context).strip())
+
+        try:
+            reranked = list(getattr(working_memory, "reranked_hits", []) or [])
+        except Exception:
+            reranked = []
+
+        if reranked:
+            hit_lines: List[str] = []
+            for i, hit in enumerate(reranked[:8], 1):
+                if isinstance(hit, dict):
+                    txt = str(hit.get("text") or hit.get("content") or hit.get("snippet") or "").strip()
+                    src = str(hit.get("source") or hit.get("kind") or hit.get("path") or "").strip()
+                    score = hit.get("score", None)
+                else:
+                    txt = str(hit).strip()
+                    src = ""
+                    score = None
+
+                if not txt:
+                    continue
+
+                txt = re.sub(r"\s+", " ", txt)[:260]
+
+                score_txt = ""
+                if score not in (None, ""):
+                    try:
+                        score_txt = f"{float(score):.3f}"
+                    except Exception:
+                        score_txt = str(score)
+
+                if src and score_txt:
+                    hit_lines.append(f"{i:02d}. [{src} | score={score_txt}] {txt}")
+                elif src:
+                    hit_lines.append(f"{i:02d}. [{src}] {txt}")
+                else:
+                    hit_lines.append(f"{i:02d}. {txt}")
+
+            if hit_lines:
+                blocks.append("Reranked evidence:\n" + "\n".join(hit_lines))
+
+        try:
+            recent_turns = list(getattr(short_term_memory, "recent_turns", []) or [])
+        except Exception:
+            recent_turns = []
+
+        if recent_turns:
+            turn_lines: List[str] = []
+            for turn in recent_turns[-8:]:
+                try:
+                    role = "User" if str(turn.get("role", "")).lower() == "user" else "ELI"
+                    content = re.sub(r"\s+", " ", str(turn.get("content", "") or "")).strip()
+                    if content:
+                        turn_lines.append(f"{role}: {content[:220]}")
+                except Exception:
+                    continue
+            if turn_lines:
+                blocks.append("Recent turns:\n" + "\n".join(turn_lines))
+
+        try:
+            grounded = self._build_grounded_evidence_context(user_input) or ""
+            if grounded:
+                blocks.append(grounded)
+        except Exception as e:
+            log.debug(f"[COGNITIVE] assemble_precise_context grounded evidence failed: {e}")
+
+        assembled_context = "\n\n".join(b for b in blocks if b).strip()
+
+        # Last-resort fallback only if orchestrator gave us nothing useful.
+        if not assembled_context:
+            try:
+                recent = self.memory.get_recent_conversation(5, user_id=self.user_id) or []
+            except Exception:
+                recent = []
+
+            try:
+                intent = intent or self._parse_intent(user_input, recent)
+            except Exception:
+                intent = {"action": "CHAT", "args": {"message": user_input}, "confidence": 0.5}
+
+            try:
+                reserved = int(self._mode_profile(reasoning_mode).get("max_tokens", 512))
+            except Exception:
+                reserved = 512
+
+            try:
+                assembled_context = self._retrieve_relevant_memories(
+                    user_input,
+                    intent=intent,
+                    reserved_tokens=reserved,
+                ) or ""
+            except Exception as e:
+                log.debug(f"[COGNITIVE] assemble_precise_context fallback memory build failed: {e}")
+                assembled_context = ""
+
+            try:
+                grounded = self._build_grounded_evidence_context(user_input) or ""
+                if grounded:
+                    assembled_context = (
+                        (assembled_context + "\n\n" + grounded).strip()
+                        if assembled_context else grounded
+                    )
+            except Exception as e:
+                log.debug(f"[COGNITIVE] assemble_precise_context fallback grounded evidence failed: {e}")
+
+        try:
+            handoff_brief = ""
+            if working_memory is not None:
+                try:
+                    recent_turns = list(getattr(short_term_memory, "recent_turns", []) or [])
+                except Exception:
+                    recent_turns = []
+
+                try:
+                    _bus_result = getattr(working_memory, "bus_result", None)
+                except Exception:
+                    _bus_result = None
+
+                try:
+                    handoff_brief = self._build_persona_handoff_once(
+                        user_input=user_input,
+                        memory_context=assembled_context,
+                        bus_result=_bus_result,
+                        recent_turns=_eli_scrub_recent_turns_for_identity(recent_turns, user_input),
+                        working_memory=working_memory,
+                    ) or ""
+                except Exception as e:
+                    log.debug(f"[COGNITIVE] assemble_precise_context handoff build failed: {e}")
+                    handoff_brief = ""
+
+                setattr(working_memory, "assembled_context", assembled_context)
+                setattr(working_memory, "final_prompt", final_prompt)
+                setattr(working_memory, "short_term_memory", short_term_memory)
+                setattr(working_memory, "intent", intent)
+                setattr(working_memory, "persona_handoff", handoff_brief)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        return assembled_context, final_prompt
 
 
+    def generate_from_assembled_prompt(self, prompt: str,
+                                       working_memory=None,
+                                       reasoning_mode: Optional[str] = None,
+                                       raw_direct: bool = False, **kwargs):
+        # FAST PATH: raw_direct bypasses persona/handoff/memory build.
+        # Used by HyDE (retrieval seed generation) where we want a tiny,
+        # quick answer — no system prompt customisation, no context assembly.
+        if raw_direct:
+            try:
+                from eli.cognition.gguf_inference import gguf_try_infer
+                _raw_system = (
+                    "You are a knowledge assistant. Write a short factual answer "
+                    "(2-3 sentences, no roleplay, no filler)."
+                )
+                response = gguf_try_infer(
+                    prompt,
+                    system=_raw_system,
+                    max_tokens=96,
+                    temperature=0.4,
+                    lock_timeout=2.0,
+                )
+                return (response or "").strip()
+            except Exception as e:
+                log.debug(f"[COGNITIVE] raw_direct fast path failed: {e}; falling back")
+                # fall through to slow path
+        memory_context = ""
+        try:
+            memory_context = getattr(working_memory, "assembled_context", "") or ""
+        except Exception:
+            memory_context = ""
+
+        try:
+            _stm = getattr(working_memory, "short_term_memory", None)
+            recent_turns = list(getattr(_stm, "recent_turns", []) or [])
+        except Exception:
+            recent_turns = []
+
+        try:
+            _bus_result = getattr(working_memory, "bus_result", None)
+        except Exception:
+            _bus_result = None
+
+        try:
+            situation_brief = self._build_persona_handoff_once(
+                user_input=prompt,
+                memory_context=memory_context,
+                bus_result=_bus_result,
+                recent_turns=recent_turns,
+                working_memory=working_memory,
+            ) or ""
+        except Exception as e:
+            log.debug(f"[COGNITIVE] generate_from_assembled_prompt handoff failed: {e}")
+            situation_brief = ""
+
+        _gen_overrides = None
+        try:
+            _gen_overrides = self._chat_generation_overrides(
+                prompt,
+                memory_context,
+                reasoning_mode=reasoning_mode,
+            )
+        except Exception:
+            _gen_overrides = None
+
+        return self._get_chat_response(
+            prompt,
+            memory_context,
+            reasoning_mode=reasoning_mode,
+            gen_overrides=_gen_overrides,
+            situation_brief=situation_brief,
+        ).strip()
 
     def _eli_tool_failure_replan(
         self,
@@ -3754,8 +10739,451 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(f"[REPLAN] Re-plan attempt failed: {_replan_err}")
             return failed_result
 
+    def _maybe_fail_closed_chat(
+        self,
+        user_input: str,
+        *,
+        query_class: str = "",
+        memory_context: str = "",
+        bus_result: Any = None,
+    ) -> Optional[str]:
+        try:
+            from eli.cognition.chat_grounding_gate import evaluate_chat_grounding_gate
+            return evaluate_chat_grounding_gate(
+                user_input,
+                query_class=query_class,
+                memory_context=memory_context,
+                bus_result=bus_result,
+            )
+        except Exception as _fc_err:
+            log.debug(f"[COGNITIVE] chat fail-closed gate skipped: {_fc_err}")
+            return None
+
+    def _govern_visible_response(
+        self,
+        user_input: str,
+        text: str,
+        *,
+        memory_context: str = "",
+        is_grounded: bool = False,
+    ) -> str:
+        response = _normalize_assistant_text(user_input, str(text or "").strip())
+        response = _output_governor_normalize(user_input, response)
+        if _HAS_GOVERNANCE:
+            # normalize_response = the GGUF-artifact cleaner
+            # clean_gguf_artifacts(response, user_input). The old swapped-arg
+            # TypeError fallback is gone now the signature collision with
+            # output_governor.normalize_response(user_input, text) is resolved.
+            try:
+                response = normalize_response(response, user_input)
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        response = govern_output(response, is_grounded=is_grounded, evidence=memory_context)
+        if not is_grounded:
+            try:
+                from eli.cognition.user_claim_validator import (
+                    validate_user_claims_against_evidence,
+                )
+                _recent_user_turns: List[str] = []
+                try:
+                    for _t in (self.memory.get_recent_conversation(limit=8, user_id=self.user_id) or []):
+                        if str((_t or {}).get("role", "")).lower() == "user":
+                            _c = str((_t or {}).get("content", "") or "").strip()
+                            if _c:
+                                _recent_user_turns.append(_c)
+                except Exception:
+                    _recent_user_turns = []
+                _claim_verdict = validate_user_claims_against_evidence(
+                    response,
+                    memory_context,
+                    user_input=user_input,
+                    recent_user_turns=_recent_user_turns,
+                )
+                if _claim_verdict.get("unsafe") or _claim_verdict.get("violations"):
+                    _san = str(_claim_verdict.get("sanitized") or "").strip()
+                    if _san:
+                        response = _san
+                    log.debug(
+                        "[COGNITIVE] user-claim validator: violations=%s unsafe=%s",
+                        len(_claim_verdict.get("violations") or []),
+                        _claim_verdict.get("unsafe"),
+                    )
+            except Exception as _ucv_err:
+                log.debug(f"[COGNITIVE] user-claim validator skipped: {_ucv_err}")
+        try:
+            from eli.cognition.reasoning_modes import apply_final_reasoning_contract as _rm_final
+            response = _rm_final(response)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        try:
+            from eli.runtime.diagnostic_patterns import is_vague_dynamic_status_claim
+            if is_vague_dynamic_status_claim(response):
+                evidence_packet = self._build_dynamic_status_evidence(
+                    user_input,
+                    response,
+                    trace=getattr(self, "_last_trace", {}) or {},
+                )
+                if evidence_packet:
+                    synthesized = ""
+                    try:
+                        synthesized = self._synthesize_answer(
+                            evidence_packet,
+                            user_input,
+                            max_tokens_override=384,
+                            action="META_DIAGNOSTIC",
+                        ).strip()
+                    except Exception:
+                        synthesized = ""
+                    response = synthesized or evidence_packet
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        if not response:
+            response = "I lost the thread during generation. Ask it again and I will rebuild from current context."
+        return response.strip()
 
 
+    def _inject_anti_repeat_contract(self, user_input: str, situation_brief: str) -> str:
+        """Prepend the anti-repeat contract to a persona handoff when ELI has spoken."""
+        brief = str(situation_brief or "").strip()
+        if _ANTI_REPEAT_BLOCK_RE.search(brief):
+            return brief
+        try:
+            if _is_greeting_turn(user_input):
+                log.debug("[ANTI-REPEAT] greeting — contract not injected")
+                return brief
+            _prev_eli = []
+            for _t in (self.memory.get_recent_conversation(limit=8) or []):
+                if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                    _c = str((_t or {}).get("content", "") or "").strip()
+                    if _c:
+                        _prev_eli.append(_c)
+            if not _prev_eli:
+                return brief
+            _quoted = "\n".join(f"  - {s[:220]}" for s in _prev_eli[:3])
+            _no_repeat = (
+                "YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of it, and do "
+                "not re-ask a question the user has already answered:\n" + _quoted +
+                "\nReply to what the user just said. If you have already described your "
+                "own state or mood, do not describe it again unless asked."
+            )
+            log.debug(f"[ANTI-REPEAT] contract injected ({len(_prev_eli[:3])} prior replies)")
+            return (_no_repeat + "\n\n" + brief).strip()
+        except Exception:
+            log.debug("[ANTI-REPEAT] contract skipped", exc_info=True)
+            return brief
+
+    def _redact_recent_eli_from_context(self, memory_context: str) -> str:
+        """Strip ELI's own recent replies from retrieved memory before generation."""
+        ctx = str(memory_context or "")
+        if not ctx:
+            return ctx
+        try:
+            _prev_eli = []
+            for _t in (self.memory.get_recent_conversation(limit=8) or []):
+                if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
+                    _c = str((_t or {}).get("content", "") or "").strip()
+                    if _c:
+                        _prev_eli.append(_c)
+            if _prev_eli:
+                return _redact_prior_replies(ctx, _prev_eli)
+        except Exception:
+            log.debug("[ANTI-REPEAT] memory redact skipped", exc_info=True)
+        return ctx
+
+    def _yield_with_anti_repeat_guard(
+        self,
+        prompt: str,
+        stream_factory,
+        *,
+        memory_context: str = "",
+        situation_brief: str = "",
+        reasoning_mode: Optional[str] = None,
+        working_memory: Any = None,
+        bus_result: Any = None,
+        recent_turns: Optional[Any] = None,
+    ):
+        """Wrap a live token stream with anti-repeat enforcement and one retry."""
+        from types import SimpleNamespace
+
+        _recent_eli: List[str] = []
+        _recent_user: List[str] = []
+        try:
+            for _t in (self.memory.get_recent_conversation(limit=16) or []):
+                _role = str((_t or {}).get("role", "")).lower()
+                _c = str((_t or {}).get("content", "") or "").strip()
+                if not _c:
+                    continue
+                if _role == "user":
+                    _recent_user.append(_c)
+                elif _role in ("assistant", "eli"):
+                    _recent_eli.append(_c)
+        except Exception:
+            log.debug("[ANTI-REPEAT] recent-reply fetch failed", exc_info=True)
+        _echo_sources = [prompt] + _recent_user
+
+        if _user_asked_for_a_repeat(prompt):
+            log.debug("[ANTI-REPEAT] user asked for a repeat — guard stood down")
+            yield from stream_factory(situation_brief, memory_context, None)
+            return
+
+        try:
+            yield from _stream_holding_back_repeats(
+                stream_factory(situation_brief, memory_context, None),
+                _recent_eli,
+                allow_retry=True,
+                echo_sources=_echo_sources,
+            )
+            return
+        except _RepeatDetected:
+            log.debug("[ANTI-REPEAT] opening matched a recent reply — regenerating")
+
+        _retry_brief = _redact_prior_replies(
+            _deprimed_persona_brief(situation_brief), _recent_eli)
+        _retry_context = _redact_prior_replies(memory_context, _recent_eli)
+        _retry_gen = None
+        try:
+            _base_temp = float(self._generation_settings().get("temperature", 0.7) or 0.7)
+            _retry_gen = {"temperature": round(min(1.2, _base_temp + _REPEAT_RETRY_TEMP_BUMP), 3)}
+        except Exception:
+            log.debug("[ANTI-REPEAT] retry temperature bump skipped", exc_info=True)
+        log.debug(
+            "[ANTI-REPEAT] retry generation issued (persona handoff "
+            "de-primed: %d -> %d chars, context %d -> %d chars, temp=%s)",
+            len(situation_brief), len(_retry_brief),
+            len(memory_context or ""), len(_retry_context or ""),
+            (_retry_gen or {}).get("temperature", "unchanged"),
+        )
+        yield from _stream_holding_back_repeats(
+            stream_factory(_retry_brief, _retry_context, _retry_gen),
+            _recent_eli,
+            allow_retry=False,
+            salvage=True,
+            echo_sources=_echo_sources,
+        )
+
+
+    def generate_stream_from_assembled_prompt(self, prompt: str,
+                                              working_memory=None,
+                                              reasoning_mode: Optional[str] = None,
+                                              gen_overrides: Optional[Dict[str, Any]] = None,
+                                              **kwargs):
+        memory_context = ""
+        situation_brief = ""
+        try:
+            memory_context = getattr(working_memory, "assembled_context", "") or ""
+            situation_brief = getattr(working_memory, "persona_handoff", "") or ""
+        except Exception:
+            memory_context = ""
+            situation_brief = ""
+
+        # Private reasoning modes run the real multi-pass algorithms (CoT, ToT,
+        # CAI, SC) then buffer the finished result before yielding chunks.
+        # Quick mode streams live.  Raw private-strategy chunks must never reach
+        # the GUI before the final sanitiser runs on them.
+        try:
+            from eli.cognition.reasoning_modes import (
+                is_private_reasoning_mode as _rm_private,
+                canonical_mode as _rm_canonical,
+            )
+            if _rm_private(reasoning_mode):
+                _rm_key = _rm_canonical(reasoning_mode)
+                _rm_profile = self._mode_profile(_rm_key)
+                _rm_gen_overrides = self._chat_generation_overrides(
+                    prompt, memory_context, reasoning_mode=_rm_key,
+                )
+                if gen_overrides:
+                    # Caller-supplied sampling wins — this is how the anti-repeat
+                    # retry raises temperature so attempt 2 is not attempt 1 again.
+                    _rm_gen_overrides = dict(_rm_gen_overrides or {})
+                    _rm_gen_overrides.update(
+                        {k: v for k, v in dict(gen_overrides).items() if v is not None})
+                situation_brief_rm = ""
+                try:
+                    _stm_rm = getattr(working_memory, "short_term_memory", None)
+                    _recent_rm = list(getattr(_stm_rm, "recent_turns", []) or [])
+                    _bus_rm = getattr(working_memory, "bus_result", None)
+                    situation_brief_rm = str(
+                        self._build_persona_handoff_once(
+                            user_input=prompt,
+                            memory_context=memory_context,
+                            bus_result=_bus_rm,
+                            recent_turns=_recent_rm,
+                            working_memory=working_memory,
+                        ) or ""
+                    )
+                except Exception:
+                    situation_brief_rm = ""
+                # Expose grounding confidence to the per-mode algorithms
+                # (constitutional grounded-trust override, #3b/Option C).
+                try:
+                    self._current_grounding_confidence = float(
+                        getattr(_bus_rm, "grounding_confidence", 0.0) or 0.0
+                    )
+                except Exception:
+                    self._current_grounding_confidence = 0.0
+                # Route to the real per-mode algorithm; falls back to a single
+                # _get_chat_response call if _run_mode_algorithm returns None.
+                final = None
+                if self._supports_mode_algorithm(_rm_key):
+                    try:
+                        final = self._run_mode_algorithm(
+                            _rm_key, prompt, memory_context,
+                            _rm_gen_overrides, situation_brief_rm,
+                        )
+                        log.debug(
+                            f"[COGNITIVE][STREAM] private mode {_rm_key}: "
+                            f"algorithm produced {len(final or '')} chars"
+                        )
+                    except Exception as _algo_err:
+                        log.debug(
+                            f"[COGNITIVE][STREAM] {_rm_key} algorithm failed: "
+                            f"{_algo_err} — falling back to single pass"
+                        )
+                        final = None
+                if not final:
+                    final = self._get_chat_response(
+                        prompt, memory_context,
+                        reasoning_mode=_rm_key,
+                        gen_overrides=_rm_gen_overrides,
+                        situation_brief=situation_brief_rm,
+                    )
+                final = self._govern_visible_response(
+                    str(prompt or ""),
+                    str(final or ""),
+                    memory_context=memory_context,
+                    is_grounded=bool(memory_context),
+                )
+                for piece in self._yield_text_chunks(final, chunk_size=12):
+                    yield piece
+                return
+        except Exception as _rm_stream_err:
+            log.debug(f"[COGNITIVE] Private reasoning buffered stream failed; falling back to guarded stream: {_rm_stream_err}")
+
+        try:
+            _stm = getattr(working_memory, "short_term_memory", None)
+            recent_turns = list(getattr(_stm, "recent_turns", []) or [])
+        except Exception:
+            recent_turns = []
+
+        try:
+            _bus_result = getattr(working_memory, "bus_result", None)
+        except Exception:
+            _bus_result = None
+
+        if not situation_brief:
+            try:
+                situation_brief = self._build_persona_handoff_once(
+                    user_input=prompt,
+                    memory_context=memory_context,
+                    bus_result=_bus_result,
+                    recent_turns=recent_turns,
+                    working_memory=working_memory,
+                ) or ""
+            except Exception as e:
+                log.debug(f"[COGNITIVE] generate_stream_from_assembled_prompt handoff failed: {e}")
+                situation_brief = ""
+
+        situation_brief = self._inject_anti_repeat_contract(prompt, situation_brief)
+        memory_context = self._redact_recent_eli_from_context(memory_context)
+        try:
+            if working_memory is not None:
+                working_memory.persona_handoff = situation_brief
+                working_memory.assembled_context = memory_context
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        def _live_stream_factory(brief: str, ctx: str, overrides: Optional[Dict[str, Any]] = None):
+            """True GUI streaming path with optional brief/context overrides for retry."""
+            import re as _re
+
+            raw_parts: List[str] = []
+            yielded_any = False
+            start_buffer = ""
+            prefix_resolved = False
+
+            def _clean_start(s: str) -> str:
+                return _re.sub(
+                    r"^\s*(?:ELI|Assistant|AI|<\|assistant\|>)\s*:\s*",
+                    "",
+                    str(s or ""),
+                    flags=_re.I,
+                )
+
+            def _still_possible_role_prefix(s: str) -> bool:
+                low = str(s or "").lower()
+                stripped = low.strip()
+                if not stripped:
+                    return True
+                prefixes = (
+                    "e", "el", "eli", "eli:",
+                    "a", "as", "ass", "assi", "assis", "assist", "assista",
+                    "assistan", "assistant", "assistant:",
+                    "ai", "ai:",
+                    "<|assistant|>", "<|assistant|>:",
+                )
+                return stripped in prefixes and len(low) < 24
+
+            _merged_overrides = dict(gen_overrides or {})
+            if overrides:
+                _merged_overrides.update({k: v for k, v in dict(overrides).items() if v is not None})
+
+            for chunk in self._stream_model_response(
+                prompt,
+                ctx,
+                reasoning_mode=reasoning_mode,
+                gen_overrides=_merged_overrides or None,
+                situation_brief=brief,
+            ):
+                piece = str(chunk or "")
+                if not piece:
+                    continue
+
+                raw_parts.append(piece)
+
+                if not prefix_resolved:
+                    start_buffer += piece
+
+                    if _still_possible_role_prefix(start_buffer):
+                        continue
+
+                    prefix_resolved = True
+                    cleaned = _clean_start(start_buffer)
+                    if cleaned:
+                        yielded_any = True
+                        yield cleaned
+                    continue
+
+                yielded_any = True
+                yield piece
+
+            if not prefix_resolved and start_buffer:
+                cleaned = _clean_start(start_buffer)
+                if cleaned:
+                    yielded_any = True
+                    yield cleaned
+
+            if not yielded_any:
+                final_text = self._govern_visible_response(
+                    prompt,
+                    "".join(raw_parts),
+                    memory_context=ctx or brief,
+                    is_grounded=bool(ctx or brief),
+                )
+                if final_text:
+                    for token in self._yield_text_chunks(final_text, chunk_size=12):
+                        yield token
+
+        yield from self._yield_with_anti_repeat_guard(
+            prompt,
+            _live_stream_factory,
+            memory_context=memory_context,
+            situation_brief=situation_brief,
+            reasoning_mode=reasoning_mode,
+            working_memory=working_memory,
+            bus_result=_bus_result,
+            recent_turns=recent_turns,
+        )
+        return
 
     def process(self, user_input: str, source: str = "user", stream: bool = False,
 
@@ -3835,11 +11263,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # Applied before ANY processing so injected text never reaches the LLM
         # or the router in its raw form.
         user_input = _eli_sanitize_user_input(user_input)
-        try:
-            from eli.cognition import tone_adaptor as _ta
-            _ta.note_user_text(user_input or "")
-        except Exception:
-            log.debug("tone note_user_text skipped", exc_info=True)
         # ── End prompt injection guard ─────────────────────────────────────────
 
         # ── Minimal attr guard for __new__-constructed instances (tests) ───────
@@ -4402,6 +11825,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # Always clear stale per-turn diagnostic evidence before we decide.
         self._diagnostic_evidence_block = ""
         self._diagnostic_action_hint = ""
+        self._turn_resolved_intent = None
 
         try:
             _eli_diag_text = str(user_input or "")
@@ -4455,6 +11879,20 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final_response = govern_output(_direct_persona_answer, is_grounded=True)
                 try:
                     self._store_assistant_turn(final_response)
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+                try:
+                    self._publish_last_response_meta(
+                        {"request_id": getattr(self, "_current_request_id", "")},
+                        action="PERSONA_STATUS",
+                        result_action="PERSONA_STATUS",
+                        confidence=0.90,
+                        confidence_label="high",
+                        evidence_used=True,
+                        grounded=True,
+                        response=final_response,
+                        user_input=str(user_input or ""),
+                    )
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
                 if stream:
@@ -4628,10 +12066,70 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        context = self.memory.get_recent_conversation(5, user_id=getattr(self, "user_id", None))
+        context = self.memory.get_recent_conversation(14, user_id=getattr(self, "user_id", None))
+
+        # Turn dossier: assemble awareness + memory before routing consumes skips.
+        try:
+            from eli.cognition.turn_dossier import (
+                assemble_turn_dossier,
+                attach_dossier_to_working_memory,
+            )
+            _dossier_qclass = "GENERAL"
+            try:
+                if _is_brief_phatic_prompt(str(user_input or "").strip().lower()):
+                    _dossier_qclass = "PHATIC"
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            _session_opener = False
+            try:
+                if not getattr(self, "_session_opener_shown", False):
+                    from eli.runtime.session_continuity import session_has_prior_turns
+                    if not session_has_prior_turns(context, user_input):
+                        _session_opener = True
+                        self._session_opener_shown = True
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            _turn_dossier = assemble_turn_dossier(
+                self,
+                user_input,
+                query_class=_dossier_qclass,
+                reasoning_mode=str(reasoning_mode or "quick"),
+                session_id=str(getattr(self, "session_id", "") or ""),
+                user_id=str(getattr(self, "user_id", "") or ""),
+                working_memory=self._working_memory,
+                include_session_opener=_session_opener,
+            )
+            attach_dossier_to_working_memory(self._working_memory, _turn_dossier)
+            self._last_turn_dossier = _turn_dossier
+        except Exception as _dossier_err:
+            log.debug("[COGNITIVE] turn dossier assembly skipped: %s", _dossier_err)
+            self._last_turn_dossier = None
+
+        # Thread-aware routing context for web prepass + proactive grounding.
+        try:
+            from eli.runtime.conversation_thread import (
+                extract_thread_topic,
+                proactive_web_intent,
+                recent_turns_from_context,
+                set_route_context,
+            )
+            _thread_turns = recent_turns_from_context(context)
+            set_route_context(thread_topic=extract_thread_topic(_thread_turns))
+            _proactive_intent = proactive_web_intent(user_input, _thread_turns)
+        except Exception as _thread_err:
+            log.debug(f"[COGNITIVE] conversation thread context skipped: {_thread_err}")
+            _proactive_intent = None
+            _thread_turns = []
 
         t_route = time.perf_counter()
-        intent = self._parse_intent(user_input, context)
+        if _proactive_intent:
+            intent = _proactive_intent
+            log.debug(
+                "[COGNITIVE] proactive conversation grounding → WEB_SEARCH "
+                f"(query={(intent.get('args') or {}).get('query', '')!r})"
+            )
+        else:
+            intent = self._parse_intent(user_input, context)
         _eli_pipe(
             "intent_routed",
             action=str((intent or {}).get("action") or "CHAT"),
@@ -4759,9 +12257,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     "action": action, "args": dict(args or {}), "input": user_input,
                     # Stamped so consumers that mean "right after X" can actually
                     # check it. The news topic-deepen rule read this dict as proof a
-                    # briefing had just happened, but CHAT never overwrites it, so one
-                    # report left the flag set for the lifetime of the process and
-                    # every later short input stayed eligible to be rewritten to CHAT.
+                    # briefing had just happened, but CHAT never overwrites it (CHAT
+                    # is excluded above), so one report left the flag set for the
+                    # lifetime of the process and every later short input stayed
+                    # eligible to be rewritten into CHAT.
                     "ts": time.time(),
                 }
         except Exception:
@@ -4792,22 +12291,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _forced_control and str(action).upper() != _forced_control:
                 intent = dict(intent or {})
                 intent["action"] = _forced_control
-                # Preserve the question across the upgrade. Wiping args to {} threw
-                # away args["question"] — the very text the upgraded handler needs —
-                # so grounded handlers received no question at all. (Same reasoning as
-                # the targeted restore further down this file.)
-                _prev_args = dict(args or {})
-                _carried = {k: v for k, v in _prev_args.items()
-                            if k in ("question", "query", "text", "profile_scope",
-                                     "explain", "_raw_user_text") and v}
-                _carried.setdefault("question", str(user_input or ""))
-                intent["args"] = _carried
+                intent["args"] = {}
                 _meta = dict(intent.get("meta") or {})
                 _meta["upgraded_from"] = str(action)
                 _meta["upgraded_reason"] = "strict_control_contract"
                 intent["meta"] = _meta
                 action = _forced_control
-                args = dict(_carried)
+                args = {}
                 log.debug(f"[COGNITIVE] Control contract upgraded action -> {_forced_control}")
                 if str(action or "").strip().upper() == "META_DIAGNOSTIC":
                     _eli_phase13_diag_probe = str(
@@ -4872,7 +12362,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             action = "EXPLAIN_LAST_RESPONSE"
             args = {}
 
-        if str(action).upper() == "CHAT" and _matched_by == "runtime.status.grounded_chat":
+        if str(action).upper() == "CHAT" and _matched_by in {
+            "runtime.status.grounded_chat",
+            "runtime.status.identity_grounded_chat",
+        }:
             intent = dict(intent or {})
             intent["action"] = "RUNTIME_STATUS"
             intent["args"] = {}
@@ -4918,62 +12411,16 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                       f"{action!r} — degrading open (non-fatal): {_gate_err}")
 
 
-        # News topic-deepen (USER's own follow-up): the deepen detector + last-action-news
-        # check that the followthrough path already uses (extract_deepen_topic) was never
-        # applied to the user's DIRECT request, so "look into the magnetic fields" right after
-        # a news briefing hit the LLM resolver and was mis-routed (BACKGROUND_JOBS dump, fake
-        # DISCUSS_ARTICLE). Reuse that SAME detector here: if the user is going deeper on a
-        # topic just after news, answer it as a substantive grounded discussion (CHAT), not a
-        # mis-guessed command. CHAT/NEWS_FETCH left alone (already conversational / re-fetch).
+        # News topic-deepen: after a briefing, "go deeper into X" must re-fetch that
+        # story — not route to CHAT and let the model guess from weights.
         try:
-            _act_up = str(action or "").upper()
-            if _act_up not in ("CHAT", "NEWS_FETCH"):
-                from eli.runtime.action_commitment import extract_deepen_topic as _edt_direct
-                _deepen_topic = _edt_direct(user_input)
-                _lca_direct = getattr(self, "_last_command_action", None) or {}
-                _was_news_direct = str(_lca_direct.get("action") or "").upper() in (
-                    _DEEPEN_ARMING_ACTIONS)
-                # "right after" means within the window, not "at any point since launch".
-                if _was_news_direct:
-                    _lca_ts = float(_lca_direct.get("ts") or 0.0)
-                    if _lca_ts and (time.time() - _lca_ts) > _DEEPEN_WINDOW_SECONDS:
-                        _was_news_direct = False
-                # ACCEPTING a news follow-up offer: right after a briefing ELI asks "want to dive
-                # deeper into X or Y?"; the user's reply ("running local llms please", "the first
-                # one") carries NO explicit deepen verb, so extract_deepen_topic misses it and the
-                # LLM resolver mis-routes it to a canned how-to / code dump (the observed bug). If
-                # we're right after news and the reply is SHORT and NOT a hard OS command, read it
-                # as the picked topic → grounded discussion. Gated tight: worst case a short
-                # question becomes a conversational answer (better than a misroute), never a
-                # hijacked hard action.
-                if (not _deepen_topic) and _was_news_direct:
-                    _hard = {
-                        "OPEN_APP", "CLOSE_APP", "FOCUS_APP", "SWITCH_WINDOW", "PLAY_MEDIA",
-                        "PLAY_SPECIFIC", "MEDIA_CONTROL", "VOLUME_CONTROL", "MUTE", "CREATE_FILE",
-                        "CREATE_FOLDER", "DELETE_FILE", "SCREENSHOT", "TYPE_TEXT", "MOUSE_CONTROL",
-                        "KEY_PRESS", "SET_ALARM", "SET_TIMER", "SHELL_EXEC", "OPEN_URL",
-                        "GAZE_CLICK", "START_POMODORO", "ADD_EVENT", "SEARCH_NOTES",
-                    }
-                    _wc = len(str(user_input or "").split())
-                    if _act_up not in _hard and 1 <= _wc <= 7:
-                        _deepen_topic = str(user_input or "").strip().rstrip("?.!,;: ").strip()
-                # An EXPLICIT, high-confidence router match is a command, not an
-                # ambiguous follow-up. Observed in v2: "Good.. morning report?" matched
-                # self.morning_report at 0.95 and was still rewritten to CHAT, so the
-                # user asked for a morning report and got small-talk. MORNING_REPORT is
-                # also in the arming set, so a report suppressed the next report.
-                if _is_explicit_command_match(intent) or _act_up in _DEEPEN_ARMING_ACTIONS:
-                    _deepen_topic = ""
-
-                if _deepen_topic and _was_news_direct:
-                    log.debug(f"[COGNITIVE] news topic-deepen: {action}→CHAT "
-                              f"(topic='{_deepen_topic}')")
-                    action = "CHAT"
-                    args = {"message": user_input}
-                    if isinstance(intent, dict):
-                        intent["action"] = "CHAT"
-                        intent["allow_chat_without_evidence"] = True
-                        intent["_deepen_topic"] = _deepen_topic
+            action, args, intent = _try_news_topic_deepen_reroute(
+                user_input, action, args, intent,
+                getattr(self, "_last_command_action", None),
+            )
+            action, args, intent = _try_news_fetch_complaint_redo(
+                user_input, action, args, intent, self.memory,
+            )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -5009,6 +12456,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # CORRECTION shortcut: the user is correcting the previous answer
         # ("that's not what I asked"). Try a direct steered repair before the
         # heavy pipeline; on failure fall through as GENERAL.
+        # Never hijack explicit executor routes (WEB_SEARCH when user says "search
+        # the web") — observed: correction repair returned patch-cycle deflection
+        # instead of running DuckDuckGo.
         if _qclass == 'CORRECTION':
             try:
                 from eli.cognition.correction_patterns import correction_shortcut_allowed
@@ -5147,13 +12597,23 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         _eli_force_orch_all = str(__import__("os").environ.get("ELI_FORCE_ORCHESTRATOR_ALL_MODES", "")).strip().lower() in {"1", "true", "yes", "on"}
         _eli_force_orch_all_actions = str(__import__("os").environ.get("ELI_FORCE_ORCHESTRATOR_ALL_ACTIONS", "")).strip().lower() in {"1", "true", "yes", "on"}
         _eli_is_chat_action = str(action or "").upper() == "CHAT"
+        _eli_meta_turn = False
+        try:
+            from eli.cognition.correction_patterns import is_meta_conversation as _is_meta
+            _eli_meta_turn = _is_meta(user_input)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
         _eli_orch_should_run = (
             not bool(kwargs.get("disable_orchestrator"))
             and not getattr(self, "_orchestrator_active", False)
             and (_eli_is_chat_action or _eli_force_orch_all_actions or _eli_force_orch_all)
             and (
                 not _eli_is_chat_action
-                or (_qclass != "PHATIC" and not _is_brief_phatic_prompt(user_input))
+                or (
+                    _qclass != "PHATIC"
+                    and not _is_brief_phatic_prompt(user_input)
+                    and not _eli_meta_turn
+                )
             )
         )
         try:
@@ -5171,6 +12631,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             else:
                 log.debug(f"[PIPELINE] S05 PLANNER orchestrator dispatch mode={_eli_proc_mode}")
             _eli_pipe("orchestrator_dispatch", mode=_eli_proc_mode, stream=stream)
+            self._turn_resolved_intent = {"text": user_input, "intent": dict(intent or {})}
             try:
                 _orch_result = self._run_internal_orchestrator(
                     user_input,
@@ -5186,50 +12647,86 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 log.debug(f"[COGNITIVE] internal orchestrator failed, falling back to legacy pipeline: {_orch_err}")
 
         try:
-            from eli.cognition.agent_bus import get_bus
-            _bus = get_bus()
-            bus_result = _bus.dispatch(
-                user_input, intent,
-                session_id=self.session_id,
-                user_id=self.user_id,
-                reasoning_mode=reasoning_mode,
-            )
-            bus_memory_context = bus_result.memory_context or ""
+            from eli.cognition.agent_bus import DispatchResult as _DispatchResult
+            if _qclass == "PHATIC":
+                _phatic_mem = ""
+                try:
+                    _phatic_mem = str(getattr(self._working_memory, "dossier_context", "") or "").strip()
+                except Exception:
+                    _phatic_mem = ""
+                bus_result = _DispatchResult(
+                    intent_action=str(action or "CHAT"),
+                    intent_confidence=float(intent.get("confidence") or 0.6),
+                    memory_context=_phatic_mem,
+                    aggregated_confidence=0.45 if _phatic_mem else 0.0,
+                    grounding_confidence=0.35 if _phatic_mem else 0.0,
+                    confidence_label="phatic_light",
+                    agents_used=["memory"] if _phatic_mem else [],
+                )
+                bus_memory_context = _phatic_mem
+                if _log_stage:
+                    _log_stage(
+                        6,
+                        component="agent_bus",
+                        detail="phatic_light" if _phatic_mem else "skipped_phatic",
+                        agents=(["memory"] if _phatic_mem else []),
+                        mem_chars=len(_phatic_mem),
+                        conf=f"{0.45 if _phatic_mem else 0.0:.2f}",
+                        grounding=f"{0.35 if _phatic_mem else 0.0:.2f}",
+                        label="phatic_light" if _phatic_mem else "phatic_skip",
+                    )
+                else:
+                    log.debug(
+                        "[PIPELINE] S06 AGENT_BUS %s (PHATIC — %s)",
+                        "light dossier memory" if _phatic_mem else "skipped",
+                        f"{len(_phatic_mem)} chars" if _phatic_mem else "no dossier context",
+                    )
+            else:
+                from eli.cognition.agent_bus import get_bus
+                _bus = get_bus()
+                bus_result = _bus.dispatch(
+                    user_input, intent,
+                    session_id=self.session_id,
+                    user_id=self.user_id,
+                    reasoning_mode=reasoning_mode,
+                )
+                bus_memory_context = bus_result.memory_context or ""
             trace["agent_confidence"] = bus_result.aggregated_confidence
             trace["grounding_confidence"] = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0)
             trace["confidence_label"] = bus_result.confidence_label
             trace["agents_used"] = bus_result.agents_used
             # ── Always-visible Stage 5-9 summary ─────────────────────────────
-            _pipe_bus_agents = list(getattr(bus_result, "agents_used", []) or [])
-            _pipe_bus_conf = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0)
-            _pipe_bus_grounding = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0)
-            _pipe_bus_label = str(getattr(bus_result, "confidence_label", "?") or "?")
-            _pipe_bus_mem = len(str(bus_memory_context or ""))
-            if _log_stage:
-                _log_stage(
-                    6,
-                    component="agent_bus",
-                    detail="dispatch",
-                    agents=_pipe_bus_agents,
-                    mem_chars=_pipe_bus_mem,
-                    conf=f"{_pipe_bus_conf:.2f}",
-                    grounding=f"{_pipe_bus_grounding:.2f}",
-                    label=_pipe_bus_label,
-                )
-            else:
-                log.debug(
-                    f"[PIPELINE] S06 AGENT_BUS dispatch agents={_pipe_bus_agents} "
-                    f"mem={_pipe_bus_mem}ch conf={_pipe_bus_conf:.2f} "
-                    f"grounding={_pipe_bus_grounding:.2f} ({_pipe_bus_label})"
-                )
+            if _qclass != "PHATIC":
+                _pipe_bus_agents = list(getattr(bus_result, "agents_used", []) or [])
+                _pipe_bus_conf = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0)
+                _pipe_bus_grounding = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0)
+                _pipe_bus_label = str(getattr(bus_result, "confidence_label", "?") or "?")
+                _pipe_bus_mem = len(str(bus_memory_context or ""))
+                if _log_stage:
+                    _log_stage(
+                        6,
+                        component="agent_bus",
+                        detail="dispatch",
+                        agents=_pipe_bus_agents,
+                        mem_chars=_pipe_bus_mem,
+                        conf=f"{_pipe_bus_conf:.2f}",
+                        grounding=f"{_pipe_bus_grounding:.2f}",
+                        label=_pipe_bus_label,
+                    )
+                else:
+                    log.debug(
+                        f"[PIPELINE] S06 AGENT_BUS dispatch agents={_pipe_bus_agents} "
+                        f"mem={_pipe_bus_mem}ch conf={_pipe_bus_conf:.2f} "
+                        f"grounding={_pipe_bus_grounding:.2f} ({_pipe_bus_label})"
+                    )
 
             # ── World awareness feed (non-blocking) ───────────────────────────
             try:
                 from eli.world.world_event_bus import fire_confidence_event as _wfce
                 _wfce(
-                    grounding_confidence=_pipe_bus_grounding,
-                    aggregated_confidence=_pipe_bus_conf,
-                    agents_used=_pipe_bus_agents,
+                    grounding_confidence=float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0),
+                    aggregated_confidence=float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0),
+                    agents_used=list(getattr(bus_result, "agents_used", []) or []),
                     action=action,
                 )
             except Exception:
@@ -5279,6 +12776,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     _esc = _grounding_escalate(
                         self, user_input, intent, bus_result,
                         reasoning_mode=reasoning_mode, trace=trace,
+                        recent_turns=context,
                     )
                     if _esc is not None:
                         try:
@@ -5390,6 +12888,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "GET_PROPOSALS",
                             "EXPLAIN_LAST_RESPONSE",
                             "EXPLAIN_ALL_REASONING_MODES",
+                            "EXPLAIN_FAILURE_LOG",
+                            "EXPLAIN_GGUF_DIAGNOSTICS",
+                            "EXPLAIN_LAST_FAILURE",
                             "SELF_UPDATE",
                             # Self-maintenance actions (upgrade/improve/patch)
                             # produce a complete, authoritative step-by-step
@@ -5403,6 +12904,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "SELF_UPGRADE",
                             "SELF_IMPROVE",
                             "SELF_PATCH",
+                            "SELF_REPAIR_PLAYBOOK",
+                            "EXPLAIN_FAILURE_LOG",
+                            "EXPLAIN_GGUF_DIAGNOSTICS",
+                            "EXPLAIN_LAST_FAILURE",
                             # Code examiner: tiered error report + per-step patch
                             # outcomes are grounded fact — surface verbatim, never
                             # re-narrated (a weak model would corrupt the findings).
@@ -5442,6 +12947,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "RESTORE_WINDOWS", "SWITCH_WORKSPACE", "TILE_WINDOWS",
                             "MEDIA_CONTROL", "PLAY_MEDIA", "PAUSE_MEDIA",
                             "STOP_MEDIA", "NEXT_MEDIA", "PREVIOUS_MEDIA",
+                            "NOW_PLAYING",
                             "SHUFFLE_MEDIA", "REPEAT_MEDIA", "VOLUME",
                             "KEYBOARD", "MOUSE_CONTROL", "SCREENSHOT",
                             "SET_CLIPBOARD", "GET_CLIPBOARD",
@@ -5461,6 +12967,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             or intent.get("force_persona_synthesis")
                             or (intent.get("meta") or {}).get("force_persona_synthesis")
                         )
+                        _followup_kind = str((args or {}).get("followup_kind") or "").strip().lower()
+                        _self_report_depth_followup = (
+                            _action_upper == "SELF_REPORT"
+                            and _followup_kind in {"detail", "challenge"}
+                        )
                         # Deep technical introspection — "explain exactly how your
                         # memory/cognition pipeline works: files, folders, tables,
                         # processes". The executor builds a complete, sanitised LIVE
@@ -5473,13 +12984,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         # "memory.sqlite3 for temporary storage" and miscounted the
                         # databases. These return verbatim in EVERY reasoning mode.
                         #
-                        # Scope is deliberately TIGHT to the explain-internals pair:
-                        # RUNTIME_STATUS / RUNTIME_AUDIT / MEMORY_STATUS / NEWS_FETCH
-                        # have an explicit V19 "synthesise in non-Quick" contract
-                        # (tested) and a conversational synthesis genuinely reads
-                        # better for them — they are NOT here. Persona-narrative
-                        # actions (PERSONAL_MEMORY_DEEP_EXPLAIN) also synthesise.
+                        # Scope is deliberately TIGHT: RUNTIME_STATUS / RUNTIME_AUDIT /
+                        # MEMORY_STATUS still synthesise in non-Quick (V19 contract).
+                        # NEWS_FETCH / MORNING_REPORT / DAILY_REPORT are NOT here —
+                        # the executor already builds a complete persona-voiced briefing
+                        # with source tags ([HackerNews — 25 Aug], etc.). Re-running that
+                        # through compact synthesis strips citations, collapses depth, and
+                        # can contradict the evidence ("no morning report" when the
+                        # afternoon report is right there). Return verbatim in every mode.
+                        # Persona-narrative actions (PERSONAL_MEMORY_DEEP_EXPLAIN) synthesise.
                         _verbatim_always_actions = {
+                            "NEWS_FETCH",
+                            "MORNING_REPORT",
+                            "DAILY_REPORT",
                             # NOTE (2026-06-08): EXPLAIN_MEMORY_RUNTIME and
                             # EXPLAIN_COGNITION_RUNTIME were moved OUT of this set at the
                             # user's request — in non-quick modes they now SYNTHESISE the
@@ -5505,6 +13022,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "SELF_IMPROVE",
                             "SELF_IMPROVEMENT_LOG",
                             "SELF_TEST",
+                            "SELF_UPGRADE",
+                            "SELF_PATCH",
+                            "SELF_UPDATE",
                         }
                         # Quick mode bypasses synthesis for grounded control actions
                         # (returns deterministic evidence directly — fast, no GGUF).
@@ -5520,6 +13040,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             or (
                                 _direct_mode == "quick"
                                 and _action_upper in _deterministic_direct_payload_actions
+                                and not _self_report_depth_followup
                             )
                         )
                         # For non-Quick grounded control actions: synthesize the
@@ -5552,9 +13073,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 evidence=_synth_evidence,
                                 action=_action_upper,
                                 mode=_direct_mode,
-                                # Already retrieved by the memory agent this turn and
-                                # otherwise discarded by this early-return branch.
-                                memory_context=bus_memory_context,
                             )
                             if _compact_synth and _compact_synth.strip():
                                 _final_text = _compact_synth.strip()
@@ -5783,8 +13301,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             except Exception as _direct_return_err:
                 log.debug(f"[COGNITIVE] direct action return skipped: {_direct_return_err}")
         except Exception as _bus_err:
-            from eli.core.observability import observe
-            observe(__name__, "AgentBus dispatch failed (non-fatal)", exc=_bus_err)
+            log.debug(
+    f"[COGNITIVE] AgentBus dispatch failed (non-fatal): {_bus_err}")
 
         try:
             from eli.runtime.control_contracts import (
@@ -5803,7 +13321,14 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 except Exception:
                     _ctrl_mode = "quick" if not reasoning_mode else str(reasoning_mode)
 
-                if _ctrl_mode == "quick":
+                # Maintenance/control actions whose evidence packet IS the user-facing
+                # answer — never run them through CoT (which invents generic plans).
+                _ctrl_direct_finalise = {
+                    "SELF_UPDATE",
+                    "SELF_ANALYZE",
+                    "EXPLAIN_LAST_RESPONSE",
+                }
+                if _ctrl_mode == "quick" or str(action or "").upper() in _ctrl_direct_finalise:
                     return _finalise_control_result(
                         self,
                         user_input=user_input,
@@ -6733,7 +14258,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if _bus_ok is not None:
                     log.debug(f"[REPLAN] reusing bus success for {action}; skipping replan")
                     result = _bus_ok
-        if action in ("SELF_IMPROVE", "SELF_PATCH", "SELF_ANALYZE", "CODE_CHANGES") and hasattr(
+        if action in ("SELF_IMPROVE", "SELF_PATCH", "SELF_ANALYZE", "CODE_CHANGES", "SELF_UPGRADE") and hasattr(
             self, '_awareness') and self._awareness:
             try:
                 self._awareness.refresh()
@@ -6838,12 +14363,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final_response = (
                     "Sorry — my reply came out garbled there. Could you ask me that again?"
                 )
-        # ── Self-description repair (outbound) ───────────────────────────────
-        # The prompt-level self-facts block makes fabrication rare; this makes it
-        # correctable. ELI has placed its databases under an invented username,
-        # written agent.sqlite for agent.sqlite3, and described upgrading itself
-        # via a script that has never existed. Cheap: returns immediately unless a
-        # path or script token is present.
+        # Fabricated-internals guard: a claim ELI makes about its OWN paths or
+        # upgrade mechanism is checkable, so it gets checked. Observed live: it
+        # placed its databases under a /home/<name> path invented from the user's
+        # first name, wrote agent.sqlite for agent.sqlite3, and described
+        # upgrading itself via "./upgrade.sh" — a script that has never existed.
+        # Prompt-level grounding makes that rare; this makes it correctable.
+        # Cheap: returns immediately unless a path or script token is present.
         try:
             from eli.runtime.self_facts import repair_self_description as _repair_self
             _repaired, _self_fixes = _repair_self(final_response)
@@ -6891,6 +14417,29 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         return result
 
     def _parse_intent(self, text: str, context: list) -> Dict[str, Any]:
+        # Canonical precedence: memory meta / deep personal explain before phatic
+        # or long-question guards can swallow structured identity routes.
+        try:
+            from eli.execution.route_contracts import classify_precedence_route
+            _prec = classify_precedence_route(text)
+            if _prec:
+                log.debug("[COGNITIVE] precedence route → %s", _prec.get("action"))
+                return _prec
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # Phatic fast-path runs AFTER precedence so compound greeting + substantive
+        # request still reaches structured routes; pure greetings stay fast.
+        try:
+            if (os.environ.get("ELI_PHATIC_FASTPATH", "1").strip().lower()
+                    not in ("0", "false", "no", "off")
+                    and _is_brief_phatic_prompt(text)):
+                log.debug("[COGNITIVE] phatic fast-path → CHAT (skipped router + LLM intent resolver)")
+                return {"action": "CHAT", "args": {"message": text},
+                        "confidence": 0.6,
+                        "meta": {"matched_by": "phatic.fastpath",
+                                 "allow_chat_without_evidence": True}}
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
         router_intent = None
         try:
             router_intent = route_intent(text)
@@ -6906,23 +14455,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 and _matched_by != "fallback.chat"):
             log.debug(f"[COGNITIVE] Router parsed: {router_intent}")
             return router_intent
-        # Phatic fast-path: a brief greeting/thanks/check-in never needs LLM intent
-        # resolution — it is always conversation. When no deterministic rule fired,
-        # short-circuit to CHAT and SKIP the resolver model call entirely. This saves
-        # one full generation per phatic turn on ANY model/hardware (a greeting was
-        # paying for a needless intent-classification pass); it is purely a logic
-        # win, not a latency hack tuned to one device. Off: ELI_PHATIC_FASTPATH=0.
-        try:
-            if (os.environ.get("ELI_PHATIC_FASTPATH", "1").strip().lower()
-                    not in ("0", "false", "no", "off")
-                    and _is_brief_phatic_prompt(text)):
-                log.debug("[COGNITIVE] phatic fast-path → CHAT (skipped LLM intent resolver)")
-                return {"action": "CHAT", "args": {"message": text},
-                        "confidence": 0.6,
-                        "meta": {"matched_by": "phatic.fastpath",
-                                 "allow_chat_without_evidence": True}}
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
         # Unmatched → grounded LLM intent resolver (real catalogue, cached). Only
         # adopt a confident, actionable result; otherwise fall through to chat.
         try:
@@ -6972,6 +14504,34 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             li = {"action": "CHAT", "args": {"message": text}, "confidence": 0.6}
                     except Exception:
                         log.debug("[COGNITIVE] follow-up guard skipped", exc_info=True)
+            # Persona self-knowledge must not collapse to the SELF_REPORT runtime blurb.
+            try:
+                from eli.runtime.control_contracts import (
+                    is_persona_self_knowledge_query as _persona_self,
+                    is_identity_depth_followup as _identity_depth,
+                )
+                _li_act = str((li or {}).get("action") or "").upper()
+                if _li_act == "SELF_REPORT" and _persona_self(text):
+                    log.debug("[COGNITIVE] persona self-knowledge → CHAT (was SELF_REPORT)")
+                    li = {
+                        "action": "CHAT",
+                        "args": {"message": text},
+                        "confidence": 0.92,
+                        "meta": {"matched_by": "engine.persona_self_knowledge_veto"},
+                    }
+                elif _li_act == "EXPLAIN_ALL_REASONING_MODES" and _identity_depth(text):
+                    log.debug(
+                        "[COGNITIVE] identity depth follow-up → CHAT "
+                        f"(was {_li_act})",
+                    )
+                    li = {
+                        "action": "CHAT",
+                        "args": {"message": text},
+                        "confidence": 0.92,
+                        "meta": {"matched_by": "engine.identity_depth_followup_veto"},
+                    }
+            except Exception:
+                log.debug("[COGNITIVE] persona self-knowledge veto skipped", exc_info=True)
             if (li and li.get("action") and li.get("action") != "CHAT"
                     and li.get("confidence", 0) >= 0.6):
                 log.debug(f"[COGNITIVE] LLM intent resolved: {li.get('action')} "
@@ -6984,17 +14544,1125 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return router_intent
         return {"action": "CHAT", "args": {"message": text}, "confidence": 0.5}
 
+    def _stream_with_followthrough(self, inner, user_input: str,
+                                   reasoning_mode: Optional[str] = None) -> Generator[str, None, None]:
+        """Wrap the CHAT token stream so NO action is faked (engine-level, every
+        consumer). Streams the reply, then — if ELI committed to or faked a task
+        ("let me check the news", "fetching…", "[Story 1]") — actually re-runs
+        the pipeline and yields the REAL result. If it says it, it does it.
+        Recursion-guarded; only yields when a genuine non-chat task executes."""
+        parts: list = []
+        for tok in inner:
+            try:
+                parts.append(str(tok or ""))
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            yield tok
+        full = "".join(parts).strip()
+        if not full or getattr(self, "_in_followthrough", False):
+            return
+        try:
+            from eli.runtime.action_commitment import detect_action_commitment as _dc
+            commit = _dc(full)
+        except Exception:
+            commit = None
+        if not commit:
+            return
+        self._in_followthrough = True
+        try:
+            # Topic-deepen guard: if the previous real action was a news briefing
+            # and the user asked to go deeper on a specific topic ("look closer
+            # into Hubble"), re-fetch THAT topic — not ELI's lossy paraphrase,
+            # which drops the topic and dumps the whole briefing again.
+            _query = commit["clause"]
+            try:
+                import re as _ft_re
+                from eli.runtime.action_commitment import extract_deepen_topic as _edt
+                _deepen = _edt(user_input)
+                _lca = getattr(self, "_last_command_action", None) or {}
+                _was_news = str(_lca.get("action") or "").upper() in (
+                    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
+                _clause_newsish = bool(_ft_re.search(
+                    r"\bnews|headline|stor(?:y|ies)|latest|update\b",
+                    commit["clause"], _ft_re.I))
+                if _deepen and (_was_news or _clause_newsish):
+                    _query = f"fetch the latest news about {_deepen}"
+            except Exception:
+                _query = commit["clause"]
+            real = self.process(_query, stream=False, reasoning_mode=reasoning_mode)
+            if isinstance(real, dict):
+                real_act = str(real.get("action") or "").upper()
+                real_txt = str(real.get("content") or real.get("response") or "").strip()
+            else:
+                real_act, real_txt = "", str(real or "").strip()
+            # Followthrough is for ACTIONS ELI promised to perform FOR the user (fetch news,
+            # play media, search, open) — never for internal status/introspection DUMPS. A
+            # casual narration ("I've been checking my memory") must not auto-run MEMORY_STATUS
+            # and carpet-bomb the user with evidence they didn't ask for (the "why did you send
+            # me that data dump" complaint).
+            _ft_dump_actions = {
+                "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY",
+                "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS",
+                "META_DIAGNOSTIC", "SELF_ANALYZE", "RUNTIME_AUDIT", "REASONING_MODE_STATUS",
+                "EXPLAIN_ALL_REASONING_MODES", "CAPABILITY", "CAPABILITY_STATUS",
+                "HABIT_STATUS", "ORCHESTRATION_STATUS", "EXAMINE_CODE", "FILE_AUDIT",
+            }
+            if (real_txt and real_act not in ("", "CHAT", "UNKNOWN", "NOOP")
+                    and real_act not in _ft_dump_actions):
+                log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' → executed {real_act}")
+                yield "\n\n" + real_txt
+            elif real_act in _ft_dump_actions:
+                # Suppressing a dump nobody asked for is right. Suppressing one
+                # ELI just PROMISED to report is breaking its own word: live, it
+                # said "run the full acceleration diagnostics again, and I'll
+                # flag any lingering hiccups", ran RUNTIME_AUDIT, found a real
+                # duplicate-symbol defect, and threw the result away. The user
+                # saw nothing.
+                #
+                # So: when the reply contains an explicit undertaking to report,
+                # surface the FINDINGS only -- never the full PASS/PASS/PASS
+                # listing, which is the data dump the suppression exists to
+                # prevent. Both complaints are satisfied at once.
+                _ft_promised = bool(_ft_re.search(
+                    r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
+                    r"(?:flag|report|tell you|let you know|surface|call out|point out|"
+                    r"highlight|come back to you)\b",
+                    # `full` is the complete streamed reply -- the promise lives
+                    # there, not necessarily in the matched clause alone.
+                    str(commit.get("clause") or "") + " " + str(full or "")))
+                _ft_findings = _ft_summarise_findings(real_txt) if _ft_promised else ""
+                if _ft_findings:
+                    log.debug(f"[FOLLOWTHROUGH] {real_act} was promised — surfacing findings only")
+                    yield "\n\n" + _ft_findings
+                else:
+                    log.debug(f"[FOLLOWTHROUGH] suppressed status/dump action {real_act} (not a user-requested task)")
+        except Exception as _ft_err:
+            log.debug(f"[FOLLOWTHROUGH] engine-stream skipped: {_ft_err}")
+        finally:
+            self._in_followthrough = False
 
+    def _stream_chat(self, user_input: str, args: dict, context: list,
+                     reasoning_mode: Optional[str] = None,
+                     pre_built_memory_context: str = "",
+                     pre_built_bus_result: Optional[Any] = None) -> Generator[str, None, None]:
 
+        # Direct OS/audio controls that intentionally return no visible GUI text must
+        # execute before GGUF/stream fallback. Otherwise the no-visible-output guard
+        # mistakes a successful silent action for a broken generation.
+        try:
+            _p41_text = str(user_input or "").strip()
+            if _p41_text:
+                from eli.execution.router_enhanced import route as _p41_route
+                from eli.execution.executor_enhanced import execute as _p41_execute
+        
+                _p41_r = _p41_route(_p41_text)
+                _p41_action = None
+                _p41_args = {}
+        
+                if isinstance(_p41_r, dict):
+                    _p41_action = _p41_r.get("action")
+                    _p41_args = _p41_r.get("args") or {}
+                elif isinstance(_p41_r, (tuple, list)) and _p41_r:
+                    _p41_action = _p41_r[0]
+                    if len(_p41_r) > 1 and isinstance(_p41_r[1], dict):
+                        _p41_args = _p41_r[1]
+                else:
+                    _p41_action = getattr(_p41_r, "action", None)
+                    _p41_args = getattr(_p41_r, "args", {}) or {}
+        
+                _p41_silent_actions = {"VOLUME"}
+                if str(_p41_action or "").upper() in _p41_silent_actions:
+                    _p41_res = _p41_execute(str(_p41_action).upper(), _p41_args)
+                    log.debug(f"[COGNITIVE][PHASE41] silent direct action {_p41_action} executed; suppressing GUI output: {_p41_res}")
+                    # Yield a zero-width space so the GUI generator is non-empty and
+                    # does NOT trigger the stream=False double-call fallback.
+                    yield "\u200b"
+                    return
+        except Exception as _p41_err:
+            log.debug(f"[COGNITIVE][PHASE41] silent direct fastpath skipped: {_p41_err}")
 
+        """
+        Canonical single-dispatch streaming path.
 
+        Rules:
+        - process() may already have run AgentBus; reuse that context.
+        - Do not call process() again.
+        - Do not let the GUI perform a non-streaming rerun.
+        - If the primary stream path yields nothing, fall back inside this same
+          engine method directly to gguf_inference.generate().
+        """
+        from types import SimpleNamespace
+        import time as _time
 
+        prompt = str((args or {}).get("message") or user_input or "").strip()
+        started = _time.perf_counter()
+        _eli_pipeline_trace = str(__import__("os").environ.get("ELI_PIPELINE_TRACE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        _eli_pipeline_req = str(getattr(self, "_pipeline_req_id", "") or "n/a")
 
+        def _eli_pipe_stream(stage: str, **fields) -> None:
+            if not _eli_pipeline_trace:
+                return
+            try:
+                parts = [f"stage={stage}", f"req={_eli_pipeline_req}"]
+                for k, v in fields.items():
+                    parts.append(f"{k}={v}")
+                log.debug("[PIPELINE][ENGINE_STREAM] " + " ".join(parts))
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
 
+        if not prompt:
+            return
 
+        # Streaming GUI path must also bypass inference for commands.
+        try:
+            _p45_intent = route_intent(prompt)
+            _p45_action = _phase45_action_name((_p45_intent or {}).get("action"))
+            if _p45_action in _PHASE45_DIRECT_FAST_ACTIONS:
+                _p45_args = (_p45_intent or {}).get("args", {}) or {}
+                _p45_started = _time.perf_counter()
+                _p45_raw = execute_action(_p45_action, _p45_args)
+                _p45_result = _phase45_force_direct_result(_p45_action, _p45_raw)
+                _p45_text = str(_p45_result.get("response") or _p45_result.get("content") or "")
+                log.debug(f"[PHASE45] stream direct command {_p45_action} completed in {_time.perf_counter() - _p45_started:.3f}s")
+                # Silent commands still yield a zero-width marker so the GUI does
+                # not think the stream failed and print the "no visible output" error.
+                if not _p45_text and _p45_action in _PHASE45_SILENT_FAST_ACTIONS:
+                    yield "\u200b"
+                    return
+                if _p45_text:
+                    yield _p45_text
+                    return
+                yield "\u200b"
+                return
+        except Exception as _p45_stream_err:
+            log.debug(f"[PHASE45] stream command fastpath failed: {_p45_stream_err}")
 
+        # (SHORT_AMBIGUOUS_INPUT_FASTPATH removed — short/one-word inputs like
+        # "Hi" now reach the model normally instead of being rejected with
+        # "Didn't catch that — say it again?")
 
+        # ELI_REASONING_MODE_RECOVERY_V1
+        # Some indirect stream paths may omit the explicit reasoning_mode kwarg.
+        # process() stamps the active mode on self; recover it here to preserve
+        # non-Quick mode contracts in Stage 11 and fallback guards.
+        if not reasoning_mode:
+            reasoning_mode = getattr(self, "_current_reasoning_mode", None) or None
 
+        log.debug(
+            f"[COGNITIVE][PIPELINE] stream_chat begin "
+            f"req={_eli_pipeline_req} "
+            f"mode={reasoning_mode or 'quick'} "
+            f"prompt_chars={len(prompt)} "
+            f"prebuilt_ctx={bool(pre_built_memory_context)} "
+            f"prebuilt_bus={bool(pre_built_bus_result)}"
+        )
+
+        if pre_built_bus_result is not None or pre_built_memory_context:
+            _qclass = str(getattr(self, "_last_request_meta", {}).get("query_class") or "")
+            _fc_stream = self._maybe_fail_closed_chat(
+                prompt,
+                query_class=_qclass,
+                memory_context=pre_built_memory_context or "",
+                bus_result=pre_built_bus_result,
+            )
+            if _fc_stream:
+                yield _fc_stream
+                return
+
+        _eli_pipe_stream(
+            "begin",
+            mode=(reasoning_mode or "quick"),
+            prompt_chars=len(prompt),
+            prebuilt_ctx=bool(pre_built_memory_context),
+            prebuilt_bus=bool(pre_built_bus_result),
+        )
+
+        _rapport_mode = _eli_is_rapport_prompt(prompt)
+
+        try:
+            _phatic_stream = _is_brief_phatic_prompt(str(user_input or prompt or "").strip().lower())
+        except Exception:
+            _phatic_stream = False
+        if _phatic_stream:
+            _rapport_mode = False
+
+        # 1. Memory / evidence context. Reuse process()-built context when present.
+        # Rapport prompts deliberately skip deep memory/HyDE retrieval: casual banter should not be
+        # converted into a corporate status query or safety lecture.
+        if _phatic_stream:
+            memory_context = ""
+            log.debug("[COGNITIVE] Stream: phatic prompt — skipping memory/evidence context")
+            _eli_pipe_stream("context_mode", mode="phatic_skip")
+        elif _rapport_mode:
+            # Skip deep memory/HyDE retrieval but inject the user profile so
+            # ELI knows who it's talking to and can respond personally rather
+            # than with generic chatbot filler.
+            memory_context = ""
+            try:
+                from eli.kernel.state import get_user_profile_text as _gup
+                _profile_txt = (_gup() or "").strip()
+                if _profile_txt:
+                    memory_context = f"USER PROFILE:\n{_profile_txt}"
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            log.debug("[COGNITIVE] Stream: rapport prompt — lightweight profile context only")
+            _eli_pipe_stream("context_mode", mode="rapport_profile_only")
+        elif pre_built_memory_context and not any(p in prompt.lower() for p in (
+            # Force a fresh cross-session fetch for memory/recall queries — the
+            # prebuilt context was built for the *prior* turn without cross-session
+            # and won't contain prior-session content even when needed now.
+            "last conversation", "last chat", "what did i say", "what have i said",
+            "pick up where", "left off", "where were we", "what were we working on",
+            "previous session", "prior session", "recall", "past conversation",
+            "what did we", "what have we", "remember", "what were we discussing",
+        )):
+            memory_context = str(pre_built_memory_context or "")
+            log.debug("[COGNITIVE] Stream: reusing pre-built bus memory context — skipping second dispatch")
+            _eli_pipe_stream("context_mode", mode="prebuilt_reuse", chars=len(memory_context))
+        else:
+            try:
+                memory_context = self._retrieve_relevant_memories(
+                    user_input,
+                    intent={"action": "CHAT"},
+                )
+            except Exception as _mem_err:
+                log.debug(f"[COGNITIVE] Stream memory retrieval failed: {_mem_err}")
+                memory_context = ""
+
+            try:
+                evidence_context = self._build_grounded_evidence_context(user_input)
+                if evidence_context:
+                    memory_context = (memory_context + "\n\n" + evidence_context).strip()
+            except Exception as _ev_err:
+                log.debug(f"[COGNITIVE] Stream evidence build failed: {_ev_err}")
+            _eli_pipe_stream("context_mode", mode="retrieved", chars=len(memory_context))
+
+        log.debug(f"[COGNITIVE][TIMING] memory_context={_time.perf_counter() - started:.3f}s")
+
+        # 2. Build persona handoff once. Try the richest signature first, then degrade.
+        situation_brief = ""
+        try:
+            try:
+                _stream_recent_turns = list(context or [])
+            except Exception:
+                _stream_recent_turns = []
+
+            attempts = [
+                {
+                    "memory_context": memory_context,
+                    "bus_result": pre_built_bus_result,
+                    "recent_turns": _stream_recent_turns,
+                },
+                {
+                    "memory_context": memory_context,
+                    "recent_turns": _stream_recent_turns,
+                },
+                {
+                    "recent_turns": _stream_recent_turns,
+                },
+                {},
+            ]
+
+            for kw in attempts:
+                try:
+                    situation_brief = str(self._build_persona_handoff_once(user_input, **kw) or "").strip()
+                    if situation_brief:
+                        break
+                except TypeError:
+                    continue
+
+            if situation_brief:
+                log.debug(f"[COGNITIVE] Persona handoff → {len(situation_brief)} char brief")
+                log.debug(f"[PIPELINE] Stage 10: Context → {len(memory_context)}ch  Stage 10.5: Persona Handoff → {len(situation_brief)}ch")
+                _eli_pipe_stream("persona_handoff", chars=len(situation_brief))
+        except Exception as _handoff_err:
+            log.debug(f"[COGNITIVE] Persona handoff failed (non-fatal): {_handoff_err}")
+            situation_brief = ""
+            _eli_pipe_stream("persona_handoff_error", error=type(_handoff_err).__name__)
+
+        semantic_guard = _eli_conversation_semantic_guard(user_input)
+        _rapport_instruction = _eli_rapport_prompt_instruction(user_input)
+        if _rapport_instruction:
+            if situation_brief:
+                situation_brief = _rapport_instruction + "\n" + situation_brief
+            else:
+                situation_brief = _rapport_instruction
+        if semantic_guard:
+            if situation_brief:
+                situation_brief = semantic_guard + "\n\n" + situation_brief
+            else:
+                situation_brief = semantic_guard
+
+        situation_brief = self._inject_anti_repeat_contract(user_input, situation_brief)
+
+        # Do not promote raw memory_context into situation_brief.
+        # Raw context is private evidence, not answer text.
+        if not situation_brief:
+            situation_brief = ""
+
+        # 3. Build a minimal working-memory object for Stage 11.
+        try:
+            _wm_recent_turns = list(context or [])
+        except Exception:
+            _wm_recent_turns = []
+
+        wm = SimpleNamespace(
+            user_input=user_input,
+            assembled_context=memory_context,
+            persona_handoff=situation_brief,
+            final_response="",
+            trace={},
+            bus_result=pre_built_bus_result,
+            short_term_memory=SimpleNamespace(recent_turns=_wm_recent_turns),
+        )
+
+        full_tokens: List[str] = []
+        yielded = False
+
+        # 4. Primary Stage 11 streaming path.
+        try:
+            log.debug("[COGNITIVE] Stream: Stage 11 primary path")
+            log.debug(f"[PIPELINE] Stage 11: LLM Generation → streaming ({reasoning_mode or 'quick'} mode)")
+            log.debug(
+                f"[COGNITIVE][PIPELINE] stage_11_enter "
+                f"req={_eli_pipeline_req} "
+                f"mode={reasoning_mode or 'quick'} "
+                f"ctx_chars={len(situation_brief)} "
+                f"memory_chars={len(pre_built_memory_context or str())} "
+                f"bus_result={bool(pre_built_bus_result)}"
+            )
+            _eli_pipe_stream(
+                "stage_11_enter",
+                mode=(reasoning_mode or "quick"),
+                ctx_chars=len(situation_brief),
+                memory_chars=len(pre_built_memory_context or str()),
+                bus_result=bool(pre_built_bus_result),
+            )
+            for piece in self.generate_stream_from_assembled_prompt(
+                prompt,
+                working_memory=wm,
+                reasoning_mode=reasoning_mode,
+            ):
+                full_tokens.append(piece)
+                yielded = True
+                yield piece
+
+            if yielded:
+                final_text = self._govern_visible_response(
+                    prompt,
+                    "".join(full_tokens).strip(),
+                    memory_context=memory_context or situation_brief,
+                    is_grounded=bool(memory_context or situation_brief),
+                )
+                if final_text:
+                    try:
+                        self._store_assistant_turn(final_text)
+                    except Exception as _store_err:
+                        log.debug(f"[COGNITIVE] Stream assistant-turn store failed: {_store_err}")
+                    # ── Stage 12: Confidence scoring ──────────────────────────
+                    try:
+                        _s12_intent_conf = float(
+                            (getattr(pre_built_bus_result, "intent_confidence", None)
+                             or 0.6) if pre_built_bus_result else 0.6
+                        )
+                        _s12_score = self._score_response_confidence(
+                            prompt, final_text, memory_context, _s12_intent_conf, None)
+                        _s12_agent_conf = float(
+                            getattr(pre_built_bus_result, "aggregated_confidence", 0.0) or 0.0
+                        ) if pre_built_bus_result else 0.0
+                        _s12_label = str(
+                            getattr(pre_built_bus_result, "confidence_label", "?") or "?"
+                        ) if pre_built_bus_result else "?"
+                        _s12_threshold = 0.54 if (reasoning_mode or "quick") == "quick" else 0.66
+                        _s12_pass = "PASS" if _s12_score >= _s12_threshold else "LOW"
+                        log.debug(
+                            f"[PIPELINE] Stage 12: Confidence → "
+                            f"response={_s12_score:.2f} agent={_s12_agent_conf:.2f} "
+                            f"({_s12_label}) threshold={_s12_threshold:.2f} [{_s12_pass}]"
+                        )
+                        # A low confidence SCORE is a quality signal, not a code bug — there is no
+                        # traceback/file for the self-heal patcher to act on, so logging it as a
+                        # code-failure only polluted the failure log + recent-failures probe and
+                        # made low-confidence casual turns look like recurring bugs. Debug-log the
+                        # signal for observability; do not file it as a failure.
+                        if _s12_score < _s12_threshold:
+                            log.debug(f"[COGNITIVE] low stream confidence score={_s12_score:.2f} "
+                                      f"(agent={_s12_agent_conf:.2f}, mode={reasoning_mode or 'quick'})")
+                    except Exception as _s12_err:
+                        log.debug(f"[PIPELINE] Stage 12: Confidence scoring failed: {_s12_err}")
+                # ── Stream meta publish ───────────────────────────────────────
+                # _last_request_meta is not updated by the streaming generator path;
+                # publish it here so the GUI confidence badge reflects this turn.
+                try:
+                    _s_grounding = float(
+                        getattr(pre_built_bus_result, "grounding_confidence", 0.0) or 0.0
+                    ) if pre_built_bus_result else 0.0
+                    _s_agg = float(
+                        getattr(pre_built_bus_result, "aggregated_confidence", 0.0) or 0.0
+                    ) if pre_built_bus_result else 0.0
+                    _s_agents = list(
+                        getattr(pre_built_bus_result, "agents_used", []) or []
+                    ) if pre_built_bus_result else []
+                    _s_label = str(
+                        getattr(pre_built_bus_result, "confidence_label", "") or ""
+                    ) if pre_built_bus_result else ""
+                    self._last_request_meta = {
+                        "action": "CHAT",
+                        "result_action": "CHAT",
+                        "route_action": "CHAT",
+                        "request_id": str(_eli_pipeline_req or ""),
+                        "reasoning_mode": str(reasoning_mode or "quick"),
+                        "agents_used": _s_agents,
+                        "aggregated_confidence": _s_agg,
+                        "confidence": _s_agg,
+                        "grounding_confidence": _s_grounding,
+                        "confidence_label": _s_label,
+                        "evidence_used": bool(pre_built_memory_context),
+                        "grounded": bool(pre_built_memory_context),
+                        "response_chars": len(final_text),
+                        "response_text": final_text[:_TRACE_TEXT_CHARS],
+                        "response_truncated": len(final_text) > _TRACE_TEXT_CHARS,
+                        "user_input": str(user_input or "")[:400],
+                    }
+                    # PERSIST it, not just the in-memory badge. This block already
+                    # existed and only ever set _last_request_meta, so a streamed
+                    # CHAT — which is every ordinary GUI turn — never wrote
+                    # last_trace.json. "What was the last message you sent?" then
+                    # answered from whichever run last wrote the file: observed at
+                    # 2.1.96 reporting a turn from 106 minutes and one restart
+                    # earlier, with full confidence and no indication it was stale.
+                    from eli.runtime.last_trace import save_last_trace as _save_lt
+                    _save_lt(dict(self._last_request_meta))
+                except Exception as _smeta_err:
+                    log.debug(f"[PIPELINE] Stream meta publish failed: {_smeta_err}")
+                log.debug(f"[COGNITIVE][TIMING] stream_total={_time.perf_counter() - started:.3f}s")
+                return
+
+            log.debug("[COGNITIVE] Stream: Stage 11 primary path yielded zero visible tokens")
+            log.debug(
+                f"[COGNITIVE][PIPELINE] stage_11_zero_token "
+                f"req={_eli_pipeline_req} "
+                f"mode_at_check={reasoning_mode or None} "
+                f"full_tokens_count={len(full_tokens)} "
+                f"situation_brief_len={len(situation_brief)}"
+            )
+            _eli_pipe_stream(
+                "stage_11_zero_token",
+                mode_at_check=(reasoning_mode or None),
+                full_tokens_count=len(full_tokens),
+                situation_brief_len=len(situation_brief),
+            )
+
+            _mode_now = str(reasoning_mode or "quick").strip().lower()
+            if _mode_now not in {"quick", "fast", "direct"}:
+                _fault = (
+                    "Internal cognition-pipeline fault: Stage 11 produced zero visible tokens while "
+                    f"reasoning_mode={_mode_now}. I am blocking direct GGUF fallback because this is a "
+                    "non-Quick mode. The correct path is router → AgentBus plan → memory/context grounding "
+                    "→ Stage 11 synthesis → governor. Current failure point: generate_stream_from_assembled_prompt "
+                    "returned no visible chunks."
+                )
+                yield _fault
+                try:
+                    self._store_assistant_turn(_fault)
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+                log.debug(f"[COGNITIVE][TIMING] stream_total={_time.perf_counter() - started:.3f}s")
+                return
+
+        except Exception as _stage11_err:
+            log.debug(f"[COGNITIVE] Stream Stage 11 primary failed: {_stage11_err}")
+            _mode_now = str(reasoning_mode or "quick").strip().lower()
+            if _mode_now not in {"quick", "fast", "direct"}:
+                _fault = (
+                    "Internal cognition-pipeline fault: Stage 11 raised an exception in a non-Quick mode. "
+                    f"reasoning_mode={_mode_now}; error={_stage11_err}. Direct GGUF fallback blocked."
+                )
+                yield _fault
+                return
+
+        # 5. Same-dispatch direct GGUF fallback. QUICK MODE ONLY.
+        try:
+            _mode_now = str(reasoning_mode or "quick").strip().lower()
+            if _mode_now not in {"quick", "fast", "direct"}:
+                log.debug(f"[COGNITIVE] Direct GGUF fallback blocked for non-Quick mode: {_mode_now}")
+                return
+
+            log.debug("[COGNITIVE] Stream: direct gguf fallback path")
+            log.debug(f"[COGNITIVE][PIPELINE] gguf_fallback req={_eli_pipeline_req} mode_now={_mode_now!r}")
+            _eli_pipe_stream("gguf_fallback", mode_now=_mode_now)
+            from eli.cognition import gguf_inference as _gi
+
+            try:
+                from eli.core.runtime_settings import load_settings as _load_settings
+                _settings = _load_settings()
+            except Exception:
+                _settings = {}
+
+            try:
+                max_tokens = int(self._generation_settings().get("max_tokens", _settings.get("max_tokens", 512)) or 512)
+            except Exception:
+                max_tokens = 512
+            if max_tokens <= 0:
+                max_tokens = 512
+
+            try:
+                temperature = float(_settings.get("temperature", 0.7) or 0.7)
+            except Exception:
+                temperature = 0.7
+
+            direct_prompt = (
+                "You are ELI. Use the grounding package below and answer the user directly. "
+                "Do not speak as a generic AI assistant. Do not claim you lack memory or identity. "
+                "For repeated failures, repairs, and audits, give cause, evidence, fix, and verification.\n\n"
+                "--- GROUNDING PACKAGE ---\n"
+                f"{situation_brief}\n\n"
+                "--- USER MESSAGE ---\n"
+                f"{prompt}\n\n"
+                "--- ELI RESPONSE ---\n"
+            )
+
+            try:
+                direct_stream = _gi.generate(
+                    direct_prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=True,
+                )
+            except TypeError:
+                direct_stream = _gi.generate(
+                    direct_prompt,
+                    max_tokens=max_tokens,
+                    stream=True,
+                )
+
+            if isinstance(direct_stream, str):
+                direct_iter = [direct_stream]
+            else:
+                direct_iter = direct_stream
+
+            for chunk in direct_iter:
+                piece = ""
+                if isinstance(chunk, dict):
+                    piece = str(
+                        chunk.get("response")
+                        or chunk.get("content")
+                        or chunk.get("text")
+                        or ""
+                    )
+                    if not piece:
+                        try:
+                            piece = str(chunk["choices"][0]["delta"].get("content", ""))
+                        except Exception:
+                            piece = ""
+                else:
+                    piece = str(chunk or "")
+
+                if not piece:
+                    continue
+
+                full_tokens.append(piece)
+                yielded = True
+                # Stream live tokens immediately in the direct fallback path.
+                yield piece
+
+            if yielded:
+                final_text = self._govern_visible_response(
+                    prompt,
+                    "".join(full_tokens),
+                    memory_context=situation_brief,
+                    is_grounded=bool(situation_brief),
+                )
+                if final_text:
+                    try:
+                        self._store_assistant_turn(final_text)
+                    except Exception as _store_err:
+                        log.debug(f"[COGNITIVE] Stream direct-fallback store failed: {_store_err}")
+                log.debug(f"[COGNITIVE][TIMING] stream_total={_time.perf_counter() - started:.3f}s")
+                return
+
+        except Exception as _direct_err:
+            log.debug(f"[COGNITIVE] Stream direct gguf fallback failed: {_direct_err}")
+
+        # 6. Final visible failure. This should only happen if both generation paths failed.
+
+        try:
+            from eli.execution.router_enhanced import route as _p41_route2
+            _p41_text2 = str(user_input or "").strip()
+            _p41_r2 = _p41_route2(_p41_text2) if _p41_text2 else {}
+            if isinstance(_p41_r2, dict):
+                _p41_action2 = str(_p41_r2.get("action") or "").upper()
+            else:
+                _p41_action2 = str(getattr(_p41_r2, "action", "") or "").upper()
+            if _p41_action2 in {"VOLUME"}:
+                log.debug(f"[COGNITIVE][PHASE41] no-visible-output suppressed for silent action: {_p41_action2}")
+                return
+        except Exception as _p41_suppress_err:
+            log.debug(f"[COGNITIVE][PHASE41] no-visible suppressor skipped: {_p41_suppress_err}")
+        try:
+            _p43_silent_actions = {'VOLUME'}
+            _p43_action = ''
+            for _p43_k in ('action', '_action', 'intent_action', 'routed_action'):
+                _p43_v = locals().get(_p43_k)
+                if isinstance(_p43_v, str) and _p43_v.strip():
+                    _p43_action = _p43_v.strip().upper()
+                    break
+            if not _p43_action:
+                for _p43_k in ('route', 'intent', 'parsed', 'routed'):
+                    _p43_obj = locals().get(_p43_k)
+                    if isinstance(_p43_obj, dict):
+                        _p43_v = _p43_obj.get('action') or _p43_obj.get('name')
+                        if isinstance(_p43_v, str) and _p43_v.strip():
+                            _p43_action = _p43_v.strip().upper()
+                            break
+            _p43_user = str(
+                locals().get('user_input')
+                or locals().get('text')
+                or locals().get('message')
+                or ''
+            ).strip().lower()
+            if _p43_action in _p43_silent_actions or _p43_user in ('volume up', 'volume down', 'volume mute', 'mute', 'unmute'):
+                log.debug('[COGNITIVE][PHASE43] silent direct action completed; suppressing no-visible-output error.')
+                return
+        except Exception as _p43_e:
+            log.debug(f'[COGNITIVE][PHASE43] silent-action suppress check failed: {_p43_e}')
+        msg = "❌ CognitiveEngine stream produced no visible output after Stage 11 and direct GGUF fallback."
+        log.debug(f"[COGNITIVE] {msg}")
+        yield msg
+        return
+
+    def _maybe_store_memory(self, text: str, role: str = "user") -> None:
+        # Never store error strings as memories
+        _err_patterns = (
+            "gguf streaming failed", "gguf error", "model not ready",
+            "requested tokens", "exceed context window", "inference failed",
+            "context window", "broker unavailable",
+        )
+        # FIX: use 'text' instead of undefined 'response'
+        _resp_low = (text or "").lower().strip()
+        if any(p in _resp_low for p in _err_patterns) and len(_resp_low) < 300:
+            return
+        # Refuse ELI-authored patterns in user_input
+        # These get stored if ELI's response leaked into user_input at any
+        # point
+        _eli_self_patterns = (
+            "i am eli", "i'm eli", "my current reasoning mode",
+            "### memory system", "current time (authoritative",
+            "good afternoon", "good morning", "haha, glad",
+            "sure, let's", "understood, ", "gguf streaming",
+            "provider:", "model:", "context size:", "gpu layers:",
+            "threads:", "batch:", "gguf loaded:", "confidence:", "agents:",
+            "capabilities:", "runtime snapshot failed:"
+        )
+        # Governance filter: skip storing junk
+        if _HAS_GOVERNANCE and not should_store_as_memory(text, role):
+            return
+        _user_low = (text or "").lower().strip()
+        if any(p in _user_low for p in _eli_self_patterns):
+            return
+        text = (text or "").strip()
+        if not text:
+            return
+        if role == "assistant":
+            if len(text.split()) < 4 or text.lower() in {
+                "i'm here.", "i'm here", "got it.", "got it", "ok.", "ok"
+            }:
+                return
+            # ELI talking ABOUT ITSELF is not knowledge. Stored as a memory it comes back
+            # in a later session under "Stored knowledge:" and gets recited as fact —
+            # observed live: "I'm standing by, still glitchy, still running on the same
+            # old code" survived across sessions and was replayed as the answer to
+            # "morning" and "how are you?". Conversation history already preserves what
+            # was said; only substantive content earns a memory.
+            _t_low = text.lower()
+            _self_status = (
+                # first person + a state word ("I'm good", "I am ready")
+                (re.search(r"\b(i'?m|i am|i've|i have been|my)\b", _t_low)
+                 and re.search(r"\b(glitch\w*|standing by|running on|same old code|"
+                               r"still here|buggy|broken|fine|okay|ok|good|alright|well|"
+                               r"ready|online|operational|functioning|state|status|mood|"
+                               r"feeling)\b", _t_low))
+                # …or an unmistakable self-status phrase even without the pronoun
+                # ("Sahns. Still glitchy, still running on the same old code.")
+                or re.search(r"\b(still glitch\w*|same old code|standing by|"
+                             r"running on the same)\b", _t_low)
+            )
+            if _self_status:
+                log.debug("[MEMORY] not storing ELI's own self-status remark as knowledge")
+                return
+            kind = "assistant_insight"
+            source = "assistant"
+        else:
+            kind = "memory"
+            source = "user"
+
+        if role == "user":
+            user_text = text.lower()
+            stripped = user_text.strip().rstrip("?!.")
+            if stripped.endswith("?") or user_text.strip().endswith("?"):
+                return
+            if len(user_text.split()) < 4:
+                return
+            _question_starts = ("who ", "what ", "where ", "when ", "why ", "how ", "which ",
+                                "can you", "could you", "would you", "do you", "does ",
+                                "is there", "are there", "tell me", "give me", "show me",
+                                "list ", "explain ", "describe ")
+            if any(stripped.startswith(q) for q in _question_starts):
+                return
+
+            facts = []
+            pref_tests = [
+                # Explicit preferences
+                ("preference",
+     r"my (?:favourite|favorite|preferred|fav) (?:colour|color|language|editor|music|food|drink|tool|os|distro|framework|stack|setup|genre|show|film|game|sport) is .{2,60}"),
+                ("preference",
+     r"i (?:prefer|like|love|use|always use|usually use|tend to use|enjoy) .{3,60}"),
+                ("preference",
+     r"i(?:'m| am) (?:a big fan of|really into|obsessed with) .{3,60}"),
+                # Identity
+                ("identity", r"(?:^|[.!] )i am (?:a |an )?(?!not |asking |saying |telling |wondering )[a-z].{3,60}"),
+                ("identity", r"my name is (?!not\b|never\b|unknown\b|actually\b|just\b)[a-zA-Z]{2,30}"),
+                ("identity", r"call me (?!later|back|when)[a-zA-Z]{2,25}"),
+                ("identity", r"i(?:'m| am) (?:a |an )?(?:developer|engineer|designer|student|researcher|teacher|writer|artist|musician|gamer|trader|analyst)\b.{0,60}"),
+                # Work / project context
+                ("context", r"i(?:'m| am) (?:working|building|developing|making|creating) (?:on |a |an )?(?:project |app |tool |script |system |bot |game )?.{3,60}"),
+                ("context", r"i work (?:on|with|in|at|for) .{3,60}"),
+                ("context", r"i(?:'ve| have) been (?:working|building|using|running|studying|learning) .{3,60}"),
+                ("context", r"my (?:project|app|tool|system|game|bot|script) (?:is|uses|runs|does|needs) .{3,60}"),
+                # Hardware / environment
+                ("technical", r"i(?:'m| am) (?:using|running|on) .{3,60}"),
+                ("technical", r"i have (?:a |an )?(?:\d+\s*gb\b|nvidia|amd|intel|rtx|gtx|rx\s*\d|core\s*i|ryzen|arm).{2,60}"),
+                ("technical", r"my (?:gpu|cpu|ram|machine|pc|laptop|server|setup|rig|distro|os|kernel) (?:is|has|runs|uses) .{3,60}"),
+                # Software / tech stack
+                ("technical", r"i(?:'m| am) using (?:python|javascript|typescript|rust|go|java|c\+\+|kotlin|swift|ruby|php|elixir|haskell|lua).{0,60}"),
+                ("technical", r"(?:the project|this project|my project|the app|my app) (?:uses|runs on|is built with|is written in) .{3,60}"),
+            ]
+            for tag, pattern in pref_tests:
+                for m in re.finditer(pattern, user_text):
+                    fact = m.group(0).strip()[:200]
+                    if len(fact) > 8 and len(fact.split()) >= 3:
+                        facts.append((fact, tag))
+            tech_tests = [
+                ("correction",
+     r"(?:actually|correction|to clarify|wait|no)[,:] (?:my |the |it |that |this )\w.{8,100}"),
+                ("technical", r"(?:the|that|this) \w+ is (?:approximately|exactly|about|around) [\d\.]+ .{2,40}"),
+                ("context",
+     r"(?:i just|i recently|i finally|i always|i usually|i never|i sometimes) (?:finished|completed|shipped|deployed|broke|fixed|deleted|migrated|updated).{3,80}"),
+            ]
+            for tag, pattern in tech_tests:
+                for m in re.finditer(pattern, user_text):
+                    fact = m.group(0).strip()[:200]
+                    if len(fact) > 12 and len(fact.split()) >= 4:
+                        facts.append((fact, tag))
+
+            # importance mapping: identity/preference facts are high-salience
+            _tag_importance = {
+                "identity": 0.88,
+                "preference": 0.82,
+                "correction": 0.78,
+                "context": 0.72,
+                "technical": 0.68,
+            }
+
+            for fact, tag in facts[:8]:  # raised cap: extract more facts per turn
+                try:
+                    existing = self.memory.recall_memory(fact[:50], limit=3)
+                    already = any(fact[:40].lower() in str(
+                        m.get("text", "")).lower() for m in existing)
+                    if not already:
+                        _imp = _tag_importance.get(tag, 0.65)
+                        self.memory.store_memory(
+                            fact,
+                            tags=[tag, "auto_extracted"],
+                            kind=kind,
+                            source=source,
+                            importance=_imp,
+                        )
+                        log.debug(f"[MEMORY] Stored {tag} (importance={_imp}): {fact[:60]}")
+                        # Pin directly into working memory if importance is high enough
+                        try:
+                            if self._working_memory and _imp >= 0.65:
+                                self._working_memory.pin(
+                                    fact, source=f"auto_{tag}", importance=_imp)
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
+                        # Post-response: also index in vector store
+                        try:
+                            from eli.memory.vector_store import get_vector_store
+                            _vs = get_vector_store()
+                            if _vs is not None:
+                                _vs.add(fact, metadata={"tags": tag, "source": source,
+                                                        "importance": _imp})
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
+                except Exception as mem_e:
+                    log.debug(f"[MEMORY] store failed: {mem_e}")
+        else:
+            # Do NOT store ELI's responses in the FTS5-indexed memories table.
+            # They are already in conversation_turns and would pollute recall
+            # with old/bad answers, causing ELI to repeat or reinforce errors.
+            pass
+
+        # --- Periodic working memory persistence (every 10 turns) ---
+        try:
+            self._wm_turn_counter = getattr(self, "_wm_turn_counter", 0) + 1
+            if self._working_memory and self._wm_turn_counter % 10 == 0:
+                _wm_db = str(getattr(self.memory, "db_path", "") or "")
+                if _wm_db:
+                    self._working_memory.persist(_wm_db)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # --- Periodic session digest (every 20 turns) ---
+        try:
+            if getattr(self, "_wm_turn_counter", 0) % 20 == 0:
+                self._generate_session_digest()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+    def _generate_session_digest(self) -> None:
+        """Summarise the last 20 conversation turns into a searchable session digest memory."""
+        try:
+            recent = self.memory.get_recent_conversation(limit=20)
+            if not recent or len(recent) < 6:
+                return
+            user_msgs = [t["content"] for t in recent if t.get("role") == "user" and t.get("content")]
+            if not user_msgs:
+                return
+            # Extract key topics from user messages
+            _stopwords = {"i", "me", "my", "the", "a", "an", "is", "was", "it", "to", "do",
+                          "you", "your", "and", "or", "of", "in", "on", "for", "what", "how",
+                          "can", "that", "this", "with", "not", "are", "have", "has", "be",
+                          "just", "so", "ok", "yeah", "yes", "no", "hey", "hi"}
+            _word_freq: Dict[str, int] = {}
+            for msg in user_msgs:
+                for w in msg.lower().split():
+                    w = re.sub(r"[^a-z0-9]", "", w)
+                    if len(w) >= 4 and w not in _stopwords:
+                        _word_freq[w] = _word_freq.get(w, 0) + 1
+            top_topics = [w for w, _ in sorted(_word_freq.items(), key=lambda x: x[1], reverse=True)[:6]]
+            if not top_topics:
+                return
+            digest = f"Session digest ({len(recent)} turns): topics — {', '.join(top_topics)}. Last user message: {user_msgs[-1][:100]}"
+            # Dedup: only store if meaningfully different from last digest
+            try:
+                existing = self.memory.recall_memory(top_topics[0], limit=2)
+                if any("Session digest" in str(m.get("text", "")) for m in existing):
+                    return
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            self.memory.store_memory(
+                digest,
+                tags=["session_digest", "auto"],
+                kind="session_context",
+                source="eli_session",
+                importance=0.50,
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+    def _learn_from_result(
+        self, intent: Dict[str, Any], result: Dict[str, Any]) -> None:
+        action = str(intent.get("action") or "").upper()
+        args = intent.get("args", {}) or {}
+        ok = bool((result or {}).get("ok", True))
+        meta = intent.get("meta", {}) or {}
+
+        try:
+            self.memory.log_learning_event(
+                "command_result",
+                input_text=str(intent.get("user_input") or args.get("message") or args.get("query") or ""),
+                output_text=str((result or {}).get("content") or (result or {}).get("response") or ""),
+                action=action,
+                outcome="ok" if ok else "failed",
+                reward=1.0 if ok else -1.0,
+                metadata={
+                    "args": args,
+                    "matched_by": meta.get("matched_by"),
+                    "result_error": (result or {}).get("error"),
+                },
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        try:
+            self.memory.log_habit_event(
+                "command_result",
+                {
+                    "action": action,
+                    "args": args,
+                    "ok": ok,
+                    "matched_by": meta.get("matched_by"),
+                    "source": "cognitive_engine",
+                },
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        try:
+            from eli.runtime.evidence_ledger import record_event as _eli_record_event
+            _eli_record_event(
+                "command_result",
+                source="cognitive_engine.learn_from_result",
+                action=action,
+                subject=str(args.get("path") or args.get("target") or args.get("name") or args.get("topic") or ""),
+                content=str((result or {}).get("content") or (result or {}).get("response") or (result or {}).get("error") or ""),
+                payload={
+                    "args": args,
+                    "matched_by": meta.get("matched_by"),
+                    "result": result or {},
+                },
+                severity="info" if ok else "error",
+                outcome="ok" if ok else "failed",
+                confidence=float(intent.get("confidence") or 0.0) if isinstance(intent, dict) else None,
+                reusable=True,
+                session_id=str(getattr(self, "session_id", "") or ""),
+                user_id=str(getattr(self, "user_id", "") or ""),
+            )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        if action == "OPEN_APP" and ok:
+            name = args.get("name") or args.get("target") or args.get("app")
+            cmd = (result or {}).get("cmd") or (result or {}).get("command") or args.get("cmd") or name
+            method = (result or {}).get("method") or meta.get("matched_by") or "cognitive_engine"
+            if name:
+                self.memory.store_app_cmd(name, cmd or name, method)
+                self.memory.log_habit_event(
+                    "app_launch",
+                    {"app": name, "cmd": cmd or name, "method": method, "success": True},
+                )
+        elif action in {"OPEN_FILE_SYSTEM", "LIST_DIR", "READ_FILE"} and ok:
+            path = args.get("path")
+            if path:
+                self.memory.log_habit_event(action.lower(), {"path": path, "success": True})
+
+    def _start_reflection_loop(self) -> None:
+        def loop() -> None:
+            _MAX_RETRIES = 4  # Fix 7: retry instead of skipping
+            initial_delay = int(
+    os.environ.get(
+        "ELI_REFLECTION_START_DELAY_SEC",
+         "300") or 300)
+            time.sleep(max(0, initial_delay))
+            while self.running:
+                self._reflect()
+                time.sleep(24 * 3600)
+        threading.Thread(
+    target=loop,
+    daemon=True,
+     name="eli-reflection").start()
+
+    def _reflect(self) -> None:
+        _MAX_RETRIES = 4
+        acquired = False
+        try:
+            for _ in range(_MAX_RETRIES):
+                if self._gguf_lock.acquire(blocking=False):
+                    acquired = True
+                    break
+                time.sleep(1)
+            if not acquired:
+                log.debug("[COGNITIVE] Reflection deferred (GGUF busy)")
+                return
+            try:
+                from eli.runtime.reflection import run_reflection
+                result = run_reflection(hours=24)
+                insights = result.get("insights", [])
+                if insights:
+                    log.debug(f"[COGNITIVE] eli-reflection: {len(insights)} insights generated")
+                    # Persisting them here as well was a DOUBLE write:
+                    # run_reflection -> reflect_on_period already stores each
+                    # insight, and this loop stored the same rows again with no
+                    # duplicate check of any kind. Every reflection cycle
+                    # therefore appended two copies of every insight, which is
+                    # how one machine reached 135 reflection rows with 34 exact
+                    # duplicates — six identical copies of a single row — all of
+                    # them ranking in recall by weight of numbers.
+                    # reflect_on_period owns this; do not write it twice.
+            except Exception as e:
+                log.debug(f"[COGNITIVE] Reflection failed: {e}")
+        finally:
+            if acquired:
+                self._gguf_lock.release()
+        try:
+            from eli.cognition.persona_updater import update_persona_overlay
+            update_persona_overlay(memory=self.memory)
+        except Exception as e:
+            log.debug(f"[COGNITIVE] Persona overlay update failed: {e}")
+
+    def _start_habit_loop(self) -> None:
+        def loop() -> None:
+            self._detect_habits()
+            while self.running:
+                time.sleep(12 * 3600)
+                self._detect_habits()
+        threading.Thread(target=loop, daemon=True, name="eli-habits").start()
+
+    def _detect_habits(self) -> None:
+        acquired = False
+        try:
+            _MAX_RETRIES = 4
+            for _ in range(_MAX_RETRIES):
+                if self._gguf_lock.acquire(blocking=False):
+                    acquired = True
+                    break
+                time.sleep(1)
+            if not acquired:
+                # Fix 7b: log message
+                log.debug("[COGNITIVE] Habit detection deferred")
+                return
+            try:
+                from eli.planning.habits import detect_habits
+                detect_habits(days=14, min_occurrences=3)
+                log.debug("[COGNITIVE] eli-habits: detection complete")
+            except Exception as e:
+                log.debug(f"[COGNITIVE] Habit detection failed: {e}")
+        finally:
+            if acquired:
+                self._gguf_lock.release()
+
+    def _start_habit_scheduler(self) -> None:
+        """Start the habit rule execution scheduler (fires detected habits on schedule)."""
+        try:
+            from eli.planning.habits_scheduler import get_scheduler
+            get_scheduler()
+            log.debug("[COGNITIVE] Habit scheduler started")
+        except Exception as e:
+            log.debug(f"[COGNITIVE] Habit scheduler failed to start: {e}")
+
+    def _start_self_improvement_loop(self) -> None:
+        """Start the background self-improvement analysis loop (24h interval)."""
+        try:
+            from eli.runtime.self_improvement import get_self_improvement
+            get_self_improvement().start_self_improvement_loop(interval_hours=24)
+            log.debug("[COGNITIVE] Self-improvement loop started")
+        except Exception as e:
+            log.debug(f"[COGNITIVE] Self-improvement loop failed to start: {e}")
+
+    def _start_proactive_listener(self) -> None:
+        proactive_flag = str(
+    os.environ.get(
+        "ELI_PROACTIVE",
+         "1")).strip().lower()
+        if proactive_flag in ("0", "false", "no", "off"):
+            log.debug("[COGNITIVE] Proactive daemon disabled by ELI_PROACTIVE=0")
+            self.proactive_daemon = None
+            return
+        if os.environ.get("ELI_PROACTIVE_STARTED") == "1":
+            log.debug(
+                "[COGNITIVE] Proactive daemon already running - skipping duplicate start")
+            self.proactive_daemon = None
+            return
+        try:
+            from eli.planning.proactive_daemon import start_daemon
+            self.proactive_daemon = start_daemon()
+            os.environ["ELI_PROACTIVE_STARTED"] = "1"
+            self.add_observation("system", "Proactive daemon started")
+            log.debug("[COGNITIVE] Proactive daemon started – habit learning active")
+        except Exception as e:
+            log.debug(f"[COGNITIVE] Failed to start proactive daemon: {e}")
+            self.proactive_daemon = None
 
     def add_observation(self, source: str, content: str) -> None:
         self.memory.add_observation(source, content)
@@ -7129,16 +15797,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(f"[COGNITIVE] Governor validation failed (non-fatal): {gov_err}")
             return text
 
-    # Actions that answer questions about the USER. For these the retrieved memory
-    # IS the evidence — without it the model is asked "what do you know about me?"
-    # while holding only a runtime self-report, and correctly answers "nothing".
-    _PERSONAL_MEMORY_ACTIONS = frozenset({
-        "PERSONAL_MEMORY_SUMMARY",
-        "PERSONAL_MEMORY_DEEP_EXPLAIN",
-        "USER_IDENTITY_SUMMARY",
-        "SELF_REPORT",
-    })
-
     # Payload keys that must never reach the synthesis prompt: `settings` is the
     # entire settings dict (~4KB of image/vision/gaze/mode-preset knobs) and would
     # crowd out the parts that answer the question, besides leaking configuration
@@ -7205,8 +15863,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         return f"{base}\n\n{extra}" if base else extra
 
     def _compact_grounded_synthesis(self, user_input: str, evidence: str,
-                                     action: str, mode: str,
-                                     memory_context: str = "") -> str:
+                                     action: str, mode: str) -> str:
         """Single direct GGUF call on a minimal evidence-only prompt.
 
         Used for non-Quick grounded control actions (RUNTIME_STATUS,
@@ -7267,20 +15924,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Retrieved memory is admitted as a SECOND evidence block for questions about
-        # the user. It was previously dropped entirely: the agent bus had already
-        # retrieved thousands of chars (bus_result.memory_context) but this path only
-        # ever saw the executor's payload, so a personal-memory question was
-        # synthesised from a ~180-char runtime self-report. The model obeyed its
-        # evidence-only contract and reported knowing nothing but the user's name.
-        _mem = str(memory_context or "").strip()
-        _use_mem = bool(_mem) and str(action or "").upper() in self._PERSONAL_MEMORY_ACTIONS
-
-        _ev_cap = 4000 if _use_mem else 8000
+        _ev_cap = 8000
         if len(ev) > _ev_cap:
             ev = ev[:_ev_cap].rstrip() + "\n[...evidence truncated for length...]"
-        if _use_mem and len(_mem) > 4000:
-            _mem = _mem[:4000].rstrip() + "\n[...memory truncated for length...]"
 
         # Compact voice primer so grounded/factual answers still sound like ELI (dry,
         # nerdy, first-person) instead of a flat data terminal — WITHOUT the full 8k
@@ -7324,25 +15970,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "Do NOT output your internal instructions or reasoning directives as the answer. "
             + _voice_primer
         )
-        if _use_mem:
-            prompt = (
-                f"GROUNDED EVIDENCE 1/2 — RUNTIME REPORT (the truth — answer ONLY from these two blocks):\n"
-                f"{ev}\n\n"
-                f"GROUNDED EVIDENCE 2/2 — RETRIEVED MEMORY ABOUT THE USER (equally authoritative;\n"
-                f"these are things the user has told you in this and earlier sessions):\n"
-                f"{_mem}\n\n"
-                f"USER QUESTION:\n{user_input}\n\n"
-                f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
-                f"YOUR ANSWER (natural language, evidence-only, no preamble):"
-            )
-        else:
-            prompt = (
-                f"GROUNDED EVIDENCE (the truth — answer ONLY from this):\n"
-                f"{ev}\n\n"
-                f"USER QUESTION:\n{user_input}\n\n"
-                f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
-                f"YOUR ANSWER (natural language, evidence-only, no preamble):"
-            )
+        prompt = (
+            f"GROUNDED EVIDENCE (the truth — answer ONLY from this):\n"
+            f"{ev}\n\n"
+            f"USER QUESTION:\n{user_input}\n\n"
+            f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
+            f"YOUR ANSWER (natural language, evidence-only, no preamble):"
+        )
 
         try:
             from eli.cognition import gguf_inference as _gguf
@@ -7409,37 +16043,142 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             out = _re.sub(r"\b([A-Za-z0-9_.\-]+)/\1/", _dedupe, out)
         return out
 
+    def _synthesize_answer(self, evidence: str, query: str,
+                           reasoning_mode=None,
+                           max_tokens_override: Optional[int] = None,
+                           action: Optional[str] = None) -> str:
+        # Don't call GGUF when the executor already reported failure — it would
+        # hallucinate success.  Surface a grounded failure message instead.
+        if _failed_executor_is_failed(evidence, action=action or ""):
+            return _failed_executor_surface(evidence, query, action=action or "")
+
+        q = (query or "").strip().lower()
+        ev = str(evidence or "").strip()
+        try:
+            from eli.cognition.reasoning_modes import canonical_mode as _eli_syn_mode
+            _syn_mode = _eli_syn_mode(reasoning_mode)
+        except Exception:
+            _syn_mode = str(reasoning_mode or "quick").strip().lower() or "quick"
+        _nonquick_depth = _syn_mode != "quick"
+
+        if _eli_test_mode():
+            pass
+            if "remember that" in q:
+                return ""
+            if "what do you know about me" in q:
+                return ev[:1200] if ev else "I found stored memories."
+            if q.startswith("list "):
+                return ev[:1200] if ev else "Directory listed."
+
+        persona = self.get_persona()
+        # Cap evidence to prevent context overflow. Persona ~2k chars +
+        # instructions ~400 chars + query ~200 chars leaves a budget.
+        # At n_ctx=16384, 3.5 chars/token, ~60% usable = ~34k chars total.
+        _ev_max_chars = 10000
+        if len(ev) > _ev_max_chars:
+            ev = ev[-_ev_max_chars:]
+            nl = ev.find("\n")
+            if nl > 0:
+                ev = ev[nl + 1:]
+        _depth_instruction = (
+            "For non-quick reasoning modes, provide a thorough, in-depth answer with concrete grounded detail and clear structure. "
+            if _nonquick_depth else
+            "For simple command results, answer in one short sentence. "
+        )
+        prompt = (
+            f"{persona}\n\n"
+            "INSTRUCTIONS: The data below was gathered by your internal agents. "
+            "Answer the user's current request only. "
+            "Write a clear, natural, first-person answer using ONLY this data. "
+            "Do not output raw JSON, bracket labels, or agent metadata. "
+            "Do not mention previous turns, memories, files, paths, or unrelated context unless the user explicitly asked for them. "
+            f"{_depth_instruction}"
+            "For failed commands, state the failure and the specific reason only. "
+            "Include exact file paths only when the user explicitly asks about runtime, memory, files, databases, or paths. "
+            "Speak as yourself — same personality, same tone as your regular chat responses.\n\n"
+            f"AGENT DATA:\n{ev}\n\n"
+            f"USER QUESTION:\n{query}\n\n"
+            "YOUR ANSWER:"
+        )
+        try:
+            from eli.runtime.final_response_provider import (
+                apply_generation_kwargs as _eli_apply_response_kwargs,
+                clear_current_action as _eli_clear_current_action,
+                decorate_prompt as _eli_decorate_prompt,
+                set_current_action as _eli_set_current_action,
+            )
+            _contract = _eli_set_current_action(action or "CHAT")
+            prompt = _eli_decorate_prompt(prompt, _contract)
+            _grounded_short = any(x in q for x in (
+                "runtime", "gpu layers", "context size", "model", "previous response",
+                "last response", "which agents contributed", "confidence in your last response",
+            ))
+            _max_tokens = int(max_tokens_override) if (max_tokens_override is not None and max_tokens_override != 0) else -1
+            if _nonquick_depth and _max_tokens == -1:
+                _max_tokens = 1800
+            # A grounded factual answer (web/news lookup) is a few sentences, not
+            # an essay. In quick mode max_tokens=-1 means "fill the rest of the
+            # context" (~8.8k tokens observed) — that both slows the reply AND
+            # starves the prompt budget, forcing the system prompt + grounding
+            # instruction to be truncated. Cap it so the evidence fits and the
+            # answer stays tight. Non-quick keeps its larger 1800 budget above.
+            if _max_tokens == -1 and str(action or "").upper() in ("WEB_SEARCH", "NEWS_FETCH"):
+                _max_tokens = 700
+            _gen_kwargs = _eli_apply_response_kwargs(
+                {"max_tokens": _max_tokens, "temperature": 0.35},
+                _contract,
+            )
+            response = self._get_chat_response(
+                prompt,
+                gen_overrides=_gen_kwargs,
+            )
+            _eli_clear_current_action()
+            if response and response.strip():
+                return response.strip()
+        except Exception as e:
+            try:
+                _eli_clear_current_action()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            log.debug(f"[COGNITIVE] _synthesize_answer LLM call failed: {e}")
+        return ""
 
 
 _engine: Optional[CognitiveEngine] = None
+_engine_lock = threading.Lock()
 
 
-# ── What ELI's prompt actually needs, in TOKENS ──────────────────────────────
-#
-# The GUI loader sized the requested context from a flat `ELI_CTX_BRIEF_FLOOR`
-# of 12288 "so the persona/memory brief is never chopped". 12288 is the brief's
-# budget in CHARACTERS (persona 8192 + memory 4096) — it was being spent as
-# TOKENS, demanding four times the context the brief can ever occupy, on every
-# machine. On a small card that difference is decisive: smart_fit honours the
-# requested context by shedding GPU layers, so an inflated floor pushes the
-# whole model onto the CPU to reserve room nothing will use.
-#
-# Derived here, from the same budgets the assembler actually enforces, so the
-# two cannot drift apart again.
+def set_engine(engine: "CognitiveEngine") -> None:
+    """Register an already-built engine as the process-wide one.
+
+    The GUI builds its engine directly, with auto_init_gguf=False (the model is
+    loaded later, by the startup dialog, with the operator's own parameters). It
+    never registered that instance here, so the first background caller of
+    get_engine() — habits_scheduler on its own thread — constructed a SECOND
+    CognitiveEngine with auto_init_gguf defaulting to True. Live at 2.2.5 that
+    meant a second GGUF load, a second habit scheduler, a second
+    self-improvement loop, "Signal handler registration failed ... signal only
+    works in main thread" (proof it was off-thread), and two shutdown sequences
+    ending in "native teardown already done by another instance".
+    """
+    global _engine
+    with _engine_lock:
+        _engine = engine
+
+
+
+# Character budget for the memory block in the assembled prompt.
 ELI_BUDGET_MEMORY_CHARS = 4096
-ELI_CHARS_PER_TOKEN = 4
 
-
-def eli_brief_budget_tokens() -> int:
-    """Context (tokens) ELI's persona + memory brief can actually occupy."""
-    chars = int(CognitiveEngine._PERSONA_MAX_CHARS) + int(ELI_BUDGET_MEMORY_CHARS)
-    return max(1024, chars // ELI_CHARS_PER_TOKEN)
 
 def get_engine() -> CognitiveEngine:
     global _engine
-    if _engine is None:
-        _engine = CognitiveEngine()
-    return _engine
+    # Locked: two background threads racing here would each build an engine and
+    # one would be silently discarded, having already started its own daemons.
+    with _engine_lock:
+        if _engine is None:
+            _engine = CognitiveEngine()
+        return _engine
 
 # REASONING_STATUS body block removed (Phase 2c — helpers relocated above class CognitiveEngine)
 

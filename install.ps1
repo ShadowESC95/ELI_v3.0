@@ -1,4 +1,4 @@
-﻿# ELI v3 -- Windows PowerShell installer
+﻿# ELI v2.0 -- Windows PowerShell installer
 # Run: powershell -ExecutionPolicy Bypass -File install.ps1 [-CpuOnly] [-Latest] [-InstallCuda] [-CudaVersion cu121]
 
 param(
@@ -17,6 +17,12 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Venv = Join-Path $ScriptDir ".venv"
+$env:ELI_PROJECT_ROOT = $ScriptDir
+if (-not $env:ELI_DATA_DIR) { $env:ELI_DATA_DIR = Join-Path $ScriptDir "artifacts" }
+if (-not $env:ELI_CONFIG_DIR) { $env:ELI_CONFIG_DIR = Join-Path $ScriptDir "config" }
+if (-not $env:ELI_MODELS_DIR) { $env:ELI_MODELS_DIR = Join-Path $ScriptDir "models" }
+if (-not $env:ELI_CACHE_DIR) { $env:ELI_CACHE_DIR = Join-Path $ScriptDir "cache" }
+if ($env:PYTHONPATH) { $env:PYTHONPATH = "$ScriptDir;$env:PYTHONPATH" } else { $env:PYTHONPATH = $ScriptDir }
 # Frozen lock by default (reproducible); -Latest uses the Windows/range profile.
 $RequirementCandidates = if ($Latest) {
     @( (Join-Path $ScriptDir "requirements-windows.txt"), (Join-Path $ScriptDir "requirements.txt") )
@@ -41,7 +47,7 @@ if ($Wheelhouse) {
 
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host "  ELI v3 - Installer (Windows)" -ForegroundColor Cyan
+Write-Host "  ELI v2.0 - Installer (Windows)" -ForegroundColor Cyan
 Write-Host "  100% local - private - offline-by-default" -ForegroundColor DarkGray
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -240,9 +246,9 @@ if (-not $CpuOnly) {
     }
 }
 
-# ELI v3 wheel
-Write-Host "[..] Installing ELI v3..."
-$Wheel = Get-ChildItem (Join-Path $ScriptDir "dist") -Filter "eli_v3-*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
+# ELI v2.0 wheel
+Write-Host "[..] Installing ELI v2.0..."
+$Wheel = Get-ChildItem (Join-Path $ScriptDir "dist") -Filter "eli_v2_0-*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($Wheel) {
     Invoke-Pip (@("install") + $PipFindLinksArgs + @("$($Wheel.FullName)[full]", "--quiet"))
 } else {
@@ -257,12 +263,6 @@ if ($Wheel) {
 # Remaining deps
 Write-Host "[..] Installing dependencies from $(Split-Path $RequirementsFile -Leaf)..."
 Invoke-Pip (@("install") + $PipFindLinksArgs + @("-r", $RequirementsFile, "--quiet"))
-
-$TestReq = Join-Path $ScriptDir "requirements-test.txt"
-if (Test-Path $TestReq) {
-    Write-Host "[..] Installing test-suite dependencies..."
-    Invoke-Pip (@("install", "-r", $TestReq, "--quiet"))
-}
 
 # Seed a clean offline config (never overwrite) + init data dirs/databases.
 $Settings = Join-Path $ScriptDir "config\settings.json"
@@ -291,11 +291,23 @@ Write-Host "[..] Initialising data directories and full database architecture...
 if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Full database architecture ready (blank slate)." -ForegroundColor Green }
 else { Write-Host "[WARN] Some stores deferred to first launch (self-build on first use)." -ForegroundColor Yellow }
 
+Write-Host "[..] Ensuring capability manifest and command reference..."
+# Native (python) non-zero exits do NOT throw in PowerShell, so a try/catch can't see
+# them -- check $LASTEXITCODE explicitly (same pattern Invoke-Pip uses).
+& $PythonVenv -c "from eli.tools.registry.capability_updater import update_capability_manifest; r=update_capability_manifest(); assert r.get('ok'), r; print(f'[OK] {r.get(\"total\",0)} capabilities indexed')"
+if ($LASTEXITCODE -ne 0) {
+    if (Test-Path (Join-Path $ScriptDir "capability_manifest.json")) {
+        Write-Host "[OK] Using shipped capability_manifest.json (regeneration skipped)." -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] Capability manifest missing -- run: .venv\Scripts\python -m eli.tools.registry.capability_updater" -ForegroundColor Yellow
+    }
+}
+
 # -- Optional system tools (best-effort via winget): ffmpeg = media/whisper, tesseract = OCR --
 # Non-fatal. Windows uses native APIs for volume/clipboard/notifications, so only these help.
 if (Get-Command winget -ErrorAction SilentlyContinue) {
     Write-Host "[..] Installing optional system tools (ffmpeg, tesseract) via winget..."
-    foreach ($id in @("Gyan.FFmpeg", "UB-Mannheim.TesseractOCR")) {
+    foreach ($id in @("Gyan.FFmpeg", "UB-Mannheim.TesseractOCR", "mpv.MPV")) {
         winget install --id $id --silent --accept-package-agreements --accept-source-agreements 2>$null
     }
     Write-Host "[OK] Optional system tools step done (skips any already present)." -ForegroundColor Green
@@ -324,19 +336,16 @@ if (-not $NoModel) {
     else { Write-Host "[WARN] Embedder fetch deferred (run: python -m eli.core.model_download --aux)" -ForegroundColor Yellow }
 }
 
-# Voice weights (browser voice + TTS): local faster-whisper STT + a Piper voice.
-# The pip packages ship the runtimes; these are the (gitignored) weights. Best-effort.
+# Voice weights: required for web-server mic -- always fetch, not gated on chat model.
 $VoiceStatus = "skipped"
-if (-not $NoModel) {
-    Write-Host "[..] Ensuring voice models (local STT + TTS, for browser/desktop voice) are present..."
-    & $PythonVenv -m eli.runtime.voice_assets
-    if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Voice models ready." -ForegroundColor Green; $VoiceStatus = "ready" }
-    else { Write-Host "[WARN] Voice models deferred (run: .venv\Scripts\python -m eli.runtime.voice_assets)" -ForegroundColor Yellow; $VoiceStatus = "deferred (fetch later)" }
-}
+Write-Host "[..] Ensuring voice models (local STT + TTS, for browser/desktop voice) are present..."
+& $PythonVenv -m eli.runtime.voice_assets
+if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Voice models ready." -ForegroundColor Green; $VoiceStatus = "ready" }
+else { Write-Host "[WARN] Voice models deferred (run: .venv\Scripts\python -m eli.runtime.voice_assets)" -ForegroundColor Yellow; $VoiceStatus = "deferred (fetch later)" }
 
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Green
-Write-Host "  ELI v3 - installation complete" -ForegroundColor Green
+Write-Host "  ELI v2.0 - installation complete" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "--- Summary ---" -ForegroundColor Magenta
@@ -346,6 +355,8 @@ Write-Host "[OK] Voice       $VoiceStatus" -ForegroundColor Green
 Write-Host "[OK] Data        fresh local databases, offline-by-default" -ForegroundColor Green
 Write-Host ""
 Write-Host "--- Launch ---" -ForegroundColor Magenta
+Write-Host "[..] Installing Start Menu shortcuts with ELI icon..."
+powershell -ExecutionPolicy Bypass -File "$ScriptDir\scripts\install_desktop_apps.ps1"
 Write-Host "  .\eli.bat                                  # desktop app (GUI)" -ForegroundColor White
 Write-Host "  .\scripts\eli_serve.ps1 -Lan               # web app for phone / tablet" -ForegroundColor White
 Write-Host "  powershell -File scripts\install_desktop_apps.ps1   # add Start Menu shortcuts" -ForegroundColor White

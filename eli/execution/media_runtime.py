@@ -19,6 +19,10 @@ import time
 import urllib.parse
 from typing import Any, Callable, Mapping
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 
 PLAY_ACTIONS = {"PLAY_MEDIA", "MEDIA_PLAY", "PLAY"}
 PAUSE_ACTIONS = {"PAUSE_MEDIA", "MEDIA_PAUSE", "PAUSE"}
@@ -69,7 +73,11 @@ def _target(args: Mapping[str, Any]) -> str:
     aliases = {
         "you tube": "youtube",
         "yt": "youtube",
-        "youtube.com": "youtube",
+        "youtube.com": "youtube website",
+        "youtube com": "youtube website",
+        "youtube website": "youtube website",
+        "youtube web": "youtube website",
+        "youtube web site": "youtube website",
         "mpv": "mpv",
         "spotify": "spotify",
     }
@@ -120,7 +128,7 @@ def _mpv_socket() -> str:
             # mpv on Windows exposes IPC over a named pipe, not a filesystem socket.
             return r"\\.\pipe\eli_youtube_mpv"
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     import tempfile
     return os.path.join(tempfile.gettempdir(), "eli_youtube_mpv.sock")
 
@@ -212,19 +220,25 @@ def youtube_play(query: str) -> str:
     if not q:
         return "Say what to play."
 
-    if not shutil.which("mpv"):
-        return "mpv is not installed; cannot play YouTube locally."
-    if not shutil.which("yt-dlp"):
-        return "yt-dlp is not installed; cannot play YouTube locally."
+    from eli.integrations.media.media_deps import (
+        missing_youtube_tools,
+        path_env_for_subprocess,
+        yt_dlp_available,
+    )
+    _missing = missing_youtube_tools()
+    if _missing:
+        names = " and ".join(_missing)
+        return f"{names} {'is' if len(_missing) == 1 else 'are'} not installed; cannot play YouTube locally."
 
     from eli.integrations.media.youtube_playback import attempt_youtube_mpv
+    from eli.integrations.media.cross_platform import mpv_socket_path
 
     sock = _mpv_socket()
     try:
         _mpv_ipc("close")
         time.sleep(0.15)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     result = attempt_youtube_mpv(q, ipc_path=sock)
     if result.get("played"):
@@ -260,21 +274,21 @@ def open_spotify() -> str:
                 return "Opened app: spotify"
             except Exception:
                 continue
-        # Last resort on Linux: the spotify: URI scheme via the portable opener.
+        # Last resort on Linux: the spotify: URI scheme via the app handler.
         try:
-            if _pc.open_url("spotify:"):
+            if _pc.open_app_uri("spotify:"):
                 return "Opened app: spotify"
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return "Could not open spotify. Tried: spotify, flatpak com.spotify.Client, snap spotify, gtk-launch, xdg-open spotify:"
 
     # macOS / Windows: reuse the cross-platform app launcher (open -a / Start-Apps),
     # then fall back to the spotify: URI scheme.
     try:
-        if _pc.open_app("spotify") or _pc.open_url("spotify:"):
+        if _pc.open_app("spotify") or _pc.open_app_uri("spotify:"):
             return "Opened app: spotify"
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return "Could not open spotify."
 
 
@@ -293,7 +307,7 @@ def spotify_query(query: str) -> str:
         open_spotify()
         time.sleep(0.35)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     if _pc.LINUX:
         # Linux: drive Spotify over MPRIS (D-Bus), then nudge play via playerctl.
@@ -313,7 +327,7 @@ def spotify_query(query: str) -> str:
                     timeout=3,
                 )
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         if shutil.which("playerctl"):
             try:
@@ -324,7 +338,7 @@ def spotify_query(query: str) -> str:
                     timeout=2,
                 )
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
     elif _pc.MACOS and shutil.which("osascript"):
         # macOS: open the search URI then ask Spotify (AppleScript) to play.
@@ -336,14 +350,14 @@ def spotify_query(query: str) -> str:
                 capture_output=True, text=True, timeout=3,
             )
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     else:
         # Windows / other: open the search URI; the client surfaces results.
         try:
             _pc.open_url(uri)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     return f"Searching Spotify for: {q}"
 
@@ -454,6 +468,7 @@ def normalize_streaming_target(raw: str) -> str:
     """Map a spoken/platform target to a canonical streaming id, or '' if unknown."""
     import re as _re
     t = _re.sub(r"\s+", " ", _lower(raw)).strip()
+    t = _re.sub(r"(?:\s+com|\.com)\s*$", "", t).strip()
     if not t:
         return ""
     if t in _STREAMING_CANONICAL_URLS:
@@ -469,10 +484,108 @@ def _streaming_display_name(canon: str) -> str:
     return _STREAMING_DISPLAY_NAMES.get(canon, canon.replace("plus", "+").title())
 
 
-def _play_on_streaming(target: str, query: str) -> str:
-    """Deep-link to a streaming platform's search for the requested title. Honest: reports
-    exactly what it did (opened + searched), never claims playback it can't verify."""
-    import urllib.parse, re
+_STREAMING_APP_LAUNCHERS: dict[str, list[list[str]]] = {
+    "netflix": [
+        ["flatpak", "run", "com.netflix.Netflix"],
+        ["netflix"],
+        ["snap", "run", "netflix"],
+    ],
+    "disneyplus": [
+        ["flatpak", "run", "com.disney.disneyplus"],
+        ["flatpak", "run", "com.disneyplus"],
+    ],
+    "hulu": [
+        ["flatpak", "run", "com.hulu.plus"],
+        ["hulu"],
+    ],
+    "primevideo": [
+        ["flatpak", "run", "com.amazon.PrimeVideo"],
+        ["primevideo"],
+    ],
+    "max": [
+        ["flatpak", "run", "com.wbd.stream"],
+    ],
+    "paramountplus": [
+        ["flatpak", "run", "com.cbsinteractive.paramountplus"],
+    ],
+    "peacock": [
+        ["flatpak", "run", "com.peacocktv.peacocktv"],
+    ],
+    "appletv": [
+        ["flatpak", "run", "com.apple.AMSTV"],
+    ],
+    "plex": [
+        ["flatpak", "run", "tv.plex.PlexDesktop"],
+        ["plex"],
+    ],
+    "crunchyroll": [
+        ["flatpak", "run", "com.crunchyroll.Crunchyroll"],
+    ],
+    "twitch": [
+        ["flatpak", "run", "com.twitch.Twitch"],
+        ["twitch"],
+    ],
+}
+
+
+def open_streaming_app(canon: str) -> bool:
+    """Launch a native streaming app when installed. Never opens a browser tab."""
+    from eli.utils import platform_compat as _pc
+
+    key = normalize_streaming_target(canon) or _lower(canon)
+    if not key:
+        return False
+
+    if _pc.MACOS:
+        label = _streaming_display_name(key)
+        try:
+            subprocess.Popen(
+                ["open", "-a", label],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except Exception:
+            log.debug("suppressed streaming app open on macOS", exc_info=True)
+
+    if _pc.WINDOWS:
+        try:
+            if _pc.open_app(key):
+                return True
+        except Exception:
+            log.debug("suppressed streaming app open on Windows", exc_info=True)
+
+    for argv in _STREAMING_APP_LAUNCHERS.get(key, [[key]]):
+        if not argv or not shutil.which(argv[0]):
+            continue
+        try:
+            subprocess.Popen(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except Exception:
+            continue
+
+    try:
+        from eli.system.portable_app_control import open_app as _open_app
+        result = _open_app(key)
+        if isinstance(result, dict) and result.get("ok"):
+            return True
+    except Exception:
+        log.debug("suppressed portable_app_control streaming open", exc_info=True)
+
+    return False
+
+
+def _play_on_streaming_browser(target: str, query: str) -> str:
+    """Open a streaming platform search in the default browser (.com / explicit web)."""
+    import urllib.parse
+    import re as _re
+
     canon = normalize_streaming_target(target)
     tpl = _STREAMING_CANONICAL_URLS.get(canon)
     if not tpl:
@@ -480,21 +593,67 @@ def _play_on_streaming(target: str, query: str) -> str:
     label = _streaming_display_name(canon)
     if query:
         url = tpl.format(q=urllib.parse.quote(query))
-        msg = f"Opened {label} and searched for '{query}'. Pick it from the results to play."
+        msg = f"Opened {label} in your browser and searched for '{query}'."
     else:
-        url = re.split(r"/search|/#!", tpl)[0] or tpl
-        msg = f"Opened {label}."
+        url = _re.split(r"/search|/#!", tpl)[0] or tpl
+        msg = f"Opened {label} in your browser."
     try:
         from eli.utils import platform_compat as _pc
         if _pc.open_url(url):
             return msg
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         import webbrowser
         return msg if webbrowser.open(url, new=2) else f"Couldn't open {label}."
     except Exception:
         return f"Couldn't open {label}."
+
+
+def _play_on_streaming(target: str, query: str, *, browser: bool = False) -> str:
+    """Play/search on a streaming platform.
+
+    Default: native installed app (never a browser tab).
+    browser=True: only when the user said *.com / website / 'search for …'.
+    """
+    import urllib.parse
+
+    if browser:
+        return _play_on_streaming_browser(target, query)
+
+    canon = normalize_streaming_target(target)
+    tpl = _STREAMING_CANONICAL_URLS.get(canon)
+    if not canon or not tpl:
+        return ""
+    label = _streaming_display_name(canon)
+
+    opened = open_streaming_app(canon)
+    if query:
+        url = tpl.format(q=urllib.parse.quote(query))
+        try:
+            from eli.utils import platform_compat as _pc
+            if _pc.open_app_uri(url):
+                return (
+                    f"Opened {label} and searched for '{query}'. "
+                    f"Pick it from the results to play."
+                )
+        except Exception:
+            log.debug("suppressed streaming in-app search", exc_info=True)
+        if opened:
+            return (
+                f"Opened {label}. Search for '{query}' in the app to play."
+            )
+        return (
+            f"Couldn't open the {label} app — install it, or say "
+            f"'play {query} on {canon}.com' to search in your browser."
+        )
+
+    if opened:
+        return f"Opened {label}."
+    return (
+        f"Couldn't open the {label} app — install it, or say "
+        f"'open {canon}.com' to use the website."
+    )
 
 
 _MEDIA_DELEGATE_ACTIONS = (
@@ -530,7 +689,8 @@ def install_media_executor(original_execute_action: Callable[..., Any]) -> Calla
         # Explicit streaming platform (netflix/prime/disney/plex/...) → deep-link its search.
         # Honours the media-target contract: a named platform NEVER falls through to YouTube.
         if target and act in PLAY_ACTIONS and is_streaming_platform(target):
-            msg = _play_on_streaming(target, query)
+            browser = bool(data.get("browser"))
+            msg = _play_on_streaming(target, query, browser=browser)
             if msg:
                 return {
                     "ok": True,

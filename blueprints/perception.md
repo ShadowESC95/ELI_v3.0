@@ -17,7 +17,11 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `tts_xtts.py` | 351 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
 | `vision.py` | 692 |
 | `os_controller.py` | 573 |
-| `screen_locator.py` | 410 | locate UI elements on screen |
+| `screen_locator.py` | 410 | locate UI elements on screen (AT-SPI → local VL-ground → OCR) |
+| `screen_analysis.py` | ~180 | depth modes, prior-screen memory, research-context prompts |
+| `ui_ground.py` | ~320 | local GGUF precision click + computer-use agent (no HTTP) |
+| `desktop_capabilities.py` | ~170 | cross-OS input/screenshot/locate probe for dossier/SELF_TEST |
+| `media_deps.py` | ~140 | bundled-python + PATH discovery for yt-dlp/mpv/desktop CLIs |
 | `gaze_engine.py` | 358 |
 | `log_rotation.py` | 225 | log housekeeping |
 | `analyze_pdfs/image/mesh/csv.py` | ~600 | file-type analysers |
@@ -44,9 +48,51 @@ The working local-vision stack (see memory `eli-image-analysis`):
   whenever the shared LLM lock is busy** (so it never steals the model
   mid-reply). Stores a short description as memory for rolling awareness.
 
+## Screen locate & click (`screen_locator.py` + `ui_ground.py`)
+
+Three-strategy chain for “find/click X on screen” — all local:
+
+1. **AT-SPI** (Linux) — real widget tree: role, bounds, invoke action. Best for
+   labelled buttons and accessible apps.
+2. **Local VL-ground** (optional) — `ui_ground_backend=auto|local_gguf` runs a
+   local GGUF (Phi-Ground / OS-Atlas / UGround naming in `models/`) or the
+   primary VL with a JSON box prompt. For icon-only or non-text UI.
+3. **OCR** — Tesseract word boxes + fuzzy match; click centre coordinate.
+
+**Computer-use agent** (`computer_use_backend=auto|local_gguf`) — optional
+UI-TARS-style GGUF in `models/` for multi-step screenshot→action loops. Off by
+default.
+
+Configure on GUI **Screen tab** or `settings.json`: `ui_ground_backend`,
+`computer_use_backend`, `screen_analysis_depth` (`quick`|`standard`|`deep`).
+
+## Deep screen analysis (`screen_analysis.py` + `SCREEN_READ_ANALYZE`)
+
+Voice examples that route to a real screenshot + VL + OCR (+ text-model fusion):
+
+- “What's on my screen?” — standard depth
+- “Analyze my screen in depth / exactly what's on my screen” — deep audit
+- “How does this relate to my research?” — pulls local memory + KG context
+- “Do you remember seeing this in previous sessions?” — prior `screen_awareness` glances
+
+No network. Missing OS tools (mpv, tesseract, ydotool) are offered via
+`grounded_remediation` **after** a failed attempt — never as a pre-install gate.
+
+## Cross-OS desktop input (`desktop_capabilities.py` + `platform_compat.py`)
+
+| OS | Mouse/keyboard | Screenshot |
+|---|---|---|
+| Linux X11 | xdotool → PyAutoGUI | scrot |
+| Linux Wayland | ydotool+ydotoold → xdotool (XWayland) → PyAutoGUI | grim+slurp |
+| Windows | PyAutoGUI | Pillow ImageGrab |
+| macOS | PyAutoGUI (+ Accessibility permission) | screencapture |
+| Android/Termux | intents only | N/A |
+
+See `docs/CROSS_PLATFORM.md` for the full matrix and install commands per OS.
+
 ## Speech-to-text (`audio_stt.py`, `local_whisper_stt.py`, `mic_resolver.py`)
 
-**Microphone selection (`mic_resolver.py`, 3.0.81).** On every OS, ELI builds a ranked list of
+**Microphone selection (`mic_resolver.py`, v2.3.44).** On every OS, ELI builds a ranked list of
 PortAudio inputs — USB and headset/Bluetooth (AirPods, Turtle Beach Chat, Trust USB, …) before
 built-in, webcam, and virtual loopback routes — and probes each in an isolated subprocess at the
 device's native sample rate until one delivers live audio. Linux additionally tries
@@ -237,19 +283,7 @@ is invisible to `list_voices()` while still occupying ~60 MB. `incomplete_voices
 these and `repair_voice_configs()` fetches just the missing ~5 KB config.
 `tests/test_voice_library.py` guards against shipping the broken state again.
 
-**Character voices** (`voice_fx.py`) are a base voice + an ffmpeg effect chain (pitch /
-speed / filters) — calm, robotic, energetic, synthetic, and refined styles built in, and users create their own
-(`char:<name>`, preset store at `config/voices/characters.json`). Because the ideal bases
-for HAL/TARS/Rick (lessac/joe/ryan) are restricted or unbundled, each preset carries an
-**ordered, gender-matched `fallback` chain**; `resolve_base_voice()` walks base →
-fallbacks → default against the *installed* set, so a character can never fall through to
-an unusable or foreign-language voice (it previously landed on a Czech voice and garbled
-the speech). Download the ideal base and it is used automatically. **Voice cloning**
-(`tts_xtts.py`, `clone:<name>`) reproduces a voice from a short reference clip via Coqui
-XTTS-v2 — an opt-in extra (`eli-v3[clone]`) that falls back to a normal voice when the
-model isn't installed rather than going silent. Both `char:` and `clone:` resolve through
-`synthesize_wav` (browser voice) and `_run_tts` (host playback), and appear in the GUI
-voice picker.
+**Style presets** (`voice_fx.py`, `char:calm`, `char:robotic`, …) are a redistributable Piper base voice plus an ffmpeg effect chain (pitch / speed / filters). They are **generic sound styles**, not bundled impersonations of copyrighted characters. Ideal Piper bases for some historical presets (lessac, joe, ryan) are excluded from the public bundle over dataset licensing; each preset carries an **ordered, gender-matched `fallback` chain** against installed voices only. **Voice cloning** (`tts_xtts.py`, `clone:<name>`) reproduces a voice from a short reference clip via Coqui XTTS-v2 — an opt-in extra (`eli-v2.0[clone]`) that falls back to a normal voice when the model isn't installed rather than going silent. Both `char:` and `clone:` resolve through `synthesize_wav` (browser voice) and `_run_tts` (host playback), and appear in the GUI voice picker.
 
 ## OS control (`os_controller.py`)
 

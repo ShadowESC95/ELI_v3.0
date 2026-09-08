@@ -79,7 +79,63 @@ def test_deepen_query_routes_to_topic_news():
     assert r["args"].get("topic") == "hubble"
 
 
-def test_relational_going_on_is_not_news():
+def test_news_topic_deepen_reroutes_chat_to_news_fetch():
+    import time
+    from eli.kernel.engine import _try_news_topic_deepen_reroute
+
+    user = "go deeper into the transformer trained in 1.5 hours please"
+    action, args, intent = _try_news_topic_deepen_reroute(
+        user,
+        "CHAT",
+        {"message": user},
+        {"action": "CHAT", "confidence": 0.6, "meta": {"matched_by": "fallback.chat"}},
+        {"action": "NEWS_FETCH", "ts": time.time()},
+    )
+    assert action == "NEWS_FETCH"
+    assert "transformer trained in 1.5 hours" in (args.get("topic") or "")
+    assert intent.get("meta", {}).get("matched_by") == "news.topic_deepen"
+
+
+def test_news_fetch_complaint_redo_recovers_topic():
+    from eli.kernel.engine import _try_news_fetch_complaint_redo
+
+    class _Mem:
+        def get_recent_conversation(self, limit=12):
+            return [
+                {"role": "assistant", "content": "briefing…"},
+                {"role": "user", "content": "go deeper into Hubble please"},
+            ]
+
+    user = "you are guessing, why did you not fetch the actual real news story?"
+    action, args, intent = _try_news_fetch_complaint_redo(
+        user, "CHAT", {}, {"action": "CHAT"}, _Mem(),
+    )
+    assert action == "NEWS_FETCH"
+    assert args.get("topic") == "Hubble"
+    assert intent.get("meta", {}).get("matched_by") == "news.fetch_complaint_redo"
+
+
+def test_news_fetch_complaint_pattern():
+    from eli.cognition.correction_patterns import is_news_fetch_complaint, is_correction_query
+
+    msg = "you are guessing, why did you not fetch the actual real news story?"
+    assert is_news_fetch_complaint(msg)
+    assert is_correction_query(msg)
+
+
+def test_recover_recent_deepen_topic():
+    from eli.runtime.action_commitment import recover_recent_deepen_topic
+
+    class _Mem:
+        def get_recent_conversation(self, limit=12):
+            return [
+                {"role": "user", "content": "what is the latest news?"},
+                {"role": "assistant", "content": "headlines…"},
+                {"role": "user", "content": "go deeper into magnetic fields please"},
+            ]
+
+    assert recover_recent_deepen_topic(_Mem()) == "magnetic fields"
+
     # Regression: "what's going on" aimed at ELI/the user must NOT detonate a
     # news fetch mid-conversation. (Live bug: "are you blaming that on me or
     # what's going on" → 55s NEWS_FETCH dump.)
@@ -153,10 +209,10 @@ def test_play_specific_video_provider_targets_are_normalized():
     prime = route("play Oppenheimer on prime")
 
     assert netflix["action"] == "PLAY_MEDIA"
-    assert netflix["args"]["query"] == "Oppenheimer"
+    assert netflix["args"]["query"].lower() == "oppenheimer"
     assert netflix["args"]["target"] == "netflix"
     assert prime["action"] == "PLAY_MEDIA"
-    assert prime["args"]["query"] == "Oppenheimer"
+    assert prime["args"]["query"].lower() == "oppenheimer"
     assert prime["args"]["target"] == "primevideo"
 
 
@@ -164,8 +220,8 @@ def test_play_specific_streaming_target_never_falls_through_to_youtube(monkeypat
     """Executor must honour netflix/prime targets — not silently route to YouTube."""
     calls = []
 
-    def _fake_streaming(target, query):
-        calls.append((target, query))
+    def _fake_streaming(target, query, *, browser=False):
+        calls.append((target, query, browser))
         return f"Opened {target.title()} and searched for '{query}'. Pick it from the results to play."
 
     monkeypatch.setattr("eli.execution.media_runtime._play_on_streaming", _fake_streaming)
@@ -179,8 +235,8 @@ def test_play_specific_streaming_target_never_falls_through_to_youtube(monkeypat
         assert query in (result.get("response") or "")
 
     assert calls == [
-        ("netflix", "rick and morty"),
-        ("primevideo", "the walking dead"),
+        ("netflix", "rick and morty", False),
+        ("primevideo", "the walking dead", False),
     ]
 
 

@@ -1,9 +1,9 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for 3.0.85 (August 2026).** The primary install path is now the
+> **Updated for v2.3.92 (September 2026).** The primary install path is now the
 > prebuilt, CI-launch-tested installers on GitHub Releases (Windows Setup.exe,
 > macOS dmg, Linux AppImage) with first-boot GPU (CUDA/Vulkan/Metal) and
-> starter-model offers; data lives in a per-user `ELI_v3` folder that survives
+> starter-model offers; data lives in a per-user `ELI_v2` folder that survives
 > upgrades. Source installs below remain fully supported.
 
 
@@ -19,7 +19,7 @@ you had to set `ELI_MIC_DEVICE_INDEX` manually on v2.3.30.
 **Cause (v2.3.30 regression):** on Linux/PipeWire, PortAudio's `pulse` wrapper often passed a
 short probe yet stayed silent during real STT; on all platforms a webcam or virtual "Stereo Mix"
 default could win over a connected USB/Bluetooth headset.
-**Fix (3.0.85+):** upgrade to **3.0.85** — cross-platform ranked auto-resolve probes USB,
+**Fix (v2.3.73+):** upgrade to **v2.3.73** — cross-platform ranked auto-resolve probes USB,
 headset/Chat, and Bluetooth endpoints before built-in/webcam/virtual routes, at each device's
 native sample rate. No env vars required on Linux, macOS, or Windows.
 **Diagnostics:**
@@ -35,6 +35,37 @@ export ELI_MIC_PULSE_SOURCE="$(pactl get-default-source)"
 ```
 On Windows gaming headsets, set the **Chat** mic (not Game) as the default recording device in
 Sound settings. On macOS, pick your AirPods or headset under System Settings → Sound → Input.
+
+---
+
+## YouTube won't play / "mpv is not installed" / no video window
+
+**Symptom:** “play X on YouTube” fails, opens browser only, or plays audio with no video.
+**Cause:** `mpv` and/or `yt-dlp` missing. `yt-dlp` is a Python package (installed into ELI's bundled interpreter); `mpv` is an OS package.
+**Fix:** Say **yes** when ELI offers to install after a failed attempt, or run manually:
+```bash
+# Linux
+sudo apt install mpv   # or dnf/pacman equivalent
+# yt-dlp is installed by install.sh into ELI's Python — or: python -m pip install yt-dlp
+# macOS
+brew install mpv
+# Windows
+winget install mpv.MPV
+```
+**Note:** Plain “play X on youtube” uses **visible mpv**. “play X on youtube.com” opens the browser.
+
+---
+
+## Wayland: mouse clicks do nothing / ydotool errors
+
+**Symptom:** MOUSE_CONTROL or screen locate clicks fail on GNOME/KDE Wayland; error mentions `ydotoold`.
+**Cause:** `xdotool` only reaches XWayland windows. Native Wayland needs `ydotool` + the `ydotoold` daemon with `/dev/uinput` access.
+**Fix:**
+```bash
+sudo apt install ydotool    # or your distro equivalent
+ydotoold &                  # run daemon (may need uinput group)
+```
+Or use AT-SPI/OCR click paths for labelled controls. See `docs/CROSS_PLATFORM.md`.
 
 ---
 
@@ -146,7 +177,7 @@ open the memory DB and exits.
 **WAL journal** needs isn't supported — **NTFS, exFAT/FAT, or a network mount** (very common
 for a `~/Downloads` on a dual-boot data drive). WAL returns `SQLITE_READONLY` there; the
 rollback-journal stores beside it work fine, which is the tell-tale split. (This is also why
-the AppImage — which stores data under `~/.local/share/ELI_v3` on your main partition — worked
+the AppImage — which stores data under `~/.local/share/ELI_v2` on your main partition — worked
 while the portable build in `~/Downloads` didn't.)
 **Fix:** fixed in **v2.1.19** — ELI detects a WAL-hostile filesystem and falls back to a
 DELETE (rollback) journal automatically, so it runs wherever you put it. On an older build,
@@ -156,7 +187,7 @@ mount with: `findmnt -T . -o TARGET,FSTYPE`.
 ---
 
 ## Arch / lean distros: GUI won't open — "libxcb-cursor0 is needed to load the Qt xcb platform plugin"
-**Symptom:** the AppImage's engine loads (you see the `ELI v3.0` banner and the module log)
+**Symptom:** the AppImage's engine loads (you see the `ELI v2.0` banner and the module log)
 but the window never appears; it aborts with the `xcb-cursor0 … xcb platform plugin` message.
 **Cause:** Qt 6.5+'s xcb platform plugin (`libqxcb.so`) links the **whole xcb-util family** —
 `libxcb-cursor`, `libxcb-icccm`, `libxcb-image`, `libxcb-keysyms`, `libxcb-render-util`,
@@ -174,7 +205,7 @@ sudo apt install libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libx
 ```
 Diagnose exactly which library is missing (Qt's own trace names it):
 ```bash
-QT_DEBUG_PLUGINS=1 ./ELI_v3-*-x86_64.AppImage 2>&1 | grep -iE 'cannot|not found'
+QT_DEBUG_PLUGINS=1 ./ELI_v2-*-x86_64.AppImage 2>&1 | grep -iE 'cannot|not found'
 ```
 
 ---
@@ -184,10 +215,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.11**, so Arc
 Python 3.14 (which has no `llama-cpp-python` wheel) is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/3.0.85
-wget "$U/ELI_v3-3.0.85-x86_64.AppImage"
-chmod +x ELI_v3-3.0.85-x86_64.AppImage
-./ELI_v3-3.0.85-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v2.0/releases/download/v2.3.55
+wget "$U/ELI_v2-2.3.73-x86_64.AppImage"
+chmod +x ELI_v2-2.3.73-x86_64.AppImage
+./ELI_v2-2.3.73-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -349,10 +380,10 @@ web-searched — surfacing whatever the search returned.
 
 ---
 
-## Natural voice / cloning: `pip install "eli-v3[natural]"` fails with "No matching distribution"
-**Symptom:** following an in-app message or older doc literally (`pip install "eli-v3[natural]"`)
-fails — pip tries to fetch `eli-v3` from PyPI, where this project isn't published.
-**Cause:** that string only resolves once `eli-v3` is already installed under that name from a
+## Natural voice / cloning: `pip install "eli-v2.0[natural]"` fails with "No matching distribution"
+**Symptom:** following an in-app message or older doc literally (`pip install "eli-v2.0[natural]"`)
+fails — pip tries to fetch `eli-v2.0` from PyPI, where this project isn't published.
+**Cause:** that string only resolves once `eli-v2.0` is already installed under that name from a
 real index; a source checkout needs the local-path form instead.
 **Fix:** from the ELI project root: `pip install -e ".[natural]"` (or `.[clone]`/`.[voice]` —
 all three are aliases for the same Coqui XTTS-v2 extra). Fixed at the source in v2.1.29 — every
