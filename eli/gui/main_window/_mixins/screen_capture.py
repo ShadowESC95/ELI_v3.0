@@ -78,6 +78,8 @@ class ScreenCaptureMixin:
         self._sc_ocr_btn.setEnabled(True)
         # A screenshot alone is enough for vision analysis (no OCR needed first).
         self._sc_analyse_btn.setEnabled(True)
+        if hasattr(self, "_sc_deep_btn"):
+            self._sc_deep_btn.setEnabled(True)
 
     def _sc_run_ocr(self):
         if not self._sc_screenshot_path:

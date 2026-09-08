@@ -894,6 +894,12 @@ class TabsMixin:
         self._sc_analyse_btn.clicked.connect(self._sc_ask_eli)
         btn_row.addWidget(self._sc_analyse_btn)
 
+        self._sc_deep_btn = QPushButton("🔬 Deep audit")
+        self._sc_deep_btn.setEnabled(False)
+        self._sc_deep_btn.setToolTip("Full local screen audit — VL + OCR + text-model fusion")
+        self._sc_deep_btn.clicked.connect(lambda: self._sc_ask_eli(deep=True))
+        btn_row.addWidget(self._sc_deep_btn)
+
         self._sc_clear_btn = QPushButton("🗑️ Clear")
         self._sc_clear_btn.clicked.connect(self._sc_clear)
         btn_row.addWidget(self._sc_clear_btn)

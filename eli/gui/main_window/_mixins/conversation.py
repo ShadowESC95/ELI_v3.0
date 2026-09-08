@@ -338,11 +338,13 @@ class ConversationMixin:
                     continue
                 self.mic_device_combo.addItem(f"{name}", ("alsa", idx))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # PulseAudio / PipeWire sources (catches BT headsets)
         try:
             import subprocess as _sp
+            if not _sp.which("pactl"):
+                raise FileNotFoundError("pactl not installed")
             _out = _sp.check_output(["pactl", "list", "sources", "short"],
                                     text=True, timeout=3)
             for line in _out.strip().splitlines():
@@ -361,7 +363,7 @@ class ConversationMixin:
                     continue  # already covered by ALSA list above
                 self.mic_device_combo.addItem(label, ("pulse", src_name))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         self.mic_device_combo.blockSignals(False)
 

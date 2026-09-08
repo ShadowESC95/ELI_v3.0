@@ -42,6 +42,17 @@ def is_frozen() -> bool:
     """True if running as a frozen (PyInstaller/cx_Freeze) bundle."""
     return getattr(sys, 'frozen', False)
 
+def _frozen_user_root() -> Path:
+    """Per-user ELI_v3 root — must match packaging/pyinstaller/rthook_eli_frozen_paths.py."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return (base / "ELI_v3").expanduser().resolve()
+
+
 def _frozen_base() -> Path:
     """Base directory for frozen app resources."""
     if hasattr(sys, '_MEIPASS'):
@@ -174,6 +185,9 @@ def data_dir() -> Path:
     override = os.environ.get("ELI_DATA_DIR")
     if override:
         return Path(override).expanduser().resolve()
+
+    if is_frozen():
+        return _frozen_user_root() / "artifacts"
     
     if _is_dev_mode():
         return project_root() / "artifacts"
@@ -201,6 +215,9 @@ def config_dir() -> Path:
     override = os.environ.get("ELI_CONFIG_DIR")
     if override:
         return Path(override).expanduser().resolve()
+
+    if is_frozen():
+        return _frozen_user_root() / "config"
     
     if _is_dev_mode():
         return project_root() / "config"
@@ -318,13 +335,14 @@ def learning_dir() -> Path:
     return data_dir() / "training"
 
 
+
+
 def license_dir() -> Path:
     """Commercial license activation directory (activation.json)."""
     override = os.environ.get("ELI_LICENSE_DIR")
     if override:
         return resolve_runtime_path(override)
     return config_dir() / "licensing"
-
 
 # ── Database paths ──
 
@@ -379,7 +397,9 @@ def persona_path() -> Path:
 
 def persona_auto_path() -> Path:
     """Canonical auto-updating persona overlay."""
-    return project_root() / "eli" / "cognition" / "persona.auto.txt"
+    if _is_dev_mode():
+        return project_root() / "eli" / "cognition" / "persona.auto.txt"
+    return config_dir() / "persona.auto.txt"
 
 
 def notebook_dir() -> Path:
@@ -435,11 +455,123 @@ _gguf_model_path: str | None = None
 def project_root() -> Path:
     env = os.environ.get("ELI_PROJECT_ROOT")
     if env:
-        return resolve_runtime_path(env, base=Path.cwd()) if not Path(env).expanduser().is_absolute() else Path(env).expanduser().resolve()
+        p = resolve_runtime_path(env, base=Path.cwd()) if not Path(env).expanduser().is_absolute() else Path(env).expanduser().resolve()
+        if is_frozen():
+            try:
+                if os.access(p, os.W_OK):
+                    return p
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            return _frozen_user_root()
+        return p
+    if is_frozen():
+        return _frozen_user_root()
     found = _find_project_root()
     if found is not None:
         return found
     return Path(__file__).resolve().parents[2]
+
+
+@lru_cache(maxsize=1)
+def source_root() -> Path:
+    """Writable ELI source tree used for self-patching and code examination.
+
+    Priority:
+      1. ELI_SOURCE_ROOT — explicit dev checkout (AppImage can patch a git tree)
+      2. project_root() when it looks like a runnable ELI tree
+
+    Packaged/frozen installs seed eli/ under the user ELI_v3 root; the frozen
+    runtime hook prepends that root to sys.path so patches there affect imports.
+    """
+    explicit = os.environ.get("ELI_SOURCE_ROOT", "").strip()
+    if explicit:
+        p = Path(explicit).expanduser()
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        else:
+            p = p.resolve()
+        if _is_eli_root(p):
+            return p
+    root = project_root()
+    if _is_eli_root(root):
+        return root
+    return root
+
+
+def _runtime_overlay_active(root: Path) -> bool:
+    """True when the seeded user tree can shadow bundled eli/ imports."""
+    if not is_frozen():
+        return False
+    try:
+        resolved = root.expanduser().resolve()
+    except Exception:
+        resolved = root
+    root_s = str(resolved)
+    for entry in list(sys.path[:8]):
+        try:
+            if Path(entry).expanduser().resolve() == resolved:
+                return True
+        except Exception:
+            if str(entry).rstrip("/") == root_s.rstrip("/"):
+                return True
+    # Patches write under source_root/eli/ even when eli was first imported from the
+    # bundle; post-apply reload picks up the user copy. Writable tree = overlay-capable.
+    eli_pkg = resolved / "eli"
+    return eli_pkg.is_dir() and os.access(eli_pkg, os.W_OK)
+
+
+def patch_capability() -> dict:
+    """Honest report of whether this install can alter live Python source."""
+    root = source_root()
+    eli_pkg = root / "eli"
+    has_git = (root / ".git").is_dir()
+    frozen = is_frozen()
+    writable = bool(eli_pkg.is_dir() and os.access(eli_pkg, os.W_OK))
+    explicit_src = bool(os.environ.get("ELI_SOURCE_ROOT", "").strip())
+    runtime_overlay = _runtime_overlay_active(root)
+    kind = "source" if has_git else ("frozen" if frozen else "packaged")
+    can_patch = writable and (has_git or frozen or explicit_src)
+    hint = ""
+    if not can_patch:
+        hint = (
+            "Set ELI_SOURCE_ROOT to a writable git checkout, or run from a dev tree, "
+            "to patch source. AppImage installs patch the seeded user eli/ tree when "
+            "the runtime overlay is active."
+        )
+    elif frozen and not explicit_src and not has_git:
+        hint = (
+            "Patching the seeded user eli/ tree — takes effect on next import after "
+            "apply (runtime overlay). Ship fixes to others via self upgrade / new release."
+        )
+    elif explicit_src:
+        hint = f"Patching explicit source root via ELI_SOURCE_ROOT."
+    return {
+        "source_root": str(root),
+        "install_kind": kind,
+        "writable": writable,
+        "has_git": has_git,
+        "runtime_overlay": runtime_overlay,
+        "explicit_source_root": explicit_src,
+        "can_patch_live": can_patch,
+        "hint": hint,
+    }
+
+
+def bundled_asset_path(*relative_parts: str) -> Path | None:
+    """Resolve a shipped asset under ``artifacts/`` (frozen bundle or source tree)."""
+    rel = Path(*relative_parts)
+    roots: list[Path] = []
+    if is_frozen():
+        roots.append(_frozen_base())
+    roots.append(project_root())
+    for root in roots:
+        candidate = (root / "artifacts" / rel).resolve()
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
 
 def models_root() -> Path:
     return models_dir()

@@ -44,11 +44,12 @@ def _resolve_project_artifacts_dir() -> Path:
             return Path(core_paths.get_artifact_dir()).expanduser().resolve()
         return core_paths.get_paths().artifacts_dir.resolve()
     except Exception:
-        pass
+        log.debug("[MEMORY] core_paths artifact dir lookup failed", exc_info=True)
 
-    v = os.environ.get("ELI_ARTIFACTS_DIR") or os.environ.get("ELI_ARTIFACTS")
-    if v:
-        return Path(v).expanduser().resolve()
+    for env_name in ("ELI_DATA_DIR", "ELI_ARTIFACTS_DIR", "ELI_ARTIFACTS"):
+        raw = os.environ.get(env_name, "").strip()
+        if raw:
+            return Path(raw).expanduser().resolve()
 
     here = Path(__file__).resolve()
     eli_root = here.parents[1]
@@ -410,6 +411,7 @@ def _ensure_memory_schema(conn):
         ("timestamp", "REAL"),
         ("kind", "TEXT"),
         ("text", "TEXT"),
+        ("value", "TEXT"),
         ("content", "TEXT"),
         ("tags", "TEXT"),
         ("source", "TEXT"),
@@ -1051,7 +1053,7 @@ def _ensure_full_memory_schema(conn):
     for n, d in [
         ("content", "TEXT"), ("timestamp", "REAL"), ("source", "TEXT"),
         ("status", "TEXT"), ("weight", "REAL DEFAULT 1.0"), ("confidence", "REAL DEFAULT 1.0"),
-        ("kind", "TEXT"), ("tags", "TEXT"), ("text", "TEXT"), ("ts", "REAL"),
+        ("kind", "TEXT"), ("tags", "TEXT"), ("text", "TEXT"), ("value", "TEXT"), ("ts", "REAL"),
         ("importance", "REAL DEFAULT 0.5"),
         ("verification_status", "TEXT DEFAULT 'verified'"),
         ("provenance_kind", "TEXT DEFAULT 'user_verbatim'"),

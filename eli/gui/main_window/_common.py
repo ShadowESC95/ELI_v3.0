@@ -434,6 +434,9 @@ def detect_system_capabilities() -> Dict[str, Any]:
         'ollama_cli': False,
         'has_gpu': False,
         'gpu_name': '',
+        'gpu_vendor': '',
+        'gpu_integrated': False,
+        'vulkan_available': False,
         'vram_mb': 0,
         'vram_total_mb': 0,
     }
@@ -447,25 +450,15 @@ def detect_system_capabilities() -> Dict[str, Any]:
     try:
         import shutil
         info['ollama_cli'] = shutil.which('ollama') is not None
-        if shutil.which('nvidia-smi'):
-            out = subprocess.check_output(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=memory.free,memory.total,name",
-                    "--format=csv,noheader,nounits",
-                ],
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-            ).decode().strip().splitlines()
-            if out:
-                parts = [p.strip() for p in out[0].split(",")]
-                info['vram_mb'] = int(float(parts[0]))
-                info['vram_total_mb'] = int(float(parts[1]))
-                info['gpu_name'] = parts[2] if len(parts) > 2 else "NVIDIA GPU"
-                info['has_gpu'] = True
-        elif shutil.which('rocm-smi'):
-            info['has_gpu'] = True
-            info['gpu_name'] = "ROCm GPU"
+        from eli.core.hardware_profile import detect_hardware
+        hw = detect_hardware()
+        info['has_gpu'] = bool(hw.has_gpu)
+        info['gpu_name'] = hw.gpu_name or ''
+        info['gpu_vendor'] = getattr(hw, 'gpu_vendor', '') or ''
+        info['gpu_integrated'] = bool(getattr(hw, 'gpu_integrated', False))
+        info['vulkan_available'] = bool(getattr(hw, 'vulkan_available', False))
+        info['vram_mb'] = int(hw.free_vram_mb or 0)
+        info['vram_total_mb'] = int(hw.total_vram_mb or 0)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     return info

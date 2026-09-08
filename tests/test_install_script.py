@@ -184,3 +184,10 @@ def test_yt_dlp_is_declared():
     root = Path(__file__).resolve().parents[1]
     text = (root / "requirements.txt").read_text(encoding="utf-8")
     assert "yt-dlp" in text, "yt-dlp is still undeclared; playback would be browser-only"
+
+
+def test_install_script_reports_intel_integrated():
+    text = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
+    assert "HAS_INTEL_IGPU" in text
+    assert "Intel integrated" in text
+    assert "GGML_VULKAN=on" in text
