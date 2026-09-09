@@ -15,6 +15,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Eli-Progress {
+    param([string]$Phase, [int]$Pct, [string]$Msg)
+    Write-Host "[ELI-PROGRESS] phase=$Phase pct=$Pct msg=$Msg"
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Venv = Join-Path $ScriptDir ".venv"
 $env:ELI_PROJECT_ROOT = $ScriptDir
@@ -103,9 +108,15 @@ if (-not $HasNvidia) {
 
     if ($OtherGpus.Count -ge 1) {
         Write-Host "[OK] GPU         $($OtherGpus[0])" -ForegroundColor Green
+        $isQualcomm = $OtherGpus[0] -match '(?i)qualcomm|adreno|snapdragon'
         $vendor = if ($OtherGpus[0] -match '(?i)amd|radeon') { "AMD" }
                   elseif ($OtherGpus[0] -match '(?i)intel|arc') { "Intel" }
+                  elseif ($isQualcomm) { "Qualcomm Snapdragon" }
                   else { "this vendor" }
+        if ($isQualcomm) {
+            Write-Host "            Snapdragon unified memory - layer fit uses shared RAM budget." -ForegroundColor DarkGray
+            Write-Host "            Vulkan offload is experimental on Adreno; keep batch_size <= 32." -ForegroundColor DarkGray
+        }
         Write-Host "[WARN] GPU       $vendor GPU found, but no prebuilt GPU-accelerated" -ForegroundColor Yellow
         Write-Host "                 llama-cpp-python wheel is published for it on Windows." -ForegroundColor Yellow
         Write-Host "                 ELI will use the CPU build (it still runs, just slower)." -ForegroundColor Yellow
@@ -172,6 +183,7 @@ Invoke-Pip @("install", "--quiet", "--upgrade", "pip", "wheel")
 Invoke-Pip @("install", "--quiet", "setuptools>=68,<82")
 
 # PyTorch
+Eli-Progress -Phase torch -Pct 20 -Msg "Installing PyTorch"
 if ($CpuOnly) {
     Write-Host "[..] Installing PyTorch (CPU)..."
     Invoke-Pip (@("install") + $PipFindLinksArgs + @("torch", "--index-url", "https://download.pytorch.org/whl/cpu", "--quiet"))
@@ -186,6 +198,7 @@ if ($CpuOnly) {
 }
 
 # llama-cpp-python
+Eli-Progress -Phase llama -Pct 35 -Msg "Installing inference engine"
 if ($CpuOnly) {
     Write-Host "[..] Installing llama-cpp-python (CPU)..."
     Invoke-Pip (@("install") + $PipFindLinksArgs + @("llama-cpp-python", "--quiet"))
@@ -247,6 +260,7 @@ if (-not $CpuOnly) {
 }
 
 # ELI v2.0 wheel
+Eli-Progress -Phase eli -Pct 55 -Msg "Installing ELI core"
 Write-Host "[..] Installing ELI v2.0..."
 $Wheel = Get-ChildItem (Join-Path $ScriptDir "dist") -Filter "eli_v2_0-*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($Wheel) {
@@ -343,6 +357,7 @@ Write-Host "[..] Ensuring voice models (local STT + TTS, for browser/desktop voi
 if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Voice models ready." -ForegroundColor Green; $VoiceStatus = "ready" }
 else { Write-Host "[WARN] Voice models deferred (run: .venv\Scripts\python -m eli.runtime.voice_assets)" -ForegroundColor Yellow; $VoiceStatus = "deferred (fetch later)" }
 
+Eli-Progress -Phase finish -Pct 100 -Msg "Installation complete"
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host "  ELI v2.0 - installation complete" -ForegroundColor Green

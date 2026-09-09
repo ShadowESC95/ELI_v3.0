@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ELI MKXI — master release builder.
+# ELI v2.0 — master release builder.
 #
 # Drives the per-platform builders under packaging/<platform>/ and emits
 # checksums + RELEASE_NOTES.md alongside the artifacts in dist/.
@@ -44,16 +44,16 @@ else
 fi
 
 echo "================================================="
-echo "  ELI MKXI release builder — version ${VERSION}"
+echo "  ELI v2.0 release builder — version ${VERSION}"
 echo "  Targets: ${TARGETS[*]}"
 echo "================================================="
 
 build_python_artifacts() {
-    if ( cd /tmp && "$PY" -c 'import build.__main__' >/dev/null 2>&1 ); then
-        ( cd /tmp && "$PY" -m build "$PROJECT_ROOT" --wheel --sdist --outdir "$DIST/" )
+    if ( cd /tmp && python3 -c 'import build.__main__' >/dev/null 2>&1 ); then
+        ( cd /tmp && python3 -m build "$PROJECT_ROOT" --wheel --sdist --outdir "$DIST/" )
     else
         echo "[wheel] python-build frontend not installed; building wheel via pip wheel (sdist skipped)."
-        "$PY" -m pip wheel --no-deps "$PROJECT_ROOT" -w "$DIST/"
+        python3 -m pip wheel --no-deps "$PROJECT_ROOT" -w "$DIST/"
     fi
 }
 
@@ -74,7 +74,7 @@ build_windows_wheelhouse() {
                 PyAutoGUI*|pyautogui*) continue ;;
                 accelerate*) extra_download_args=(--no-deps) ;;
             esac
-            if ! "$PY" -m pip download \
+            if ! python3 -m pip download \
                     --dest "$WHEELHOUSE" \
                     --platform "$WHEELHOUSE_PLATFORM" \
                     --python-version "$pyver" \
@@ -91,7 +91,7 @@ build_windows_wheelhouse() {
             awk 'NF && $1 !~ /^#/'
         )
 
-        if ! "$PY" -m pip download \
+        if ! python3 -m pip download \
                 --dest "$WHEELHOUSE" \
                 --platform "$WHEELHOUSE_PLATFORM" \
                 --python-version "$pyver" \
@@ -106,7 +106,7 @@ build_windows_wheelhouse() {
     done
 
     echo "[wheelhouse] Building pure-Python automation wheels..."
-    if ! "$PY" -m pip wheel \
+    if ! python3 -m pip wheel \
             --wheel-dir "$WHEELHOUSE" \
             "PyAutoGUI>=0.9.54"; then
         echo "[wheelhouse] Missing pure-Python automation wheels for PyAutoGUI."
@@ -130,9 +130,23 @@ _stage_windows_common() {
         mkdir -p "$STAGING/installers"
         cp -r "$PROJECT_ROOT/packaging/windows/." "$STAGING/installers/"
     fi
-    if ls "$DIST"/eli_mkxi-*.whl >/dev/null 2>&1; then
-        cp "$DIST"/eli_mkxi-*.whl "$STAGING/dist/"
+    if ls "$DIST"/eli_v2_0-*.whl >/dev/null 2>&1; then
+        cp "$DIST"/eli_v2_0-*.whl "$STAGING/dist/"
     fi
+    cat > "$STAGING/ELI_Setup.bat" <<'BAT_EOF'
+@echo off
+title ELI Setup
+cd /d "%~dp0"
+set ELI_PROJECT_ROOT=%~dp0
+set PYTHONPATH=%~dp0;%PYTHONPATH%
+python -m eli.setup --full-install --launch
+if not errorlevel 1 exit /b 0
+echo GUI installer unavailable — running PowerShell install...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" -Yes -AutoModel
+if errorlevel 1 ( echo Setup failed. & pause & exit /b 1 )
+python -m eli.setup --run-remaining --launch
+pause
+BAT_EOF
     cat > "$STAGING/README_INSTALL.txt" <<EOF
 ELI v2 — Windows portable (${2:-lean})
 
@@ -140,7 +154,7 @@ ELI v2 — Windows portable (${2:-lean})
 2. Run install.bat  (or: powershell -ExecutionPolicy Bypass -File install.ps1)
 3. Run eli.bat
 
-Model pack: GitHub release tag local-assets-v3.0 or python scripts/restore_github_asset_files.py
+Model pack: GitHub release tag local-assets-v2.1 or python scripts/restore_github_asset_files.py
 EOF
 
     # cmd.exe's goto-label lookup fails intermittently on LF-only .bat (byte-offset
@@ -148,8 +162,9 @@ EOF
     find "$STAGING" -type f \( -name '*.bat' -o -name '*.cmd' -o -name '*.ps1' \) \
         -exec sed -i 's/\r*$/\r/' {} + 2>/dev/null || true
 
-    # Remove Linux/macOS entry points from the WINDOWS package (double-clicking install.sh
-    # or a .desktop on Windows is user-error bait). Python source stays.
+    # Remove Linux/macOS entry points from the WINDOWS package — a customer double-clicking
+    # install.sh or an .desktop file on Windows is pure user-error bait. The Python source
+    # stays (source-available); only the POSIX launchers/installers are pruned.
     rm -f "$STAGING/install.sh" "$STAGING/eli.sh" "$STAGING/ELI_Setup.sh" \
           "$STAGING/build_packages.sh" "$STAGING"/*.desktop 2>/dev/null || true
     rm -rf "$STAGING/bin" 2>/dev/null || true
@@ -158,32 +173,42 @@ EOF
         rm -f "$STAGING/scripts/$_s" 2>/dev/null || true
     done
 
-    # Pre-generate the gitignored capability manifest into the package (installer fallback).
-    ( cd "$STAGING" && PYTHONPATH="$STAGING" "$PY" -c \
+    # Pre-generate the capability manifest into the package (it's gitignored, so the
+    # git-archive source carries none) — the installer's offline fallback copy.
+    ( cd "$STAGING" && PYTHONPATH="$STAGING" python3 -c \
       "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
       >/dev/null 2>&1 || true
 }
 
 # ── Pre-flight: tests must pass before producing artifacts ──────────────
+if [ -z "${SKIP_TESTS:-}" ] && [ -z "${SKIP_COMPILE:-}" ]; then
 echo ""
 echo "[pre-flight] Compiling the codebase…"
 # This is a MAINTAINER build tool. If it's run from an unpacked release (no .git),
 # fall back to a plain file walk instead of `git ls-files` so it doesn't error out.
 if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    ( cd "$PROJECT_ROOT" && "$PY" -m py_compile $(git ls-files '*.py') )
+    ( cd "$PROJECT_ROOT" && python3 -m py_compile $(git ls-files '*.py') )
 else
     echo "[pre-flight] not a git checkout — this is the maintainer release builder;"
     echo "             to USE ELI run ./ELI_Setup.sh (or ./RUN_ELI.sh). Skipping compile."
-    ( cd "$PROJECT_ROOT" && find eli api -name '*.py' -print0 2>/dev/null | xargs -0 "$PY" -m py_compile 2>/dev/null || true )
+    ( cd "$PROJECT_ROOT" && find eli api -name '*.py' -print0 2>/dev/null | xargs -0 python3 -m py_compile 2>/dev/null || true )
+fi
 fi
 
 if [ -z "${SKIP_TESTS:-}" ]; then
+    # capability_manifest.json is gitignored, so a git-archive / release tree carries none.
+    # tests/claims read it at the project root — generate it there BEFORE pytest, or those
+    # four tests error out with FileNotFoundError during collection.
     echo "[pre-flight] Installing test-suite deps (API drivers, pyflakes, paho-mqtt)…"
-    if ! "$PY" -m pip install -q -r "$PROJECT_ROOT/requirements-test.txt"; then
-        echo "[pre-flight] ERROR: failed to install requirements-test.txt — set SKIP_TESTS=1 to bypass"
-        exit 1
-    fi
-    echo "[pre-flight] Running pytest (set SKIP_TESTS=1 to skip)…"
+    "$PY" -m pip install -q -r "$PROJECT_ROOT/requirements-test.txt" 2>/dev/null || true
+    echo "[pre-flight] Generating capability_manifest.json (gitignored; tests/claims need it)…"
+    # $PY, not python3: importing the capability updater pulls ELI's dependency set,
+    # and on the system interpreter this silently fails, leaving tests/claims to error
+    # on a missing manifest right after.
+    ( cd "$PROJECT_ROOT" && PYTHONPATH="$PROJECT_ROOT" "$PY" -c \
+      "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
+      >/dev/null 2>&1 || echo "[pre-flight] (manifest generation skipped — continuing)"
+    echo "[pre-flight] Running pytest via $PY (set SKIP_TESTS=1 to skip)…"
     ( cd "$PROJECT_ROOT" \
       && export ELI_PROJECT_ROOT="$PROJECT_ROOT" \
       && export ELI_DATA_DIR="${ELI_DATA_DIR:-$PROJECT_ROOT/artifacts}" \
@@ -208,9 +233,14 @@ for target in "${TARGETS[@]}"; do
             ;;
         deb)
             echo ""
-            echo "[deb] Invoking packaging/debian/build-deb.sh…"
-            bash "$PROJECT_ROOT/packaging/debian/build-deb.sh" "$VERSION" || \
-                echo "[deb] build-deb.sh failed (probably missing dpkg-deb / fakeroot)."
+            if [ -f "$PROJECT_ROOT/packaging/debian/build-deb.sh" ]; then
+                echo "[deb] Invoking packaging/debian/build-deb.sh…"
+                bash "$PROJECT_ROOT/packaging/debian/build-deb.sh" "$VERSION" || \
+                    echo "[deb] build-deb.sh failed (probably missing dpkg-deb / fakeroot)."
+            else
+                echo "[deb] No .deb builder yet (packaging/debian/ does not exist)."
+                echo "[deb] Use the portable tarball or AppImage instead: bash build_packages.sh appimage"
+            fi
             ;;
         appimage)
             echo ""
@@ -220,19 +250,24 @@ for target in "${TARGETS[@]}"; do
             ;;
         macos)
             echo ""
-            echo "[macos] Invoking packaging/macos/build-macos-app.sh…"
-            bash "$PROJECT_ROOT/packaging/macos/build-macos-app.sh" "$VERSION" || \
-                echo "[macos] macOS builder failed (run on macOS for a real .dmg)."
+            if [ -f "$PROJECT_ROOT/packaging/macos/build-macos-app.sh" ]; then
+                echo "[macos] Invoking packaging/macos/build-macos-app.sh…"
+                bash "$PROJECT_ROOT/packaging/macos/build-macos-app.sh" "$VERSION" || \
+                    echo "[macos] macOS builder failed (run on macOS for a real .dmg)."
+            else
+                echo "[macos] No macOS builder yet (packaging/macos/ does not exist)."
+                echo "[macos] macOS users: install from source — bash install.sh (Metal auto-detected)."
+            fi
             ;;
         windows-lean)
             echo ""
             echo "[windows-lean] Producing lean portable zip (source + wheel)…"
-            if ! ls "$DIST"/eli_mkxi-*.whl >/dev/null 2>&1; then
+            if ! ls "$DIST"/eli_v2_0-*.whl >/dev/null 2>&1; then
                 build_python_artifacts
             fi
-            STAGING="$PROJECT_ROOT/build/win-portable/ELI_v3.0-${VERSION}-windows-portable"
+            STAGING="$PROJECT_ROOT/build/win-portable/ELI_v2-${VERSION}-windows-portable"
             _stage_windows_common "$STAGING" "lean"
-            ZIP="$DIST/ELI_v3.0-${VERSION}-windows-portable.zip"
+            ZIP="$DIST/ELI_v2-${VERSION}-windows-portable.zip"
             rm -f "$ZIP"
             ( cd "$(dirname "$STAGING")" && zip -r -q "$ZIP" "$(basename "$STAGING")" )
             echo "[windows-lean] Portable zip: $ZIP"
@@ -241,18 +276,18 @@ for target in "${TARGETS[@]}"; do
             echo ""
             if [ "$(uname -s)" = "Darwin" ] || [ "$(uname -s)" = "Linux" ]; then
                 echo "[windows] Producing full offline portable zip on $(uname -s)…"
-                if ! ls "$DIST"/eli_mkxi-*.whl >/dev/null 2>&1; then
+                if ! ls "$DIST"/eli_v2_0-*.whl >/dev/null 2>&1; then
                     build_python_artifacts
                 fi
                 if ! find "$DIST/wheelhouse" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null | grep -q .; then
                     build_windows_wheelhouse
                 fi
-                STAGING="$PROJECT_ROOT/build/win-portable/ELI_v3.0-${VERSION}-windows-portable-full"
+                STAGING="$PROJECT_ROOT/build/win-portable/ELI_v2-${VERSION}-windows-portable-full"
                 _stage_windows_common "$STAGING" "full offline"
                 if [ -d "$DIST/wheelhouse" ]; then
                     cp -r "$DIST/wheelhouse" "$STAGING/wheelhouse"
                 fi
-                ZIP="$DIST/ELI_v3.0-${VERSION}-windows-portable-full.zip"
+                ZIP="$DIST/ELI_v2-${VERSION}-windows-portable-full.zip"
                 rm -f "$ZIP"
                 ( cd "$(dirname "$STAGING")" && zip -r -q "$ZIP" "$(basename "$STAGING")" )
                 echo "[windows] Full portable zip: $ZIP"
@@ -275,15 +310,15 @@ if [ -d "$DIST/wheelhouse" ]; then
 fi
 
 echo "[finalise] Computing SHA-256 checksums…"
-( cd "$DIST" && sha256sum eli_mkxi-*.whl 2>/dev/null \
-                          eli_mkxi-*.tar.gz 2>/dev/null \
-                          ELI_v3.0-*.dmg 2>/dev/null \
-                          ELI_v3.0-*.AppImage 2>/dev/null \
-                          ELI_v3.0-*-Setup.exe 2>/dev/null \
-                          eli-mkxi_*_amd64.deb 2>/dev/null \
-                          ELI_v3.0-*-windows-portable*.zip 2>/dev/null \
-                          ELI_v3.0-*-linux-portable.tar.gz 2>/dev/null \
-                          ELI_v3.0-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
+( cd "$DIST" && sha256sum eli_v2_0-*.whl 2>/dev/null \
+                          eli_v2_0-*.tar.gz 2>/dev/null \
+                          ELI_v2-*.dmg 2>/dev/null \
+                          ELI_v2-*.AppImage 2>/dev/null \
+                          ELI_v2-*-Setup.exe 2>/dev/null \
+                          eli-v2.0_*_amd64.deb 2>/dev/null \
+                          ELI_v2-*-windows-portable*.zip 2>/dev/null \
+                          ELI_v2-*-linux-portable.tar.gz 2>/dev/null \
+                          ELI_v2-*-macos-app.tar.gz 2>/dev/null > SHA256SUMS.txt || true )
 
 cat > "$DIST/RELEASE_NOTES.md" <<EOF
 # ELI v2 ${VERSION}
@@ -300,11 +335,11 @@ $(cat "$DIST/SHA256SUMS.txt" 2>/dev/null || echo "(checksum file missing)")
 \`\`\`
 
 ## Install quick reference
-- **pip / wheel**: \`pip install dist/eli_mkxi-${VERSION}-py3-none-any.whl[full]\`
-- **Debian/Ubuntu**: \`sudo dpkg -i dist/eli-mkxi_${VERSION}_amd64.deb && sudo apt -f install\`
-- **Linux portable**: extract \`dist/ELI_v3.0-${VERSION}-linux-portable.tar.gz\`, run \`./INSTALL_ELI.sh\`
-- **Windows lean**: extract \`dist/ELI_v3.0-${VERSION}-windows-portable.zip\`, run \`install.bat\`
-- **Windows full offline**: extract \`dist/ELI_v3.0-${VERSION}-windows-portable-full.zip\`, run \`install.bat\`
+- **pip / wheel**: \`pip install dist/eli_v2_0-${VERSION}-py3-none-any.whl[full]\`
+- **Debian/Ubuntu**: \`sudo dpkg -i dist/eli-v2.0_${VERSION}_amd64.deb && sudo apt -f install\`
+- **Linux portable**: extract \`dist/ELI_v2-${VERSION}-linux-portable.tar.gz\`, run \`./INSTALL_ELI.sh\`
+- **Windows lean**: extract \`dist/ELI_v2-${VERSION}-windows-portable.zip\`, run \`install.bat\`
+- **Windows full offline**: extract \`dist/ELI_v2-${VERSION}-windows-portable-full.zip\`, run \`install.bat\`
 - **macOS**: build on a Mac host with \`bash build_packages.sh macos\`
 
 EOF

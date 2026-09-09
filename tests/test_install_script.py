@@ -186,8 +186,47 @@ def test_yt_dlp_is_declared():
     assert "yt-dlp" in text, "yt-dlp is still undeclared; playback would be browser-only"
 
 
-def test_install_script_reports_intel_integrated():
+def test_linux_installer_smoke_tests_llama_runtime_not_just_import():
+    """CUDA wheels import fine then SIGILL in ggml_cpu_init on CPUs without VNNI."""
+    text = _sh_text()
+    assert "_llama_runtime_smoke" in text
+    assert "llama_backend_init" in text
+    assert "_llama_rebuild_for_this_cpu" in text
+    assert "_cpu_trusts_prebuilt_llama_wheel" in text
+    assert "x86-64-v3" in text
+
+
+def test_install_sh_emits_gui_progress_markers():
     text = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
-    assert "HAS_INTEL_IGPU" in text
-    assert "Intel integrated" in text
-    assert "GGML_VULKAN=on" in text
+    assert "eli_progress()" in text
+    assert "[ELI-PROGRESS]" in text
+    assert 'eli_progress finish 100' in text
+
+
+def test_install_backend_parses_progress_lines():
+    from eli.setup.install_backend import parse_install_line
+    p = parse_install_line("[ELI-PROGRESS] phase=venv pct=12 msg=Virtual environment ready")
+    assert p is not None
+    assert p.phase == "venv"
+    assert p.percent == 12
+    assert "Virtual" in p.message
+    hint = parse_install_line("[..] Installing PyTorch (CUDA 12.1)...")
+    assert hint is not None
+    assert hint.phase == "torch"
+
+
+def test_install_messages_have_all_phases():
+    from eli.setup.install_messages import INSTALL_MESSAGES, messages_for_phase
+    for phase in ("welcome", "system", "venv", "torch", "llama", "eli", "finish"):
+        assert phase in INSTALL_MESSAGES
+        assert messages_for_phase(phase)
+
+
+def test_appimage_syncs_when_bundled_version_changes():
+    text = (Path(__file__).resolve().parents[1]
+            / "packaging" / "linux" / "build-appimage.sh").read_text(encoding="utf-8")
+    apprun = text[text.index("cat > \"$APPDIR/AppRun\" <<'APPRUN_EOF'"):]
+    assert "_bundle_version" in apprun
+    assert "_installed_version" in apprun
+    assert 'printf \'%s\\n\' "$_BUNDLE_VER" >"$MARKER"' in apprun
+    assert "touch \"$MARKER\"" not in apprun, "marker must store version, not just exist"

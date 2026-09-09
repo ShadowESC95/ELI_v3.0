@@ -1,4 +1,4 @@
-"""ELI MKXI — Startup panel components.
+"""ELI v2.0 — Startup panel components.
 
 Contains:
   - HardwareTuningDock  — dock widget showing hardware tuning status/log
@@ -87,7 +87,8 @@ def _ollama_unreachable_message(host: str, err) -> str:
     if is_loopback:
         return (
             f"Could not reach Ollama at {shown}.\n\n"
-            f"{hint}\n\n"
+            "ELI tried to start a local Ollama server automatically but it didn't come "
+            f"up — it may not be installed, or it failed to start.\n\n{hint}\n\n"
             "This is a local address, so ELI's offline-by-default guard is not the "
             f"problem — the Net toggle can stay OFF.\n\n{err}"
         )
@@ -294,6 +295,27 @@ class StartupModelSelectionDialog(QDialog):
         refresh_ollama_btn = QPushButton("Refresh Ollama models")
         refresh_ollama_btn.clicked.connect(self._refresh_ollama_models)
         form.addRow("", refresh_ollama_btn)
+
+        # Voice engine — chosen HERE, before hardware tuning / GPU allocation, so a
+        # heavy neural voice's VRAM is a deliberate up-front choice on a capable box,
+        # while a low-VRAM machine keeps fast Piper and all its VRAM for the model.
+        self.tts_engine_combo = QComboBox()
+        self.tts_engine_combo.addItem("Piper — fast, low VRAM (recommended)", "piper")
+        self.tts_engine_combo.addItem("Natural neural (XTTS-v2) — human-like, uses GPU/VRAM", "natural")
+        self.tts_engine_combo.setToolTip(
+            "Piper is fast and light and runs anywhere. The natural neural voice (XTTS-v2) "
+            "sounds human — expressive, punctuation-aware — but needs the voice extra "
+            "(downloads ~1.8GB on first use) and more VRAM/compute. Pick it on a capable "
+            "machine; ELI falls back to Piper automatically if it can't load.")
+        try:
+            from eli.core.runtime_settings import load_settings as _ls
+            _cur_engine = str((_ls() or {}).get("tts_engine", "piper")).lower()
+            _ei = self.tts_engine_combo.findData(_cur_engine)
+            if _ei >= 0:
+                self.tts_engine_combo.setCurrentIndex(_ei)
+        except Exception:
+            log.debug("[STARTUP] tts_engine preselect failed", exc_info=True)
+        form.addRow("Voice engine", self.tts_engine_combo)
         layout.addLayout(form)
 
         self.auto_tune_checkbox = QCheckBox(
@@ -674,6 +696,18 @@ class StartupModelSelectionDialog(QDialog):
     def selected_ollama_model(self) -> str:
         return self.ollama_model_combo.currentText().strip()
 
+    def selected_tts_engine(self) -> str:
+        """'piper' or 'natural' — the voice engine chosen before model load."""
+        try:
+            return str(self.tts_engine_combo.currentData() or "piper")
+        except Exception:
+            return "piper"
+
+    def selected_tts_voice(self) -> str:
+        """The voice id implied by the engine choice: a natural neural voice, or ''
+        (empty = leave the Piper voice as-is)."""
+        return "natural:sophia" if self.selected_tts_engine() == "natural" else ""
+
     def should_auto_tune(self) -> bool:
         return self.selected_provider() != "ollama"
 
@@ -710,6 +744,7 @@ class _ModelDownloadThread(QThread):
         try:
             from eli.core.model_download import download_model
             def _emit_progress(done: int, total: int) -> None:
+                # Qt int signals are 32-bit — raw byte counts overflow on multi-GB models.
                 pct = int(min(1000, round(1000 * done / total))) if total > 0 else 0
                 done_mib = min(int(done // (1024 * 1024)), 2_000_000)
                 self.progress.emit(pct, done_mib)
@@ -809,7 +844,7 @@ class FirstBootWizard(QDialog):
     """3-step setup wizard shown on first boot when no GGUF model is found.
 
     Steps:
-      1. Welcome — explains ELI v3 and what is needed
+      1. Welcome — explains ELI v2.0 and what is needed
       2. Model    — file browser to locate a GGUF, or switch to Ollama
       3. Hardware — confirm hardware tuning and launch
     """
@@ -884,7 +919,7 @@ class FirstBootWizard(QDialog):
                 v.addWidget(_logo)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        title = QLabel("Welcome to ELI v3")
+        title = QLabel("Welcome to ELI v2.0")
         title.setStyleSheet("font-size:18px;font-weight:bold;color:#88c0d0;")
         v.addWidget(title)
         body = QLabel(
@@ -896,7 +931,7 @@ class FirstBootWizard(QDialog):
             "on step 2. Ollama works on Windows, macOS and Linux, local or on your LAN.\n"
             "   •  Embedder — nomic ~80 MiB (memory / RAG; automatic).\n"
             "   •  Voice — Piper speech out + Whisper listening (automatic). More voices, "
-            "accents and character voices (HAL, JARVIS, GLaDOS…) are downloadable later "
+            "accents and generic voice styles (calm, robotic, synthetic…) are downloadable later "
             "in Settings \u25b8 Runtime \u25b8 \"VOICE / TTS\".\n\n"
             "Pick a chat model, confirm hardware, and you're in."
         )
@@ -1043,6 +1078,18 @@ class FirstBootWizard(QDialog):
         ov.addWidget(_wiz_refresh)
         v.addWidget(self._ollama_widget)
         self._ollama_widget.setVisible(False)
+
+        # Voice engine — same choice as the model picker, offered here for a brand-new
+        # user, before the model loads. Piper (fast) vs the human-like neural voice.
+        v.addWidget(QLabel("Voice engine:"))
+        self._wiz_tts_engine = QComboBox()
+        self._wiz_tts_engine.addItem("Piper — fast, works on any machine (recommended)", "piper")
+        self._wiz_tts_engine.addItem("Natural neural (XTTS-v2) — human-like, needs GPU/VRAM", "natural")
+        self._wiz_tts_engine.setToolTip(
+            "Piper is fast and light. The natural neural voice sounds human — expressive and "
+            "punctuation-aware — but downloads ~1.8GB on first use and needs more VRAM. ELI "
+            "falls back to Piper automatically if the neural voice can't load.")
+        v.addWidget(self._wiz_tts_engine)
 
         self._wiz_provider.currentIndexChanged.connect(self._sync_wiz_provider)
         v.addStretch()
@@ -1355,19 +1402,34 @@ class FirstBootWizard(QDialog):
             _hp_apply(_rec)
             _style = "color:#a3be8c;font-size:12px;"
             _extra = ""
+            from eli.core.hardware_profile import format_gpu_layers_status as _fmt_layers
+            _layer_disp = _fmt_layers(
+                int(_rec.n_gpu_layers or 0),
+                gpu_integrated=bool(getattr(_hw, "gpu_integrated", False)),
+                gpu_name=str(getattr(_hw, "gpu_name", "") or ""),
+                gpu_vendor=str(getattr(_hw, "gpu_vendor", "") or ""),
+            )
             if _hw.has_gpu and _rec.n_gpu_layers == 0:
                 _style = "color:#ebcb8b;font-size:12px;"
-                _extra = (
-                    "\n⚠ This model is too large for comfortable GPU offload on your card. "
-                    "Try Qwen2.5-7B (recommended for 8 GB GPUs)."
-                )
+                if getattr(_hw, "gpu_integrated", False):
+                    from eli.core.hardware_profile import integrated_gpu_label as _igpu_lbl
+                    _kind = _igpu_lbl(_hw.gpu_name, getattr(_hw, "gpu_vendor", ""))
+                    _extra = (
+                        f"\n⚠ {_kind} detected — install the GPU pack to "
+                        "offload layers; CPU mode works until then."
+                    )
+                else:
+                    _extra = (
+                        "\n⚠ This model is too large for comfortable GPU offload on your card. "
+                        "Try Qwen2.5-7B (recommended for 8 GB GPUs)."
+                    )
             elif _hw.has_gpu and 0 < _rec.n_gpu_layers < 10:
                 _extra = (
                     "\n⚠ Partial GPU offload — consider a smaller model for faster replies."
                 )
             self._hw_result_label.setStyleSheet(_style)
             self._hw_result_label.setText(
-                f"GPU: {_hw.gpu_name}  |  GPU layers: {_rec.n_gpu_layers}  "
+                f"GPU: {_hw.gpu_name}  |  GPU layers: {_layer_disp}  "
                 f"|  Context: {_rec.n_ctx}  |  Batch: {_rec.batch_size}  "
                 f"|  Free VRAM: {_hw.free_vram_mb}MB{_extra}"
             )
@@ -1388,6 +1450,15 @@ class FirstBootWizard(QDialog):
 
     def selected_ollama_model(self) -> str:
         return self._wiz_ollama_model.currentText().strip()
+
+    def selected_tts_engine(self) -> str:
+        try:
+            return str(self._wiz_tts_engine.currentData() or "piper")
+        except Exception:
+            return "piper"
+
+    def selected_tts_voice(self) -> str:
+        return "natural:sophia" if self.selected_tts_engine() == "natural" else ""
 
     def accept(self):
         provider = self.selected_provider()

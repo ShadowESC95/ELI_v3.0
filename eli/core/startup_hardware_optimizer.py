@@ -5,9 +5,14 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 
 def _eli_canonical_root_ROOT() -> Path:
@@ -60,6 +65,18 @@ def run(cmd: List[str]) -> str:
     return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
 
 
+def _integrated_vram_estimate() -> tuple[int, int]:
+    """Shared-memory VRAM budget for iGPU / APU / Apple unified-memory systems."""
+    from eli.core.hardware_profile import _estimate_integrated_vram_mb
+    ram_gb = detect_ram_gb()
+    try:
+        import psutil
+        avail_gb = psutil.virtual_memory().available / 1e9
+    except Exception:
+        avail_gb = ram_gb * 0.5
+    return _estimate_integrated_vram_mb(ram_gb, avail_gb)
+
+
 def detect_ram_gb() -> float:
     # psutil is cross-platform (Linux/macOS/Windows) and already a dependency —
     # prefer it so RAM is detected correctly off-Linux instead of defaulting to 8.
@@ -67,14 +84,14 @@ def detect_ram_gb() -> float:
         import psutil
         return round(psutil.virtual_memory().total / 1e9, 2)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         txt = Path("/proc/meminfo").read_text()
         m = re.search(r"MemTotal:\s+(\d+)\s+kB", txt)
         if m:
             return round(int(m.group(1)) / 1024 / 1024, 2)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return 8.0
 
 
@@ -85,7 +102,7 @@ def detect_cpu_name() -> str:
         if m:
             return m.group(1).strip()
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return platform.processor() or "unknown"
 
 
@@ -108,7 +125,7 @@ def detect_nvidia_gpus() -> List[GPUInfo]:
             idx, name, total, free = [x.strip() for x in line.split(",")[:4]]
             out.append(GPUInfo(int(idx), name, "nvidia", int(total), int(free)))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return out
 
 
@@ -127,16 +144,20 @@ def detect_other_gpus() -> List[GPUInfo]:
             for k, v in _i.items():
                 kl = str(k).lower()
                 if "vram" in kl and "total" in kl and "memory" in kl and "used" not in kl:
-                    try: _tot = int(v)
-                    except Exception: pass
+                    try:
+                        _tot = int(v)
+                    except Exception:
+                        log.debug("rocm-smi VRAM total parse failed for %r", k, exc_info=True)
                 elif "vram" in kl and "used" in kl and "memory" in kl:
-                    try: _used = int(v)
-                    except Exception: pass
+                    try:
+                        _used = int(v)
+                    except Exception:
+                        log.debug("rocm-smi VRAM used parse failed for %r", k, exc_info=True)
             if _tot > 0:
                 amd_total += _tot // (1024 * 1024)
                 amd_free += max(0, _tot - _used) // (1024 * 1024)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
         raw = run(["lspci"])
         for i, line in enumerate(raw.splitlines()):
@@ -144,14 +165,28 @@ def detect_other_gpus() -> List[GPUInfo]:
             if "vga" in low or "3d controller" in low:
                 if "nvidia" in low:
                     continue
-                vendor = "amd" if ("amd" in low or "advanced micro" in low) else ("intel" if "intel" in low else "unknown")
+                vendor = (
+                    "amd" if ("amd" in low or "advanced micro" in low)
+                    else "intel" if "intel" in low
+                    else "qualcomm" if any(k in low for k in ("qualcomm", "adreno", "snapdragon", "5143"))
+                    else "unknown"
+                )
                 if vendor == "amd" and amd_total > 0:
                     out.append(GPUInfo(i, line.strip(), vendor, amd_total, amd_free))
                     amd_total = amd_free = 0  # assign the summed VRAM once
                 else:
+                    try:
+                        from eli.core.hardware_profile import _is_integrated_gpu_name
+                        _name = line.strip()
+                        if _is_integrated_gpu_name(_name, vendor):
+                            free_mb, total_mb = _integrated_vram_estimate()
+                            out.append(GPUInfo(i, _name, vendor, total_mb, free_mb))
+                            continue
+                    except Exception:
+                        log.debug("integrated GPU lspci classify failed", exc_info=True)
                     out.append(GPUInfo(i, line.strip(), vendor, 0, 0))
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return out
 
 
@@ -170,10 +205,58 @@ def detect_native_gpus() -> List[GPUInfo]:
         vendor = ("nvidia" if any(k in low for k in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla"))
                   else "amd" if any(k in low for k in ("amd", "radeon", "rx "))
                   else "intel" if "intel" in low or "arc" in low
+                  else "qualcomm" if any(k in low for k in ("qualcomm", "adreno", "snapdragon"))
                   else "unknown")
-        free = int(vram_mb * 0.80) if vram_mb else 0
+        try:
+            from eli.core.hardware_profile import _is_integrated_gpu_name
+            _integrated = _is_integrated_gpu_name(name, vendor)
+        except Exception:
+            _integrated = vendor == "intel" and "arc" not in low
+        if vram_mb <= 0 and _integrated:
+            free_mb, total_mb = _integrated_vram_estimate()
+            vram_mb, free = total_mb, free_mb
+        elif sys.platform == "darwin" and vram_mb <= 0:
+            free_mb, total_mb = _integrated_vram_estimate()
+            vram_mb, free = total_mb, free_mb
+            vendor = vendor if vendor != "unknown" else "apple"
+        else:
+            free = int(vram_mb * 0.80) if vram_mb else 0
         out.append(GPUInfo(i, name, vendor, int(vram_mb), free))
     return out
+
+
+def gpu_budget_for_fit() -> Optional[GPUInfo]:
+    """Best GPU budget for smart-fit — NVIDIA, AMD, Intel iGPU, Apple, etc."""
+    return resolve_gpu_for_allocate()
+
+
+def resolve_gpu_for_allocate() -> Optional[GPUInfo]:
+    """Single GPU selection for allocate()/build_profile() and smart-fit.
+
+    ``detect_gpus()`` (nvidia-smi / lspci / rocm-smi) can miss Intel iGPU and
+    other shared-memory GPUs that ``detect_hardware()`` finds via DRM/sysfs.
+    Always fall back to the canonical hardware profile so layer sizing uses the
+    same VRAM budget everywhere.
+    """
+    gpu = select_gpu(detect_gpus())
+    if gpu and gpu.total_mb > 0 and gpu.free_mb > 0:
+        return gpu
+    try:
+        from eli.core.hardware_profile import detect_hardware
+        hw = detect_hardware()
+        if hw.has_gpu and hw.free_vram_mb > 0:
+            return GPUInfo(
+                0,
+                hw.gpu_name or "GPU",
+                hw.gpu_vendor or "unknown",
+                int(hw.total_vram_mb or hw.free_vram_mb),
+                int(hw.free_vram_mb),
+            )
+    except Exception:
+        log.debug("resolve_gpu_for_allocate fallback failed", exc_info=True)
+    if gpu and gpu.total_mb > 0:
+        return gpu
+    return None
 
 
 def detect_gpus() -> List[GPUInfo]:
@@ -277,7 +360,7 @@ def _gguf_metadata_ctx(model_path: str) -> int:
             try:
                 del _m
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         except Exception:
             val = 0
     _TRAIN_CTX_CACHE[key] = val
@@ -300,7 +383,7 @@ def train_ctx_for_model(model_path: str) -> int:
         if _meta_ctx and _meta_ctx > 0:
             return int(_meta_ctx)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
     name = Path(model_path).name.lower()
 
@@ -552,6 +635,9 @@ def allocate(
                 target_batch = 0
     ctx_fraction  = float(os.environ.get("ELI_CTX_FRACTION", "0.9"))
 
+    if gpu is None or gpu.total_mb <= 0:
+        gpu = resolve_gpu_for_allocate()
+
     # ---- CPU-only path ----
     if gpu is None or gpu.total_mb <= 0:
         _raw = int(train_ctx * ctx_fraction)
@@ -687,7 +773,9 @@ def build_profile() -> HardwareProfile:
     model_gb = size_gb(model)
 
     gpus = detect_gpus()
-    gpu = select_gpu(gpus)
+    gpu = resolve_gpu_for_allocate()
+    if gpu is None:
+        gpu = select_gpu(gpus)
 
     ram = detect_ram_gb()
     cpu_threads = os.cpu_count() or 4
