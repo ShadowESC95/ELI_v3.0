@@ -153,6 +153,8 @@ def _is_dev_mode() -> bool:
     # auto-detected source layout as dev mode only for real checkouts; packaged
     # installs should use platformdirs unless a launcher set ELI_PROJECT_ROOT.
     if not (root / ".git").exists():
+        if (root / "install.sh").is_file() and (root / "RUN_ELI.sh").is_file():
+            return True
         return False
     # Modern source layout: project_root/eli/cognition and project_root/eli/gui
     eli_pkg = root / "eli"

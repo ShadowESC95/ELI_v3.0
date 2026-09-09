@@ -184,7 +184,14 @@ if [ -z "${SKIP_TESTS:-}" ]; then
         exit 1
     fi
     echo "[pre-flight] Running pytest (set SKIP_TESTS=1 to skip)…"
-    ( cd "$PROJECT_ROOT" && "$PY" -m pytest -q tests/ )
+    ( cd "$PROJECT_ROOT" \
+      && export ELI_PROJECT_ROOT="$PROJECT_ROOT" \
+      && export ELI_DATA_DIR="${ELI_DATA_DIR:-$PROJECT_ROOT/artifacts}" \
+      && export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$PROJECT_ROOT/config}" \
+      && export ELI_MODELS_DIR="${ELI_MODELS_DIR:-$PROJECT_ROOT/models}" \
+      && export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$PROJECT_ROOT/cache}" \
+      && PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+      && "$PY" -m pytest -q tests/ )
 fi
 
 # ── Targets ─────────────────────────────────────────────────────────────
