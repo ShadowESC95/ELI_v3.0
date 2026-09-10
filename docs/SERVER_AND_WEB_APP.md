@@ -123,6 +123,13 @@ ELI_API_HOST=0.0.0.0 ELI_API_PORT=8081 ELI_API_TOKEN=$(python -c 'import secrets
 2. From the phone browser (same Wi‑Fi), open the printed `http://<host-ip>:8081/?token=…`.
 3. Chat. The model runs on the host; the phone is a thin client.
 
+**Recommended:** use the **PWA** in your browser (step 2) — no install, no store account.
+
+**Optional native companion (v3):** for a home-screen app or sideloaded Android APK (no Play
+Store required), see [`clients/mobile/`](../clients/mobile/README.md). Same `/v1/chat/stream`
+API and `--lan` token; distribute via GitHub Releases or build-from-source. Play/App Store is
+deferred and optional.
+
 ## 8. Cross-platform & dependencies
 - **Server deps** (`fastapi`, `uvicorn`) are in `pyproject [full]` and every `requirements-*.txt`,
   so a normal install includes them on Linux, macOS, and Windows.

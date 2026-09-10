@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "ELI Mobile Companion",
+    "slug": "eli-companion",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "elicompanion",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#05070d"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "tech.geteli.companion",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "ELI Companion connects to the ELI server on your own computer, on your local network.",
+        "NSMicrophoneUsageDescription": "Optional — used for voice messages to your local ELI server (future)."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#05070d",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "tech.geteli.companion",
+      "usesCleartextTraffic": true
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#05070d",
+          "dark": { "backgroundColor": "#05070d" }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "eliDefaultPort": 8081
+    }
+  }
+}
