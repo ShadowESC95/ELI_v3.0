@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -25,9 +26,22 @@ from typing import Any, Dict, Optional
 log = logging.getLogger(__name__)
 
 CLONE_PREFIX = "clone:"
+NATURAL_PREFIX = "natural:"
 _XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 _TTS = None  # lazy singleton
 
+# Curated natural voices using XTTS-v2's built-in studio speakers.
+_NATURAL_VOICES = {
+    "sophia": {"speaker": "Claribel Dervla", "gender": "female",
+               "desc": "Sophia — warm, natural female"},
+    "aria":   {"speaker": "Daisy Studious", "gender": "female",
+               "desc": "Aria — clear, articulate female"},
+    "james":  {"speaker": "Andrew Chipper", "gender": "male",
+               "desc": "James — bright, friendly male"},
+    "daniel": {"speaker": "Damien Black", "gender": "male",
+               "desc": "Daniel — deep, measured male"},
+}
+_DEFAULT_NATURAL = "sophia"
 
 # ── Registry (offline-safe) ──────────────────────────────────────────────────────
 def _registry_path() -> Path:
@@ -241,11 +255,75 @@ def _get_model():
     # shim, so it has to be applied before, not after. A caller reaching here
     # without having probed first would otherwise fail on transformers>=5.
     _patch_transformers_compat()
+    os.environ.setdefault("COQUI_TOS_AGREED", "1")
     from TTS.api import TTS as _TTSApi
     device = _select_device()
     log.info("tts_xtts: loading XTTS-v2 on %s (first run downloads ~1.8GB)…", device)
     _TTS = _TTSApi(_XTTS_MODEL).to(device)
     return _TTS
+
+
+def natural_available() -> bool:
+    """True when the neural natural-voice backend can run (TTS installed)."""
+    return xtts_available()
+
+
+def list_natural_voices() -> "list[str]":
+    """Built-in neural voice ids (``natural:<id>``), or [] when XTTS isn't installed."""
+    if not natural_available():
+        return []
+    return [NATURAL_PREFIX + k for k in _NATURAL_VOICES]
+
+
+def natural_voice_meta(voice_id: str) -> Optional[Dict[str, Any]]:
+    key = str(voice_id or "").lower().replace(NATURAL_PREFIX, "", 1).strip()
+    return _NATURAL_VOICES.get(key)
+
+
+def _resolve_builtin_speaker(model, wanted: str) -> Optional[str]:
+    try:
+        speakers = list(getattr(model, "speakers", None)
+                        or getattr(getattr(model, "synthesizer", None), "speakers", None) or [])
+    except Exception:
+        speakers = []
+    if not speakers:
+        return None
+    for s in speakers:
+        if str(s).strip().lower() == wanted.strip().lower():
+            return s
+    for s in speakers:
+        if wanted.split()[0].lower() in str(s).lower():
+            return s
+    return speakers[0]
+
+
+def synthesize_natural_wav(text: str, voice_id: str) -> Optional[bytes]:
+    """Synthesize with an XTTS-v2 built-in speaker — no clone needed."""
+    meta = natural_voice_meta(voice_id) or _NATURAL_VOICES.get(_DEFAULT_NATURAL)
+    if not natural_available():
+        return None
+    outpath = ""
+    try:
+        model = _get_model()
+        speaker = _resolve_builtin_speaker(model, str(meta.get("speaker") or ""))
+        fd, outpath = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        Path(outpath).unlink(missing_ok=True)
+        kwargs = {"text": str(text), "language": "en", "file_path": outpath}
+        if speaker:
+            kwargs["speaker"] = speaker
+        model.tts_to_file(**kwargs)
+        if Path(outpath).is_file() and Path(outpath).stat().st_size > 0:
+            return Path(outpath).read_bytes()
+    except Exception:
+        log.debug("tts_xtts: natural synthesis failed", exc_info=True)
+    finally:
+        if outpath:
+            try:
+                Path(outpath).unlink(missing_ok=True)
+            except OSError:
+                log.debug("tts_xtts: temp wav cleanup failed", exc_info=True)
+    return None
 
 
 def synthesize_wav(text: str, clone_name: str) -> Optional[bytes]:

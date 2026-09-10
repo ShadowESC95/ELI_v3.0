@@ -1003,7 +1003,7 @@ class FirstBootWizard(QDialog):
                 v.addWidget(_logo)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        title = QLabel("Welcome to ELI v2.0")
+        title = QLabel("Welcome to ELI v3.0")
         title.setStyleSheet("font-size:18px;font-weight:bold;color:#88c0d0;")
         v.addWidget(title)
         body = QLabel(

@@ -342,8 +342,9 @@ class ConversationMixin:
 
         # PulseAudio / PipeWire sources (catches BT headsets)
         try:
+            import shutil as _shutil
             import subprocess as _sp
-            if not _sp.which("pactl"):
+            if not _shutil.which("pactl"):
                 raise FileNotFoundError("pactl not installed")
             _out = _sp.check_output(["pactl", "list", "sources", "short"],
                                     text=True, timeout=3)
