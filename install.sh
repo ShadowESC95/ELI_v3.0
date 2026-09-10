@@ -182,8 +182,16 @@ else
 fi
 ok "CPU         ${B}${_CPUS}${R} cores      RAM ${B}${_RAMGB:-?} GB${R}"
 ok "Disk free   ${B}$(df -h "$SCRIPT_DIR" 2>/dev/null | awk 'NR==2{print $4}')${R}   ${D}(a model is ~2-5 GB)${R}"
+# GPU probes use grep/lspci pipelines — with `set -o pipefail`, a no-match grep
+# aborts the whole install (common on Intel iGPU systems at 5% / "Your system").
+_gpu_pipeline() {
+    set +o pipefail
+    "$@"
+    set -o pipefail
+}
+
 if command -v nvidia-smi &>/dev/null; then
-    _NGPU="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -c . || true)"
+    _NGPU="$(_gpu_pipeline bash -c 'nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -c . || true')"
     _NGPU="${_NGPU//$'\r'/}"
     _NGPU="${_NGPU//$'\n'/}"
     _NGPU="${_NGPU:-0}"
@@ -202,8 +210,8 @@ fi
 # /dev/kfd kernel node means a ROCm-capable AMD GPU is present.
 if [ "$HAS_NVIDIA" -eq 0 ] && [ "$OS" != "Darwin" ]; then
     if command -v rocminfo &>/dev/null || command -v rocm-smi &>/dev/null || [ -e /dev/kfd ]; then
-        _AGPU="$(rocm-smi --showproductname 2>/dev/null | grep -m1 -iE 'series|card' | sed 's/.*: *//' || true)"
-        [ -z "$_AGPU" ] && _AGPU="$(lspci 2>/dev/null | grep -iE 'vga|display|3d' | grep -iE 'amd|radeon|advanced micro' | head -1 | sed 's/.*: //' || true)"
+        _AGPU="$(_gpu_pipeline bash -c 'rocm-smi --showproductname 2>/dev/null | grep -m1 -iE "series|card|gpu" | sed "s/.*: *//" || true')"
+        [ -z "$_AGPU" ] && _AGPU="$(_gpu_pipeline bash -c 'lspci 2>/dev/null | grep -iE "vga|display|3d" | grep -iE "amd|radeon|advanced micro" | head -1 | sed "s/.*: //" || true')"
         ok "GPU         ${B}${GRN}AMD ROCm${R}  ${D}${_AGPU:-detected}${R}"
         HAS_AMD=1
     fi
@@ -215,10 +223,10 @@ if [ "$HAS_NVIDIA" -eq 0 ] && [ "$HAS_AMD" -eq 0 ] && [ "$OS" != "Darwin" ]; the
     for _drm in /sys/class/drm/card[0-9]/device/vendor; do
         [ -r "$_drm" ] || continue
         [ "$(cat "$_drm" 2>/dev/null | tr 'A-F' 'a-f')" = "0x8086" ] || continue
-        _pci="$(readlink -f "$(dirname "$_drm")" 2>/dev/null | xargs basename 2>/dev/null || true)"
+        _pci="$(_gpu_pipeline bash -c 'readlink -f "$(dirname "$_drm")" 2>/dev/null | xargs basename 2>/dev/null || true')"
         if [ -n "$_pci" ] && command -v lspci &>/dev/null; then
             # pipefail + set -e: lspci exits 1 when the slot is unknown — must not abort install
-            _INTEL_NAME="$(lspci -s "$_pci" -nn 2>/dev/null | sed 's/^[^:]*: //' | head -1 || true)"
+            _INTEL_NAME="$(_gpu_pipeline bash -c "lspci -s '${_pci}' -nn 2>/dev/null | sed 's/^[^:]*: //' | head -1 || true")"
         fi
         [ -n "$_INTEL_NAME" ] && break
     done
@@ -238,14 +246,14 @@ if [ "$HAS_NVIDIA" -eq 0 ] && [ "$HAS_AMD" -eq 0 ] && [ "$HAS_INTEL_IGPU" -eq 0 
     for _drm in /sys/class/drm/card[0-9]/device/vendor; do
         [ -r "$_drm" ] || continue
         [ "$(cat "$_drm" 2>/dev/null | tr 'A-F' 'a-f')" = "0x5143" ] || continue
-        _pci="$(readlink -f "$(dirname "$_drm")" 2>/dev/null | xargs basename 2>/dev/null || true)"
+        _pci="$(_gpu_pipeline bash -c 'readlink -f "$(dirname "$_drm")" 2>/dev/null | xargs basename 2>/dev/null || true')"
         if [ -n "$_pci" ] && command -v lspci &>/dev/null; then
-            _QCOM_NAME="$(lspci -s "$_pci" -nn 2>/dev/null | sed 's/^[^:]*: //' | head -1 || true)"
+            _QCOM_NAME="$(_gpu_pipeline bash -c "lspci -s '${_pci}' -nn 2>/dev/null | sed 's/^[^:]*: //' | head -1 || true")"
         fi
         [ -n "$_QCOM_NAME" ] && break
     done
     if [ -z "$_QCOM_NAME" ] && command -v lspci &>/dev/null; then
-        _QCOM_NAME="$(lspci 2>/dev/null | grep -iE 'qualcomm|adreno|snapdragon' | head -1 | sed 's/^[^:]*: //' || true)"
+        _QCOM_NAME="$(_gpu_pipeline bash -c 'lspci 2>/dev/null | grep -iE "qualcomm|adreno|snapdragon" | head -1 | sed "s/^[^:]*: //" || true')"
     fi
     if [ -n "$_QCOM_NAME" ]; then
         ok "GPU         ${B}${GRN}Qualcomm Adreno${R}  ${D}${_QCOM_NAME}${R}"
@@ -809,7 +817,19 @@ if ! "$PYTHON_VENV" -c "import eli" 2>/dev/null; then
     VERIFY_OK=0
 fi
 if ! "$PYTHON_VENV" -c "import eli.gui.app" 2>/dev/null; then
-    echo "[WARN] GUI entry (eli.gui.app) not importable — GUI extras may be missing."
+    echo "[WARN] GUI entry (eli.gui.app) not importable — installing GUI bootstrap…"
+    _GUI_BOOT="$SCRIPT_DIR/requirements-portable-bootstrap.txt"
+    if [ -f "$_GUI_BOOT" ]; then
+        "$PIP" install "${_PIP_LINKS[@]}" -r "$_GUI_BOOT" \
+            || "$PIP" install "${_PIP_LINKS[@]}" 'PySide6>=6.6.0' || true
+    else
+        "$PIP" install "${_PIP_LINKS[@]}" 'PySide6>=6.6.0' || true
+    fi
+    if ! "$PYTHON_VENV" -c "from eli.gui.qt_compat import QApplication" 2>/dev/null; then
+        echo "[WARN] PySide6 still not importable — run install again with network, or use terminal mode."
+    else
+        echo "[OK] GUI bindings (PySide6) installed."
+    fi
 fi
 if [ -x "$VENV/bin/eli" ]; then
     echo "[OK] 'eli' command installed at $VENV/bin/eli"

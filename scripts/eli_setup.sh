@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ELI v2.0 — one-click setup (GUI-first on every platform with a display).
+# ELI v3.0 — one-click setup (GUI-first on every platform with a display).
 # Falls back to terminal-only when no graphical session or Qt is unavailable.
 set -euo pipefail
 
@@ -12,8 +12,15 @@ export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$ROOT/config}"
 export ELI_MODELS_DIR="${ELI_MODELS_DIR:-$ROOT/models}"
 export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$ROOT/cache}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# GNOME/KDE often set QT_STYLE_OVERRIDE=adwaita — PySide6 only ships Fusion/Windows.
+unset QT_STYLE_OVERRIDE 2>/dev/null || true
 
 cd "$ROOT"
+
+# Android / Termux — unified installer routes to headless profile (install_android.sh).
+if python3 -c "from eli.setup.platform_profile import is_android_headless; import sys; sys.exit(0 if is_android_headless() else 1)" 2>/dev/null; then
+  exec python3 -m eli.setup --full-install --launch
+fi
 
 _gui_available() {
   if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
@@ -22,21 +29,89 @@ _gui_available() {
   return 1
 }
 
-_try_gui_installer() {
-  local _py=""
-  mkdir -p "$ROOT/artifacts"
-  for _py in python3 python; do
-    if command -v "$_py" >/dev/null 2>&1; then
-      if "$_py" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)" 2>/dev/null; then
-        if ! "$_py" -c "from eli.gui.qt_compat import QApplication" 2>/dev/null; then
-          "$_py" -m pip install --user 'PySide6>=6.6.0' >>"$ROOT/artifacts/setup_gui_fallback.log" 2>&1 || true
-        fi
-        if "$_py" -m eli.setup --full-install --launch >>"$ROOT/artifacts/setup_gui.log" 2>&1; then
-          return 0
-        fi
-      fi
+_pip_wheelhouse_args() {
+  PIP_WH_ARGS=()
+  for _wh in "$ROOT/wheelhouse" "$ROOT/dist/wheelhouse"; do
+    if [ -d "$_wh" ] && compgen -G "$_wh/*.whl" >/dev/null 2>&1; then
+      PIP_WH_ARGS=(--find-links "$_wh" --prefer-binary)
+      return 0
     fi
   done
+  PIP_WH_ARGS=()
+}
+
+_venv_python() {
+  if [ -x "$PY" ] && "$PY" -c "import sys" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+_gui_import_ok() {
+  _venv_python || return 1
+  "$PY" -c "from eli.gui.qt_compat import QApplication" >/dev/null 2>&1
+}
+
+_install_core_env() {
+  if [ -t 1 ]; then
+    echo "  [setup] Preparing core environment (install.sh)…"
+  fi
+  bash "$ROOT/install.sh" --yes --auto-model \
+    || bash "$ROOT/install.sh" --yes --cpu-only --auto-model
+}
+
+_ensure_gui_in_venv() {
+  _gui_import_ok && return 0
+  _venv_python || return 1
+  if [ -t 1 ]; then
+    echo "  [setup] Installing GUI bindings into the project virtual environment…"
+  fi
+  _pip_wheelhouse_args
+  "$PY" -m pip install --upgrade pip wheel >/dev/null 2>&1 || true
+  if [ -f "$ROOT/requirements-portable-bootstrap.txt" ]; then
+    "$PY" -m pip install "${PIP_WH_ARGS[@]}" -r "$ROOT/requirements-portable-bootstrap.txt" \
+      || "$PY" -m pip install "${PIP_WH_ARGS[@]}" 'PySide6>=6.6.0' \
+      || return 1
+  else
+    "$PY" -m pip install "${PIP_WH_ARGS[@]}" 'PySide6>=6.6.0' \
+      || "$PY" -m pip install -e "$ROOT[gui]" \
+      || return 1
+  fi
+  _gui_import_ok
+}
+
+_ensure_ready_for_gui() {
+  if ! _venv_python; then
+    _install_core_env
+  elif ! "$PY" -c "import eli" >/dev/null 2>&1; then
+    _install_core_env
+  fi
+  _ensure_gui_in_venv || {
+    if [ -t 1 ]; then
+      echo "  [setup] GUI bindings still unavailable — retrying full install.sh…"
+    fi
+    _install_core_env
+    _ensure_gui_in_venv
+  }
+}
+
+_try_gui_installer() {
+  local _log="$ROOT/artifacts/setup_gui.log"
+  mkdir -p "$ROOT/artifacts"
+  if ! _ensure_ready_for_gui; then
+    return 1
+  fi
+  if [ -t 1 ]; then
+    echo "  [setup] GUI installer running — live output below (also saved to $_log)"
+    echo "  [setup] Install only — launch afterward with: bash \"$ROOT/RUN_ELI.sh\""
+    if "$PY" -m eli.setup --full-install 2>&1 | tee -a "$_log"; then
+      echo ""
+      echo "  [OK] Setup complete. Launch ELI with: bash \"$ROOT/RUN_ELI.sh\""
+      return 0
+    fi
+  elif "$PY" -m eli.setup --full-install >>"$_log" 2>&1; then
+    return 0
+  fi
   return 1
 }
 
@@ -52,7 +127,7 @@ else
 fi
 
 echo
-echo "${B}${CYN}ELI v2.0 setup (terminal mode)${R}"
+echo "${B}${CYN}ELI v3.0 setup (terminal mode)${R}"
 echo "  Graphical installer unavailable — running full install in the terminal."
 echo
 
@@ -61,15 +136,16 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -x "$PY" ]; then
+if ! _venv_python; then
   echo "  Installing core environment (install.sh)…"
   bash "$ROOT/install.sh" --yes --auto-model \
     || bash "$ROOT/install.sh" --yes --cpu-only --auto-model
 fi
 
-if [ ! -x "$PY" ]; then
+if ! _venv_python; then
   echo "${YEL}[!]${R} Virtual environment could not be created."
   exit 1
 fi
 
-exec "$PY" -m eli.setup --run-remaining --launch
+echo "  [OK] Launch ELI with: bash \"$ROOT/RUN_ELI.sh\""
+exec "$PY" -m eli.setup --run-remaining

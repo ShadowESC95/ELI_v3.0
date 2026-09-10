@@ -4,6 +4,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Optional: point at a clean release-asset tree instead of copying an entire developer models/ folder.
+ASSET_ROOT="${ELI_ASSETS_SRC:-$ROOT}"
 if [ -x "$ROOT/.venv/bin/python3" ]; then
   PYTHON="${PYTHON:-$ROOT/.venv/bin/python3}"
 else
@@ -115,28 +117,51 @@ fi
   "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
   >/dev/null 2>&1 || echo "[package] (manifest pre-gen skipped — installer will regenerate)"
 
-# We bundle a real ~1.7GB starter model (Qwen2.5-3B) below, so bundling the 766MB torch
-# wheel too would push a single release asset over GitHub's 2GB cap. Torch is OPT-IN
-# (ELI_BUNDLE_TORCH=1); by default it's fetched at install time (small, quick).
+# Offline wheelhouse — portable packages must install the GUI offline on first run.
+echo "[package] wheelhouse (portable=${ELI_PORTABLE_WHEELHOUSE:-1}, torch=${ELI_BUNDLE_TORCH:-0}, full=${ELI_FULL_WHEELHOUSE:-0})"
 mkdir -p "$STAGING/wheelhouse"
+if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ]; then
+  echo "[package]   bundling portable GUI bootstrap wheels (offline-first install)…"
+  if [ -f "$ROOT/requirements-portable-bootstrap.txt" ]; then
+    "$PYTHON" -m pip download -r "$ROOT/requirements-portable-bootstrap.txt" \
+      -d "$STAGING/wheelhouse" --prefer-binary -q 2>/dev/null || true
+  fi
+  for _plat in manylinux2014_x86_64 manylinux2014_aarch64; do
+    for _pv in 311 312; do
+      "$PYTHON" -m pip download -d "$STAGING/wheelhouse" \
+        --platform "$_plat" --python-version "$_pv" --implementation cp \
+        --abi "cp${_pv}" --only-binary=:all: --prefer-binary \
+        'PySide6>=6.6.0' 'shiboken6>=6.6.0' -q 2>/dev/null || true
+    done
+  done
+fi
 if [ "${ELI_BUNDLE_TORCH:-0}" = "1" ]; then
-  echo "[package] bundling CPU torch fallback wheel…"
   "$PYTHON" -m pip download torch -d "$STAGING/wheelhouse" \
       --platform manylinux2014_x86_64 --python-version 312 --implementation cp \
       --abi cp312 --only-binary=:all: --no-deps -q 2>/dev/null || true
 fi
 if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
-  echo "[package] wheelhouse: $(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l) wheel(s)"
+  _wh_count="$(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l)"
+  echo "[package] wheelhouse: ${_wh_count} wheel(s)"
+  if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ] && [ "${_wh_count:-0}" -lt 1 ]; then
+    echo "[package] ERROR: portable wheelhouse is empty — offline GUI install will fail." >&2
+    exit 1
+  fi
 else
+  if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ]; then
+    echo "[package] ERROR: portable wheelhouse missing — offline GUI install will fail." >&2
+    exit 1
+  fi
   rmdir "$STAGING/wheelhouse" 2>/dev/null || true
 fi
+cp "$ROOT/requirements-portable-bootstrap.txt" "$STAGING/" 2>/dev/null || true
 
 # Starter model — bundle ONE small GGUF so a fresh install answers immediately with no
 # model download. Set ELI_STARTER_MODEL to a filename in models/ (default: tinyllama).
 STARTER_MODEL="${ELI_STARTER_MODEL:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
-if [ -f "$ROOT/models/$STARTER_MODEL" ]; then
-  echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ROOT/models/$STARTER_MODEL" | cut -f1))"
-  mkdir -p "$STAGING/models"; cp "$ROOT/models/$STARTER_MODEL" "$STAGING/models/"
+if [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
+  echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ASSET_ROOT/models/$STARTER_MODEL" | cut -f1))"
+  mkdir -p "$STAGING/models"; cp "$ASSET_ROOT/models/$STARTER_MODEL" "$STAGING/models/"
 else
   echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
 fi
@@ -145,12 +170,12 @@ fi
 # would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
 # Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
 if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
-  _EMB="$ROOT/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
+  _EMB="$ASSET_ROOT/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
   if [ -f "$_EMB" ]; then
     mkdir -p "$STAGING/models/embeddings"; cp "$_EMB" "$STAGING/models/embeddings/"
     echo "[package] bundling embedder (memory/RAG): $(du -h "$_EMB" | cut -f1)"
   fi
-  for _vd in "$ROOT/tts_piper/piper" "$ROOT/models/tts/piper"; do
+  for _vd in "$ASSET_ROOT/tts_piper/piper" "$ASSET_ROOT/models/tts/piper"; do
     if [ -f "$_vd/en_US-amy-medium.onnx" ]; then
       mkdir -p "$STAGING/tts_piper/piper"
       cp "$_vd/en_US-amy-medium.onnx" "$_vd/en_US-amy-medium.onnx.json" "$STAGING/tts_piper/piper/" 2>/dev/null || true
@@ -161,9 +186,9 @@ if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
 fi
 
 if [ "$WITH_ASSETS" -eq 1 ]; then
-  echo "[package] including local model/voice assets; this can be very large"
-  [ -d "$ROOT/models" ] && cp -a "$ROOT/models/." "$STAGING/models/"
-  [ -d "$ROOT/tts_piper" ] && cp -a "$ROOT/tts_piper/." "$STAGING/tts_piper/"
+  echo "[package] including model/voice assets from $ASSET_ROOT (this can be very large)"
+  [ -d "$ASSET_ROOT/models" ] && cp -a "$ASSET_ROOT/models/." "$STAGING/models/"
+  [ -d "$ASSET_ROOT/tts_piper" ] && cp -a "$ASSET_ROOT/tts_piper/." "$STAGING/tts_piper/"
 fi
 
 cat > "$STAGING/RUN_ELI.sh" <<'RUN_EOF'
@@ -192,7 +217,7 @@ SETUP_EOF
 chmod +x "$STAGING/ELI_Setup.sh"
 
 # Every shell helper must be executable out of the tarball (Permission denied
-# on eli_diagnose.sh was a real fresh-install failure on jess@blue).
+# on eli_diagnose.sh was a real fresh-install failure on some portable extracts).
 while IFS= read -r -d '' _sh; do
   chmod +x "$_sh"
 done < <(find "$STAGING" -type f \( -name '*.sh' -o -name 'eli_diagnose.sh' \) -print0)
