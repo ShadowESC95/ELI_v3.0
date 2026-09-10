@@ -86,6 +86,55 @@ def _is_eli_root(path: Path) -> bool:
         return False
 
 
+def ensure_install_env() -> None:
+    """Pin ELI_* env vars to the checkout whose ``eli`` package was imported.
+
+    Shell aliases often export ``ELI_PROJECT_ROOT`` from another checkout (e.g. a
+    lingering v2 path while running v3). That makes proactive/memory write into
+    the wrong ``artifacts/`` tree. The imported package location is authoritative.
+    """
+    pkg_root = _find_project_root()
+    if pkg_root is None:
+        return
+    resolved = pkg_root.resolve()
+    env_root = (os.environ.get("ELI_PROJECT_ROOT") or "").strip()
+    stale = False
+    if env_root:
+        try:
+            stale = Path(env_root).expanduser().resolve() != resolved
+        except Exception:
+            stale = True
+    else:
+        stale = True
+    if not stale:
+        return
+    if env_root:
+        log.warning(
+            "ELI_PROJECT_ROOT=%s does not match this install (%s) — using this checkout",
+            env_root,
+            resolved,
+        )
+    os.environ["ELI_PROJECT_ROOT"] = str(resolved)
+    for key, sub in (
+        ("ELI_DATA_DIR", "artifacts"),
+        ("ELI_CONFIG_DIR", "config"),
+        ("ELI_MODELS_DIR", "models"),
+        ("ELI_CACHE_DIR", "cache"),
+    ):
+        cur = (os.environ.get(key) or "").strip()
+        if not cur:
+            os.environ[key] = str(resolved / sub)
+            continue
+        if env_root:
+            try:
+                cur_p = Path(cur).expanduser().resolve()
+                env_p = Path(env_root).expanduser().resolve()
+                if str(cur_p).startswith(str(env_p)):
+                    os.environ[key] = str(resolved / sub)
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+
+
 def _active_root() -> Path:
     """The install root that relative runtime paths should be anchored to.
 
@@ -700,6 +749,8 @@ class EliPaths:
 
     def __repr__(self):
         return f"EliPaths(root={project_root()}, data={data_dir()}, dev={_is_dev_mode()})"
+
+ensure_install_env()
 
 # Singleton instances used by 30+ modules
 PATHS = EliPaths()
