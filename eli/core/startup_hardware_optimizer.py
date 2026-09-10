@@ -62,7 +62,11 @@ class HardwareProfile:
 
 
 def run(cmd: List[str]) -> str:
-    return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+    """Run a probe command; return stdout or empty string on expected failure."""
+    try:
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+        return ""
 
 
 def _integrated_vram_estimate() -> tuple[int, int]:
@@ -95,6 +99,30 @@ def detect_ram_gb() -> float:
     return 8.0
 
 
+def detect_available_ram_gb() -> float:
+    """Currently free RAM — the binding budget for CPU-only inference."""
+    try:
+        import psutil
+        return round(psutil.virtual_memory().available / 1e9, 2)
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    try:
+        from eli.core.hardware_profile import detect_hardware
+        hw = detect_hardware()
+        avail = float(getattr(hw, "available_ram_gb", 0) or 0)
+        if avail > 0:
+            return round(avail, 2)
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    return round(detect_ram_gb() * 0.5, 2)
+
+
+def cpu_ctx_ceiling_from_ram(model_gb: float, train_ctx: int = 0) -> int:
+    """Largest ctx this machine's available RAM can hold for a model this size."""
+    from eli.core.dynamic_runtime_budget import _ctx_ceiling_for_ram
+    return int(_ctx_ceiling_for_ram(detect_available_ram_gb(), float(model_gb), int(train_ctx or 0)))
+
+
 def detect_cpu_name() -> str:
     try:
         txt = Path("/proc/cpuinfo").read_text(errors="replace")
@@ -115,7 +143,7 @@ def detect_nvidia_gpus() -> List[GPUInfo]:
         from eli.core.hardware_profile import nvidia_smi_path as _smi_path
         _smi = _smi_path()
         if not _smi:
-            raise FileNotFoundError("nvidia-smi not found")
+            return out
         raw = run([
             _smi,
             "--query-gpu=index,name,memory.total,memory.free",
@@ -125,7 +153,7 @@ def detect_nvidia_gpus() -> List[GPUInfo]:
             idx, name, total, free = [x.strip() for x in line.split(",")[:4]]
             out.append(GPUInfo(int(idx), name, "nvidia", int(total), int(free)))
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        log.debug("nvidia-smi probe unavailable (expected on non-NVIDIA hosts)")
     return out
 
 
@@ -157,7 +185,7 @@ def detect_other_gpus() -> List[GPUInfo]:
                 amd_total += _tot // (1024 * 1024)
                 amd_free += max(0, _tot - _used) // (1024 * 1024)
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        log.debug("rocm-smi probe unavailable (expected on non-AMD hosts)")
     try:
         raw = run(["lspci"])
         for i, line in enumerate(raw.splitlines()):
@@ -640,9 +668,33 @@ def allocate(
 
     # ---- CPU-only path ----
     if gpu is None or gpu.total_mb <= 0:
+        try:
+            from eli.core.hardware_profile import (
+                cpu_ram_fit_config,
+                detect_hardware,
+                effective_use_gpu_layers,
+            )
+            from eli.core.runtime_settings import DEFAULT_N_CTX as _DEF_CTX
+            _hw = detect_hardware()
+            if not effective_use_gpu_layers(_hw):
+                _target = int(forced_ctx or user_ctx or _DEF_CTX)
+                _batch_in = int(forced_batch or user_batch or 128)
+                _cpu_ctx, _cpu_batch = cpu_ram_fit_config(
+                    model_gb, _hw.available_ram_gb,
+                    user_ctx=_target, user_batch=_batch_in,
+                    model_path=profile_model, kv_quantized=(ram_gb <= 16),
+                    min_batch=32 if getattr(_hw, "gpu_integrated", False) else 128,
+                )
+                notes.append(
+                    f"CPU/RAM fit: gpu_layers=0 ctx={_cpu_ctx} batch={_cpu_batch} "
+                    f"(available={_hw.available_ram_gb:.1f}GB)."
+                )
+                return _cpu_ctx, 0, _cpu_batch, max_tokens_from_ctx(_cpu_ctx), ctx_fraction, notes
+        except Exception:
+            log.debug("cpu_ram_fit_config unavailable in allocate", exc_info=True)
         _raw = int(train_ctx * ctx_fraction)
         _cpu_ctx = int(forced_ctx or user_ctx or round_ctx(min(_raw, ram_ctx_cap(ram_gb, model_gb))))
-        _cpu_batch = int(forced_batch or user_batch or 256)
+        _cpu_batch = int(forced_batch or user_batch or 128)
         notes.append(f"CPU/no measurable GPU: gpu_layers=0. ctx={_cpu_ctx} batch={_cpu_batch}.")
         return _cpu_ctx, 0, _cpu_batch, max_tokens_from_ctx(_cpu_ctx), ctx_fraction, notes
 

@@ -264,6 +264,18 @@ def _is_llama_model(model_path: Optional[Path]) -> bool:
     )
 
 
+def _is_glm_model(model_path: Optional[Path]) -> bool:
+    """GLM / ChatGLM models use [gMASK] + <|user|>/<|assistant|> turns."""
+    try:
+        from eli.cognition.model_output_tokens import glm_filename_hint
+        return glm_filename_hint(str(model_path or ""))
+    except Exception:
+        if model_path is None:
+            return False
+        name = str(model_path).lower()
+        return any(x in name for x in ("glm-", "glm_", "chatglm", "glm4", "glm-4"))
+
+
 def _is_thinking_model(model_path: Optional[Path] = None) -> bool:
     """Heuristic: does the ACTUALLY-LOADED model emit a <think>…</think> reasoning block
     by default? Name-based (Qwen3 family, DeepSeek-R1 / R1-distill, QwQ). Extend as new
@@ -281,7 +293,9 @@ def _is_thinking_model(model_path: Optional[Path] = None) -> bool:
         name = str(_ov.get("model_name") or _ov.get("model_path") or "").lower()
         if not name:
             name = str(get_model_path() or "").lower()
-    return any(k in name for k in ("qwen3", "deepseek-r1", "r1-distill", "qwq", "-r1-"))
+    return any(k in name for k in (
+        "qwen3", "deepseek-r1", "r1-distill", "qwq", "-r1-", "glm-4", "glm4", "ornith",
+    ))
 
 
 # Thread-local "force no-think" scope. Some large-budget calls (e.g. grounded-evidence
@@ -321,10 +335,16 @@ def _no_think_prefill(*, structured: bool, max_tokens) -> str:
     judge / summary / quick utility), and any call inside a `force_no_think()` scope. The
     MAIN answer call (large budget) keeps thinking unless ELI_MODEL_THINK=0. '' (no-op)
     for non-reasoning models or when thinking is wanted."""
+    _glm = _is_glm_model(None)
+    _closed_think = "<think>\n\n</think>\n\n"
+    _open_think = "<think>\n\n"
+    # Utility scopes (correction repair, routing, summaries) must suppress thinking
+    # even on models not yet in the name heuristic (e.g. Ornith) — otherwise the
+    # whole budget burns inside an unclosed  block and cleaning returns empty.
+    if _force_no_think_active():
+        return _closed_think if _glm else "<think>\n\n</think>\n\n"
     if not _is_thinking_model():
         return ""
-    if _force_no_think_active():
-        return "<think>\n\n</think>\n\n"
     try:
         _small = 0 < int(max_tokens or 0) < 1024
     except Exception:
@@ -345,7 +365,9 @@ def _no_think_prefill(*, structured: bool, max_tokens) -> str:
     else:
         _env = os.environ.get("ELI_MODEL_THINK", "").strip().lower()
         disable = _env in ("0", "false", "no", "off")
-    return "<think>\n\n</think>\n\n" if disable else ""
+    if _glm:
+        return _closed_think if disable else _open_think
+    return _closed_think if disable else ""
 
 
 # ── Future-proof template detection: read the model's OWN embedded template ───
@@ -379,6 +401,8 @@ def _gguf_template_family() -> Optional[str]:
         return cached or None
     if "<|im_start|>" in tmpl:
         fam = "chatml"
+    elif "[gmask]" in tmpl.lower() or "<|observation|>" in tmpl:
+        fam = "glm"
     elif "<|start_header_id|>" in tmpl or "<|eot_id|>" in tmpl:
         fam = "llama"
     elif "<start_of_turn>" in tmpl:
@@ -424,42 +448,45 @@ def _canonical_eli_persona() -> str:
     return "You are ELI, a local reasoning and automation assistant. Be direct, accurate, grounded, privacy-preserving, and useful."
 
 def _strip_think_text(t: str) -> str:
-    """Remove a <think>…</think> reasoning block (or an unterminated one) from text.
-    Reasoning models (Qwen3 / Qwen3.x-A3B, DeepSeek-R1, …) emit a PRIVATE
-    chain-of-thought before the answer that must never surface. Keeps whatever
-    follows the last </think>; drops a never-closed think outright. Model-agnostic —
-    a no-op for models that don't think."""
-    if "<think" not in (t or "").lower():
+    """Remove a reasoning block from text before user-visible cleaning.
+
+    Handles ``<think>``, ``<think>``, and unclosed blocks. Model-agnostic —
+    no-op when no thinking markers are present."""
+    t = str(t or "")
+    if not t.strip():
         return t
-    t = re.sub(r"(?is)<think\s*>.*?</think\s*>", "", t)
-    if "</think>" in t.lower():
+    low = t.lower()
+    if "<think" not in low and "redacted_thinking" not in low:
+        return t
+    # Closed blocks first (both common tag spellings).
+    t = re.sub(r"(?is)<redacted_thinking\b[^>]*>.*?</redacted_thinking\s*>", "", t)
+    t = re.sub(r"(?is)<think\b[^>]*>.*?</think\s*>", "", t)
+    # Unclosed / truncated: keep whatever follows the last close tag.
+    if re.search(r"(?i)</redacted_thinking\s*>", t):
+        t = re.split(r"(?i)</redacted_thinking\s*>", t)[-1]
+    elif re.search(r"(?i)</think\s*>", t):
         t = re.split(r"(?i)</think\s*>", t)[-1]
-    elif "<think" in t.lower():
-        t = re.split(r"(?i)<think\s*>", t)[0]
-    return re.sub(r"(?i)</?think\s*>", "", t).strip()
+    elif re.search(r"(?i)<redacted_thinking\b", t):
+        t = re.split(r"(?i)<redacted_thinking\b[^>]*>", t)[0]
+    elif re.search(r"(?i)<think\b", t):
+        t = re.split(r"(?i)<think\b[^>]*>", t)[0]
+    return re.sub(
+        r"(?i)</?redacted_thinking\b[^>]*>|</?think\b[^>]*>",
+        "",
+        t,
+    ).strip()
 
 
 def _clean_eli_output(text: str) -> str:
+    from eli.cognition.model_output_tokens import (
+        PERSONA_DRIFT_PREFIXES,
+        strip_persona_drift_prefix,
+        strip_special_tokens,
+    )
     t = _strip_think_text(str(text or ""))
-    # Strip Mistral prompt-echo: model sometimes echoes [INST]...[/INST] before answering
-    # Keep only content AFTER the last [/INST] marker if present
-    if "[/INST]" in t:
-        t = t.split("[/INST]")[-1]
-    if "<|im_end|>" in t:
-        parts = t.split("<|im_end|>")
-        # Take the last non-empty part
-        t = next((p for p in reversed(parts) if p.strip()), t)
-    # Safety net for Zephyr/Phi role tokens (TinyLlama etc.): if the model ran past its
-    # turn and started a fake "<|user|>/<|system|>" continuation, keep only the answer
-    # BEFORE it. Then strip any stray role/turn tokens.
-    for _rt in ("<|user|>", "<|system|>", "<|assistant|>"):
-        if _rt in t:
-            t = t.split(_rt)[0]
-    t = t.replace("[INST]", "").replace("[/INST]", "").replace("<s>", "").replace("</s>", "")
+    t = strip_special_tokens(t)
     t = t.replace("Assistant:", "ELI:").replace("assistant:", "ELI:").replace("AI:", "ELI:")
-    t = t.replace("<|im_start|>", "").replace("<|im_end|>", "").replace("assistant\n", "")
-    for _tok in ("<|end|>", "<|eot_id|>", "<|end_of_text|>", "<|assistant|>", "<|user|>", "<|system|>"):
-        t = t.replace(_tok, "")
+    t = t.replace("assistant\n", "")
     t = t.strip()
     t = re.sub(r"^\s*ELI:\s*", "", t)
     # Weak/short-context models sometimes echo ELI's OWN prompt scaffolding — the persona
@@ -481,36 +508,14 @@ def _clean_eli_output(text: str) -> str:
     t = re.sub(r"^\s*(?:Answer|Response|Reply)\s*:\s*", "", t, flags=re.I)
     t = t.strip()
 
-    bad_heads = (
-        "i'm an ai",
-        "i am an ai",
-        "as an ai",
-        "i'm just an ai",
-        "i am just an ai",
-        "i don't have a head",
-        "i do not have a head",
-        "i don't have personal memories",
-        "i do not have personal memories",
-        "i can't retain information",
-        "i cannot retain information",
-        "i don't have a memory like humans",
-        "i do not have a memory like humans",
-        "i don't store information between",
-        "i do not store information between",
-        "unlike humans, i don't",
-        "as a language model",
-        "as an llm",
-        "as a large language model",
-    )
+    bad_heads = PERSONA_DRIFT_PREFIXES
     low = t.lower().strip()
     if any(low.startswith(p) for p in bad_heads):
-        # Strip the offending preamble and return what's left, or a retry hint
         log.debug(f"[GGUF][CLEAN] Persona drift stripped: {t[:80]!r}")
-        # Try to salvage content after the first sentence
-        rest = re.sub(r"^[^.!?]*[.!?]\s*", "", t, count=1).strip()
-        if len(rest) >= 2:
-            return rest
-        return t  # return full original — empty responses are worse than imperfect ones
+        salvaged = strip_persona_drift_prefix(t)
+        if salvaged:
+            return salvaged
+        return t  # empty responses are worse than imperfect ones
     # Strip model meta-commentary appended after main response
     t = re.sub(r'\s*\(Note:[^)]{0,400}\)', '', t, flags=re.I).strip()
     t = re.sub(r'\s*\[Note:[^\]]{0,400}\]', '', t, flags=re.I).strip()
@@ -542,24 +547,23 @@ def _strip_think_stream(chunks):
         buf += raw
         low = buf.lstrip().lower()
         if mode == "suppress":
-            if "</think>" in low:
-                after = re.split(r"(?i)</think\s*>", buf, maxsplit=1)[-1]
+            if re.search(r"(?i)</(?:redacted_thinking|think)\s*>", buf):
+                after = re.split(r"(?i)</(?:redacted_thinking|think)\s*>", buf, maxsplit=1)[-1]
                 buf, mode = "", "pass"
                 if after.strip():
                     yield {"response": after}
             continue
-        # detect: is this a thinking model emitting <think> first?
-        if low.startswith("<think"):
+        # detect: is this a thinking model emitting a reasoning block first?
+        if low.startswith("<think") or low.startswith("<redacted_thinking"):
             mode = "suppress"
-            if "</think>" in low:
-                after = re.split(r"(?i)</think\s*>", buf, maxsplit=1)[-1]
+            if re.search(r"(?i)</(?:redacted_thinking|think)\s*>", buf):
+                after = re.split(r"(?i)</(?:redacted_thinking|think)\s*>", buf, maxsplit=1)[-1]
                 buf, mode = "", "pass"
                 if after.strip():
                     yield {"response": after}
             continue
-        # still undecided (leading whitespace, or a partial prefix of "<think")?
-        # keep buffering up to a small cap; otherwise it's not a thinker → flush.
-        if (low == "" or "<think".startswith(low)) and len(buf) < 12:
+        # still undecided (leading whitespace, or a partial prefix)?
+        if (low == "" or "<think".startswith(low) or "<redacted_thinking".startswith(low)) and len(buf) < 24:
             continue
         mode = "pass"
         yield {"response": buf}
@@ -632,13 +636,16 @@ except Exception:
 # so every generation it triggers is abortable regardless of the call path.
 # Kill switch: ELI_FG_PREEMPT=0.
 _FG_PRIORITY = threading.Event()
+# Keep the ctypes abort callback alive for the process lifetime.
+_LLAMA_ABORT_CB = None
 # Set at shutdown to abort EVERY in-flight generation at the next token. A background
 # self-improvement/codegen call can sit in a single native llm() call for 10+ minutes;
 # the OS can't kill a thread mid-native-call, so shutdown's unload_model() (which needs
 # the shared lock) blocked for 20-30 min. This cooperative abort lets any in-flight call
 # yield at the next token so teardown proceeds immediately.
 _SHUTDOWN = threading.Event()
-# User Stop during chat — cooperative abort at next token.
+# Set when the user clicks Stop during chat generation. Cooperative abort at the
+# next token — same mechanism as shutdown, without tearing down the model.
 _USER_CANCEL = threading.Event()
 _bg_tls = threading.local()
 
@@ -686,11 +693,34 @@ def _fg_preempt_enabled() -> bool:
 
 def _should_abort_generation(background: bool) -> bool:
     """True when an in-flight generation should yield at the next token: shutdown is
-    signalled (aborts ANY call) or — for BACKGROUND calls with preemption enabled — a
-    foreground turn is waiting on the shared lock."""
+    signalled (aborts ANY call), the user clicked Stop (aborts ANY call), or — for
+    BACKGROUND calls with preemption enabled — a foreground turn is waiting on the
+    shared lock."""
     if _SHUTDOWN.is_set() or _USER_CANCEL.is_set():
         return True
     return bool(background) and _fg_preempt_enabled() and _FG_PRIORITY.is_set()
+
+
+def _install_llama_abort_callback(llm) -> None:
+    """Abort prompt prefill and token generation when shutdown/cancel is signalled.
+
+    StoppingCriteria only runs between output tokens; llama_set_abort_callback
+    interrupts llama_decode during the prompt prefill as well — so closing the
+    GUI during a 1000+ token CPU prefill returns promptly instead of hanging.
+    """
+    global _LLAMA_ABORT_CB
+    try:
+        import ctypes
+        from llama_cpp import llama_cpp as _lc
+
+        @_lc.ggml_abort_callback
+        def _abort_cb(_data):
+            return bool(_should_abort_generation(is_background_inference()))
+
+        _LLAMA_ABORT_CB = _abort_cb
+        _lc.llama_set_abort_callback(llm.ctx, _abort_cb, ctypes.c_void_p(None))
+    except Exception:
+        _SWLOG.debug("llama abort callback install failed", exc_info=True)
 
 
 def _make_stopping_criteria(background: bool):
@@ -1047,7 +1077,10 @@ def load_model(force_reload: bool = False):
     except Exception as e:
         log.debug(f"[GGUF] shared runtime snapshot write failed: {e}")
 
+    _install_llama_abort_callback(_llm)
     return _llm
+
+
 def _format_prompt(system: Optional[str], user: str) -> str:
     """Format a prompt using the model-appropriate chat template."""
     system = (system or "").strip()
@@ -1058,12 +1091,23 @@ def _format_prompt(system: Optional[str], user: str) -> str:
     # fall back to filename heuristics, then the generic format.
     fam = _gguf_template_family()
     if fam is None:
-        if _is_chatml_model(model_path):
+        if _is_glm_model(model_path):
+            fam = "glm"
+        elif _is_chatml_model(model_path):
             fam = "chatml"
         elif _is_llama_model(model_path):
             fam = "llama"
         elif _is_mistral_model(model_path):
             fam = "mistral"
+
+    # GLM / ChatGLM — [gMASK]<|system|>…<|user|>…<|assistant|> (must precede phi)
+    if fam == "glm":
+        parts = ["[gMASK]"]
+        if system:
+            parts.append(f"<|system|>{system}")
+        parts.append(f"<|user|>{user}")
+        parts.append("<|assistant|>")
+        return "".join(parts)
 
     # Qwen / ChatML format (OpenHermes, Hermes, Dolphin, Zephyr, DeepSeek, Qwen…)
     if fam == "chatml":
@@ -1202,8 +1246,14 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
         extra["stopping_criteria"] = _sc
 
     def _acquire_lock_fg_priority():
-        if not bg and _fg_preempt_enabled():
-            _FG_PRIORITY.set()
+        if not bg:
+            try:
+                from eli.cognition.inference_broker import stamp_foreground_generation_start
+                stamp_foreground_generation_start()
+            except Exception:
+                _SWLOG.debug("suppressed exception", exc_info=True)
+            if _fg_preempt_enabled():
+                _FG_PRIORITY.set()
         try:
             _LLM_CALL_LOCK.acquire()
         finally:
@@ -1483,41 +1533,42 @@ def _generate_legacy(
 
     stop = stop or []
 
-    # Universal turn-boundary stops — prevent the model from running on into the
-    # next turn. Chat-template ROLE tokens always apply. These are special tokens (not
-    # natural-language labels), so they never appear inside a thinking model's <think>
-    # block — safe to stop on for every model. Without `<|user|>`/`<|assistant|>` here,
-    # Zephyr/Phi-template models (e.g. TinyLlama) run past their turn and hallucinate a
-    # fake "<|user|> …" continuation after their real answer.
-    stop += ["<|im_start|>", "<|im_end|>",
-             "<|user|>", "<|assistant|>", "<|system|>"]
-
-    # The natural-language role labels ("User:" / "Assistant:") are a crude guard
-    # for non-templated models — and they are DELIBERATELY withheld from thinking
-    # models (Qwen3 / DeepSeek-R1 / QwQ). Such a model routinely reconstructs the
-    # conversation INSIDE its private <think> block, and the prompt renders history
-    # as "[003] [ts] User: …" (engine.py:4412). A bare "User:" stop then fires
-    # mid-think and kills generation before the model ever closes </think> or
-    # writes its answer → empty reply (observed on a short, ambiguous "yes please":
-    # the model halted exactly at the next "[003] … User:" label). For these models
-    # the real turn terminator is the template token (<|im_end|> / <|eot_id|>),
-    # added above and below — so dropping the label stops is safe.
-    if not _is_thinking_model():
-        stop += [
-            "User:", "USER:", "\nUser:", "\nUSER:", "\n\nUser:", "\n\nUSER:",
-            "Assistant:", "ASSISTANT:", "\nAssistant:", "\nASSISTANT:",
-            "\n\nAssistant:", "\n\nASSISTANT:",
-        ]
-
+    fam = _gguf_template_family()
     _mp = get_model_path()
-    if _is_mistral_model(_mp):
-        stop += ["</s>", "[INST]", "[/INST]"]
-    elif _is_llama_model(_mp):
-        stop += ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"]
-    else:
-        stop += ["<|end|>", "<|eot_id|>"]
-    if _is_chatml_model(_mp):
-        stop += ["<|im_end|>"]  # already in universal but explicit for qwen
+    if fam is None:
+        if _is_glm_model(_mp):
+            fam = "glm"
+        elif _is_chatml_model(_mp):
+            fam = "chatml"
+        elif _is_llama_model(_mp):
+            fam = "llama"
+        elif _is_mistral_model(_mp):
+            fam = "mistral"
+
+    try:
+        from eli.cognition.model_output_tokens import stop_tokens_for_family
+        stop += stop_tokens_for_family(
+            fam,
+            include_label_stops=not _is_thinking_model(),
+        )
+    except Exception:
+        # Fallback: legacy universal stops if import fails
+        stop += ["<|im_start|>", "<|im_end|>",
+                 "<|user|>", "<|assistant|>", "<|system|>"]
+        if not _is_thinking_model():
+            stop += [
+                "User:", "USER:", "\nUser:", "\nUSER:", "\n\nUser:", "\n\nUSER:",
+                "Assistant:", "ASSISTANT:", "\nAssistant:", "\nASSISTANT:",
+                "\n\nAssistant:", "\n\nASSISTANT:",
+            ]
+        if _is_mistral_model(_mp):
+            stop += ["</s>", "[INST]", "[/INST]"]
+        elif _is_llama_model(_mp):
+            stop += ["<|eot_id|>", "<|end_of_text|>", "<|start_header_id|>"]
+        else:
+            stop += ["<|end|>", "<|eot_id|>"]
+        if _is_chatml_model(_mp):
+            stop += ["<|im_end|>"]
 
     # Deduplicate while preserving order
     seen = set()

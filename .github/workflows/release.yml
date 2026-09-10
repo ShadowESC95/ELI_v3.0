@@ -1,4 +1,4 @@
-# ELI v3 — cross-platform release pipeline.
+# ELI v2 — cross-platform release pipeline.
 #
 # Trigger: push a tag `v<version>` (must match [project].version in
 # pyproject.toml — the guard job fails the run with a clear message if not).
@@ -6,10 +6,13 @@
 #   git tag v2.1.0 && git push origin v2.1.0
 #
 # Builds in parallel and uploads to the GitHub Release for that tag:
-#   Windows : ELI-Setup-<v>.exe (Inno Setup) + ELI_v3-<v>-windows-x64.zip (portable, ELI.exe inside)
-#   macOS   : ELI_v3-<v>-macos-arm64.dmg (drag-to-Applications, ad-hoc signed)
-#   Linux   : ELI_v3-<v>-x86_64.AppImage
-# plus SHA256SUMS.txt.
+#   Windows : ELI-Setup-<v>.exe (Inno Setup) + ELI_v2-<v>-windows-x64.zip (portable, ELI.exe inside)
+#   WoA     : ELI_v2-<v>-windows-arm64-portable.zip (lean, experimental — cross-built on ubuntu)
+#   macOS   : ELI_v2-<v>-macos-arm64.dmg (drag-to-Applications, ad-hoc signed)
+#   Linux   : ELI_v2-<v>-x86_64.AppImage + ELI_v2-<v>-linux-portable.tar.gz
+#   Source  : eli_v2_0-<v>.whl + sdist .tar.gz + .deb + windows-portable.zip
+#             + windows-portable-full.zip + wheelhouse.tar.gz + WHEELHOUSE.txt
+# plus SHA256SUMS.txt + RELEASE_NOTES.md.
 #
 # Piper TTS voices ARE bundled (pulled from the project's local-assets-v2.1
 # release — same set previous full tarballs shipped). GGUF model weights are
@@ -36,13 +39,14 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_CACHE_DIR: "1"
   # Extras that MUST be in the frozen app; the build fails if any is missing.
-  REQUIRED_EXTRAS: "gui llm server docs analysis extras"
+  REQUIRED_EXTRAS: "gui llm server docs analysis extras media"
   # Extras bundled when their wheels resolve on the runner; skipped (loudly)
   # otherwise — every optional import in ELI degrades cleanly by design.
-  # NOTE: consumed by ALL THREE build jobs. The neural clone engine is added as a
-  # job-level override on build-linux only — that is the one job installing the CPU
-  # torch stack first; adding it globally makes windows/macos resolve torch from PyPI
-  # and their bundles then fail the 2 GiB asset guard.
+  # NOTE: this list is consumed by ALL THREE build jobs. The XTTS-v2 neural voice engine
+  # (`natural`) is deliberately NOT here — it is added as a job-level override on
+  # build-linux only, which is the one job that installs the CPU torch stack first and
+  # verifies no CUDA wheels crept in. Adding it globally makes windows/macos resolve
+  # torch from PyPI, and their bundles then fail the 2 GiB asset guard below.
   OPTIONAL_EXTRAS: "tts asr image vision web wakeword"
 
 jobs:
@@ -82,6 +86,7 @@ jobs:
   build-windows:
     env:
       ELI_REQUIRE_VOICES: "1"
+      ELI_REQUIRE_EMBEDDER: "1"
       GH_TOKEN: ${{ github.token }}
     name: windows (exe + installer)
     needs: guard
@@ -121,12 +126,41 @@ jobs:
         shell: bash
         run: |
           mkdir -p tts_piper/piper
-          gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
-            --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper \
-            || { echo "::error::could not download voices from the local-assets-v2.1 release"; exit 1; }
+          # GitHub release asset API occasionally 5xx mid-release (macOS job hit HTTP 500
+          # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
+          _voice_ok=0
+          for _attempt in 1 2 3 4 5; do
+            if gh release download local-assets-v2.1 --repo "$GITHUB_REPOSITORY" --clobber \
+                --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
+              _voice_ok=1
+              break
+            fi
+            echo "::warning::voice asset download attempt ${_attempt}/5 failed — retrying in $((_attempt * 5))s"
+            sleep $((_attempt * 5))
+          done
+          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not download voices from the local-assets-v2.1 release after 5 attempts"; exit 1; }
           count=$(ls tts_piper/piper/*.onnx 2>/dev/null | wc -l)
           echo "voices downloaded: $count"
           [ "$count" -ge 1 ] || { echo "::error::no .onnx voices present after download"; exit 1; }
+
+      - name: Bundle text embedder (nomic-embed, required for memory/RAG)
+        shell: bash
+        run: |
+          # Ship the ~84 MB embedder so the packaged app has semantic memory
+          # offline instead of degrading to keyword-only recall. Download straight
+          # to the repo-relative path ELI.spec bundles from — NOT via model_download,
+          # whose models_dir() resolves to a runtime data dir that differs per OS.
+          set -euo pipefail
+          dest="models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
+          url="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+          mkdir -p models/embeddings
+          curl -fL --retry 3 --retry-delay 5 -o "$dest" "$url" \
+            || { echo "::error::embedder download failed from $url"; exit 1; }
+          # Guard against an HTML error page saved as the .gguf (size sanity: >50 MB).
+          bytes=$(wc -c < "$dest")
+          [ "$bytes" -gt 52428800 ] \
+            || { echo "::error::embedder is only $bytes bytes — download did not return the model"; exit 1; }
+          echo "embedder: $(( bytes / 1048576 )) MiB at $dest"
 
       - name: PyInstaller build (ELI.spec)
         shell: bash
@@ -155,14 +189,15 @@ jobs:
         shell: bash
         run: |
           V=${{ needs.guard.outputs.version }}
-          7z a -tzip "dist/ELI_v3-$V-windows-x64.zip" ./dist/ELI
+          7z a -tzip "dist/ELI_v2-$V-windows-x64.zip" ./dist/ELI
 
       - name: Download VC++ redistributable (bundled into installer)
         shell: bash
         run: |
           mkdir -p build
           # aka.ms is a redirect to a Microsoft CDN that occasionally 5xx/times out —
-          # retry so a transient hiccup can't fail an otherwise-green release.
+          # retry so a transient hiccup can't fail an otherwise-green release (it did
+          # once, skipping publish while Linux/macOS built fine).
           curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 \
             -o build/vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
           test -s build/vc_redist.x64.exe || { echo "::error::vc_redist download failed after retries"; exit 1; }
@@ -170,6 +205,10 @@ jobs:
       - name: Inno Setup installer
         shell: pwsh
         run: |
+          # The licence pane reads a generated UTF-8+BOM copy of LICENSE; Inno
+          # decodes a BOM-less UTF-8 file as ANSI and mangles it.
+          python scripts\make_installer_license.py
+          if ($LASTEXITCODE -ne 0) { Write-Error "could not generate the installer licence file"; exit 1 }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { Write-Error "Inno Setup 6 (ISCC.exe) not found and choco install failed"; exit 1 }
@@ -192,34 +231,20 @@ jobs:
           done
           cat SHA256SUMS-windows.txt
 
-      # Upload the installers STRAIGHT to the GitHub Release instead of through
-      # Actions artifact storage. A private repo only gets ~1-2 GB of included
-      # Actions storage while one ELI run produces ~5 GB of installers, so the
-      # upload could never fit — every release died on "Artifact storage quota has
-      # been hit", and purging only bought minutes. Release assets do not count
-      # against that quota. Only the few-hundred-byte checksum file still travels
-      # as an artifact, so the publish job can still merge SHA256SUMS.
-      - name: Upload installers directly to the Release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
-          shopt -s nullglob
-          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz dist/SHA256SUMS-*.txt)
-          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
-          for f in "${FILES[@]}"; do
-            echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
-            gh release upload "$TAG" "$f" --clobber
-          done
-
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eli-windows
+          retention-days: 3   # build intermediates; the publish job consumes them immediately
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/SHA256SUMS-windows.txt
+          if-no-files-found: error
 
   build-macos:
     env:
       ELI_REQUIRE_VOICES: "1"
+      ELI_REQUIRE_EMBEDDER: "1"
       GH_TOKEN: ${{ github.token }}
     name: macos (app + dmg, arm64)
     needs: guard
@@ -258,12 +283,40 @@ jobs:
       - name: Bundle Piper voices (from the project's local-assets release)
         run: |
           mkdir -p tts_piper/piper
-          gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
-            --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper \
-            || { echo "::error::could not download voices from the local-assets-v2.1 release"; exit 1; }
+          # GitHub release asset API occasionally 5xx mid-release (macOS job hit HTTP 500
+          # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
+          _voice_ok=0
+          for _attempt in 1 2 3 4 5; do
+            if gh release download local-assets-v2.1 --repo "$GITHUB_REPOSITORY" --clobber \
+                --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
+              _voice_ok=1
+              break
+            fi
+            echo "::warning::voice asset download attempt ${_attempt}/5 failed — retrying in $((_attempt * 5))s"
+            sleep $((_attempt * 5))
+          done
+          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not download voices from the local-assets-v2.1 release after 5 attempts"; exit 1; }
           count=$(ls tts_piper/piper/*.onnx 2>/dev/null | wc -l)
           echo "voices downloaded: $count"
           [ "$count" -ge 1 ] || { echo "::error::no .onnx voices present after download"; exit 1; }
+
+      - name: Bundle text embedder (nomic-embed, required for memory/RAG)
+        shell: bash
+        run: |
+          # Ship the ~84 MB embedder so the packaged app has semantic memory
+          # offline instead of degrading to keyword-only recall. Download straight
+          # to the repo-relative path ELI.spec bundles from — NOT via model_download,
+          # whose models_dir() resolves to a runtime data dir that differs per OS.
+          set -euo pipefail
+          dest="models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
+          url="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+          mkdir -p models/embeddings
+          curl -fL --retry 3 --retry-delay 5 -o "$dest" "$url" \
+            || { echo "::error::embedder download failed from $url"; exit 1; }
+          bytes=$(wc -c < "$dest")
+          [ "$bytes" -gt 52428800 ] \
+            || { echo "::error::embedder is only $bytes bytes — download did not return the model"; exit 1; }
+          echo "embedder: $(( bytes / 1048576 )) MiB at $dest"
 
       - name: PyInstaller build (ELI.spec)
         run: pyinstaller --noconfirm --clean ELI.spec
@@ -295,45 +348,27 @@ jobs:
           done
           cat SHA256SUMS-macos.txt
 
-      # Upload the installers STRAIGHT to the GitHub Release instead of through
-      # Actions artifact storage. A private repo only gets ~1-2 GB of included
-      # Actions storage while one ELI run produces ~5 GB of installers, so the
-      # upload could never fit — every release died on "Artifact storage quota has
-      # been hit", and purging only bought minutes. Release assets do not count
-      # against that quota. Only the few-hundred-byte checksum file still travels
-      # as an artifact, so the publish job can still merge SHA256SUMS.
-      - name: Upload installers directly to the Release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
-          shopt -s nullglob
-          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz dist/SHA256SUMS-*.txt)
-          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
-          for f in "${FILES[@]}"; do
-            echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
-            gh release upload "$TAG" "$f" --clobber
-          done
-
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eli-macos
+          retention-days: 3   # build intermediates; the publish job consumes them immediately
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS-macos.txt
+          if-no-files-found: error
 
   build-linux:
     env:
       ELI_REQUIRE_VOICES: "1"
+      ELI_REQUIRE_EMBEDDER: "1"
       GH_TOKEN: ${{ github.token }}
-      # Linux-only: bundle the neural clone engine so `clone:` voices actually
-      # synthesise instead of silently falling back to Piper. CHATTERBOX, not the
-      # `natural` (XTTS-v2) extra: Chatterbox is MIT and commercial-clean, while the
-      # XTTS-v2 *model* is non-commercial — v3 already prefers Chatterbox for exactly
-      # that reason (see tts_router: "Chatterbox (MIT, preferred) -> XTTS (legacy)"),
-      # and shipping a non-commercial model in a redistributed artifact would cut
-      # against that. Safe here and only here: this job installs the CPU torch stack
-      # from the pytorch CPU index before the extras loop and fails on any nvidia-*
-      # wheel. Model weights are NOT bundled; they download on first use.
-      OPTIONAL_EXTRAS: "tts asr image vision web wakeword chatterbox"
+      # The XTTS-v2 neural engine is deliberately NOT bundled. It shipped briefly in
+      # v2.1.72 and was pulled: the CPU-only torch the bundle must use (a CUDA build
+      # blows GitHub's 2 GiB asset limit) means XTTS runs on CPU, and on a GPU machine
+      # the startup picker pinned ELI_XTTS_DEVICE=cuda, so it crashed with "Torch not
+      # compiled with CUDA enabled" — and even working, it costs GPU/CPU far out of
+      # proportion to a voice. Piper is the shipped engine. Cloning still works from a
+      # source install (`pip install -e ".[natural]"`), where torch matches the host.
     name: linux (AppImage)
     needs: guard
     runs-on: ubuntu-latest
@@ -359,21 +394,21 @@ jobs:
           #   PyInstaller only bundles what is present at build time, so these MUST be
           #   installed or the AppImage fails on lean end-user distros — Qt reports it
           #   misleadingly as "libxcb-cursor0 is needed" whichever member is missing.
-          #   xvfb: virtual X for the real-xcb GUI gate.
+          # xvfb: virtual X server for the real-xcb GUI selftest in the smoke check.
           sudo apt-get install -y --no-install-recommends \
-            portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 espeak-ng \
+            portaudio19-dev libasound2-dev libegl1 libgl1 libxkbcommon-x11-0 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-render-util0 libxcb-util1 xvfb
+            libxcb-render-util0 libxcb-util1 espeak-ng xvfb
 
       - name: Install dependencies (core hard-fails; optional extras degrade loudly)
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip wheel
           pip install -r requirements-build.txt
-          # CPU torch first — default PyPI torch drags ~6 GB of CUDA libs into the bundle.
           # CPU torch stack FIRST — default PyPI torch drags ~6 GB of CUDA libs into the
-          # bundle. torchaudio is included because the clone engine requires it, and
-          # resolving it from PyPI afterwards pulls the CUDA build of torch back in.
+          # bundle. torchaudio is included here for the same reason: the `natural`
+          # (XTTS-v2) extra requires it, and resolving it from PyPI afterwards pulls the
+          # CUDA build of torch straight back in.
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install ".[$(echo $REQUIRED_EXTRAS | tr ' ' ',')]"
           pip install llama-cpp-python --prefer-binary \
@@ -383,11 +418,24 @@ jobs:
             pip install ".[$extra]" \
               || echo "::warning::optional extra '$extra' has no installable wheels on linux — shipped build degrades cleanly without it"
           done
+          # An extra that quietly re-resolved torch from PyPI would pull the CUDA build
+          # (~6 GB of nvidia-* wheels) and push the AppImage past GitHub's 2 GB per-asset
+          # limit — the exact failure that kept `natural` out of the bundle before. Fail
+          # here, where the cause is obvious, rather than at upload.
           if pip list --format=freeze | grep -q '^nvidia-'; then
             echo "::error::CUDA wheels were pulled in (nvidia-*) — the torch stack is no longer CPU-only:"
             pip list --format=freeze | grep '^nvidia-' | sed 's/^/  /'
             exit 1
           fi
+          python - <<'PY'
+          import importlib
+          for mod, why in (("torch", "neural voice engine"), ("TTS", "XTTS-v2 (coqui-tts)")):
+              try:
+                  importlib.import_module(mod)
+                  print(f"  {mod}: present ({why})")
+              except Exception as e:
+                  print(f"::warning::{mod} unavailable — {why} will degrade to Piper: {e}")
+          PY
 
       - name: Generate capability manifests (bundled introspection data)
         run: |
@@ -397,23 +445,92 @@ jobs:
       - name: Bundle Piper voices (from the project's local-assets release)
         run: |
           mkdir -p tts_piper/piper
-          gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
-            --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper \
-            || { echo "::error::could not download voices from the local-assets-v2.1 release"; exit 1; }
+          # GitHub release asset API occasionally 5xx mid-release (macOS job hit HTTP 500
+          # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
+          _voice_ok=0
+          for _attempt in 1 2 3 4 5; do
+            if gh release download local-assets-v2.1 --repo "$GITHUB_REPOSITORY" --clobber \
+                --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
+              _voice_ok=1
+              break
+            fi
+            echo "::warning::voice asset download attempt ${_attempt}/5 failed — retrying in $((_attempt * 5))s"
+            sleep $((_attempt * 5))
+          done
+          [ "$_voice_ok" -eq 1 ] || { echo "::error::could not download voices from the local-assets-v2.1 release after 5 attempts"; exit 1; }
           count=$(ls tts_piper/piper/*.onnx 2>/dev/null | wc -l)
           echo "voices downloaded: $count"
           [ "$count" -ge 1 ] || { echo "::error::no .onnx voices present after download"; exit 1; }
 
+      - name: Bundle GPU acceleration packs (offline-first CUDA/Vulkan)
+        run: |
+          mkdir -p gpu-packs
+          _gpu_ok=0
+          for _attempt in 1 2 3 4 5; do
+            if gh release download gpu-packs --repo "$GITHUB_REPOSITORY" --clobber \
+                --pattern "vulkan-*linux_x86_64*.whl" \
+                --pattern "cuda-*linux_x86_64*.whl" \
+                --dir gpu-packs; then
+              _gpu_ok=1
+              break
+            fi
+            echo "::warning::gpu-packs download attempt ${_attempt}/5 failed — retrying"
+            sleep $((_attempt * 5))
+          done
+          if [ "$_gpu_ok" -eq 1 ]; then
+            ls -lh gpu-packs/
+          else
+            echo "::warning::gpu-packs unavailable — AppImage will download GPU pack at first launch"
+          fi
+
+      - name: Bundle text embedder (nomic-embed, required for memory/RAG)
+        shell: bash
+        run: |
+          # Ship the ~84 MB embedder so the packaged app has semantic memory
+          # offline instead of degrading to keyword-only recall. Download straight
+          # to the repo-relative path ELI.spec bundles from — NOT via model_download,
+          # whose models_dir() resolves to a runtime data dir that differs per OS.
+          set -euo pipefail
+          dest="models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
+          url="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+          mkdir -p models/embeddings
+          curl -fL --retry 3 --retry-delay 5 -o "$dest" "$url" \
+            || { echo "::error::embedder download failed from $url"; exit 1; }
+          bytes=$(wc -c < "$dest")
+          [ "$bytes" -gt 52428800 ] \
+            || { echo "::error::embedder is only $bytes bytes — download did not return the model"; exit 1; }
+          echo "embedder: $(( bytes / 1048576 )) MiB at $dest"
+
       - name: PyInstaller build (ELI.spec)
-        run: pyinstaller --noconfirm --clean ELI.spec
+        run: |
+          pyinstaller --noconfirm --clean ELI.spec 2>&1 | tee /tmp/pyi.log
+          # collect_submodules imports the package in an ISOLATED SUBPROCESS, so a
+          # package that only imports with an in-process shim fails collection and
+          # PyInstaller merely WARNS — buried in ~250k log lines. That is how four
+          # releases shipped an AppImage whose neural engine could not load.
+          if grep -q "Failed to collect submodules for 'TTS'" /tmp/pyi.log; then
+            echo "::error::PyInstaller could not collect TTS — the neural engine will not load:"
+            grep -m1 -A2 "Failed to collect submodules for 'TTS'" /tmp/pyi.log
+            exit 1
+          fi
 
       - name: Smoke check — bundle structure + REAL launch selftest (headless + xcb)
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
           test -x dist/ELI/ELI || { echo "::error::dist/ELI/ELI missing"; exit 1; }
           test -x dist/ELI/ELI-Server || { echo "::error::dist/ELI/ELI-Server missing"; exit 1; }
           test -d dist/ELI/_internal/eli || { echo "::error::eli source tree missing from bundle"; exit 1; }
+          # The neural voice engine must be COLLECTED, not merely pip-installed.
+          # v2.1.65 and v2.1.66 both shipped coqui_tts-*.dist-info with no TTS/
+          # package: the spec's import probe raised on a transformers incompatibility
+          # and silently skipped collection, so every cloned voice fell back to Piper
+          # with the extra sitting unused in the bundle. Metadata is not the package.
+          if ls dist/ELI/_internal/coqui_tts-*.dist-info >/dev/null 2>&1; then
+            if [ ! -d dist/ELI/_internal/TTS ]; then
+              echo "::error::coqui-tts is installed but the TTS/ package was NOT collected — voice cloning would silently fall back to Piper"
+              exit 1
+            fi
+            echo "TTS/ package collected: $(du -sh dist/ELI/_internal/TTS | cut -f1)"
+          fi
           # Self-containment guard: the Qt xcb plugin (libqxcb.so) links the whole
           # xcb-util family at runtime and resolves them via its RUNPATH from
           # PySide6/Qt/lib. Assert EACH member is bundled IN THAT EXACT DIRECTORY —
@@ -429,35 +546,28 @@ jobs:
             fi
           done
           # Headless engine selftest (offscreen Qt platform).
-          if ! ./dist/ELI/ELI --selftest; then
+          if ! QT_QPA_PLATFORM=offscreen ./dist/ELI/ELI --selftest; then
             echo "::error::frozen app failed its headless launch selftest:"
             cat eli_selftest_error.log 2>/dev/null || true
             exit 1
           fi
-          # Real-X GUI selftest under a virtual display — creates a QApplication on
-          # the xcb platform exactly as an end-user desktop does; this is what
-          # catches a missing Qt GUI dependency (like libxcb-cursor) that offscreen
-          # mode never loads.
-          # NOTE (v3): the real-X test crashes under xvfb specifically ("libxcb-cursor0
-          # is needed … plugin found but won't load"), even though (a) EVERY xcb-util
-          # member is verified bundled by the hard check above, (b) the offscreen launch
-          # passes, and (c) the byte-identical spec passes in v2 and v3's shipped AppImages
-          # run on real desktops. That points to an xvfb/frozen-onedir quirk, not a real
-          # missing dependency — so it's a WARNING here, not a release blocker, while the
-          # two genuine protections (libs-bundled + offscreen-launch) stay hard-gated.
+          # Real-X GUI selftest under a virtual display — exercises the xcb platform
+          # plugin the offscreen path never touches. THIS is the check that would have
+          # caught the missing-libxcb-cursor gap; keep it so it can't regress.
           if ! xvfb-run -a env QT_QPA_PLATFORM=xcb ./dist/ELI/ELI --selftest; then
-            echo "::warning::frozen app failed the xcb real-X selftest under xvfb — non-fatal (see NOTE): xcb libs are verified bundled and the offscreen launch passed. Shipping the AppImage; investigate the xvfb-specific crash separately."
+            echo "::error::frozen app failed the xcb (real X) launch selftest — a Qt GUI dependency is missing from the bundle:"
             cat eli_selftest_error.log 2>/dev/null || true
+            exit 1
           fi
 
       - name: Build AppImage
         run: bash packaging/linux/build-appimage-pyinstaller.sh
 
-      - name: Classic portable tarball (source + voices — parity with previous releases)
+      - name: Classic portable tarball (source + voices + offline GUI wheelhouse)
         run: |
           pip install build
           ELI_PORTABLE_WHEELHOUSE=1 SKIP_TESTS=1 bash scripts/package_desktop_app.sh --with-assets
-          mv dist/app_packages/ELI_v3*-linux-portable.tar.gz dist/
+          mv dist/app_packages/ELI_v2-*-linux-portable.tar.gz dist/
           ls -lh dist/*.tar.gz
 
       - name: Checksums + GitHub 2 GiB asset-size guard
@@ -475,51 +585,141 @@ jobs:
           done
           cat SHA256SUMS-linux.txt
 
-      # Upload the installers STRAIGHT to the GitHub Release instead of through
-      # Actions artifact storage. A private repo only gets ~1-2 GB of included
-      # Actions storage while one ELI run produces ~5 GB of installers, so the
-      # upload could never fit — every release died on "Artifact storage quota has
-      # been hit", and purging only bought minutes. Release assets do not count
-      # against that quota. Only the few-hundred-byte checksum file still travels
-      # as an artifact, so the publish job can still merge SHA256SUMS.
-      - name: Upload installers directly to the Release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "ELI $TAG" --generate-notes || true
-          shopt -s nullglob
-          FILES=(dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage dist/*.tar.gz dist/SHA256SUMS-*.txt)
-          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no installers to upload"; exit 1; }
-          for f in "${FILES[@]}"; do
-            echo "uploading $(basename "$f") ($(du -h "$f" | cut -f1))"
-            gh release upload "$TAG" "$f" --clobber
-          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eli-linux
+          retention-days: 3   # build intermediates; the publish job consumes them immediately
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/SHA256SUMS-linux.txt
+          if-no-files-found: error
 
+  build-source-artifacts:
+    name: source packages (wheel, sdist, deb, wheelhouse, win-portable)
+    needs: guard
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set SOURCE_DATE_EPOCH (reproducible timestamps)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip build wheel
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev zip
+
+      - name: Bootstrap claims artifacts (manifest for wheel integrity)
+        run: |
+          pip install tomli
+          pip install -e ".[server]" --quiet
+          python -m eli.core.init_data
+          python tools/bootstrap_claims_artifacts.py
+
+      - name: Build Python wheel + sdist
+        run: python -m build --wheel --sdist --outdir dist/
+
+      - name: Build Debian package
+        run: |
+          bash packaging/debian/build-deb.sh "${{ needs.guard.outputs.version }}"
+          cp dist/app_packages/*.deb dist/
+
+      - name: Build Windows wheelhouse + lean/full portable zips (x64 + WoA arm64)
+        env:
+          SKIP_TESTS: "1"
+          SKIP_COMPILE: "1"
+        run: |
+          bash build_packages.sh wheelhouse windows-lean windows wheelhouse-arm64 windows-arm64-lean
+          if [ -d dist/wheelhouse ]; then
+            tar -czf "dist/ELI_v2-${{ needs.guard.outputs.version }}-wheelhouse.tar.gz" -C dist wheelhouse
+            ls -1 dist/wheelhouse > dist/WHEELHOUSE.txt
+          else
+            echo "::error::wheelhouse directory missing after build_packages.sh wheelhouse"
+            exit 1
+          fi
+          if [ -d dist/wheelhouse-arm64 ]; then
+            tar -czf "dist/ELI_v2-${{ needs.guard.outputs.version }}-wheelhouse-arm64.tar.gz" -C dist wheelhouse-arm64
+            ls -1 dist/wheelhouse-arm64 > dist/WHEELHOUSE-arm64.txt
+          else
+            echo "::warning::wheelhouse-arm64 directory missing — WoA offline install may be incomplete"
+          fi
+          test -f "dist/ELI_v2-${{ needs.guard.outputs.version }}-windows-portable.zip" \
+            || { echo "::error::windows lean portable zip missing"; exit 1; }
+          test -f "dist/ELI_v2-${{ needs.guard.outputs.version }}-windows-portable-full.zip" \
+            || { echo "::error::windows full offline portable zip missing"; exit 1; }
+          test -f "dist/ELI_v2-${{ needs.guard.outputs.version }}-windows-arm64-portable.zip" \
+            || { echo "::error::windows-arm64 lean portable zip missing"; exit 1; }
+
+      - name: Write release notes stub
+        run: |
+          V=${{ needs.guard.outputs.version }}
+          cat > dist/RELEASE_NOTES.md <<EOF
+          # ELI v2 ${V}
+
+          Full release: frozen bundles (AppImage / dmg / exe) plus pip-installable wheel,
+          source tarball, Debian package, Windows lean portable (source + wheel),
+          Windows on ARM (WoA) lean portable (experimental), and offline Windows wheelhouse
+          archives (x64 + arm64). GPU acceleration packs refresh on the \`gpu-packs\`
+          pre-release when this tag is pushed.
+
+          Verify: \`sha256sum -c SHA256SUMS.txt\`
+          EOF
+
+      - name: Checksums + GitHub 2 GiB asset-size guard
+        run: |
+          cd dist
+          for f in *.whl *.deb *.zip *wheelhouse*.tar.gz eli_v2_0-*.tar.gz RELEASE_NOTES.md WHEELHOUSE*.txt; do
+            [ -e "$f" ] || continue
+            sha256sum "$f" >> SHA256SUMS-source.txt
+            size=$(stat -c%s "$f")
+            if [ "$size" -ge 2147483648 ]; then
+              echo "::error::$f is $size bytes — over GitHub's 2 GiB release-asset limit."
+              exit 1
+            fi
+          done
+          cat SHA256SUMS-source.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eli-source
+          retention-days: 3
+          path: |
+            dist/*.whl
+            dist/eli_v2_0-*.tar.gz
+            dist/*.deb
+            dist/*windows-portable.zip
+            dist/*windows-portable-full.zip
+            dist/*windows-arm64-portable.zip
+            dist/*wheelhouse*.tar.gz
+            dist/WHEELHOUSE*.txt
+            dist/RELEASE_NOTES.md
+            dist/SHA256SUMS-source.txt
+          if-no-files-found: error
 
   release:
     name: publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [guard, build-windows, build-macos, build-linux]
+    needs: [guard, build-windows, build-macos, build-linux, build-source-artifacts]
     runs-on: ubuntu-latest
     steps:
-      # Nothing to download: each build job uploaded its installers and checksum
-      # straight to the Release. Merge the per-platform checksums by pulling them
-      # back off the Release, so no Actions artifact storage is touched at all.
-      - name: Merge checksums from the Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge checksums
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          mkdir -p dist && cd dist
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "SHA256SUMS-*.txt" --clobber || true
-          shopt -s nullglob
-          parts=(SHA256SUMS-*.txt)
-          if [ ${#parts[@]} -gt 0 ]; then cat "${parts[@]}" > SHA256SUMS.txt; ls -lh; fi
+          cd dist
+          cat SHA256SUMS-*.txt > SHA256SUMS.txt
+          rm SHA256SUMS-*.txt
+          ls -lh
 
       - name: Create/update GitHub Release and upload artifacts
         uses: softprops/action-gh-release@v2
@@ -527,5 +727,14 @@ jobs:
           name: ELI v${{ needs.guard.outputs.version }}
           generate_release_notes: true
           files: |
+            dist/*.zip
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.whl
+            dist/*.deb
+            dist/WHEELHOUSE.txt
+            dist/RELEASE_NOTES.md
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true

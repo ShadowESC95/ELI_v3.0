@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Build a portable desktop application package for ELI v3.0.
+# Build a portable desktop application package for ELI Pro.
 # Default package excludes heavyweight model/voice assets; restore them from GitHub release after install.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Optional: point at a clean release-asset tree instead of copying an entire developer models/ folder.
+# Optional: point at a clean release-asset tree (CI / local-assets-v2.1 restore) instead
+# of copying an entire developer models/ folder that may include finetune checkpoints.
 ASSET_ROOT="${ELI_ASSETS_SRC:-$ROOT}"
 if [ -x "$ROOT/.venv/bin/python3" ]; then
   PYTHON="${PYTHON:-$ROOT/.venv/bin/python3}"
@@ -18,13 +19,13 @@ from eli.core.toml_util import load_toml
 print(load_toml("pyproject.toml")["project"]["version"])
 PY
 )"
-APP_NAME="ELI_v3.0"
+APP_NAME="ELI_v2"
 OUT_DIR="$ROOT/dist/app_packages"
 WORK_DIR="$ROOT/build/app-package"
 WITH_ASSETS=0
 SKIP_WHEEL=0
-REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_v3.0}"
-TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v3.0}"
+REPO="${GITHUB_REPOSITORY:-ShadowESC95/ELI_v2.0}"
+TAG="${ELI_ASSET_RELEASE_TAG:-local-assets-v2.1}"
 
 usage() {
   cat <<EOF_USAGE
@@ -39,7 +40,7 @@ Options:
   -h, --help              Show help.
 
 Output:
-  dist/app_packages/ELI_v3.0-${VERSION}-linux-portable.tar.gz
+  dist/app_packages/ELI_v2-${VERSION}-linux-portable.tar.gz
 EOF_USAGE
 }
 
@@ -81,7 +82,8 @@ rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
 # NOTE: the wheel is built LATER, from the clean git-archive staging tree (not this dirty
-# working tree), so the shipped binary always matches the shipped source.
+# working tree), so the shipped binary always matches the shipped source — no stale or
+# untracked modules leak into the wheel and reproducibility holds.
 
 echo "[package] exporting committed source from HEAD"
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -90,34 +92,47 @@ else
   (cd "$ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_piper/**') | tar -xf - -C "$STAGING"
 fi
 
-mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper"
-if [ -f "$ROOT/packaging/desktop/Eli_Icon.png" ]; then
-  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/packaging/desktop/"
-  mkdir -p "$STAGING/blueprints"
-  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/blueprints/"
-fi
+mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper" "$STAGING/blueprints"
 # License docs live under models/ but models/** is excluded from the lean archive — copy explicitly
 for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
 done
+if [ -f "$ROOT/packaging/desktop/Eli_Icon.png" ]; then
+  if [ -x "$ROOT/.venv/bin/python" ] 2>/dev/null || [ -x "$PYTHON" ]; then
+    _GEN_PY="${PYTHON:-python3}"
+    [ -x "$ROOT/.venv/bin/python" ] && _GEN_PY="$ROOT/.venv/bin/python"
+    "$_GEN_PY" "$ROOT/scripts/generate_branding_icons.py" 2>/dev/null || true
+  fi
+  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/packaging/desktop/"
+  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/blueprints/"
+  for _ic in Eli_Icon.ico eli-48.png eli-128.png eli-256.png; do
+    [ -f "$ROOT/packaging/desktop/$_ic" ] && cp "$ROOT/packaging/desktop/$_ic" "$STAGING/packaging/desktop/"
+  done
+fi
+# Build the wheel FROM the staging tree (the exact git-archive source we ship), so the
+# shipped binary == shipped source. Only this version's wheel ends up in dist/.
 if [ "$SKIP_WHEEL" -eq 0 ]; then
   echo "[package] building wheel from clean staging tree ($PYTHON)"
   ( cd "$STAGING" && "$PYTHON" -m build --wheel --no-isolation ) \
     || { echo "[package] wheel build failed" >&2; exit 1; }
-  find "$STAGING/dist" -maxdepth 1 -name 'eli_v3-*.whl' ! -name "eli_v3-${VERSION}-*.whl" -delete 2>/dev/null || true
+  # keep only this version's wheel in the staged dist/
+  find "$STAGING/dist" -maxdepth 1 -name 'eli_v2_0-*.whl' ! -name "eli_v2_0-${VERSION}-*.whl" -delete 2>/dev/null || true
   # Remove setuptools build cruft `python -m build` leaves in the tree: an .egg-info on
   # PYTHONPATH makes pip think ELI is already installed (unmet-deps warnings + skipped
   # editable install), and build/lib/ is a duplicate source tree. Neither ships.
   rm -rf "$STAGING/build/lib" "$STAGING/build/bdist."* "$STAGING"/*.egg-info 2>/dev/null || true
 fi
 
-# Generate a fresh capability_manifest.json into the package (gitignored, so git-archive
-# carries none) — the installer's offline fallback copy.
+# Generate a fresh capability_manifest.json into the package (it's gitignored, so the
+# git-archive source doesn't carry one) — this is the installer's offline fallback copy.
 ( cd "$STAGING" && PYTHONPATH="$STAGING" "$PYTHON" -c \
   "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
   >/dev/null 2>&1 || echo "[package] (manifest pre-gen skipped — installer will regenerate)"
 
 # Offline wheelhouse — portable packages must install the GUI offline on first run.
+# ELI_PORTABLE_WHEELHOUSE=1 (default for release builds): PySide6 + bootstrap deps.
+# ELI_FULL_WHEELHOUSE=1: entire pinned lock (large; may exceed GitHub 2 GiB cap).
+# ELI_BUNDLE_TORCH=1: optional CPU torch wheel (opt-in — size budget).
 echo "[package] wheelhouse (portable=${ELI_PORTABLE_WHEELHOUSE:-1}, torch=${ELI_BUNDLE_TORCH:-0}, full=${ELI_FULL_WHEELHOUSE:-0})"
 mkdir -p "$STAGING/wheelhouse"
 if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ]; then
@@ -140,6 +155,11 @@ if [ "${ELI_BUNDLE_TORCH:-0}" = "1" ]; then
       --platform manylinux2014_x86_64 --python-version 312 --implementation cp \
       --abi cp312 --only-binary=:all: --no-deps -q 2>/dev/null || true
 fi
+if [ "${ELI_FULL_WHEELHOUSE:-0}" = "1" ] && [ -f "$ROOT/requirements.lock.txt" ]; then
+  echo "[package]   downloading full pinned wheel set (this is large, needs network)…"
+  "$PYTHON" -m pip download -r "$ROOT/requirements.lock.txt" -d "$STAGING/wheelhouse" \
+      --prefer-binary -q 2>/dev/null || echo "[package]   (some wheels unavailable — install will fetch those)"
+fi
 if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
   _wh_count="$(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l)"
   echo "[package] wheelhouse: ${_wh_count} wheel(s)"
@@ -156,20 +176,38 @@ else
 fi
 cp "$ROOT/requirements-portable-bootstrap.txt" "$STAGING/" 2>/dev/null || true
 
-# Starter model — bundle ONE small GGUF so a fresh install answers immediately with no
-# model download. Set ELI_STARTER_MODEL to a filename in models/ (default: tinyllama).
+# GPU acceleration packs — offline install for AppImage-style frozen builds and as a
+# fallback when install.sh cannot compile CUDA (e.g. rolling distros). Vulkan ~90MB;
+# CUDA wheel is larger but included when present in the build tree or gpu-packs release.
+echo "[package] bundling GPU acceleration packs (offline-first)…"
+mkdir -p "$STAGING/gpu-packs"
+if [ -d "$ROOT/gpu-packs" ] && compgen -G "$ROOT/gpu-packs/*.whl" >/dev/null 2>&1; then
+  cp "$ROOT/gpu-packs/"*.whl "$STAGING/gpu-packs/" 2>/dev/null || true
+elif command -v gh >/dev/null 2>&1; then
+  _gpu_repo="${GITHUB_REPOSITORY:-ShadowESC95/ELI_v2.0}"
+  gh release download gpu-packs --repo "$_gpu_repo" --clobber \
+    --pattern "vulkan-*linux_x86_64*.whl" --dir "$STAGING/gpu-packs" 2>/dev/null || true
+  gh release download gpu-packs --repo "$_gpu_repo" --clobber \
+    --pattern "cuda-*linux_x86_64*.whl" --dir "$STAGING/gpu-packs" 2>/dev/null || true
+fi
+if compgen -G "$STAGING/gpu-packs/*.whl" >/dev/null 2>&1; then
+  echo "[package] gpu-packs: $(ls -1 "$STAGING/gpu-packs"/*.whl | wc -l) wheel(s)"
+else
+  echo "[package] (no gpu-packs bundled — frozen/AppImage builds will download at first launch)"
+  rmdir "$STAGING/gpu-packs" 2>/dev/null || true
+fi
+
+# Starter model — bundle a genuinely usable small GGUF so a fresh install answers well
+# out of the box. Default: Qwen2.5-3B-Instruct (great on 4GB+ GPUs / CPU). Override with
+# ELI_STARTER_MODEL=<filename in models/>. Users can still download any other model from
+# the full catalog during setup — this is just the default it ships with.
 STARTER_MODEL="${ELI_STARTER_MODEL:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
 if [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
   echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ASSET_ROOT/models/$STARTER_MODEL" | cut -f1))"
   mkdir -p "$STAGING/models"; cp "$ASSET_ROOT/models/$STARTER_MODEL" "$STAGING/models/"
-else
-  echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
-fi
-
-# A "full" package (starter model present) also bundles the small aux weights the installer
-# would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
-# Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
-if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
+  # A "full" package (starter model present) also bundles the small aux weights the installer
+  # would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
+  # Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
   _EMB="$ASSET_ROOT/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
   if [ -f "$_EMB" ]; then
     mkdir -p "$STAGING/models/embeddings"; cp "$_EMB" "$STAGING/models/embeddings/"
@@ -183,6 +221,8 @@ if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
       break
     fi
   done
+else
+  echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
 fi
 
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -217,21 +257,21 @@ SETUP_EOF
 chmod +x "$STAGING/ELI_Setup.sh"
 
 # Every shell helper must be executable out of the tarball (Permission denied
-# on eli_diagnose.sh was a real fresh-install failure on some portable extracts).
+# on diagnose scripts was a real fresh-install failure on some portable extracts).
 while IFS= read -r -d '' _sh; do
   chmod +x "$_sh"
 done < <(find "$STAGING" -type f \( -name '*.sh' -o -name 'eli_diagnose.sh' \) -print0)
 
-cat > "$STAGING/packaging/desktop/ELI_v3.0.desktop.template" <<'DESKTOP_EOF'
+cat > "$STAGING/packaging/desktop/ELI_v2.desktop.template" <<'DESKTOP_EOF'
 [Desktop Entry]
-Name=ELI v3.0
+Name=ELI v2.0
 GenericName=Local AI Assistant
 Comment=Local AI cognitive runtime and assistant
 Exec=__APP_ROOT__/RUN_ELI.sh
-Icon=__APP_ROOT__/packaging/desktop/Eli_Icon.png
+Icon=eli
 Type=Application
 Categories=Utility;
-Keywords=ai;assistant;llm;local;eli;
+Keywords=ai;assistant;llm;local;eli;eli_v2_0;
 StartupNotify=true
 Terminal=false
 StartupWMClass=ELI
@@ -244,42 +284,56 @@ APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$DESKTOP_DIR"
 sed "s#__APP_ROOT__#$APP_ROOT#g" \
-  "$APP_ROOT/packaging/desktop/ELI_v3.0.desktop.template" \
-  > "$DESKTOP_DIR/eli.desktop"
-rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop"
-chmod +x "$DESKTOP_DIR/eli.desktop"
-echo "$DESKTOP_DIR/eli.desktop"
+  "$APP_ROOT/packaging/desktop/ELI_v2.desktop.template" \
+  > "$DESKTOP_DIR/eli-v2.desktop"
+rm -f "$DESKTOP_DIR/eli.desktop" "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-v2-0.desktop"
+chmod +x "$DESKTOP_DIR/eli-v2.desktop"
+echo "$DESKTOP_DIR/eli-v2.desktop"
 DESKTOP_INSTALL_EOF
 chmod +x "$STAGING/packaging/desktop/install_desktop_launcher.sh"
 
 cat > "$STAGING/README_INSTALL.txt" <<README_EOF
-ELI v3.0 — portable download-and-run package
+ELI v2.0 — portable download-and-run package
 
 Hardware (honest):
   Best tested: Linux x86_64 + NVIDIA GPU.
-  AMD: ROCm or Vulkan GPU offload attempted automatically; CPU fallback if neither builds.
-  Windows/macOS builds exist; feedback welcome.
+  Windows/macOS/AMD builds exist; expect rough edges — feedback welcome.
 
-Quick start (easiest — one click):
-  chmod +x ELI_Setup.sh && ./ELI_Setup.sh
-  # guided setup: deps + full GGUF catalog picker + voice + app menu icons
+Quick start (easiest):
+  chmod +x ELI_Setup.sh && ./ELI_Setup.sh          # guided one-click setup (recommended)
+  # picks chat models from full catalog + installs voice/embedder
 
-Classic:
-  1. ./INSTALL_ELI.sh    (same as ELI_Setup.sh)
-  2. ./RUN_ELI.sh
-
-Daily use:
-  ./RUN_ELI.sh
-  eli    (after setup installs ~/.local/bin/eli)
-
-Chat models (7 in catalog — pick any at setup):
+Chat models (7 in catalog):
   qwen2.5-3b, qwen2.5-7b, qwen3-8b, falcon3-10b, phi-4, qwen3.6-35b-a3b, falcon-h1-34b
   Always installed: nomic embedder (~85 MB) + voice (whisper + piper)
   Re-pick later: .venv/bin/python -m eli.core.model_download --choose
 
-Model/voice pack (optional GitHub assets — tag: local-assets-v3.0):
+Full new-user guide (all OS, every command):
+  blueprints/new_user_install_guide.pdf
+
+Phone / tablet (LAN + microphone):
+  ./scripts/eli_serve.sh --lan --https
+
+Linux AppImage (double-click after chmod +x):
+  See GitHub Releases — ELI_v2-*-x86_64.AppImage
+
+Windows Setup.exe:
+  See GitHub Releases — ELI_v2-*-Setup.exe (or ELI_Setup.bat inside the zip)
+
+Classic portable:
+  1. ./INSTALL_ELI.sh
+  2. ./RUN_ELI.sh --with-github-assets    # optional model/voice pack
+  3. ./RUN_ELI.sh                         # launch ELI
+
+Daily use:
+  ./RUN_ELI.sh
+  eli    (after INSTALL_ELI.sh installs ~/.local/bin/eli)
+
+Model/voice pack (separate download — tag: local-assets-v2.1):
   gh auth login
   ./RUN_ELI.sh --with-github-assets
+  # or: .venv/bin/python scripts/restore_github_asset_files.py --repo $REPO --tag $TAG
+  # Ryan (NC-SA) and Lessac (uncleared) voices are skipped — see models/MODEL_LICENSES.md
 
 Desktop launcher:
   ./packaging/desktop/install_desktop_launcher.sh
@@ -287,7 +341,17 @@ Desktop launcher:
 Data folders (auto-created on first run):
   artifacts/db/  artifacts/runtime/  config/
 
-Linux AppImage: see GitHub Releases — ELI_v3.0-*-x86_64.AppImage
+Terminal command:
+  INSTALL_ELI.sh installs ~/.local/bin/eli by default.
+  If your shell cached an older eli: hash -r
+
+Licence:
+  ELI is source-available under the PolyForm Internal Use License 1.0.0 —
+  run and modify it for your own use; you may not redistribute it.
+  Full terms:  ./LICENSE      (or run: eli --license)
+  Third-party: ./THIRD_PARTY_NOTICES.md, ./models/MODEL_LICENSES.md
+
+ELI v3 is in private development (not linked from this package).
 README_EOF
 
 PACKAGE="$OUT_DIR/${APP_NAME}-${VERSION}-linux-portable.tar.gz"

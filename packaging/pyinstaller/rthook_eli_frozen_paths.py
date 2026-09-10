@@ -6,10 +6,10 @@ eli/core/portable_paths.py). The launchers for source installs (RUN_ELI.sh,
 bin/elix, eli.gui.app:main) all pin ELI_PROJECT_ROOT + the data/config/models
 dirs before the app boots. This hook does the same job for frozen bundles.
 
-Policy: the root is ALWAYS the per-user ELI_v3 directory —
-    Windows : %LOCALAPPDATA%\\ELI_v3
-    macOS   : ~/Library/Application Support/ELI_v3
-    Linux   : ~/.local/share/ELI_v3
+Policy: the root is ALWAYS the per-user ELI_v2 directory —
+    Windows : %LOCALAPPDATA%\\ELI_v2
+    macOS   : ~/Library/Application Support/ELI_v2
+    Linux   : ~/.local/share/ELI_v2
 — the SAME location previous ELI releases (portable installs, the old
 AppImage) used, so models, settings and conversation data carry straight
 over on upgrade. It is also the only safe choice everywhere: the AppImage
@@ -137,7 +137,7 @@ def _user_root() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "ELI_v3"
+    return base / "ELI_v2"
 
 
 def _is_writable_dir(path: Path) -> bool:
@@ -226,9 +226,32 @@ def _pin_env_for_root(root: Path) -> None:
         sys.path.insert(0, _root_str)
 
 
+def _ensure_safe_cwd() -> None:
+    """AppImage launches from a deleted extract folder break getcwd() and torch."""
+    try:
+        os.getcwd()
+        return
+    except OSError:
+        pass
+    for candidate in (
+        os.environ.get("HOME", ""),
+        os.environ.get("TMPDIR", ""),
+        "/tmp",
+    ):
+        if not candidate:
+            continue
+        try:
+            os.chdir(candidate)
+            return
+        except OSError:
+            continue
+
+
 def _pin_frozen_root() -> None:
     if not getattr(sys, "frozen", False):
         return
+
+    _ensure_safe_cwd()
 
     explicit = os.environ.get("ELI_PROJECT_ROOT", "").strip()
     if explicit:
@@ -274,6 +297,12 @@ def _pin_frozen_root() -> None:
     # never brick the app (v2.1.4 crashed at every boot when a CUDA pack
     # missing its runtime libs shadowed the working CPU copy).
     gpu_dir = root / "runtime" / "gpu"
+    if not (gpu_dir / ".gpu_pack_ok").is_file():
+        try:
+            import eli_gpu_pack
+            eli_gpu_pack.ensure_gpu_pack_for_hardware(bundle_only=True)
+        except Exception:
+            pass
     # The pack is CUDA-accelerated but comes from an index that stops at
     # 0.3.19, while the BUNDLED copy is current. A model whose architecture
     # only the newer runtime understands (hybrid attention+SSM: qwen35,
@@ -325,10 +354,16 @@ def _pin_frozen_root() -> None:
                 for _m in [k for k in list(sys.modules) if k == "llama_cpp"
                            or k.startswith("llama_cpp.")]:
                     sys.modules.pop(_m, None)
+                # Invalidate the install marker so a broken pack does not shadow
+                # the bundled runtime on every subsequent boot.
+                try:
+                    (gpu_dir / ".gpu_pack_ok").unlink(missing_ok=True)
+                except Exception:
+                    pass
                 _warn(
                     "[ELI] GPU pack cannot reach a GPU backend in this build - "
                     "falling back to the bundled runtime (CPU). Reinstall the "
-                    "pack with: ELI --install-gpu-pack --force\n"
+                    "pack with: ELI --install-gpu-pack --vulkan --force\n"
                 )
         else:
             _warn(

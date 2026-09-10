@@ -34,6 +34,7 @@ from PyInstaller.utils.hooks import (
     collect_data_files,
     collect_dynamic_libs,
     collect_submodules,
+    copy_metadata,
 )
 
 ROOT = Path(SPECPATH).resolve()  # noqa: F821 — SPECPATH is provided by PyInstaller
@@ -135,6 +136,35 @@ if not any(f.suffix == ".onnx" for f in _voice_files):
 for f in _voice_files:
     datas.append((str(f), "tts_piper/piper"))
 
+# Text embedder (nomic-embed, ~84 MB) — REQUIRED for memory / RAG / knowledge-graph
+# recall. Not in git (a GGUF weight); CI downloads it to models/embeddings/ before
+# building. Bundling it means the packaged app has working semantic memory offline
+# instead of degrading to keyword-only ("Embed model not found"). vector_store
+# searches the frozen-bundle location when the writable data-dir copy is absent.
+_embed_file = ROOT / "models" / "embeddings" / "nomic-embed-text-v1.5.Q4_K_M.gguf"
+if _embed_file.is_file():
+    datas.append((str(_embed_file), "models/embeddings"))
+elif os.environ.get("ELI_REQUIRE_EMBEDDER") == "1":
+    _fail("ELI_REQUIRE_EMBEDDER=1 but models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf "
+          "is missing — run: python -m eli.core.model_download --aux")
+else:
+    print("[ELI.spec] WARNING: no embedder in models/embeddings — packaged memory "
+          "will fall back to keyword recall until the model is downloaded at runtime")
+
+# GPU acceleration packs (CUDA/Vulkan llama-cpp wheels) — bundled for offline-first
+# install on frozen builds. CI downloads these into gpu-packs/ before PyInstaller.
+_gpu_pack_dir = ROOT / "gpu-packs"
+_gpu_pack_files = sorted(_gpu_pack_dir.glob("*.whl")) if _gpu_pack_dir.is_dir() else []
+if _gpu_pack_files:
+    for f in _gpu_pack_files:
+        datas.append((str(f), "gpu-packs"))
+    print(f"[ELI.spec] bundling {len(_gpu_pack_files)} GPU pack wheel(s)")
+elif os.environ.get("ELI_REQUIRE_GPU_PACKS") == "1":
+    _fail("ELI_REQUIRE_GPU_PACKS=1 but gpu-packs/*.whl missing — "
+          "run: gh release download gpu-packs --pattern '*.whl' --dir gpu-packs")
+else:
+    print("[ELI.spec] WARNING: no gpu-packs/*.whl — AppImage will download GPU pack at first launch")
+
 
 # ── Hidden imports ───────────────────────────────────────────────────────────
 def _optional_collect(package: str, *, data: bool = False, libs: bool = False):
@@ -161,6 +191,62 @@ hiddenimports += collect_submodules("api")
 hiddenimports += collect_submodules("numpy")
 # Dynamic-dispatch third-party packages PyInstaller cannot trace statically.
 for pkg in ("pyttsx3", "plyer.platforms", "uvicorn"):
+    hiddenimports += _optional_collect(pkg)
+# Scientific / simulation + 3D-mesh stack: meshio loads a submodule per file
+# format at runtime and matplotlib/plotly/pandas pull dynamic backends, so the
+# standard hooks miss pieces and the frozen app's mesh analysis / plotting /
+# simulations would fail. Collect them whole so 2D/3D/(time-evolving) 4D plots,
+# graphs and mesh inspection work in the packaged build, not just from source.
+for pkg in ("meshio", "matplotlib", "mpl_toolkits", "pandas", "plotly", "scipy"):
+    hiddenimports += _optional_collect(pkg)
+# Coqui XTTS-v2 — the neural voice-clone engine. `eli/perception/tts_xtts.py`
+# imports `TTS` LAZILY, inside xtts_available(), so PyInstaller's static analysis
+# never sees it. The v2.1.65 AppImage proved the consequence: pip installed
+# coqui-tts on the runner (coqui_tts-0.27.5.dist-info is in the bundle) but the
+# TTS/ package itself was never collected, so `import TTS` failed at runtime and
+# every cloned voice fell back to Piper — with the extra bundled and unusable.
+# `trainer` is imported by coqui-tts at load time and has the same problem.
+# coqui-tts cannot be imported bare: it reaches for
+# `transformers.pytorch_utils.isin_mps_friendly`, which transformers>=5 removed.
+# ELI carries a shim for exactly this (tts_xtts._patch_transformers_compat) and
+# applies it before its own probe. The spec did not, so `__import__("TTS")` raised,
+# _optional_collect reported "optional dependency not installed" and collected
+# nothing — v2.1.66 shipped trainer/ and torch/ but no TTS/, with pip having
+# installed coqui-tts perfectly well. Reuse the project's shim rather than
+# duplicating it; if it is unavailable the collect below simply skips as before.
+try:
+    from eli.perception.tts_xtts import _patch_transformers_compat as _eli_tts_shim
+    _eli_tts_shim()
+    print("[ELI.spec] applied transformers compat shim before collecting TTS")
+except Exception as _e:
+    print(f"[ELI.spec] transformers compat shim unavailable ({_e}); TTS may be skipped")
+# `transformers` uses a LAZY module system: submodules are declared in
+# `_import_structure` and imported on attribute access, which PyInstaller cannot
+# trace. It reached the bundle only as a traced dependency of something else, so it
+# was partial — and XTTS-v2 uses GPT-2 as its text encoder, so importing TTS in the
+# frozen app died with "Could not import module 'GPT2PreTrainedModel'". That error
+# took three releases to surface because xtts_available() discarded it.
+# Reproduced locally in a minimal frozen probe (six CI releases could not settle it;
+# two local builds did). Four separate things break XTTS in a PyInstaller bundle, and
+# the FIRST one masquerades as the others:
+#
+#  1. `transformers.models.gpt2.modeling_gpt2` calls
+#     importlib.metadata.version("torchcodec"). PyInstaller ships the package but not
+#     its .dist-info, so the lookup raises PackageNotFoundError — and transformers'
+#     lazy loader re-reports it as "Could not import module 'GPT2PreTrainedModel'".
+#     That misleading message sent five releases chasing GPT-2 and transformers pins.
+#     Fixed by copy_metadata below.
+#  2. TTS reads TTS/vocoder/configs/*.py at import → needs include_py_files.
+#  3. coqui-tts pulls transitive packages PyInstaller cannot trace statically.
+#  4. `inflect` decorates with typeguard's @typechecked, which calls
+#     inspect.getsource() at import time — impossible in a frozen app unless the .py
+#     source ships as data so linecache can read it.
+_NEURAL_PKGS = (
+    "TTS", "trainer", "transformers",
+    "ko_speech_tools", "coqpit_config", "monotonic_alignment_search",
+    "num2words", "inflect", "anyascii", "librosa", "soundfile", "typeguard",
+)
+for pkg in _NEURAL_PKGS:
     hiddenimports += _optional_collect(pkg)
 if sys.platform == "win32":
     hiddenimports += ["pyttsx3.drivers.sapi5", "comtypes.stream"]
@@ -247,6 +333,23 @@ if sys.platform.startswith("linux"):
 
 for pkg in ("llama_cpp", "faster_whisper", "openwakeword", "piper"):
     datas += _optional_collect(pkg, data=True)
+# coqui-tts ships model/config JSON inside the package; submodules alone leave the
+# engine importable but unable to build a model.
+# (2) and (4): these packages are read as SOURCE at import time, so .py files must
+# ship as data, not only as compiled modules in the PYZ.
+for pkg in _NEURAL_PKGS:
+    datas += _optional_collect(pkg, data=True)
+for pkg in ("TTS", "trainer", "inflect", "typeguard"):
+    try:
+        datas += collect_data_files(pkg, include_py_files=True)
+    except Exception as _e:
+        print(f"[ELI.spec] source-data collection skipped for {pkg}: {_e}")
+# (1): dist-info metadata for anything queried via importlib.metadata at import.
+for _m in ("torchcodec", "torch", "torchaudio", "coqui-tts", "transformers", "numpy"):
+    try:
+        datas += copy_metadata(_m)
+    except Exception as _e:
+        print(f"[ELI.spec] no metadata for {_m} (optional): {_e}")
 
 excludes = [
     # PyQt is GPL — the shipped binary must stay PySide6-only (pyproject GUI
@@ -328,11 +431,11 @@ if sys.platform == "darwin":
         coll,
         name=f"{APP_NAME}.app",
         icon=str(ICON_PNG),  # PyInstaller converts to .icns via Pillow
-        bundle_identifier="com.shadowesc95.eli3",
+        bundle_identifier="com.shadowesc95.eli",
         version=APP_VERSION,
         info_plist={
             "CFBundleName": "ELI",
-            "CFBundleDisplayName": "ELI v3.0",
+            "CFBundleDisplayName": "ELI v2.0",
             "CFBundleShortVersionString": APP_VERSION,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "12.0",

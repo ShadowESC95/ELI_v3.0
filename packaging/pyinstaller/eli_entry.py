@@ -13,6 +13,10 @@ Modes:
   --selftest    boot the runtime stack + verify every mutable path resolves
                 OUTSIDE the read-only bundle, then exit 0/1. CI runs this on
                 the built bundle for every platform before anything ships.
+  --license     print the PolyForm Internal Use terms ELI ships under, then
+                exit. The Windows installer has a licence pane of its own; the
+                dmg, AppImage and portable zip do not, so this is how the terms
+                stay reachable from every download.
   -c / -m       python-compatible passthrough. ELI spawns
                 `sys.executable -c "…"` helpers (import smoke tests, sandbox
                 probes); in a frozen app sys.executable is ELI itself, and
@@ -85,6 +89,29 @@ def _assert_paths_outside_bundle() -> None:
     if os.environ.get("ELI_REQUIRE_VOICES") == "1":
         if not list((bundle / "tts_piper" / "piper").glob("*.onnx")):
             raise RuntimeError("selftest: no Piper voices bundled (tts_piper/piper/*.onnx)")
+    # Neural voice engine: assert the FROZEN app can actually import it, not merely
+    # that pip installed it on the runner. v2.1.65 and v2.1.66 both shipped
+    # coqui_tts-*.dist-info with no usable TTS package — the spec's bare
+    # `__import__("TTS")` raised on a transformers incompatibility ELI already
+    # carries a shim for, so collection was skipped and every cloned voice fell back
+    # to Piper. A directory listing cannot settle this: collect_submodules puts pure
+    # Python in the PYZ inside the executable, so `_internal/TTS/` legitimately holds
+    # only data files. The import is the only honest check.
+    if os.environ.get("ELI_REQUIRE_NEURAL_VOICE") == "1":
+        from eli.perception import tts_xtts as _tx
+        if not _tx.xtts_available():
+            why = ""
+            try:
+                why = _tx.xtts_import_error()
+            except Exception:
+                pass
+            raise RuntimeError(
+                "selftest: the neural voice engine is NOT usable in this bundle — "
+                "cloned/natural voices would silently fall back to Piper. "
+                f"Import failed with: {why or 'unknown (no reason recorded)'}. "
+                "Check that ELI.spec collected TTS and its transitive imports."
+            )
+        print("selftest: neural voice engine usable (XTTS-v2 importable in the bundle)")
 
 
 def _selftest() -> int:
@@ -96,14 +123,7 @@ def _selftest() -> int:
         # memory DB).
         from eli.core.init_data import bootstrap_once
         bootstrap_once()
-        import eli.gui.gui_eli_original as gui  # full GUI import chain (Qt, plugins, memory)
-        # Instantiate QApplication so the selftest actually LOADS the Qt platform
-        # plugin (offscreen when headless, xcb under a real/virtual X). Importing
-        # the GUI module alone never loads a platform, so it can't catch a missing
-        # platform dependency like libxcb-cursor.so.0 — creating the app does: an
-        # unresolved xcb dep makes Qt abort here, which the xcb launch gate detects.
-        from PySide6.QtWidgets import QApplication
-        _app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841
+        import eli.gui.eli_pro_audio_gui_v2_0 as gui  # full GUI import chain (Qt, plugins, memory)
         import api.server                             # noqa: F401  web/phone server stack
         import llama_cpp                              # noqa: F401  native inference libs load
         # llama_cpp must import from REAL files on disk (module_collection_mode
@@ -180,10 +200,10 @@ def _fresh_start(argv: list[str]) -> int:
 def _desktop_files() -> dict[str, Path]:
     apps = Path.home() / ".local" / "share" / "applications"
     return {
-        "eli": apps / "eli-v3.desktop",
-        "server": apps / "eli-v3-server.desktop",
-        "uninstall": apps / "eli-v3-uninstall.desktop",
-        "icon": Path.home() / ".local" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "eli-v3.png",
+        "eli": apps / "eli-v2.desktop",
+        "server": apps / "eli-v2-server.desktop",
+        "uninstall": apps / "eli-v2-uninstall.desktop",
+        "icon": Path.home() / ".local" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "eli-v2.png",
     }
 
 
@@ -204,6 +224,7 @@ def _resolve_appimage_path() -> str:
             return p
     return ""
 
+
 def _integrate(quiet: bool = False) -> int:
     """Linux: install applications-menu entries (ELI, Server, Uninstall) that
     point at THIS AppImage, with THIS version's icon — replacing any stale
@@ -217,7 +238,7 @@ def _integrate(quiet: bool = False) -> int:
         print(
             "[integrate] could not resolve the .AppImage path — are you running the "
             "EXTRACTED AppRun (or a non-AppImage build)? Launch the .AppImage file "
-            "itself and retry, e.g.:  ./ELI_v3-*-x86_64.AppImage --integrate",
+            "itself and retry, e.g.:  ./ELI_v2-*-x86_64.AppImage --integrate",
             file=sys.stderr,
         )
         return 1
@@ -232,9 +253,9 @@ def _integrate(quiet: bool = False) -> int:
         shutil.copy2(src_icon, files["icon"])
     files["eli"].parent.mkdir(parents=True, exist_ok=True)
     entries = {
-        "eli": ("ELI v3.0", f'"{appimage}"', "ELI — private local AI assistant"),
+        "eli": ("ELI v2.0", f'"{appimage}"', "ELI — private local AI assistant"),
         "server": ("ELI Server (phone & web)", f'"{appimage}" --server', "ELI phone/web server with console output"),
-        "uninstall": ("Uninstall ELI v3.0", f'"{appimage}" --uninstall', "Remove ELI menu entries and optionally its data"),
+        "uninstall": ("Uninstall ELI v2.0", f'"{appimage}" --uninstall', "Remove ELI menu entries and optionally its data"),
     }
     for key, (name, execline, comment) in entries.items():
         files[key].write_text(
@@ -292,8 +313,9 @@ def _first_run_integrate_offer() -> None:
     if not appimage:
         # Running the extracted AppRun (or not an AppImage) — nothing to point a
         # launcher at. Say so once, so "no menu icon" is diagnosable instead of a
-        # silent no-op. --appimage-extract-and-run is fine (it DOES set APPIMAGE);
-        # only the raw extracted AppRun path lands here.
+        # silent no-op. Users on lean distros who were told to use
+        # --appimage-extract-and-run are fine (that DOES set APPIMAGE); only the
+        # raw extracted AppRun path lands here.
         print(
             "[ELI] app-menu integration skipped: launch the .AppImage directly "
             "(not the extracted AppRun) to get menu icons, or run:  ELI --integrate",
@@ -429,15 +451,11 @@ QMessageBox.warning(None, "ELI - first model",
 
 
 def _first_run_gpu_offer() -> None:
-    """First-launch hardware chooser (frozen GUI builds, Windows/Linux).
+    """Auto-install a verified GPU pack before llama_cpp is imported (AppImage/exe).
 
-    Asks once: enable GPU acceleration (NVIDIA→CUDA / AMD→Vulkan, auto-
-    detected) or stay on CPU. Runs BEFORE anything imports llama_cpp, so an
-    installed pack takes effect the same boot (sys.path shadowing) with no
-    restart. The dialog + download run in ELI subprocesses (via the python
-    `-c` passthrough above) because the main GUI later creates its own
-    QApplication. Declining writes a marker and never asks again;
-    `--install-gpu-pack` stays available. macOS is Metal out of the box.
+    Uses bundled gpu-packs/ wheels when present (offline-first), otherwise
+    downloads the correct CUDA/Vulkan pack for the detected hardware. Runs
+    BEFORE the GUI imports llama_cpp so offload works on the first boot.
     """
     if not getattr(sys, "frozen", False) or sys.platform == "darwin":
         return
@@ -447,79 +465,62 @@ def _first_run_gpu_offer() -> None:
         if not str(root):
             return
         runtime = root / "runtime"
-        marker = runtime / ".gpu_choice"
-        if marker.exists() or (runtime / "gpu" / "llama_cpp").is_dir():
+        if (runtime / "gpu" / ".gpu_pack_ok").is_file():
+            gpu_dir = runtime / "gpu"
+            sys.path.insert(0, str(gpu_dir))
+            import eli_gpu_pack as _gp
+            _gp.preload_native_libs(gpu_dir)
             return
-        # Canonical detection — the SAME HardwareProfile install.sh's verify,
-        # the smart-fit loader and the HARDWARE_PROFILE action use (NVIDIA
-        # nvidia-smi, AMD rocm-smi/sysfs/registry). One source of truth.
+
+        bundled = None
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import eli_gpu_pack as _gp
+            from eli.core.hardware_profile import detect_hardware
+            hp = detect_hardware()
+            if not hp.has_gpu:
+                runtime.mkdir(parents=True, exist_ok=True)
+                (runtime / ".gpu_choice").write_text("cpu-no-gpu-hardware", encoding="utf-8")
+                return
+            name_l = (hp.gpu_name or "").lower()
+            nvidia = "nvidia" in name_l or "geforce" in name_l or "rtx" in name_l or "gtx" in name_l
+            bundled = _gp._pick_bundled_wheel(prefer_cuda=nvidia)
+            if bundled:
+                rc = _gp._install_from_local_wheel(bundled[2], bundled[0], bundled[1])
+                if rc == 0 and (runtime / "gpu" / ".gpu_pack_ok").is_file():
+                    (runtime / ".gpu_choice").write_text("gpu-bundled", encoding="utf-8")
+                    sys.path.insert(0, str(runtime / "gpu"))
+                    _gp.preload_native_libs(runtime / "gpu")
+                    return
+        except Exception:
+            bundled = None
+
         from eli.core.hardware_profile import detect_hardware
         hp = detect_hardware()
-        runtime.mkdir(parents=True, exist_ok=True)
         if not hp.has_gpu:
-            marker.write_text("cpu-no-gpu-hardware", encoding="utf-8")
             return
-        # Vendor from the (cross-OS) HardwareProfile name. NVIDIA → CUDA;
-        # AMD and discrete Intel Arc → Vulkan. Intel iGPUs (Iris Xe / UHD) may
-        # try Vulkan but CPU is recommended — never report them as "no GPU".
         name_l = (hp.gpu_name or "").lower()
         nvidia = "nvidia" in name_l or "geforce" in name_l or "rtx" in name_l or "gtx" in name_l
-        amd = (not nvidia) and ("amd" in name_l or "radeon" in name_l)
-        intel_arc = (not nvidia and not amd) and "arc" in name_l
-        intel_igpu = bool(getattr(hp, "gpu_integrated", False)) and not intel_arc
-        if intel_igpu:
-            vendor = (
-                f"{hp.gpu_name} — shared system RAM "
-                f"(~{max(hp.total_vram_mb, hp.free_vram_mb) / 1024:.1f} GB budgeted)"
-            )
-            backend = "Intel Vulkan (experimental — CPU is recommended on Iris Xe)"
-            size = "roughly 90 MB"
-            gp_args = "['--vulkan']"
-        elif not (nvidia or amd or intel_arc):
-            marker.write_text(f"cpu-unsupported-gpu:{hp.gpu_name}", encoding="utf-8")
-            return
-        else:
-            vendor = f"{hp.gpu_name} — {max(hp.total_vram_mb, hp.free_vram_mb) / 1024:.0f} GB VRAM"
-            backend = "NVIDIA CUDA" if nvidia else ("AMD Vulkan" if amd else "Intel Arc Vulkan")
-            size = "roughly 1.6 GB" if nvidia else "roughly 90 MB"
-            gp_args = "[]" if nvidia else "['--vulkan']"
-        # Measured, not estimated: the CUDA wheel is ~1.3 GB and the NVIDIA
-        # runtime redistributables (cudart + cublas) add ~350 MB on top; the
-        # Vulkan pack (AMD / Intel Arc / experimental Intel iGPU) is ~90 MB.
-        gpu_btn = "Try Vulkan (experimental)" if intel_igpu else "Enable GPU (recommended)"
-        cpu_btn = "Use CPU (recommended)" if intel_igpu else "Use CPU"
-        ask = f"""
-import sys
-from PySide6.QtWidgets import QApplication, QMessageBox
-app = QApplication(sys.argv)
-m = QMessageBox()
-m.setWindowTitle("ELI - GPU acceleration")
-m.setText("ELI detected: {vendor}")
-m.setInformativeText("Enable {backend} acceleration now? This downloads the GPU "
-                     "inference engine once ({size}). CPU mode always works; "
-                     "you can enable GPU later by running ELI with --install-gpu-pack.")
-yes = m.addButton("{gpu_btn}", QMessageBox.AcceptRole)
-m.addButton("{cpu_btn}", QMessageBox.RejectRole)
-m.exec()
-sys.exit(0 if m.clickedButton() is yes else 3)
-"""
-        if subprocess.run([sys.executable, "-c", ask]).returncode != 0:
-            marker.write_text("cpu-user-choice", encoding="utf-8")
-            return
+        intel_igpu = bool(getattr(hp, "gpu_integrated", False)) and "arc" not in name_l
+        gp_args = "['--vulkan']" if (intel_igpu or (not nvidia)) else "[]"
+        label = "Installing bundled GPU pack…" if bundled else "Downloading GPU acceleration pack…"
         download = f"""
 import sys, threading
 from PySide6.QtWidgets import QApplication, QProgressDialog
 from PySide6.QtCore import Qt, QTimer
 import eli_gpu_pack
 app = QApplication(sys.argv)
-dlg = QProgressDialog("Downloading the GPU acceleration pack...", None, 0, 0)
+dlg = QProgressDialog({label!r}, None, 0, 0)
 dlg.setWindowTitle("ELI - GPU acceleration")
 dlg.setCancelButton(None)
 dlg.setWindowModality(Qt.ApplicationModal)
 dlg.setMinimumWidth(420)
 dlg.show()
 rc = {{"v": 1}}
-t = threading.Thread(target=lambda: rc.__setitem__("v", eli_gpu_pack.install({gp_args})), daemon=True)
+t = threading.Thread(
+    target=lambda: rc.__setitem__("v", eli_gpu_pack.ensure_gpu_pack_for_hardware()),
+    daemon=True,
+)
 t.start()
 timer = QTimer()
 timer.timeout.connect(lambda: None if t.is_alive() else app.quit())
@@ -529,23 +530,31 @@ sys.exit(rc["v"])
 """
         rc = subprocess.run([sys.executable, "-c", download]).returncode
         if rc == 0 and (runtime / "gpu" / ".gpu_pack_ok").is_file():
-            marker.write_text("gpu", encoding="utf-8")
-            sys.path.insert(0, str(runtime / "gpu"))  # effective THIS boot
-            import eli_gpu_pack as _gp
-            _gp.preload_native_libs(runtime / "gpu")
-        else:
-            # no marker on failure — the offer returns next launch, and the
-            # CLI path (--install-gpu-pack) is always available. The pack
-            # installer already removed anything unverified.
-            notice = """
-import sys
-from PySide6.QtWidgets import QApplication, QMessageBox
-app = QApplication(sys.argv)
-QMessageBox.warning(None, "ELI - GPU acceleration",
-    "The GPU pack could not be installed or verified on this machine, so ELI "
-    "will run on CPU (fully functional). It will offer GPU again at next "
-    "launch; you can also retry any time with:  ELI --install-gpu-pack")
-"""
+            (runtime / ".gpu_choice").write_text("gpu", encoding="utf-8")
+            sys.path.insert(0, str(runtime / "gpu"))
+            import eli_gpu_pack as _gp2
+            _gp2.preload_native_libs(runtime / "gpu")
+        elif rc != 0:
+            try:
+                import eli_gpu_pack as _gp3
+                reason = _gp3.last_failure()
+                log_path = _gp3._log_path()
+            except Exception:
+                reason, log_path = "", None
+            body = (
+                "ELI could not install a GPU acceleration pack for this machine "
+                "and will run on CPU (fully functional). Retry with: ELI --install-gpu-pack"
+            )
+            if reason:
+                body += f"\n\nReason: {reason}"
+            if log_path:
+                body += f"\n\nFull log: {log_path}"
+            notice = (
+                "import sys\n"
+                "from PySide6.QtWidgets import QApplication, QMessageBox\n"
+                "app = QApplication(sys.argv)\n"
+                f"QMessageBox.warning(None, 'ELI - GPU acceleration', {body!r})\n"
+            )
             subprocess.run([sys.executable, "-c", notice])
     except Exception:
         pass  # never block the GUI boot on the chooser
@@ -555,6 +564,8 @@ def _mode() -> str:
     argv = sys.argv[1:]
     if "--selftest" in argv:
         return "selftest"
+    if "--license" in argv or "--licence" in argv:
+        return "license"
     if "--install-gpu-pack" in argv:
         return "gpu-pack"
     if "--remove-gpu-pack" in argv:
@@ -572,23 +583,12 @@ def _mode() -> str:
 
 
 if __name__ == "__main__":
-    # License flags first: this entry point never goes through eli/__main__.py,
-    # so without this the GUI's own gate fires before the flags are seen and
-    # `ELI --activate-key …` can never succeed on a frozen build.
-    try:
-        from eli.licensing.flags import handle_license_flags
-
-        _license_rc = handle_license_flags(sys.argv[1:])
-        if _license_rc is not None:
-            sys.exit(_license_rc)
-    except SystemExit:
-        raise
-    except Exception as _exc:  # never let flag handling block a normal launch
-        print(f"[ELI] license flag handling unavailable: {_exc}", file=sys.stderr)
-
     mode = _mode()
     if mode == "selftest":
         sys.exit(_selftest())
+    elif mode == "license":
+        from eli.runtime.license_info import print_license
+        sys.exit(print_license())
     elif mode == "gpu-pack":
         import eli_gpu_pack
         sys.exit(eli_gpu_pack.install([a for a in sys.argv[1:] if a != "--install-gpu-pack"]))
