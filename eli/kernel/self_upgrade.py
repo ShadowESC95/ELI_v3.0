@@ -25,8 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from eli.core.paths import project_root as _project_root
 PROJECT_ROOT = _project_root()
-_DEFAULT_RELEASE_REPO = os.environ.get("ELI_RELEASE_REPO", "ShadowESC95/ELI_v2.0")
-_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v2.4.6")
+_DEFAULT_RELEASE_REPO = os.environ.get("ELI_RELEASE_REPO", "ShadowESC95/ELI_v3.0")
+_DEFAULT_RELEASE_TAG = os.environ.get("ELI_RELEASE_TAG", "v3.0.108")
 
 
 def _ver_tuple(v: str) -> Tuple[int, ...]:
@@ -236,7 +236,7 @@ class SelfUpgrader:
             pass
         try:
             import importlib.metadata as im
-            return str(im.version("eli-v2.0"))
+            return str(im.version("eli-v3"))
         except Exception:
             pass
         return "0.0.0"

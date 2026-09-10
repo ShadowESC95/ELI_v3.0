@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ELI v2.0 — one-click setup (GUI-first on every platform with a display).
+# ELI v3 — one-click setup (GUI-first on every platform with a display).
 # Falls back to terminal-only when no graphical session or Qt is unavailable.
 set -euo pipefail
 
@@ -121,7 +121,7 @@ else
 fi
 
 echo
-echo "${B}${CYN}ELI v2.0 setup (terminal mode)${R}"
+echo "${B}${CYN}ELI v3 setup (terminal mode)${R}"
 echo "  Graphical installer unavailable — running full install in the terminal."
 echo
 

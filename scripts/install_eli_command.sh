@@ -21,7 +21,7 @@ Installs:
   $BIN_DIR/$NAME
 
 The installed command runs:
-  $ROOT/scripts/eli_startup.sh "\$@"
+  $ROOT/eli.sh "\$@"
 EOF_USAGE
 }
 
@@ -69,10 +69,12 @@ fi
 
 cat > "$TARGET" <<EOF_LAUNCHER
 #!/usr/bin/env bash
-# ELI v3.0 terminal launcher.
+# ELI v3 terminal launcher — installed by scripts/install_eli_command.sh
 set -euo pipefail
 APP_ROOT="$ROOT"
-exec "\$APP_ROOT/scripts/eli_startup.sh" "\$@"
+# Drop stale exports from another checkout (common when v2 and v3 coexist).
+unset ELI_PROJECT_ROOT ELI_DATA_DIR ELI_CONFIG_DIR ELI_MODELS_DIR ELI_CACHE_DIR
+exec "\$APP_ROOT/eli.sh" "\$@"
 EOF_LAUNCHER
 chmod +x "$TARGET"
 

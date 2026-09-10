@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# ELI v2.0 — Linux / macOS installer
+# ELI v3 — Linux / macOS installer
 # Usage: bash install.sh [--cpu-only] [--skip-torch]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/.venv"
 PYTHON="${PYTHON:-python3}"
+ELI_VERSION="$("$PYTHON" -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('$SCRIPT_DIR/pyproject.toml').read_bytes())['project']['version'])" 2>/dev/null || echo "3.0")"
 export ELI_PROJECT_ROOT="$SCRIPT_DIR"
 export ELI_DATA_DIR="${ELI_DATA_DIR:-$SCRIPT_DIR/artifacts}"
 export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$SCRIPT_DIR/config}"
@@ -156,7 +157,7 @@ attempt_runtime_tools() {
 }
 
 echo "${B}${CYN}╔══════════════════════════════════════════════╗${R}"
-echo "${B}${CYN}║  ELI v2.0 · Installer                         ║${R}"
+echo "${B}${CYN}║  ELI v${ELI_VERSION} · Installer                         ║${R}"
 echo "${B}${CYN}║  ${R}${D}100% local · private · offline-by-default${R}${B}${CYN}    ║${R}"
 echo "${B}${CYN}╚══════════════════════════════════════════════╝${R}"
 
@@ -693,18 +694,18 @@ if [ "$SKIP_TORCH" -eq 0 ] && [ "$CPU_ONLY" -eq 0 ] && [ "$OS" != "Darwin" ]; th
     fi
 fi
 
-# Install ELI v2.0 wheel (or editable from source checkout)
+# Install ELI v3 wheel (or editable from source checkout)
 # NOT --quiet: this step resolves the full dependency tree (torch, PySide6, faiss, …)
 # and can take several minutes. Suppressing output made it look frozen, so users killed
 # it here — before the requirements install below (which brings in PySide6) ever ran,
 # leaving a GUI-less venv ("please install PySide6"). Show progress instead.
 eli_progress llama 50 "Inference engine ready"
 eli_progress eli 55 "Installing ELI core package"
-echo "[..] Installing ELI v2.0 (editable) — resolving dependencies, this can take a few minutes..."
+echo "[..] Installing ELI v${ELI_VERSION} (editable) — resolving dependencies, this can take a few minutes..."
 WHEEL=""
 # Pick the HIGHEST version wheel (sort -V), not the first — a plain glob returns the
 # oldest first, which would install a stale version if several wheels are present.
-WHEEL="$(ls "$SCRIPT_DIR"/dist/eli_v2_0-*.whl 2>/dev/null | sort -V | tail -1)"
+WHEEL="$(ls "$SCRIPT_DIR"/dist/eli_v3-*.whl 2>/dev/null | sort -V | tail -1)"
 # Install ELI EDITABLE from the source tree, so the tree is the SINGLE runtime authority
 # (site-packages links to it — nothing shadows a duplicate wheel copy; the launchers'
 # PYTHONPATH becomes redundant belt-and-suspenders). Fall back to the bundled wheel only
@@ -895,11 +896,11 @@ fi
 echo
 if [ "$VERIFY_OK" -eq 1 ]; then
     echo "${B}${GRN}╔══════════════════════════════════════════════╗${R}"
-    echo "${B}${GRN}║  ELI v2.0 — installation complete             ║${R}"
+    echo "${B}${GRN}║  ELI v3 (${ELI_VERSION}) — installation complete      ║${R}"
     echo "${B}${GRN}╚══════════════════════════════════════════════╝${R}"
 else
     echo "${B}${YEL}╔══════════════════════════════════════════════╗${R}"
-    echo "${B}${YEL}║  ELI v2.0 — finished WITH ERRORS (see above)  ║${R}"
+    echo "${B}${YEL}║  ELI v3 — finished WITH ERRORS (see above)    ║${R}"
     echo "${B}${YEL}╚══════════════════════════════════════════════╝${R}"
 fi
 
@@ -910,9 +911,23 @@ ok "Model       ${B}${MODEL_STATUS}${R}   ${D}(${SCRIPT_DIR}/models/)${R}"
 ok "Voice       ${B}${VOICE_STATUS}${R}   ${D}(local STT + TTS weights)${R}"
 ok "Data        ${B}fresh local databases${R}, offline-by-default"
 
+section "Shell command"
+if [ "$ASSUME_YES" -eq 1 ]; then
+    bash "$SCRIPT_DIR/scripts/fix_eli_shell_env.sh" --yes || warn "Shell fix deferred — run: bash scripts/fix_eli_shell_env.sh"
+elif [ -t 0 ]; then
+    printf "  Install 'eli' command and fix stale shell alias? [Y/n]  "
+    read -r _shell_fix </dev/tty || _shell_fix=y
+    case "${_shell_fix:-y}" in
+        [Yy]*) bash "$SCRIPT_DIR/scripts/fix_eli_shell_env.sh" --yes || warn "Shell fix failed" ;;
+        *) info "Skipped — run later: bash scripts/fix_eli_shell_env.sh" ;;
+    esac
+else
+    info "Run after install: bash scripts/fix_eli_shell_env.sh"
+fi
+
 section "Launch"
 if [ "$OS" = "Linux" ] && [ -x "$PYTHON_VENV" ]; then
-    info "Installing app-menu icons (ELI v2.0 + ELI Server)…"
+    info "Installing app-menu icons (ELI v3 + ELI Server)…"
     if bash "$SCRIPT_DIR/scripts/install_desktop_apps.sh"; then
         ok "Desktop launchers installed with ELI icon."
     else
@@ -923,7 +938,7 @@ echo "  ${B}./scripts/eli_setup.sh${R}               ${D}# first-time one-click 
 echo "  ${B}./scripts/eli_launch.sh${R}              ${D}# desktop app (GUI)${R}"
 echo "  ${B}./scripts/eli_launch.sh serve --lan --https${R}  ${D}# web app for phone / tablet (mic)${R}"
 echo "  ${B}./eli.sh${R}                             ${D}# also launches the desktop app${R}"
-echo "  ${B}./scripts/install_desktop_apps.sh${R}    ${D}# ELI Setup + ELI v2.0 + ELI Server icons${R}"
+echo "  ${B}./scripts/install_desktop_apps.sh${R}    ${D}# ELI Setup + ELI v3 + ELI Server icons${R}"
 echo
 if [ "$MODEL_STATUS" = "none yet" ] || [ "$MODEL_STATUS" = "download failed (fetch later)" ]; then
     echo "  ${D}No model yet — the first-run wizard offers a download, or run:${R}"
