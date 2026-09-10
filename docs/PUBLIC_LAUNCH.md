@@ -1,27 +1,27 @@
 # ELI v2 — public launch copy-paste
 
-> **Current release: v2.3.92 (September 2026).** Thread-aware web grounding: conversation topics expand underspecified queries; proactive web on corrections; orchestrator reuses engine intent; consolidated factual gates.
+> **Current release: v3.0.109 (September 2026).** Thread-aware web grounding: conversation topics expand underspecified queries; proactive web on corrections; orchestrator reuses engine intent; consolidated factual gates.
 > Builds on v2.3.72 (news deepen + live-session honesty).
 
 ## Links (share these)
 
 - **Repo:** https://github.com/ShadowESC95/ELI_v2.0
-- **Release v2.3.92:** https://github.com/ShadowESC95/ELI_v2.0/releases/tag/v2.3.92
+- **Release v2.3.92:** https://github.com/ShadowESC95/ELI_v2.0/releases/tag/v3.0.109
 - **License:** PolyForm Internal Use (source-available, personal use — not OSI open source)
 
 ## Easiest install — Linux
 
 ```bash
 # AppImage (recommended)
-wget https://github.com/ShadowESC95/ELI_v2.0/releases/download/v2.3.92/ELI_v2-2.3.92-x86_64.AppImage
-chmod +x ELI_v2-2.3.92-x86_64.AppImage
-./ELI_v2-2.3.92-x86_64.AppImage
+wget https://github.com/ShadowESC95/ELI_v2.0/releases/download/v3.0.109/ELI_v2-3.0.109-x86_64.AppImage
+chmod +x ELI_v2-3.0.109-x86_64.AppImage
+./ELI_v2-3.0.109-x86_64.AppImage
 ```
 
 ```bash
 # Portable tarball (source + voices)
-wget https://github.com/ShadowESC95/ELI_v2.0/releases/download/v2.3.92/ELI_v2-2.3.92-linux-portable.tar.gz
-tar -xzf ELI_v2-2.3.92-linux-portable.tar.gz && cd ELI_v2-2.3.92-linux-portable
+wget https://github.com/ShadowESC95/ELI_v2.0/releases/download/v3.0.109/ELI_v2-3.0.109-linux-portable.tar.gz
+tar -xzf ELI_v2-3.0.109-linux-portable.tar.gz && cd ELI_v2-3.0.109-linux-portable
 chmod +x ELI_Setup.sh && ./ELI_Setup.sh
 ```
 
@@ -31,19 +31,19 @@ chmod +x ELI_Setup.sh && ./ELI_Setup.sh
 
 ## Easiest install — Windows
 
-1. Download `ELI-Setup-2.3.73.exe` or `ELI_v2-2.3.73-windows-x64.zip` from the release page
+1. Download `ELI-Setup-3.0.109.exe` or `ELI_v2-3.0.109-windows-x64.zip` from the release page
 2. Install or extract → run **ELI**
 3. Set your headset **Chat** mic as the default recording device if voice input is silent
 
 ## Easiest install — macOS (Apple Silicon)
 
-1. Download `ELI_v2-2.3.73-macos-arm64.dmg`
+1. Download `ELI_v2-3.0.109-macos-arm64.dmg`
 2. Drag to Applications → right-click → Open (unsigned)
 3. Grant mic access when prompted; AirPods work when set as system input
 
 ## Hacker News / Reddit one-liner
 
-> **ELI v2.3.73.** Local-first AI assistant (~166k LOC, 227 capabilities, GGUF, PySide6 GUI, offline-by-default). Thread-aware web grounding, honest model identity, phatic fast path. https://github.com/ShadowESC95/ELI_v2.0/releases/tag/v2.3.73
+> **ELI v3.0.109.** Local-first AI assistant (~232k LOC, 227 capabilities, GGUF, PySide6 GUI, offline-by-default). Thread-aware web grounding, honest model identity, phatic fast path. https://github.com/ShadowESC95/ELI_v2.0/releases/tag/v3.0.109
 
 ## What to say it is
 
