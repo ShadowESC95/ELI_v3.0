@@ -8964,44 +8964,13 @@ class EliMainWindow(QMainWindow):
         return page
 
     def _eli_server_lan_ip(self) -> str:
-        """Best-effort LAN IP the phone can actually reach. Prefers a real private
-        address (192.168/10/non-docker 172) over loopback (Linux maps the hostname to
-        127.0.1.1) and over docker bridges."""
-        import socket
-        cands = []
+        """Best-effort LAN IP the phone can actually reach (cross-platform)."""
         try:
-            cands.append(socket.gethostbyname(socket.gethostname()))
+            from eli.runtime.server_util import resolve_lan_ip
+            return resolve_lan_ip()
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        try:
-            import subprocess as _sp
-            out = _sp.run(["hostname", "-I"], capture_output=True, text=True, timeout=2)
-            cands += (out.stdout or "").split()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        try:
-            import subprocess as _sp  # macOS
-            for ifc in ("en0", "en1"):
-                out = _sp.run(["ipconfig", "getifaddr", ifc], capture_output=True, text=True, timeout=2)
-                if out.stdout.strip():
-                    cands.append(out.stdout.strip())
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        def _score(ip: str) -> int:
-            if not ip or ip.startswith("127.") or ":" in ip:
-                return -1
-            if ip.startswith("192.168."):
-                return 4
-            if ip.startswith("10."):
-                return 3
-            if ip.startswith("172.17.") or ip.startswith("172.18."):
-                return 1  # docker bridge — usable but deprioritised
-            if ip.startswith("172."):
-                return 2
-            return 2
-        best = max(cands, key=_score, default="")
-        return best if best and _score(best) > 0 else "<this-computer-ip>"
+            return "<this-computer-ip>"
 
     def _eli_server_python(self) -> str:
         """Always launch the server with the project's venv interpreter — NOT whatever
@@ -9248,7 +9217,8 @@ class EliMainWindow(QMainWindow):
             self._srv_thread.start()
             if lan:
                 from eli.runtime.server_util import start_https_sidecar
-                hport = start_https_sidecar(host=host)
+                hport, https_uv = start_https_sidecar(host=host)
+                self._srv_https_uv = https_uv
                 if hport:
                     https_url = f"https://{self._eli_server_lan_ip()}:{hport}/#token={token}"
                     self._srv_https_url.setText(https_url)

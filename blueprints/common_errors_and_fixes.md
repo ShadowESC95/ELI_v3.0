@@ -1,14 +1,43 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for v3.0.112 (September 2026).** The primary install path is now the
-> prebuilt, CI-launch-tested installers on GitHub Releases (Windows Setup.exe,
-> macOS dmg, Linux AppImage) with first-boot GPU (CUDA/Vulkan/Metal) and
-> starter-model offers; data lives in a per-user `ELI_v2` folder that survives
-> upgrades. Source installs below remain fully supported.
+> **Updated for v3.0.114 (September 2026).** Primary path: GitHub Releases
+> (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage). Portable Linux uses `./ELI_Setup.sh`
+> (CPU-first). The in-app **Home** tab is ELI MQTT/devices — not Home Assistant.
 
 
 A quick reference for the gremlins that actually come up when running ELI. Each one is
 symptom → cause → the exact fix. Add new ones as they surface.
+
+---
+
+## Windows: two ELI windows after Setup.exe
+
+**Symptom:** Finish the installer and two GUI windows appear (or desktop has ELI + ELI Server).
+**Cause:** Desktop used to pin both `ELI.exe` and `ELI-Server.exe`; post-install could race.
+**Fix (v3.0.114+):** Desktop shortcut is **ELI only**; Server stays in Start Menu. Frozen GUI
+takes a singleton lock — a second launch shows “ELI is already running” and exits.
+Close the extra window; upgrade to 3.0.114+.
+
+---
+
+## Setup wizard: nomic / Piper “won’t download”
+
+**Symptom:** Chat model downloads, but embedder/voice stay missing.
+**Cause:** Older wizard called `download_aux(required_only=False)` and ignored failures; offline-by-default blocked FirstBoot prefetch.
+**Fix (v3.0.114+):** Wizard uses `python -m eli.core.model_download --aux` with a real exit code.
+Click **Fetch embedder + voice now** (scoped network) or run:
+```bash
+.venv/bin/python -m eli.core.model_download --aux
+.venv/bin/python -m eli.runtime.voice_assets
+```
+
+---
+
+## Web server / phone “Home” page won’t connect
+
+**Symptom:** Settings → Web Server starts, phone can’t open the URL / QR is `<this-computer-ip>`.
+**Cause:** LAN IP detection lacked a Windows path; Apply-port left a stale `ELI_API_PORT`; HTTPS sidecar couldn’t stop; Windows firewall tip omitted 8443.
+**Fix (v3.0.114+):** Shared `resolve_lan_ip()` (UDP + PowerShell); Stop clears port env; HTTPS handle is retained; firewall hints include HTTPS. Use **phone / Wi-Fi** mode, allow the firewall command, open the **token** URL (Home tab = devices/MQTT, not Home Assistant).
 
 ---
 
@@ -19,7 +48,7 @@ you had to set `ELI_MIC_DEVICE_INDEX` manually on v2.3.30.
 **Cause (v2.3.30 regression):** on Linux/PipeWire, PortAudio's `pulse` wrapper often passed a
 short probe yet stayed silent during real STT; on all platforms a webcam or virtual "Stereo Mix"
 default could win over a connected USB/Bluetooth headset.
-**Fix (v3.0.112+):** upgrade to **v3.0.112** — cross-platform ranked auto-resolve probes USB,
+**Fix (v2.3.92+):** upgrade to **v2.3.92** — cross-platform ranked auto-resolve probes USB,
 headset/Chat, and Bluetooth endpoints before built-in/webcam/virtual routes, at each device's
 native sample rate. No env vars required on Linux, macOS, or Windows.
 **Diagnostics:**
@@ -187,7 +216,7 @@ mount with: `findmnt -T . -o TARGET,FSTYPE`.
 ---
 
 ## Arch / lean distros: GUI won't open — "libxcb-cursor0 is needed to load the Qt xcb platform plugin"
-**Symptom:** the AppImage's engine loads (you see the `ELI v2.0` banner and the module log)
+**Symptom:** the AppImage's engine loads (you see the `ELI v3.0` banner and the module log)
 but the window never appears; it aborts with the `xcb-cursor0 … xcb platform plugin` message.
 **Cause:** Qt 6.5+'s xcb platform plugin (`libqxcb.so`) links the **whole xcb-util family** —
 `libxcb-cursor`, `libxcb-icccm`, `libxcb-image`, `libxcb-keysyms`, `libxcb-render-util`,
@@ -205,7 +234,7 @@ sudo apt install libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libx
 ```
 Diagnose exactly which library is missing (Qt's own trace names it):
 ```bash
-QT_DEBUG_PLUGINS=1 ./ELI_v2-*-x86_64.AppImage 2>&1 | grep -iE 'cannot|not found'
+QT_DEBUG_PLUGINS=1 ./ELI_v3-*-x86_64.AppImage 2>&1 | grep -iE 'cannot|not found'
 ```
 
 ---
@@ -216,9 +245,9 @@ Python 3.14 (which has no `llama-cpp-python` wheel) is irrelevant, and as of **v
 bundles every Qt xcb library too. Download and run:
 ```bash
 U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v2.3.55
-wget "$U/ELI_v2-3.0.112-x86_64.AppImage"
-chmod +x ELI_v2-3.0.112-x86_64.AppImage
-./ELI_v2-3.0.112-x86_64.AppImage
+wget "$U/ELI_v3-2.4.12-x86_64.AppImage"
+chmod +x ELI_v3-2.4.12-x86_64.AppImage
+./ELI_v3-2.4.12-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small

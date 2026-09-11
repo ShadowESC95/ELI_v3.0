@@ -1,52 +1,37 @@
 # ELI v3.0 — Commands & Installers Reference
 
-> **Updated for 3.0.85 (August 2026).** The primary way to install ELI is now the
-> **prebuilt installers on GitHub Releases** — `ELI-Setup-<v>.exe` (Windows),
-> the `.dmg` (macOS, Apple Silicon), the `.AppImage` (Linux). The Linux AppImage and
-> portable tarball are **CI-launch-tested** on every release; the macOS `.dmg` is
-> built on a Mac (best-effort, not verified in CI). First launch offers GPU acceleration
-> (NVIDIA CUDA / AMD Vulkan; Apple Metal is built in) and a starter model sized to your
-> hardware. Data lives in a per-user `ELI_v3` folder and survives upgrades;
-> `--fresh-start` resets it. Regenerate the live capability doc:
-> `python -m eli.tools.registry.capability_updater`. Everything below remains valid for
-> **source installs** (clone + `install.sh`) and the classic portable tarball.
+> **Updated for v3.0.114 (September 2026).** One hardware-aware GUI wizard. Prebuilt installers on
+> [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.114). Full beginner map:
+> `first time Installation/INSTALLATION_GUIDE.md`.
 
 
 *Every install path and command in one place. Copy-paste ready. Run everything from
 inside the ELI folder unless noted.*
 
-Canonical version: **2.1.23**. Best-tested platform: **Linux x86_64 + NVIDIA**. Windows,
-macOS, and AMD are coded for and ship installers, but expect rough edges.
+Canonical version: **3.0.114**. Best-tested platform: **Linux x86_64 + NVIDIA**. Windows,
+macOS, AMD, Intel Arc, and Apple Silicon ship supported paths; Iris Xe / ≤8 GB use CPU policy.
 
 ---
 
 ## 1. The one-click installer (recommended for everyone)
 
-This is the gentlest path — it does the whole job and opens ELI at the end. Safe to run
-more than once.
-
-### From a downloaded release (no git, no build)
-
-Get `ELI_v3-3.0.85-linux-portable.tar.gz` from
-[GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases), then:
+### From a downloaded portable release
 
 ```bash
-tar -xzf ELI_v3-3.0.85-linux-portable.tar.gz
-cd ELI_v3-3.0.85-linux-portable
+tar -xzf ELI_v3-3.0.114-linux-portable.tar.gz
+cd ELI_v3-3.0.114-linux-portable
 chmod +x ELI_Setup.sh
 ./ELI_Setup.sh
 ```
 
-`ELI_Setup.sh` runs the same 8-step one-click setup as `scripts/eli_setup.sh`:
+`ELI_Setup.sh` → `scripts/eli_setup.sh`:
 
-1. Welcome
-2. Python check (needs Python 3.10+)
-3. Python environment + dependencies (`install.sh --yes --auto-model`)
-4. Starter model pack (GitHub asset restore, or a hardware-sized auto-download)
-5. Local database
-6. Memory embedder + voice models
-7. App-menu icons (ELI v3.0, ELI Server, ELI Setup)
-8. Opens the graphical setup wizard and launches ELI
+1. Minimal `.venv` + PySide6 (when a display is available)
+2. **`eli.setup.hardware_policy`** decides CPU vs GPU
+3. **Unified Install Wizard** streams `install.sh` / `install.ps1` **once**
+4. Hard-fail stages until nomic + voice + chat model succeed
+
+Terminal fallback (headless / no Qt): `install.sh --yes [--cpu-only] --auto-model`, then `--run-remaining`.
 
 ### From a git clone
 
@@ -56,17 +41,16 @@ cd ELI_v3.0
 ./scripts/eli_setup.sh
 ```
 
-### The absolute-easiest Linux path: the AppImage
-
-Get `ELI_v3-3.0.85-x86_64.AppImage` from Releases:
+### Linux AppImage
 
 ```bash
-chmod +x ELI_v3-3.0.85-x86_64.AppImage
-./ELI_v3-3.0.85-x86_64.AppImage
+chmod +x ELI_v3-3.0.114-x86_64.AppImage
+./ELI_v3-3.0.114-x86_64.AppImage
 ```
 
-First double-click installs ELI to `~/.local/share/ELI_v3` and runs setup once; every
-launch after that opens ELI directly.
+### Compatibility aliases (not separate installers)
+
+`scripts/eli_one_click_setup.sh` and `scripts/install_eli.sh` **only redirect** to `eli_setup.sh`.
 
 ---
 
@@ -80,6 +64,8 @@ cd ELI_v3.0
 bash install.sh                 # interactive: system report → plan → install → pick model
 ./scripts/eli_launch.sh         # launch the desktop app
 ```
+
+On Iris Xe / ≤8 GB prefer `./scripts/eli_setup.sh` or `bash install.sh --yes --cpu-only --auto-model`.
 
 **`install.sh` flags** (combine as needed):
 
@@ -183,7 +169,7 @@ to your hardware. Vision models also need their matching `mmproj` GGUF alongside
 .venv/bin/python -m eli.runtime.voice_assets
 ```
 
-**Restore the model/voice pack from GitHub** (tag `local-assets-v2.1`, needs `gh`):
+**Restore the model/voice pack from GitHub** (tag `local-assets-v3.0`, needs `gh`):
 
 ```bash
 gh auth login
@@ -225,7 +211,7 @@ bash build_packages.sh wheel appimage windows-lean   # pick targets
 
 ```powershell
 bash build_packages.sh windows-lean
-powershell -ExecutionPolicy Bypass -File packaging/windows/build-windows.ps1 -Version 2.1.23
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-windows.ps1 -Version 2.4.6
 ```
 
 A signed/notarized macOS `.dmg` must be built on a Mac. Large model/voice binaries ship
@@ -296,7 +282,7 @@ ELI lives entirely inside its own folder — nothing spreads across your system:
 rm -rf /path/to/ELI_v3.0
 ```
 
-For an AppImage install, also remove `~/.local/share/ELI_v3`. If you added app-menu icons,
+For an AppImage install, also remove `~/.local/share/ELI_v2`. If you added app-menu icons,
 delete the `.desktop` files from `~/.local/share/applications/`.
 
 ---

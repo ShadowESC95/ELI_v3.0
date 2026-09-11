@@ -661,13 +661,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Always ensure the REQUIRED support models (the embedder) are present — RAG /
     # memory don't work without it, so a chat-model download pulls it too.
+    aux_ok = True
     for ar in download_aux(required_only=True, progress_cb=_cli_progress):
         sys.stdout.write("\n")
         if ar.get("ok"):
             print(f"✅ embedder {'present' if ar.get('already_present') else 'downloaded'}: {ar['path']}")
         else:
-            print(f"⚠️  embedder fetch failed: {ar.get('error')} (memory/RAG will be limited)")
-    return 0 if ok else 1
+            print(f"❌ embedder fetch failed: {ar.get('error')}")
+            aux_ok = False
+    return 0 if (ok and aux_ok) else 1
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
-﻿# Build ELI v2 Windows Setup.exe (Inno Setup) from the lean portable zip.
+# Build ELI v3 Windows Setup.exe (Inno Setup) from the lean portable zip.
 # Run ON WINDOWS with Inno Setup 6 installed (iscc.exe on PATH).
 #
-#   powershell -ExecutionPolicy Bypass -File packaging\windows\build-windows.ps1 -Version 2.0.7
+#   powershell -ExecutionPolicy Bypass -File packaging\windows\build-windows.ps1 -Version 3.0.114
 param(
     [string]$Version = "",
     [string]$ProjectRoot = ""
@@ -18,8 +18,8 @@ if (-not $Version) {
 }
 
 $Dist = Join-Path $ProjectRoot "dist"
-$Staging = Join-Path $ProjectRoot "build\win-portable\ELI_v2-$Version-windows-portable"
-$Zip = Join-Path $Dist "ELI_v2-$Version-windows-portable.zip"
+$Staging = Join-Path $ProjectRoot "build\win-portable\ELI_v3-$Version-windows-portable"
+$Zip = Join-Path $Dist "ELI_v3-$Version-windows-portable.zip"
 
 if (-not (Test-Path $Zip)) {
     Write-Host "[windows] portable zip missing -- run: bash build_packages.sh windows-lean"
@@ -41,14 +41,32 @@ $SetupBat = Join-Path $Staging "ELI_Setup.bat"
 @echo off
 title ELI Setup
 cd /d "%~dp0"
+set "ELI_PROJECT_ROOT=%~dp0"
+set "PYTHONPATH=%~dp0"
 echo.
-echo  ELI v2.0 -- one-click setup
+echo  ELI v3.0 -- one-click setup (hardware-aware GUI wizard when available)
 echo  This may take several minutes the first time.
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" -Yes
+if exist "%~dp0.venv\Scripts\python.exe" goto WIZARD
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" -Yes -AutoModel
 if errorlevel 1 (
   echo.
-  echo Setup failed. Try running install.bat manually.
+  echo Core install failed. See messages above, then re-run ELI_Setup.bat.
+  pause
+  exit /b 1
+)
+:WIZARD
+if exist "%~dp0.venv\Scripts\python.exe" (
+  "%~dp0.venv\Scripts\python.exe" -m eli.setup --full-install
+  if errorlevel 1 (
+    echo.
+    echo Setup wizard reported remaining steps. Re-run ELI_Setup.bat or:
+    echo   .venv\Scripts\python.exe -m eli.setup --run-remaining
+    pause
+    exit /b 1
+  )
+) else (
+  echo Setup finished but .venv is missing - re-run ELI_Setup.bat.
   pause
   exit /b 1
 )
@@ -77,7 +95,7 @@ foreach ($c in @(
 }
 
 $Iss = Join-Path $ProjectRoot "packaging\windows\ELI_Setup.iss"
-$OutExe = Join-Path $Dist "ELI_v2-$Version-Setup.exe"
+$OutExe = Join-Path $Dist "ELI_v3-$Version-Setup.exe"
 
 if (-not $Iscc) {
     Write-Warning "[windows] Inno Setup (iscc) not found."

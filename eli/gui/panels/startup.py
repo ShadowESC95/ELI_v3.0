@@ -195,10 +195,12 @@ class HardwareTuningLogRelay(logging.Handler):
             try:
                 logging.getLogger().removeHandler(self)
             except Exception:
-                pass
+                logging.getLogger(__name__).debug(
+                    "suppressed exception", exc_info=True)
         except Exception:
             # Handler.emit must never raise — a broken dock must not kill logging.
-            pass
+            logging.getLogger(__name__).debug(
+                "suppressed exception", exc_info=True)
 
 
 class HardwareTuningDock(QDockWidget):
@@ -1033,37 +1035,30 @@ class _SupportAssetsThread(QThread):
     """Fetch required embedder + voice weights (idempotent) off the UI thread."""
     finished_result = pyqtSignal(dict)
 
+    def __init__(self, parent=None, *, force_network: bool = False):
+        super().__init__(parent)
+        self._force_network = bool(force_network)
+
     def run(self):
         out: Dict[str, Any] = {"embedder": {}, "voice": {}}
-        # This prefetch is started by a WIDGET, not by the user asking for it, so
-        # the offline setting governs it — unlike an explicit "download model"
-        # button, which legitimately opens a scoped network window. Without this
-        # gate, merely constructing the wizard reached out and copied assets
-        # around the disk: in the offscreen GUI test lane that fired a real Piper
-        # download mid-test and aborted the whole pytest process, silently
-        # skipping every test after it. Honour the same gate everything else does.
+        # First-boot support assets are required for memory + voice. Offline-by-default
+        # still applies to ambient traffic; this path opens a scoped allow_network
+        # window (same contract as model_download / the Fetch button).
         try:
-            from eli.core.config import network_allowed
-            if not network_allowed():
-                msg = "offline — asset prefetch skipped (enable networking to fetch)"
-                out["embedder"] = {"ok": False, "skipped": True, "error": msg}
-                out["voice"] = {"piper": {"ok": False, "skipped": True, "error": msg},
-                                "whisper": {"ok": False, "skipped": True}}
-                self.finished_result.emit(out)
-                return
-        except Exception:
-            log.debug("[STARTUP] network gate check failed — continuing", exc_info=True)
-        try:
-            from eli.core.model_download import download_aux
-            aux = download_aux(required_only=True)
-            out["embedder"] = aux[0] if aux else {"ok": False, "error": "no embedder entry"}
+            from contextlib import ExitStack
+            from eli.core.netguard import allow_network
+            with ExitStack() as stack:
+                stack.enter_context(allow_network("firstboot-support-assets"))
+                from eli.core.model_download import download_aux
+                aux = download_aux(required_only=True)
+                out["embedder"] = aux[0] if aux else {"ok": False, "error": "no embedder entry"}
+                from eli.runtime.voice_assets import ensure_voice_assets
+                out["voice"] = ensure_voice_assets()
         except Exception as exc:
-            out["embedder"] = {"ok": False, "error": str(exc)}
-        try:
-            from eli.runtime.voice_assets import ensure_voice_assets
-            out["voice"] = ensure_voice_assets()
-        except Exception as exc:
-            out["voice"] = {"piper": {"ok": False, "error": str(exc)}, "whisper": {"ok": False}}
+            if not out.get("embedder"):
+                out["embedder"] = {"ok": False, "error": str(exc)}
+            if not out.get("voice"):
+                out["voice"] = {"piper": {"ok": False, "error": str(exc)}, "whisper": {"ok": False}}
         self.finished_result.emit(out)
 
 

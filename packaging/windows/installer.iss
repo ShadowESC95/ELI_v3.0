@@ -127,7 +127,6 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{a
 Name: "{group}\ELI Server (phone and web)"; Filename: "{app}\{#MyServerExeName}"; WorkingDir: "{app}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{autodesktop}\ELI Server"; Filename: "{app}\{#MyServerExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{autodesktop}\Uninstall ELI v3"; Filename: "{uninstallexe}"; Tasks: desktopicon
 
 [Run]

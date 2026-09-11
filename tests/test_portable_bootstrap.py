@@ -33,3 +33,17 @@ def test_windows_setup_bat_uses_venv_python():
     bat = (root / "build_packages.sh").read_text(encoding="utf-8")
     assert '.venv\\Scripts\\python.exe" -m eli.setup' in bat
     assert "install.ps1" in bat
+
+
+def test_eli_setup_applies_hardware_policy():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts" / "eli_setup.sh").read_text(encoding="utf-8")
+    assert "eli.setup.hardware_policy" in script
+    assert "ELI_INSTALL_CPU_ONLY" in script
+
+
+def test_one_click_and_install_eli_redirect():
+    root = Path(__file__).resolve().parents[1]
+    for name in ("eli_one_click_setup.sh", "install_eli.sh"):
+        src = (root / "scripts" / name).read_text(encoding="utf-8")
+        assert "eli_setup.sh" in src

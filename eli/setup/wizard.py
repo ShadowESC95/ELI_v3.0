@@ -117,10 +117,11 @@ class _SetupWorker(QThread):
         if sid == "database":
             return self._py("-m", "eli.core.init_data")
         if sid == "embedder":
-            return self._py(
-                "-c",
-                "from eli.core.model_download import download_aux; download_aux(required_only=False)",
-            )
+            # Must use --aux (required_only) with a real exit code. The old
+            # download_aux(required_only=0) path tried optional multi-GB
+            # vision models and always exited 0, so the wizard claimed success
+            # while nomic was still missing.
+            return self._py("-m", "eli.core.model_download", "--aux")
         if sid == "voice":
             return self._py("-m", "eli.runtime.voice_assets")
         if sid == "chat_model":
@@ -145,8 +146,8 @@ class _SetupWorker(QThread):
             subprocess.run(["gh", "auth", "status"], capture_output=True, check=True)
         except Exception:
             return False
-        repo = os.environ.get("GITHUB_REPOSITORY", "ShadowESC95/ELI_v2.0")
-        tag = os.environ.get("ELI_ASSET_RELEASE_TAG", "local-assets-v2.1")
+        repo = os.environ.get("GITHUB_REPOSITORY", "ShadowESC95/ELI_v3.0")
+        tag = os.environ.get("ELI_ASSET_RELEASE_TAG", "local-assets-v3.0")
         proc = subprocess.run(
             [str(venv_python()), str(script), "--repo", repo, "--tag", tag],
             cwd=str(self._root),

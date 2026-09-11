@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# ELI v3 — one-click setup (GUI-first on every platform with a display).
-# Falls back to terminal-only when no graphical session or Qt is unavailable.
+# ELI v3 — one-click setup (GUI wizard first on every machine with a display).
+#
+# Canonical entry for portable + source installs:
+#   ./ELI_Setup.sh  /  ./INSTALL_ELI.sh  /  ./scripts/eli_setup.sh
+#
+# Hardware policy (same as install.sh --yes):
+#   NVIDIA / AMD / Apple → GPU path
+#   Intel Arc → Vulkan
+#   Intel iGPU / ≤8 GB / no discrete GPU → CPU-only
+# Override: ELI_INSTALL_CPU_ONLY=0|1
+#
+# The GUI wizard owns the single full install.sh run. This script only
+# bootstraps a minimal .venv + PySide6 so the wizard can open.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,6 +27,30 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 unset QT_STYLE_OVERRIDE 2>/dev/null || true
 
 cd "$ROOT"
+
+# ── Hardware policy (Python is the source of truth) ───────────────────────────
+# Falls back to CPU-only only if policy import fails before any tree is usable.
+_eli_apply_hw_policy() {
+  case "${ELI_INSTALL_CPU_ONLY:-}" in
+    0|false|FALSE|no|NO|off|OFF)
+      export ELI_INSTALL_CPU_ONLY=0
+      return 0
+      ;;
+    1|true|TRUE|yes|YES|on|ON)
+      export ELI_INSTALL_CPU_ONLY=1
+      return 0
+      ;;
+  esac
+  local _decision
+  _decision="$(python3 -m eli.setup.hardware_policy 2>/dev/null || true)"
+  if [ "$_decision" = "gpu" ]; then
+    export ELI_INSTALL_CPU_ONLY=0
+  else
+    # "cpu" or empty/unavailable → safe default for laptops
+    export ELI_INSTALL_CPU_ONLY=1
+  fi
+}
+_eli_apply_hw_policy
 
 # Android / Termux — unified installer routes to headless profile (install_android.sh).
 if python3 -c "from eli.setup.platform_profile import is_android_headless; import sys; sys.exit(0 if is_android_headless() else 1)" 2>/dev/null; then
@@ -47,9 +82,18 @@ _venv_python() {
   return 1
 }
 
-_gui_import_ok() {
+_real_qt_ok() {
   _venv_python || return 1
-  "$PY" -c "from eli.gui.qt_compat import QApplication" >/dev/null 2>&1
+  "$PY" -c "from eli.gui.qt_compat import real_qt_available; import sys; sys.exit(0 if real_qt_available() else 1)" 2>/dev/null
+}
+
+_install_complete() {
+  _venv_python || return 1
+  "$PY" -c "import eli, llama_cpp, requests" 2>/dev/null
+}
+
+_gui_import_ok() {
+  _real_qt_ok
 }
 
 _ensure_minimal_venv() {
@@ -69,14 +113,25 @@ _ensure_gui_in_venv() {
   fi
   _pip_wheelhouse_args
   "$PY" -m pip install --upgrade pip wheel >/dev/null 2>&1 || true
+  _qt_install_ok=0
   if [ -f "$ROOT/requirements-portable-bootstrap.txt" ]; then
-    "$PY" -m pip install "${PIP_WH_ARGS[@]}" -r "$ROOT/requirements-portable-bootstrap.txt" \
-      || "$PY" -m pip install "${PIP_WH_ARGS[@]}" 'PySide6>=6.6.0' \
-      || return 1
-  else
-    "$PY" -m pip install "${PIP_WH_ARGS[@]}" 'PySide6>=6.6.0' \
-      || "$PY" -m pip install -e "$ROOT[gui]" \
-      || return 1
+    if "$PY" -m pip install "${PIP_WH_ARGS[@]}" -r "$ROOT/requirements-portable-bootstrap.txt"; then
+      _qt_install_ok=1
+    elif "$PY" -m pip install "${PIP_WH_ARGS[@]}" 'PySide6>=6.6.0'; then
+      _qt_install_ok=1
+    fi
+  elif "$PY" -m pip install "${PIP_WH_ARGS[@]}" 'PySide6>=6.6.0'; then
+    _qt_install_ok=1
+  elif "$PY" -m pip install -e "$ROOT[gui]"; then
+    _qt_install_ok=1
+  fi
+  if [ "$_qt_install_ok" -eq 0 ] && [ -t 1 ]; then
+    echo "  [setup] PySide6 bootstrap failed for $($PY --version 2>&1)."
+    if [ -d "$ROOT/wheelhouse" ]; then
+      echo "  [setup] Bundled wheelhouse may lack wheels for this Python — install.sh will try next."
+    else
+      echo "  [setup] No wheelhouse/ in this package — install.sh needs network for PySide6."
+    fi
   fi
   _gui_import_ok
 }
@@ -93,8 +148,9 @@ _try_gui_installer() {
     return 1
   fi
   if [ -t 1 ]; then
-    echo "  [setup] GUI installer — full install runs in the wizard below."
-    echo "  [setup] Live output is mirrored here and saved to $_log"
+    echo "  [setup] Opening one-click GUI installer (hardware-aware)…"
+    echo "  [setup] ELI_INSTALL_CPU_ONLY=${ELI_INSTALL_CPU_ONLY}  log: $_log"
+    echo "  [setup] The wizard runs install.sh once, then embedder / voice / model."
     "$PY" -m eli.setup --full-install 2>&1 | tee -a "$_log"
     _code=${PIPESTATUS[0]}
     if [ "$_code" -eq 0 ]; then
@@ -109,11 +165,21 @@ _try_gui_installer() {
   return 1
 }
 
-if _gui_available && _try_gui_installer; then
-  exit 0
+# ── Preferred path: GUI wizard owns the full install ──────────────────────────
+if _gui_available; then
+  if _try_gui_installer; then
+    exit 0
+  fi
+  # Wizard failed but core may already be complete (e.g. assets-only retry left).
+  if _install_complete && _real_qt_ok; then
+    echo ""
+    echo "  [OK] Core install complete. Launch ELI with: bash \"$ROOT/RUN_ELI.sh\""
+    echo "  Tip: re-run ./ELI_Setup.sh to finish remaining assets in the wizard."
+    exit 0
+  fi
 fi
 
-# ── Terminal fallback (headless / no Qt) ─────────────────────────────────────
+# ── Terminal fallback (headless / no Qt / GUI wizard incomplete) ─────────────
 if [ -t 1 ]; then
   B=$'\033[1m'; R=$'\033[0m'; GRN=$'\033[32m'; YEL=$'\033[33m'; CYN=$'\033[36m'
 else
@@ -122,7 +188,8 @@ fi
 
 echo
 echo "${B}${CYN}ELI v3 setup (terminal mode)${R}"
-echo "  Graphical installer unavailable — running full install in the terminal."
+echo "  GUI wizard did not finish — completing install in the terminal."
+echo "  Hardware policy: ELI_INSTALL_CPU_ONLY=${ELI_INSTALL_CPU_ONLY}"
 echo
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -130,14 +197,31 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! _venv_python; then
-  echo "  Installing core environment (install.sh)…"
-  bash "$ROOT/install.sh" --yes --auto-model \
-    || bash "$ROOT/install.sh" --yes --cpu-only --auto-model
+if ! _install_complete; then
+  echo "  Installing core environment (install.sh) — llama_cpp + runtime deps…"
+  # Hide dual-failure under set -e so we can print an actionable message.
+  if [ "${ELI_INSTALL_CPU_ONLY:-0}" = "1" ]; then
+    bash "$ROOT/install.sh" --yes --cpu-only --auto-model \
+      || bash "$ROOT/install.sh" --yes --auto-model \
+      || true
+  else
+    bash "$ROOT/install.sh" --yes --auto-model \
+      || bash "$ROOT/install.sh" --yes --cpu-only --auto-model \
+      || true
+  fi
 fi
 
-if ! _venv_python; then
-  echo "${YEL}[!]${R} Virtual environment could not be created."
+if ! _install_complete; then
+  echo "${YEL}[!]${R} Core install incomplete (need llama_cpp + requests in .venv)."
+  echo "  Run: bash \"$ROOT/install.sh\" --yes"
+  echo "  Or use the AppImage (no venv build): GitHub Releases → ELI_v3-*-x86_64.AppImage"
+  exit 1
+fi
+
+if ! _real_qt_ok; then
+  echo "${YEL}[!]${R} PySide6 is not installed for $($PY --version 2>&1)."
+  echo "  Re-run with network: bash \"$ROOT/install.sh\" --yes"
+  echo "  Or use the AppImage (no venv build): see GitHub Releases → ELI_v3-*-x86_64.AppImage"
   exit 1
 fi
 

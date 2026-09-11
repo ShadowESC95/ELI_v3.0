@@ -313,7 +313,19 @@ class UnifiedInstallWizard(QDialog):
         self._clock.start()
         self._fade_msg.set_phase("welcome")
         self._fade_msg.start()
-        self._set_phase("welcome", 2, f"Python {ver} OK")
+        hw_msg = f"Python {ver} OK"
+        try:
+            from eli.setup.hardware_policy import (
+                apply_cpu_only_env,
+                detect_accelerators,
+                summarize_for_ui,
+            )
+            inv = detect_accelerators()
+            apply_cpu_only_env(inv)
+            hw_msg = f"Python {ver} OK — {summarize_for_ui(inv)}"
+        except Exception:
+            pass
+        self._set_phase("welcome", 2, hw_msg)
 
         if has_venv() and _core_install_complete(self._root):
             self._set_phase("core_install", 40, "Core install present — checking remaining stages")
@@ -560,7 +572,7 @@ def run_terminal_headless_installer(*, launch_after: bool = False) -> int:
 
 
 def _core_install_complete(root: Path) -> bool:
-    """True when .venv exists and the ELI package is importable (not just PySide6)."""
+    """True when .venv has ELI plus inference/runtime deps (not bootstrap-only Qt)."""
     if not has_venv():
         return False
     py = venv_python()
@@ -568,7 +580,7 @@ def _core_install_complete(root: Path) -> bool:
         return False
     try:
         subprocess.run(
-            [str(py), "-c", "import eli"],
+            [str(py), "-c", "import eli, llama_cpp, requests"],
             cwd=str(root),
             env={**os.environ, "ELI_PROJECT_ROOT": str(root),
                  "PYTHONPATH": str(root)},
@@ -586,18 +598,23 @@ def run_unified_installer(*, launch_after: bool = False) -> int:
     if profile == InstallProfile.ANDROID_HEADLESS and not gui_install_available():
         return run_terminal_headless_installer(launch_after=launch_after)
 
+    os.environ["ELI_SETUP_WIZARD"] = "1"
     app = QApplication.instance() or QApplication(sys.argv)
     dlg = UnifiedInstallWizard(launch_after=launch_after)
     dlg.run_auto()
     dlg.exec()
-    return 0 if dlg._install_succeeded else 1
+    root = project_root()
+    ok = dlg._install_succeeded or _core_install_complete(root)
+    return 0 if ok else 1
 
 
 def ensure_qt_for_installer() -> bool:
     """Ensure PySide6 is importable in the project venv (not --user on system python)."""
     try:
-        from eli.gui.qt_compat import QApplication  # noqa: F401
-        return True
+        from eli.gui.qt_compat import real_qt_available
+
+        if real_qt_available():
+            return True
     except Exception:
         log.debug("Qt import unavailable before bootstrap install", exc_info=True)
     py = venv_python()
@@ -620,8 +637,9 @@ def ensure_qt_for_installer() -> bool:
     except Exception:
         return False
     try:
-        from eli.gui.qt_compat import QApplication  # noqa: F401
-        return True
+        from eli.gui.qt_compat import real_qt_available
+
+        return bool(real_qt_available())
     except Exception:
         return False
 

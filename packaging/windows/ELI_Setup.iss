@@ -1,12 +1,12 @@
-; Inno Setup script — grandma-friendly Windows installer for ELI v2 portable.
-; Build on Windows: iscc packaging\windows\ELI_Setup.iss /DMyAppVersion=2.0.7
-; Or: powershell -File packaging\windows\build-windows.ps1 -Version 2.0.7
+; Inno Setup script — grandma-friendly Windows installer for ELI v3 portable.
+; Build on Windows: iscc packaging\windows\ELI_Setup.iss /DMyAppVersion=3.0.114
+; Or: powershell -File packaging\windows\build-windows.ps1 -Version 3.0.114
 
-#define MyAppName "ELI v2.0"
+#define MyAppName "ELI v3.0"
 #define MyAppPublisher "ShadowESC95"
-#define MyAppURL "https://github.com/ShadowESC95/ELI_v2.0"
+#define MyAppURL "https://github.com/ShadowESC95/ELI_v3.0"
 #ifndef MyAppVersion
-  #define MyAppVersion "2.0.7"
+  #define MyAppVersion "3.0.114"
 #endif
 
 [Setup]
@@ -15,18 +15,18 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={localappdata}\ELI_v2
+DefaultDirName={localappdata}\ELI_v3
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputBaseFilename=ELI_v2-{#MyAppVersion}-Setup
+OutputBaseFilename=ELI_v3-{#MyAppVersion}-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=..\..\packaging\desktop\Eli_Icon.png
-UninstallDisplayIcon={app}\packaging\desktop\Eli_Icon.png
+SetupIconFile=..\..\packaging\desktop\Eli_Icon.ico
+UninstallDisplayIcon={app}\packaging\desktop\Eli_Icon.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -35,16 +35,18 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: checkedonce
 
 [Files]
-Source: "..\..\build\win-portable\ELI_v2-{#MyAppVersion}-windows-portable\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\build\win-portable\ELI_v3-{#MyAppVersion}-windows-portable\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\eli.bat"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\desktop\Eli_Icon.png"
-Name: "{group}\ELI Setup (repair)"; Filename: "{app}\ELI_Setup.bat"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\eli.bat"; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\packaging\desktop\Eli_Icon.png"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\eli.bat"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\desktop\Eli_Icon.ico"
+Name: "{group}\ELI Setup (repair)"; Filename: "{app}\ELI_Setup.bat"; WorkingDir: "{app}"; IconFilename: "{app}\packaging\desktop\Eli_Icon.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\eli.bat"; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\packaging\desktop\Eli_Icon.ico"
 
 [Run]
+; One default action only — Setup launches the wizard; do not also Launch ELI
+; or Windows users get two GUI processes after Finish.
 Filename: "{app}\ELI_Setup.bat"; Description: "Set up ELI now (recommended)"; Flags: postinstall nowait skipifsilent
-Filename: "{app}\eli.bat"; Description: "Launch ELI"; Flags: postinstall nowait skipifsilent unchecked
+Filename: "{app}\eli.bat"; Description: "Launch ELI (after setup)"; Flags: postinstall nowait skipifsilent unchecked
 
 [Code]
 function InitializeSetup(): Boolean;
