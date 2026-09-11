@@ -590,8 +590,11 @@ def interactive_select() -> int:
     print("\nEnsuring the required text embedder (memory/RAG)...")
     for ar in download_aux(required_only=True, progress_cb=_cli_progress):
         sys.stdout.write("\n")
-        print(f"  ✅ embedder {'present' if ar.get('already_present') else 'downloaded'}: {ar['path']}"
-              if ar.get("ok") else f"  ⚠️  embedder fetch failed: {ar.get('error')}")
+        if ar.get("ok"):
+            print(f"  ✅ embedder {'present' if ar.get('already_present') else 'downloaded'}: {ar['path']}")
+        else:
+            print(f"  ❌ embedder fetch failed: {ar.get('error')}")
+            rc = 1
     return rc
 
 

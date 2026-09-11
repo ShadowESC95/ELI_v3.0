@@ -1312,11 +1312,11 @@ class FirstBootWizard(QDialog):
         self._voice_status.setStyleSheet("color:#a3be8c;font-size:11px;")
         gv.addWidget(self._voice_status)
         fetch_sup = QPushButton("Fetch embedder + voice now")
-        fetch_sup.clicked.connect(self._start_support_assets)
+        fetch_sup.clicked.connect(lambda: self._start_support_assets(force_network=True))
         gv.addWidget(fetch_sup)
         self._support_thread: Optional[_SupportAssetsThread] = None
         self._refresh_support_status()
-        self._start_support_assets()
+        self._start_support_assets(force_network=False)
 
         v.addWidget(self._gguf_widget)
 
@@ -1518,12 +1518,12 @@ class FirstBootWizard(QDialog):
             self._embedder_status.setText(f"○ Embedder status unknown ({exc})")
             self._voice_status.setText("○ Voice status unknown")
 
-    def _start_support_assets(self):
+    def _start_support_assets(self, *, force_network: bool = False):
         if getattr(self, "_support_thread", None) is not None and self._support_thread.isRunning():
             return
         self._embedder_status.setText("Fetching embedder (nomic) …")
         self._voice_status.setText("Fetching voice models …")
-        self._support_thread = _SupportAssetsThread(parent=self)
+        self._support_thread = _SupportAssetsThread(parent=self, force_network=force_network)
         self._support_thread.finished_result.connect(self._on_support_done)
         self._support_thread.start()
 
