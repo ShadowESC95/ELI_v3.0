@@ -434,14 +434,45 @@ print('llama-runtime-smoke-ok')
 }
 
 _llama_safe_cpu_cmake_flags() {
-    # x86-64-v3 = AVX2/FMA — covers most 2013+ desktops; avoids VNNI-only wheels.
-    if [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo; then
-        echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3"
-    elif [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])sse4_2([[:space:]]|$)' /proc/cpuinfo; then
-        echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2"
-    else
-        echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64 -DCMAKE_CXX_FLAGS=-march=x86-64"
+    # Baseline ISA flags so the built runtime is portable across machines of
+    # this ARCHITECTURE, rather than tuned to the one that compiled it.
+    #
+    # -march=x86-64* is an x86 spelling. Emitting it unconditionally meant every
+    # non-x86 host fell through to the else branch and handed an aarch64 compiler
+    # a flag it rejects — Raspberry Pi, ARM Chromebooks, ARM servers and
+    # Asahi/Linux-on-Apple-Silicon could not install at all.
+    local _arch _kernel
+    _arch="$(uname -m 2>/dev/null || echo unknown)"
+    _kernel="$(uname -s 2>/dev/null || echo unknown)"
+
+    # Apple clang rejects -march= for arm64; every Apple Silicon part shares one
+    # ISA, and remaining Intel Macs are AVX2. Portable build, no ISA flag.
+    if [ "$_kernel" = "Darwin" ]; then
+        echo "-DGGML_NATIVE=OFF"
+        return 0
     fi
+
+    case "$_arch" in
+        x86_64|amd64)
+            if [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo; then
+                echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3"
+            elif [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])sse4_2([[:space:]]|$)' /proc/cpuinfo; then
+                echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2"
+            else
+                echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64 -DCMAKE_CXX_FLAGS=-march=x86-64"
+            fi
+            ;;
+        aarch64|arm64)
+            # ARMv8-A floor; ggml probes dotprod/fp16 at runtime.
+            echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=armv8-a -DCMAKE_CXX_FLAGS=-march=armv8-a"
+            ;;
+        armv7l|armv7|armhf)
+            echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=armv7-a -DCMAKE_CXX_FLAGS=-march=armv7-a"
+            ;;
+        ppc64le|riscv64|s390x|*)
+            echo "-DGGML_NATIVE=OFF"
+            ;;
+    esac
 }
 
 _llama_rebuild_for_this_cpu() {

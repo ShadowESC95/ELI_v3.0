@@ -552,22 +552,36 @@ class LocalModelManager:
                     # Say so BEFORE blocking. Shipped without this line, a live
                     # 2.2.8 launch sat on "attempt 1/13" for three and a half
                     # minutes with nothing on screen, and looked hung.
+                    try:
+                        from eli.core.load_probe import probe_timeout_for as _lp_budget
+                        _probe_budget = _lp_budget(str(path_obj), int(_cand["n_ctx"]))
+                    except Exception:
+                        log.debug("[GUI][LOAD] probe budget lookup failed", exc_info=True)
+                        _probe_budget = 30.0
                     log.info(
                         f"[GUI][LOAD] verifying your settings on this machine "
                         f"(ctx={_cand['n_ctx']} gpu_layers={_cand['n_gpu_layers']} "
                         f"batch={_cand['n_batch']}) — up to "
-                        f"{int(float(os.environ.get('ELI_LOAD_PROBE_TIMEOUT', '') or 30))}s "
-                        f"this once, then remembered…")
+                        f"{_probe_budget:.0f}s this once, then remembered…")
                     try:
-                        from eli.core.load_probe import probe_config
-                        _ok, _why = probe_config(
+                        from eli.core.load_probe import probe_verdict
+                        _verdict, _why = probe_verdict(
                             str(path_obj), int(_cand["n_ctx"]),
                             int(_cand["n_gpu_layers"]), int(_cand["n_batch"]),
                         )
                     except Exception as _probe_err:
                         # The check itself is unavailable. That is not evidence
                         # against the operator's settings, so they stand.
-                        _ok, _why = True, f"probe unavailable: {_probe_err}"
+                        _verdict, _why = "unavailable", f"probe unavailable: {_probe_err}"
+                    # A TIMEOUT is not a pass — loading an over-fit config unproven
+                    # is what aborts mid-generation. Unavailable still proceeds.
+                    if _verdict == "timeout":
+                        log.warning(
+                            f"[GUI][LOAD] could not verify your settings in time "
+                            f"({_why}) — falling through to measured fallbacks.")
+                        _last_error = f"requested settings unproven: {_why}"
+                        continue
+                    _ok = _verdict != "bad"
                     if not _ok:
                         log.warning(
                             f"[GUI][LOAD] your settings (ctx={_cand['n_ctx']} "
@@ -578,7 +592,10 @@ class LocalModelManager:
                             f"the context or GPU layers, to have them used as entered.")
                         _last_error = f"requested settings failed verification: {_why}"
                         continue
-                    log.debug(f"[GUI][LOAD] requested settings verified ({_why})")
+                    if _verdict == "ok":
+                        log.debug(f"[GUI][LOAD] requested settings verified ({_why})")
+                    else:
+                        log.debug(f"[GUI][LOAD] proceeding unproven ({_why})")
                 llama_kwargs: Dict[str, Any] = dict(
                     model_path=str(path_obj),
                     n_ctx=int(_cand["n_ctx"]),

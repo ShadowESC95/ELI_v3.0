@@ -1603,7 +1603,15 @@ def recommend(hw: Optional[HardwareProfile] = None,
     # means the recommendation is a prediction of the load rather than a second
     # opinion about it.
     import os as _os_fit
-    _fit_batch_in = max(128, int(_os_fit.environ.get("ELI_MIN_BATCH", "128") or "128"))
+    # Operator target anchors the fit (and the post-fit batch choice below).
+    # Reading it only as a late cap made any value above the offload heuristic
+    # unreachable — the dialog looked ignored.
+    _env_target_batch = int(_os_fit.environ.get("ELI_TARGET_BATCH", "0") or "0")
+    _fit_batch_in = (
+        _env_target_batch
+        if _env_target_batch > 0
+        else max(128, int(_os_fit.environ.get("ELI_MIN_BATCH", "128") or "128"))
+    )
     _igpu_min_batch = 32 if hw.gpu_integrated else 128
     if hw.gpu_integrated:
         _fit_batch_in = min(_fit_batch_in, _igpu_min_batch)
@@ -1703,11 +1711,23 @@ def recommend(hw: Optional[HardwareProfile] = None,
                 f"Model: {chosen['name']} ({chosen['size_gb']:.2f}GB) — CPU only"
             )
 
-    # Batch size: scales linearly with GPU offload ratio.
-    # Partial offload → interpolate 128..512 by actual offload fraction.
-    # CPU-only → floor of 128. Aligned to 64-byte boundaries.
-    if chosen_layers == 0:
-        rec.batch_size = 128
+    # Batch size.
+    #
+    # The operator's explicit target (startup dialog -> ELI_TARGET_BATCH) IS the
+    # request. It anchors the value here and only the VRAM-headroom pass below may
+    # reduce it — same contract as ctx and layers. Without a target, the offload
+    # heuristic still supplies the default (this used to overwrite both the
+    # operator target and the batch smart_fit_config had just computed).
+    if _env_target_batch > 0:
+        rec.batch_size = max(_igpu_min_batch, int(_env_target_batch))
+        rec.reasoning.append(
+            f"batch {rec.batch_size} — your target (reduced below only if the "
+            f"measured compute headroom cannot hold it)"
+        )
+    elif chosen_layers == 0:
+        # CPU: keep the RAM fit's batch when it asked for less (iGPU floors at 32);
+        # otherwise the 128 default, since larger batches buy little without offload.
+        rec.batch_size = max(_igpu_min_batch, min(int(rec.batch_size or 128), 128))
     elif _full_offload:
         rec.batch_size = 512
     else:
@@ -1719,7 +1739,7 @@ def recommend(hw: Optional[HardwareProfile] = None,
     # graph workspace) consume VRAM beyond the model + KV allocation. On 8 GB cards
     # with full offload and long ctx, this leaves insufficient room for batch=512.
     # Thresholds derived empirically: ~750 MB needed for batch=512 on 7B models.
-    if hw.has_gpu and hw.free_vram_mb > 0 and chosen_layers > 0 and rec.batch_size > 128:
+    if hw.has_gpu and hw.free_vram_mb > 0 and chosen_layers > 0 and rec.batch_size > _igpu_min_batch:
         _offload_f = min(1.0, chosen_layers / max(1, total_layers))
         _kv_at_ctx = _kv_cache_mb(rec.n_ctx, total_layers, quant=kv_q)
         _gpu_model_for_batch = chosen["size_gb"] * 1024.0 * _offload_f
@@ -1734,8 +1754,14 @@ def recommend(hw: Optional[HardwareProfile] = None,
         # then OOMing on first decode. _compute_graph_reserve_mb errs high and
         # the margin absorbs estimate error + display/VRAM fluctuation.
         _SAFETY_MARGIN_MB = 400.0
-        _safe_batch = 128
-        for _cand_b in (512, 448, 384, 320, 256, 192, 128):
+        _safe_batch = _igpu_min_batch
+        # Operator value leads the ladder so a deliberate 768 is reachable when
+        # the card has room (the old fixed list started at 512).
+        _batch_candidates = sorted(
+            {int(rec.batch_size), 512, 448, 384, 320, 256, 192, 128, _igpu_min_batch},
+            reverse=True,
+        )
+        for _cand_b in _batch_candidates:
             if _cand_b > rec.batch_size:
                 continue
             _need = _compute_graph_reserve_mb(rec.n_ctx, _cand_b) + _SAFETY_MARGIN_MB
@@ -1751,13 +1777,9 @@ def recommend(hw: Optional[HardwareProfile] = None,
             )
             rec.batch_size = _safe_batch
 
-    # Honor the startup dialog's ELI_TARGET_BATCH as an upper cap.
-    # This lets the user throttle batch (e.g. when running alongside other
-    # GPU workloads) without the profiler silently ignoring the setting.
-    _env_batch_cap = int(os.environ.get("ELI_TARGET_BATCH", "0") or "0")
-    if 0 < _env_batch_cap < rec.batch_size:
-        rec.batch_size = max(128, (_env_batch_cap // 64) * 64)
-        rec.reasoning.append(f"batch capped to {rec.batch_size} by ELI_TARGET_BATCH={_env_batch_cap}")
+    # ELI_TARGET_BATCH is the anchor above, not a late cap: capping could only
+    # ever LOWER the value, so a target higher than the offload heuristic was
+    # unreachable and the setting looked ignored.
 
     # Adreno Vulkan in llama.cpp is unstable above batch 32 on Snapdragon laptops.
     if hw.gpu_vendor == "qualcomm" and chosen_layers > 0 and rec.batch_size > 32:

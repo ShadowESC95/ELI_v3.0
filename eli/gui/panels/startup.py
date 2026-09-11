@@ -195,9 +195,10 @@ class HardwareTuningLogRelay(logging.Handler):
             try:
                 logging.getLogger().removeHandler(self)
             except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                pass
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            # Handler.emit must never raise — a broken dock must not kill logging.
+            pass
 
 
 class HardwareTuningDock(QDockWidget):

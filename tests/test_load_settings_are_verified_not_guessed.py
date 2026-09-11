@@ -1,6 +1,6 @@
 """The operator's load settings are used as entered, or proven not to work.
 
-Ported from v2. Live at v2 2.2.7, on a card with 6268MB free:
+Live at 2.2.7, on a card with 6268MB free:
 
     [GUI][LOAD] smart-fit ... : ctx=10384 gpu_layers=28
     [GUI][LOAD] smart-fit reduced GPU layers 99->28 to fit 6268MB free VRAM
@@ -50,7 +50,7 @@ import pytest
 from eli.core import load_probe
 
 LOADER = (pathlib.Path(__file__).resolve().parents[1]
-          / "eli" / "gui" / "main_window" / "models.py")
+          / "eli" / "gui" / "eli_pro_audio_gui_v2_0.py")
 
 
 def _code(src: str) -> str:
@@ -67,14 +67,24 @@ def loader_src():
 
 # ── the settings go in untouched ───────────────────────────────────────────
 def test_the_request_is_queued_verbatim(loader_src):
-    """No clamp, no substitution: the operator's own three numbers."""
+    """No clamp, no substitution: the operator's own three numbers.
+
+    Two sites are intentional: GPU offload queues the real layer count first;
+    CPU-only machines queue layers=0 as a later fallback so RAM fit still leads.
+    """
     code = _code(loader_src)
-    m = re.search(r'_add_attempt\("requested",\s*([^)]*)\)', code)
-    assert m, "requested attempt not found"
-    args = m.group(1)
-    assert "_base_ctx" in args and "_base_layers" in args and "_base_batch" in args
+    gpu = re.search(
+        r'_add_attempt\("requested",\s*(_base_ctx,\s*_base_layers,\s*_base_batch[^)]*)\)',
+        code,
+    )
+    cpu = re.search(
+        r'_add_attempt\("requested",\s*(_base_ctx,\s*0,\s*_base_batch[^)]*)\)',
+        code,
+    )
+    assert gpu, "GPU requested attempt not found"
+    assert cpu, "CPU-only requested fallback not found"
     for calculated in ("_sf_ctx", "_sf_layers", "_sf_batch", "_req_layers", "_sf_fit_layers"):
-        assert calculated not in args, \
+        assert calculated not in gpu.group(1), \
             f"the request is being replaced with {calculated}"
 
 
@@ -111,22 +121,27 @@ def test_the_loader_probes_before_loading():
     i = src.index('if _cand.get("verify"):')
     j = src.index("llama_kwargs: Dict[str, Any] = dict(", i)
     window = src[i:j]
-    assert "probe_config" in window
+    assert "probe_verdict" in window
     assert "continue" in window, "a failed verdict must fall through to the next rung"
 
 
 def test_a_probe_that_cannot_run_does_not_override_the_operator():
+    """No information is not evidence. A machine that can never run the probe
+    (no subprocess, no llama_cpp in the child) must not be permanently capped."""
     src = LOADER.read_text(encoding="utf-8")
     i = src.index('if _cand.get("verify"):')
-    window = src[i:i + 1600]
-    assert "_ok, _why = True" in window, \
+    window = src[i:i + 2600]
+    assert '_verdict, _why = "unavailable"' in window, \
         "an unavailable probe must leave the operator's settings standing"
+    # ...and 'unavailable' must not be one of the verdicts that falls through.
+    assert 'if _verdict == "timeout":' in window
+    assert 'if _verdict == "unavailable":' not in window
 
 
 def test_the_failure_message_says_nothing_was_altered():
     src = LOADER.read_text(encoding="utf-8")
     i = src.index('if _cand.get("verify"):')
-    window = src[i:i + 1800].lower()
+    window = src[i:i + 4200].lower()
     assert "not being altered" in window
 
 
@@ -348,17 +363,38 @@ def test_the_probe_is_announced_before_it_blocks():
     """The silent gap is what made it look hung."""
     src = LOADER.read_text(encoding="utf-8")
     i = src.index('if _cand.get("verify"):')
-    j = src.index("probe_config", i)
+    j = src.index("probe_verdict", i)
     window = src[i:j]
     assert "verifying your settings" in window, \
         "the probe still blocks startup with nothing on screen"
 
 
-def test_the_timeout_is_a_wait_an_operator_would_tolerate():
+def test_the_timeout_is_a_wait_an_operator_would_tolerate(tmp_path, monkeypatch):
+    """Bounded, and still quick for the models most people run.
+
+    This asserted a single flat ``_DEFAULT_TIMEOUT_S <= 90``. A flat budget is what
+    made a 8.89GB model structurally unprovable — the probe cold-loads the weights
+    and prefills ~45% of the window, so 30s could not cover it under any conditions
+    and the operator's GPU layers lost to the fallback on every launch. The budget
+    now scales with that work. The principle behind the test is unchanged and still
+    enforced: a typical model must not block startup, and nothing blocks unbounded.
+    """
     from eli.core import load_probe as lp
 
-    assert lp._DEFAULT_TIMEOUT_S <= 90, \
-        "a startup probe must not block for minutes"
+    monkeypatch.delenv("ELI_LOAD_PROBE_TIMEOUT", raising=False)
+
+    # A sparse file: real st_size, no real bytes on disk, and no patching of
+    # Path.stat (which pytest itself calls while building tracebacks).
+    typical = tmp_path / "typical-4gb.gguf"
+    with open(typical, "wb") as fh:
+        fh.truncate(int(4.0 * 1024 ** 3))
+    assert lp.probe_timeout_for(str(typical), 8192) <= 90, \
+        "a typical model's probe must not block startup"
+
+    assert lp._TIMEOUT_CEILING_S <= 180, \
+        "no probe may block for more than a few minutes"
+    assert lp._TIMEOUT_FLOOR_S >= 30, \
+        "a probe too short to ever finish condemns settings it never tested"
 
 
 def test_an_external_termination_is_not_a_verdict(monkeypatch, tmp_path):
@@ -415,3 +451,83 @@ def test_the_probe_prompt_stays_realistic(monkeypatch, tmp_path):
     load_probe.probe_config("/x.gguf", 10384, 99, 128, use_cache=False)
     assert seen["probe_tokens"] >= 4000, \
         "the probe prompt is too small to reach the allocation that crashes"
+
+
+# ── the 2.2.9 crash: a timeout was treated as a pass ───────────────────────
+def test_a_timeout_is_its_own_verdict_not_a_pass():
+    """The shipped 2.2.9 log read, verbatim:
+
+        [LOAD_PROBE] timed out after 60s — treating as unproven
+        [GUI][LOAD] requested settings verified (probe timed out after 60s (unproven))
+        [GUI][LOAD] selected=requested (ctx=10384 gpu_layers=99 batch=128)
+        ...
+        ggml-cuda.cu:98: CUDA error        <- SIGABRT, core dumped
+
+    smart-fit had measured 28 layers as the fit; the probe could not prove 99
+    and the loader called that "verified". CUDA allocates lazily, so the load
+    looked clean and the process died on the first real prompt.
+    """
+    import subprocess
+    from eli.core import load_probe
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="probe", timeout=60)
+
+    orig = subprocess.run
+    subprocess.run = _timeout
+    try:
+        verdict, why = load_probe.probe_verdict("/x.gguf", 10384, 99, 128, use_cache=False)
+    finally:
+        subprocess.run = orig
+
+    assert verdict == load_probe.UNPROVEN_TIMEOUT
+    assert verdict != load_probe.PROVEN_OK, "a timeout must never read as proven"
+    assert "unproven" in why.lower()
+
+
+def test_the_boolean_wrapper_still_reports_a_timeout_as_not_failed():
+    """probe_config answers "did this FAIL?" — a timeout did not fail, it did
+    not finish. The distinction lives in probe_verdict, and callers about to
+    load an over-committed config must use that one."""
+    import subprocess
+    from eli.core import load_probe
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="probe", timeout=60)
+
+    orig = subprocess.run
+    subprocess.run = _timeout
+    try:
+        ok, _ = load_probe.probe_config("/x.gguf", 10384, 99, 128, use_cache=False)
+    finally:
+        subprocess.run = orig
+    assert ok is True
+
+
+def test_the_loader_falls_through_on_a_timeout():
+    src = LOADER.read_text(encoding="utf-8")
+    i = src.index('if _cand.get("verify"):')
+    j = src.index("llama_kwargs: Dict[str, Any] = dict(", i)
+    window = src[i:j]
+    assert 'if _verdict == "timeout":' in window
+    k = window.index('if _verdict == "timeout":')
+    assert "continue" in window[k:k + 1400], \
+        "an unproven over-commit must fall back to the measured rungs"
+
+
+def test_verified_is_only_claimed_when_actually_proven():
+    """The log line that made a gamble look like a checked launch."""
+    src = LOADER.read_text(encoding="utf-8")
+    i = src.index('if _cand.get("verify"):')
+    j = src.index("llama_kwargs: Dict[str, Any] = dict(", i)
+    window = src[i:j]
+    k = window.index("requested settings verified")
+    preceding = window[max(0, k - 200):k]
+    assert '_verdict == "ok"' in preceding, \
+        "'verified' is logged without checking the verdict is a real pass"
+
+
+def test_a_real_failure_still_reads_as_bad():
+    from eli.core import load_probe
+    assert load_probe.PROVEN_BAD != load_probe.UNPROVEN_TIMEOUT
+    assert load_probe.PROVEN_BAD != load_probe.PROVEN_OK

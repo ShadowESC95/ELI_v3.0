@@ -52,18 +52,66 @@ log = get_logger(__name__)
 # CPU speed, and a live 2.2.8 launch sat at "attempt 1/13" for three and a half
 # minutes with nothing on screen explaining why. Past this budget the answer is
 # "unproven", the operator's settings stand, and startup continues.
-# Override with ELI_LOAD_PROBE_TIMEOUT.
 # 60s was the second value and still too long in practice: a 2.3.8 launch spent the
 # full minute proving 99 GPU layers on a 2060 Super, timed out "unproven", and fell
-# back to the 26 layers smart-fit had already measured — so the operator paid a
-# minute of blank startup for an answer the fallback had. 30s keeps the probe useful
-# for the configurations it can settle quickly while halving the cost of the ones it
-# cannot.
-_DEFAULT_TIMEOUT_S = 30.0
+# back to the 26 layers smart-fit had already measured.
+#
+# A FLAT budget is the bug behind both of those. The probe cold-loads the model and
+# prefills ~45% of the window, so its cost scales with model size and ctx — but the
+# budget did not. At 2.4.14 a 8.89GB Q8 at ctx=10384 could not finish in 30s under
+# any circumstances, so the operator's GPU layers were structurally unprovable and
+# the fallback won every single launch. A small model settled in seconds; a large
+# one was condemned without ever being tested. The budget now derives from the same
+# two numbers the work does.
+# Override the whole calculation with ELI_LOAD_PROBE_TIMEOUT.
+_TIMEOUT_BASE_S = 30.0        # process spawn + import + backend init
+_TIMEOUT_PER_GB_S = 10.0      # cold read from disk + upload to VRAM
+_TIMEOUT_PER_1K_CTX_S = 2.0   # prefill, worst case with CPU-spilled layers
+_TIMEOUT_FLOOR_S = 30.0
+# The ceiling still answers the original objection: a startup probe must not block
+# for "minutes" plural without end. Three minutes is the most this will ever spend,
+# it is paid ONCE per configuration (cached, and timeouts are memoised for an hour),
+# it only happens when the request already exceeds the measured fit, and the caller
+# prints the real number before blocking. A typical 2-5GB model still settles inside
+# the old 30-60s; only the large models that were previously condemned untested cost
+# more than that.
+_TIMEOUT_CEILING_S = 180.0
 
 # Verdicts older than this are re-proven — drivers, other GPU tenants and
 # resident models all move. Override with ELI_LOAD_PROBE_TTL.
 _DEFAULT_TTL_S = 7 * 24 * 3600.0
+
+# A timeout is not a verdict, so it is not cached as one. It is still remembered
+# briefly: without this, a configuration too slow to settle re-pays the FULL budget
+# on every launch forever. Short enough that a machine which frees up gets retried.
+_TIMEOUT_MEMO_TTL_S = 3600.0
+
+
+def probe_timeout_for(model_path: str, n_ctx: int) -> float:
+    """Seconds to allow this model at this context before calling it unproven.
+
+    Public so the caller can tell the operator the real number instead of a
+    constant that no longer matches what the probe will actually spend.
+    """
+    override = (os.environ.get("ELI_LOAD_PROBE_TIMEOUT", "") or "").strip()
+    if override:
+        try:
+            return max(1.0, float(override))
+        except ValueError:
+            log.debug("ELI_LOAD_PROBE_TIMEOUT is not a number: %r", override)
+    try:
+        size_gb = Path(model_path).stat().st_size / (1024 ** 3)
+    except FileNotFoundError:
+        size_gb = 0.0
+    except OSError as exc:
+        log.debug("load_probe: model size unreadable for timeout scaling: %s", exc)
+        size_gb = 0.0
+    budget = (
+        _TIMEOUT_BASE_S
+        + size_gb * _TIMEOUT_PER_GB_S
+        + (max(0, int(n_ctx)) / 1000.0) * _TIMEOUT_PER_1K_CTX_S
+    )
+    return float(min(_TIMEOUT_CEILING_S, max(_TIMEOUT_FLOOR_S, budget)))
 
 
 def _cache_path() -> Path:
@@ -139,6 +187,32 @@ def cached_verdict(model_path: str, n_ctx: int, n_gpu_layers: int,
     return bool(ok) if isinstance(ok, bool) else None
 
 
+def _timeout_key(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int) -> str:
+    return "timeout:" + _key(model_path, n_ctx, n_gpu_layers, n_batch)
+
+
+def _recently_timed_out(model_path: str, n_ctx: int, n_gpu_layers: int,
+                        n_batch: int) -> bool:
+    entry = _load_cache().get(_timeout_key(model_path, n_ctx, n_gpu_layers, n_batch))
+    if not isinstance(entry, dict):
+        return False
+    return (time.time() - float(entry.get("ts", 0) or 0)) < _TIMEOUT_MEMO_TTL_S
+
+
+def _record_timeout(model_path: str, n_ctx: int, n_gpu_layers: int,
+                    n_batch: int) -> None:
+    cache = _load_cache()
+    cache[_timeout_key(model_path, n_ctx, n_gpu_layers, n_batch)] = {
+        "ts": time.time(),
+        "model": str(model_path),
+        "n_ctx": int(n_ctx),
+        "n_gpu_layers": int(n_gpu_layers),
+        "n_batch": int(n_batch),
+        "gpu": _gpu_identity(),
+    }
+    _save_cache(cache)
+
+
 def _record(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
             ok: bool, detail: str = "") -> None:
     cache = _load_cache()
@@ -194,32 +268,47 @@ raise SystemExit(0)
 '''
 
 
-def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
-                 *, use_cache: bool = True,
-                 timeout_s: Optional[float] = None) -> Tuple[bool, str]:
+# Verdicts. The caller needs the difference between "proved fine" and "could not
+# prove anything", because it is deciding whether to load a configuration that
+# measurement already says does not fit.
+PROVEN_OK = "ok"            # ran, survived a real decode
+PROVEN_BAD = "bad"          # ran, failed (this is what the CUDA abort looks like)
+UNPROVEN_TIMEOUT = "timeout"      # ran, did not finish in the budget
+UNPROVEN_UNAVAILABLE = "unavailable"  # could not run at all — no information
+SKIPPED = "skipped"         # nothing to prove (cpu-only, disabled)
+
+
+def probe_verdict(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
+                  *, use_cache: bool = True,
+                  timeout_s: Optional[float] = None) -> Tuple[str, str]:
     """Do these exact parameters survive a real decode on this machine?
 
-    Returns ``(ok, detail)``. Never raises, and never modifies the parameters —
-    the caller decides what to do with a False.
+    Returns ``(verdict, detail)`` where verdict is one of the constants above.
+    Never raises, and never modifies the parameters — the caller decides.
 
-    A probe that cannot run at all (no subprocess, no llama_cpp, timeout)
-    returns ``True``: an unavailable check must not become a reason to override
-    the operator. Only a probe that actually PROVED a failure returns False.
+    Why three states and not a bool: collapsing "could not prove" into "fine"
+    is what shipped the 2.2.9 crash. The probe only runs when the request
+    ALREADY exceeds the measured fit, so on that path "unproven" is not a
+    neutral result — proceeding is a gamble whose downside is a CUDA abort()
+    that takes the whole process down mid-generation. The caller now
+    distinguishes a timeout (the probe ran and did not finish — fall back to
+    the measured rungs) from an unavailable probe (no information at all —
+    the operator's settings stand, as before).
     """
     if os.environ.get("ELI_LOAD_PROBE", "1").strip().lower() in ("0", "false", "no"):
-        return True, "probe disabled (ELI_LOAD_PROBE=0)"
+        return SKIPPED, "probe disabled (ELI_LOAD_PROBE=0)"
 
     n_ctx, n_gpu_layers, n_batch = int(n_ctx), int(n_gpu_layers), int(n_batch)
 
     if use_cache:
         cached = cached_verdict(model_path, n_ctx, n_gpu_layers, n_batch)
         if cached is not None:
-            return cached, "cached verdict"
+            return (PROVEN_OK if cached else PROVEN_BAD), "cached verdict"
 
     # CPU-only configurations cannot hit the CUDA abort this exists to catch,
     # and a probe would cost a full cold load for nothing.
     if n_gpu_layers <= 0:
-        return True, "cpu-only: no GPU allocation to prove"
+        return SKIPPED, "cpu-only: no GPU allocation to prove"
 
     # Probe sizes derive from the caller's own parameters — no magic numbers.
     #
@@ -238,8 +327,11 @@ def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
     probe_gen = max(8, min(32, int(n_ctx * 0.01)))
 
     timeout = float(timeout_s if timeout_s is not None
-                    else (os.environ.get("ELI_LOAD_PROBE_TIMEOUT", "")
-                          or _DEFAULT_TIMEOUT_S))
+                    else probe_timeout_for(model_path, n_ctx))
+
+    if use_cache and _recently_timed_out(model_path, n_ctx, n_gpu_layers, n_batch):
+        return (UNPROVEN_TIMEOUT,
+                "probe timed out recently; not re-paying the budget this launch")
     payload = json.dumps({
         "model_path": str(model_path),
         "n_ctx": n_ctx,
@@ -256,13 +348,15 @@ def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        # Slow, not proven broken. Do not override the operator on a timeout,
-        # and do not cache a verdict that was never reached.
+        # Slow, not proven broken. Do not override the operator on a timeout, and do
+        # not cache a VERDICT that was never reached — only the fact that it timed
+        # out, briefly, so the next launch does not re-pay the same budget.
+        _record_timeout(model_path, n_ctx, n_gpu_layers, n_batch)
         log.debug("[LOAD_PROBE] timed out after %.0fs — treating as unproven", timeout)
-        return True, f"probe timed out after {timeout:.0f}s (unproven)"
+        return UNPROVEN_TIMEOUT, f"probe timed out after {timeout:.0f}s (unproven)"
     except Exception as e:
         log.debug("[LOAD_PROBE] could not run: %s", e)
-        return True, f"probe unavailable: {e}"
+        return UNPROVEN_UNAVAILABLE, f"probe unavailable: {e}"
 
     elapsed = time.perf_counter() - t0
     rc = int(proc.returncode or 0)
@@ -288,11 +382,11 @@ def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
         _record(model_path, n_ctx, n_gpu_layers, n_batch, True, "ok")
         log.debug("[LOAD_PROBE] ctx=%d layers=%d batch=%d verified in %.1fs",
                   n_ctx, n_gpu_layers, n_batch, elapsed)
-        return True, f"verified in {elapsed:.1f}s"
+        return PROVEN_OK, f"verified in {elapsed:.1f}s"
 
     if rc == 3:
         # llama_cpp missing in the child — the check could not run.
-        return True, "llama_cpp unavailable in probe (unproven)"
+        return UNPROVEN_UNAVAILABLE, "llama_cpp unavailable in probe (unproven)"
 
     if rc == -15:
         # SIGTERM: something outside asked the probe to stop. That says nothing
@@ -303,7 +397,7 @@ def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
         # backend's abort() is exactly what this exists to catch, and an
         # OOM-kill is a real answer about this configuration's footprint.
         log.debug("[LOAD_PROBE] terminated externally — unproven, not recorded")
-        return True, "probe terminated externally (unproven)"
+        return UNPROVEN_UNAVAILABLE, "probe terminated externally (unproven)"
 
     # rc 4/5 are honest Python-level failures; a negative rc is a signal
     # (SIGABRT is what the CUDA backend raises), which is the case this exists
@@ -311,4 +405,18 @@ def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
     _record(model_path, n_ctx, n_gpu_layers, n_batch, False, f"rc={rc} {tail}")
     log.debug("[LOAD_PROBE] ctx=%d layers=%d batch=%d FAILED rc=%d (%.1fs) %s",
               n_ctx, n_gpu_layers, n_batch, rc, elapsed, tail)
-    return False, f"rc={rc} {tail}".strip()
+    return PROVEN_BAD, f"rc={rc} {tail}".strip()
+
+
+def probe_config(model_path: str, n_ctx: int, n_gpu_layers: int, n_batch: int,
+                 *, use_cache: bool = True,
+                 timeout_s: Optional[float] = None) -> Tuple[bool, str]:
+    """Boolean view of :func:`probe_verdict` — ``ok`` is "not proven bad".
+
+    Kept because it is the honest answer to "did this fail?". Callers that are
+    about to load an over-committed configuration want probe_verdict instead,
+    so they can tell a timeout from a clean pass.
+    """
+    verdict, detail = probe_verdict(model_path, n_ctx, n_gpu_layers, n_batch,
+                                    use_cache=use_cache, timeout_s=timeout_s)
+    return verdict != PROVEN_BAD, detail

@@ -101,14 +101,8 @@ def _model_size_category(size_bytes: int) -> str:
     return "large"
 
 
-# KV-cache overhead constants (same as hardware_profile.py)
-_KV_BYTES_PER_TOKEN_PER_LAYER = 6_000
-_CUDA_OVERHEAD_MB = 350
-
-
-def _kv_cache_mb(n_ctx: int, n_layers: int = 32, quant: bool = False) -> float:
-    raw = n_ctx * n_layers * _KV_BYTES_PER_TOKEN_PER_LAYER / 1_048_576
-    return raw / 4 if quant else raw
+# KV-cache overhead: always the loader's formula — never a second local copy.
+from eli.core.hardware_profile import _kv_cache_mb, _CUDA_OVERHEAD_MB
 
 
 def _auto_tune(model_path: Path, hw: dict) -> dict:
