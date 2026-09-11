@@ -1,4 +1,4 @@
-# Build ELI v3 Windows Setup.exe (Inno Setup) from the lean portable zip.
+﻿# Build ELI v3 Windows Setup.exe (Inno Setup) from the lean portable zip.
 # Run ON WINDOWS with Inno Setup 6 installed (iscc.exe on PATH).
 #
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build-windows.ps1 -Version 3.0.114
