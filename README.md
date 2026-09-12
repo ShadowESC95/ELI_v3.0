@@ -27,6 +27,12 @@ no cloud, no account, nobody else in the loop. It's offline by default and it *e
 the network socket — not on the honour system. Point it at whatever local model you like and it tunes
 itself to the hardware you've got, from a laptop to a multi-GPU tower.
 
+> **v3.0.115 — docs + release cut on the unified wizard.** Same hardware-aware one-click setup as
+> 3.0.114 (NVIDIA/AMD/Arc/Metal → GPU; Iris Xe / ≤8 GB → CPU). Wizard hard-fails until nomic,
+> Piper/Whisper, and a chat GGUF are present. Windows Setup: one desktop ELI + GUI singleton.
+> Guide: **`first time Installation/INSTALLATION_GUIDE.md`**.
+> **[Releases](https://github.com/ShadowESC95/ELI_v3.0/releases/latest)**.
+
 ## Contents
 - [What is ELI?](#what-is-eli)
 - [What it does](#what-it-does)
@@ -426,6 +432,7 @@ data whenever you want.
 
 ## Documentation
 
+- **[First-time installation](first%20time%20Installation/INSTALLATION_GUIDE.md)** — downloads, wizard completeness, hardware matrix
 - **[Server & Web App](docs/SERVER_AND_WEB_APP.md)** — self-hosted FastAPI server + phone/web UI
 - **[Train your own model](docs/TRAINING_YOUR_OWN_MODEL.md)** — A-to-Z LoRA/QLoRA into an ELI GGUF
 - **[Cross-platform coverage](docs/CROSS_PLATFORM.md)** — capability × platform matrix

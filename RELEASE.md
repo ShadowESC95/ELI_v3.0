@@ -1,16 +1,17 @@
 # ELI v3 — cutting a download-and-run release
 
-> Maintainer: **ShadowESC95/ELI_v3.0** on GitHub
+> Maintainer: **ShadowESC95/ELI_v3.0** on GitHub  
+> **New users:** **`first time Installation/INSTALLATION_GUIDE.md`**
 
-Current semver: **`pyproject.toml`** → **3.0.114** (tag **`v3.0.114`**).
+Current semver: **`pyproject.toml`** → **3.0.115** (tag **`v3.0.115`**).
 
-**One installer:** `./ELI_Setup.sh` (or `INSTALL_ELI.sh`) → `scripts/eli_setup.sh` → GUI wizard → `install.sh` / `install.ps1` once, hardware-aware via `eli.setup.hardware_policy` (NVIDIA/AMD/Arc/Metal → GPU; Iris Xe / ≤8 GB → CPU). Legacy aliases `install_eli.sh` / `eli_one_click_setup.sh` only redirect there.
+## 1. Build packages
 
-## 1. Build portable Linux package
+**Local Linux portable:**
 
 ```bash
 bash scripts/package_desktop_app.sh
-# Output: dist/app_packages/ELI_v3-3.0.114-linux-portable.tar.gz
+# Output: dist/app_packages/ELI_v3-3.0.115-linux-portable.tar.gz
 ```
 
 Optional full bundle (local models — very large):
@@ -19,21 +20,22 @@ Optional full bundle (local models — very large):
 bash scripts/package_desktop_app.sh --with-assets
 ```
 
-## 2. Publish GitHub Release
+## 2. What each asset is for
 
-1. [New release](https://github.com/ShadowESC95/ELI_v3.0/releases/new)
-2. Tag: `v3.0.114` (semver matches `pyproject.toml`)
-3. Attach:
-   - `ELI_v3-3.0.114-linux-portable.tar.gz`
-   - `.sha256` sidecar
+| Asset | Use |
+|---|---|
+| `ELI-Setup-<v>.exe` | Windows one-click (frozen). Desktop = ELI only; GUI singleton. |
+| `ELI_v3-<v>-windows-x64.zip` | Unzip → `ELI\ELI.exe` |
+| `ELI_v3-<v>-x86_64.AppImage` | Linux double-click (frozen) |
+| `ELI_v3-<v>-linux-portable.tar.gz` | `./ELI_Setup.sh` → hardware-aware wizard |
+| `ELI_v3-<v>-macos-arm64.dmg` | macOS Apple Silicon |
 
-## 3. What users do
+**One installer:** `./ELI_Setup.sh` / `ELI_Setup.bat` / `ELI-Setup-*.exe` → GUI wizard → `eli.setup.hardware_policy` → one `install.sh`/`install.ps1`. Core stages (env, DB, nomic, voice, chat GGUF) hard-fail until present. OS tools (mpv, tesseract, …) best-effort.
+
+## 3. Tag and publish
 
 ```bash
-tar -xzf ELI_v3-3.0.114-linux-portable.tar.gz
-cd ELI_v3-3.0.114-linux-portable
-./ELI_Setup.sh
-./RUN_ELI.sh
+git tag v3.0.115 && git push origin v3.0.115
 ```
 
 Activate a paid license when prompted (v3 only). **Tested path:** Linux x86_64 + NVIDIA.

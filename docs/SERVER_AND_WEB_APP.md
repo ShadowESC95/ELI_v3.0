@@ -6,7 +6,7 @@ exposes a **mobile-first web chat UI** plus a small REST API. It lets you reach 
 machine**. Nothing goes to the cloud; this is the same offline-first ELI, just reachable over
 your own LAN.
 
-> **v3.0.114:** LAN address discovery uses `eli.runtime.server_util.resolve_lan_ip`
+> **v3.0.115:** LAN address discovery uses `eli.runtime.server_util.resolve_lan_ip`
 > (Windows / macOS / Linux), shared by the API and desktop web-server UI.
 
 > "Flask" is the common shorthand for this server. ELI actually uses **FastAPI** (same idea,

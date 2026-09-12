@@ -1,12 +1,12 @@
 ; Inno Setup script — grandma-friendly Windows installer for ELI v3 portable.
-; Build on Windows: iscc packaging\windows\ELI_Setup.iss /DMyAppVersion=3.0.114
-; Or: powershell -File packaging\windows\build-windows.ps1 -Version 3.0.114
+; Build on Windows: iscc packaging\windows\ELI_Setup.iss /DMyAppVersion=3.0.115
+; Or: powershell -File packaging\windows\build-windows.ps1 -Version 3.0.115
 
 #define MyAppName "ELI v3.0"
 #define MyAppPublisher "ShadowESC95"
 #define MyAppURL "https://github.com/ShadowESC95/ELI_v3.0"
 #ifndef MyAppVersion
-  #define MyAppVersion "3.0.114"
+  #define MyAppVersion "3.0.115"
 #endif
 
 [Setup]
