@@ -74,6 +74,11 @@ class LocalModelManager:
         use_mlock: bool = False,
     ) -> bool:
         try:
+            try:
+                from eli.core.gpu_pack_runtime import try_activate_gpu_pack
+                try_activate_gpu_pack(verify=True)
+            except Exception:
+                log.debug("GPU pack activation before model load skipped", exc_info=True)
             from llama_cpp import Llama
             from llama_cpp import llama_cpp as _llama_native
             # Co-resident vision: reserve the small fast (Moondream) model's VRAM
@@ -151,6 +156,14 @@ class LocalModelManager:
                     gpu_offload_supported = bool(_supports_fn())
             except Exception:
                 gpu_offload_supported = None
+            if gpu_offload_supported is False:
+                try:
+                    from eli.core.gpu_pack_runtime import trust_vulkan_igpu_offload
+                    if trust_vulkan_igpu_offload():
+                        gpu_offload_supported = True
+                        log.debug("[GUI][GPU] trusting Vulkan iGPU pack despite offload flag=False")
+                except Exception:
+                    log.debug("vulkan igpu offload trust probe failed", exc_info=True)
             effective_n_gpu_layers = int(n_gpu_layers)
             if requested_n_gpu_layers > 0 and gpu_offload_supported is False:
                 log.debug(

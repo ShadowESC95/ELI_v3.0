@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for v3.0.115 (September 2026).** Primary path: GitHub Releases
+> **Updated for v3.0.116 (September 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -11,13 +11,34 @@ symptom → cause → the exact fix. Add new ones as they surface.
 
 ---
 
+
+## GPU pack: `libcudart.so.12: cannot open shared object file`
+
+**Symptom:** AppImage/portable fails loading llama with missing `libcudart.so.12`, or Iris Xe
+logs `Vulkan backend forced` while downloading an ~800 MB CUDA wheel.
+**Cause (≤3.0.115):** `--vulkan` / Intel / AMD picker preferred `cuda-` assets, labelled them
+vulkan, and skipped cudart vendoring.
+**Fix (v3.0.116+):** upgrade; `rm -rf …/runtime/gpu` and relaunch. Real `vulkan-` wheels for
+Iris/AMD; CUDA packs vendor cudart/cublas or fail closed.
+
+---
+
+## GPU pack: `no CUDA wheel found` while offline-by-default
+
+**Symptom:** Dialog says no CUDA wheel; logs show NetGuard blocking `abetlen.github.io`.
+**Cause (≤3.0.115):** GPU pack install used raw `urlopen` without `allow_network()`.
+**Fix (v3.0.116+):** install opens a scoped NetGuard allow and falls back to CI `cuda-` packs
+on the shared `gpu-packs` GitHub release.
+
+---
+
 ## Windows: two ELI windows after Setup.exe
 
 **Symptom:** Finish the installer and two GUI windows appear (or desktop has ELI + ELI Server).
 **Cause:** Desktop used to pin both `ELI.exe` and `ELI-Server.exe`; post-install could race.
 **Fix (v3.0.114+):** Desktop shortcut is **ELI only**; Server stays in Start Menu. Frozen GUI
 takes a singleton lock — a second launch shows “ELI is already running” and exits.
-Close the extra window; upgrade to 3.0.114+ (current **3.0.115**).
+Close the extra window; upgrade to 3.0.114+ (current **3.0.116**).
 
 ---
 

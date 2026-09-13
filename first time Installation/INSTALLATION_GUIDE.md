@@ -1,7 +1,7 @@
 # ELI v3 — Installation Guide (every OS / machine / user)
 
-**Version:** 3.0.115 · **Updated:** 2026-09-12  
-**Release:** https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.115
+**Version:** 3.0.116 · **Updated:** 2026-09-13  
+**Release:** https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.116
 
 This guide answers: **which download, which first click, and what the wizard actually installs.**
 
@@ -71,7 +71,7 @@ So: the wizard makes **chat + memory + voice + GUI** complete and hardware-aware
 
 | You are… | Download | First action |
 |----------|----------|--------------|
-| Windows, simplest | `ELI-Setup-3.0.115.exe` | Run Setup |
+| Windows, simplest | `ELI-Setup-3.0.116.exe` | Run Setup |
 | Windows, unzip | `ELI_v3-*-windows-x64.zip` | `ELI\ELI.exe` |
 | Linux, simplest | `ELI_v3-*-x86_64.AppImage` | `chmod +x` → run |
 | Linux, editable | `*-linux-portable.tar.gz` | `./ELI_Setup.sh` |
@@ -85,20 +85,20 @@ So: the wizard makes **chat + memory + voice + GUI** complete and hardware-aware
 
 ### Linux AppImage
 ```bash
-chmod +x ELI_v3-3.0.115-x86_64.AppImage
-./ELI_v3-3.0.115-x86_64.AppImage
+chmod +x ELI_v3-3.0.116-x86_64.AppImage
+./ELI_v3-3.0.116-x86_64.AppImage
 ```
 
 ### Linux portable
 ```bash
-tar -xzf ELI_v3-3.0.115-linux-portable.tar.gz
-cd ELI_v3-3.0.115-linux-portable
+tar -xzf ELI_v3-3.0.116-linux-portable.tar.gz
+cd ELI_v3-3.0.116-linux-portable
 chmod +x ELI_Setup.sh && ./ELI_Setup.sh
 ./RUN_ELI.sh
 ```
 
 ### Windows Setup
-Run **`ELI-Setup-3.0.115.exe`**. Desktop shortcut is **ELI only** (Server in Start Menu). A second GUI instance is refused (singleton). Data: `%LOCALAPPDATA%\ELI_v2\`.
+Run **`ELI-Setup-3.0.116.exe`**. Desktop shortcut is **ELI only** (Server in Start Menu). A second GUI instance is refused (singleton). Data: `%LOCALAPPDATA%\ELI_v2\`.
 
 ### macOS
 Open the `.dmg`, drag to Applications, launch (Metal).
@@ -123,7 +123,7 @@ ELI_INSTALL_CPU_ONLY=0 ./ELI_Setup.sh
 
 ---
 
-## 5. Troubleshooting (3.0.115)
+## 5. Troubleshooting (3.0.116)
 
 | Symptom | Fix |
 |---------|-----|

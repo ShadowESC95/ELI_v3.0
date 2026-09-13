@@ -1,6 +1,6 @@
 # ELI v3 — First-Time Installation
 
-**Current release: 3.0.115** — https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.115
+**Current release: 3.0.116** — https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.116
 
 | Document | Who it's for |
 |----------|----------------|

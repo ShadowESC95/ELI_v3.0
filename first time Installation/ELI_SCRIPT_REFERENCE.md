@@ -1,6 +1,6 @@
 # ELI v3 Script & Setup Reference
 
-**Version:** 3.0.115 (unified GUI wizard, hardware_policy, accurate completeness docs)  
+**Version:** 3.0.116 (unified GUI wizard, hardware_policy, accurate completeness docs)  
 **Repository:** ELI_MKXI / ELI v3.0  
 **Last updated:** 2026-09-12
 

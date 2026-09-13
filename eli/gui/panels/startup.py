@@ -39,8 +39,14 @@ MODEL_PROVIDER_LABELS = {
 
 
 def _import_eli_gpu_pack():
-    """Load packaging/pyinstaller/eli_gpu_pack in dev or frozen builds."""
+    """Load eli_gpu_pack in AppImage/portable (hiddenimport) or dev tree."""
     import sys
+    try:
+        import eli_gpu_pack
+        return eli_gpu_pack
+    except ImportError:
+        # Expected on portable/dev: module lives under packaging/pyinstaller/.
+        log.debug("eli_gpu_pack not on sys.path yet; resolving via packaging tree")
     candidates = []
     meipass = getattr(sys, "_MEIPASS", "")
     if meipass:
@@ -66,7 +72,20 @@ class _GpuPackInstallThread(QThread):
         try:
             gp = _import_eli_gpu_pack()
             rc = int(gp.install(self._argv) or 0)
-            msg = gp.last_failure() if rc != 0 else "GPU pack installed."
+            msg = ""
+            if rc == 0:
+                dest = gp._eli_root() / "runtime" / "gpu"
+                if not gp.activate_gpu_pack_runtime(dest, verify=True):
+                    msg = (
+                        "GPU pack installed. Restart ELI once so this process "
+                        "can load the Vulkan/CUDA runtime (offload was not "
+                        "active in this session yet)."
+                    )
+                    rc = 0
+                else:
+                    msg = "GPU pack installed."
+            else:
+                msg = gp.last_failure() or "GPU pack install failed."
             self.finished_result.emit(rc, str(msg or ""))
         except Exception as exc:
             self.finished_result.emit(1, str(exc))
@@ -773,6 +792,11 @@ class StartupModelSelectionDialog(QDialog):
         _idx = self.compute_mode_combo.findData(_saved if _saved in ("auto", "gpu", "cpu") else "auto")
         if _idx >= 0:
             self.compute_mode_combo.setCurrentIndex(_idx)
+        try:
+            from eli.core.gpu_pack_runtime import try_activate_gpu_pack
+            try_activate_gpu_pack(verify=True)
+        except Exception:
+            log.debug("gpu pack activate before compute-mode probe skipped", exc_info=True)
         try:
             from eli.core.hardware_profile import detect_hardware, _llama_gpu_offload_available
             _hw = detect_hardware()
