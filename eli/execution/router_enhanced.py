@@ -3554,7 +3554,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                 r"\.com|\s+com\b|\bwebsite\b|\bweb(?:site)?\b", target, re.I
             ))
             if re.search(r"youtube\s*(?:\.com|\s+com|website|web)\b", target, re.I):
-                target = "youtube website"
+            target = "youtube website"
                 browser = True
             else:
                 try:
