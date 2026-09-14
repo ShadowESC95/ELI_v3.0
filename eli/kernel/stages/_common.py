@@ -257,6 +257,16 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         "just checking in",
     )
     has_eli_status = any(p in normalized for p in _eli_status_phrases)
+    # "just checking in" alone is phatic; combined with "what have you been doing
+    # the past week" is a substantive social ask — keep the user's selected mode.
+    _substantive_activity = any(p in normalized for p in (
+        "what have you been doing", "what have you been up to",
+        "what have you been working on", "what you been doing", "what you been up to",
+        "what has been going on", "what's been going on", "whats been going on",
+        "the past week", "this past week", "past few days", "all week",
+    ))
+    if has_eli_status and _substantive_activity:
+        return False
     if has_eli_status and not has_task and n <= 30:
         return True
 
