@@ -27,7 +27,9 @@ no cloud, no account, nobody else in the loop. It's offline by default and it *e
 the network socket — not on the honour system. Point it at whatever local model you like and it tunes
 itself to the hardware you've got, from a laptop to a multi-GPU tower.
 
-> **v3.0.122 — check-in is not a maintenance dump.** Port of v2.4.31.
+> **v3.0.122 — CI smoke: DATE meta GUI guard is observable.** Port of v2.4.32.
+>
+> **v3.0.121 — check-in is not a maintenance dump.** Port of v2.4.31.
 >
 > **v3.0.120 — DATE meta-route + day awareness + no stale GPU volunteer.** Port of v2.4.30.
 >
