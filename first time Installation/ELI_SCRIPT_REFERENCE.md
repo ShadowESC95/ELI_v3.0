@@ -1,6 +1,6 @@
 # ELI v3 Script & Setup Reference
 
-**Version:** 3.0.121 (check-in ≠ SELF_REPORT dump; DATE meta; day awareness)  
+**Version:** 3.0.122 (check-in ≠ SELF_REPORT dump; DATE meta; day awareness)  
 **Repository:** ELI_MKXI / ELI v3.0  
 **Last updated:** 2026-09-14
 
