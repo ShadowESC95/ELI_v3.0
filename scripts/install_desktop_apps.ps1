@@ -1,4 +1,4 @@
-# Redistribution-safe Start Menu shortcuts (stable eli-run + install_root pointer).
+﻿# Redistribution-safe Start Menu shortcuts (stable eli-run + install_root pointer).
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $Py = Join-Path $Root ".venv\Scripts\python.exe"
