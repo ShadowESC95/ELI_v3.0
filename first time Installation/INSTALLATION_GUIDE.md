@@ -1,7 +1,7 @@
 # ELI v3 — Installation Guide (every OS / machine / user)
 
-**Version:** 3.0.125 · **Updated:** 2026-09-14  
-**Release:** https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.125
+**Version:** 3.0.126 · **Updated:** 2026-09-14  
+**Release:** https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.126
 
 This guide answers: **which download, which first click, and what the wizard actually installs.**
 
@@ -71,7 +71,7 @@ So: the wizard makes **chat + memory + voice + GUI** complete and hardware-aware
 
 | You are… | Download | First action |
 |----------|----------|--------------|
-| Windows, simplest | `ELI-Setup-3.0.125.exe` | Run Setup |
+| Windows, simplest | `ELI-Setup-3.0.126.exe` | Run Setup |
 | Windows, unzip | `ELI_v3-*-windows-x64.zip` | `ELI\ELI.exe` |
 | Linux, simplest | `ELI_v3-*-x86_64.AppImage` | `chmod +x` → run |
 | Linux, editable | `*-linux-portable.tar.gz` | `./ELI_Setup.sh` |
@@ -85,20 +85,20 @@ So: the wizard makes **chat + memory + voice + GUI** complete and hardware-aware
 
 ### Linux AppImage
 ```bash
-chmod +x ELI_v3-3.0.125-x86_64.AppImage
-./ELI_v3-3.0.125-x86_64.AppImage
+chmod +x ELI_v3-3.0.126-x86_64.AppImage
+./ELI_v3-3.0.126-x86_64.AppImage
 ```
 
 ### Linux portable
 ```bash
-tar -xzf ELI_v3-3.0.125-linux-portable.tar.gz
-cd ELI_v3-3.0.125-linux-portable
+tar -xzf ELI_v3-3.0.126-linux-portable.tar.gz
+cd ELI_v3-3.0.126-linux-portable
 chmod +x ELI_Setup.sh && ./ELI_Setup.sh
 ./RUN_ELI.sh
 ```
 
 ### Windows Setup
-Run **`ELI-Setup-3.0.125.exe`**. Desktop shortcut is **ELI only** (Server in Start Menu). A second GUI instance is refused (singleton). Data: `%LOCALAPPDATA%\ELI_v2\`.
+Run **`ELI-Setup-3.0.126.exe`**. Desktop shortcut is **ELI only** (Server in Start Menu). A second GUI instance is refused (singleton). Data: `%LOCALAPPDATA%\ELI_v2\`.
 
 ### macOS
 Open the `.dmg`, drag to Applications, launch (Metal).
@@ -123,7 +123,7 @@ ELI_INSTALL_CPU_ONLY=0 ./ELI_Setup.sh
 
 ---
 
-## 5. Troubleshooting (3.0.125)
+## 5. Troubleshooting (3.0.126)
 
 | Symptom | Fix |
 |---------|-----|
@@ -131,14 +131,14 @@ ELI_INSTALL_CPU_ONLY=0 ./ELI_Setup.sh
 | Portable dies mid-scan | Use 3.0.114+ (`_gpu_pipeline`); prefer `./ELI_Setup.sh` |
 | Nomic / Piper missing | Wizard hard-fails until fixed — Retry / Fetch |
 | Iris Xe OOM on install | Wizard CPU policy, or AppImage — not interactive Vulkan `install.sh` |
-| Wrong `eli` / stale menu icon | 3.0.125+ auto-refreshes `.desktop` on version bump; or AppImage `--integrate` |
+| Wrong `eli` / stale menu icon | 3.0.126+ auto-refreshes `.desktop` on version bump; or AppImage `--integrate` |
 | “Yes” to install mpv does nothing | 3.0.119+ Phase-45 remediation confirm (first yes runs apt) |
 | Check-in invents old GPU layers / denies knowing the day | 3.0.120+ continuity guard + CURRENT TIME day rule |
 | “Explain why you used DATE…” returns only the date | 3.0.120+ meta-DATE questions stay CHAT |
-| “just checking in / what have you been doing?” → version dump | 3.0.125+ rapport check-in stays CHAT |
+| “just checking in / what have you been doing?” → version dump | 3.0.126+ rapport check-in stays CHAT |
 | Wrong `eli` command (v2 vs v3) | `bash scripts/fix_eli_shell_env.sh --yes` |
 
-| Big GGUF “loaded” then aborts on first decode (ctx/batch ≫ VRAM) | 3.0.125+ load probe runs when **ctx or batch** exceed smart-fit, not only GPU layers |
+| Big GGUF “loaded” then aborts on first decode (ctx/batch ≫ VRAM) | 3.0.126+ load probe runs when **ctx or batch** exceed smart-fit, not only GPU layers |
 | Log shows only `127.0.0.1` / phone cannot connect | Localhost mode is intentional — use **Start (phone / Wi‑Fi)** or `--lan` for QR + LAN |
-| Desktop / menu icon: Failed to change to directory `…/ELI_v*-linux-portable` | 3.0.125+ icons use stable `eli-run` (no extract `Path=`); open GUI once from the new folder or run `./scripts/install_desktop_apps.sh` |
+| Desktop / menu icon: Failed to change to directory `…/ELI_v*-linux-portable` | 3.0.126+ icons use stable `eli-run` (no extract `Path=`); open GUI once from the new folder or run `./scripts/install_desktop_apps.sh` |
 Maintainer map: **[ELI_SCRIPT_REFERENCE.md](ELI_SCRIPT_REFERENCE.md)**.

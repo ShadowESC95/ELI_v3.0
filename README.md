@@ -27,6 +27,8 @@ no cloud, no account, nobody else in the loop. It's offline by default and it *e
 the network socket — not on the honour system. Point it at whatever local model you like and it tunes
 itself to the hardware you've got, from a laptop to a multi-GPU tower.
 
+> **v3.0.126 — desktop_launchers: no silent except:pass (smoke ceiling); port of v2.4.36.**
+>
 > **v3.0.125 — PowerShell installer ASCII-only (smoke).** Port of v2.4.35.
 >
 > **v3.0.124 — redistribution-safe desktop icons (no extract-folder paths).** Port of v2.4.34.

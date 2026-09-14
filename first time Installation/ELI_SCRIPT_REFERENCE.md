@@ -1,6 +1,6 @@
 # ELI v3 Script & Setup Reference
 
-**Version:** 3.0.125 (PS1 ASCII smoke; redistribution-safe desktop icons)
+**Version:** 3.0.126 (PS1 ASCII smoke; redistribution-safe desktop icons)
 **Repository:** ELI_MKXI / ELI v3.0  
 **Last updated:** 2026-09-14
 
