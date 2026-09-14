@@ -1769,6 +1769,12 @@ class ExecutorBridge:
             or text_lower == 'today'
             or 'what day' in text_lower
         ):
+            try:
+                from eli.execution.router_enhanced import _is_wallclock_meta_question
+                if _is_wallclock_meta_question(text_lower):
+                    return {'action': 'CHAT', 'args': {'message': text}}
+            except Exception:
+                pass
             return {'action': 'DATE', 'args': {}}
         if 'remember' in text_lower or 'store memory' in text_lower:
             return {'action': 'MEMORY_STORE', 'args': {'text': text}}

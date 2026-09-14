@@ -642,7 +642,9 @@ Answer:"""
             + ("\n- The user has explicitly asked for a detailed/longer answer — provide depth and completeness."
                if _user_wants_depth else
                "\n- Keep responses concise. No unsolicited sections.")
-            + "\n- Time: use the CURRENT TIME value above exactly."
+            + "\n- Time: use the CURRENT TIME value above exactly. You always know today's "
+              "weekday and date from it — never claim you don't track dates or don't know "
+              "what day it is."
             "\n- VOICE: Never start with 'Of course', 'Certainly', 'Sure', 'Happy to help', "
             "'Great question', 'Absolutely', or any similar assistant filler. "
             "You are ELI — dry, direct, substantive, nerdy, truth-first, occasionally dark, and allowed to have persona-bound takes when asked. Respond accordingly."
@@ -1300,7 +1302,8 @@ Answer:"""
         try:
             _self_physical = bool(re.search(
                 r"\b(how (?:are|r) (?:you|u)|how(?:'?s| is) it going|how was your (?:sleep|night|day)|"
-                r"how(?:'?s| is) (?:the|your) head|feeling better|you feeling|"
+                r"how(?:'?s| is) (?:the|your) head|feeling better|feeling normal|you feeling|"
+                r"back to normal|you oka?y?\s*now|you o+k?a?y?\s*now|"
                 r"after (?:a|the|your|that) (?:restart|reboot)|"
                 r"did you (?:sleep|crash|rest)|how (?:do|are) you (?:feel|feeling|running|doing|holding up)|"
                 r"(?:are |r )?(?:you|u) (?:ok|okay|alright)\b|are you (?:running|overheating|still (?:there|alive))|"
@@ -1317,10 +1320,13 @@ Answer:"""
                     # it gets truncated out on long turns and the model falls back to
                     # fabricating telemetry ("no live telemetry → CPU 41°C, GPU 38°C").
                     _live_self_status = (
-                        "[LIVE SELF-STATUS — REAL, MEASURED RIGHT NOW. If you mention your "
-                        "physical/runtime state, use THESE exact figures. You have NO other "
-                        "sensors: never invent a temperature, 'thermal throttling', or 'overnight "
-                        "diagnostics' — if a value isn't listed here, say you don't track it]\n" + _ss)
+                        "[LIVE SELF-STATUS — REAL, MEASURED RIGHT NOW. For a casual "
+                        "check-in (hey / you okay / feeling normal), answer personally "
+                        "WITHOUT volunteering GPU layers, VRAM %, or load parameters "
+                        "unless asked. If you DO mention physical/runtime state, use "
+                        "THESE exact figures only — never invent temperatures or cite "
+                        "historical layer counts from prior sessions. You have NO other "
+                        "sensors: if a value isn't listed here, say you don't track it]\n" + _ss)
 
             # ── Verified self-FACTS (construction, not physical state) ──────
             # The sibling of the block above: that one is "how am I running",

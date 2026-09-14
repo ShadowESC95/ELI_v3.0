@@ -167,6 +167,22 @@ def _is_brief_phatic_prompt(text: str) -> bool:
             if re.match(pat, normalized):
                 return True
 
+    # "feeling normal again" / typo-tolerant "you oaynow" after greeting strip.
+    if n <= 6 and re.match(
+        r"^feeling (?:normal|better|ok|okay|fine|alright)(?: again| now| yet)?$",
+        normalized,
+    ):
+        return True
+    if n <= 5 and re.match(
+        r"^(?:are |r )?you\s+o+k?a?y?\s*now(?:\s+again)?$",
+        normalized,
+    ):
+        return True
+    if n <= 12 and re.search(r"\bfeeling (?:normal|better)\b", normalized) and re.search(
+        r"\byou\b", normalized
+    ) and not re.search(r"\b(gpu|layer|vram|fix|install|bug|code|error)\b", normalized):
+        return True
+
     # Identity/self-awareness questions — phatic if combined with a greeting
     _identity_only = {
         "do you know who you are", "do you know who i am",
