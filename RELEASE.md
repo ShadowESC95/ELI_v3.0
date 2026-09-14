@@ -3,7 +3,7 @@
 > Maintainer: **ShadowESC95/ELI_v3.0** on GitHub  
 > **New users:** **`first time Installation/INSTALLATION_GUIDE.md`**
 
-Current semver: **`pyproject.toml`** → **3.0.117** (tag **`v3.0.117`**).
+Current semver: **`pyproject.toml`** → **3.0.118** (tag **`v3.0.118`**).
 
 ## 1. Build packages
 
@@ -11,7 +11,7 @@ Current semver: **`pyproject.toml`** → **3.0.117** (tag **`v3.0.117`**).
 
 ```bash
 bash scripts/package_desktop_app.sh
-# Output: dist/app_packages/ELI_v3-3.0.117-linux-portable.tar.gz
+# Output: dist/app_packages/ELI_v3-3.0.118-linux-portable.tar.gz
 ```
 
 Optional full bundle (local models — very large):
@@ -35,7 +35,7 @@ bash scripts/package_desktop_app.sh --with-assets
 ## 3. Tag and publish
 
 ```bash
-git tag v3.0.117 && git push origin v3.0.117
+git tag v3.0.118 && git push origin v3.0.118
 ```
 
 Activate a paid license when prompted (v3 only). **Tested path:** Linux x86_64 + NVIDIA.

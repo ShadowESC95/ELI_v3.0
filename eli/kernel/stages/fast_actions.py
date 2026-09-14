@@ -15,9 +15,13 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'ASK_CLARIFY',
     'BACKGROUND_JOBS',  # deterministic job-list read — verbatim, never paraphrase
     'CHECK_JOB',  # job status/result is authoritative; the model invents elapsed times and drops the actual summary if it re-narrates this
+    'CANCEL_PENDING_REMEDIATION',  # grounded cancel — never let GGUF invent "cancelled"
+    'CHECK_TARGET_STATUS',
     'CLOSE_APP',
+    'CONFIRM_PENDING_REMEDIATION',  # apt/mpv install confirm — executor must run, not narrate
     'CREATE_FILE',  # fs mutation: executor writes + reads back, result is authoritative — never let the heuristic agent profile drop `system` and punt "run touch yourself"
     'DATE',
+    'EXPLAIN_LAST_FAILURE',
     'KEYBOARD',
     'LIST_EVENTS',
     'MEDIA_CONTROL',
@@ -37,6 +41,7 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'OPEN_URL',
     'PAUSE_MEDIA',
     'PLAY_MEDIA',
+    'PREPARE_REMEDIATION',
     'PREVIOUS_MEDIA',
     'SCREEN_LOCATE',
     'SCREEN_READ_ANALYZE',  # vision/OCR result is authoritative — never re-narrate the screen
@@ -79,6 +84,8 @@ _DIRECT_FINAL_ACTIONS = frozenset({
     "GUI_RUNTIME_AUDIT", "RUNTIME_AUDIT", "IMPORT_AUDIT",
     "RESOLVE_RUNTIME_PATHS", "EXPLAIN_LAST_RESPONSE",
     "EXPLAIN_LAST_FAILURE", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
+    "CHECK_TARGET_STATUS", "PREPARE_REMEDIATION",
+    "CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION",
     "SELF_REPORT", "USER_IDENTITY_SUMMARY", "PERSONAL_MEMORY_SUMMARY",
     "PERSONAL_MEMORY_DEEP_EXPLAIN", "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT",
     "SELF_ANALYZE", "SELF_IMPROVE", "SELF_IMPROVEMENT_LOG", "SELF_UPDATE",

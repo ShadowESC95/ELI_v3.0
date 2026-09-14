@@ -1,8 +1,8 @@
 # ELI v3 Script & Setup Reference
 
-**Version:** 3.0.117 (unified GUI wizard, hardware_policy, accurate completeness docs)  
+**Version:** 3.0.118 (memory continuity gate; Phase-45 mpv confirm; desktop refresh)  
 **Repository:** ELI_MKXI / ELI v3.0  
-**Last updated:** 2026-09-12
+**Last updated:** 2026-09-14
 
 **Beginner guide:** **[INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)**
 
