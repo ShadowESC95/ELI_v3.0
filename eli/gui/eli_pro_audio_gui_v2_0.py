@@ -12546,6 +12546,12 @@ class EliMainWindow(QMainWindow):
 def main():
     print(f"\n  {APP_NAME} {APP_VERSION}\n  ───────────────\n")
 
+    try:
+        from eli.runtime.desktop_launchers import ensure_desktop_launchers
+        ensure_desktop_launchers()
+    except Exception:
+        log.debug("desktop launcher refresh skipped", exc_info=True)
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     try:

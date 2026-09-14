@@ -227,8 +227,8 @@ cat > "$STAGING/packaging/desktop/ELI_v3.0.desktop.template" <<'DESKTOP_EOF'
 Name=ELI v3.0
 GenericName=Local AI Assistant
 Comment=Local AI cognitive runtime and assistant
-Exec=__APP_ROOT__/RUN_ELI.sh
-Icon=__APP_ROOT__/packaging/desktop/Eli_Icon.png
+Exec=eli-run gui
+Icon=eli
 Type=Application
 Categories=Utility;
 Keywords=ai;assistant;llm;local;eli;
@@ -239,16 +239,10 @@ DESKTOP_EOF
 
 cat > "$STAGING/packaging/desktop/install_desktop_launcher.sh" <<'DESKTOP_INSTALL_EOF'
 #!/usr/bin/env bash
+# Prefer the redistribution-safe installer (stable eli-run + install_root pointer).
 set -euo pipefail
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-mkdir -p "$DESKTOP_DIR"
-sed "s#__APP_ROOT__#$APP_ROOT#g" \
-  "$APP_ROOT/packaging/desktop/ELI_v3.0.desktop.template" \
-  > "$DESKTOP_DIR/eli.desktop"
-rm -f "$DESKTOP_DIR/eli-pro.desktop" "$DESKTOP_DIR/eli-mkxi-v2-pro.desktop"
-chmod +x "$DESKTOP_DIR/eli.desktop"
-echo "$DESKTOP_DIR/eli.desktop"
+exec bash "$APP_ROOT/scripts/install_desktop_apps.sh"
 DESKTOP_INSTALL_EOF
 chmod +x "$STAGING/packaging/desktop/install_desktop_launcher.sh"
 

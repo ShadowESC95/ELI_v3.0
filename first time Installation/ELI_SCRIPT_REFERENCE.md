@@ -1,6 +1,6 @@
 # ELI v3 Script & Setup Reference
 
-**Version:** 3.0.123 (load-probe when ctx/batch exceed fit; LAN localhost hint)
+**Version:** 3.0.124 (redistribution-safe desktop icons; load-probe; LAN hint)
 **Repository:** ELI_MKXI / ELI v3.0  
 **Last updated:** 2026-09-14
 
