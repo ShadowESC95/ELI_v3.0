@@ -975,6 +975,8 @@ class LocalModelManager:
             # has measured free VRAM, because the layer count has to be clamped
             # against it. See the note at the insertion point.
             _sf_fit_layers = None
+            _sf_fit_ctx = None
+            _sf_fit_batch = None
 
             # ── Smart loader (fit-to-hardware fallback) ───────────────────
             # Anchor on the user's preferred ctx/batch, then fit into the VRAM
@@ -1079,6 +1081,8 @@ class LocalModelManager:
                             f"generation: the layers that did not fit run on CPU. Free VRAM or lower "
                             f"the context to get them back.")
                     _sf_fit_layers = int(_sf_layers)
+                    _sf_fit_ctx = int(_sf_ctx)
+                    _sf_fit_batch = int(_sf_batch)
                     self.fitted_gpu_layers = int(_sf_layers)
                     _add_attempt("smart-fit", _sf_ctx, _sf_layers, _sf_batch)
             except Exception as _sf_err:
@@ -1139,14 +1143,22 @@ class LocalModelManager:
             # is the case that silently aborts the process mid-generation. The
             # verdict is cached per (model, params, GPU), so even that is paid
             # once per configuration rather than once per startup.
-            _needs_proof = (
-                _sf_fit_layers is not None
-                and int(_base_layers) > int(_sf_fit_layers)
-            )
+            #
+            # Layers alone are not enough — ctx/batch over-fit also lazy-OOMs
+            # (live: Nemotron 30B layers==fit but ctx 12000>>4096 skipped probe).
+            _proof_bits: list[str] = []
+            if _sf_fit_layers is not None and int(_base_layers) > int(_sf_fit_layers):
+                _proof_bits.append(
+                    f"gpu_layers {_base_layers}>{_sf_fit_layers}")
+            if _sf_fit_ctx is not None and int(_base_ctx) > int(_sf_fit_ctx):
+                _proof_bits.append(f"ctx {_base_ctx}>{_sf_fit_ctx}")
+            if _sf_fit_batch is not None and int(_base_batch) > int(_sf_fit_batch):
+                _proof_bits.append(f"batch {_base_batch}>{_sf_fit_batch}")
+            _needs_proof = bool(_proof_bits)
             if _needs_proof:
                 log.debug(
-                    f"[GUI][LOAD] your {_base_layers} GPU layers exceed the "
-                    f"{_sf_fit_layers} measured to fit — verifying them on this "
+                    f"[GUI][LOAD] your settings exceed the measured fit "
+                    f"({'; '.join(_proof_bits)}) — verifying them on this "
                     f"machine before loading (one-off, then cached; set "
                     f"ELI_LOAD_PROBE=0 to skip)")
             if gpu_offload_supported is False:

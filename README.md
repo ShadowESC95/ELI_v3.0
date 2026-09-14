@@ -27,6 +27,8 @@ no cloud, no account, nobody else in the loop. It's offline by default and it *e
 the network socket — not on the honour system. Point it at whatever local model you like and it tunes
 itself to the hardware you've got, from a laptop to a multi-GPU tower.
 
+> **v3.0.123 — load-probe when ctx/batch exceed smart-fit (+ LAN localhost hint).** Port of v2.4.33.
+>
 > **v3.0.122 — CI smoke: DATE meta GUI guard is observable.** Port of v2.4.32.
 >
 > **v3.0.121 — check-in is not a maintenance dump.** Port of v2.4.31.
