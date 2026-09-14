@@ -27,6 +27,10 @@ no cloud, no account, nobody else in the loop. It's offline by default and it *e
 the network socket — not on the honour system. Point it at whatever local model you like and it tunes
 itself to the hardware you've got, from a laptop to a multi-GPU tower.
 
+> **v3.0.117 — CUDA pack verify: pin cudart to 12.6+ and trust device enum.**
+> CI CUDA packs no longer vendor too-old 12.4 cudart; verify keeps packs that
+> already enumerated NVIDIA devices. Port of the 2.4.27 fix.
+>
 > **v3.0.116 — complete GPU packs per hardware (port of v2.4.26).** Iris/AMD/`--vulkan` get real `vulkan-` wheels; CUDA packs vendor cudart/cublas or fail closed; NetGuard scoped allow for pack install; AppImage `--integrate` refreshes `~/.local/bin/eli`. Guide: **`first time Installation/INSTALLATION_GUIDE.md`**. **[Releases](https://github.com/ShadowESC95/ELI_v3.0/releases/latest)**.
 >
 > **v3.0.115 — docs + release cut on the unified wizard.** Same hardware-aware one-click setup as
