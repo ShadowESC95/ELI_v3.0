@@ -1,6 +1,6 @@
 # ELI v3 Script & Setup Reference
 
-**Version:** 3.0.118 (memory continuity gate; Phase-45 mpv confirm; desktop refresh)  
+**Version:** 3.0.119 (memory continuity gate; Phase-45 mpv confirm; desktop refresh)  
 **Repository:** ELI_MKXI / ELI v3.0  
 **Last updated:** 2026-09-14
 
