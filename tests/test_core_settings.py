@@ -473,7 +473,7 @@ def test_corrupt_settings_file_is_flagged(tmp_path, monkeypatch):
     bad.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(bad))
 
-    settings = rs._load_settings_unsanitized(apply_env_overlay=False)
+    settings = rs._load_settings_unsanitized()
     assert settings["n_gpu_layers"] == rs.DEFAULTS["n_gpu_layers"], (
         "still falls back to defaults -- that part was already correct"
     )
@@ -487,7 +487,7 @@ def test_missing_settings_file_is_not_flagged_as_corrupt(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_path / "does_not_exist.json"))
 
-    rs._load_settings_unsanitized(apply_env_overlay=False)
+    rs._load_settings_unsanitized()
     assert rs.settings_file_was_corrupt_on_last_load() is False, (
         "a normal first run (no settings file yet) is not an error"
     )
@@ -500,6 +500,6 @@ def test_valid_settings_file_is_not_flagged_as_corrupt(tmp_path, monkeypatch):
     good.write_text(json.dumps({"n_gpu_layers": 17}), encoding="utf-8")
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(good))
 
-    settings = rs._load_settings_unsanitized(apply_env_overlay=False)
+    settings = rs._load_settings_unsanitized()
     assert settings["n_gpu_layers"] == 17
     assert rs.settings_file_was_corrupt_on_last_load() is False
