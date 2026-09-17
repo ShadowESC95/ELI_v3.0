@@ -201,6 +201,13 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
     _conf_meta_update_sig = pyqtSignal()
 
+    # Screen control: OCR / "ask ELI" results (worker → main thread) — was
+    # QTimer.singleShot(0, ...) called FROM the worker thread, which has no
+    # guaranteed event loop and is not the safe cross-thread marshalling
+    # pattern already used a few lines above for capture (_sc_capture_sig).
+    _sc_ocr_done_sig = pyqtSignal(str)
+    _sc_eli_done_sig = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         app = QApplication.instance()
@@ -284,6 +291,8 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             self._open_generated_artifact_from_result,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._sc_ocr_done_sig.connect(self._sc_ocr_done, Qt.ConnectionType.QueuedConnection)
+        self._sc_eli_done_sig.connect(self._sc_eli_done, Qt.ConnectionType.QueuedConnection)
 
         ensure_dirs()
         self.init_ui()

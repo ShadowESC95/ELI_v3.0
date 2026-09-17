@@ -133,7 +133,7 @@ class ScreenCaptureMixin:
                     "Then restart ELI and try again."
                 )
 
-            QTimer.singleShot(0, lambda: self._sc_ocr_done(text))
+            self._sc_ocr_done_sig.emit(text)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -195,9 +195,9 @@ class ScreenCaptureMixin:
                     )
                     with self.__class__._inference_lock:
                         resp = backend.generate(prompt=prompt, max_tokens=512, temperature=0.6)
-                QTimer.singleShot(0, lambda: self._sc_eli_done(resp))
+                self._sc_eli_done_sig.emit(resp)
             except Exception as exc:
-                QTimer.singleShot(0, lambda: self._sc_eli_done(f"❌ Error: {exc}"))
+                self._sc_eli_done_sig.emit(f"❌ Error: {exc}")
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -1,8 +1,9 @@
 # ELI GUI
 
-> **Updated for 3.0.85.** v3 decomposed the v2 GUI monolith into packages.
-> Ollama model selector fixed on packaged builds (`QDialogButtonBox` via
-> `eli/gui/qt_compat.py`).
+> **Updated for 3.0.128.** v3 decomposed the v2 GUI monolith into packages
+> (see `main_window/` below — `eli_pro_audio_gui_v2_0.py` is now dead code,
+> superseded but not yet deleted). Ollama model selector fixed on packaged
+> builds (`QDialogButtonBox` via `eli/gui/qt_compat.py`).
 
 `eli/gui/` — **27,612 LOC**, **61 modules** (decomposed packages + panels/tabs/docks/widgets).
 A full native PySide6/PyQt desktop app (with a Qt-binding compat shim), plus a
@@ -80,6 +81,15 @@ v3 split the former ~12.6k-line monolith into a package:
   `ExecutorBridge`, `_GUIEngineAdapter`).
 - **`models.py`** — `LocalModelManager`, `OllamaModelManager`.
 - **`widgets.py`** — `_QABoard`, `_MiniTelemetryGraph`, zoomable views, `_CapabilityList`.
+
+Threading: long-running workers marshal results back to the GUI thread via a
+class-level `pyqtSignal` on `window.py`'s `EliMainWindow`, connected with an
+explicit `Qt.ConnectionType.QueuedConnection` (same pattern Training already
+used correctly, see below). Two screen-control call sites in
+`_mixins/screen_capture.py` (OCR results, "ask ELI" results) used
+`QTimer.singleShot(0, ...)` called *from* the worker thread instead, which has
+no guaranteed event loop — fixed to use the same signal pattern as the
+neighbouring capture handler.
 
 ## Labs workspace (`labs/`)
 
