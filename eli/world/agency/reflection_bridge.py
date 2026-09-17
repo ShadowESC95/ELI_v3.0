@@ -16,6 +16,7 @@ def load_persona_text() -> str:
                 chunks.append(path.read_text(encoding="utf-8", errors="replace")[:12000])
             except Exception:
                 log.debug("reflection_bridge persona read skipped", exc_info=True)
+    return "\n\n".join(chunks)
 
 def send_reflection_to_world(summary: str, depth: float = 0.7, source: str = "reflection_bridge"):
     engine = EliWorldAutonomyEngine()
