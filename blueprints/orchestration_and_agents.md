@@ -1,9 +1,11 @@
 # ELI Orchestration & Agents — Full Topology
 
-> **Updated for 3.0.81.** 3.0.81 eliminated the Quick-mode cliff: all CHAT
-> modes run the orchestrator at scaled depth; retrieval is unified in
-> `eli/memory/retrieval.py`; Stage 12 learning is centralized in
-> `learning_coordinator.py`.
+> **Updated for 3.0.81, plus the ported v2.4.44/v2.4.45 verbatim-gate audit.**
+> 3.0.81 eliminated the Quick-mode cliff: all CHAT modes run the orchestrator
+> at scaled depth; retrieval is unified in `eli/memory/retrieval.py`; Stage
+> 12 learning is centralized in `learning_coordinator.py`. The
+> direct-vs-synthesize gate itself was audited against what executor
+> handlers actually return — see "Two agent stacks" below.
 
 Supersedes the earlier `agent_bus.md`, which only documented the parallel
 specialist bus and missed the real `AgentOrchestrator`. Read-only reference;
@@ -51,6 +53,23 @@ Flow inside `AgentOrchestrator.run()`:
   mode, up to 3 otherwise. For "grounded synthesis" actions the observations are
   assembled into context and passed to the LLM; for direct actions the executor
   result is returned as-is.
+
+  **The direct-vs-synthesize decision itself** is a set membership test —
+  `_deterministic_direct_payload_actions` in `eli/kernel/engine.py`. An
+  action in the set returns its executor's `content`/`response` string
+  verbatim in quick mode; anything not in it is eligible for
+  `_compact_grounded_synthesis()` to re-narrate through the LLM (constrained
+  to quote from evidence, but still a rewrite pass, not the raw string). A
+  second, stronger set, `_verbatim_always_actions`, forces verbatim in
+  *every* mode, not just quick. Ported from v2.4.44/v2.4.45: 68 actions
+  whose executor handlers already build a complete, correct `content`
+  string — led by `READ_FILE`, `SHELL_EXEC`, and `MCP_CALL` (raw file
+  content / raw command output / raw live-tool output, none of which may be
+  paraphrased by an LLM synthesis pass without breaking the guarantee that
+  the answer matches what's actually on disk or what a tool actually
+  printed) — were missing from `_deterministic_direct_payload_actions`
+  entirely and have been added (see
+  `tests/test_deterministic_actions_cover_status_and_read_file.py`).
 - **CHAT** (orchestrator.py:742–897): planner → shared retrieval →
   **`dispatch_specialists()`** (mode-aware fan-out; memory skipped when already
   prefetched) → context assembly → persona handoff → generation. Private

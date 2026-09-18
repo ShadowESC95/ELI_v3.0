@@ -4,6 +4,12 @@
 > exists as a secondary path). VRAM fit reads `{arch}.block_count` from the GGUF
 > header (model-agnostic) with a size heuristic fallback only when metadata is
 > unreadable. Token budgets scale by reasoning mode via `reasoning_modes.py`.
+> Ported from v2.4.39–v2.4.45: `get_live_gpu_telemetry()` consolidation (see
+> "Hardware profiling" below), real per-model VRAM lookup instead of a flat
+> guess on live-probe failure, an uncapped unified-memory (Apple Silicon /
+> AMD APU) budget, sanitized subprocess env before shelling out to
+> `nvidia-smi`/`rocm-smi`/`lspci`, and a stale `llm.n_ctx()` read fixed so it
+> can no longer oversize a prompt past the context the model enforces.
 
 How ELI loads a model, talks to it, and adapts to whatever machine it's on. The
 inference path is model-agnostic (see memory `eli-model-agnostic`); the boot path
@@ -77,13 +83,24 @@ whatever the card.
   `recommend()` and the startup optimizer use `cpu_ram_fit_config()` — same
   `smart_fit_config` math, budgeted from live RAM instead.
 
-Vendor parity leaks at the ~15 sites that bypass `hardware_profile` and
-re-implement `nvidia-smi` directly instead of reading the profile it already
-built — e.g. `perception/local_whisper_stt.py`'s `_gpu_total_mb()` and a few
-status-reporting surfaces (`self_status.py`, `truth_report.py`) that fall back
-to "GPU telemetry unavailable" on non-NVIDIA hardware they could otherwise
-read from the shared profile. The fix direction is routing those sites through
-`hardware_profile` rather than adding more vendor detection.
+**`get_live_gpu_telemetry()`** — the canonical live GPU status function
+(ported from v2.4.44/v2.4.45), returning
+`{ok, name, vendor, estimated, total_mb, free_mb, used_mb, util_pct,
+temp_c, power_w, power_limit_w, driver, live_probe_failed}`. Calls
+`detect_hardware()` for base identity, then for NVIDIA does one live
+`nvidia-smi` query (util/temp/power via a sanitized subprocess env — a
+frozen build's own bundled `LD_LIBRARY_PATH` can make the real tool
+silently fail), for AMD does one live `rocm-smi` VRAM query, else uses
+`detect_hardware()`'s own estimate. This replaced ~8 independent sites that
+each shelled out to `nvidia-smi` on their own and said "unavailable" on
+every AMD/Intel/Apple machine, or on any NVIDIA machine with a driver
+hiccup: `GPU_STATUS` (`executor_enhanced.py`), `self_status.py`,
+`truth_report.py`, `deterministic_grounding_gate.py` (×2),
+`user_visible_response_surface.py`, `contracts/runtime_status.py`, and
+`gguf_inference.py`'s adaptive cold-load probe. `local_whisper_stt.py`'s
+`_gpu_total_mb()` was routed through `detect_hardware()` directly instead
+(ctranslate2/faster-whisper has no ROCm backend, so AMD/Intel correctly
+stay on CPU there — that was correct-by-design, not a bug).
 
 ## GPU pack (`packaging/pyinstaller/eli_gpu_pack.py`, `core/gpu_pack_runtime.py`)
 
