@@ -196,19 +196,47 @@ _gpu_pipeline() {
 }
 
 if command -v nvidia-smi &>/dev/null; then
-    _NGPU="$(_gpu_pipeline bash -c 'nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -c . || true')"
+    # Broken drivers often print the failure on stdout — never count that as a
+    # GPU (was selecting CUDA on CPU laptops: "NVIDIA-SMI has failed… (0 MiB)").
+    # Confirmed in the field: a DIFFERENT failure ("Failed to initialize NVML:
+    # Driver/library version mismatch", e.g. after a driver update with no
+    # reboot) prints a SECOND line — "NVML library version: 595.91" — that
+    # matches none of the keyword filters below and survives as a fake GPU
+    # name, wrongly selecting the CUDA build plan on a driver that cannot
+    # build/run CUDA right now. The exit code is the reliable signal nvidia-smi
+    # gives on both failures; check that FIRST, before trusting any output line.
+    set +o pipefail
+    _NGPU_RAW="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)" && _SMI_RC=0 || _SMI_RC=$?
+    set -o pipefail
+    if [ "$_SMI_RC" -eq 0 ]; then
+        _NGPU_NAMES="$(printf '%s\n' "$_NGPU_RAW" | grep -viE 'failed|couldn.t communicate|NVIDIA-SMI|driver not|no devices were found|^[[:space:]]*$' || true)"
+        _NGPU="$(printf '%s\n' "$_NGPU_NAMES" | grep -c . || true)"
+        _GPU0="$(printf '%s\n' "$_NGPU_NAMES" | head -1 || true)"
+        _VRAMTOT="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END{printf "%d", s}' || true)"
+    else
+        _NGPU_NAMES=""
+        _NGPU=0
+        _GPU0=""
+        _VRAMTOT=""
+    fi
     _NGPU="${_NGPU//$'\r'/}"
     _NGPU="${_NGPU//$'\n'/}"
     _NGPU="${_NGPU:-0}"
     if [ "${_NGPU}" -ge 1 ] 2>/dev/null; then
-        _GPU0="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
-        _VRAMTOT="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk '{s+=$1} END{printf "%d", s}')"
         if [ "$_NGPU" -gt 1 ]; then
             ok "GPU         ${B}${GRN}${_NGPU}× ${_GPU0}${R}  (${_VRAMTOT} MiB total VRAM)   ${D}— scales to multi-GPU${R}"
         else
             ok "GPU         ${B}${GRN}${_GPU0}${R}  (${_VRAMTOT} MiB)"
         fi
         HAS_NVIDIA=1
+    else
+        warn "GPU         nvidia-smi present but driver unusable — not selecting CUDA"
+        warn "            This install runs CPU-only. If the card itself is fine (a"
+        warn "            driver update just needs a reboot to take effect, say), you"
+        warn "            do not need to re-run this installer for GPU acceleration --"
+        warn "            reboot if needed, then use ELI's own 'Install CUDA GPU pack'"
+        warn "            button (Startup Model Selection) to fetch a pre-built GPU"
+        warn "            wheel instead of rebuilding llama-cpp-python from source."
     fi
 fi
 # AMD GPU (ROCm) — checked only when there's no NVIDIA + not macOS. rocminfo/rocm-smi or the
@@ -546,7 +574,14 @@ _llama_rebuild_for_this_cpu() {
             export CUDACXX="$_NVCC"
             _ARCHS="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
                       | tr -d '.' | sort -u | paste -sd';' -)"
-            [ -z "$_ARCHS" ] && _ARCHS="native"
+            # "native" asks nvcc to probe the GPU itself at build time -- which
+            # depends on the SAME driver stack nvidia-smi just failed to talk
+            # to, so it is not a safe fallback when the query above came back
+            # empty because the driver is broken (confirmed in the field: this
+            # is exactly how a slow, doomed from-source build failure started).
+            # Fall back to the same known-good architecture list the CI-built
+            # GPU pack uses instead of trusting "native" here.
+            [ -z "$_ARCHS" ] && _ARCHS="61;75;86;89"
             CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$_ARCHS $_safe" \
                 _pip install --force-reinstall --no-cache-dir "llama-cpp-python>=$_min" --quiet || return 1
         else
@@ -693,7 +728,14 @@ else
             # Build only for the GPUs actually present; "all" multiplies build time.
             _ARCHS="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
                       | tr -d '.' | sort -u | paste -sd';' -)"
-            [ -z "$_ARCHS" ] && _ARCHS="native"
+            # "native" asks nvcc to probe the GPU itself at build time -- which
+            # depends on the SAME driver stack nvidia-smi just failed to talk
+            # to, so it is not a safe fallback when the query above came back
+            # empty because the driver is broken (confirmed in the field: this
+            # is exactly how a slow, doomed from-source build failure started).
+            # Fall back to the same known-good architecture list the CI-built
+            # GPU pack uses instead of trusting "native" here.
+            [ -z "$_ARCHS" ] && _ARCHS="61;75;86;89"
             if CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$_ARCHS $_safe" \
                     _pip install "llama-cpp-python>=$LLAMA_MIN" --no-cache-dir --quiet; then
                 echo "[OK] llama-cpp-python built with CUDA (arch $_ARCHS)."

@@ -122,21 +122,73 @@ def _lspci_display_lines() -> list[str]:
     ]
 
 
+_NVIDIA_SMI_NOISE = re.compile(
+    r"(?i)failed|couldn.?t\s+communicate|nvidia-smi|driver\s+not|"
+    r"no\s+devices\s+were\s+found|insufficient\s+permissions|"
+    r"not\s+supported|has\s+failed"
+)
+
+
+def _nvidia_smi_gpu_names() -> list[str]:
+    """Return usable GPU names from nvidia-smi — never treat error text as a GPU.
+
+    Broken driver installs still print to stdout (e.g. ``NVIDIA-SMI has failed
+    because it couldn't communicate with the NVIDIA driver``, or — confirmed in
+    the field — ``Failed to initialize NVML: Driver/library version mismatch``
+    followed by a SECOND line, ``NVML library version: 595.91``, that matches
+    none of the keyword filters below and survives as a fake "GPU name").
+    Counting either as a GPU incorrectly selects the CUDA install path on a
+    machine whose driver cannot actually run CUDA right now. The exit code is
+    the reliable signal — nvidia-smi returns nonzero on exactly this failure —
+    so check that FIRST, before trusting any line of its stdout.
+    """
+    if not shutil.which("nvidia-smi"):
+        return []
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=6.0, check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    names: list[str] = []
+    for ln in (proc.stdout or "").splitlines():
+        name = ln.strip()
+        if not name or _NVIDIA_SMI_NOISE.search(name):
+            continue
+        # Real CSV names are short product strings, not multi-sentence errors.
+        if len(name) > 120 or "\t" in name:
+            continue
+        names.append(name)
+    return names
+
+
 def detect_accelerators() -> AcceleratorInventory:
     notes: list[str] = []
     nvidia = amd = intel_igpu = intel_arc = qualcomm = False
     apple_metal = sys.platform == "darwin"
-
-    if shutil.which("nvidia-smi"):
-        smi = _run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            timeout=6.0,
-        )
-        if any(ln.strip() for ln in smi.splitlines()):
-            nvidia = True
+    smi_names = _nvidia_smi_gpu_names()
+    # Positive evidence the driver can't run CUDA right now (smi present but
+    # every query failed) must not be overridden by the WMI/lspci fallback
+    # below just because the PCI device is still physically there.
+    _nvidia_driver_broken = bool(shutil.which("nvidia-smi")) and not smi_names
+    if smi_names:
+        nvidia = True
+    elif _nvidia_driver_broken:
+        notes.append("nvidia-smi present but driver unusable — not selecting CUDA")
 
     if shutil.which("rocm-smi"):
-        amd = True
+        # The BINARY existing is not the same as a working AMD GPU behind it —
+        # confirmed in the field: rocm-smi installed (a generic driver-utils
+        # package) on a machine with no AMD GPU at all, erroring "Driver not
+        # initialized (amdgpu not found in modules)" the moment it's actually
+        # queried. Require it to successfully report something before trusting it.
+        _rocm_out = _run(["rocm-smi", "--showproductname"], timeout=6.0)
+        if re.search(r"(?i)card\s*\d|gpu\s*\[|series|radeon|instinct", _rocm_out) \
+                and not re.search(r"(?i)driver not initialized|not found|error", _rocm_out):
+            amd = True
 
     if sys.platform == "win32":
         out = _run(
@@ -153,8 +205,9 @@ def detect_accelerators() -> AcceleratorInventory:
                 continue
             low = name.lower()
             if "nvidia" in low:
-                nvidia = True
-            elif re.search(r"amd|radeon|ati", low):
+                if not _nvidia_driver_broken:
+                    nvidia = True
+            elif re.search(r"(?:\bamd\b|\bati\b|\bradeon\b)", low):
                 amd = True
             elif re.search(r"arc\s*(a|pro|b)?\d", low) or "intel arc" in low:
                 intel_arc = True
@@ -166,8 +219,9 @@ def detect_accelerators() -> AcceleratorInventory:
         for ln in _lspci_display_lines():
             low = ln.lower()
             if "nvidia" in low:
-                nvidia = True
-            elif re.search(r"amd|ati|radeon", low):
+                if not _nvidia_driver_broken:
+                    nvidia = True
+            elif re.search(r"(?:\bamd\b|\bati\b|\bradeon\b)", low):
                 amd = True
             elif re.search(r"arc\s*(a|pro|b)?\d", low):
                 intel_arc = True
