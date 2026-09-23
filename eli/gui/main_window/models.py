@@ -18,39 +18,59 @@ class LocalModelManager:
         n_gpu_layers: int,
         *,
         requested_n_gpu_layers: Optional[int] = None,
+        requested_n_ctx: Optional[int] = None,
+        requested_n_batch: Optional[int] = None,
         gpu_offload_supported: Optional[bool] = None,
     ):
         try:
             from eli.core.paths import get_paths
             snap_path = Path(get_paths().artifacts_dir) / 'runtime_snapshot.json'
             effective_n_gpu_layers = int(n_gpu_layers or 0)
+            effective_n_ctx = int(n_ctx or 0)
+            effective_n_batch = int(getattr(self, 'n_batch', 0) or 0)
             requested_layers = int(
                 requested_n_gpu_layers
                 if requested_n_gpu_layers is not None
                 else effective_n_gpu_layers
             )
+            # ctx/batch used to collapse onto whatever actually loaded here --
+            # only gpu_layers kept an honest requested-vs-effective split. That
+            # meant a smart-fit fallback (e.g. ctx cut 12384->4096 to fit VRAM)
+            # got reported back as "requested", and GPU_STATUS/EXPLAIN grounded
+            # a confident "loaded exactly as requested, no fallback occurred"
+            # on evidence the load ladder had already overwritten (port of
+            # v2.4.55). The caller now passes the operator's TRUE original
+            # ask; default to the effective value only when a caller genuinely
+            # has nothing else (e.g. a snapshot re-publish with no fallback
+            # story to tell).
+            requested_ctx = int(
+                requested_n_ctx if requested_n_ctx is not None else effective_n_ctx
+            )
+            requested_batch = int(
+                requested_n_batch if requested_n_batch is not None else effective_n_batch
+            )
             payload = {
                 'provider': 'gguf',
                 'model_path': str(model_path),
                 'model_name': Path(model_path).name if model_path else '',
-                'n_ctx': int(n_ctx or 0),
+                'n_ctx': effective_n_ctx,
                 'n_gpu_layers': effective_n_gpu_layers,
                 'n_threads': int(n_threads or 0),
-                'n_batch': int(getattr(self, 'n_batch', 0) or 0),
+                'n_batch': effective_n_batch,
                 'requested_n_gpu_layers': requested_layers,
                 'gpu_offload_supported': gpu_offload_supported,
                 'load_mode': 'GPU' if effective_n_gpu_layers > 0 else 'CPU',
                 'requested': {
-                    'n_ctx': int(n_ctx or 0),
+                    'n_ctx': requested_ctx,
                     'n_gpu_layers': requested_layers,
                     'n_threads': int(n_threads or 0),
-                    'n_batch': int(getattr(self, 'n_batch', 0) or 0),
+                    'n_batch': requested_batch,
                 },
                 'effective': {
-                    'n_ctx': int(n_ctx or 0),
+                    'n_ctx': effective_n_ctx,
                     'n_gpu_layers': effective_n_gpu_layers,
                     'n_threads': int(n_threads or 0),
-                    'n_batch': int(getattr(self, 'n_batch', 0) or 0),
+                    'n_batch': effective_n_batch,
                 },
                 'loaded': bool(getattr(self, 'is_loaded', False)),
                 'pid': __import__('os').getpid(),
@@ -327,6 +347,7 @@ class LocalModelManager:
                         reserve_mb=_sf_reserve, kv_quantized=_sf_kvq,
                         min_batch=_sf_min_batch,
                         model_path=str(path_obj),
+                        user_gpu_layers=_user_gpu_layers,
                     )
                     log.debug(
                         f"[GUI][LOAD] smart-fit (post-init free={_sf_gpu.free_mb}MB "
@@ -750,6 +771,8 @@ class LocalModelManager:
                 n_threads,
                 self.n_gpu_layers,
                 requested_n_gpu_layers=requested_n_gpu_layers,
+                requested_n_ctx=_user_ctx,
+                requested_n_batch=_user_batch,
                 gpu_offload_supported=gpu_offload_supported,
             )
             return True

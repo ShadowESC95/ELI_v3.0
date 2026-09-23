@@ -1593,6 +1593,7 @@ def smart_fit_config(
     min_ctx: int = 2048,
     min_batch: int = 128,
     min_gpu_fraction: float = 0.25,
+    user_gpu_layers: Optional[int] = None,
 ) -> tuple[int, int, int]:
     """Smart loader fit.
 
@@ -1629,12 +1630,23 @@ def smart_fit_config(
     ctx = max(min_ctx, int(user_ctx))
     _target_ctx = int(ctx)
     batch = max(min_batch, int(user_batch))
-    layers = total  # start fully offloaded
+    # The operator's own layer count is a CEILING, same as ctx/batch below: this
+    # function may reduce it to fit VRAM, but must never hand back more layers
+    # than were asked for just because headroom opened up elsewhere. Without
+    # this, cutting ctx to fit frees VRAM and the "fine pack" backfill loop
+    # further down spends that headroom on MORE layers than the operator
+    # chose (port of v2.4.55 -- ported from v2, not independently found in
+    # v3; live report there: operator asked for gpu_layers=10, smart-fit cut
+    # ctx 12384->4096 to fit, then backfilled layers 10->11 because the
+    # smaller KV cache left room, silently overriding a value the operator
+    # never asked to change).
+    ceiling = total if user_gpu_layers is None else max(0, min(total, int(user_gpu_layers)))
+    layers = ceiling  # start fully offloaded (up to the operator's ceiling)
 
     if budget <= 0:
         return ctx, 0, batch  # no GPU budget → CPU-only
 
-    floor = max(0, int(total * min_gpu_fraction))
+    floor = min(max(0, int(total * min_gpu_fraction)), ceiling)
     step = max(1, total // 10)
 
     # 1) GPU layers, in increments, down to the floor.
@@ -1660,7 +1672,7 @@ def smart_fit_config(
     # time while they still fit, so GPU offload FILLS the remaining budget — "give
     # the leftover VRAM to the layers". Strictly bounded by budget, so it can never
     # reintroduce an OOM; a no-op when already fully offloaded or CPU-only-by-necessity.
-    while layers < total and _needed(ctx, layers + 1, batch) <= budget:
+    while layers < ceiling and _needed(ctx, layers + 1, batch) <= budget:
         layers += 1
 
     # When ctx had to be reduced (step 4) and we still ended CPU-only, re-probe at
@@ -1669,7 +1681,7 @@ def smart_fit_config(
     # intentional ("ctx last, quality over speed").
     if layers <= 0 and budget > 0 and ctx < _target_ctx:
         probe_layers = 0
-        while probe_layers < total and _needed(min_ctx, probe_layers + 1, min_batch) <= budget:
+        while probe_layers < ceiling and _needed(min_ctx, probe_layers + 1, min_batch) <= budget:
             probe_layers += 1
         if probe_layers > 0:
             ctx, batch, layers = min_ctx, min_batch, probe_layers
