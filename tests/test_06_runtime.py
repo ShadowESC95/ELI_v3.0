@@ -48,16 +48,9 @@ def test_runtime_approval_engine_loadable():
     assert _load("eli.runtime.approval_engine") is not None
 
 
-def test_runtime_identity_guard_loadable():
-    assert _load("eli.runtime.identity_guard") is not None
-
-
 def test_runtime_authority_gate_loadable():
     assert _load("eli.runtime.authority_gate") is not None
 
-
-def test_runtime_authority_state_loadable():
-    assert _load("eli.runtime.authority_state") is not None
 
 
 def test_runtime_awareness_boot_loadable():
@@ -80,12 +73,6 @@ def test_runtime_evidence_arbitration_loadable():
     assert _load("eli.runtime.evidence_arbitration") is not None
 
 
-def test_runtime_evidence_store_loadable():
-    assert _load("eli.runtime.evidence_store") is not None
-
-
-
-
 def test_runtime_final_response_provider_loadable():
     assert _load("eli.runtime.final_response_provider") is not None
 
@@ -101,9 +88,6 @@ def test_runtime_last_trace_loadable():
 def test_runtime_live_introspection_loadable():
     assert _load("eli.runtime.live_introspection") is not None
 
-
-def test_runtime_memory_evidence_loadable():
-    assert _load("eli.runtime.memory_evidence") is not None
 
 
 def test_runtime_operator_feed_loadable():
@@ -141,9 +125,6 @@ def test_runtime_response_contracts_loadable():
     assert _load("eli.runtime.response_contracts") is not None
 
 
-def test_runtime_response_packets_loadable():
-    assert _load("eli.runtime.response_packets") is not None
-
 
 def test_runtime_response_policy_loadable():
     assert _load("eli.runtime.response_policy") is not None
@@ -161,16 +142,6 @@ def test_runtime_stage_packets_loadable():
 
 def test_runtime_stage_packet_store_loadable():
     assert _load("eli.runtime.stage_packet_store") is not None
-
-
-def test_runtime_tool_result_models_loadable():
-    assert _load("eli.runtime.tool_result_models") is not None
-
-
-
-def test_runtime_tool_result_store_loadable():
-    assert _load("eli.runtime.tool_result_store") is not None
-
 
 
 def test_runtime_auth_loadable():

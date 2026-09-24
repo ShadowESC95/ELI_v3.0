@@ -13,6 +13,9 @@ Flags:
   --deactivate-license
                    Remove local license activation and exit.
   --start-trial    Start this install's 7-day trial and exit.
+  --mcp-server     Run ELI as an MCP server on stdin/stdout, for other apps.
+  --mcp-config [--allow-control]
+                   Print the mcpServers entry to paste into another app's config.
   --license, --licence
                    Print the PolyForm Internal Use terms ELI ships under, then
                    exit. Distinct from --license-status, which reports this
@@ -43,6 +46,17 @@ def main() -> int:
     if "--license" in args or "--licence" in args:
         from eli.runtime.license_info import print_license
         return print_license()
+
+    # ── ELI as an MCP server ──────────────────────────────────────────────────
+    # Before any GUI/engine import: the protocol owns stdout.
+    if "--mcp-server" in args:
+        from eli.integrations.mcp.server import main as _mcp_main
+        return _mcp_main()
+    if "--mcp-config" in args:
+        import json
+        from eli.integrations.mcp.server import connection_config
+        print(json.dumps(connection_config("--allow-control" in args), indent=2))
+        return 0
 
     # ── Trust-agent utility ───────────────────────────────────────────────────
     if "--trust-agent" in args:
