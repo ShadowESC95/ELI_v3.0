@@ -23,6 +23,12 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'CHECK_TARGET_STATUS',
     'CLOSE_APP',
     'CONFIRM_PENDING_REMEDIATION',  # apt/mpv install confirm — executor must run, not narrate
+    'CANCEL_TASK',  # deterministic executor result: the receipt or list is the answer
+    'COMPUTER_USE',  # deterministic executor result: the receipt or list is the answer
+    'LIST_TASKS',  # deterministic executor result: the receipt or list is the answer
+    'RESCHEDULE_TASK',  # deterministic executor result: the receipt or list is the answer
+    'MEMORY_AUDIT',  # deterministic executor result: the receipt or list is the answer
+    'MEMORY_FORGET',  # the list of what would be deleted, and the deletion receipt, are the executor's word
     'MEMORY_STORE',  # the executor's verified receipt (row, index) is the confirmation; a model paraphrase could deny it
     'CREATE_FILE',  # fs mutation: executor writes + reads back, result is authoritative — never let the heuristic agent profile drop `system` and punt "run touch yourself"
     'DATE',

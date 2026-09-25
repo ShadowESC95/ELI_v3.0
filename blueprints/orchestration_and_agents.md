@@ -48,7 +48,7 @@ Flow inside `AgentOrchestrator.run()`:
   observation loop**: run the executor, ask the loaded model for `ANSWER` or
   `TOOL:<action> <args>`, chain to the next tool and accumulate observations. One iteration in
   fast mode, up to three otherwise. The proposed tool is validated against the executor's
-  `SUPPORTED_ACTIONS` (214 actions) and the loop stops on an unknown action; `intent["args"]`
+  `SUPPORTED_ACTIONS` (215 actions) and the loop stops on an unknown action; `intent["args"]`
   are merged rather than overwritten. For "grounded synthesis" actions the observations are
   assembled into context and passed to the model; for direct actions the executor result is
   returned as is.
@@ -68,7 +68,7 @@ Flow inside `AgentOrchestrator.run()`:
 - `eli/runtime/response_contracts.py::_QUICK_ACTIONS` (8 entries) only feeds the prompt header
   and never decides verbatim versus synthesis.
 
-The 190 routable actions were each checked against their executor handler's real return shape
+The 192 routable actions were each checked against their executor handler's real return shape
 (not assumed from the name): raw file reads, shell output, MCP results, transcriptions and OCR
 text, confirmations and status reports are verbatim; `ANALYZE_IMAGE`, `ANALYZE_PDF[_FOLDER]`,
 `SCREEN_READ_ANALYZE`, `DATA_FABRICATOR`, `GENERATE_PROJECT`, `SEQUENCE` and `MULTI_COMMAND`

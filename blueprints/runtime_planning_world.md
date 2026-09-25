@@ -45,11 +45,48 @@ Background cognition + goal/queue machinery:
   a two-DB split: reads user-facing memory/conversation from the **user DB**,
   writes proactive observations/improvements/errors to the **agent DB** (keeps
   ELI's own machinations out of user recall). Background thread.
-- `autonomy_scheduler.py` — schedules autonomous actions (throttled).
+- `autonomy_scheduler.py` — schedules autonomous actions (throttled). Also
+  the "decide to invoke it" layer for self-upgrade and LoRA retraining
+  (`_maybe_check_self_upgrade`/`_maybe_check_lora_retrain`, added
+  2026-09-18): both mechanisms were fully built and safety-gated but
+  pull-only — nothing inside ELI ever decided on its own to use them, even
+  with a newer release on GitHub or enough reviewed training data sitting
+  idle. Only fires in `goal_driven` operator-policy mode (every other mode
+  is unchanged, still pull-only), on a multi-day throttle per check kind,
+  and routes through the same `schedule_request(kind=...)` entry point and
+  downstream safety machinery a human-typed "update ELI overnight" already
+  used — this closes the trigger gap without adding a new execution path.
 - `goal_store.py`, `proposal_queue.py`, `proposal_adapters.py`,
   `attention_queue.py`, `jobqueue.py`, `operator_goal_actions.py`, `habits.py` —
   goal persistence, capability-proposal queue, attention prioritisation, a job
   queue, and habit scheduling.
+- **Routine detection** (`habits.py`, `routine_stats.py`): app launches are clustered on the
+  clock as a circle (neighbours within 30 minutes join, across midnight too), so 08:58 and 09:02
+  are one routine. A routine needs launches on at least three distinct days. `detect_shift` flags a
+  routine whose recent times sit an hour or more from the earlier ones, and `detect_lapse` flags one
+  that stopped, judged against the days the person was active at all; each is recorded once as an
+  observation and never changes a rule you enabled. `detect_habits` returns
+  `{suggested, shifts, lapsed}`. The scheduler keeps its run keys on disk so a restart in the same
+  minute does not run a habit twice, and a plain-text reply from the engine is reported as unverified
+  rather than as success.
+- **Lessons** (`runtime/lessons.py`): failures that recur (same action, same error, three or more
+  times) become lessons with a trigger, evidence, proposed change, predicted outcome and an expiry.
+  Each finished action of that kind gives its lessons one check; a lesson is retired when it expires
+  unconfirmed or its checks show it does not help, and renewed a few times when they do.
+- **Lessons, checked against the baseline.** A lesson records the action's success rate before it
+  existed and is retired unless later runs beat that rate by a margin. It is scoped to the argument
+  names all its failures shared and is checked on sibling actions with the same failure category,
+  so `transfers()` says whether the advice held elsewhere.
+- **Reliability and calibration** (`evidence_ledger.py`): `action_reliability` and `predict_success`
+  give a recency-weighted success rate per action from the recorded tool runs; each run stores the
+  prediction made before it, and `calibration_report` scores them (Brier score and predicted versus
+  observed by band). The awareness block lists actions that have been failing lately.
+- **Task records** (`goal_store.py`): a task is a goal the scheduler does not tick, carrying
+  constraints, decisions, finished steps, artifacts and open questions. `capture_task_events` reads
+  clear phrasings from the user's messages ("we decided to", "we still need to", "let's work on"),
+  and `task_brief` puts unfinished work into the next session's awareness block.
+- **World events.** `review_completed` eases repair pressure after any review;
+  `repair_completed` fires only for a verified repair.
 - `goal_autogenesis.py` (NEW, 2026-06-08) — **closes the autonomy loop**: the goal
   stack (goal_store → `due_goals` → `governed_goal_tick` → proposal_queue) was fully
   wired but the store was always EMPTY because `create_goal` was operator-only, so
@@ -115,3 +152,7 @@ The substrate behind ELI's emergent self-state (autonomy pressure, awareness,
   4. Plugin registry points at an `eli-plugins/registry` GitHub URL — fine as
      opt-in, but ensure it degrades cleanly offline (the bundled fallback
      exists; verify it's always used when the network is absent).
+  5. **Self-upgrade/LoRA were pull-only — RESOLVED 2026-09-18** —
+     `autonomy_scheduler.py` now decides on its own, in `goal_driven` mode,
+     when to schedule a `self_upgrade` check or a `lora` retrain, instead of
+     requiring an explicit human ask or pre-schedule every time.

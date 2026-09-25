@@ -11,8 +11,8 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime and
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in
 > `ELI_USER_MANUAL.md`). No cloud on the inference path, no hardcoded model.
-> **231,141 lines across 609 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
-> 235 capabilities in `capability_manifest.json`, 190 of them routable and 214 in the
+> **231,687 lines across 612 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
+> 237 capabilities in `capability_manifest.json`, 192 of them routable and 214 in the
 > executor's supported list.
 
 ---
@@ -247,8 +247,8 @@ The known weak seam is internal state leaking into spoken output on the plain CH
 
 ## 10. Execution layer (`eli/execution/executor_enhanced.py`)
 
-- `execute(action, args) -> dict`. The executor's supported list holds **214 actions**; the
-  manifest declares **235 capabilities**, of which **190 are routable** and 214 are in the
+- `execute(action, args) -> dict`. The executor's supported list holds **215 actions**; the
+  manifest declares **237 capabilities**, of which **192 are routable** and 215 are in the
   supported list.
 - **Fast path** (`engine.py`): deterministic OS, media, status and job actions (`VOLUME`,
   `MEDIA_CONTROL`, `NEXT_MEDIA`, `OPEN_APP`, `DATE`, `SHELL_EXEC`, `ANALYZE_IMAGE`,
@@ -339,7 +339,17 @@ recent conversation, merged and reranked (§7).
   focus, recurring errors, active project); runs an autonomy tick every 30 minutes.
 - **Self-improvement loop** (`runtime/self_improvement.py`): started at boot, analyses
   failures immediately and then every 24 hours. Repair by the coding agent is opt-in and
-  bounded.
+  bounded. A failure is stored with a capsule (input, versions, model, error class), and a
+  candidate patch is tried on a hard-linked copy of the tree and compared with the same tests on
+  the untouched tree: only a candidate that fixes something and breaks nothing is applied, every
+  candidate stays in the archive (`code_patches`) with its verdict and cost, and the tests, the
+  evaluator and the safety gates cannot be patched by a candidate. `ELI_SELFPATCH_UNPROVEN=1`
+  restores applying without proof. A failure is stored with a capsule (input, versions, model, error class), and a
+  candidate patch is tried on a hard-linked copy of the tree and compared with the same tests on
+  the untouched tree: only a candidate that fixes something and breaks nothing is applied, every
+  candidate stays in the archive (`code_patches`) with its verdict and cost, and the tests, the
+  evaluator and the safety gates cannot be patched by a candidate. `ELI_SELFPATCH_UNPROVEN=1`
+  restores applying without proof.
 - **Habit scheduler** (`planning/habits_scheduler.py`, `habits.py`).
 - **Scheduler** (`kernel/scheduler.py`); **background tasks** (`runtime/background_tasks.py`).
 - **Code monitor** (`runtime/code_monitor.py`); **ambient vision loop**.
@@ -422,7 +432,7 @@ tts_piper/  Piper voice files shipped with the repo
    surface.
 2. **Internal state → spoken output.** The recurring failure class. The grounding gate and
    escalation defend it; they do not close it on the plain CHAT path.
-3. **Swallowed errors.** 207 handlers are a lone `pass` and 5,258 catch `Exception`,
+3. **Swallowed errors.** 210 handlers are a lone `pass` and 5,303 catch `Exception`,
    most of them logging at debug level. A ratchet test (`tests/claims/test_no_silent_swallow.py`)
    stops the silent count rising.
 4. **Latency versus model size.** On an 8 GB GPU a 24B model at Q5 offloads few layers and

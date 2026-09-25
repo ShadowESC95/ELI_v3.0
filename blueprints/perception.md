@@ -12,7 +12,7 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
 | `wakeword.py` | ~450 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head) |
 | `voice_profile.py` | ~420 | **prosody + labelled-emotion** (tone/question detection) |
-| `tts_router.py` | 1219 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
+| `tts_router.py` | 1244 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
 | `tts_xtts.py` | 378 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
 | `vision.py` | 698 |

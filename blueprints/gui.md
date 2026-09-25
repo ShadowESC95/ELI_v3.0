@@ -60,7 +60,7 @@ flowchart TD
 | `main_window/widgets.py`, `_common.py` | 493, 557 | shared widgets and helpers |
 | `labs/` (16 modules) | 6.4k | the Labs sub-tabs; `report_tab.py` is the largest (3327) |
 | `labs_tab.py`, `gui_eli_original.py` | 30, 7 | compatibility shims that re-export the packages above |
-| `eli_pro_audio_gui_v2_0.py` | 12816 | the pre-decomposition monolith, kept for compatibility; `app.py` does not launch it |
+| `eli_pro_audio_gui_v2_0.py` | 12822 | the pre-decomposition monolith, kept for compatibility; `app.py` does not launch it |
 | `panels/startup.py` | 1974 | guided first boot: hardware, model pick or download, tuning |
 | `panels/settings.py` | 825 | settings dialog including the Plugins and Marketplace sub-tabs |
 | `tabs/extensions_tab.py` | 1991 | Extensions tab |

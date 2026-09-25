@@ -35,8 +35,8 @@ in-process from the desktop GUI.
 
 ## 2. Scale and shape
 
-**231,141 lines across 609 Python files** in `eli/`, plus `api/server.py` (5,282 lines with
-an embedded dashboard) and **544 test files** under `tests/`.
+**231,687 lines across 612 Python files** in `eli/`, plus `api/server.py` (5,282 lines with
+an embedded dashboard) and **560 test files** under `tests/`.
 
 | Subsystem | Lines | Files | Role |
 |---|---:|---:|---|
@@ -68,8 +68,8 @@ another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server
   calculation is shared by the loader and the startup dialog; the fit priority
   (balanced, max GPU, max context) is a setting.
 - **Routing**: `execution/router_enhanced.py` is regex-first with an LLM-intent fallback
-  and an explicit priority pipeline, resolving to one of **235 manifest capabilities**
-  (190 routable, 214 in the executor's supported list, 219 in either). The full reference
+  and an explicit priority pipeline, resolving to one of **237 manifest capabilities**
+  (192 routable, 215 in the executor's supported list, 221 in either). The full reference
   with activation phrases is `capabilities_and_actions.md`.
 - **Orchestration**: `kernel/engine.py` runs the gradient orchestrator for all CHAT modes
   (Quick is light, Expert is deep); `dispatch_specialists()` composes the 15-agent
@@ -106,13 +106,13 @@ another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server
    app allowlists.
 4. **Breadth, integrated.** Vision, voice, OS control, memory, knowledge graph, plugins and
    self-training in one pipeline.
-5. **A large safety net.** 13,585 tests are collected; the structural tests catch broken
+5. **A large safety net.** 13,898 tests are collected; the structural tests catch broken
    imports, stale action lists and unpinned routes.
 
 ## 5. Where it is weak (measured)
 
-1. **Swallowed errors.** 5,258 handlers catch `Exception` (most log at debug level), 6 are
-   bare `except:`, and 207 are a lone `pass`. A ratchet test
+1. **Swallowed errors.** 5,303 handlers catch `Exception` (most log at debug level), 6 are
+   bare `except:`, and 210 are a lone `pass`. A ratchet test
    (`tests/claims/test_no_silent_swallow.py`) stops the silent count rising.
 2. **Large files.** The executor is an action ladder and the engine a long orchestration
    method; the regression surface is high and unit-testing is hard.

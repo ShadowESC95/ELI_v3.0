@@ -5943,7 +5943,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             # More confirmation/status/report actions whose handler already builds a complete
                             # content/response string, checked by reading each. MCP_CALL is the same danger class as
                             # READ_FILE/SHELL_EXEC: it returns a live tool's raw output, which must not be re-narrated.
-                            "ADD_EVENT", "PLUGIN_STATUS", "MEMORY_STORE",
+                            "ADD_EVENT", "PLUGIN_STATUS", "MEMORY_STORE", "MEMORY_FORGET", "CANCEL_TASK", "COMPUTER_USE", "LIST_TASKS", "RESCHEDULE_TASK", "MEMORY_AUDIT",
                             "GET_WEATHER", "PERSONA_LOCK_SET", "PERSONA_LOCK_CLEAR",
                             "SET_TONE", "CLEAR_TONE", "SET_USER_NAME",
                             "SET_COMMUNICATION_STYLE", "SET_VOICE",

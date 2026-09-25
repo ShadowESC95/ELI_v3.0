@@ -14,7 +14,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ╔══════════════════════════════════════════════════════════════════════════════════╗
 ║                                ELI — FULL ARCHITECTURE                             ║
 ║                100% local  ·  offline-by-default  ·  model-agnostic                ║
-║               231,141 LOC · 609 files · desktop GUI + web app server               ║
+║               231,687 LOC · 612 files · desktop GUI + web app server               ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
 
 ┌─ PRESENTATION ────────────────────────────────────────────────────────────────────┐
@@ -62,7 +62,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
         │              └────────────────────────────┬─────────────────────────────────────┘
         ▼                                           ▼
 ┌─ EXECUTION ───────────────────────────────────────────────────────────────────────┐
-│  execution/executor_enhanced.py  214 supported actions · 235 capabilities (190 routable)  │
+│  execution/executor_enhanced.py  215 supported actions · 237 capabilities (192 routable)  │
 │  media_runtime · operator_actions · background_tasks                                │
 │  PLUGINS(10): calendar document_reader media notes pomodoro weather                 │
 │              system_stats tts web web_automation        eli/coding :: CodeAgent     │
@@ -133,7 +133,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ## C. Module tree (LOC · key files · role)
 
 ```
-eli/  (231,141 LOC, 609 files)  ·  api/server.py  (FastAPI web app + dashboard)
+eli/  (231,687 LOC, 612 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │
 ├── __main__.py ················ entry dispatch (GUI | --headless)
 │
@@ -143,7 +143,7 @@ eli/  (231,141 LOC, 609 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │   ├── pipeline.py · state.py · world_model.py · self_upgrade.py
 │
 ├── execution/         26.3k ─── route → act
-│   ├── executor_enhanced.py   15.9k   214 supported / 235 manifest
+│   ├── executor_enhanced.py   15.9k   215 supported / 237 manifest
 │   ├── router_enhanced.py      8.3k   priority pipeline
 │   ├── execution_planner.py · route_authority.py · route_contracts.py
 │   ├── operator_actions.py · operator_policy.py

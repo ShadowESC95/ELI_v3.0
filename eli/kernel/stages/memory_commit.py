@@ -20,6 +20,12 @@ class MemoryCommitMixin:
     """Turn-commit stage: store memory / turns, learn from the executed result."""
 
     def _maybe_store_memory(self, text: str, role: str = "user") -> None:
+        if role == "user":
+            try:
+                from eli.planning.goal_store import capture_task_events
+                capture_task_events(text)
+            except Exception:
+                log.debug("task events not captured", exc_info=True)
         # Never store error strings as memories
         _err_patterns = (
             "gguf streaming failed", "gguf error", "model not ready",

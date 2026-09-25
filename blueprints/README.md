@@ -7,8 +7,8 @@ package's structure + the algorithm-bearing bodies; claims are grounded in what 
 inspected.
 
 > **Updated for 3.0.128.** Cognition unified with the v2 line (gradient orchestrator, shared
-> retrieval, S01–S12 tracing, memory storage policy). **231,141 lines across 609 `.py` files**,
-> **235** capabilities (**190** routable, **214** in `SUPPORTED_ACTIONS`, **219** in either). See
+> retrieval, S01–S12 tracing, memory storage policy). **231,687 lines across 612 `.py` files**,
+> **237** capabilities (**192** routable, **215** in `SUPPORTED_ACTIONS`, **221** in either). See
 > **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
 >
 > **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
@@ -48,7 +48,7 @@ inspected.
 - **[capability_catalogue.md](capability_catalogue.md)** — exhaustive, ground-truth
   catalogue of all actions (232) + every package's modules (5 parts).
 - **[project_overview.md](project_overview.md)** — start here for the engineering
-  view. What ELI is, scale (~231k LOC / 609 files + web app), architecture by layer, the
+  view. What ELI is, scale (~231k LOC / 612 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
   topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.
