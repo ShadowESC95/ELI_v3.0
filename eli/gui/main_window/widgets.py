@@ -478,7 +478,7 @@ class _GlobalScrollZoom(QObject):
                                     cf.setPointSize(new_size)
                                     child.setFont(cf)
                         except Exception:
-                            pass
+                            log.debug("suppressed exception", exc_info=True)
                         # Dark theme's stylesheet pins font sizes; regenerate it
                         # at the new size so zoom works on BOTH themes.
                         try:
@@ -489,5 +489,5 @@ class _GlobalScrollZoom(QObject):
             event.accept()
             return True
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return False

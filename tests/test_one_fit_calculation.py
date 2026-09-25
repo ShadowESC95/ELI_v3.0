@@ -15,14 +15,20 @@ The recommendation is displayed to the operator AND stored as the hw_profile_*
 fallback used when their settings fail to load, so a second answer is not a
 cosmetic problem.
 """
-import pathlib
-
 import pytest
 
+from eli.core import hardware_profile as hp
 from eli.core.hardware_profile import (HardwareProfile, _layers_for_size, recommend,
-                                       smart_fit_config, vram_reserve_mb)
+                                       unified_fit_config, vram_reserve_mb)
 
-MODEL = pathlib.Path("/tmp/test_models/Qwen_Qwen3-8B-Q4_K_M.gguf")
+
+@pytest.fixture(autouse=True)
+def _gpu_backend_active(monkeypatch):
+    """These cases simulate discrete-GPU hosts where the CUDA/Vulkan pack is active."""
+    monkeypatch.setattr(hp, "_llama_gpu_offload_available", lambda: True)
+    monkeypatch.delenv("ELI_VRAM_RESERVE_MB", raising=False)
+    monkeypatch.delenv("ELI_FORCE_GPU_LAYERS", raising=False)
+    monkeypatch.delenv("ELI_MIN_BATCH", raising=False)
 
 
 def _hw(free_mb: int, total_mb: int = 7752) -> HardwareProfile:
@@ -35,11 +41,18 @@ def _models(size_gb: float):
     return [{"name": "test.gguf", "path": "/tmp/test.gguf", "size_gb": size_gb}]
 
 
-def _loader_fit(size_gb: float, free_mb: int, ctx: int, kv_q: bool):
+def _loader_fit(size_gb: float, free_mb: int, ctx: int, kv_q: bool, avail_ram_gb: float):
     total = _layers_for_size(size_gb)
-    _c, layers, _b = smart_fit_config(size_gb, free_mb, user_ctx=ctx, user_batch=128,
-                                      reserve_mb=vram_reserve_mb(), kv_quantized=kv_q,
-                                      total_layers=total, min_batch=128)
+    _c, layers, _b = unified_fit_config(
+        size_gb, free_mb, avail_ram_gb,
+        user_ctx=ctx, user_batch=128,
+        reserve_mb=vram_reserve_mb(gpu_integrated=False),
+        kv_quantized=kv_q,
+        model_path="/tmp/test.gguf",
+        total_layers=total,
+        min_batch=128,
+        gpu_integrated=False,
+    )
     return _c, (total if int(layers) >= 99 else int(layers))
 
 
@@ -55,7 +68,14 @@ def test_the_recommendation_matches_what_the_loader_would_do(size_gb, free_mb, t
     hw = _hw(free_mb, total_mb)
     rec = recommend(hw, _models(size_gb))
     kv_q = bool(total_mb < 12000)
-    ctx, layers = _loader_fit(size_gb, free_mb, rec.n_ctx, kv_q)
+    # "auto" is derived from the model and this machine, not a constant: the
+    # invariant is that the recommendation equals the loader's fit of THAT target.
+    from eli.core.hardware_profile import auto_ctx_target
+    _target_ctx = auto_ctx_target(
+        "/tmp/test.gguf", size_gb, free_vram_mb=free_mb,
+        available_ram_gb=hw.available_ram_gb, use_gpu=True, kv_quantized=kv_q)
+    ctx, layers = _loader_fit(
+        size_gb, free_mb, int(_target_ctx), kv_q, hw.available_ram_gb)
     assert (rec.n_ctx, rec.n_gpu_layers) == (ctx, layers), (
         f"recommendation {rec.n_ctx}/{rec.n_gpu_layers} != load {ctx}/{layers}"
     )
@@ -68,13 +88,13 @@ def test_the_opposite_policy_blocks_are_gone():
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     for gone in ("after ctx settled", "_MIN_GPU_LAYERS", "from VRAM budget"):
         assert gone not in code, f"a second fit policy survived: {gone}"
-    assert "smart_fit_config(" in code, "recommend() no longer runs the loader's fit"
+    assert "unified_fit_config(" in code, "recommend() no longer runs the loader's fit"
 
 
 def test_the_fit_is_reported_to_the_operator():
     """The tab shows rec.reasoning; the fit must be visible there, not silent."""
     rec = recommend(_hw(6168), _models(4.68))
-    assert any("Fit (same calculation the loader runs)" in r for r in rec.reasoning)
+    assert any("joint VRAM+RAM" in r for r in rec.reasoning)
 
 
 def test_a_cpu_only_machine_is_unaffected():

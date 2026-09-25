@@ -1,6 +1,6 @@
 """What the proactive daemon concluded while running unattended overnight.
 
-Ported from v2. From a live v2 2.2.5 session left on all night. The chat itself was healthy — the
+From a live 2.2.5 session left on all night. The chat itself was healthy — the
 reflection-telemetry fix held and a greeting no longer produced "I'm a patch
 job" — but the background daemon reported three things that were not true.
 
@@ -208,7 +208,7 @@ def test_no_inference_is_spent_when_only_plumbing_remains(monkeypatch, tmp_path)
     "evening", "evening Eli", "good evening", "good day",
 ])
 def test_bare_time_of_day_greetings_are_phatic(greeting):
-    from eli.kernel.stages._common import _is_brief_phatic_prompt as phatic
+    from eli.kernel.engine import _is_brief_phatic_prompt as phatic
 
     assert phatic(greeting)
 
@@ -221,7 +221,7 @@ def test_the_router_agreed_all_along():
 
 
 def test_a_substantive_afternoon_sentence_is_not_phatic():
-    from eli.kernel.stages._common import _is_brief_phatic_prompt as phatic
+    from eli.kernel.engine import _is_brief_phatic_prompt as phatic
 
     assert not phatic("what is the weather this afternoon in Cork")
     assert not phatic("the sun is not that cheerful and it is only afternoon for 30 minutes")

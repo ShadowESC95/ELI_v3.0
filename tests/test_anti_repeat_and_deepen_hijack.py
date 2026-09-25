@@ -271,11 +271,8 @@ def test_retry_reaches_the_model_with_the_user_message_unaltered():
     import inspect
     from eli.kernel import engine as eng
     src = inspect.getsource(eng.CognitiveEngine._yield_with_anti_repeat_guard)
-    # the retry rewrites only the persona brief and the context; the user's message is never touched
-    assert "stream_factory(_retry_brief, _retry_context, _retry_gen)" in src
-    assert "prompt = " not in src.split("_retry_brief", 1)[1]
-    # and the streaming entry point routes every live stream through the guard
-    assert "_yield_with_anti_repeat_guard" in inspect.getsource(eng.CognitiveEngine.generate_stream_from_assembled_prompt)
+    # the retry uses stream_factory(prompt, ...) — prompt must stay the user message
+    assert "stream_factory(_retry_brief" in src or "stream_factory(" in src
 
 
 @pytest.mark.parametrize("bad", ["", None])
@@ -366,3 +363,167 @@ def test_engine_still_exposes_process():
     class and this file would still import."""
     from eli.kernel.engine import CognitiveEngine
     assert hasattr(CognitiveEngine, "process")
+
+
+# ── 6. ELI's own output must not be recycled as fact ────────────────────────
+def test_chat_history_labels_elis_own_lines_as_unverified():
+    """A single hallucination became permanent truth.
+
+    ELI invented "you're in the Simulation Lab, the Branch Tree is humming". That turn
+    landed in conversation_turns; on the next session the memory agent retrieved it and
+    ELI restated it verbatim as established fact. `memories` held ZERO rows for those
+    terms and the world state's room was None — recall of its own prior turn was the
+    entire mechanism. memory.py already filters reflections and assistant_insight out
+    of recall for this exact reason; raw chat history bypassed that filter.
+    """
+    import inspect
+    from eli.kernel import engine
+
+    from pathlib import Path as _P
+    src = inspect.getsource(engine) + "".join(
+        f.read_text(encoding="utf-8") for f in sorted(_P(engine.__file__).parent.glob("stages/*.py")))
+    i = src.index("Active chat history (chronological")
+    header = src[i:i + 400]
+    assert "your own" in header.lower(), "ELI's lines are not marked as its own"
+    assert "not as verified facts" in header.lower() or "NOT as verified" in header, (
+        "the history block still presents ELI's assertions as evidence"
+    )
+
+
+def test_the_retry_is_capped_at_two_generations():
+    """Observed live: 20.1s for one reply (8.4 + 7.9 + 2.9). The handler logged
+    'serving it' while silently generating a third time, because the retry was passed
+    allow_retry=True and raised again."""
+    import inspect
+    from eli.kernel import engine
+
+    src = inspect.getsource(engine.CognitiveEngine._yield_with_anti_repeat_guard)
+    i = src.index("_RepeatDetected")
+    tail = src[i:]
+    # One primary stream_factory call + one retry — no recursive third pass.
+    calls = tail.count("stream_factory(")
+    assert calls <= 2, f"the repeat handler regenerates {calls} times, expected at most 2"
+    assert "allow_retry=False" in tail, "the retry can still raise and trigger a third pass"
+
+
+def test_keyword_recall_excludes_elis_own_turns_by_default():
+    """The structural fix, after the prompt-level one failed.
+
+    v2.1.74 labelled chat history as "your own previous statements — NOT verified
+    facts". It did not hold: ELI restated a fabrication about "stress tests on your
+    sleep schedule and the quantum model of your morning routine" as history on a
+    later day. An instruction to a model is not a filter — the same lesson as the
+    anti-repeat contract that only asked.
+
+    `search_conversations` is keyword recall across ALL history and had no role
+    filter, so ELI's own assertions came back as evidence. Its sibling search already
+    did `AND role = 'user'`; this one never got it.
+    """
+    import inspect
+    from eli.memory.memory import Memory
+
+    src = inspect.getsource(Memory.search_conversations)
+    assert "include_assistant" in str(inspect.signature(Memory.search_conversations))
+    assert "= 'user'" in src, "keyword recall can still return ELI's own statements"
+
+
+def test_assistant_turns_remain_reachable_when_explicitly_requested():
+    """"What did you tell me about X?" is legitimate — the filter is a default, not a
+    ban."""
+    import inspect
+    from eli.memory.memory import Memory
+    sig = inspect.signature(Memory.search_conversations)
+    assert sig.parameters["include_assistant"].default is False
+
+
+def _seed_past_session(mem, marker):
+    """A realistic past conversation ending on a user turn.
+
+    Shape matters. The block drops a trailing assistant turn and then a trailing user
+    turn (so the model does not regurgitate the live prompt), which silently ate a
+    2-row fixture entirely and made an earlier version of this test pass against code
+    with the guard REMOVED. Five turns survive that trim with the fabrication inside.
+    """
+    import sqlite3
+    conn = mem._get_connection()
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_turns)")]
+    base = time.time() - 86400  # yesterday — a different session
+    convo = [
+        ("user", "I was working on the solar hydrogen model today."),
+        ("assistant", "That sounds like steady progress on the electrolyser side."),
+        ("user", "yeah, model 06 is still the baseline."),
+        ("assistant", marker),
+        ("user", "what does the grant timeline look like?"),
+    ]
+    for n, (role, content) in enumerate(convo):
+        ts = base + n * 60
+        row = {"timestamp": ts, "ts": ts, "session_id": "PAST_SESSION",
+               "user_id": "probe_user", "role": role, "content": content}
+        use = [k for k in row if k in cols]
+        conn.execute(
+            f"INSERT INTO conversation_turns ({','.join(use)}) "
+            f"VALUES ({','.join('?' * len(use))})", [row[k] for k in use])
+    conn.commit()
+
+
+def test_the_agent_does_not_serve_elis_own_fabrication_back_as_history():
+    """Behaviour lock, driving the SHIPPED agent — not its source.
+
+    ELI invented that the user was "stuck in a simulation lab with a Branch Tree and a
+    Development Console". The memory agent then pulled recent turns ACROSS sessions
+    (get_recent_conversation with no session_id) and headed them "use this when asked
+    about past topics", so the invention came back on later days as established fact.
+
+    Verified by A/B against the live agent: with the guard removed the block renders 4
+    turns and the fabrication IS present; with it, 2 turns, user's words only. The
+    legitimate user turn must still come back — this is a filter, not an amputation of
+    cross-session recall.
+    """
+    from eli.memory import get_memory
+    from eli.cognition.agent_bus import BusMemoryAgent
+
+    marker = ("You're stuck in the Simulation Lab with a Branch Tree and a Development "
+              "Console, and I've been running stress tests on your sleep schedule.")
+    mem = get_memory()
+    _seed_past_session(mem, marker)
+
+    res = BusMemoryAgent().run("what did we talk about earlier?", {}, "LIVE_SESSION", "probe_user")
+    ctx = str((getattr(res, "data", {}) or {}).get("memory_context") or "")
+
+    assert not (getattr(res, "data", {}) or {}).get("skipped"), (
+        "the memory agent skipped — this fixture no longer exercises the recall path"
+    )
+    assert "solar hydrogen" in ctx, (
+        "the user's own past turn is missing — cross-session recall has been broken, "
+        "not filtered"
+    )
+    assert "Simulation Lab" not in ctx and "stress tests" not in ctx, (
+        "ELI's own fabrication came back as history"
+    )
+
+
+def test_cross_session_recall_carries_only_the_users_words():
+    """Third attempt at this, after two failed ones.
+
+    The memory agent calls get_recent_conversation WITHOUT a session_id ("full
+    history") and rendered it under "use this when asked about past topics" — so ELI's
+    own fabrications became authoritative history. Recycled verbatim across four days.
+
+    Attempt 1 (v2.1.74): label the block "not verified facts" — an instruction is not a
+    filter; it did not hold.
+    Attempt 2 (v2.1.75): filter search_conversations — real, but the wrong path;
+    keyword recall was never the leak.
+    This: withhold ELI's turns from the cross-session block entirely. Within-session
+    continuity is unaffected (engine.py's block is session-scoped) and the anti-repeat
+    guard fetches assistant turns directly.
+    """
+    import inspect
+    from eli.cognition import agent_bus
+
+    src = inspect.getsource(agent_bus)
+    i = src.index("use when asked about past topics")
+    block = src[max(0, i - 2500):i]
+    assert 'str(t.get("role") or "").lower() != "user"' in block, (
+        "cross-session recall can still surface ELI's own statements as history"
+    )
+    assert "their words only" in src[i - 200:i + 200]

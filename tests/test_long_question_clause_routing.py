@@ -1,9 +1,5 @@
 """Locks on the long-question guard measuring the wrong unit, and on the schedule
-prepass not recognising yes/no questions. Ported from v2.
-
-v3's router is decomposed and diverges from v2's by ~4000 lines, so a few end-to-end
-expectations differ for reasons unrelated to this fix; those are noted where they
-appear and asserted at the predicate instead.
+prepass not recognising yes/no questions.
 
 **1. A request in the final clause was thrown away.** From a live session:
 
@@ -31,8 +27,11 @@ docstring claimed questions were excluded; for yes/no questions it was not true.
 """
 import pytest
 
-from eli.execution.router_enhanced import _trailing_request_clause, route
-from eli.execution.routing.schedule import _QUESTION_RX
+from eli.execution.router_enhanced import (
+    _QUESTION_RX,
+    _trailing_request_clause,
+    route,
+)
 
 
 def _action(text):
@@ -133,24 +132,19 @@ def test_questions_about_eli_are_not_scheduled(text):
     "could you get the news at 7am?",
     "would you run the backup tonight?",
 ])
-def test_polite_requests_are_not_rejected_as_questions(text):
-    """"can/could/would you" is a request, not a question about ELI. The question
-    guard must not swallow them.
-
-    Asserted at the predicate rather than end-to-end: v3's router diverges from v2
-    by ~4000 lines and already sent these to CHAT before this change (verified
-    against the committed router), so an end-to-end SCHEDULE_TASK assertion would
-    encode a v2-only behaviour and fail here for an unrelated reason."""
-    assert not _QUESTION_RX.search(text), text
+def test_polite_requests_still_schedule(text):
+    """"can/could/would you" is a request, not a question about ELI. Rejecting these
+    would break scheduling for anyone who asks politely."""
+    assert _action(text) == "SCHEDULE_TASK", text
 
 
 @pytest.mark.parametrize("text", [
     "get a morning report ready for tomorrow",
     "open spotify at 8pm",
+    "get the news at 7am",
 ])
 def test_plain_imperatives_still_schedule(text):
-    """From the prepass docstring. ("get the news at 7am" is a third example there,
-    but v3 routes it to NEWS_FETCH before the prepass — pre-existing, not this fix.)"""
+    """The three examples the prepass docstring promises."""
     assert _action(text) == "SCHEDULE_TASK", text
 
 
@@ -159,3 +153,12 @@ def test_question_rx_distinguishes_asking_from_requesting():
     assert _QUESTION_RX.search("what is on tonight?")
     assert not _QUESTION_RX.search("can you open spotify at 8pm?")
     assert not _QUESTION_RX.search("could you get the news at 7am?")
+
+
+def test_a_report_is_not_a_repo():
+    """'repo' matched inside 'report', so 'broken ... morning report' was routed as a codebase audit."""
+    from eli.execution.router_enhanced import _eli_phase10_is_codebase_audit_request as audit
+    assert not audit("it is broken now anyway. What's the morning report?")
+    assert not audit("is the engineer around, status please")
+    assert audit("audit the repo for missing imports")
+    assert audit("check the router.py for what is wrong")

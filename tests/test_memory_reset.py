@@ -86,4 +86,4 @@ def test_reset_persona_overlay_writes_template(tmp_path, monkeypatch):
 
     monkeypatch.setattr("eli.cognition.persona.write_auto_persona", _write)
     assert mr.reset_persona_overlay(tpl) is True
-    assert "blank overlay" in dest.read_text(encoding="utf-8")
+    assert "blank overlay" in dest.read_text(encoding="utf-8")        # nothing left to clear

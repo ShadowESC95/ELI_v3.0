@@ -104,9 +104,9 @@ class LifecycleMixin:
         except Exception as _eng_err:
             log.debug(f"[COGNITIVE] Shutdown: engagement flush failed (non-fatal): {_eng_err}")
 
-        # 3.5 In-depth, LLM-generated end-of-session summary → session_summaries.
-        # Must run BEFORE signal_shutdown(): aborting inference first made the
-        # summary LLM return empty (llm=False) even when the model was loaded.
+        # 3.4 The in-depth LLM end-of-session summary (session_summaries, user_patterns, semantic
+        # tier, memories FTS) runs before aborting inference, while shutdown isn't yet signalled;
+        # otherwise _llm_summarise_session bails and every session logs llm=False.
         try:
             from eli.runtime.profile_extractor import write_llm_session_summary
             _ss = write_llm_session_summary(
@@ -119,11 +119,9 @@ class LifecycleMixin:
         except Exception as _ss_err:
             log.debug(f"[COGNITIVE] Shutdown: session summary failed (non-fatal): {_ss_err}")
 
-        # 4. Signal shutdown to the inference layer. A background self-improvement
-        # /codegen call can be mid-flight in a single 10+ minute native llm() call holding
-        # the shared lock; the OS can't kill it, so unload_model would block for
-        # 20-30 minutes. This makes any in-flight generation yield at the next token and
-        # short-circuits new background calls, so teardown proceeds immediately.
+        # 3.5 Abort in-flight generation after the hand-off note. closeEvent can arrive
+        # while a slow CPU/iGPU stream still holds the broker lock; the summary above
+        # only runs when the model is idle (falls back to heuristic if not).
         try:
             from eli.cognition import gguf_inference as _ggi_sd
             _ggi_sd.signal_shutdown()
@@ -154,7 +152,7 @@ class LifecycleMixin:
         try:
             from eli.runtime.self_improvement import get_self_improvement
             si = get_self_improvement()
-            si.analyze_and_improve(propose=False)
+            si.analyze_and_improve()
         except Exception:
             logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 

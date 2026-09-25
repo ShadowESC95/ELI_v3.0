@@ -525,6 +525,8 @@ class AgentOrchestrator:
                 self._bus_result_for_escalation(wm),
                 reasoning_mode=reasoning_mode,
                 trace=getattr(wm, "trace", None),
+                recent_turns=getattr(self.engine, "memory", None)
+                and self.engine.memory.get_recent_conversation(8) or None,
             )
             if _esc is None:
                 return None
@@ -629,7 +631,18 @@ class AgentOrchestrator:
         )
 
         wm.trace["stage_1"] = "intent_routing"
-        intent = self.engine.parse_intent(user_input, stm.recent_turns)
+        _cached = getattr(self.engine, "_turn_resolved_intent", None)
+        if (isinstance(_cached, dict) and _cached.get("text") == user_input
+                and isinstance(_cached.get("intent"), dict)
+                and _cached["intent"].get("action")):
+            intent = dict(_cached["intent"])
+            try:
+                self.engine._turn_resolved_intent = None
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            log.debug(f"[ORCHESTRATOR] Stage 1: reusing engine-resolved intent → {intent.get('action')}")
+        else:
+            intent = self.engine.parse_intent(user_input, stm.recent_turns)
         # Honour the engine's META_DIAGNOSTIC->CHAT veto. The orchestrator re-resolves intent, so
         # without this it ran the original status action after the veto had downgraded it.
         if getattr(self.engine, "_eli_phase13_chat_override", False):
@@ -811,6 +824,7 @@ class AgentOrchestrator:
                             bus_result=getattr(wm, "bus_result", None),
                             recent_turns=getattr(stm, "recent_turns", []),
                             working_memory=wm,
+                            reasoning_mode=reasoning_mode,
                         )
                     _ph = str(getattr(wm, "persona_handoff", "") or "")
                     log.debug(f"[ORCHESTRATOR] Stage 10.5: Persona Handoff → {len(_ph)} chars")
@@ -933,6 +947,11 @@ class AgentOrchestrator:
                 skip_memory=True,
                 agent_names=_spec_names,
             )
+            try:
+                self.engine._last_bus_result = wm.bus_result
+                self.engine._last_orchestrator_trace = dict(getattr(wm, "trace", {}) or {})
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
             wm.trace["agent_bus_specialists"] = {
                 "agents_used": list(getattr(wm.bus_result, "agents_used", []) or []),
                 "aggregated_confidence": float(
@@ -994,6 +1013,7 @@ class AgentOrchestrator:
                     bus_result=getattr(wm, "bus_result", None),
                     recent_turns=getattr(stm, "recent_turns", []),
                     working_memory=wm,
+                    reasoning_mode=reasoning_mode,
                 )
             _ph = str(getattr(wm, "persona_handoff", "") or "")
             log.debug(f"[ORCHESTRATOR] Stage 10.5: Persona Handoff → {len(_ph)} chars")

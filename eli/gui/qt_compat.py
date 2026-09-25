@@ -53,6 +53,7 @@ try:
         QGraphicsTextItem, QGraphicsLineItem,
         QMenuBar, QMenu, QToolBar, QStatusBar, QSystemTrayIcon,
         QFileDialog, QMessageBox, QInputDialog, QColorDialog, QFontDialog,
+        QDialogButtonBox,
         QSizePolicy, QStyle, QProgressDialog,
     )
     QT_API = "PySide6"
@@ -75,6 +76,7 @@ except Exception:
             QGraphicsTextItem, QGraphicsLineItem,
             QMenuBar, QMenu, QToolBar, QStatusBar, QSystemTrayIcon,
             QFileDialog, QMessageBox, QInputDialog, QColorDialog, QFontDialog,
+            QDialogButtonBox,
             QSizePolicy, QStyle,
         )
         QT_API = "PyQt6"
@@ -97,6 +99,7 @@ except Exception:
                 QGraphicsTextItem, QGraphicsLineItem,
                 QMenuBar, QMenu, QToolBar, QStatusBar, QSystemTrayIcon,
                 QFileDialog, QMessageBox, QInputDialog, QColorDialog, QFontDialog,
+                QDialogButtonBox,
                 QSizePolicy, QAction, QStyle,
             )
             QT_API = "PyQt5"
@@ -121,7 +124,7 @@ except Exception:
             QColor = QFont = QIcon = QPixmap = QImage = QPainter = QPalette = _stub
             QKeySequence = QTextCursor = QTextCharFormat = QBrush = QPen = _stub
             QDesktopServices = _stub
-            QApplication = QMainWindow = QWidget = QDialog = QDialogButtonBox = QDockWidget = _Stub
+            QApplication = QMainWindow = QWidget = QDialog = QDockWidget = _Stub
             QVBoxLayout = QHBoxLayout = QGridLayout = QFormLayout = QStackedLayout = _Stub
             QLabel = QPushButton = QLineEdit = QTextEdit = QPlainTextEdit = _Stub
             QComboBox = QCheckBox = QRadioButton = QSpinBox = QDoubleSpinBox = _Stub
@@ -132,8 +135,14 @@ except Exception:
             QGraphicsEllipseItem = QGraphicsTextItem = QGraphicsLineItem = _Stub
             QMenuBar = QMenu = QToolBar = QStatusBar = QSystemTrayIcon = _Stub
             QFileDialog = QMessageBox = QInputDialog = QColorDialog = QFontDialog = _Stub
+            QDialogButtonBox = _Stub
             QSizePolicy = QAction = QStyle = _Stub
             QRectF = _Stub
+
+def real_qt_available() -> bool:
+    """True when a real Qt binding loaded (PySide6/PyQt6/PyQt5), not headless stubs."""
+    return QT_API is not None
+
 
 def real_qt_available() -> bool:
     """True when a real Qt binding loaded (PySide6/PyQt6/PyQt5), not headless stubs."""

@@ -25,7 +25,7 @@ class ScreenCaptureMixin:
                         self._sc_capture_sig.emit(cap_path)
                         return
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
                 # Try mss (fast), fall back to scrot/gnome-screenshot
                 try:
                     import mss, mss.tools
@@ -56,7 +56,7 @@ class ScreenCaptureMixin:
         try:
             self._sc_capture_sig.disconnect()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self._sc_capture_sig.connect(self._sc_on_capture, Qt.ConnectionType.QueuedConnection)
         threading.Thread(target=worker, daemon=True).start()
 

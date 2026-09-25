@@ -44,10 +44,9 @@ def test_project_root_file_exists(fname):
 
 
 def test_pyproject_toml_valid():
-    import tomllib
+    from eli.core.toml_util import load_toml
     path = os.path.join(PROJECT_ROOT, "pyproject.toml")
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
+    data = load_toml(path)
     assert "project" in data or "tool" in data, "pyproject.toml looks empty"
 
 
@@ -56,7 +55,7 @@ def test_capability_manifest_valid_json():
     assert os.path.isfile(path), "capability_manifest.json must ship in the repo root"
     with open(path) as f:
         data = json.load(f)
-    assert data is not None
+    assert data.get("total", 0) > 0
 
 
 def test_capability_inventory_valid_json():

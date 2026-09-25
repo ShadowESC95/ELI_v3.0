@@ -118,6 +118,8 @@ DEFAULTS: Dict[str, Any] = {
     "batch_size": 512,
     # Fraction of available RAM for model weights + KV (startup dialog, 10–75%).
     "ram_budget_percent": 60,
+    # Hardware fit priority: balanced | max_gpu | max_ctx (startup dialog).
+    "fit_priority": "balanced",
     "use_mmap": True,
     "use_mlock": False,
     # Multi-GPU split (optional; empty = single GPU). tensor_split is a comma list of per-GPU
@@ -127,9 +129,9 @@ DEFAULTS: Dict[str, Any] = {
     "main_gpu": 0,
     "split_mode": "",
     "gpu_profiles_file": "",
-    # Deep thinking on the ANSWER call for reasoning models (Qwen3 / DeepSeek-R1):
-    # ON = higher quality, slower; OFF = faster. Utility calls (routing/JSON/summary)
-    # never think regardless. No effect on non-reasoning models. GUI-toggleable.
+    # Deep thinking on the answer call for models whose chat template has a reasoning channel
+    # (detected from metadata, not names). On is higher quality and slower. Utility calls (routing,
+    # JSON, summary) never think. No effect on non-reasoning models. GUI-toggleable.
     "model_thinking": True,
     "cache_type_k": "",
     "cache_type_v": "",
@@ -236,22 +238,23 @@ def pinned_gpu_layers_for_model(model_path, settings=None, current_ctx=None):
     followed the user across model swaps and silently stranded them on the CPU
     while the tuner -- which had measured the right answer -- stood down.
 
-    The same is true across ctx changes on the SAME model (port of v2.4.56):
-    n_gpu_layers is only ever a valid ceiling as a measurement of "what fits",
-    and KV cache for every layer lives on GPU regardless of offload, so it
-    scales with ctx directly -- a count measured at ctx=2048 can mean "7
-    layers fit with room to spare" and, unchanged, become "only 2 layers
-    actually fit" the moment ctx grows to 12200, because the KV cache for the
-    OTHER layers is now eating VRAM the small-ctx measurement never had to
-    account for. Before n_gpu_layers was enforced as a ceiling this was
-    harmless (the loader silently recomputed a fresh number regardless of
-    what was "requested"); once it IS enforced, blindly reusing a small-ctx
-    pin at a much larger ctx forces batch and ctx itself to be crushed far
-    harder than necessary to squeeze under a ceiling that was never actually
-    calibrated for the ctx now in play. So the pin is invalidated -- exactly
-    like a model mismatch -- whenever the ctx it was measured at is on record
-    and differs from the ctx about to be used; the tuner then measures fresh,
-    for THIS ctx, same as a model swap already does.
+    The same is true across ctx changes on the SAME model, and it is not
+    hypothetical: n_gpu_layers is only ever a valid ceiling as a measurement
+    of "what fits", and KV cache for every layer lives on GPU regardless of
+    offload, so it scales with ctx directly -- a count measured at ctx=2048
+    can mean "7 layers fit with room to spare" and, unchanged, become "only 2
+    layers actually fit" the moment ctx grows to 12200, because the KV cache
+    for the OTHER 46 layers is now eating VRAM the small-ctx measurement never
+    had to account for. Before n_gpu_layers was enforced as a ceiling this was
+    harmless (the loader silently recomputed a fresh number regardless of what
+    was "requested"); once it IS enforced (see hardware_profile.smart_fit_config's
+    user_gpu_layers), blindly reusing a small-ctx pin at a much larger ctx
+    forces batch and ctx itself to be crushed far harder than necessary to
+    squeeze under a ceiling that was never actually calibrated for the ctx
+    now in play. So the pin is invalidated -- exactly like a model mismatch --
+    whenever the ctx it was measured at is on record and differs from the
+    ctx about to be used; the tuner then measures fresh, for THIS ctx, same as
+    a model swap already does.
 
     Returns None when the pin does not apply, meaning "let the tuner measure".
 
@@ -337,6 +340,8 @@ ENV_TO_KEY = {
     "ELI_GGUF_MAIN_GPU": "main_gpu",
     "ELI_SPLIT_MODE": "split_mode",
     "ELI_GGUF_SPLIT_MODE": "split_mode",
+    "ELI_RAM_BUDGET_PERCENT": "ram_budget_percent",
+    "ELI_FIT_PRIORITY": "fit_priority",
     "ELI_GPU_PROFILES_FILE": "gpu_profiles_file",
     "ELI_AUTO_SPEAK": "auto_speak",
     "ELI_MIC_ENABLED": "mic_enabled",
@@ -501,7 +506,7 @@ def _heal_model_paths(settings: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
     return out, changed
 
 
-def _load_settings_unsanitized() -> Dict[str, Any]:
+def _load_settings_unsanitized(*, apply_env_overlay: bool = True) -> Dict[str, Any]:
     global _MIGRATION_LOGGED, _LAST_LOAD_SETTINGS_FILE_CORRUPT
     settings = dict(DEFAULTS)
     settings_file = _settings_file()
@@ -550,10 +555,11 @@ def _load_settings_unsanitized() -> Dict[str, Any]:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    for env_name, key in ENV_TO_KEY.items():
-        val = os.environ.get(env_name)
-        if val not in (None, ""):
-            settings[key] = _coerce_value(key, val)
+    if apply_env_overlay:
+        for env_name, key in ENV_TO_KEY.items():
+            val = os.environ.get(env_name)
+            if val not in (None, ""):
+                settings[key] = _coerce_value(key, val)
 
     # Canonical coercion (no more dual-key fallbacks)
     settings["n_threads"] = int(settings.get("n_threads", DEFAULTS["n_threads"]))
@@ -643,6 +649,24 @@ def save_settings(settings: Dict[str, Any]) -> None:
     # write, never world-readable for any instant. See eli.core.secure_io.
     from eli.core.secure_io import secure_write_text as _secure_write
     _secure_write(settings_file, json.dumps(existing, indent=2, ensure_ascii=False), mode=0o600)
+
+    # Keep process env in sync with the just-saved model path. Without this,
+    # get_model_path() keeps returning the previous GGUF via ELI_GGUF_MODEL_PATH
+    # that the GUI pinned at first load, and settings "model swaps" are no-ops.
+    try:
+        apply_env(dict(existing))
+    except Exception:
+        log.debug("[SETTINGS] apply_env after save failed", exc_info=True)
+
+
+def load_settings_from_disk() -> Dict[str, Any]:
+    """Load settings.json without letting process model-path env vars win.
+
+    Use this when the caller needs the *saved* selection (e.g. reload after a
+    settings swap). Normal load_settings() still honours ELI_GGUF_MODEL_PATH for
+    explicit shell/CLI overrides.
+    """
+    return load_settings(apply_env_overlay=False)
 
 
 def update_settings(**kwargs: Any) -> Dict[str, Any]:
@@ -817,7 +841,7 @@ def _eli_runtime_physical_project_root():
     Frozen builds are the one exception: there the physical location is the
     read-only PyInstaller bundle (_internal / AppImage mount) and
     ELI_PROJECT_ROOT is pinned in-process by the bundle's own runtime hook
-    (not inherited from a shell), pointing at the per-user ELI_v2 root.
+    (not inherited from a shell), pointing at the per-user ELI_v3 root.
     Anchoring on the bundle made this guard strip the correct root and sent
     every PROJECT_ROOT-relative write to the read-only mount.
     """

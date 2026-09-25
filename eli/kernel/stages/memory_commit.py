@@ -199,7 +199,7 @@ class MemoryCommitMixin:
         # --- Periodic working memory persistence (every 10 turns) ---
         try:
             self._wm_turn_counter = getattr(self, "_wm_turn_counter", 0) + 1
-            if self._working_memory and self._wm_turn_counter % 10 == 0:
+            if self._working_memory and self._wm_turn_counter % 3 == 0:
                 _wm_db = str(getattr(self.memory, "db_path", "") or "")
                 if _wm_db:
                     self._working_memory.persist(_wm_db)

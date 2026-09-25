@@ -5,10 +5,10 @@ cases built a bare ``CognitiveEngine()``, which auto-initialises GGUF from the
 machine's live settings. So "no GGUF" held only while the developer's box
 happened not to have a model configured.
 
-In v2 this passed all morning and failed the same afternoon, on an unchanged
-commit, because a model had been selected in between. On someone else's machine
-— the redistribution case — the outcome depends on their configuration, which is
-not a property this test is meant to be measuring.
+It passed all morning and failed the same afternoon, on an unchanged commit,
+because a model had been selected in between. On someone else's machine — the
+redistribution case — the outcome depends on their configuration, which is not
+a property this test is meant to be measuring.
 
 ``auto_init_gguf=False`` is the existing switch for exactly this: it sets
 ``_gguf_available = False`` and skips ``_init_gguf()``, so the no-GGUF branch is

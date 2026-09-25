@@ -10,6 +10,11 @@ from pathlib import Path
 
 from eli.core.paths import models_dir, project_root
 from eli.core.runtime_settings import _settings_file, load_settings, save_settings
+# KV-cache math and CUDA overhead are imported, not restated. This module used to
+# carry its own copy of the constants and the formula, kept "in sync by hand" with a
+# comment — the arrangement that let a third copy in startup_hardware_optimizer.py
+# drift to a different constant without anything failing.
+from eli.core.hardware_profile import _CUDA_OVERHEAD_MB, _kv_cache_mb
 
 
 from eli.utils.log import get_logger
@@ -83,11 +88,11 @@ def _detect_hardware() -> dict:
                  "--format=csv,noheader,nounits"],
                 stderr=subprocess.DEVNULL, timeout=5
             ).decode().strip().splitlines()[0]
-        parts = [p.strip() for p in out.split(",")]
-        hw["vram_mb"]       = int(parts[0])   # FREE VRAM
-        hw["vram_total_mb"] = int(parts[1])
-        hw["gpu_name"]      = parts[2] if len(parts) > 2 else "NVIDIA GPU"
-        hw["has_gpu"]       = True
+            parts = [p.strip() for p in out.split(",")]
+            hw["vram_mb"]       = int(parts[0])   # FREE VRAM
+            hw["vram_total_mb"] = int(parts[1])
+            hw["gpu_name"]      = parts[2] if len(parts) > 2 else "NVIDIA GPU"
+            hw["has_gpu"]       = True
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     return hw
@@ -187,8 +192,12 @@ def _auto_tune(model_path: Path, hw: dict) -> dict:
     else:
         n_gpu_layers = 0
 
-    # CPU threads: leave 2 cores for OS/GUI
-    n_threads = max(1, cpu_cores - 2)
+    # CPU threads: leave 1 core free when CPU-bound, else 2 for OS/GUI
+    try:
+        from eli.core.hardware_profile import recommend_cpu_threads as _rct
+        n_threads = _rct(cpu_cores, cpu_bound=(n_gpu_layers <= 0))
+    except Exception:
+        n_threads = max(1, cpu_cores - (1 if n_gpu_layers <= 0 else 2))
 
     # Batch size: scales with GPU offload
     if n_gpu_layers >= total_layers: n_batch = 512
@@ -203,8 +212,28 @@ def _auto_tune(model_path: Path, hw: dict) -> dict:
         "max_tokens":   -1,      # unlimited — use full remaining context
         "temperature":  0.7,
         "use_mmap":     True,
-        "use_mlock":    avail_ram_gb >= 16,
+        "use_mlock":    avail_ram_gb >= 16 and _mlock_viable(),
     }
+
+
+def _mlock_viable() -> bool:
+    """True only when the OS memlock limit can actually lock a multi-GB model.
+
+    RLIMIT_MEMLOCK is frequently capped low (64 KB–8 MB) regardless of installed
+    RAM, so requesting use_mlock there just yields 'failed to mlock … Cannot
+    allocate memory' warnings — the load still succeeds via mmap. Only gate on
+    POSIX where the limit is inspectable; leave non-POSIX (Windows) behaviour
+    unchanged.
+    """
+    try:
+        import resource
+    except Exception:
+        return True  # non-POSIX — preserve prior behaviour
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+        return soft == -1 or soft >= 4 * 1024 ** 3  # -1 = unlimited; else need ≥4 GiB
+    except Exception:
+        return True
 
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
@@ -344,15 +373,42 @@ def main():
         import logging
         logging.getLogger("eli.boot").debug("GUI boot bootstrap skipped", exc_info=True)
 
+    # A database folder this user cannot write to is fatal, but it is also
+    # entirely self-inflicted-by-sudo and trivially fixable — so say so plainly.
+    # Without this the first symptom is a raw sqlite3 traceback thrown during a
+    # GUI module import, which reads like a crash rather than a permissions
+    # problem the user can solve in one command.
+    try:
+        from eli.core.init_data import store_blocker
+        _blocker = store_blocker()
+    except Exception:
+        _blocker = None
+    if _blocker:
+        print(f"\n{_blocker}\n", file=sys.stderr)
+        try:  # windowed launches (AppImage, desktop icon) have no visible stderr
+            from PySide6.QtWidgets import QApplication, QMessageBox
+            _app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.critical(None, "ELI — cannot write to its data folder", _blocker)
+        except Exception:
+            log.debug("could not show data-folder blocker dialog", exc_info=True)
+        return 1
+
     # ── Load config first — determines whether setup UI is needed ────────────
     cfg         = _load_config()
     saved_model = cfg.get("model_path") or cfg.get("bundled_model_path") or ""
     first_run   = not cfg.get("first_run_complete", False)
 
+    # Activate GPU pack before any code imports bundled llama_cpp (AppImage/portable).
+    try:
+        from eli.core.gpu_pack_runtime import try_activate_gpu_pack
+        try_activate_gpu_pack(verify=True)
+    except Exception:
+        log.debug("GPU pack early activation skipped", exc_info=True)
+
     # If the GUI startup picker is enabled, skip the terminal pre-load entirely.
     # StartupModelSelectionDialog owns model selection, hw-tuning, and load.
     if cfg.get("show_startup_model_picker", True) and "--setup" not in sys.argv:
-        import eli.gui.gui_eli_original as _gui_mod
+        import eli.gui.eli_pro_audio_gui_v2_0 as _gui_mod
         _gui_mod.main()
         return
 
@@ -752,7 +808,7 @@ def main():
     import threading as _thr
     _thr.Thread(target=_prewarm_embed, daemon=True, name="embed-prewarm").start()
 
-    import eli.gui.gui_eli_original as _gui_mod
+    import eli.gui.eli_pro_audio_gui_v2_0 as _gui_mod
     _gui_mod._PRELOADED_MODEL      = model
     _gui_mod._PRELOADED_MODEL_PATH = str(model_path)
     # Pass the EFFECTIVE params (what actually loaded) — critical so the

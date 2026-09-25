@@ -609,18 +609,39 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                     size_gb = 0.0
                 family = 'unknown'
                 name_low = path.name.lower()
-                if 'mistral' in name_low:
-                    family = 'mistral'
-                elif 'qwen' in name_low:
-                    family = 'qwen'
-                elif 'phi' in name_low:
-                    family = 'phi'
+                draft_only = False
+                arch = ""
+                try:
+                    from eli.cognition.model_identity import read_gguf_identity
+                    ident = read_gguf_identity(path)
+                    arch = str(ident.get("architecture") or "")
+                    fam = ident.get("family")
+                    if fam:
+                        family = str(fam)
+                    draft_only = bool(ident.get("draft_only"))
+                except Exception:
+                    try:
+                        from eli.cognition.model_load_diagnostics import is_draft_only_gguf
+                        draft_only = bool(is_draft_only_gguf(path))
+                    except Exception:
+                        draft_only = any(
+                            m in name_low
+                            for m in ("dspark", "dflash", "-draft", "_draft", "eagle", "medusa")
+                        )
+                label_name = path.name
+                if draft_only:
+                    label_name = f"{path.name} (draft — not a chat model)"
+                    family = "draft"
+                elif arch and family == "unknown":
+                    family = arch
                 results.append({
-                    'name': path.name,
+                    'name': label_name,
                     'path': str(path),
                     'size_gb': size_gb,
                     'family': family,
+                    'architecture': arch,
                     'source': classify_gguf_source(str(path)),
+                    'draft_only': draft_only,
                 })
         except Exception:
             continue
@@ -688,7 +709,11 @@ def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     else:
         n_gpu_layers = min(99, max(4, vram_mb // 150))
 
-    n_threads = max(1, cpu_count - 2)
+    try:
+        from eli.core.hardware_profile import recommend_cpu_threads as _rct
+        n_threads = _rct(cpu_count, cpu_bound=(not has_gpu or vram_mb <= 0))
+    except Exception:
+        n_threads = max(1, cpu_count - (1 if (not has_gpu or vram_mb <= 0) else 2))
 
     # Batch: proportional to free VRAM (≈ 1 unit per 10 MB), aligned to 64.
     if has_gpu and vram_mb > 0:
@@ -747,39 +772,51 @@ class LocalModelManager:
         n_gpu_layers: int,
         *,
         requested_n_gpu_layers: Optional[int] = None,
+        requested_n_ctx: Optional[int] = None,
+        requested_n_batch: Optional[int] = None,
         gpu_offload_supported: Optional[bool] = None,
     ):
         try:
             from eli.core.paths import get_paths
             snap_path = Path(get_paths().artifacts_dir) / 'runtime_snapshot.json'
             effective_n_gpu_layers = int(n_gpu_layers or 0)
+            effective_n_ctx = int(n_ctx or 0)
+            effective_n_batch = int(getattr(self, 'n_batch', 0) or 0)
             requested_layers = int(
                 requested_n_gpu_layers
                 if requested_n_gpu_layers is not None
                 else effective_n_gpu_layers
             )
+            # ctx/batch requested values are the operator's true ask, not what the fallback loaded;
+            # default to effective only when the caller has nothing else.
+            requested_ctx = int(
+                requested_n_ctx if requested_n_ctx is not None else effective_n_ctx
+            )
+            requested_batch = int(
+                requested_n_batch if requested_n_batch is not None else effective_n_batch
+            )
             payload = {
                 'provider': 'gguf',
                 'model_path': str(model_path),
                 'model_name': Path(model_path).name if model_path else '',
-                'n_ctx': int(n_ctx or 0),
+                'n_ctx': effective_n_ctx,
                 'n_gpu_layers': effective_n_gpu_layers,
                 'n_threads': int(n_threads or 0),
-                'n_batch': int(getattr(self, 'n_batch', 0) or 0),
+                'n_batch': effective_n_batch,
                 'requested_n_gpu_layers': requested_layers,
                 'gpu_offload_supported': gpu_offload_supported,
                 'load_mode': 'GPU' if effective_n_gpu_layers > 0 else 'CPU',
                 'requested': {
-                    'n_ctx': int(n_ctx or 0),
+                    'n_ctx': requested_ctx,
                     'n_gpu_layers': requested_layers,
                     'n_threads': int(n_threads or 0),
-                    'n_batch': int(getattr(self, 'n_batch', 0) or 0),
+                    'n_batch': requested_batch,
                 },
                 'effective': {
-                    'n_ctx': int(n_ctx or 0),
+                    'n_ctx': effective_n_ctx,
                     'n_gpu_layers': effective_n_gpu_layers,
                     'n_threads': int(n_threads or 0),
-                    'n_batch': int(getattr(self, 'n_batch', 0) or 0),
+                    'n_batch': effective_n_batch,
                 },
                 'loaded': bool(getattr(self, 'is_loaded', False)),
                 'pid': __import__('os').getpid(),
@@ -3277,11 +3314,12 @@ class EliMainWindow(QMainWindow):
         except Exception: pass
 
     def _on_thinking_toggled(self, checked: bool):
-        """Deep-thinking toggle for reasoning models (Qwen3 / DeepSeek-R1). ON = the
-        answer call thinks (quality, slower); OFF = no thinking anywhere (faster).
+        """Deep-thinking toggle for models whose chat template enables reasoning.
+        ON = the answer call may think (quality, slower); OFF = no thinking.
         Utility calls (routing/JSON/summary) never think regardless. Live: sets
         ELI_MODEL_THINK now (read per-call by gguf_inference._no_think_prefill) — no
-        model reload — and persists the choice. No effect on non-reasoning models."""
+        model reload — and persists the choice. No effect when the loaded model
+        has no thinking channel."""
         try:
             import os as _os
             _os.environ["ELI_MODEL_THINK"] = "1" if checked else "0"
@@ -4676,9 +4714,9 @@ class EliMainWindow(QMainWindow):
         self.auto_speak_btn.toggled.connect(self._on_auto_speak_toggled)
         btn_layout.addWidget(self.auto_speak_btn)
 
-        # Deep-thinking toggle (reasoning models: Qwen3 / DeepSeek-R1). ON = the answer
-        # call thinks (higher quality, slower); OFF = no thinking (faster). Utility calls
-        # never think regardless; no effect on non-reasoning models. Live — no reload.
+        # Deep-thinking toggle (any model whose chat template enables reasoning).
+        # ON = the answer call may think (higher quality, slower); OFF = no thinking.
+        # Utility calls never think regardless; no effect on non-reasoning models.
         try:
             from eli.core.runtime_settings import load_settings as _ls_think
             _think_on = bool(_ls_think().get("model_thinking", True))
@@ -4688,7 +4726,8 @@ class EliMainWindow(QMainWindow):
         self.thinking_btn.setCheckable(True)
         self.thinking_btn.setChecked(_think_on)
         self.thinking_btn.setToolTip(
-            "Deep thinking on answers (reasoning models only — Qwen3 / DeepSeek-R1).\n"
+            "Deep thinking on answers (only when the loaded model's chat template "
+            "enables a reasoning channel).\n"
             "ON = higher quality, slower.  OFF = faster.\n"
             "Routing / summaries never think. No effect on non-reasoning models.")
         self.thinking_btn.setStyleSheet(
@@ -9137,13 +9176,15 @@ class EliMainWindow(QMainWindow):
         return bool(probe.get("eli_running"))
 
     def _eli_server_apply_port(self) -> None:
-        """Persist the chosen API port; used on the next server Start."""
+        """Persist the chosen API port and clear stale env so the next Start uses it."""
         try:
             port = int(self._srv_port_spin.value())
             if not (1024 <= port <= 65535):
                 raise ValueError("Port must be between 1024 and 65535.")
             from eli.core import config
             config.set("api_port", port)
+            import os
+            os.environ.pop("ELI_API_PORT", None)
             QMessageBox.information(
                 self, "Server port",
                 f"Server port set to {port}.\n\nStop and Start the server for it to take effect.")
@@ -9156,7 +9197,13 @@ class EliMainWindow(QMainWindow):
             from eli.runtime.server_util import qr_png_bytes
             from PySide6.QtCore import Qt
             from PySide6.QtGui import QPixmap
-        except Exception:
+        except Exception as ex:
+            for lab in (
+                getattr(self, "_srv_qr_http", None),
+                getattr(self, "_srv_qr_https", None),
+            ):
+                if lab is not None:
+                    lab.setText(f"QR unavailable\n({ex})")
             return
         for lab, url, label in (
             (getattr(self, "_srv_qr_http", None), http_url, "HTTP connect"),
@@ -9176,6 +9223,7 @@ class EliMainWindow(QMainWindow):
                     lab.setPixmap(pix)
                     lab.setToolTip(f"{label}: {url}")
                 except Exception as ex:
+                    lab.clear()
                     lab.setText(f"{label}\n(QR unavailable: {ex})")
             else:
                 lab.clear()
@@ -9305,6 +9353,30 @@ class EliMainWindow(QMainWindow):
                 log.debug("suppressed exception", exc_info=True)
         self._srv_uv = None
         self._srv_thread = None
+        proc = getattr(self, "_srv_proc", None)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+            self._srv_proc = None
+        for fh in getattr(self, "_srv_proc_log_fhs", ()) or ():
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+        self._srv_proc_log_fhs = ()
+        import os
+        os.environ.pop("ELI_API_PORT", None)
+        os.environ.pop("ELI_API_HOST", None)
         self._srv_url.clear()
         try:
             self._eli_server_refresh_qr()
@@ -9328,7 +9400,13 @@ class EliMainWindow(QMainWindow):
         except Exception as e:
             self._eli_server_update_ui("error", f"token rotate failed: {e}")
             return
-        running = bool(getattr(self, "_srv_thread", None) and self._srv_thread.is_alive())
+        running = bool(
+            (getattr(self, "_srv_thread", None) and self._srv_thread.is_alive())
+            or (
+                getattr(self, "_srv_proc", None) is not None
+                and self._srv_proc.poll() is None
+            )
+        )
         lan = os.environ.get("ELI_API_HOST", "") == "0.0.0.0"
         if running and lan:
             port = int(os.environ.get("ELI_API_PORT", "8081"))
@@ -9356,6 +9434,31 @@ class EliMainWindow(QMainWindow):
                 log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_poll(self) -> None:
+        proc = getattr(self, "_srv_proc", None)
+        if proc is not None:
+            code = proc.poll()
+            if code is not None:
+                self._srv_proc = None
+                err = getattr(self, "_srv_err", "") or (
+                    f"server process exited ({code})" if code else ""
+                )
+                if not err:
+                    self._srv_url.clear()
+                self._eli_server_update_ui("error" if err else "stopped", err[:160])
+                return
+            import os as _os, socket
+            try:
+                port = int(_os.environ.get("ELI_API_PORT", "8081"))
+            except Exception:
+                port = 8081
+            up = False
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                    up = True
+            except Exception:
+                up = False
+            self._eli_server_update_ui("running" if up else "starting")
+            return
         th = getattr(self, "_srv_thread", None)
         if th is None:
             return
@@ -10155,16 +10258,22 @@ class EliMainWindow(QMainWindow):
                 )
                 _live = dict(_rs_load_pin() or {})
                 _pin_model = str(_live.get("n_gpu_layers_model") or "")
+                _pin_ctx = int(_live.get("n_gpu_layers_ctx") or 0)
                 _live["n_gpu_layers"] = int(_user_pinned_layers or 0)
-                _applies = _pin_for_model(model_path, _live)
+                _applies = _pin_for_model(model_path, _live, current_ctx=_canonical_ctx)
             except Exception:
-                _pin_model, _applies = "", (_user_pinned_layers or None)
+                _pin_model, _pin_ctx, _applies = "", 0, (_user_pinned_layers or None)
             if _user_pinned_layers and _applies is None:
+                if _pin_model and _pin_model != _this_model:
+                    _why = f"was pinned for {_pin_model}, not {_this_model}"
+                elif _pin_ctx and _pin_ctx != _canonical_ctx:
+                    _why = f"was measured at ctx={_pin_ctx}, not the current ctx={_canonical_ctx}"
+                else:
+                    _why = "no longer applies"
                 self._hardware_tuning_log(
-                    f"gpu_layers={_user_pinned_layers} was pinned for "
-                    f"{_pin_model or 'an unrecorded model'}, not {_this_model} - using "
-                    f"the tuner's {int(rec.n_gpu_layers)}, measured for this model. "
-                    f"Set the value here to pin it to {_this_model}."
+                    f"gpu_layers={_user_pinned_layers} {_why} - using "
+                    f"the tuner's {int(rec.n_gpu_layers)}, measured for this model at "
+                    f"this ctx. Reload with the same ctx to keep a pin across loads."
                 )
                 _user_pinned_layers = 0
             _canonical_layers = int(_user_pinned_layers) if _user_pinned_layers else int(rec.n_gpu_layers)
@@ -10192,9 +10301,9 @@ class EliMainWindow(QMainWindow):
                 _s = dict(_rs_load() or {})
                 _s["n_ctx"] = _canonical_ctx        # user's chosen ctx, preserved
                 _s["n_gpu_layers"] = _canonical_layers   # user's choice, preserved
-                # Stamp the model the count now belongs to, so the next swap can
-                # tell a deliberate pin from one inherited from another model.
+                # Record the model and ctx this pin was measured at, so a swap or ctx change can invalidate it.
                 _s["n_gpu_layers_model"] = _this_model
+                _s["n_gpu_layers_ctx"] = _canonical_ctx
                 _s["batch_size"] = _canonical_batch   # user's choice, preserved
                 if int(rec.n_threads) > 0:
                     _s["n_threads"] = int(rec.n_threads)
@@ -10236,6 +10345,12 @@ class EliMainWindow(QMainWindow):
                     )
             except Exception as _save_err:
                 self._hardware_tuning_log(f"Warning: hw_profile save failed: {_save_err}")
+
+            try:
+                from eli.core.hardware_profile import apply_recommendation as _hp_apply
+                _hp_apply(rec)
+            except Exception as _json_err:
+                log.debug("[SETTINGS] runtime_hardware_profile.json sync failed", exc_info=True)
 
             result.update({"ok": True, "recommendation": rec.to_dict() if hasattr(rec, "to_dict") else {}})
             return result
@@ -10313,6 +10428,15 @@ class EliMainWindow(QMainWindow):
                     self.model_path_input.setText(selected_path)
             else:
                 self.model_path_input.setText(selected_path)
+
+            # The dialog's Target batch is the request; the Settings-tab spinbox held a stale value
+            # that the tuner treated as a pinned choice, so copy the dialog's value into it.
+            try:
+                _dlg_batch = int(dlg.target_batch_spin.value())
+                if _dlg_batch > 0:
+                    self.batch_size_input.setValue(_dlg_batch)
+            except Exception:
+                log.debug("could not carry the dialog's target batch forward", exc_info=True)
 
             if selected_path:
                 tune_result = self._apply_hardware_recommendation_for_model(selected_path)
@@ -11840,7 +11964,12 @@ class EliMainWindow(QMainWindow):
             idx = self.provider_combo.findData(provider)
             if idx >= 0:
                 self.provider_combo.setCurrentIndex(idx)
-            model_path = s.get("model_path") or DEFAULT_MODEL_PATH
+            if provider == "custom_gguf":
+                model_path = s.get("custom_model_path") or s.get("model_path") or DEFAULT_MODEL_PATH
+            elif provider == "bundled_gguf":
+                model_path = s.get("bundled_model_path") or s.get("model_path") or DEFAULT_MODEL_PATH
+            else:
+                model_path = s.get("model_path") or DEFAULT_MODEL_PATH
             self.model_path_input.setText(model_path or "")
             bundled_path = s.get("bundled_model_path", "")
             if bundled_path:
@@ -12004,9 +12133,16 @@ class EliMainWindow(QMainWindow):
 
         updates = {
             "provider": provider,
+            # Store the canonical active model path for the selected provider.
+            # Without this, custom_model_path / bundled_model_path can diverge
+            # from model_path and get_model_path() keeps the stale primary key.
             "model_path": model_path,
-            "custom_model_path": self.model_path_input.text(),
-            "bundled_model_path": bundled_path,
+            "custom_model_path": (
+                self.model_path_input.text().strip()
+                if provider == "custom_gguf"
+                else str(existing.get("custom_model_path") or self.model_path_input.text() or "")
+            ),
+            "bundled_model_path": bundled_path or str(existing.get("bundled_model_path") or ""),
             # Store the canonical form, so "localhost:11434" or a bare IP typed
             # here is persisted as a URL every consumer can actually use.
             "ollama_host": self.ollama_manager._normalize_host(
@@ -12127,13 +12263,31 @@ class EliMainWindow(QMainWindow):
                         result = gguf_inference.reload_model(await_completion=True)
                         if result.get("ok"):
                             params = result.get("params") or {}
+                            model_name = (
+                                Path(str(params.get("model_path") or "")).name
+                                or str(params.get("model_name") or "")
+                                or "model"
+                            )
+                            ctx = params.get("n_ctx")
+                            gpu = params.get("n_gpu_layers")
+                            batch = params.get("n_batch")
                             log.debug(
                                 "[SETTINGS] Model reloaded — "
-                                f"ctx={params.get('n_ctx')} "
-                                f"gpu_layers={params.get('n_gpu_layers')} "
+                                f"model={model_name} "
+                                f"ctx={ctx} "
+                                f"gpu_layers={gpu} "
                                 f"threads={params.get('n_threads')} "
-                                f"batch={params.get('n_batch')}"
+                                f"batch={batch}"
                             )
+                            # Refresh the min-chat model strip (same contract as
+                            # the initial load_model status path).
+                            try:
+                                self.status_signal.emit(
+                                    f"🟢 Model ready: {model_name} "
+                                    f"(ctx={ctx} gpu={gpu} batch={batch})"
+                                )
+                            except Exception:
+                                log.debug("[SETTINGS] model label emit failed", exc_info=True)
                         else:
                             log.debug(f"[SETTINGS] Reload failed: {result.get('error')}")
                     except Exception as exc:
@@ -12510,6 +12664,14 @@ class EliMainWindow(QMainWindow):
 
         try:
             self._cancel_stream_requested = True
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Abort in-flight generation before CognitiveEngine.shutdown() — otherwise
+        # session-summary LLM work deadlocks on the broker lock (15+ min on CPU).
+        try:
+            from eli.cognition import gguf_inference as _ggi_close
+            _ggi_close.signal_shutdown()
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 

@@ -14,7 +14,7 @@ class ConversationMixin:
             from eli.cognition.reasoning_modes import apply_final_reasoning_contract as _rm_final
             text = _rm_final(text)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         clean = _re.sub(r'[*_`#>|\[\]~]', '', text)
         clean = _re.sub(r'\s+', ' ', clean).strip()
         try:
@@ -52,14 +52,22 @@ class ConversationMixin:
         if not name or name == "(no voices)":
             return
         try:
-            from eli.perception.tts_router import set_active_voice
-            set_active_voice(name)
+            from eli.perception.tts_router import set_active_voice, resolve_voice_id
+            vid = resolve_voice_id(name)
+            if getattr(self, "voice_combo", None) is not None:
+                data = self.voice_combo.currentData()
+                if data:
+                    vid = str(data)
+            set_active_voice(vid)
             # Mirror to the Settings tab selector if present
             sel = getattr(self, "_voice_selector", None)
-            if sel is not None and sel.findText(name) >= 0:
-                sel.blockSignals(True)
-                sel.setCurrentText(name)
-                sel.blockSignals(False)
+            if sel is not None:
+                for i in range(sel.count()):
+                    if sel.itemData(i) == vid:
+                        sel.blockSignals(True)
+                        sel.setCurrentIndex(i)
+                        sel.blockSignals(False)
+                        break
         except Exception as ex:
             log.debug(f"[GUI] voice change failed: {ex}")
 
@@ -100,7 +108,20 @@ class ConversationMixin:
                 "unmute":         ("VOLUME", {"direction": "unmute"}),
             }
             _vt_lower = _voice_text.lower().strip()
-            if _vt_lower in _INSTANT_DISPATCH:
+            import re as _re_vol
+            _vol_pct = _re_vol.fullmatch(
+                r"(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?",
+                _vt_lower.replace(" percent", "%").replace(" per cent", "%"),
+            )
+            if _vol_pct:
+                _pct = max(0, min(100, int(_vol_pct.group(1))))
+                _route = {
+                    "action": "VOLUME",
+                    "args": {"level": _pct, "percent": _pct, "mode": "absolute"},
+                    "confidence": 0.999,
+                    "meta": {"matched_by": "gui.instant_dispatch.volume_absolute"},
+                }
+            elif _vt_lower in _INSTANT_DISPATCH:
                 _action, _args = _INSTANT_DISPATCH[_vt_lower]
                 _route = {"action": _action, "args": _args,
                           "confidence": 1.0,
@@ -139,7 +160,7 @@ class ConversationMixin:
                     _session_id = str(getattr(_ce, "session_id", "") or _session_id)
                     _user_id = str(getattr(_ce, "user_id", "") or _user_id)
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
                 try:
                     if _user_voice_text:
                         _uc = getattr(self, '_user_text_color', '#a3be8c')
@@ -260,7 +281,7 @@ class ConversationMixin:
                             if _parts:
                                 _speak_text = ". ".join(_parts)
                         except Exception:
-                            pass
+                            log.debug("suppressed exception", exc_info=True)
                     # else: synthesised briefing — leave _speak_text full
                 # For remediation previews, drop the bash script body before TTS
                 # so the mic doesn't pick up hundreds of chars of shell code.
@@ -286,7 +307,7 @@ class ConversationMixin:
                         try:
                             QApplication.processEvents()
                         except Exception:
-                            pass
+                            log.debug("suppressed exception", exc_info=True)
                     except Exception as _ui_e:
                         log.debug(f"[GUI_DIRECT_EXEC][UI_APPEND_FAIL] {_ui_e}")
 
@@ -303,6 +324,17 @@ class ConversationMixin:
                 return
         except Exception as _direct_e:
             log.debug(f"[GUI_DIRECT_EXEC][FALLBACK] {type(_direct_e).__name__}: {_direct_e}")
+        # Avoid queueing open-ended chat through the 35B path while a turn is still
+        # generating — voice media commands should stay instant; chat can wait.
+        try:
+            from eli.cognition.inference_broker import foreground_recently_active
+            if foreground_recently_active(window=8.0):
+                _short = len(str(text or "").split()) <= 6
+                if _short:
+                    log.debug("[STT→GUI] deferred — inference busy (short utterance dropped)")
+                    return
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
         self.chat_input.setPlainText(text)
         self.send_message()
 
@@ -341,27 +373,25 @@ class ConversationMixin:
 
         # PulseAudio / PipeWire sources (catches BT headsets)
         try:
-            import shutil as _shutil
             import subprocess as _sp
-            if not _shutil.which("pactl"):
-                raise FileNotFoundError("pactl not installed")
-            _out = _sp.check_output(["pactl", "list", "sources", "short"],
-                                    text=True, timeout=3)
-            for line in _out.strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) < 2:
-                    continue
-                src_name = parts[1].strip()
-                # Skip monitors and virtual sinks
-                if ".monitor" in src_name:
-                    continue
-                label = src_name
-                # Make BT sources human-readable
-                if src_name.startswith("bluez_input"):
-                    label = f"Bluetooth: {src_name.split('.')[1].replace('_', ':')}"
-                elif "alsa_input" in src_name:
-                    continue  # already covered by ALSA list above
-                self.mic_device_combo.addItem(label, ("pulse", src_name))
+            if shutil.which("pactl"):
+                _out = _sp.check_output(["pactl", "list", "sources", "short"],
+                                        text=True, timeout=3)
+                for line in _out.strip().splitlines():
+                    parts = line.split("\t")
+                    if len(parts) < 2:
+                        continue
+                    src_name = parts[1].strip()
+                    # Skip monitors and virtual sinks
+                    if ".monitor" in src_name:
+                        continue
+                    label = src_name
+                    # Make BT sources human-readable
+                    if src_name.startswith("bluez_input"):
+                        label = f"Bluetooth: {src_name.split('.')[1].replace('_', ':')}"
+                    elif "alsa_input" in src_name:
+                        continue  # already covered by ALSA list above
+                    self.mic_device_combo.addItem(label, ("pulse", src_name))
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -391,7 +421,7 @@ class ConversationMixin:
                 if not dynamic:
                     rec.energy_threshold = float(threshold)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         if getattr(self, "_first_run_complete", False):
             self.save_settings(silent=True)
 
@@ -682,13 +712,6 @@ class ConversationMixin:
             from pathlib import Path as _P
             from eli.core.paths import get_paths
             vp_path = _P(get_paths().artifacts_dir) / "runtime" / "voice_profile.json"
-            try:
-                from eli.kernel.state import get_active_user_id, _user_runtime_dir
-                uid = str(get_active_user_id("") or "").strip()
-                if uid and uid not in ("", "default-user"):
-                    vp_path = _user_runtime_dir(uid) / "voice_profile.json"
-            except Exception:
-                pass
             if vp_path.exists():
                 vp_path.unlink()
             QMessageBox.information(
@@ -707,7 +730,7 @@ class ConversationMixin:
             backends = available_backends()
             active = get_active_voice()
             voices = backends.get("piper_voices", [])
-            # A `clone:`/`natural:` voice that cannot synthesise falls back to Piper.
+            # A `natural:`/`clone:` voice that cannot synthesise falls back to Piper.
             # This panel used to report only the SELECTED voice, so it read
             # "Active voice: natural:sophia" while every word was spoken by
             # en_US-amy-medium — and the model-file line showed a third, unrelated
@@ -718,9 +741,9 @@ class ConversationMixin:
             ]
             if _fb.get("active"):
                 txt_lines += [
-                    f"  \u26a0 NOT IN USE:     '{_fb.get('requested')}' cannot synthesise \u2014",
+                    f"  ⚠ NOT IN USE:     '{_fb.get('requested')}' cannot synthesise —",
                     f"                    {_fb.get('reason')}.",
-                    f"  \u25b6 Actually speaking: {backends.get('default_voice') or '(piper default)'}",
+                    f"  ▶ Actually speaking: {backends.get('default_voice') or '(piper default)'}",
                 ]
             txt_lines += [
                 f"Active model file:  {backends.get('active_model') or '(missing)'}",
@@ -752,6 +775,7 @@ class ConversationMixin:
             self.send_message()
 
     def stop_generation(self):
+        """Abort the in-flight model response so a new message can be sent."""
         if not getattr(self, "is_generating", False):
             return
         self._cancel_stream_requested = True
@@ -819,7 +843,12 @@ class ConversationMixin:
             from eli.cognition import gguf_inference as _ggi
             _ggi.clear_cancel_generation()
         except Exception:
-            pass
+            log.debug("[GUI] clear_cancel_generation failed", exc_info=True)
+        try:
+            from eli.cognition import expression_state as _es_think
+            _es_think.set_thinking(True)  # face shows a focused "working" look
+        except Exception:
+            log.debug("[GUI] thinking-state set failed", exc_info=True)
         self.status_signal.emit('Generating')
         self.status_signal.emit('🔄 Generating response...')
 
@@ -864,11 +893,11 @@ class ConversationMixin:
 
                 full_tokens = []
                 _response_streamed = False
-                _storage_handled = False
+                _storage_handled = False  # CognitiveEngine stores turns internally
                 _was_cancelled = False
 
                 def _generation_cancelled() -> bool:
-                    if getattr(self, '_cancel_stream_requested', False):
+                    if getattr(self, "_cancel_stream_requested", False):
                         return True
                     try:
                         from eli.cognition import gguf_inference as _ggi
@@ -978,9 +1007,13 @@ class ConversationMixin:
                     from eli.cognition.reasoning_modes import apply_final_reasoning_contract as _rm_final
                     response = _rm_final(response)
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
-                _hist = ((response.rstrip() + '\n\n[Generation stopped.]') if (_was_cancelled and response) else ('[Generation stopped.]' if _was_cancelled else response))
+                _hist = (
+                    (response.rstrip() + "\n\n[Generation stopped.]")
+                    if (_was_cancelled and response) else
+                    ("[Generation stopped.]" if _was_cancelled else response)
+                )
                 self.conversation_history.append({'role': 'assistant', 'content': _hist})
                 self._last_eli_response = _hist
 
@@ -991,7 +1024,7 @@ class ConversationMixin:
                         # GUI direct SQLite fallback disabled to prevent duplicate rows.
                         pass
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
 
                 if not _response_streamed:
                     self.chat_response_signal.emit(response)
@@ -1007,7 +1040,7 @@ class ConversationMixin:
                 try:
                     self._conf_meta_update_sig.emit()
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
             except Exception as e:
                 self.chat_response_signal.emit(f"❌ Error: {str(e)}")
@@ -1024,7 +1057,7 @@ class ConversationMixin:
                          str(e)[:500], _tb2.format_exc()[:1000]))
                     _c2.commit(); _c2.close()
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
             finally:
                 self.is_generating = False
                 self._cancel_stream_requested = False
@@ -1032,7 +1065,12 @@ class ConversationMixin:
                     from eli.cognition import gguf_inference as _ggi
                     _ggi.clear_cancel_generation()
                 except Exception:
-                    pass
+                    log.debug("[GUI] clear_cancel_generation failed in finally", exc_info=True)
+                try:
+                    from eli.cognition import expression_state as _es_think2
+                    _es_think2.set_thinking(False)
+                except Exception:
+                    log.debug("[GUI] thinking-state clear failed", exc_info=True)
                 self.status_signal.emit('Send enabled')
                 self.status_signal.emit('🟢 Ready')
 
@@ -1104,9 +1142,21 @@ class ConversationMixin:
             cursor.insertBlock()
             self.chat_display.setTextCursor(cursor)
             self.chat_display.ensureCursorVisible()
-            self.send_btn.setText("Send")
-            self.send_btn.setEnabled(True)
-            self.is_generating = False
+            return
+
+        if text == "__STREAM_CANCELLED__":
+            self._streaming = False
+            self._stream_buffer = []
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            stop_fmt = QTextCharFormat()
+            stop_fmt.setFontWeight(QFont.Weight.Normal)
+            stop_fmt.setForeground(QColor("#bf616a"))
+            cursor.setCharFormat(stop_fmt)
+            cursor.insertText("\n[Generation stopped.]")
+            cursor.insertBlock()
+            self.chat_display.setTextCursor(cursor)
+            self.chat_display.ensureCursorVisible()
             return
 
         if getattr(self, "_streaming", False):
@@ -1147,7 +1197,7 @@ class ConversationMixin:
                         if not isinstance(_r, str):
                             _r = str(_r)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         ts = datetime.now().strftime("%H:%M:%S")
         cursor = self.chat_display.textCursor()

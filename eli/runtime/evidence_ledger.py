@@ -22,15 +22,9 @@ def _default_db_path() -> Path:
 
 
 def _project_root() -> Path:
-    """Canonical, environment-honouring root — not this module's own location.
-
-    Path(__file__).parents[2] points INSIDE the read-only bundle in a shipped
-    build, so anything resolved from it reads or writes the wrong tree. Same
-    class as the self-report bug fixed in 2.1.82.
-    """
     try:
-        from eli.core.paths import project_root as _canonical
-        return Path(_canonical())
+        from eli.core.paths import canonical_root
+        return canonical_root(Path(__file__).resolve().parents[2])
     except Exception:
         return Path(__file__).resolve().parents[2]
 
@@ -118,7 +112,8 @@ def _connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
     path = Path(db_path).expanduser().resolve() if db_path else _default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=5.0)
-    apply_pragmas(conn, db_path=str(path))
+    from eli.core.sqlite_util import apply_pragmas
+    apply_pragmas(conn, db_path=str(path), synchronous="NORMAL")
     ensure_schema(conn)
     return conn
 

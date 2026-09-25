@@ -4,7 +4,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Optional: point at a clean release-asset tree instead of copying an entire developer models/ folder.
+# Optional: point at a clean release-asset tree (CI / local-assets-v2.1 restore) instead
+# of copying an entire developer models/ folder that may include finetune checkpoints.
 ASSET_ROOT="${ELI_ASSETS_SRC:-$ROOT}"
 if [ -x "$ROOT/.venv/bin/python3" ]; then
   PYTHON="${PYTHON:-$ROOT/.venv/bin/python3}"
@@ -81,7 +82,8 @@ rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
 # NOTE: the wheel is built LATER, from the clean git-archive staging tree (not this dirty
-# working tree), so the shipped binary always matches the shipped source.
+# working tree), so the shipped binary always matches the shipped source — no stale or
+# untracked modules leak into the wheel and reproducibility holds.
 
 echo "[package] exporting committed source from HEAD"
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -90,16 +92,25 @@ else
   (cd "$ROOT" && git archive --format=tar HEAD -- ':!:models/**' ':!:tts_piper/**') | tar -xf - -C "$STAGING"
 fi
 
-mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper"
-if [ -f "$ROOT/packaging/desktop/Eli_Icon.png" ]; then
-  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/packaging/desktop/"
-  mkdir -p "$STAGING/blueprints"
-  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/blueprints/"
-fi
+mkdir -p "$STAGING/dist" "$STAGING/packaging/desktop" "$STAGING/models" "$STAGING/tts_piper" "$STAGING/blueprints"
 # License docs live under models/ but models/** is excluded from the lean archive — copy explicitly
 for _lic in MODEL_LICENSES.md README.txt; do
   [ -f "$ROOT/models/$_lic" ] && cp "$ROOT/models/$_lic" "$STAGING/models/"
 done
+if [ -f "$ROOT/packaging/desktop/Eli_Icon.png" ]; then
+  if [ -x "$ROOT/.venv/bin/python" ] 2>/dev/null || [ -x "$PYTHON" ]; then
+    _GEN_PY="${PYTHON:-python3}"
+    [ -x "$ROOT/.venv/bin/python" ] && _GEN_PY="$ROOT/.venv/bin/python"
+    "$_GEN_PY" "$ROOT/scripts/generate_branding_icons.py" 2>/dev/null || true
+  fi
+  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/packaging/desktop/"
+  cp "$ROOT/packaging/desktop/Eli_Icon.png" "$STAGING/blueprints/"
+  for _ic in Eli_Icon.ico eli-48.png eli-128.png eli-256.png; do
+    [ -f "$ROOT/packaging/desktop/$_ic" ] && cp "$ROOT/packaging/desktop/$_ic" "$STAGING/packaging/desktop/"
+  done
+fi
+# Build the wheel FROM the staging tree (the exact git-archive source we ship), so the
+# shipped binary == shipped source. Only this version's wheel ends up in dist/.
 if [ "$SKIP_WHEEL" -eq 0 ]; then
   echo "[package] building wheel from clean staging tree ($PYTHON)"
   ( cd "$STAGING" && "$PYTHON" -m build --wheel --no-isolation ) \
@@ -111,13 +122,16 @@ if [ "$SKIP_WHEEL" -eq 0 ]; then
   rm -rf "$STAGING/build/lib" "$STAGING/build/bdist."* "$STAGING"/*.egg-info 2>/dev/null || true
 fi
 
-# Generate a fresh capability_manifest.json into the package (gitignored, so git-archive
-# carries none) — the installer's offline fallback copy.
+# Generate a fresh capability_manifest.json into the package (it's gitignored, so the
+# git-archive source doesn't carry one) — this is the installer's offline fallback copy.
 ( cd "$STAGING" && PYTHONPATH="$STAGING" "$PYTHON" -c \
   "from eli.tools.registry.capability_updater import update_capability_manifest; update_capability_manifest()" ) \
   >/dev/null 2>&1 || echo "[package] (manifest pre-gen skipped — installer will regenerate)"
 
 # Offline wheelhouse — portable packages must install the GUI offline on first run.
+# ELI_PORTABLE_WHEELHOUSE=1 (default for release builds): PySide6 + bootstrap deps.
+# ELI_FULL_WHEELHOUSE=1: entire pinned lock (large; may exceed GitHub 2 GiB cap).
+# ELI_BUNDLE_TORCH=1: optional CPU torch wheel (opt-in — size budget).
 echo "[package] wheelhouse (portable=${ELI_PORTABLE_WHEELHOUSE:-1}, torch=${ELI_BUNDLE_TORCH:-0}, full=${ELI_FULL_WHEELHOUSE:-0})"
 mkdir -p "$STAGING/wheelhouse"
 if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ]; then
@@ -127,7 +141,7 @@ if [ "${ELI_PORTABLE_WHEELHOUSE:-1}" = "1" ]; then
       -d "$STAGING/wheelhouse" --prefer-binary -q 2>/dev/null || true
   fi
   for _plat in manylinux2014_x86_64 manylinux2014_aarch64; do
-    for _pv in 311 312; do
+    for _pv in 310 311 312 313; do
       "$PYTHON" -m pip download -d "$STAGING/wheelhouse" \
         --platform "$_plat" --python-version "$_pv" --implementation cp \
         --abi "cp${_pv}" --only-binary=:all: --prefer-binary \
@@ -139,6 +153,11 @@ if [ "${ELI_BUNDLE_TORCH:-0}" = "1" ]; then
   "$PYTHON" -m pip download torch -d "$STAGING/wheelhouse" \
       --platform manylinux2014_x86_64 --python-version 312 --implementation cp \
       --abi cp312 --only-binary=:all: --no-deps -q 2>/dev/null || true
+fi
+if [ "${ELI_FULL_WHEELHOUSE:-0}" = "1" ] && [ -f "$ROOT/requirements.lock.txt" ]; then
+  echo "[package]   downloading full pinned wheel set (this is large, needs network)…"
+  "$PYTHON" -m pip download -r "$ROOT/requirements.lock.txt" -d "$STAGING/wheelhouse" \
+      --prefer-binary -q 2>/dev/null || echo "[package]   (some wheels unavailable — install will fetch those)"
 fi
 if [ -n "$(ls -A "$STAGING/wheelhouse" 2>/dev/null)" ]; then
   _wh_count="$(ls -1 "$STAGING/wheelhouse"/*.whl 2>/dev/null | wc -l)"
@@ -162,14 +181,9 @@ STARTER_MODEL="${ELI_STARTER_MODEL:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
 if [ -f "$ASSET_ROOT/models/$STARTER_MODEL" ]; then
   echo "[package] bundling starter model: $STARTER_MODEL ($(du -h "$ASSET_ROOT/models/$STARTER_MODEL" | cut -f1))"
   mkdir -p "$STAGING/models"; cp "$ASSET_ROOT/models/$STARTER_MODEL" "$STAGING/models/"
-else
-  echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
-fi
-
-# A "full" package (starter model present) also bundles the small aux weights the installer
-# would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
-# Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
-if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
+  # A "full" package (starter model present) also bundles the small aux weights the installer
+  # would otherwise fetch from HF — which can 403 on unauthenticated bulk downloads (observed).
+  # Embedder (memory/RAG) + default Piper voice → a full install is genuinely offline-capable.
   _EMB="$ASSET_ROOT/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
   if [ -f "$_EMB" ]; then
     mkdir -p "$STAGING/models/embeddings"; cp "$_EMB" "$STAGING/models/embeddings/"
@@ -183,6 +197,8 @@ if [ -f "$STAGING/models/$STARTER_MODEL" ]; then
       break
     fi
   done
+else
+  echo "[package] starter model $STARTER_MODEL not found in models/ — skipping (installer will download one)"
 fi
 
 if [ "$WITH_ASSETS" -eq 1 ]; then
@@ -217,7 +233,7 @@ SETUP_EOF
 chmod +x "$STAGING/ELI_Setup.sh"
 
 # Every shell helper must be executable out of the tarball (Permission denied
-# on eli_diagnose.sh was a real fresh-install failure on some portable extracts).
+# on diagnose scripts was a real fresh-install failure on some portable extracts).
 while IFS= read -r -d '' _sh; do
   chmod +x "$_sh"
 done < <(find "$STAGING" -type f \( -name '*.sh' -o -name 'eli_diagnose.sh' \) -print0)
@@ -251,12 +267,17 @@ ELI v3.0 — portable download-and-run package
 
 Hardware (honest):
   Best tested: Linux x86_64 + NVIDIA GPU.
-  AMD: ROCm or Vulkan GPU offload attempted automatically; CPU fallback if neither builds.
-  Windows/macOS builds exist; feedback welcome.
+  Windows/macOS/AMD builds exist; expect rough edges — feedback welcome.
 
-Quick start (easiest — one click):
-  chmod +x ELI_Setup.sh && ./ELI_Setup.sh
-  # guided setup: deps + full GGUF catalog picker + voice + app menu icons
+Quick start (easiest):
+  chmod +x ELI_Setup.sh && ./ELI_Setup.sh          # guided one-click setup (recommended)
+  # If you see "Please install PySide6": bash install.sh --yes --auto-model
+  # Full beginner guide: first time Installation/INSTALLATION_GUIDE.md
+  # picks chat models from full catalog + installs voice/embedder
+
+Why is this tarball larger than the AppImage?
+  This package bundles offline gpu-packs/ (CUDA + Vulkan llama-cpp wheels).
+  The AppImage downloads GPU packs on first launch to stay under GitHub's 2 GiB limit.
 
 Classic:
   1. ./INSTALL_ELI.sh    (same as ELI_Setup.sh)
@@ -264,12 +285,7 @@ Classic:
 
 Daily use:
   ./RUN_ELI.sh
-  eli    (after setup installs ~/.local/bin/eli)
-
-Chat models (7 in catalog — pick any at setup):
-  qwen2.5-3b, qwen2.5-7b, qwen3-8b, falcon3-10b, phi-4, qwen3.6-35b-a3b, falcon-h1-34b
-  Always installed: nomic embedder (~85 MB) + voice (whisper + piper)
-  Re-pick later: .venv/bin/python -m eli.core.model_download --choose
+  eli    (after INSTALL_ELI.sh installs ~/.local/bin/eli)
 
 Model/voice pack (optional GitHub assets — tag: local-assets-v3.0):
   gh auth login

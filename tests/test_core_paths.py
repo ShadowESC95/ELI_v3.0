@@ -41,6 +41,7 @@ from eli.core.paths import (
     is_frozen,
     _is_dev_mode,
     _find_project_root,
+    resolve_runtime_path,
 )
 
 

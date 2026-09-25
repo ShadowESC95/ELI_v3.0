@@ -118,7 +118,7 @@ def run_maintenance_cycle(
         return result
 
     # Default: analyze + log improvements (+ optional coding-agent proposals when model ready)
-    improve = engine.analyze_and_improve(propose=True)
+    improve = engine.analyze_and_improve(repair=True)
     imps = list(improve.get("improvements") or [])
     result["improvements"] = imps
     result["proposal_count"] = int(improve.get("proposals_made") or 0)

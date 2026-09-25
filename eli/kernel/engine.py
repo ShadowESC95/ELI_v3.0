@@ -235,23 +235,14 @@ def _eli_direct_grounded_answer(user_text: str):
 
 
 def _model_family_from_path(model_path) -> str:
-    low = (str(model_path) if model_path else "").lower()
-    if "qwen" in low:
-        return "qwen"
-    if "mistral" in low or "mixtral" in low:
-        return "mistral"
-    if "deepseek" in low:
-        return "deepseek"
-    if "stable-code" in low or "starcoder" in low or "coder" in low:
+    """Deprecated wrapper — prefer ``resolve_chat_family`` / metadata."""
+    try:
+        from eli.cognition.model_identity import resolve_chat_family, read_gguf_identity
+        ident = read_gguf_identity(model_path)
+        fam = ident.get("family") or resolve_chat_family(path=model_path)
+        return str(fam or "chatml")
+    except Exception:
         return "chatml"
-    # Llama-3 uses a different format from Llama-2
-    if ("llama-3" in low or "llama3" in low or "meta-llama-3" in low
-            or "llama_3" in low):
-        return "llama3"
-    if ("llama" in low or "openhermes" in low or "hermes" in low
-            or "tinyllama" in low):
-        return "llama"
-    return "chatml"
 
 
 
@@ -3343,7 +3334,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
     def _build_phatic_minimal_system(self, user_input: str, situation_brief: str = "",
                                      reasoning_mode: Optional[str] = None) -> str:
-        """Tiny system prompt for greetings/check-ins — no full persona dump."""
+        """Tiny system prompt for greetings/check-ins — no 11k persona dump.
+
+        A phatic hello through the full compact system still shipped ~3k prompt
+        tokens on CPU-only hosts. This path
+        keeps voice + name + brief only."""
         parts: List[str] = []
         _tb = _phatic_time_authority_block()
         if _tb:
@@ -4131,7 +4126,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(f"[REPLAN] Re-plan attempt failed: {_replan_err}")
             return failed_result
 
-    def _inject_anti_repeat_contract(self, user_input: str, situation_brief: str) -> str:
+    def _inject_anti_repeat_contract(
+        self,
+        user_input: str,
+        situation_brief: str,
+        *,
+        recent_turns: Optional[Any] = None,
+    ) -> str:
         """Prepend the anti-repeat contract to a persona handoff when ELI has spoken."""
         brief = str(situation_brief or "").strip()
         if _ANTI_REPEAT_BLOCK_RE.search(brief):
@@ -4140,12 +4141,18 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _is_greeting_turn(user_input):
                 log.debug("[ANTI-REPEAT] greeting — contract not injected")
                 return brief
-            _prev_eli = []
-            for _t in (self.memory.get_recent_conversation(limit=8) or []):
-                if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
-                    _c = str((_t or {}).get("content", "") or "").strip()
-                    if _c:
-                        _prev_eli.append(_c)
+            _prev_eli = self._collect_recent_assistant_replies(recent_turns=recent_turns)
+            if not _prev_eli:
+                return brief
+            # Scrub multimodal / special-token leaks from prior replies so the
+            # anti-repeat contract cannot re-inject `<image|>` floods into the
+            # next prompt (and teach the model to emit them again).
+            try:
+                from eli.cognition.model_output_tokens import strip_special_tokens as _scrub
+                _prev_eli = [(_scrub(s) or "").strip() for s in _prev_eli]
+                _prev_eli = [s for s in _prev_eli if s]
+            except Exception:
+                log.debug("[ANTI-REPEAT] prior-reply scrub skipped", exc_info=True)
             if not _prev_eli:
                 return brief
             _quoted = "\n".join(f"  - {s[:220]}" for s in _prev_eli[:3])
@@ -4161,18 +4168,18 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug("[ANTI-REPEAT] contract skipped", exc_info=True)
             return brief
 
-    def _redact_recent_eli_from_context(self, memory_context: str) -> str:
+    def _redact_recent_eli_from_context(
+        self,
+        memory_context: str,
+        *,
+        recent_turns: Optional[Any] = None,
+    ) -> str:
         """Strip ELI's own recent replies from retrieved memory before generation."""
         ctx = str(memory_context or "")
         if not ctx:
             return ctx
         try:
-            _prev_eli = []
-            for _t in (self.memory.get_recent_conversation(limit=8) or []):
-                if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
-                    _c = str((_t or {}).get("content", "") or "").strip()
-                    if _c:
-                        _prev_eli.append(_c)
+            _prev_eli = self._collect_recent_assistant_replies(recent_turns=recent_turns)
             if _prev_eli:
                 return _redact_prior_replies(ctx, _prev_eli)
         except Exception:
@@ -4720,9 +4727,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
                     return _eli_rm_out
 
-                # Non-quick falls through to the full pipeline; a single GGUF synthesis pass
-                # bypassed Stage 1-12 and the mode's algorithm. (The quick-direct path above is
-                # unchanged.)
+                # Non-Quick falls through to the full pipeline. It used to do one GGUF synthesis pass that
+                # bypassed Stage 1-12 and the mode-specific algorithm. The Quick-direct path above is unchanged.
+
         except Exception as _eli_recent_mem_middleware_err:
             log.debug(f"[ENGINE][WARN] recent-memory-processing middleware failed: {_eli_recent_mem_middleware_err}")
 
@@ -5939,6 +5946,24 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "CANCEL_PENDING_REMEDIATION", "CONFIRM_PENDING_REMEDIATION",
                             "CLEAR_CHAT_HISTORY", "REFRESH_USER_INFO",
                             "MESSAGE_TIME_QUERY",
+                            # More confirmation/report/raw-content actions. TRANSCRIBE and OCR_IMAGE return raw recognised
+                            # text, same danger as READ_FILE/SHELL_EXEC/MCP_CALL. Deliberately left out: FIX_FILE (content is
+                            # a JSON blob) and RUN_TESTS (meant to be summarised).
+                            "CODE_CHANGES", "TRANSCRIBE", "DICTATE", "SMART_HOME",
+                            "LIST_SPEAKERS", "SPEAKER_ENROLL", "SPEAKER_STATUS", "VOICE_DIAGNOSTICS",
+                            "PERSONA_REFRESH", "PROACTIVE_START", "PROACTIVE_STOP",
+                            "HELP", "LIST_CAPABILITIES", "MEMORY_RECALL",
+                            "TEST_REVIEW", "OCR_IMAGE", "SUMMARIZE_FILE",
+                            "CONVERT_DOCUMENT", "ANALYZE_CSV", "GENERATE_TESTS",
+                            "CREATE_DOCUMENT", "GENERATE_DOCUMENT", "DOC_GENERATE",
+                            "DESIGN_VOICE", "CREATE_VOICE",
+                            # These run their own evidence-constrained model call (or none) and already return the final
+                            # answer, so a second synthesis is redundant and can drop a fact (a page count, an OCR'd line).
+                            # GENERATE_PROJECT embeds real code that mustn't be paraphrased. SEQUENCE and MULTI_COMMAND call
+                            # no model, they just join finished sub-steps.
+                            "ANALYZE_IMAGE", "ANALYZE_PDF", "ANALYZE_PDF_FOLDER",
+                            "SCREEN_READ_ANALYZE", "DATA_FABRICATOR", "GENERATE_PROJECT",
+                            "SEQUENCE", "MULTI_COMMAND",
                         }
                         try:
                             from eli.cognition.reasoning_modes import canonical_mode as _eli_direct_canon_mode
@@ -5986,13 +6011,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "SELF_PATCH",
                             "SELF_UPDATE",
                         }
-                        # Quick mode bypasses synthesis for grounded control actions
-                        # (returns deterministic evidence directly — fast, no GGUF).
-                        # Non-Quick modes MAY synthesise via their mode algorithm,
-                        # using a compact evidence-only context to prevent prompt
-                        # overflow — EXCEPT the verbatim-always introspection family
-                        # above, which is returned as-is in every mode so a weak
-                        # model can't corrupt grounded facts.
+                        # Quick mode skips synthesis for grounded control actions (deterministic evidence, no GGUF).
+                        # Non-quick may synthesise on a compact evidence-only context to avoid prompt overflow, except
+                        # the verbatim-always introspection family. The gpu_layers/batch/n_ctx diagnostic subset no
+                        # longer forces the raw dump, since quote-exact-from-evidence guards those numbers.
                         _bypass_persona = bool(
                             kwargs.get("bypass_persona")
                             or intent.get("bypass_persona")
@@ -6029,13 +6051,14 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 evidence=_synth_evidence,
                                 action=_action_upper,
                                 mode=_direct_mode,
+                                memory_context=bus_memory_context,
                             )
                             _synth_rejected = []
                             if _compact_synth and _compact_synth.strip():
                                 try:
                                     from eli.cognition.output_governor import validate_against_evidence
                                     _verdict = validate_against_evidence(
-                                        _compact_synth, f"{_synth_evidence}\n{_direct_content}",
+                                        _compact_synth, f"{_synth_evidence}\n{_direct_content}\n{bus_memory_context or ''}",
                                         mode="strip_silent")
                                     if _verdict.get("unsafe"):
                                         _synth_rejected = sorted({
@@ -7674,8 +7697,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             extra = extra[:cap].rstrip() + "\n[...structured evidence truncated...]"
         return f"{base}\n\n{extra}" if base else extra
 
+    # Actions whose answer is about the user, so the memory retrieved for the turn is evidence too. Runtime and audit
+    # answers are kept off this list on purpose: their compact prompts stay small to avoid overflowing n_ctx.
+    _MEMORY_EVIDENCE_ACTIONS = frozenset({
+        "PERSONAL_MEMORY_SUMMARY", "PERSONAL_MEMORY_DEEP_EXPLAIN", "USER_IDENTITY_SUMMARY", "MEMORY_RECALL",
+    })
+    _MEMORY_EVIDENCE_CHARS = 3500
+
     def _compact_grounded_synthesis(self, user_input: str, evidence: str,
-                                     action: str, mode: str) -> str:
+                                     action: str, mode: str, memory_context: str = "") -> str:
         """Single direct GGUF call on a minimal evidence-only prompt.
 
         Used for non-Quick grounded control actions (RUNTIME_STATUS,
@@ -7738,6 +7768,17 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if len(ev) > _ev_cap:
             ev = ev[:_ev_cap].rstrip() + "\n[...evidence truncated for length...]"
 
+        # A personal-memory question is answered from the retrieved memory as well as the executor payload; without
+        # it the model, bound to its evidence, truthfully reported knowing almost nothing about a user it had 10k
+        # characters of recall on.
+        _mem_block = ""
+        _mem = str(memory_context or "").strip()
+        if _mem and str(action or "").upper() in self._MEMORY_EVIDENCE_ACTIONS:
+            _mem_block = (
+                "RETRIEVED MEMORY (verified rows from the user's own stored memory; evidence about the USER):\n"
+                + _mem[: self._MEMORY_EVIDENCE_CHARS].rstrip() + "\n\n"
+            )
+
         # Compact voice primer so grounded answers still sound like ELI (dry, nerdy, first-person),
         # not a data terminal, without the full 8k persona that overflowed n_ctx. Character lives in
         # the phrasing only, the EXACT FACTS contract above binds every fact to the evidence. Taken from
@@ -7768,7 +7809,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "name, and capability in your answer MUST be quoted exactly from the evidence "
             "— never invent, alter, round, add, or drop one (no phantom files, no "
             "miscounts). If a fact isn't in the evidence, don't state it. "
-            "Write a clear natural-language answer in your own voice — synthesise the "
+            + ("Facts about the user may also come from the RETRIEVED MEMORY block. " if _mem_block else "")
+            + "Write a clear natural-language answer in your own voice — synthesise the "
             "evidence into a real explanation, do NOT paste the raw report back. "
             "When describing your own pipeline, architecture, agents, or behavior, "
             "speak in first person (I, my, I use, I run — not 'ELI does' or 'ELI uses'). "
@@ -7781,6 +7823,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         prompt = (
             f"GROUNDED EVIDENCE (the truth — answer ONLY from this):\n"
             f"{ev}\n\n"
+            f"{_mem_block}"
             f"USER QUESTION:\n{user_input}\n\n"
             f"MODE INSTRUCTION ({mode}):\n{mode_voice}\n\n"
             f"YOUR ANSWER (natural language, evidence-only, no preamble):"

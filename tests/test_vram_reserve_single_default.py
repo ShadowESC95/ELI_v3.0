@@ -77,7 +77,7 @@ def test_no_module_hardcodes_its_own_default_any_more():
     for rel in ("eli/gui/panels/startup.py",
                 "eli/core/startup_hardware_optimizer.py",
                 "eli/cognition/gguf_inference.py",
-                "eli/gui/main_window/models.py"):
+                "eli/gui/eli_pro_audio_gui_v2_0.py"):
         text = (repo / rel).read_text(encoding="utf-8")
         if pattern.search(text):
             offenders.append(rel)
@@ -135,7 +135,7 @@ def test_the_static_profile_is_tried_after_the_context_preserving_rungs():
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] /
-           "eli" / "gui" / "main_window" / "models.py").read_text(encoding="utf-8")
+           "eli" / "gui" / "eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
     hw = src.index("_add_attempt(*_hw_profile_attempt)")
     for earlier in ('_add_attempt("live-tuner-gpu"', '_add_attempt("lower-batch-half"',
                     '_add_attempt("lower-batch-qtr"'):
@@ -150,6 +150,6 @@ def test_the_deferred_profile_is_never_dropped():
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] /
-           "eli" / "gui" / "main_window" / "models.py").read_text(encoding="utf-8")
+           "eli" / "gui" / "eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
     assert src.count("_add_attempt(*_hw_profile_attempt)") >= 2, \
         "no flush for the branch that skips the GPU ladder"

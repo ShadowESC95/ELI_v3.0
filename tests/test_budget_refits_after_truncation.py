@@ -101,6 +101,30 @@ def test_the_refit_never_lowers_the_budget():
         "the re-fit is not guarded against reducing the budget"
 
 
+def test_the_stream_path_also_refits_after_truncation():
+    code = _engine_code()
+    assert "Stream budget re-fitted after truncation" in code
+    overflow = code.index("Stream overflow: truncated to fit")
+    refit = code.index("Stream budget re-fitted after truncation")
+    assert refit > overflow, "stream re-fit must follow stream truncation"
+
+
+def test_the_stream_path_keeps_head_and_tail():
+    """History is trimmed first; when that is not enough, head+tail of the system
+    prompt is kept. The inline block used to hold this; it now lives in
+    ``_trim_enhanced_system_for_stream`` so situation-brief / anti-repeat are
+    not gutted by a middle cut.
+    """
+    code = _engine_code()
+    assert "_trim_enhanced_system_for_stream" in code
+    helper = code[code.index("def _trim_enhanced_system_for_stream"):]
+    _end = helper.find("\n    def ", 1)
+    helper = helper if _end == -1 else helper[:_end]
+    assert "context trimmed to fit the model" in helper
+    assert "enhanced_system[:_head]" in helper or "text[:_head]" in helper
+    assert "CONVERSATION HISTORY" in helper
+
+
 def test_an_explicit_request_is_still_respected():
     """Reclaiming room must not override a smaller number the caller asked for."""
     code = _engine_code()

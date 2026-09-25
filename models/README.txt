@@ -23,8 +23,9 @@ Python/
   python -m pip install eli_mkxi-2.0.0-py3-none-any.whl
 
 Model / voice packs/
-  Distributed separately via GitHub Release assets (too large for git).
-  Restore after install: ./RUN_ELI.sh --with-github-assets
+  Distributed separately via GitHub Release assets (too large for git),
+  tag: local-assets-v2.1. Restore after install:
+  ./RUN_ELI.sh --with-github-assets
 
 Checksums/
   SHA256SUMS.txt alongside builds in dist/

@@ -73,14 +73,14 @@ class SelfImproveMixin:
                             "SELECT category, description, status FROM improvements ORDER BY timestamp DESC LIMIT 20"
                         ).fetchall()
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
                     fails = []
                     try:
                         fails = con.execute(
                             "SELECT user_input, error, occurrence_count FROM failures ORDER BY timestamp DESC LIMIT 6"
                         ).fetchall()
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
                     con.close()
                 except Exception as _db_err:
                     imps, fails = [], []

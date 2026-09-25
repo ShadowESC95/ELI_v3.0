@@ -114,7 +114,48 @@ _FEW_SHOT = (
     '{"q":"i am so happy to be alive","action":"CHAT","args":{},"confidence":0.95}\n'
     '{"q":"good morning","action":"CHAT","args":{},"confidence":0.95}\n'
     '{"q":"hey eli","action":"CHAT","args":{},"confidence":0.95}\n'
+    '{"q":"do you remember what we talked about last week","action":"MEMORY_RECALL",'
+    '"args":{"query":"last week conversation topics"},"confidence":0.9}\n'
 )
+
+
+# backend without grammar support (Ollama, remote), so this stays model-agnostic.
+_GRAMMAR_CACHE: Dict[str, Any] = {}
+
+
+def _action_grammar(catalogue: List[str]):
+    """A GBNF grammar admitting only {"action": <one of catalogue>, "args": {...},
+    "confidence": <number>}. Cached per catalogue signature; None if unavailable."""
+    if not catalogue:
+        return None
+    # Admit exactly what the resolver below accepts — the catalogue plus CHAT. Omitting
+    # CHAT would make ordinary small talk unrepresentable and force every greeting to be
+    # answered as a command.
+    names = sorted(set(catalogue) | {"CHAT"})
+    key = hashlib.sha1("|".join(names).encode()).hexdigest()
+    if key in _GRAMMAR_CACHE:
+        return _GRAMMAR_CACHE[key]
+    grammar = None
+    try:
+        from llama_cpp import LlamaGrammar
+        alts = " | ".join('"\\"%s\\""' % a for a in names)
+        gbnf = (
+            'root    ::= "{" ws "\\"action\\":" ws action ws "," ws "\\"args\\":" ws object'
+            ' ws "," ws "\\"confidence\\":" ws number ws "}"\n'
+            'action  ::= ' + alts + '\n'
+            'object  ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}"\n'
+            'value   ::= object | array | string | number | "true" | "false" | "null"\n'
+            'array   ::= "[" ws ( value ("," ws value)* )? "]"\n'
+            'string  ::= "\\"" ([^"\\\\] | "\\\\" ["\\\\/bfnrt])* "\\""\n'
+            'number  ::= "-"? [0-9]+ ("." [0-9]+)?\n'
+            'ws      ::= [ \\t\\n]*\n'
+        )
+        grammar = LlamaGrammar.from_string(gbnf, verbose=False)
+    except Exception:
+        log.debug("llm_intent: grammar unavailable — using free-text JSON", exc_info=True)
+        grammar = None
+    _GRAMMAR_CACHE[key] = grammar
+    return grammar
 
 
 # Canonical arg key -> names a model plausibly invents for it. The grammar constrains the action
@@ -204,6 +245,7 @@ def parse_with_llm(text: str) -> Dict[str, Any]:
             response = gguf_inference.chat_completion(
                 prompt, system=system, max_tokens=200, temperature=0.1,
             )
+
         # Tolerate markdown-fenced JSON (Phi-4 emits ```json, Qwen bare JSON) and leave enough
         # budget that long-arg JSON isn't cut off mid-object. Both made routing collapse to CHAT and
         # the model claim it ran the command.
@@ -226,6 +268,9 @@ def parse_with_llm(text: str) -> Dict[str, Any]:
         conf = max(0.0, min(1.0, conf))
         if action == "CHAT":
             args = {"message": text}
+        elif action == "MEMORY_RECALL" and not str(args.get("query") or "").strip():
+            # Grammar allows {} but MEMORY_RECALL requires a query — use the user turn.
+            args["query"] = text
         return {"action": action, "args": args, "confidence": conf,
                 "meta": {"matched_by": "llm_intent.resolver"}}
     except Exception as e:

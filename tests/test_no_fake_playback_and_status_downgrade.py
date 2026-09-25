@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from eli.execution.effectors import media as ex
-from eli.kernel.stages.fast_actions import _is_soft_informational_action
+from eli.execution import executor_enhanced as ex
+from eli.kernel.engine import _is_soft_informational_action
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

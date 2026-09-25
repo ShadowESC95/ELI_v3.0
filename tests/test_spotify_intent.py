@@ -30,5 +30,30 @@ def test_artist_songs_request():
     assert si.artist_songs_request("songs by diabolic") == "diabolic"
 
 
+def test_mpv_load_confirmed_rejects_bool_duration(monkeypatch):
+    monkeypatch.setattr(
+        "eli.integrations.media.cross_platform.mpv_ipc_send",
+        lambda cmd, **kw: True if cmd[-1] == "duration" else False,
+    )
+    from eli.execution.executor_enhanced import _mpv_load_confirmed
+    assert _mpv_load_confirmed("/tmp/fake.sock") is False
+
+
+def test_youtube_mpv_query_skips_album_suffix_for_plain_songs():
+    from eli.integrations.media.spotify_intent import youtube_mpv_query
+    assert "album" not in youtube_mpv_query("never gonna give you up").lower()
+
+
+def test_youtube_mpv_query_album_by_artist():
+    from eli.integrations.media.spotify_intent import youtube_mpv_query
+    q = youtube_mpv_query("the album liar and a thief by diabolic")
+    assert "diabolic" in q.lower()
+    assert "official audio" in q.lower()
+    q = si.youtube_search_query("the album liar and a thief by diabolic")
+    assert "diabolic" in q.lower()
+    assert "liar" in q.lower()
+    assert "album" in q.lower()
+
+
 def test_prefers_spotify_for_album_phrasing():
     assert si.prefers_spotify_music_context("the marshall mathers lp album")

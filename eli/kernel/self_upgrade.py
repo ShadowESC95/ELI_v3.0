@@ -360,7 +360,7 @@ class SelfUpgrader:
         """
         tag = self._latest_tag()
         want = tag.lstrip("v")
-        asset = f"ELI_v2-{want}-x86_64.AppImage"
+        asset = f"ELI_v3-{want}-x86_64.AppImage"
         running = os.environ.get("APPIMAGE") or ""
         if not running:
             return False, ("this is a frozen build but APPIMAGE is unset, so I cannot locate the "

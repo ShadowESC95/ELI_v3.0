@@ -30,7 +30,10 @@ NATURAL_PREFIX = "natural:"
 _XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 _TTS = None  # lazy singleton
 
-# Curated natural voices using XTTS-v2's built-in studio speakers.
+# Curated natural voices using XTTS-v2's built-in studio speakers: human-like neural TTS with
+# no clone or reference needed. Friendly id -> the speaker name asked of XTTS. Resolution is
+# tolerant (_resolve_builtin_speaker), so upstream name drift falls back to a real speaker
+# instead of failing. The startup picker can select this path.
 _NATURAL_VOICES = {
     "sophia": {"speaker": "Claribel Dervla", "gender": "female",
                "desc": "Sophia — warm, natural female"},
@@ -236,8 +239,21 @@ def _select_device() -> str:
     """
     import os
     forced = os.environ.get("ELI_XTTS_DEVICE", "").strip().lower()
-    if forced in ("cpu", "cuda"):
-        return forced
+    if forced == "cpu":
+        return "cpu"
+    if forced == "cuda":
+        # Verify torch can do CUDA before honouring the force. The startup picker sets it from "the
+        # machine has a GPU", not "this torch build has CUDA"; a CPU-only wheel raises "Torch not
+        # compiled with CUDA enabled" inside .to(device) after the 1.8GB model has loaded.
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+            log.warning("tts_xtts: ELI_XTTS_DEVICE=cuda but this torch build has no "
+                        "CUDA support — using CPU instead")
+        except Exception:
+            log.debug("tts_xtts: cuda force probe failed", exc_info=True)
+        return "cpu"
     try:
         import torch
         if torch.cuda.is_available():
@@ -358,5 +374,5 @@ def synthesize_wav(text: str, clone_name: str) -> Optional[bytes]:
             try:
                 Path(outpath).unlink(missing_ok=True)
             except OSError:
-                log.debug('tts_xtts: temp wav cleanup failed', exc_info=True)
+                log.debug("suppressed exception", exc_info=True)
     return None

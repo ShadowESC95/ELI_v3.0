@@ -40,7 +40,7 @@ def test_engine_ask_uses_cognitive_engine_dict_response():
 
 
 def test_gui_preloaded_handoff_reads_preloaded_params():
-    source = Path("eli/gui/main_window/window.py").read_text(encoding="utf-8")
+    source = Path("eli/gui/eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
     handoff = source[source.index("_PRELOADED_PARAMS"):source.index("QTimer.singleShot(600")]
 
     assert "_pre_params" in handoff

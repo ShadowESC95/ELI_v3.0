@@ -878,6 +878,75 @@ class TabsMixin:
         sub.setStyleSheet("font-size:11px; color:#8899aa; padding-bottom:6px;")
         layout.addWidget(sub)
 
+        # ── Screen analysis settings (all local — no URLs) ─────────────────
+        cfg_box = QGroupBox("Screen analysis settings")
+        cfg_box.setStyleSheet(
+            "QGroupBox { color:#8eaac8; font-weight:bold; border:1px solid #2a2d3a; "
+            "border-radius:6px; margin-top:8px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:10px; padding:0 4px; }"
+        )
+        cfg_form = QFormLayout(cfg_box)
+
+        self._sc_depth_combo = QComboBox()
+        self._sc_depth_combo.addItem("Quick glance", "quick")
+        self._sc_depth_combo.addItem("Standard", "standard")
+        self._sc_depth_combo.addItem("Deep / full audit", "deep")
+        self._sc_depth_combo.setToolTip(
+            "Quick = fast Moondream glance. Standard = VL + OCR fusion. "
+            "Deep = thorough audit with full OCR + text-model fusion."
+        )
+        cfg_form.addRow("Analysis depth", self._sc_depth_combo)
+
+        self._sc_use_memory_cb = QCheckBox("Include prior screen memories when relevant")
+        self._sc_use_memory_cb.setStyleSheet("color:#c8d0e0;")
+        cfg_form.addRow("", self._sc_use_memory_cb)
+
+        self._sc_use_research_cb = QCheckBox("Relate to my research/projects when asked")
+        self._sc_use_research_cb.setStyleSheet("color:#c8d0e0;")
+        cfg_form.addRow("", self._sc_use_research_cb)
+
+        self._sc_ground_combo = QComboBox()
+        for label, val in [
+            ("Off — AT-SPI + OCR only", "none"),
+            ("Auto — local VL when available", "auto"),
+            ("Local GGUF (Phi-Ground / OS-Atlas / UGround)", "local_gguf"),
+        ]:
+            self._sc_ground_combo.addItem(label, val)
+        self._sc_ground_combo.setToolTip(
+            "Precision click for icons/non-text UI. 100% local GGUF — "
+            "drop a grounding model into models/ or pick Auto."
+        )
+        cfg_form.addRow("Precision UI click", self._sc_ground_combo)
+
+        self._sc_agent_combo = QComboBox()
+        for label, val in [
+            ("Off", "none"),
+            ("Auto — UI-TARS-style GGUF if present", "auto"),
+            ("Local GGUF (UI-TARS / computer-use)", "local_gguf"),
+        ]:
+            self._sc_agent_combo.addItem(label, val)
+        self._sc_agent_combo.setToolTip(
+            "Multi-step desktop agent (local only). Requires a computer-use GGUF in models/."
+        )
+        cfg_form.addRow("Computer-use agent", self._sc_agent_combo)
+
+        self._sc_ambient_cb = QCheckBox("Ambient screen watch (periodic local glances → memory)")
+        self._sc_ambient_cb.setStyleSheet("color:#c8d0e0;")
+        cfg_form.addRow("", self._sc_ambient_cb)
+
+        self._sc_interval_spin = QSpinBox()
+        self._sc_interval_spin.setRange(60, 3600)
+        self._sc_interval_spin.setSingleStep(60)
+        self._sc_interval_spin.setSuffix(" s")
+        cfg_form.addRow("Glance interval", self._sc_interval_spin)
+
+        _sc_save_btn = QPushButton("💾 Save screen settings")
+        _sc_save_btn.clicked.connect(self._sc_save_settings)
+        cfg_form.addRow("", _sc_save_btn)
+
+        layout.addWidget(cfg_box)
+        self._sc_load_settings()
+
         # ── Screenshot + OCR row ──────────────────────────────────────────
         btn_row = QHBoxLayout()
         self._sc_capture_btn = QPushButton("📸 Capture Full Screen")

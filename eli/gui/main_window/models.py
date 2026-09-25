@@ -10,6 +10,10 @@ class LocalModelManager:
         self.model_path = None
         self.is_loaded = False
         self.load_error = None
+        self.fitted_gpu_layers = 0
+        self.gpu_integrated = False
+        self.gpu_name = ""
+        self.gpu_vendor = ""
     def _write_shared_runtime_snapshot(
         self,
         model_path: str,
@@ -33,16 +37,8 @@ class LocalModelManager:
                 if requested_n_gpu_layers is not None
                 else effective_n_gpu_layers
             )
-            # ctx/batch used to collapse onto whatever actually loaded here --
-            # only gpu_layers kept an honest requested-vs-effective split. That
-            # meant a smart-fit fallback (e.g. ctx cut 12384->4096 to fit VRAM)
-            # got reported back as "requested", and GPU_STATUS/EXPLAIN grounded
-            # a confident "loaded exactly as requested, no fallback occurred"
-            # on evidence the load ladder had already overwritten (port of
-            # v2.4.55). The caller now passes the operator's TRUE original
-            # ask; default to the effective value only when a caller genuinely
-            # has nothing else (e.g. a snapshot re-publish with no fallback
-            # story to tell).
+            # ctx/batch requested values are the operator's true ask, not what the fallback loaded;
+            # default to effective only when the caller has nothing else.
             requested_ctx = int(
                 requested_n_ctx if requested_n_ctx is not None else effective_n_ctx
             )
@@ -94,11 +90,25 @@ class LocalModelManager:
         use_mlock: bool = False,
     ) -> bool:
         try:
+            _pre_load_rss = 0
+            try:
+                from eli.runtime.inference_footprint import capture_process_rss_bytes
+                _pre_load_rss = int(capture_process_rss_bytes())
+            except Exception:
+                log.debug("[GUI][LOAD] pre-load RSS capture skipped", exc_info=True)
             try:
                 from eli.core.gpu_pack_runtime import try_activate_gpu_pack
                 try_activate_gpu_pack(verify=True)
             except Exception:
                 log.debug("GPU pack activation before model load skipped", exc_info=True)
+            try:
+                from eli.core.llama_cpu_compat import preflight_runtime
+                _cpu_msg = preflight_runtime()
+            except Exception:
+                _cpu_msg = None
+            if _cpu_msg:
+                print(f"❌ {_cpu_msg}")
+                return False
             from llama_cpp import Llama
             from llama_cpp import llama_cpp as _llama_native
             # Co-resident vision: reserve the small fast (Moondream) model's VRAM
@@ -135,6 +145,19 @@ class LocalModelManager:
                 return False
             print(f"🔄 Loading model: {path_obj.name}")
             print(f"   Size: {path_obj.stat().st_size / (1024**3):.2f} GB")
+            self.fitted_gpu_layers = 0
+            try:
+                from eli.core.hardware_profile import detect_hardware as _hw_load
+                _hw = _hw_load()
+                self.gpu_integrated = bool(getattr(_hw, "gpu_integrated", False))
+                self.gpu_name = str(getattr(_hw, "gpu_name", "") or "")
+                self.gpu_vendor = str(getattr(_hw, "gpu_vendor", "") or "")
+                self.vulkan_available = bool(getattr(_hw, "vulkan_available", False))
+            except Exception:
+                self.gpu_integrated = False
+                self.gpu_name = ""
+                self.gpu_vendor = ""
+                self.vulkan_available = False
             # Preserve user's explicit settings — attempt 1 always honours these exactly.
             # The hardware profile is read separately and inserted as a fallback candidate
             # so it never overrides deliberate user choices.
@@ -161,13 +184,11 @@ class LocalModelManager:
                         f"(user: ctx={_user_ctx} gpu_layers={_user_gpu_layers} "
                         f"batch={_user_batch})"
                     )
+                    if int(_hw_profile_gpu_layers or 0) > 0:
+                        self.fitted_gpu_layers = int(_hw_profile_gpu_layers)
             except Exception as _eli_hw_err:
                 log.debug(f"[GUI][HW_PROFILE] profile read failed: {_eli_hw_err}")
 
-            print(f"   GPU-layer load parameter: {n_gpu_layers}")
-            print(f"   Batch size: {n_batch}")
-            if cache_type_k or cache_type_v:
-                print(f"   KV cache: K={cache_type_k or 'default'} V={cache_type_v or 'default'}")
             requested_n_gpu_layers = int(n_gpu_layers)
             gpu_offload_supported = None
             try:
@@ -176,6 +197,8 @@ class LocalModelManager:
                     gpu_offload_supported = bool(_supports_fn())
             except Exception:
                 gpu_offload_supported = None
+            # Vulkan packs on Intel iGPU often report offload=False inside
+            # AppImage even when the pack was verified — don't force CPU.
             if gpu_offload_supported is False:
                 try:
                     from eli.core.gpu_pack_runtime import trust_vulkan_igpu_offload
@@ -202,6 +225,19 @@ class LocalModelManager:
                 f"effective_layers={effective_n_gpu_layers} "
                 f"offload_supported={gpu_offload_supported}",
             )
+            print(f"   GPU-layer load parameter: {effective_n_gpu_layers}")
+            if (
+                requested_n_gpu_layers > 0
+                and effective_n_gpu_layers == 0
+                and gpu_offload_supported is False
+            ):
+                print(
+                    f"   (hardware profile suggested {requested_n_gpu_layers} layers — "
+                    f"this runtime is CPU-only; 0 active)",
+                )
+            print(f"   Batch size: {effective_n_batch}")
+            if cache_type_k or cache_type_v:
+                print(f"   KV cache: K={cache_type_k or 'default'} V={cache_type_v or 'default'}")
             self.n_ctx = int(n_ctx)
             self.n_threads = int(n_threads)
             self.n_gpu_layers = int(effective_n_gpu_layers)
@@ -243,9 +279,13 @@ class LocalModelManager:
             _base_ctx = _user_ctx
             _base_layers = int(effective_n_gpu_layers)
             _base_batch = int(effective_n_batch)
+            _sf_ctx = None
             # The user's OWN settings are queued FIRST — but below, once the fit
             # has measured free VRAM, because the layer count has to be clamped
             # against it. See the note at the insertion point.
+            # Fit numbers also feed the verify gate: lazy CUDA aborts when the
+            # operator's ctx/batch/layers exceed what was measured (live: 30B
+            # Nemotron with layers==fit but ctx 12000>>4096 skipped the probe).
             _sf_fit_layers = None
             _sf_fit_ctx = None
             _sf_fit_batch = None
@@ -259,122 +299,116 @@ class LocalModelManager:
             import os as _sf_os
             try:
                 from eli.core.startup_hardware_optimizer import (
-                    detect_nvidia_gpus as _sf_dng, select_gpu as _sf_sg,
+                    gpu_budget_for_fit as _sf_budget,
+                    train_ctx_for_model as _sf_train_ctx,
+                    detect_available_ram_gb as _sf_avail_ram,
+                    cpu_ctx_ceiling_from_ram as _sf_ram_ceil,
                 )
-                from eli.core.hardware_profile import smart_fit_config as _sf_fit
-                from eli.core.startup_hardware_optimizer import train_ctx_for_model as _sf_train_ctx
-                _sf_gpu = _sf_sg(_sf_dng())
-                if _sf_gpu and _sf_gpu.free_mb > 0:
-                    _sf_model_gb = path_obj.stat().st_size / (1024 ** 3)
-                    from eli.core.hardware_profile import vram_reserve_mb as _vrm
-                    _sf_reserve = int(_vrm())
-                    _sf_kvq = bool(_sf_gpu.total_mb and _sf_gpu.total_mb < 12000)
-                    # Anchor the fit on the user's CHOSEN ctx. The startup popup's
-                    # "Context target fraction" (ELI_CTX_FRACTION) is the canonical control:
-                    # requested ctx = fraction × the model's trained length. smart_fit_config
-                    # then honours it by SHEDDING GPU LAYERS (ctx preserved — quality over
-                    # speed), so the fraction is a real speed↔context dial. An explicit
-                    # SMALLER settings n_ctx still caps it (user wants less). No hardcode.
-                    _sf_train = int(_sf_train_ctx(str(path_obj)))  # model's REAL n_ctx_train (metadata)
-                    # ELI's NEED, derived (not a magic number): the full persona/memory brief
-                    # budget + a generation reserve. Sizing ctx below this is what forces the
-                    # head/tail chop that mangles the prompt → weak-model garbage. So this is a
-                    # FLOOR, not just a target: any model that CAN hold the brief is never asked
-                    # for less, so the brief is never chopped. Both terms are env-tunable, and an
-                    # explicit user n_ctx still overrides — fully alterable.
-                    # DERIVED, not a flat 12288. That literal is the brief's budget in
-                    # CHARACTERS and was being spent as TOKENS, so every machine was asked
-                    # for four times the context the brief can occupy — and smart_fit pays
-                    # for context by shedding GPU layers, so on a small card it moved the
-                    # whole model to the CPU to reserve room nothing would use. Same source
-                    # as the assembler's own budgets, so the two cannot drift.
-                    try:
-                        from eli.kernel.engine import eli_brief_budget_tokens as _sf_brief_fn
-                        _sf_brief_default = _sf_brief_fn()
-                    except Exception:
-                        _sf_brief_default = 3072
-                    _sf_brief_floor = int(_sf_os.environ.get("ELI_CTX_BRIEF_FLOOR", "")
-                                          or _sf_brief_default)
+                from eli.core.hardware_profile import unified_fit_config as _sf_fit
+                _sf_model_gb = path_obj.stat().st_size / (1024 ** 3)
+                _sf_train = int(_sf_train_ctx(str(path_obj)))
+                _sf_igpu = bool(getattr(self, "gpu_integrated", False))
+                _sf_min_batch = int(_sf_os.environ.get("ELI_MIN_BATCH", "128") or "128")
+                if _sf_igpu:
+                    _sf_min_batch = min(_sf_min_batch, 32)
+                _sf_user_batch = max(_user_batch, _sf_min_batch)
+                if _sf_igpu:
+                    _sf_user_batch = min(_sf_user_batch, 32)
+                if _user_ctx and 2048 <= int(_user_ctx) <= _sf_train:
+                    _sf_user_ctx = int(_user_ctx)
+                else:
+                    _sf_brief_floor = int(_sf_os.environ.get("ELI_CTX_BRIEF_FLOOR", "12288") or "12288")
                     _sf_gen_reserve = int(_sf_os.environ.get("ELI_CTX_GEN_RESERVE", "4096") or "4096")
-                    _eli_need = _sf_brief_floor + _sf_gen_reserve            # ~16k: brief + generation
-                    # Target defaults to ELI's need; never below it. A bigger ctx just costs VRAM
-                    # (→ fewer GPU layers), so we right-size to the need rather than maxing the
-                    # model's full trained length — keeps layers on the GPU AND fits the brief.
+                    _eli_need = _sf_brief_floor + _sf_gen_reserve
                     _sf_target = int(_sf_os.environ.get("ELI_CTX_TARGET", str(_eli_need)) or str(_eli_need))
                     _sf_target = max(_sf_target, _eli_need)
-                    # Round the grain UP, not down: the target is a NEED (brief +
-                    # generation reserve), and flooring it hands back part of the very
-                    # reserve it exists to guarantee — 7168 became 6144, 1024 tokens
-                    # short. Still capped by the model's trained length.
-                    _sf_grain_ctx = -(-int(_sf_target) // 2048) * 2048
-                    _sf_user_ctx = max(2048, min(_sf_grain_ctx, _sf_train))
-                    # No-chop floor: if the model's trained context can hold ELI's brief, request
-                    # at least that — even when VRAM is tight (smart_fit sheds layers→batch→ctx,
-                    # so ctx is preserved). Guarantees the persona/memory brief is never truncated
-                    # on a capable model. (A model below the need — e.g. the 4k phi-3 — can't be
-                    # raised past its trained length, so it's flagged incompatible below instead.)
+                    _sf_user_ctx = max(2048, (min(_sf_target, _sf_train) // 2048) * 2048)
                     if _sf_train >= _eli_need:
-                        _sf_user_ctx = max(_sf_user_ctx, -(-_eli_need // 2048) * 2048)
-                    # A settings n_ctx wins ONLY when the operator actually chose it.
-                    # Unpinned values are this machine's derived profile (see
-                    # runtime_settings._apply_hardware_derived_defaults), and letting a
-                    # derived number override the need reintroduced the chop it exists to
-                    # prevent: a profile computed at ctx=4096 would be honoured as an
-                    # "explicit choice", cutting ELI's own brief in half. Pinned means the
-                    # operator typed it, and then it is theirs.
-                    try:
-                        from eli.core.runtime_settings import (
-                            operator_pinned_keys as _sf_pinned, load_settings as _sf_ls)
-                        _sf_ctx_is_operators = "n_ctx" in _sf_pinned(_sf_ls())
-                    except Exception:
-                        _sf_ctx_is_operators = True   # unknown provenance → honour it
-                    if (_user_ctx and 2048 <= int(_user_ctx) <= _sf_train
-                            and (_sf_ctx_is_operators or int(_user_ctx) >= _sf_user_ctx)):
-                        _sf_user_ctx = int(_user_ctx)  # explicit user ctx wins (capped to real ctx)
-                    # Incompatibility guard: a model whose ENTIRE trained context is smaller than
-                    # ELI's prompt budget can't run without truncating persona/memory — warn loudly
-                    # instead of silently degrading or limping onto the CPU (the 4k phi-3 case).
-                    if _sf_train < _sf_brief_floor:
-                        log.warning(
-                            f"[GUI][LOAD] model trained context {_sf_train} < ELI's prompt budget "
-                            f"~{_sf_brief_floor}: persona/memory will be truncated and output quality "
-                            f"will suffer. Choose a model with >= {_sf_brief_floor} context "
-                            f"(e.g. Qwen3-8B = 40960).")
-                    _sf_min_batch = int(_sf_os.environ.get("ELI_MIN_BATCH", "128") or "128")
+                        _sf_user_ctx = max(_sf_user_ctx, (_eli_need // 2048) * 2048)
+                if _sf_train < int(_sf_os.environ.get("ELI_CTX_BRIEF_FLOOR", "12288") or "12288"):
+                    log.warning(
+                        f"[GUI][LOAD] model trained context {_sf_train} < ELI's prompt budget "
+                        f"~{int(_sf_os.environ.get('ELI_CTX_BRIEF_FLOOR', '12288'))}: persona/memory "
+                        f"will be truncated. Choose a model with a larger trained context.")
+
+                _avail_gb = float(_sf_avail_ram())
+                if gpu_offload_supported is False:
+                    # CPU-only: size from AVAILABLE RAM, not iGPU shared-memory VRAM.
+                    # VRAM smart-fit on Iris Xe returned ctx=3996 from ~1.5GB budget while
+                    # the model + KV actually live in system RAM, not iGPU VRAM budget.
+                    _ram_ceiling = int(_sf_ram_ceil(_sf_model_gb, _sf_train))
+                    _sf_user_ctx = min(int(_sf_user_ctx), _ram_ceiling) if _ram_ceiling > 0 else int(_sf_user_ctx)
+                    from eli.core.hardware_profile import cpu_ram_budget_mb as _cpu_ram_budget
+                    _ram_budget_mb = _cpu_ram_budget(_avail_gb)
                     _sf_ctx, _sf_layers, _sf_batch = _sf_fit(
-                        _sf_model_gb, _sf_gpu.free_mb,
-                        user_ctx=_sf_user_ctx, user_batch=max(_user_batch, _sf_min_batch),
-                        reserve_mb=_sf_reserve, kv_quantized=_sf_kvq,
+                        _sf_model_gb,
+                        0,
+                        _avail_gb,
+                        user_ctx=_sf_user_ctx,
+                        user_batch=_sf_user_batch,
+                        reserve_mb=512,
+                        kv_quantized=bool(_avail_gb <= 16.0),
                         min_batch=_sf_min_batch,
                         model_path=str(path_obj),
-                        user_gpu_layers=_user_gpu_layers,
+                        force_cpu=True,
                     )
+                    _sf_layers = 0
+                    _sf_ctx = min(int(_sf_ctx), _ram_ceiling) if _ram_ceiling > 0 else int(_sf_ctx)
                     log.debug(
-                        f"[GUI][LOAD] smart-fit (post-init free={_sf_gpu.free_mb}MB "
-                        f"reserve={_sf_reserve}MB kvq={_sf_kvq}): "
-                        f"ctx={_sf_ctx} gpu_layers={_sf_layers} batch={_sf_batch}")
-                    if _sf_ctx < _sf_user_ctx:
-                        log.debug(
-                            f"[GUI][LOAD] smart-fit reduced ctx {_sf_user_ctx}->{_sf_ctx} to fit "
-                            f"{_sf_gpu.free_mb}MB free VRAM (your setting didn't fit — reduced to "
-                            f"avoid OOM, not replaced)")
-                    # Layers get the same announcement as ctx. Shedding GPU layers is
-                    # the FIRST thing smart-fit does (ctx is protected to last), so it
-                    # is the reduction users actually hit — and it was near-silent: a
-                    # 99 -> 31 cut showed up only as a number in the parameter list
-                    # while per-turn latency went from ~3s to ~14s.
-                    if _user_gpu_layers and _sf_layers < _user_gpu_layers:
-                        log.debug(
-                            f"[GUI][LOAD] smart-fit reduced GPU layers {_user_gpu_layers}->{_sf_layers} "
-                            f"to fit {_sf_gpu.free_mb}MB free VRAM — your context of {_sf_ctx} was kept "
-                            f"(ctx is reduced last). Expect slower generation: the layers that did not "
-                            f"fit run on CPU. Free VRAM or lower the context to get them back.")
-                    _sf_fit_layers = int(_sf_layers)
+                        f"[GUI][LOAD] RAM smart-fit (available={_avail_gb:.1f}GB "
+                        f"budget={_ram_budget_mb}MB ceiling={_ram_ceiling} "
+                        f"kvq={bool(_avail_gb <= 16.0)}): "
+                        f"ctx={_sf_ctx} gpu_layers=0 batch={_sf_batch}")
+                    _sf_fit_layers = 0
                     _sf_fit_ctx = int(_sf_ctx)
                     _sf_fit_batch = int(_sf_batch)
-                    _add_attempt("smart-fit", _sf_ctx, _sf_layers, _sf_batch)
+                    self.fitted_gpu_layers = 0
+                    # CPU-only: RAM fit is attempt 1 — user ctx that exceeds measured
+                    # headroom stalls for minutes on low-RAM CPU-only hosts.
+                    _add_attempt("ram-smart-fit", _sf_ctx, 0, _sf_batch, front=True)
+                else:
+                    _sf_gpu = _sf_budget()
+                    if _sf_gpu and _sf_gpu.free_mb > 0:
+                        from eli.core.hardware_profile import vram_reserve_mb as _vrm
+                        _sf_reserve = int(_vrm(gpu_integrated=_sf_igpu))
+                        _sf_kvq = bool(_sf_gpu.total_mb and _sf_gpu.total_mb < 12000)
+                        _sf_ctx, _sf_layers, _sf_batch = _sf_fit(
+                            _sf_model_gb, _sf_gpu.free_mb, _avail_gb,
+                            user_ctx=_sf_user_ctx, user_batch=_sf_user_batch,
+                            reserve_mb=_sf_reserve, kv_quantized=_sf_kvq,
+                            min_batch=_sf_min_batch,
+                            model_path=str(path_obj),
+                            gpu_integrated=_sf_igpu,
+                            user_gpu_layers=_user_gpu_layers,
+                        )
+                        log.debug(
+                            f"[GUI][LOAD] smart-fit (post-init free={_sf_gpu.free_mb}MB "
+                            f"reserve={_sf_reserve}MB kvq={_sf_kvq}): "
+                            f"ctx={_sf_ctx} gpu_layers={_sf_layers} batch={_sf_batch}")
+                        if _sf_ctx < _sf_user_ctx:
+                            log.debug(
+                                f"[GUI][LOAD] smart-fit measured ctx {_sf_ctx} as the fit for "
+                                f"{_sf_gpu.free_mb}MB free VRAM (your {_sf_user_ctx} is tried first; "
+                                f"this is the fallback if it cannot be honoured — reduced to avoid "
+                                f"OOM, never replaced)")
+                        if _user_gpu_layers and _sf_layers < _user_gpu_layers:
+                            log.debug(
+                                f"[GUI][LOAD] smart-fit measured {_sf_layers} GPU layers as the fit for "
+                                f"{_sf_gpu.free_mb}MB free VRAM (your {_user_gpu_layers} is tried first; "
+                                f"this is the fallback). Your context of {_sf_ctx} is kept either way "
+                                f"(ctx is reduced last). If the fallback is used, expect slower "
+                                f"generation: the layers that did not fit run on CPU. Free VRAM or lower "
+                                f"the context to get them back.")
+                        _sf_fit_layers = int(_sf_layers)
+                        _sf_fit_ctx = int(_sf_ctx)
+                        _sf_fit_batch = int(_sf_batch)
+                        self.fitted_gpu_layers = int(_sf_layers)
+                        _add_attempt("smart-fit", _sf_ctx, _sf_layers, _sf_batch)
             except Exception as _sf_err:
                 log.debug(f"[GUI][LOAD] smart-fit attempt skipped: {_sf_err}")
+
+            if gpu_offload_supported is False:
+                _base_layers = 0
 
             # ── The user's OWN settings, first ────────────────────────────
             #
@@ -432,8 +466,12 @@ class LocalModelManager:
             # verdict is cached per (model, params, GPU), so even that is paid
             # once per configuration rather than once per startup.
             #
-            # Layers alone are not enough — ctx/batch over-fit also lazy-OOMs
-            # (live: Nemotron 30B layers==fit but ctx 12000>>4096 skipped probe).
+            # Layers alone are not enough. Live 2.4.32: smart-fit measured
+            # ctx=4096 gpu_layers=11 batch=128 for a 22GB Nemotron on an 8GB
+            # card; the operator had layers=11 (equal) but ctx=12000 / batch=512.
+            # `_needs_proof` was False, load reported success, first decode hit
+            # ggml-cuda.cu and aborted the process. Prove on ANY axis that
+            # exceeds the measured fit.
             _proof_bits: list[str] = []
             if _sf_fit_layers is not None and int(_base_layers) > int(_sf_fit_layers):
                 _proof_bits.append(
@@ -450,12 +488,12 @@ class LocalModelManager:
                     f"machine before loading (a verdict is cached; a probe that "
                     f"times out is remembered too, so it is not repeated every launch; "
                     f"set ELI_LOAD_PROBE=0 to skip)")
-            _add_attempt("requested", _base_ctx, _base_layers, _base_batch,
-                         front=True, verify=_needs_proof)
-
-            # User's exact settings — in case smart-fit was skipped (no GPU
-            # detected) or the user's request already fits unchanged.
-            # (queued above, ahead of smart-fit — see the note there)
+            if gpu_offload_supported is False:
+                # Honour user settings as a fallback rung, not attempt 1 — RAM fit leads.
+                _add_attempt("requested", _base_ctx, 0, _base_batch, front=False)
+            else:
+                _add_attempt("requested", _base_ctx, _base_layers, _base_batch,
+                             front=True, verify=_needs_proof)
 
             # Hardware profile recommendation (legacy static fallback) — COMPUTED
             # here, but QUEUED further down, after the reduce-to-fit rungs.
@@ -495,13 +533,12 @@ class LocalModelManager:
                 try:
                     import os as _os
                     from eli.core.startup_hardware_optimizer import (
-                        detect_nvidia_gpus as _dng, select_gpu as _sg,
+                        gpu_budget_for_fit as _lt_budget,
                         allocate as _hw_alloc, find_model as _fm,
                         load_settings as _hls, size_gb as _sgb,
                         detect_ram_gb as _drg,
                     )
-                    _lt_gpus = _dng()
-                    _lt_gpu = _sg(_lt_gpus)
+                    _lt_gpu = _lt_budget()
                     if _lt_gpu and _lt_gpu.free_mb > 0:
                         _lt_settings = _hls()
                         _lt_model = _fm(_lt_settings)
@@ -516,7 +553,7 @@ class LocalModelManager:
                             # CPU path at live-tuner ctx
                             _add_attempt("live-tuner-cpu", _lt_ctx, 0, max(32, _lt_batch // 2))
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
                 # Generic fallback rungs (deeper fallback) — fractions of user's settings;
                 # tried only after the live-tuner. No hardcoded values.
                 _b_half = max(64, _base_batch // 2)
@@ -544,7 +581,7 @@ class LocalModelManager:
                         _cpu_ctx_floor = int(_env_min)
                     else:
                         from eli.core.startup_hardware_optimizer import (
-                            ram_ctx_cap as _rcc, detect_ram_gb as _drg2
+                            ram_ctx_cap as _rcc, detect_available_ram_gb as _drg2
                         )
                         _cpu_ctx_floor = _rcc(_drg2(), 0)
                     _cpu_ctx_floor = min(_cpu_ctx_floor, _base_ctx)
@@ -562,7 +599,7 @@ class LocalModelManager:
                         _cpu_base_ctx = min(int(_env_min_cpu), _base_ctx)
                     else:
                         from eli.core.startup_hardware_optimizer import (
-                            ram_ctx_cap as _rcc2, detect_ram_gb as _drg3
+                            ram_ctx_cap as _rcc2, detect_available_ram_gb as _drg3
                         )
                         _cpu_base_ctx = min(_rcc2(_drg3(), 0), _base_ctx)
                 except Exception:
@@ -620,8 +657,8 @@ class LocalModelManager:
                            "not repeated on later launches)"
                            if _probe_cut else " this once, then remembered…"))
                     try:
-                        from eli.core.load_probe import probe_verdict
-                        _verdict, _why = probe_verdict(
+                        from eli.core import load_probe as _lp
+                        _verdict, _why = _lp.probe_verdict(
                             str(path_obj), int(_cand["n_ctx"]),
                             int(_cand["n_gpu_layers"]), int(_cand["n_batch"]),
                         )
@@ -629,12 +666,29 @@ class LocalModelManager:
                         # The check itself is unavailable. That is not evidence
                         # against the operator's settings, so they stand.
                         _verdict, _why = "unavailable", f"probe unavailable: {_probe_err}"
-                    # A TIMEOUT is not a pass — loading an over-fit config unproven
-                    # is what aborts mid-generation. Unavailable still proceeds.
+                    # A TIMEOUT is not a pass. 2.2.9 logged "requested settings
+                    # verified (probe timed out after 30s (unproven))" and then
+                    # loaded ctx=10384 gpu_layers=99 against a measured fit of
+                    # 28 — CUDA allocates lazily, so the load looked clean and
+                    # the process died with `ggml-cuda.cu:98: CUDA error` /
+                    # SIGABRT on the first real prompt. The probe only runs when
+                    # the request already exceeds the measured fit, so here
+                    # "could not prove it" is a reason to use the measured rungs
+                    # below, not a reason to gamble the process on it.
+                    #
+                    # An UNAVAILABLE probe still leaves the operator's settings
+                    # alone: that is no information at all, and a machine that
+                    # can never run the probe must not be permanently capped.
                     if _verdict == "timeout":
                         log.warning(
                             f"[GUI][LOAD] could not verify your settings in time "
-                            f"({_why}) — falling through to measured fallbacks.")
+                            f"({_why}) — they exceed the measured fit"
+                            f"{(' (' + '; '.join(_proof_bits) + ')') if _proof_bits else ''}"
+                            f", and loading them unproven is what "
+                            f"aborts mid-generation. Falling through to the measured "
+                            f"fallbacks; raise ELI_LOAD_PROBE_TIMEOUT to allow the "
+                            f"check more time, or set ELI_LOAD_PROBE=0 to load them "
+                            f"as entered without proof.")
                         _last_error = f"requested settings unproven: {_why}"
                         continue
                     _ok = _verdict != "bad"
@@ -651,6 +705,8 @@ class LocalModelManager:
                     if _verdict == "ok":
                         log.debug(f"[GUI][LOAD] requested settings verified ({_why})")
                     else:
+                        # Never call an unproven config "verified" — that line is
+                        # what made the 2.2.9 crash look like a checked launch.
                         log.debug(f"[GUI][LOAD] proceeding unproven ({_why})")
                 llama_kwargs: Dict[str, Any] = dict(
                     model_path=str(path_obj),
@@ -740,8 +796,9 @@ class LocalModelManager:
             self.n_batch = int(getattr(self.model, 'n_batch', 0) or 0)
             try:
                 from eli.cognition import gguf_inference as _ggi
+                from eli.runtime.inference_footprint import record_load_memory
                 _ggi._llm = self.model
-                _ggi.set_live_runtime_override({
+                _live_payload = {
                     "provider": "gguf",
                     "loaded": True,
                     "model_path": str(path_obj),
@@ -753,26 +810,30 @@ class LocalModelManager:
                     "requested_n_gpu_layers": int(requested_n_gpu_layers),
                     "gpu_offload_supported": gpu_offload_supported,
                     "load_mode": "GPU" if int(self.n_gpu_layers) > 0 else "CPU",
-                })
+                    "live_inference_memory": record_load_memory(
+                        self.model, pre_load_rss_bytes=_pre_load_rss
+                    ),
+                }
+                _ggi.publish_live_runtime(_live_payload)
                 print("✅ gguf_inference live runtime override published")
-
-                # The reasoning-mode budgets were derived from the startup tuner's
-                # recommended ctx, which the attempt list above is free to override —
-                # and does. Re-derive them from the ctx that actually loaded, or every
-                # mode plans against a context the model is not running.
-                try:
-                    from eli.core.startup_hardware_optimizer import (
-                        resize_budgets_to_effective_ctx as _resize_budgets,
-                    )
-                    _budget_delta = _resize_budgets(int(self.n_ctx))
-                    if _budget_delta:
-                        log.debug(
-                            f"[GUI][LOAD] mode budgets re-derived from effective ctx={int(self.n_ctx)}: "
-                            f"{sorted(_budget_delta)} (were sized for the tuner's recommendation)")
-                except Exception as _budget_err:
-                    log.debug(f"[GUI][LOAD] mode budget re-derivation skipped: {_budget_err}")
             except Exception as e:
                 log.debug(f"[GUI] live runtime override publish failed: {e}")
+
+            # The reasoning-mode budgets were derived from the startup tuner's
+            # recommended ctx, which the attempt list above is free to override —
+            # and did. Re-derive them from the ctx that actually loaded, or every
+            # mode plans against a context the model is not running.
+            try:
+                from eli.core.startup_hardware_optimizer import (
+                    resize_budgets_to_effective_ctx as _resize_budgets,
+                )
+                _budget_delta = _resize_budgets(int(self.n_ctx))
+                if _budget_delta:
+                    log.debug(
+                        f"[GUI][LOAD] mode budgets re-derived from effective ctx={int(self.n_ctx)}: "
+                        f"{sorted(_budget_delta)} (were sized for the tuner's recommendation)")
+            except Exception as _budget_err:
+                log.debug(f"[GUI][LOAD] mode budget re-derivation skipped: {_budget_err}")
             self.load_error = None
             print(f"✅ Model loaded successfully")
             self._write_shared_runtime_snapshot(
@@ -867,6 +928,11 @@ class OllamaModelManager:
             return [self._normalize_host(host or self.host)]
     def list_models(self, host: Optional[str] = None) -> List[str]:
         last = None
+        try:
+            from eli.integrations.ollama.client import ensure_server_running
+            ensure_server_running()   # start a local Ollama that's installed but stopped
+        except Exception:
+            log.debug("[OLLAMA] auto-start probe failed", exc_info=True)
         for base in self._candidates(host):
             try:
                 from eli.integrations.ollama.client import _allow_via_netguard

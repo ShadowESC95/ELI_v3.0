@@ -193,7 +193,6 @@ def untrust_publisher(publisher_id: str) -> Dict[str, Any]:
         pubs = _load_publishers()
         if publisher_id not in pubs:
             return {"ok": False, "problems": [f"Publisher {publisher_id!r} is not trusted."]}
-
         pubs.pop(publisher_id)
         _save_publishers(pubs)
     return {"ok": True, "problems": []}

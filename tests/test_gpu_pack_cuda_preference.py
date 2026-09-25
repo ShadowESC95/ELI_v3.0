@@ -176,7 +176,9 @@ def test_verify_trusts_cuda_device_enumeration_on_false_negative():
     assert "LD_LIBRARY_PATH" in body
     assert 'ggml_cuda_init:\\s*found\\s+[1-9]' in body or "ggml_cuda_init:" in body
     verify_fn = body.split("def _verify(")[1].split("\ndef ")[0]
+    assert "returncode == 2" not in verify_fn or "cuda_found" in verify_fn
     assert "detail" in verify_fn
+    # Keep-pack path must key off combined detail, not stderr alone.
     assert 're.search(r"ggml_cuda_init:\\s*found\\s+[1-9]", detail' in verify_fn
 
 

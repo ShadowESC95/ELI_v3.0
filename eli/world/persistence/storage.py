@@ -118,9 +118,9 @@ def _prune_corrupt_backups(keep: int = _CORRUPT_BACKUP_KEEP) -> None:
             try:
                 old.unlink()
             except Exception:
-                log.debug("world storage backup prune skipped", exc_info=True)
+                log.debug("suppressed exception", exc_info=True)
     except Exception:
-        log.debug("world storage backup rotation skipped", exc_info=True)
+        log.debug("suppressed exception", exc_info=True)
 
 def _fit(cls, data: Any):
     """Build `cls` from a saved dict, ignoring fields it no longer declares.

@@ -253,6 +253,7 @@ def write_markdown(items: list[dict], version: str) -> None:
 def write_pdf(version: str) -> bool:
     if not os.path.isfile(OUT_MD):
         return False
+    # Try pandoc first
     for cmd in (
         ["pandoc", OUT_MD, "-o", OUT_PDF, "--pdf-engine=xelatex",
          "-V", "geometry:margin=1in", "-V", "fontsize=10pt"],

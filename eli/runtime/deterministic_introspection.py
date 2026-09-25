@@ -4,6 +4,10 @@ import json
 import re
 from typing import Any, Dict, Optional
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 
 DIAGNOSTIC_ACTIONS = {
     "SELF_REPORT",
@@ -87,29 +91,44 @@ def _route_action(text: str) -> Optional[str]:
             if action in DIAGNOSTIC_ACTIONS:
                 return action
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return classify_diagnostic_action(text)
 
 
 def _last_trace(engine: Any) -> Dict[str, Any]:
+    try:
+        meta = dict(getattr(engine, "_last_request_meta", {}) or {}) if engine is not None else {}
+        if meta:
+            return meta
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
     for name in ("_last_trace", "last_trace", "_last_response_trace", "last_response_trace"):
         try:
             val = getattr(engine, name, None)
-            if isinstance(val, dict):
+            if isinstance(val, dict) and val:
                 return val
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
+    try:
+        from eli.runtime.last_trace import load_last_trace
+        return dict(load_last_trace() or {})
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
     return {}
 
 
 def _last_response(engine: Any) -> str:
+    trace = _last_trace(engine)
+    txt = str(trace.get("response_text") or "").strip()
+    if txt:
+        return txt
     for name in ("_last_response", "last_response", "_last_answer", "last_answer"):
         try:
             val = getattr(engine, name, None)
             if val is not None and str(val).strip():
                 return str(val)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return ""
 
 
@@ -180,7 +199,7 @@ def _cognition_report(engine: Any) -> str:
             if hasattr(engine, attr):
                 lines.append(f"{attr}: {getattr(engine, attr)}")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return "\n".join(lines)
 
 

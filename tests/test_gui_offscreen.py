@@ -1,6 +1,6 @@
 """Offscreen GUI widget lane — construct REAL Qt widgets, headless.
 
-The full main window (`gui_eli_original.py`) blocks on device/display init and
+The full main window (`eli_pro_audio_gui_v2_0.py`) blocks on device/display init and
 can't be built in CI. But the tab widgets construct standalone under the offscreen
 Qt platform (`QT_QPA_PLATFORM=offscreen`). This lane builds each one for real and
 asserts it wired its UI — recovering the GUI __init__/layout/wiring coverage that the
@@ -20,8 +20,11 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Constructing a widget must never reach the network. FirstBootWizard kicks off a
-# real asset prefetch from its constructor, which aborted the pytest process in
-# this lane. Run with --noconftest, so set the offline default here explicitly.
+# real asset prefetch (Piper voices + the embedder) from its constructor, which in
+# this lane downloaded and copied files mid-test and ABORTED the pytest process —
+# taking every test after it with it. This lane is usually run with --noconftest,
+# so it cannot rely on the root conftest for the offline default: set it here, the
+# same way the offscreen Qt platform is set, so the file is hermetic on its own.
 os.environ["ELI_OFFLINE"] = "1"
 
 import pytest
@@ -49,8 +52,13 @@ def test_qt_compat_binding_resolved():
     import eli.gui.qt_compat as qc
     assert qc.QT_API in {"PySide6", "PyQt6", "PyQt5", "headless"}
     # Core symbols are re-exported under one name regardless of binding.
-    for name in ("Qt", "QTimer", "QWidget", "QVBoxLayout", "Signal"):
+    for name in ("Qt", "QTimer", "QWidget", "QVBoxLayout", "Signal", "QDialogButtonBox"):
         assert hasattr(qc, name) or name == "Signal"  # Signal aliased as pyqtSignal
+
+
+def test_ollama_model_selector_imports():
+    from eli.gui.widgets.ollama_model_selector import OllamaModelSelector
+    assert OllamaModelSelector is not None
 
 
 # --------------------------------------------------------------------------- #

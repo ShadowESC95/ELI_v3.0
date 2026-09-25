@@ -15,17 +15,11 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 
-def _eli_canonical_root_ROOT() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds (identical to this path in source installs).
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
-
-ROOT = _eli_canonical_root_ROOT()
+try:
+    from eli.core.paths import canonical_root
+    ROOT = canonical_root(Path(__file__).resolve().parents[2])
+except Exception:
+    ROOT = Path(__file__).resolve().parents[2]
 SETTINGS_PATH = ROOT / "config/settings.json"
 REPORT_PATH = ROOT / "artifacts/runtime_hardware_profile.json"
 
@@ -399,7 +393,8 @@ def train_ctx_for_model(model_path: str) -> int:
     """Return the model's native training context length.
 
     Order: ELI_MODEL_TRAIN_CTX env override → real GGUF metadata (authoritative) →
-    filename-pattern fallback (only when metadata is unreadable).
+    conservative default when metadata is unreadable. No brand/filename table —
+    redistributed GGUFs must not depend on marketing names in the path.
     """
     forced = os.environ.get("ELI_MODEL_TRAIN_CTX", "").strip()
     if forced:
@@ -413,29 +408,8 @@ def train_ctx_for_model(model_path: str) -> int:
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 
-    name = Path(model_path).name.lower()
-
-    # ---- 128 K class ----
-    if "deepseek" in name:                                    return 131072
-    if "mistral-small-3.1" in name or "mistral-small" in name: return 131072
-    if "llama-3.1" in name or "llama-3.2" in name:           return 131072
-    if "phi-3" in name or "phi-4" in name:                   return 131072
-    if "gemma-2" in name or "gemma2" in name:                return 131072
-    if "falcon3" in name or "falcon-3" in name:              return 131072
-
-    # ---- 32 K class ----
-    if "qwen2.5" in name or "qwen2-5" in name:               return 32768
-    if "qwen3" in name:                                       return 32768
-    if "qwen2" in name:                                       return 32768
-    if "mistral-7b" in name:                                  return 32768
-
-    # ---- smaller / older ----
-    if "llama-3" in name or "llama3" in name:                return 8192
-    if "phi-2" in name:                                       return 4096
-    if "tinyllama" in name:                                   return 2048
-    if "gemma" in name:                                       return 8192
-
-    return 32768
+    # Metadata missing/unreadable — do not invent a brand-based window.
+    return 8192
 
 
 def estimate_layers(model_gb: float, model_path: str = "") -> int:
@@ -452,6 +426,14 @@ def layer_mb(model_gb: float, layers: int) -> float:
     """
     return 999999.0 if layers <= 0 else (model_gb * 1024.0) / max(1, layers + 2)
 
+def layer_mb(model_gb: float, layers: int) -> float:
+    """VRAM per offloaded layer — the loader's divisor, not a second opinion.
+
+    ``+ 2`` covers the embedding and output tensors, which also land in VRAM;
+    dividing by the block count alone over-states each layer and under-offloads.
+    Mirrors ``hardware_profile._fit_needed_mb``.
+    """
+    return 999999.0 if layers <= 0 else (model_gb * 1024.0) / max(1, layers + 2)
 
 def kv_cache_mb(n_ctx: int, layers: int, quant: bool = True) -> float:
     """KV-cache cost, delegated to the one measurement the loader uses.
@@ -460,7 +442,8 @@ def kv_cache_mb(n_ctx: int, layers: int, quant: bool = True) -> float:
     ``hardware_profile._kv_cache_mb`` used 6000 B/token/layer (1500 at q4) — a 46%
     under-estimate on the same numbers. Because ``allocate()`` powers the live-tuner
     rung of the load ladder and the startup profile artifact, the tuner and the
-    loader reported different ctx/GPU-layer answers for one machine at one moment.
+    loader reported different ctx/GPU-layer answers for one machine at one moment,
+    which is the "three different numbers" the operator kept seeing.
     """
     from eli.core.hardware_profile import _kv_cache_mb
     return _kv_cache_mb(int(n_ctx), int(layers), quant=bool(quant))
@@ -749,10 +732,7 @@ def allocate(
     model_vram_mb = model_gb * 1024.0          # VRAM needed for full offload
     kv_per_token  = layers_total * 1024 / 1048576.0  # MB per ctx token (q4_0 KV)
 
-    # Auto target: the model's own trained context x the fraction spinbox, not a
-    # constant shared by every model and machine. The operator's own value
-    # (Context window field -> ELI_FORCE_CTX, or user_preferred_ctx) is handled
-    # below and never comes through here; VRAM/RAM caps below still reduce this.
+    # Auto target: trained context x fraction; an operator-chosen value is handled below.
     _default_target = round_ctx(int(train_ctx * ctx_fraction))
     _DEFAULT_CTX = _default_target
 
@@ -824,7 +804,13 @@ def build_profile() -> HardwareProfile:
 
     ram = detect_ram_gb()
     cpu_threads = os.cpu_count() or 4
-    n_threads = max(2, cpu_threads - 2)
+    try:
+        from eli.core.hardware_profile import recommend_cpu_threads as _rct
+        _cpu_bound = gpu is None or float(getattr(gpu, "free_mb", 0) or 0) <= 0
+        n_threads = _rct(cpu_threads, cpu_bound=_cpu_bound)
+    except Exception:
+        n_threads = max(1, int(cpu_threads) - (1 if (gpu is None) else 2))
+        n_threads = max(2, n_threads) if int(cpu_threads) > 2 else max(1, n_threads)
 
     # Pass user settings so allocate() can honour them first.
     n_ctx, gpu_layers, batch, max_tokens, ctx_fraction, notes = allocate(

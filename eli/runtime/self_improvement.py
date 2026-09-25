@@ -18,6 +18,11 @@ from eli.cognition.inference_broker import get_broker
 from eli.memory import Memory
 
 
+from eli.runtime.self_maintenance_config import (
+    ANALYSIS_MIN_CLUSTER,
+    DEFAULT_ANALYSIS_DAYS,
+    PATCH_MIN_CLUSTER,
+)
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -86,11 +91,29 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _reload_patched_module(dotted: Optional[str]) -> bool:
+    """Evict cached module(s) and re-import so disk patches affect this process."""
+    if not dotted:
+        return False
+    import importlib
+
+    prefix = dotted + "."
+    for name in list(sys.modules):
+        if name == dotted or name.startswith(prefix):
+            sys.modules.pop(name, None)
+    try:
+        importlib.import_module(dotted)
+        return True
+    except Exception as exc:
+        log.debug("[SELF-IMPROVE] post-patch reload failed for %s: %s", dotted, exc)
+        return False
+
+
 def _dotted_module_for_path(p: Path) -> Optional[str]:
     """Return the importable dotted module name for a project .py file, or None
     if it isn't an importable module under the `eli` package."""
     try:
-        rel = p.resolve().relative_to(PROJECT_ROOT)
+        rel = p.resolve().relative_to(_patch_root())
     except Exception:
         return None
     parts = list(rel.parts)
@@ -447,7 +470,12 @@ class SelfImprovementEngine:
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
-    def analyze_failures(self, limit: int = 50, days: int = 7, min_cluster_size: int = 3) -> List[Dict[str, Any]]:
+    def analyze_failures(
+        self,
+        limit: int = 50,
+        days: int = DEFAULT_ANALYSIS_DAYS,
+        min_cluster_size: int = ANALYSIS_MIN_CLUSTER,
+    ) -> List[Dict[str, Any]]:
         conn = self.memory._get_connection()
         try:
             since = time.time() - (days * 86400)
@@ -470,12 +498,12 @@ class SelfImprovementEngine:
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
-    def analyze_and_improve(self, *, repair: bool = False) -> Dict[str, Any]:
+    def analyze_and_improve(self, propose: Optional[bool] = None, *, repair: bool = False) -> Dict[str, Any]:
         """Analyse recent failures and log improvement records.
 
         `repair=False` (the default) keeps this method what its name promises: a
-        fast, read-mostly pass over the failure table. Set `repair=True` only from
-        a BOUNDED BACKGROUND job — it invokes the coding agent, which fans out to
+        fast, read-mostly pass over the failure table. `repair=True` (or the older
+        `propose=True`) belongs only on a BOUNDED BACKGROUND job — it invokes the coding agent, which fans out to
         tens of sequential model calls (see propose_via_agent).
         """
         failures = self.analyze_failures(limit=25, min_cluster_size=1)
@@ -555,6 +583,7 @@ class SelfImprovementEngine:
         # 30-500s each) on whatever thread called it — including the GUI chat worker
         # and the shutdown path. That is the 2-hour freeze. Repair is now opt-in and
         # belongs on a bounded background job; the caller owns the wall-clock budget.
+        repair = bool(repair or propose)
         proposals_made = 0
         if improvements and repair:
             try:
@@ -630,10 +659,10 @@ class SelfImprovementEngine:
         if m:
             cand = Path(m.group(1))
             try:
-                cand.relative_to(PROJECT_ROOT)
+                cand.relative_to(_patch_root())
                 if cand.exists() and cand.stat().st_size < max_file_chars * 3:
                     file_content = cand.read_text(encoding="utf-8")[:max_file_chars]
-                    file_ref = str(cand.relative_to(PROJECT_ROOT))
+                    file_ref = str(cand.relative_to(_patch_root()))
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
         parts = [f"Fix the bug that causes this failure: {err[:500]}"]
@@ -736,10 +765,10 @@ class SelfImprovementEngine:
         if file_match:
             candidate = Path(file_match.group(1))
             try:
-                candidate.relative_to(PROJECT_ROOT)
+                candidate.relative_to(_patch_root())
                 if candidate.exists() and candidate.stat().st_size < max_file_chars * 3:
                     full_src = candidate.read_text(encoding="utf-8")
-                    file_ref = str(candidate.relative_to(PROJECT_ROOT))
+                    file_ref = str(candidate.relative_to(_patch_root()))
                     # Give the model the enclosing scope around the failing line (plus the file's imports) instead
                     # of just the head, the same scope-aware context the code examiner uses, so it can write a
                     # verbatim in-scope fix. The deepest traceback frame for this file is the error site.
@@ -881,15 +910,16 @@ class SelfImprovementEngine:
 
         # Resolve path
         p = Path(file_str)
+        _root = _patch_root()
         if not p.is_absolute():
-            p = PROJECT_ROOT / p
+            p = _root / p
         p = p.resolve()
 
         # Safety guard — only patch files inside project
         try:
-            p.relative_to(PROJECT_ROOT)
+            p.relative_to(_root)
         except ValueError:
-            return {"ok": False, "applied": False, "message": f"Refused: {p} is outside project root"}
+            return {"ok": False, "applied": False, "message": f"Refused: {p} is outside source root"}
 
         # Protected-path guard: the self-improver must never auto-patch the safety guardrails (or
         # itself), since a faulty or adversarial patch to them would disable the gates that contain it
@@ -898,7 +928,7 @@ class SelfImprovementEngine:
         # is_protected_patch_path.
         if is_protected_patch_path(p):
             try:
-                _rel = p.relative_to(PROJECT_ROOT).as_posix()
+                _rel = p.relative_to(_root).as_posix()
             except Exception:
                 _rel = p.as_posix()
             return {"ok": False, "applied": False,
@@ -992,7 +1022,7 @@ class SelfImprovementEngine:
 
         # Log the applied patch
         try:
-            rel_path = str(p.relative_to(PROJECT_ROOT))
+            rel_path = str(p.relative_to(_root))
             self.log_improvement(
                 "code_patch",
                 f"Patched {rel_path}: {description}",
@@ -1016,13 +1046,15 @@ class SelfImprovementEngine:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        rel = str(p.relative_to(PROJECT_ROOT))
+        rel = str(p.relative_to(_root))
+        reloaded = _reload_patched_module(verify_dotted) if verify_dotted else False
         log.debug(f"[SELF-IMPROVE] Patch applied: {rel} — {description}")
         return {
             "ok": True,
             "applied": True,
             "file": rel,
             "backup": str(backup),
+            "reloaded": reloaded,
             "message": f"Patch applied to {p.name}: {description}",
         }
 
@@ -1055,11 +1087,12 @@ class SelfImprovementEngine:
             if not file_str or not old_code or not new_code:
                 return {"ok": False, "applied": False, "message": f"patch {i}: missing file/old/new"}
             p = Path(file_str)
-            p = (PROJECT_ROOT / p if not p.is_absolute() else p).resolve()
+            _root = _patch_root()
+            p = (_root / p if not p.is_absolute() else p).resolve()
             try:
-                p.relative_to(PROJECT_ROOT)
+                p.relative_to(_root)
             except ValueError:
-                return {"ok": False, "applied": False, "message": f"patch {i}: {p} outside project root"}
+                return {"ok": False, "applied": False, "message": f"patch {i}: {p} outside source root"}
             if not p.exists() or p.suffix != ".py":
                 return {"ok": False, "applied": False, "message": f"patch {i}: {p} is not an existing .py file"}
             try:
@@ -1135,16 +1168,22 @@ class SelfImprovementEngine:
                         return {"ok": False, "applied": False,
                                 "message": f"import broke in {p.name} (all reverted): {detail}"}
 
-        files = [str(p.relative_to(PROJECT_ROOT)) for p in order]
+        files = [str(p.relative_to(_patch_root())) for p in order]
+        reloaded: List[str] = []
+        if verify:
+            for p in order:
+                d = dotted.get(p)
+                if d and _reload_patched_module(d):
+                    reloaded.append(d)
         log.debug(f"[SELF-IMPROVE] Patch set applied atomically across {len(files)} file(s): {files}")
-        return {"ok": True, "applied": True, "files": files,
+        return {"ok": True, "applied": True, "files": files, "reloaded": reloaded,
                 "message": f"Applied {len(patches)} patch(es) across {len(files)} file(s)"}
 
     def revert_patch(self, file_path: str) -> dict:
         """Restore the most recent .eli_bak backup for a file."""
         p = Path(file_path)
         if not p.is_absolute():
-            p = PROJECT_ROOT / p
+            p = _patch_root() / p
         p = p.resolve()
         backup = p.with_suffix(".py.eli_bak")
         if not backup.exists():
@@ -1154,6 +1193,16 @@ class SelfImprovementEngine:
             return {"ok": True, "message": f"Reverted {p.name} from backup"}
         except Exception as exc:
             return {"ok": False, "message": f"Revert failed: {exc}"}
+
+    def _try_deterministic_patch(self, failure: dict) -> dict:
+        """Apply a known rule-based fix when the failure pattern is unambiguous."""
+        try:
+            from eli.runtime.deterministic_failure_patches import propose_deterministic_patch
+            patch = propose_deterministic_patch(failure)
+            return patch if patch else {"ok": False}
+        except Exception as exc:
+            log.debug("[SELF-IMPROVE] deterministic patch lookup failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
 
     def _test_verify_patch(self, patch: dict) -> dict:
         """Run the affected file's tests after a patch — the TEST-verify gate that
@@ -1176,12 +1225,19 @@ class SelfImprovementEngine:
             log.debug("self-improve: test-verify failed", exc_info=True)
             return {"verified": None, "target": None}
 
-    def run_patch_cycle(self, max_patches: int = 3, dry_run: bool = False,
-                        verify_tests: bool = True) -> dict:
+    def run_patch_cycle(
+        self,
+        max_patches: int = 3,
+        dry_run: bool = False,
+        verify_tests: bool = True,
+        *,
+        days: int = DEFAULT_ANALYSIS_DAYS,
+        min_cluster_size: int = PATCH_MIN_CLUSTER,
+    ) -> dict:
         """
         Full automated patch cycle (a governed closed loop):
-        1. Analyze recurring failures (min 2 occurrences)
-        2. For each, ask LLM to generate a specific code fix
+        1. Analyze recurring failures (default at least 2 occurrences)
+        2. For each, try deterministic rules, then an LLM code fix
         3. Validate syntax + apply the fix (import-verify + auto-revert)
         4. TEST-verify: run the affected file's tests; revert any patch that goes red
         5. Report results
@@ -1189,7 +1245,7 @@ class SelfImprovementEngine:
         `verify_tests=False` restores the old import-only behaviour. Returns a detailed
         dict with per-patch outcomes.
         """
-        failures = self.analyze_failures(limit=20, days=14, min_cluster_size=2)
+        failures = self.analyze_failures(limit=20, days=int(days), min_cluster_size=int(min_cluster_size))
 
         results: Dict[str, Any] = {
             "failures_analyzed": len(failures),
@@ -1200,26 +1256,73 @@ class SelfImprovementEngine:
             "dry_run": dry_run,
             "details": [],
         }
+        try:
+            from eli.core.paths import patch_capability
+            results["patch_capability"] = patch_capability()
+        except Exception:
+            log.debug("patch_capability unavailable", exc_info=True)
 
         if not failures:
-            results["summary"] = "No recurring failures found (need ≥2 occurrences). System appears stable."
+            _need = "≥1 occurrence" if int(min_cluster_size) <= 1 else f"≥{int(min_cluster_size)} occurrences"
+            results["summary"] = f"No failures in the analysis window ({_need}). System appears stable."
             return results
+
+        if (results.get("patch_capability") or {}).get("install_kind") in {"frozen", "packaged"}:
+            results["packaged_install"] = True
 
         for failure in failures[:max_patches]:
             err_preview = (failure.get("error") or failure.get("user_input") or "?")[:80]
             count = failure.get("occurrence_count", 1)
 
             try:
-                patch = self.generate_code_patch(failure)
-                if not patch.get("ok"):
-                    reason = patch.get("error", "unknown")
+                from eli.runtime.failure_taxonomy import classify, is_actionable
+                tags = classify(
+                    _safe_str(failure.get("error")),
+                    _safe_str(failure.get("command")),
+                    _safe_str(failure.get("user_input")),
+                )
+                if tags and not is_actionable(tags.get("category", "")):
+                    results["patches_skipped"] += 1
+                    _cat = tags.get("category", "network/resource")
+                    results["details"].append({
+                        "failure": err_preview,
+                        "count": count,
+                        "status": "skipped_non_actionable",
+                        "reason": "user_input_validation" if _cat == "user_input" else _cat,
+                    })
+                    continue
+            except Exception:
+                log.debug("actionable filter skipped", exc_info=True)
+
+            try:
+                patch = self._try_deterministic_patch(failure)
+                if patch.get("already_applied"):
                     results["patches_skipped"] += 1
                     results["details"].append({
                         "failure": err_preview,
                         "count": count,
+                        "status": "already_fixed_in_codebase",
+                        "reason": patch.get("description") or "fix already present",
+                    })
+                    continue
+                if not patch or not patch.get("ok"):
+                    patch = self.generate_code_patch(failure)
+                if not patch.get("ok"):
+                    reason = patch.get("error") or patch.get("reason") or "unknown"
+                    results["patches_skipped"] += 1
+                    detail = {
+                        "failure": err_preview,
+                        "count": count,
                         "status": "patch_generation_failed",
                         "reason": reason,
-                    })
+                    }
+                    if reason == "no_groundable_file":
+                        detail["hint"] = (
+                            "No Python traceback in this failure: it is a parameter or routing bug, not a crash. "
+                            "Deterministic patches are tried first; if none matched, say which failure to fix "
+                            "or run EXAMINE_CODE."
+                        )
+                    results["details"].append(detail)
                     log.debug(f"[SELF-IMPROVE] Skipped (generation failed): {err_preview[:60]} — {reason}")
                     continue
 
@@ -1295,6 +1398,11 @@ class SelfImprovementEngine:
             + (f", {reverted} reverted after tests went red" if reverted else "")
             + f"). Analyzed {len(failures)} recurring failures."
         )
+        if results.get("packaged_install") and applied == 0:
+            _hint = (results.get("patch_capability") or {}).get("hint") or ""
+            results["summary"] += " Packaged install: patches write to the user eli/ tree when the runtime overlay is active."
+            if _hint:
+                results["summary"] += f" {_hint}"
         log.debug(f"[SELF-IMPROVE] {results['summary']}")
         return results
 

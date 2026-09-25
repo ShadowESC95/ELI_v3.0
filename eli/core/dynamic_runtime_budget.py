@@ -153,9 +153,9 @@ def derive_budget(model_path: str | Path = "") -> DynamicRuntimeBudget:
     threads = max(2, (os.cpu_count() or 4) - 2)
     size_gb = model_size_gb(model_path)
 
-    # Headroom comes from the one place that defines it. A local 900 made this a
-    # different reserve from hardware_profile (700 discrete / 400 iGPU) and
-    # silently ignored ELI_VRAM_RESERVE_MB.
+    # Headroom comes from the one place that defines it. A local 900 was a fourth different reserve
+    # and ignored ELI_VRAM_RESERVE_MB, so the operator's reserve moved every calculation except this
+    # one.
     try:
         from eli.core.hardware_profile import vram_reserve_mb as _vrm
         _reserve_mb = int(_vrm())

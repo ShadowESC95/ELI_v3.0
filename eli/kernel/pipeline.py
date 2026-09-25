@@ -13,7 +13,7 @@ STEPS = [
         "desc": "Capture input, attach metadata, normalize text.",
         "module": None,
         "function": None,
-        "fallback_path": "eli/gui/gui_eli_original.py, eli/perception/audio_stt.py"
+        "fallback_path": "eli/gui/eli_pro_audio_gui_v2_0.py, eli/perception/audio_stt.py"
     },
     {
         "name": "2. INPUT NORMALIZATION + GUARDS",
@@ -83,7 +83,7 @@ STEPS = [
         "desc": "GUI / TTS / voice / executor feedback.",
         "module": None,
         "function": None,
-        "fallback_path": "eli/gui/gui_eli_original.py, eli/perception/tts_router.py"
+        "fallback_path": "eli/gui/eli_pro_audio_gui_v2_0.py, eli/perception/tts_router.py"
     },
     {
         "name": "12. LEARNING + STATE UPDATE",

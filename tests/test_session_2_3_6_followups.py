@@ -71,7 +71,7 @@ def test_free_vram_is_reported_net_of_what_generation_will_take():
     make the over-commit that aborted the process at 2.2.7 and 2.2.9."""
     # v3 keeps the GPU report in the effectors package
     src = (pathlib.Path(__file__).resolve().parents[1] / "eli" / "execution"
-           / "effectors" / "system_intel.py").read_text(encoding="utf-8")
+           / "executor_enhanced.py").read_text(encoding="utf-8")
     i = src.index("MiB VRAM reads free")
     window = src[max(0, i - 2000):i + 1500]
     assert "_compute_graph_reserve_mb" in window

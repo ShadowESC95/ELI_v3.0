@@ -6,10 +6,10 @@ eli/core/portable_paths.py). The launchers for source installs (RUN_ELI.sh,
 bin/elix, eli.gui.app:main) all pin ELI_PROJECT_ROOT + the data/config/models
 dirs before the app boots. This hook does the same job for frozen bundles.
 
-Policy: the root is ALWAYS the per-user ELI_v2 directory —
-    Windows : %LOCALAPPDATA%\\ELI_v2
-    macOS   : ~/Library/Application Support/ELI_v2
-    Linux   : ~/.local/share/ELI_v2
+Policy: the root is ALWAYS the per-user ELI_v3 directory —
+    Windows : %LOCALAPPDATA%\\ELI_v3
+    macOS   : ~/Library/Application Support/ELI_v3
+    Linux   : ~/.local/share/ELI_v3
 — the SAME location previous ELI releases (portable installs, the old
 AppImage) used, so models, settings and conversation data carry straight
 over on upgrade. It is also the only safe choice everywhere: the AppImage
@@ -137,7 +137,7 @@ def _user_root() -> Path:
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "ELI_v2"
+    return base / "ELI_v3"
 
 
 def _is_writable_dir(path: Path) -> bool:
@@ -316,56 +316,44 @@ def _pin_frozen_root() -> None:
             "[ELI] GPU pack disabled by ELI_DISABLE_GPU_PACK - using the bundled "
             "runtime (CPU, but supports newer model architectures).\n"
         )
+    _gpu_choice = ""
+    try:
+        _choice_file = root / "runtime" / ".gpu_choice"
+        if _choice_file.is_file():
+            _gpu_choice = _choice_file.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        _gpu_choice = ""
+
     if (gpu_dir / "llama_cpp").is_dir() and not _pack_off:
-        if (gpu_dir / ".gpu_pack_ok").is_file():
-            sys.path.insert(0, str(gpu_dir))
+        if _gpu_choice.startswith("cpu"):
+            # User chose CPU-only or machine has no GPU — never shadow bundled runtime.
+            try:
+                import eli_gpu_pack as _gp_skip
+                _gp_skip.deactivate_gpu_pack_runtime(gpu_dir)
+            except Exception:
+                pass
+        elif (gpu_dir / ".gpu_pack_ok").is_file():
             _pack_live = False
             try:
                 import eli_gpu_pack
-                eli_gpu_pack.preload_native_libs(gpu_dir)
-                # VERIFY IN THIS ENVIRONMENT, not just at install time.
-                #
-                # The install-time check runs in the installing shell; the app
-                # runs inside the bundle, where LD_LIBRARY_PATH points at its
-                # own libraries. A pack can therefore verify clean on install
-                # and still be unable to reach its backend here -- a Vulkan
-                # pack whose loader (libvulkan.so.1, owned by the GPU driver)
-                # could not be bound reported
-                #     llama.cpp GPU offload support: False
-                # while shadowing a BUNDLED runtime that was both newer and
-                # perfectly able to run the model on CPU. The user was left
-                # worse off than with no pack at all: no GPU, and an older
-                # llama.cpp that could not read current architectures.
-                #
-                # So the pack has to earn its place at every start. If it
-                # cannot offload here, it is unloaded and the bundle takes
-                # over. Costs one import that the app performs anyway.
-                import llama_cpp as _probe
-                _pack_live = bool(_probe.llama_supports_gpu_offload())
+                _pack_live = eli_gpu_pack.activate_gpu_pack_runtime(gpu_dir, verify=True)
             except Exception:
                 _pack_live = False
             if not _pack_live:
-                # Drop the pack from the path AND from the module cache, or the
-                # already-imported copy would keep serving despite the fallback.
                 try:
-                    sys.path.remove(str(gpu_dir))
-                except ValueError:
-                    pass
-                for _m in [k for k in list(sys.modules) if k == "llama_cpp"
-                           or k.startswith("llama_cpp.")]:
-                    sys.modules.pop(_m, None)
-                # Invalidate the install marker so a broken pack does not shadow
-                # the bundled runtime on every subsequent boot.
-                try:
-                    (gpu_dir / ".gpu_pack_ok").unlink(missing_ok=True)
+                    import eli_gpu_pack as _gp_deact
+                    _gp_deact.deactivate_gpu_pack_runtime(gpu_dir)
                 except Exception:
                     pass
-                _warn(
-                    "[ELI] GPU pack cannot reach a GPU backend in this build - "
-                    "falling back to the bundled runtime (CPU). Reinstall the "
-                    "pack with: ELI --install-gpu-pack --vulkan --force\n"
-                )
-        else:
+                # Keep .gpu_pack_ok — the first-run chooser can retry activation
+                # without forcing a full re-download. Bundled CPU runtime stays active.
+                if _gpu_choice.startswith("gpu"):
+                    _warn(
+                        "[ELI] GPU pack installed but not active this session — "
+                        "using bundled CPU runtime. Retry from the app or: "
+                        "ELI --install-gpu-pack --force\n"
+                    )
+        elif not _gpu_choice:
             _warn(
                 "[ELI] ignoring unverified GPU pack (missing .gpu_pack_ok) — "
                 "running on CPU; reinstall with: ELI --install-gpu-pack --force\n"

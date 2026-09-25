@@ -21,16 +21,7 @@ log = get_logger(__name__)
 # Verbose diagnostics knob for optional-dependency fallbacks (TTS etc.).
 DEBUG = os.environ.get("ELI_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
-def _eli_path_get(obj, key, default=None):
-    """
-    Compatibility helper for ELI path containers.
-    Accepts both dict-style path maps and object/namespace-style path maps.
-    """
-    if obj is None:
-        return default
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
+from eli.core.paths import path_get as _eli_path_get
 
 
 def _eli_generated_scripts_dir() -> Path:
@@ -1723,6 +1714,25 @@ def _format_cognition_runtime(report: Dict[str, Any], args: Optional[Dict[str, A
     lines = []
     _args = args if isinstance(args, dict) else {}
     _focus = str(_args.get("diagnostic_focus") or "").strip().lower()
+    if _focus in ("inference_ram", "latency_timing", "inference_runtime"):
+        try:
+            from eli.runtime.inference_footprint import format_inference_footprint_report
+            from eli.runtime.deterministic_grounding_gate import _inference_runtime_lines
+            parts = []
+            if _focus in ("latency_timing", "inference_runtime"):
+                try:
+                    parts.append(_inference_runtime_lines())
+                except Exception:
+                    log.debug("[EXECUTOR] inference runtime block unavailable", exc_info=True)
+            parts.append(
+                format_inference_footprint_report(
+                    include_latency_note=_focus != "inference_runtime",
+                    question=str(_args.get("question") or ""),
+                )
+            )
+            return "\n\n".join(p for p in parts if p)
+        except Exception:
+            log.debug("[EXECUTOR] inference footprint report unavailable", exc_info=True)
     # Live inference parameters go first. Asked for the current context window, this report gave
     # module paths, grep line numbers and table counts, then the synthesis said the evidence didn't
     # specify it, although n_ctx was in runtime_snapshot.json and the report had no field for it.
@@ -2147,6 +2157,121 @@ def _maybe_background_codegen(action, args):
                 "content": msg, "response": msg}
     except Exception as _bg_e:
         log.debug(f"[CODEGEN_BG] background decision failed: {_bg_e}")
+        return None
+
+
+def _record_tool_execution(action: str, args: Any, result: Any) -> None:
+    """Log this action in the evidence ledger: what ran, whether it worked, and the
+    argument names only (values can be private)."""
+    if (os.environ.get("ELI_LEDGER_TOOL_EVENTS", "1") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+    if not action or action.upper() == "CHAT":
+        return
+    from eli.runtime.evidence_ledger import record_event
+    ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
+    text = ""
+    if isinstance(result, dict):
+        text = str(result.get("response") or result.get("content") or result.get("message") or "")
+    record_event(
+        "tool_execution",
+        source="executor",
+        action=action,
+        subject=",".join(sorted(str(k) for k in (args or {}))) if isinstance(args, dict) else "",
+        content=text[:200],
+        payload={"ok": ok},
+        outcome="ok" if ok else "failed",
+        severity="info" if ok else "warning",
+    )
+
+
+def _maybe_background_code_work(action, args):
+    """Route FIX_FILE / EXAMINE_CODE to the in-process background job queue when
+    they would monopolize the shared model lock (CodeAgent, tier-3 review, sweeps).
+    Returns None to run inline. The worker carries `_no_background` so it doesn't
+    re-queue."""
+    try:
+        args = args or {}
+        if args.get("_no_background"):
+            return None
+        a = str(action or "").upper()
+        if a not in ("FIX_FILE", "EXAMINE_CODE"):
+            return None
+        _env_key = "ELI_FIX_FILE_BACKGROUND" if a == "FIX_FILE" else "ELI_EXAMINE_CODE_BACKGROUND"
+        if os.environ.get(_env_key, "1").strip().lower() in ("0", "false", "no", "off"):
+            return None
+
+        from eli.coding.cost import should_background, explicit_foreground
+
+        if a == "FIX_FILE":
+            path = str(args.get("path") or "").strip()
+            desc = f"fix file {path or 'unknown'}"
+            if extra := str(args.get("error") or args.get("stderr") or "").strip():
+                desc += f" ({extra[:120]})"
+            if explicit_foreground(desc):
+                return None
+            bg, reason = True, "verified file repair pipeline"
+        else:
+            request = (args.get("request") or args.get("query") or "").strip()
+            from eli.runtime import code_examiner as _ce
+            if _ce.is_recall_request(request) or _ce.is_fix_recall_request(request):
+                return None
+            named = _ce._extract_named_paths(request)
+            if explicit_foreground(request):
+                return None
+            if not named:
+                bg, reason = True, "codebase sweep (no single file named)"
+            elif len(named) > 1:
+                bg, reason = True, f"{len(named)} files named"
+            else:
+                decision = should_background(request)
+                try:
+                    from eli.core.hardware_profile import runtime_cpu_only as _rco
+                    _cpu = _rco()
+                except Exception:
+                    _cpu = False
+                if decision.get("background") or _cpu:
+                    bg = True
+                    reason = (
+                        decision.get("reason")
+                        if decision.get("background")
+                        else "tier-3 logic review on CPU-only runtime"
+                    )
+                else:
+                    return None
+
+        if not bg:
+            return None
+
+        from eli.runtime.background_tasks import get_background_tasks
+        bt = get_background_tasks()
+        _bg_args = dict(args)
+        _bg_args["_no_background"] = True
+        _label = (
+            str(_bg_args.get("path") or "")[:60]
+            if a == "FIX_FILE"
+            else (str(_bg_args.get("request") or _bg_args.get("query") or "")[:60])
+        )
+        jid = bt.submit(
+            f"{a}: {_label}",
+            lambda: execute(a, _bg_args),
+            kind="code",
+            meta={"action": a, "request": _label},
+        )
+        msg = (
+            f"That's a heavier code task ({reason}). I've started it in the "
+            f"background as job #{jid} — say \"check job {jid}\" for the result, or "
+            f"\"background jobs\" to list them."
+        )
+        return {
+            "ok": True,
+            "action": a,
+            "background": True,
+            "job_id": jid,
+            "content": msg,
+            "response": msg,
+        }
+    except Exception as _bg_e:
+        log.debug(f"[CODE_BG] background decision failed: {_bg_e}")
         return None
 
 
@@ -3119,39 +3244,10 @@ def _yt_mix_url(watch_url: str | None) -> str | None:
     return watch_url
 
 
-def _yt_apply_browser_autoplay(url: str) -> str:
-    """Add query params so youtube.com starts playback and keeps a Mix going."""
-    if not url or "youtube.com" not in url:
-        return url
-    sep = "&" if "?" in url else "?"
-    extras: list[str] = []
-    if "autoplay=" not in url.lower():
-        extras.append("autoplay=1")
-    if "list=RD" in url and "start_radio=" not in url.lower():
-        extras.append("start_radio=1")
-    return f"{url}{sep}{'&'.join(extras)}" if extras else url
-
-
-def _yt_resolve_watch_url_ytdlp(query: str) -> str | None:
-    """Fallback resolver when the lightweight HTML scrape finds nothing."""
-    from eli.integrations.media.media_deps import path_env_for_subprocess, yt_dlp_argv
-    argv = yt_dlp_argv()
-    if not argv:
-        return None
-    try:
-        r = subprocess.run(
-            [*argv, "--flat-playlist", "--print", "url", f"ytsearch1:{query}"],
-            capture_output=True, text=True, timeout=15,
-            env=path_env_for_subprocess(),
-        )
-        if r.returncode == 0:
-            for line in (r.stdout or "").splitlines():
-                url = line.strip()
-                if url.startswith("http") and "watch?v=" in url:
-                    return url
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return None
+from eli.integrations.media.youtube_playback import (
+    yt_apply_browser_autoplay as _yt_apply_browser_autoplay,
+    yt_resolve_watch_url_ytdlp as _yt_resolve_watch_url_ytdlp,
+)
 
 
 def _yt_browser_play_url(query: str) -> str:
@@ -3184,7 +3280,6 @@ def _spotify_open_uri(uri: str) -> bool:
 def _spotify_search(query: str, prefer: str | None = None) -> bool:
     from eli.integrations.media.cross_platform import spotify_search as _cp_search
     return _cp_search(query, prefer=prefer)
-
 
 _PLAYLIST_RE = re.compile(
     r"^\s*(?:my|the|a)?\s*(?P<name>.+?)\s*(?:play\s*list|playlist)\s*$", re.I
@@ -10109,6 +10204,9 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 
     # ---- FIX_FILE ----
     if a == "FIX_FILE":
+        _bg = _maybe_background_code_work(a, args)
+        if _bg is not None:
+            return _bg
         from pathlib import Path as _Path
         import re as _re_ff
         path = str(args.get("path") or "").strip()
@@ -10978,6 +11076,15 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         request = (args or {}).get('request') or (args or {}).get('query') or ''
         try:
             from eli.runtime import code_examiner as _ce
+            # Fix provenance: "how did you fix that file/LOC?" — answer from the
+            # verified patch log, not a multi-minute Think-mode CHAT stream.
+            if _ce.is_fix_recall_request(request):
+                report = _ce.format_fix_provenance(request)
+                return {'ok': True, 'action': a, 'content': report, 'response': report,
+                        'evidence_source': 'code_examiner_fix_provenance'}
+            _bg = _maybe_background_code_work(a, args)
+            if _bg is not None:
+                return _bg
             # Cross-turn recall: "list the errors you found" replays the persisted
             # last audit verbatim instead of re-scanning (or the model improvising).
             if _ce.is_recall_request(request):

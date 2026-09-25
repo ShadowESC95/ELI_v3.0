@@ -290,7 +290,7 @@ class _GUIEngineAdapter:
             if uid_file.exists():
                 return uid_file.read_text(encoding="utf-8", errors="ignore").strip()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return "local-user"
 
     def _compact_persona(self) -> str:
@@ -412,7 +412,7 @@ class _GUIEngineAdapter:
             from eli.kernel.state import get_user_profile_text as _gup
             _user_block = _gup().strip()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         if not _user_block:
             try:
                 from eli.kernel.state import get_user_name as _gun
@@ -420,7 +420,7 @@ class _GUIEngineAdapter:
                 if _n:
                     _user_block = f"Name: {_n}"
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         # 3. Retrieved + reranked memory hits (most valuable context)
         hit_lines = []
@@ -611,12 +611,7 @@ class _GUIEngineAdapter:
             pass
         except Exception as e:
             log.debug(f"[ENGINE-ADAPTER] post_storage failed: {e}")
-        # Weight decay — 1 % of responses (amortised cost)
         try:
-            import random as _rnd
-            if _rnd.random() < 0.01 and hasattr(self.memory, "apply_weight_decay"):
-                decayed = self.memory.apply_weight_decay()
-                if decayed:
-                    log.debug(f"[MEMORY] Weight decay: {decayed} entries aged")
+            self.memory.upkeep_async()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)

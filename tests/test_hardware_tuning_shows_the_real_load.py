@@ -13,8 +13,7 @@ import logging
 import pathlib
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui" / "panels" / "startup.py"
-GUI = (pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui" / "main_window"
-       / "_mixins" / "chrome_io.py")
+GUI = pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui" / "eli_pro_audio_gui_v2_0.py"
 
 
 def _relay_namespace():

@@ -21,6 +21,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 _STEPS = ("name", "role", "style", "focus")
 _SKIP_WORDS = ("skip", "later", "skip onboarding", "no thanks", "not now", "maybe later")
 _STATE_TTL = 7 * 24 * 3600  # a week — fine to resume; cleared on finish/skip
@@ -93,7 +97,7 @@ def clear_onboarding_state() -> None:
     try:
         _state_file().unlink()
     except FileNotFoundError:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
 
 def is_onboarding_active() -> bool:
@@ -541,7 +545,7 @@ def _apply_answer(step: str, text: str, db_path=None) -> str:
             from eli.kernel.state import set_user_name
             set_user_name(nm)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return nm
     if _is_not_an_answer(text):
         return ""
@@ -568,7 +572,7 @@ def _apply_answer(step: str, text: str, db_path=None) -> str:
         con.commit()
         con.close()
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return canonical
 
 
@@ -614,7 +618,7 @@ def _store_baseline_memory(answers: Dict[str, Any], db_path=None) -> None:
             importance=0.9,
         )
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
 
 
 def _finish(db_path=None) -> str:
@@ -625,7 +629,7 @@ def _finish(db_path=None) -> str:
         from eli.runtime.user_model import refresh_user_model_brief
         refresh_user_model_brief(db_path=db_path)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     _store_baseline_memory(answers, db_path=db_path)
     return _baseline_report(answers)
 

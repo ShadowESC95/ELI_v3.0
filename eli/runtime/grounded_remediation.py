@@ -12,6 +12,10 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 try:
     from .incident_log import write_incident
 except Exception:  # pragma: no cover
@@ -74,11 +78,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def _root() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds and pending-state writes then crash.
     try:
-        from eli.core.paths import project_root
-        return Path(project_root())
+        from eli.core.paths import canonical_root
+        return canonical_root(Path(__file__).resolve().parents[3])
     except Exception:
         return Path(__file__).resolve().parents[3]
 
@@ -732,7 +734,7 @@ def build_install_candidates(name: str) -> list[dict]:
                 "label": "Install yt-dlp into ELI's Python environment (no admin password)",
             })
         except Exception:
-            pass
+            log.debug("yt-dlp pip install candidate unavailable", exc_info=True)
 
     if norm == "pyautogui":
         candidates.append({

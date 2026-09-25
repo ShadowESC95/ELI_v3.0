@@ -50,6 +50,17 @@ class ChromeIoMixin:
                     log.debug(f"[PROACTIVE] habit {icon} '{name}': {sugg}")
                     self.proactive_suggestions_signal.emit(
                         f"<b>[habit {icon}]</b> {name}: {sugg}")
+                elif kind == "emotion_checkin":
+                    # ELI opens the conversation about how the user has been reading.
+                    # Goes to CHAT (not just the suggestions pane) — the whole point is
+                    # that ELI speaks first. The daemon already set the pending proposal
+                    # so a "yes" routes instead of being swallowed.
+                    offer = data.get("suggestion", "")
+                    log.debug(f"[PROACTIVE] emotional check-in "
+                              f"({data.get('detected','')}×{data.get('run_length',0)})")
+                    self.chat_response_signal.emit(offer)
+                    self.proactive_suggestions_signal.emit(
+                        f"<b>[check-in: {data.get('detected','')}]</b> {offer}")
                 elif kind == "morning_report":
                     report_text = data.get("suggestion", "")
                     log.debug(f"[PROACTIVE] morning report ready")
@@ -84,7 +95,7 @@ class ChromeIoMixin:
                 if lines:
                     context_parts.append("Known facts about the user:\n" + "\n".join(lines))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # 2. Semantic search for the query
         lowered = query.lower()
@@ -121,30 +132,31 @@ class ChromeIoMixin:
                     lines.append(f"  [{role}]: {snippet}")
                 context_parts.append("Recent conversation history:\n" + "\n".join(lines))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         return "\n\n".join(context_parts)
 
     def _on_thinking_toggled(self, checked: bool):
-        """Deep-thinking toggle for reasoning models (Qwen3 / DeepSeek-R1). ON = the
-        answer call thinks (quality, slower); OFF = no thinking anywhere (faster).
+        """Deep-thinking toggle for models whose chat template enables reasoning.
+        ON = the answer call may think (quality, slower); OFF = no thinking.
         Utility calls (routing/JSON/summary) never think regardless. Live: sets
         ELI_MODEL_THINK now (read per-call by gguf_inference._no_think_prefill) — no
-        model reload — and persists the choice. No effect on non-reasoning models."""
+        model reload — and persists the choice. No effect when the loaded model
+        has no thinking channel."""
         try:
             import os as _os
             _os.environ["ELI_MODEL_THINK"] = "1" if checked else "0"
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             self.thinking_btn.setText('🧠 Think: ON' if checked else '🧠 Think: OFF')
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             from eli.core.runtime_settings import update_settings as _us
             _us(model_thinking=bool(checked))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _on_full_control_toggled(self, checked: bool):
         """Master override — lifts ALL of ELI's safety barriers. Confirms on enable."""
@@ -168,16 +180,16 @@ class ChromeIoMixin:
                     self.full_control_btn.blockSignals(False)
                     return
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         try:
             from eli.core.full_control import set_full_control
             set_full_control(checked)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             self.full_control_btn.setText("🔓 Full Control: ON" if checked else "🔒 Full Control: OFF")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         try:
             colour = "#ff5252" if checked else "#88c0d0"
             note = ("🔓 ELI Full Control ENABLED — all safety barriers lifted."
@@ -186,7 +198,7 @@ class ChromeIoMixin:
                 f'<span style="color:{colour};font-size:11px;">{note}</span><br>'
             )
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _on_network_toggled(self, checked: bool):
         try:
@@ -206,7 +218,7 @@ class ChromeIoMixin:
                     payload={"enabled": bool(checked)},
                 )
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         except Exception as e:
             log.debug(f"[GUI] network toggle failed: {e}")
 
@@ -225,7 +237,7 @@ class ChromeIoMixin:
                             f"Ambient watch ON, but vision can't run yet: {reason}"
                         )
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
             log.debug(f"[GUI] ambient vision toggled -> {checked} ({st})")
         except Exception as e:
             log.debug(f"[GUI] ambient vision toggle failed: {e}")
@@ -258,7 +270,7 @@ class ChromeIoMixin:
                 f'<span style="color:#88c0d0;font-size:11px;">⚙️ {note}</span><br>'
             )
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _get_mode_prefix(self) -> str:
         """Return private reasoning strategy prompt prefix for backend handoff.
@@ -306,7 +318,7 @@ class ChromeIoMixin:
             try:
                 self._toggle_operator_console_action.setChecked(bool(checked))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         except Exception as _e:
             log.debug(f"[GUI] toggle operator console dock failed: {_e}")
 
@@ -345,7 +357,9 @@ class ChromeIoMixin:
             dock.hide()
             # Subscribe the dock to the hardware/load lines ELI already writes to
             # the terminal, so the tab and the terminal cannot report different
-            # numbers for the same launch.
+            # numbers for the same launch. Installed once, on the root logger, so
+            # it captures the optimizer, the fit, the probe and the load ladder
+            # wherever they run.
             self._install_hardware_log_relay(dock)
             return dock
         except Exception as e:
@@ -365,7 +379,7 @@ class ChromeIoMixin:
         try:
             self._toggle_hardware_dock_action.setChecked(bool(checked))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _hardware_tuning_log(self, text: str):
         dock = self._ensure_hardware_tuning_dock()
@@ -437,7 +451,7 @@ class ChromeIoMixin:
                 if text:
                     return text
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         backend = getattr(self, "active_backend", None)
         try:
@@ -447,7 +461,7 @@ class ChromeIoMixin:
                 if text:
                     return text
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         try:
             from eli.cognition import gguf_inference
@@ -456,7 +470,7 @@ class ChromeIoMixin:
             if text:
                 return text
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         return ""
 
@@ -536,7 +550,7 @@ class ChromeIoMixin:
                     "and allow incoming connections for Python / ELI on port 8081."
                 )
         except Exception:
-            log.debug("firewall hint refresh failed", exc_info=True)
+            log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_copy_firewall_cmd(self) -> None:
         cmd = (self._srv_fw_cmd.text() or "").strip()
@@ -547,9 +561,11 @@ class ChromeIoMixin:
             self._srv_status.setText("● Firewall command copied — paste into Terminal")
             self._srv_status.setStyleSheet("font-size:12px;font-weight:700;color:#ebcb8b;")
         except Exception:
-            log.debug("firewall command copy failed", exc_info=True)
+            log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_open_firewall_terminal(self) -> None:
+        import shlex
+        import sys
         cmd = (self._srv_fw_cmd.text() or "").strip()
         if not cmd:
             QMessageBox.information(
@@ -558,18 +574,35 @@ class ChromeIoMixin:
                 "Start phone / Wi-Fi mode first, or copy a firewall command from the Connect tab.",
             )
             return
-        script = f"{cmd}\necho\necho Done. You can close this window.\nread -r -p 'Press Enter to close…' _"
-        # Single owner for the terminal list (platform_compat) — covers Debian/GNOME/KDE,
-        # macOS and Windows terminals rather than guessing at a handful of Linux ones.
         from eli.utils.platform_compat import terminal_argv
 
+        if sys.platform.startswith("win"):
+            # Frozen Windows CREATE_NO_WINDOW + bash -lc is a dead end — use PowerShell.
+            ps = (
+                f"Write-Host 'Run this as Administrator if it fails:'; "
+                f"{cmd}; Write-Host ''; pause"
+            )
+            term_cmd = ["powershell", "-NoProfile", "-Command",
+                        f"Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-Command',{shlex.quote(ps)}"]
+            # Fallback without elevation if UAC is declined / unavailable.
+            try:
+                subprocess.Popen(term_cmd)
+                return
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            try:
+                subprocess.Popen(["powershell", "-NoProfile", "-Command", ps])
+                return
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        script = f"{cmd}\necho\necho Done. You can close this window.\nread -r -p 'Press Enter to close…' _"
         term_cmd = terminal_argv(["bash", "-lc", script])
         if term_cmd:
             try:
                 subprocess.Popen(term_cmd)
                 return
             except Exception:
-                log.debug("could not launch a terminal for the firewall command", exc_info=True)
+                log.debug("suppressed exception", exc_info=True)
         QMessageBox.information(
             self,
             "Firewall",
@@ -622,7 +655,15 @@ class ChromeIoMixin:
         """Render connect QRs in the settings page (best-effort)."""
         try:
             from eli.runtime.server_util import qr_png_bytes
-        except Exception:
+            from PySide6.QtCore import Qt
+            from PySide6.QtGui import QPixmap
+        except Exception as ex:
+            for lab in (
+                getattr(self, "_srv_qr_http", None),
+                getattr(self, "_srv_qr_https", None),
+            ):
+                if lab is not None:
+                    lab.setText(f"QR unavailable\n({ex})")
             return
         for lab, url, label in (
             (getattr(self, "_srv_qr_http", None), http_url, "HTTP connect"),
@@ -642,6 +683,7 @@ class ChromeIoMixin:
                     lab.setPixmap(pix)
                     lab.setToolTip(f"{label}: {url}")
                 except Exception as ex:
+                    lab.clear()
                     lab.setText(f"{label}\n(QR unavailable: {ex})")
             else:
                 lab.clear()
@@ -657,7 +699,7 @@ class ChromeIoMixin:
             try:
                 uv.should_exit = True
             except Exception:
-                log.debug("HTTPS sidecar shutdown signal failed", exc_info=True)
+                log.debug("suppressed exception", exc_info=True)
         self._srv_https_uv = None
         self._srv_https_thread = None
         import os
@@ -666,7 +708,7 @@ class ChromeIoMixin:
             self._srv_https_url.clear()
             self._eli_server_refresh_qr()
         except Exception:
-            log.debug("HTTPS UI clear/QR refresh failed", exc_info=True)
+            log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_start(self, lan: bool) -> None:
         # Run the web server IN-PROCESS (a background thread) so it shares this app's
@@ -767,13 +809,15 @@ class ChromeIoMixin:
             self._eli_server_update_ui("error", err)
 
     def _eli_server_apply_port(self) -> None:
-        """Persist the chosen API port; used on the next server Start."""
+        """Persist the chosen API port and clear stale env so the next Start uses it."""
         try:
             port = int(self._srv_port_spin.value())
             if not (1024 <= port <= 65535):
                 raise ValueError("Port must be between 1024 and 65535.")
             from eli.core import config
             config.set("api_port", port)
+            import os
+            os.environ.pop("ELI_API_PORT", None)
             QMessageBox.information(
                 self, "Server port",
                 f"Server port set to {port}.\n\nStop and Start the server for it to take effect.")
@@ -787,14 +831,38 @@ class ChromeIoMixin:
             try:
                 uv.should_exit = True
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         self._srv_uv = None
         self._srv_thread = None
+        proc = getattr(self, "_srv_proc", None)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+            self._srv_proc = None
+        for fh in getattr(self, "_srv_proc_log_fhs", ()) or ():
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+        self._srv_proc_log_fhs = ()
+        import os
+        os.environ.pop("ELI_API_PORT", None)
+        os.environ.pop("ELI_API_HOST", None)
         self._srv_url.clear()
         try:
             self._eli_server_refresh_qr()
         except Exception:
-            log.debug("QR clear on server stop failed", exc_info=True)
+            log.debug("suppressed exception", exc_info=True)
         self._eli_server_update_ui("stopped")
 
     def _eli_server_rotate_token(self) -> None:
@@ -813,7 +881,13 @@ class ChromeIoMixin:
         except Exception as e:
             self._eli_server_update_ui("error", f"token rotate failed: {e}")
             return
-        running = bool(getattr(self, "_srv_thread", None) and self._srv_thread.is_alive())
+        running = bool(
+            (getattr(self, "_srv_thread", None) and self._srv_thread.is_alive())
+            or (
+                getattr(self, "_srv_proc", None) is not None
+                and self._srv_proc.poll() is None
+            )
+        )
         lan = os.environ.get("ELI_API_HOST", "") == "0.0.0.0"
         if running and lan:
             port = int(os.environ.get("ELI_API_PORT", "8081"))
@@ -832,22 +906,61 @@ class ChromeIoMixin:
                 self._srv_status.setText("● Token rotated — re-open the new link on each phone")
                 self._srv_status.setStyleSheet("font-size:12px;font-weight:700;color:#ebcb8b;")
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         else:
             try:
                 self._srv_status.setText("● Token rotated — applies on next phone/Wi-Fi launch")
                 self._srv_status.setStyleSheet("font-size:12px;font-weight:700;color:#ebcb8b;")
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_poll(self) -> None:
+        proc = getattr(self, "_srv_proc", None)
+        if proc is not None:
+            code = proc.poll()
+            if code is not None:
+                self._srv_proc = None
+                err = getattr(self, "_srv_err", "") or (
+                    f"server process exited ({code})" if code else ""
+                )
+                if not err:
+                    self._srv_url.clear()
+                self._eli_server_update_ui("error" if err else "stopped", err[:160])
+                return
+            import os as _os, socket
+            try:
+                port = int(_os.environ.get("ELI_API_PORT", "8081"))
+            except Exception:
+                port = 8081
+            up = False
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                    up = True
+            except Exception:
+                up = False
+            self._eli_server_update_ui("running" if up else "starting")
+            return
         th = getattr(self, "_srv_thread", None)
         if th is None:
             return
         if not th.is_alive():  # thread exited (error / stopped)
             self._srv_thread = None
-            self._srv_url.clear()
             err = getattr(self, "_srv_err", "")
+            if err and ("98" in err or "already in use" in err.lower()):
+                try:
+                    from eli.runtime.server_util import probe_eli_server
+                    import os as _os
+                    port = int(_os.environ.get("ELI_API_PORT", "8081"))
+                    probe = probe_eli_server(port)
+                    lan = _os.environ.get("ELI_API_HOST", "") == "0.0.0.0"
+                    if probe.get("in_use") and self._eli_server_show_running_dialog(probe, lan):
+                        if lan:
+                            self._eli_server_refresh_firewall_hint()
+                        return
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+            if not err:
+                self._srv_url.clear()
             self._eli_server_update_ui("error" if err else "stopped", err[:160])
             return
         import os as _os, socket
@@ -870,7 +983,7 @@ class ChromeIoMixin:
             self._srv_btn_lan.setEnabled(not running)
             self._srv_btn_stop.setEnabled(running)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         text, colour = {
             "stopped": ("● Stopped", "#bf616a"),
             "starting": ("● Starting…", "#ebcb8b"),
@@ -881,7 +994,7 @@ class ChromeIoMixin:
             self._srv_status.setText(text)
             self._srv_status.setStyleSheet(f"font-size:12px;font-weight:700;color:{colour};")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def current_provider(self) -> str:
         if not hasattr(self, 'provider_combo'):
@@ -965,7 +1078,7 @@ class ChromeIoMixin:
         return None
 
     def get_active_backend(self):
-        return self.ollama_manager if self.current_provider() == 'ollama' else self.model_manager
+        return self.ollama_manager if self.current_provider() == 'ollama' else model_manager
 
     def _resolve_dropped_attachments(self, raw_text: str, dropped_paths: list) -> str:
         """Expand [Image:], [File:], [PDF:] tags into inline content for LLM context."""
@@ -1020,7 +1133,7 @@ class ChromeIoMixin:
     def show_recent_memories(self):
         self.memory_results_display.clear()
         self.memory_results_display.append("<b>Recent Memories:</b><br><br>")
-        results = self.memory_system.get_recent(limit=20)
+        results = memory_system.get_recent(limit=20)
         if results:
             for i, mem in enumerate(results, 1):
                 ts = mem.get('timestamp') or mem.get('ts','')
@@ -1057,7 +1170,7 @@ class ChromeIoMixin:
                     self.tabs.setTabText(_i, f"🎯 Proactive ({event_no})")
                     break
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self._update_proactive_status_label()
 
         # Forward to ProactiveDock (hidden by default — don't auto-show or auto-speak)
@@ -1069,7 +1182,7 @@ class ChromeIoMixin:
                     from eli.perception.tts_router import maybe_speak
                     maybe_speak(plain, enabled=True)
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
     def _update_confidence_meta_label(self):
         """Refresh the status-bar confidence/grounding badge from engine._last_request_meta."""
@@ -1087,19 +1200,21 @@ class ChromeIoMixin:
             lbl = meta.get("confidence_label", "")
             action = meta.get("result_action") or meta.get("action") or ""
             parts = []
-            if agg is not None:
+            if lbl == "phatic_skip":
+                parts.append("phatic (no retrieval)")
+            if agg is not None and lbl != "phatic_skip":
                 try:
                     _a = float(agg)
                     parts.append(f"conf {_a:.2f}" + (f" ({lbl})" if lbl else ""))
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
             if grnd is not None:
                 try:
                     _g = float(grnd)
                     grnd_tag = "✓" if _g >= 0.40 else ("~" if _g >= 0.10 else "⚠")
                     parts.append(f"grounding {grnd_tag}{_g:.2f}")
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
             if action:
                 parts.append(action)
             label.setText("  " + "  |  ".join(parts) + "  " if parts else "")
@@ -1108,7 +1223,7 @@ class ChromeIoMixin:
                 + "\n".join(f"  {k}: {v}" for k, v in sorted(meta.items()))
             )
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _update_summary_display(self, html: str):
         self.summaries_display.clear()
@@ -1351,7 +1466,7 @@ class ChromeIoMixin:
             if idx >= 0:
                 self.tabs.setCurrentIndex(idx)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _load_path_into_main_ide(self, path: Path) -> bool:
         try:
@@ -1390,7 +1505,7 @@ class ChromeIoMixin:
                 sim._current_file = path
                 sim._file_label.setText(str(path))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
             try:
                 inner = getattr(labs, "_inner_tabs", None)
                 if inner is not None:
@@ -1398,7 +1513,7 @@ class ChromeIoMixin:
                     if idx >= 0:
                         inner.setCurrentIndex(idx)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
             self._focus_tab_widget(labs)
             self.status_signal.emit(f"Opened in Labs Sim/IDE: {path.name}")
             return True
@@ -1615,7 +1730,7 @@ class ChromeIoMixin:
             if self._load_into_labs_file_chat(tmp_path):
                 return
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         # Fallback: floating viewer
         dlg = QDialog(self)
         dlg.setWindowTitle(str(path.name))
@@ -1689,21 +1804,32 @@ class ChromeIoMixin:
         if message == 'Send enabled':
             self.send_btn.setEnabled(True)
             self.send_btn.setText('Send')
-            if hasattr(self, '_send_btn_style'):
-                self.send_btn.setStyleSheet(self._send_btn_style)
+            self.send_btn.setStyleSheet(getattr(self, '_send_btn_style', ''))
+            self.send_btn.setToolTip("Send message (Enter). While generating, becomes Stop.")
             return
         if message == 'Generating':
             self.send_btn.setEnabled(True)
             self.send_btn.setText('Stop')
-            if hasattr(self, '_stop_btn_style'):
-                self.send_btn.setStyleSheet(self._stop_btn_style)
+            self.send_btn.setStyleSheet(getattr(self, '_stop_btn_style', ''))
+            self.send_btn.setToolTip("Stop the current model response (Esc also works)")
             return
         if message == 'Send disabled':
             self.send_btn.setEnabled(False)
             return
         if message.startswith('🟢 Model ready:'):
-            model_name = message.split(':', 1)[1].strip()
-            self.model_info_label.setText(f"🟢 {model_name}")
+            rest = message.split(':', 1)[1].strip()
+            import re as _re_status
+            _m = _re_status.match(
+                r'^(.+?)\s*\(ctx=(\d+)\s+gpu=([^)]+?)\s+batch=(\d+)\)\s*$',
+                rest,
+            )
+            if _m:
+                _name, _ctx, _gpu, _batch = _m.groups()
+                self.model_info_label.setText(
+                    f"🟢 {_name.strip()} | ctx={_ctx} | gpu={_gpu.strip()} | batch={_batch}"
+                )
+            else:
+                self.model_info_label.setText(f"🟢 {rest}")
             self.send_btn.setEnabled(True)
             self.status_label.setText("🟢 Ready")
             return

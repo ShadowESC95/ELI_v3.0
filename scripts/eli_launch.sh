@@ -11,8 +11,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/eli_isolate_env.sh"
+eli_isolate_env "$ROOT"
 PY="$ROOT/.venv/bin/python"
-[ -x "$PY" ] || { echo "[eli] .venv not found — run install.sh first."; exit 1; }
+[ -x "$PY" ] || { echo "[eli] .venv not found — run ./scripts/eli_setup.sh or bash install.sh first."; exit 1; }
 
 MODE="${1:-gui}"
 [ $# -gt 0 ] && shift || true

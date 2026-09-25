@@ -39,11 +39,12 @@ def test_the_output_budget_is_a_share_not_a_band():
 
 
 def test_ctx_ceiling_scales_with_ram_rather_than_stepping():
-    """Twice the RAM must not mean 'the same bucket'."""
-    small = drb._ctx_ceiling_for_ram(8, 4.68)
-    mid = drb._ctx_ceiling_for_ram(16, 4.68)
+    """More available RAM must raise the ceiling (model weight reserved first)."""
+    small = drb._ctx_ceiling_for_ram(8, 1.8)
+    mid = drb._ctx_ceiling_for_ram(16, 1.8)
     assert mid > small, "the ceiling did not move with RAM"
-    assert abs(mid - 2 * small) <= 2, "the ceiling is not proportional to RAM"
+    large = drb._ctx_ceiling_for_ram(32, 1.8)
+    assert large > mid
 
 
 def test_a_heavier_model_gets_a_smaller_ceiling():
@@ -54,13 +55,26 @@ def test_a_heavier_model_gets_a_smaller_ceiling():
 
 
 def test_the_ceiling_never_exceeds_the_training_window():
-    """llama.cpp warns `n_ctx_seq > n_ctx_train`; beyond it quality degrades."""
-    assert drb._ctx_ceiling_for_ram(1024, 4.68) <= drb._ABSOLUTE_CTX_CAP
+    """llama.cpp warns `n_ctx_seq > n_ctx_train`; beyond it quality degrades.
+
+    The ceiling is bounded by the MODEL's own trained window, not by a constant
+    — ELI runs 1B to 100B+, so a fixed cap would clamp a 128k model.
+    """
+    assert drb._ctx_ceiling_for_ram(1024, 4.68, 32768) <= 32768
+    assert drb._ctx_ceiling_for_ram(1024, 4.68, 131072) <= 131072
 
 
 def test_the_ceiling_has_a_floor():
     assert drb._ctx_ceiling_for_ram(0, 4.68) >= drb._MIN_CTX
     assert drb._ctx_ceiling_for_ram(-5, 4.68) >= drb._MIN_CTX
+
+
+def test_ctx_ceiling_subtracts_model_weight_from_available_ram():
+    """Low available RAM + multi-GB model must not over-estimate ctx ceiling."""
+    tight = drb._ctx_ceiling_for_ram(4.7, 1.8, 32768)
+    loose = drb._ctx_ceiling_for_ram(16, 1.8, 32768)
+    assert tight < loose
+    assert tight <= 4096, f"4.7GB free with 1.8GB model should stay modest, got {tight}"
 
 
 def test_the_per_token_cost_is_the_loaders_own_measurement():

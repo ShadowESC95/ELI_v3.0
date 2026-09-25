@@ -34,18 +34,27 @@ def test_download_voice_routes(text):
 
 
 @pytest.mark.parametrize("text", [
-    "use the alan voice", "switch your voice to amy", "use the robotic voice",
+    "use the alan voice", "switch your voice to amy", "use the calm voice",
 ])
 def test_set_voice_routes(text):
     assert _action(text) == "SET_VOICE"
 
 
 @pytest.mark.parametrize("text", [
-    "change your voice to sarcastic", "speak to me like a pirate",
     "use a funny voice", "use a serious voice", "be more formal",
+    "change your voice to sarcastic",
 ])
-def test_persona_tone_not_hijacked_by_voice_actions(text):
-    """A tone request that isn't a real voice must stay persona tone."""
+def test_tone_requests_go_to_the_tone_system_not_a_voice_switch(text):
+    """A named emotion/tone ('funny'→comedic, 'formal'→professional) must reach the
+    richer SET_TONE (shades delivery), never a TTS-voice switch/download."""
+    assert _action(text) == "SET_TONE"
+
+
+@pytest.mark.parametrize("text", [
+    "speak to me like a pirate", "talk to me like a wise old wizard",
+])
+def test_freetext_persona_style_stays_persona(text):
+    """A free-text style that isn't a palette tone stays SET_COMMUNICATION_STYLE."""
     assert _action(text) == "SET_COMMUNICATION_STYLE"
 
 
@@ -56,7 +65,7 @@ def test_install_firefox_is_not_a_voice_download():
 # ── resolver ────────────────────────────────────────────────────────────────
 def test_resolve_voice_query_kinds():
     assert va.resolve_voice_query("install en_US-amy-medium")["voice"] == "en_US-amy-medium"
-    assert va.resolve_voice_query("use the HAL voice")["voice"] == "char:robotic"
+    assert va.resolve_voice_query("use the calm voice")["voice"] == "char:calm"
     assert va.resolve_voice_query("a British voice")["kind"] == "accent"
     assert va.resolve_voice_query("something sarcastic")["voice"] == ""
 
@@ -79,8 +88,8 @@ def test_set_voice_executes_and_restores(monkeypatch):
     from eli.perception import tts_router
     prev = tts_router.get_active_voice()
     try:
-        r = execute("SET_VOICE", {"query": "use the robotic voice"})
-        assert r.get("ok") and r.get("voice") == "char:robotic"
+        r = execute("SET_VOICE", {"query": "use the calm voice"})
+        assert r.get("ok") and r.get("voice") == "char:calm"
     finally:
         tts_router.set_active_voice(prev)
 

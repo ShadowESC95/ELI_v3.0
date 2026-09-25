@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 _SEVERITY_SCORE = {
     "critical": 100,
@@ -14,6 +14,12 @@ _SEVERITY_SCORE = {
     "info": 10,
 }
 
+def _artifacts_dir() -> Path:
+    """The user data dir on a packaged install; the source tree in dev."""
+    from eli.core.paths import artifacts_dir
+    return artifacts_dir()
+
+
 def _project_root() -> Path:
     try:
         from eli.core.paths import get_paths
@@ -22,26 +28,15 @@ def _project_root() -> Path:
         return Path(__file__).resolve().parents[3]
 
 def attention_path() -> Path:
-    return _project_root() / "artifacts" / "runtime" / "attention_queue.jsonl"
+    # artifacts_dir() rather than project_root()/artifacts: identical under the
+    # frozen rthook (both pin the same user root) and correct for a bare pip
+    # install, where the project root is the package directory.
+    return _artifacts_dir() / "runtime" / "attention_queue.jsonl"
 
 def suppression_path() -> Path:
-    return _project_root() / "artifacts" / "runtime" / "attention_suppression.json"
+    return _artifacts_dir() / "runtime" / "attention_suppression.json"
 
-def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    out: List[Dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                out.append(obj)
-        except Exception:
-            continue
-    return out
+from eli.utils.jsonio import read_jsonl_dicts as _read_jsonl
 
 def _load_suppression() -> Dict[str, Any]:
     p = suppression_path()

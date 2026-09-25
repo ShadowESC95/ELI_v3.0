@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install / refresh desktop launchers (Linux/macOS). Redistribution-safe:
 # never embeds a versioned extract path in .desktop / .command files.
+# One-click: ./scripts/install_desktop_apps.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

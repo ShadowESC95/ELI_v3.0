@@ -20,7 +20,7 @@ class ImageMixin:
             if idx >= 0:
                 self.tabs.setCurrentIndex(idx)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def browse_image_project_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -455,8 +455,8 @@ class ImageMixin:
         self._focus_generated_image_result(result)
 
         try:
-            if self.memory_system:
-                self.memory_system.store(
+            if memory_system:
+                memory_system.store(
                     f"Generated {len(result.saved_paths)} images from prompt: {result.applied_prompt[:240]}",
                     tags=["image_generation", self.image_style_combo.currentText().strip(), self.image_scene_combo.currentText().strip()],
                     kind="creative",
@@ -486,7 +486,7 @@ class ImageMixin:
             )
             self.suggestions_display.append(note)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _image_generation_failed(self, error_text: str):
         self.image_generate_btn.setEnabled(True)

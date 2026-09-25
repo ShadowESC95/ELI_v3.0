@@ -15,7 +15,7 @@ def _import_gpu_pack_module():
         import eli_gpu_pack
         return eli_gpu_pack
     except ImportError:
-        log.debug("eli_gpu_pack not on sys.path yet; resolving via packaging tree")
+        log.debug("eli_gpu_pack not importable as frozen module", exc_info=True)
     candidates: list[Path] = []
     meipass = getattr(sys, "_MEIPASS", "")
     if meipass:

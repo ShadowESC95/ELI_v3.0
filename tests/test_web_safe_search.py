@@ -114,7 +114,7 @@ def test_cleaning_never_empties_a_query():
 # ── the toggle has to exist where a user can reach it ──────────────────────
 def _gui_src() -> str:
     from pathlib import Path
-    return Path("eli/gui/main_window/_mixins/settings_model.py").read_text(encoding="utf-8")
+    return Path("eli/gui/eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
 
 
 def test_safe_search_has_a_gui_toggle():

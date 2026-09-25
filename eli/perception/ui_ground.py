@@ -51,8 +51,8 @@ def _remote_allowed() -> bool:
     if not bool(_setting("allow_remote_grounding", "false").lower() in ("1", "true", "yes")):
         return False
     try:
-        from eli.runtime import netguard
-        return bool(getattr(netguard, "network_enabled", lambda: False)())
+        from eli.core import netguard
+        return not netguard.should_block_network()
     except Exception:
         return False
 
@@ -72,7 +72,7 @@ def configured_precision_backend() -> str:
             if ok or fok:
                 return "local_gguf"
         except Exception:
-            pass
+            log.debug("vision availability probe failed during auto backend pick", exc_info=True)
         return ""
     return resolved if resolved in _PRECISION_BACKENDS else ""
 

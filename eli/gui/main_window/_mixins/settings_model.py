@@ -11,7 +11,7 @@ class SettingsModelMixin:
                 f'<span style="color:#88c0d0;font-size:11px;">⚙️ Mode: {label}</span><br>'
             )
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _auto_detect_reasoning_mode(self, text: str) -> Optional[str]:
         """Return the canonical reasoning-mode id implied by `text`, or None."""
@@ -47,7 +47,7 @@ class SettingsModelMixin:
                         f'🤖 Auto-mode → {label}</span><br>'
                     )
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
                 break
 
     def open_settings_tab(self):
@@ -56,11 +56,10 @@ class SettingsModelMixin:
             if idx >= 0:
                 self.tabs.setCurrentIndex(idx)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def open_agent_wizard(self):
         """Open the AgentSpec wizard — same format as Settings ▸ Agents ▸ Create."""
-        from eli.gui.panels.agent_wizard import AgentCreateDialog
         dlg = AgentCreateDialog(parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._wizard_display_message(
@@ -69,7 +68,6 @@ class SettingsModelMixin:
             )
 
     def _open_prefilled_agent_spec(self, prefill: dict):
-        from eli.gui.panels.agent_wizard import AgentCreateDialog
         dlg = AgentCreateDialog(parent=self, prefill=prefill)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._wizard_display_message(
@@ -104,14 +102,17 @@ class SettingsModelMixin:
             # Ask next question
             self.wizard_say_signal.emit(self._WIZARD_QUESTIONS[state["step"]])
         else:
+            # All 3 answers collected — open the spec wizard prefilled for review
             self._agent_wizard_state = None
             answers = state["answers"]
             self._wizard_display_message(
                 "Got all 3 answers — opening the agent specification editor for review."
             )
-            from eli.gui.panels.agent_wizard import AgentCreateDialog
             prefill = AgentCreateDialog.prefill_from_legacy_wizard(*answers)
-            QTimer.singleShot(0, lambda: self._open_prefilled_agent_spec(prefill))
+            QTimer.singleShot(
+                0,
+                lambda: self._open_prefilled_agent_spec(prefill),
+            )
 
     def open_advanced_settings(self, tab: int = 0):
         dlg = AdvancedSettingsDialog(parent=self, start_tab=tab)
@@ -604,7 +605,8 @@ class SettingsModelMixin:
         )
         # An editable QComboBox has no native placeholder support the way QLineEdit
         # does — left unset, a blank (default) value renders as a genuinely empty
-        # box with no hint text, unlike every field around it.
+        # box with no hint text, unlike every field around it. That reads as broken
+        # rather than "intentionally blank", so give its internal line edit one.
         if self.communication_style_combo.lineEdit() is not None:
             self.communication_style_combo.lineEdit().setPlaceholderText(
                 "Default — ELI's own emergent voice (or type e.g. blunt, warm, formal...)")
@@ -848,7 +850,7 @@ class SettingsModelMixin:
             self._stt_diag_timer.timeout.connect(self._refresh_stt_diagnostics)
             self._stt_diag_timer.start()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         return page
 
     def _build_settings_server_page(self) -> QWidget:
@@ -1439,11 +1441,12 @@ class SettingsModelMixin:
                 _user_pinned_ctx = _spin_ctx
             else:
                 _user_pinned_ctx = None
-            # The user's own GPU-layer choice, protected exactly like ctx. A tuning
-            # run made while the GPU is busy computes a low layer count for THOSE
-            # conditions; persisting it as the preference makes a transient state
-            # permanent (observed in v2: a pinned 99 became 13 while a video played,
-            # and every later boot loaded at 13 with the GPU idle).
+            # The user's own GPU-layer choice, protected exactly like ctx below.
+            # A tuning run made while the GPU is busy (a video decoding, a game)
+            # computes a low layer count for THOSE conditions — persisting it as
+            # the user's preference makes a transient state permanent. Observed
+            # live: a pinned 99 was overwritten to 13 while a video played, and
+            # every later boot then loaded at 13 with the GPU idle.
             try:
                 _user_pinned_layers = int(self.n_gpu_layers_input.value())
             except Exception:
@@ -1460,15 +1463,26 @@ class SettingsModelMixin:
             }], user_ctx=_user_pinned_ctx)
 
             # Runtime CUDA/backend may be unavailable even if VRAM probe reports
-            # a GPU. In that case force CPU-safe values so the GUI does not keep
-            # applying aggressive GPU-centric params.
+            # a GPU. Keep the measured layer fit for display; clamp batch for CPU load.
             if _gpu_support is False:
-                rec.n_gpu_layers = 0
+                _fit_layers = int(rec.n_gpu_layers or 0)
                 rec.batch_size = min(int(getattr(rec, "batch_size", 128) or 128), 128)
-                self._hardware_tuning_log(
-                    "GPU offload unavailable at runtime -> forcing CPU-safe tuning "
-                    "(gpu_layers=0, batch<=128)."
-                )
+                if _fit_layers > 0 and getattr(hw, "gpu_integrated", False):
+                    self._hardware_tuning_log(
+                        f"GPU backend inactive — {_fit_layers} layers fit integrated "
+                        f"graphics ({hw.gpu_name}); load uses CPU until a GPU backend "
+                        f"is active."
+                    )
+                elif _fit_layers > 0:
+                    self._hardware_tuning_log(
+                        f"GPU backend inactive — {_fit_layers} layers fit VRAM; "
+                        f"load uses CPU until a GPU backend is active."
+                    )
+                else:
+                    self._hardware_tuning_log(
+                        "GPU offload unavailable at runtime -> CPU-safe tuning "
+                        "(gpu_layers=0, batch<=128)."
+                    )
 
             # KV-cache quantization: hardware fact — safe to update in the combo
             # (affects how VRAM is used, not a user performance preference).
@@ -1490,17 +1504,38 @@ class SettingsModelMixin:
             for line in list(getattr(rec, "reasoning", []) or []):
                 self._hardware_tuning_log(str(line))
 
-            # HW Profile is AUTHORITATIVE — these values are freshly computed
-            # for THIS model + THIS hardware's current free VRAM on every load.
-            # They become the primary load parameters (attempt 1), not advisory.
-            # Stale per-model values must never drive the load: switching from a
-            # 7B to a 24B model needs a fully recalculated profile, not the 7B's
-            # gpu_layers/ctx/batch left over in settings.json.
+            # These are a RECOMMENDATION, not what will load. The comment here
+            # used to say "AUTHORITATIVE ... the primary load parameters
+            # (attempt 1)", which stopped being true when the operator's own
+            # settings were moved to the front of the ladder: attempt 1 is now
+            # `requested`, and the value that actually loads is whichever rung
+            # `selected=` reports. Displaying a recommendation as authoritative
+            # is how the panel came to read "ctx=6144 gpu_layers=31" while the
+            # session was running at ctx=10384 gpu_layers=28 — three different
+            # numbers on screen at once, none of them labelled.
+            #
+            # Show the recommendation AS a recommendation. What actually loads is
+            # reported in the dock's log below it, which subscribes to the same
+            # [GUI][LOAD] / smart-fit / probe lines the terminal prints (see
+            # HardwareTuningLogRelay) — one source of truth, not a second figure
+            # computed for the panel.
             summary = (
-                f"HW Profile: ctx={int(rec.n_ctx)} gpu_layers={int(rec.n_gpu_layers)} "
+                f"HW Profile (recommended): ctx={int(rec.n_ctx)} "
+                f"gpu_layers={int(rec.n_gpu_layers)} "
                 f"threads={int(rec.n_threads)} batch={int(rec.batch_size)} "
                 f"kv={_ck or 'fp16'}"
             )
+            try:
+                from eli.cognition import gguf_inference as _ggi_live
+                _live = _ggi_live.get_runtime_snapshot() or {}
+                _eff = (_live.get("effective") or _live) if isinstance(_live, dict) else {}
+                _lc, _lg = _eff.get("n_ctx"), _eff.get("n_gpu_layers")
+                if _lc and _lg is not None:
+                    summary += (f"  |  loaded: ctx={int(_lc)} gpu_layers={int(_lg)}"
+                                f" batch={int(_eff.get('n_batch') or 0)}")
+            except Exception:
+                log.debug("[GUI] live runtime snapshot unavailable for the tuning panel",
+                          exc_info=True)
             self.system_recommendation_label.setText(summary)
             if dock is not None:
                 dock.set_status("Tuning complete")
@@ -1515,6 +1550,9 @@ class SettingsModelMixin:
             # the user at a lower ctx next boot. The load path's smart-fit reduces to
             # fit (and logs) at load time; the effective value lives in hw_profile_*.
             _canonical_ctx = int(_user_pinned_ctx) if _user_pinned_ctx else int(rec.n_ctx)
+            # Same rule for layers: an explicit user value is a preference, not a
+            # measurement, so the recommendation goes to hw_profile_n_gpu_layers
+            # and the loader still reduces to fit at load time (which IS transient).
             # A pinned layer count belongs to the MODEL it was chosen for. It is an
             # absolute number of layers, so it means something entirely different on
             # a different model: 7 was right for a 15.66GB 27B on 8GB of VRAM, and
@@ -1583,10 +1621,7 @@ class SettingsModelMixin:
                 _s = dict(_rs_load() or {})
                 _s["n_ctx"] = _canonical_ctx        # user's chosen ctx, preserved
                 _s["n_gpu_layers"] = _canonical_layers   # user's choice, preserved
-                # Stamp the model AND ctx the count now belongs to, so the next
-                # swap -- or the next ctx change on the SAME model -- can tell a
-                # deliberate pin from one inherited from a different model or a
-                # different (usually much smaller) ctx it was never measured at.
+                # Record the model and ctx this pin was measured at, so a swap or ctx change can invalidate it.
                 _s["n_gpu_layers_model"] = _this_model
                 _s["n_gpu_layers_ctx"] = _canonical_ctx
                 _s["batch_size"] = _canonical_batch   # user's choice, preserved
@@ -1598,8 +1633,12 @@ class SettingsModelMixin:
                 _s["cache_type_k"] = _ck
                 _s["cache_type_v"] = _cv
                 _rs_save(_s)
-                # Say what was applied and what was NOT. Announcing the whole
-                # profile as canonical was wrong: ctx and gpu_layers are the user's.
+                # Say what was applied and what was NOT. The previous line claimed
+                # the whole profile had been applied as canonical, directly under a
+                # printed "n_ctx set 10384 → 4096" — and n_ctx is the one value this
+                # block deliberately does not take from the profile (see
+                # _canonical_ctx above). Reading the panel, the tuner's ctx looked
+                # like the live setting; it never was.
                 _applied_desc = ((f"threads={int(rec.n_threads)}" if int(rec.n_threads) > 0
                                   else "nothing"))
                 _not_applied = []
@@ -1626,6 +1665,12 @@ class SettingsModelMixin:
                     )
             except Exception as _save_err:
                 self._hardware_tuning_log(f"Warning: hw_profile save failed: {_save_err}")
+
+            try:
+                from eli.core.hardware_profile import apply_recommendation as _hp_apply
+                _hp_apply(rec)
+            except Exception as _json_err:
+                log.debug("[SETTINGS] runtime_hardware_profile.json sync failed", exc_info=True)
 
             result.update({"ok": True, "recommendation": rec.to_dict() if hasattr(rec, "to_dict") else {}})
             return result
@@ -1661,6 +1706,27 @@ class SettingsModelMixin:
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return False
 
+        # Persist the voice-engine choice BEFORE hardware tuning / GPU allocation
+        # below, so a neural voice's VRAM is accounted for up front (and pinned to
+        # GPU), or Piper keeps the VRAM for the model on a lean box.
+        try:
+            _tts_engine = dlg.selected_tts_engine()
+            _tts_updates = {"tts_engine": _tts_engine}
+            _tts_voice = dlg.selected_tts_voice()
+            if _tts_voice:
+                _tts_updates["tts_voice"] = _tts_voice
+            from eli.core.runtime_settings import save_settings as _rs_save_tts
+            _rs_save_tts(_tts_updates)
+            if _tts_engine == "natural":
+                os.environ["ELI_XTTS_DEVICE"] = "cuda"  # user chose it up-front → prefer GPU
+                try:
+                    from eli.perception.tts_router import set_active_voice as _sav
+                    _sav(_tts_voice or "natural:sophia")
+                except Exception:
+                    log.debug("[STARTUP] set natural voice active failed", exc_info=True)
+        except Exception as _te:
+            log.debug(f"[STARTUP] tts engine persist failed: {_te}", exc_info=True)
+
         provider = dlg.selected_provider()
         idx = self.provider_combo.findData(provider)
         if idx >= 0:
@@ -1683,12 +1749,8 @@ class SettingsModelMixin:
             else:
                 self.model_path_input.setText(selected_path)
 
-            # The dialog's "Target batch" is what the operator just asked for. The
-            # tuner treats the Settings-tab batch spinbox as a pinned user choice
-            # that beats its own number, and that spinbox still held the previous
-            # session's value -- so a dialog set to 256 loaded 512, with nothing
-            # anywhere saying the request had been overridden. Carry the dialog's
-            # value into the spinbox so there is one request, not two.
+            # The dialog's Target batch is the request; the Settings-tab spinbox held a stale value
+            # that the tuner treated as a pinned choice, so copy the dialog's value into it.
             try:
                 _dlg_batch = int(dlg.target_batch_spin.value())
                 if _dlg_batch > 0:
@@ -1707,7 +1769,7 @@ class SettingsModelMixin:
                             "Model load was cancelled.",
                         )
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
                     return False
 
         self._first_run_complete = True
@@ -1743,13 +1805,13 @@ class SettingsModelMixin:
             use_mmap = bool(_s.get("use_mmap", True))
             use_mlock = bool(_s.get("use_mlock", False))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self.status_signal.emit("🔄 Loading model...")
         self.status_signal.emit("Send disabled")
         try:
             self.send_btn.setText("Loading...")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         def load_worker():
             self._model_loading = True
@@ -1762,7 +1824,7 @@ class SettingsModelMixin:
                     model_name_display = model_name
                 else:
                     model_path = self.resolve_selected_model_path()
-                    success = self.model_manager.load_model(
+                    success = model_manager.load_model(
                         model_path=model_path,
                         n_ctx=n_ctx,
                         n_threads=n_threads,
@@ -1773,18 +1835,28 @@ class SettingsModelMixin:
                         use_mmap=use_mmap,
                         use_mlock=use_mlock,
                     )
-                    backend = self.model_manager
-                    model_name_display = Path(getattr(self.model_manager, 'model_path', model_path or 'model')).name
+                    backend = model_manager
+                    model_name_display = Path(getattr(model_manager, 'model_path', model_path or 'model')).name
 
                 if success:
                     self.active_backend = backend
-                    self.memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
+                    memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
                     if provider != "ollama":
+                        from eli.core.hardware_profile import format_gpu_layers_status as _fmt_gpu
+                        _active_gpu = int(getattr(model_manager, 'n_gpu_layers', 0) or 0)
+                        _fitted_gpu = int(getattr(model_manager, 'fitted_gpu_layers', 0) or 0)
+                        _gpu_disp = _fmt_gpu(
+                            _active_gpu,
+                            fitted_layers=_fitted_gpu,
+                            gpu_integrated=bool(getattr(model_manager, 'gpu_integrated', False)),
+                            gpu_name=str(getattr(model_manager, 'gpu_name', '') or ''),
+                            gpu_vendor=str(getattr(model_manager, 'gpu_vendor', '') or ''),
+                        )
                         self.status_signal.emit(
                             f"🟢 Model ready: {model_name_display} "
-                            f"(ctx={int(getattr(self.model_manager, 'n_ctx', 0) or 0)} "
-                            f"gpu={int(getattr(self.model_manager, 'n_gpu_layers', 0) or 0)} "
-                            f"batch={int(getattr(self.model_manager, 'n_batch', 0) or 0)})"
+                            f"(ctx={int(getattr(model_manager, 'n_ctx', 0) or 0)} "
+                            f"gpu={_gpu_disp} "
+                            f"batch={int(getattr(model_manager, 'n_batch', 0) or 0)})"
                         )
                     else:
                         self.status_signal.emit(f"🟢 Model ready: {model_name_display}")
@@ -1797,25 +1869,35 @@ class SettingsModelMixin:
                             _ce._gguf_available = True
                             _ce._gguf_load_error = None
                             _loaded_path = str(
-                                getattr(self.model_manager, "model_path", model_path) or model_path
+                                getattr(model_manager, "model_path", model_path) or model_path
                             )
                             _ce._model_path = _loaded_path
-                            _ce._ctx = int(getattr(self.model_manager, "n_ctx", 0) or 0)
-                            _ce._gpu_layers = int(getattr(self.model_manager, "n_gpu_layers", 0) or 0)
+                            _ce._ctx = int(getattr(model_manager, "n_ctx", 0) or 0)
+                            _ce._gpu_layers = int(getattr(model_manager, "n_gpu_layers", 0) or 0)
                         except Exception:
-                            pass
+                            log.debug("suppressed exception", exc_info=True)
                     try:
                         if provider != "ollama":
-                            _requested_gpu = int(getattr(self.model_manager, "requested_n_gpu_layers", 0) or 0)
-                            _effective_gpu = int(getattr(self.model_manager, "n_gpu_layers", 0) or 0)
-                            _gpu_supported = getattr(self.model_manager, "gpu_offload_supported", None)
+                            _requested_gpu = int(getattr(model_manager, "requested_n_gpu_layers", 0) or 0)
+                            _effective_gpu = int(getattr(model_manager, "n_gpu_layers", 0) or 0)
+                            _gpu_supported = getattr(model_manager, "gpu_offload_supported", None)
                             if _requested_gpu > 0 and (_gpu_supported is False or _effective_gpu <= 0):
+                                from eli.core.hardware_profile import (
+                                    gpu_offload_unavailable_message as _gpu_msg,
+                                )
                                 self.status_signal.emit(
-                                    "⚠️ GPU offload unavailable; running CPU-only. "
-                                    "Check NVIDIA driver/CUDA runtime."
+                                    _gpu_msg(
+                                        gpu_vendor=str(getattr(model_manager, "gpu_vendor", "") or ""),
+                                        gpu_integrated=bool(
+                                            getattr(model_manager, "gpu_integrated", False)
+                                        ),
+                                        vulkan_available=bool(
+                                            getattr(model_manager, "vulkan_available", False)
+                                        ),
+                                    )
                                 )
                     except Exception:
-                        pass
+                        log.debug("suppressed exception", exc_info=True)
                     self.status_signal.emit("Send enabled")
                 else:
                     err = getattr(backend, 'load_error', None) or 'Unknown error'
@@ -1891,7 +1973,7 @@ class SettingsModelMixin:
                 if _vidx >= 0:
                     self.cache_type_v_combo.setCurrentIndex(_vidx)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         except Exception as e:
             print(f"⚠️ Failed to apply numeric settings to widgets: {e}")
 
@@ -1901,7 +1983,12 @@ class SettingsModelMixin:
             idx = self.provider_combo.findData(provider)
             if idx >= 0:
                 self.provider_combo.setCurrentIndex(idx)
-            model_path = s.get("model_path") or DEFAULT_MODEL_PATH
+            if provider == "custom_gguf":
+                model_path = s.get("custom_model_path") or s.get("model_path") or DEFAULT_MODEL_PATH
+            elif provider == "bundled_gguf":
+                model_path = s.get("bundled_model_path") or s.get("model_path") or DEFAULT_MODEL_PATH
+            else:
+                model_path = s.get("model_path") or DEFAULT_MODEL_PATH
             self.model_path_input.setText(model_path or "")
             bundled_path = s.get("bundled_model_path", "")
             if bundled_path:
@@ -1918,7 +2005,7 @@ class SettingsModelMixin:
                 self._saved_mic_device = tuple(_mic) if isinstance(_mic, list) else _mic
                 self._on_mic_device_changed(_save=False)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # STT sensitivity (energy threshold)
         try:
@@ -1934,7 +2021,7 @@ class SettingsModelMixin:
             _os_e.environ["ELI_STT_DYNAMIC_ENERGY"] = "1" if _dynamic else "0"
             _os_e.environ["ELI_STT_ENERGY_THRESHOLD"] = str(_threshold)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # STT behaviour flags
         try:
@@ -1950,7 +2037,7 @@ class SettingsModelMixin:
                 self.wake_word_btn.setText("Wake: ON" if not _direct else "Wake: OFF")
                 self.wake_word_btn.blockSignals(False)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # Gaze engine
         try:
@@ -1971,7 +2058,7 @@ class SettingsModelMixin:
                 except Exception as _ge:
                     log.debug(f"[GUI] Gaze engine auto-start failed: {_ge}")
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # GUI-local flags + theme
         try:
@@ -1998,7 +2085,7 @@ class SettingsModelMixin:
                     from eli.kernel.state import get_user_name as _gun
                     _gui_user_name = _gun() or ""
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
             self.user_name_input.setText(_gui_user_name)
             if hasattr(self, "communication_style_combo"):
                 _cs = str(s.get("communication_style", "") or "")
@@ -2006,7 +2093,7 @@ class SettingsModelMixin:
                     from eli.kernel.state import get_communication_style as _gcs
                     _cs = _gcs() or _cs
                 except Exception:
-                    log.debug("communication_style load from state failed", exc_info=True)
+                    log.debug("suppressed exception", exc_info=True)
                 self.communication_style_combo.setCurrentText(_cs)
             self.image_profile_notes_input.setPlainText(str(s.get("image_profile_notes", "") or ""))
             self.image_style_profile_combo.setCurrentText(str(s.get("image_style_profile", "auto") or "auto"))
@@ -2045,6 +2132,11 @@ class SettingsModelMixin:
             print(f"⚠️ Failed to apply identity/image settings: {e}")
 
         self.apply_theme()
+        if hasattr(self, "_sc_load_settings"):
+            try:
+                self._sc_load_settings()
+            except Exception:
+                log.debug("screen settings load failed", exc_info=True)
 
     def save_settings(self, silent: bool = False):
         """Save settings via runtime_settings — single canonical merge-write."""
@@ -2060,9 +2152,16 @@ class SettingsModelMixin:
 
         updates = {
             "provider": provider,
+            # Store the canonical active model path for the selected provider.
+            # Without this, custom_model_path / bundled_model_path can diverge
+            # from model_path and get_model_path() keeps the stale primary key.
             "model_path": model_path,
-            "custom_model_path": self.model_path_input.text(),
-            "bundled_model_path": bundled_path,
+            "custom_model_path": (
+                self.model_path_input.text().strip()
+                if provider == "custom_gguf"
+                else str(existing.get("custom_model_path") or self.model_path_input.text() or "")
+            ),
+            "bundled_model_path": bundled_path or str(existing.get("bundled_model_path") or ""),
             # Store the canonical form, so "localhost:11434" or a bare IP typed
             # here is persisted as a URL every consumer can actually use.
             "ollama_host": self.ollama_manager._normalize_host(
@@ -2111,6 +2210,16 @@ class SettingsModelMixin:
             "gaze_engine_enabled": bool(getattr(self, "gaze_enabled_checkbox", None) and self.gaze_enabled_checkbox.isChecked()),
             "gaze_camera": str(self.gaze_camera_input.text().strip() if hasattr(self, "gaze_camera_input") else "auto"),
         }
+        if hasattr(self, "_sc_depth_combo"):
+            updates.update({
+                "screen_analysis_depth": self._sc_depth_combo.currentData() or "standard",
+                "screen_analysis_use_memory": bool(self._sc_use_memory_cb.isChecked()),
+                "screen_analysis_use_research": bool(self._sc_use_research_cb.isChecked()),
+                "ui_ground_backend": self._sc_ground_combo.currentData() or "none",
+                "computer_use_backend": self._sc_agent_combo.currentData() or "none",
+                "ambient_vision_enabled": bool(self._sc_ambient_cb.isChecked()),
+                "ambient_vision_interval": int(self._sc_interval_spin.value()),
+            })
 
         try:
             from eli.core.runtime_settings import save_settings as _rs_save
@@ -2173,13 +2282,31 @@ class SettingsModelMixin:
                         result = gguf_inference.reload_model(await_completion=True)
                         if result.get("ok"):
                             params = result.get("params") or {}
+                            model_name = (
+                                Path(str(params.get("model_path") or "")).name
+                                or str(params.get("model_name") or "")
+                                or "model"
+                            )
+                            ctx = params.get("n_ctx")
+                            gpu = params.get("n_gpu_layers")
+                            batch = params.get("n_batch")
                             log.debug(
                                 "[SETTINGS] Model reloaded — "
-                                f"ctx={params.get('n_ctx')} "
-                                f"gpu_layers={params.get('n_gpu_layers')} "
+                                f"model={model_name} "
+                                f"ctx={ctx} "
+                                f"gpu_layers={gpu} "
                                 f"threads={params.get('n_threads')} "
-                                f"batch={params.get('n_batch')}"
+                                f"batch={batch}"
                             )
+                            # Refresh the min-chat model strip (same contract as
+                            # the initial load_model status path).
+                            try:
+                                self.status_signal.emit(
+                                    f"🟢 Model ready: {model_name} "
+                                    f"(ctx={ctx} gpu={gpu} batch={batch})"
+                                )
+                            except Exception:
+                                log.debug("[SETTINGS] model label emit failed", exc_info=True)
                         else:
                             log.debug(f"[SETTINGS] Reload failed: {result.get('error')}")
                     except Exception as exc:

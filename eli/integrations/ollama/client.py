@@ -226,15 +226,6 @@ def is_running() -> bool:
         return False
 
 
-def get_version() -> str:
-    """Return Ollama version string, or 'unavailable'."""
-    try:
-        data = _get("/api/version", timeout=3)
-        return data.get("version", "unknown")
-    except Exception:
-        return "unavailable"
-
-
 _autostart_tried = False
 
 
@@ -278,6 +269,15 @@ def ensure_server_running(timeout: float = 8.0) -> bool:
             return True
         _t.sleep(0.3)
     return is_running()
+
+
+def get_version() -> str:
+    """Return Ollama version string, or 'unavailable'."""
+    try:
+        data = _get("/api/version", timeout=3)
+        return data.get("version", "unknown")
+    except Exception:
+        return "unavailable"
 
 
 def list_models(autostart: bool = True) -> List[str]:
@@ -355,6 +355,7 @@ def open_models_folder() -> bool:
         return False
 
 
+# Popular registry tags for one-click pull in the GUI.
 POPULAR_OLLAMA_MODELS = (
     "llama3.2:3b",
     "llama3.2:1b",

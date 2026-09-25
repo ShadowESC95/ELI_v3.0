@@ -23,8 +23,8 @@ def test_package_name_matches_distribution():
     data = load_toml(root / "pyproject.toml")
     assert data["project"]["name"] == "eli-v3"
     # Shape, not a hardcoded literal: pinning the exact version here just made
-    # this another place to edit on every release while asserting nothing real.
-    # The invariant worth guarding is below.
+    # this a FOURTH place to edit on every release (it failed the 2.1.24 bump
+    # while asserting nothing real). The invariant worth guarding is below.
     import re
     assert re.fullmatch(r"\d+\.\d+\.\d+", data["project"]["version"]), \
         f"version must be MAJOR.MINOR.PATCH, got {data['project']['version']!r}"

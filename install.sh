@@ -178,22 +178,33 @@ section "Your system"
 eli_progress system 5 "Scanning hardware"
 ok "Python      ${B}$("$PYTHON" --version 2>&1)${R}"
 ok "Platform    ${B}${OS}${R} ($(uname -m 2>/dev/null || echo '?'))"
+# Pipelines with grep/awk — under `set -o pipefail` a no-match grep aborts the
+# whole install (seen on Intel iGPU laptops stuck at 5% / "Scanning hardware").
+# MUST be defined before first use below.
+# Inner command failures must NOT abort the installer (`set -e` would otherwise
+# exit the function before pipefail is restored — Jess@blue: dual banner, no Plan).
+_gpu_pipeline() {
+    set +o pipefail
+    "$@" || true
+    set -o pipefail
+    return 0
+}
+_safe_pipeline() {
+    set +o pipefail
+    "$@" || true
+    set -o pipefail
+    return 0
+}
 if [ "$OS" = "Darwin" ]; then
     _CPUS="$(sysctl -n hw.ncpu 2>/dev/null || echo '?')"
     _RAMGB="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))"
 else
-    _CPUS="$(nproc 2>/dev/null || echo '?')"
-    _RAMGB="$(free -g 2>/dev/null | awk '/^Mem:/{print $2}')"
+    _CPUS="$(_safe_pipeline bash -c 'nproc 2>/dev/null || echo ?')"
+    _RAMGB="$(_safe_pipeline bash -c "free -g 2>/dev/null | awk '/^Mem:/{print \$2}' || true")"
 fi
 ok "CPU         ${B}${_CPUS}${R} cores      RAM ${B}${_RAMGB:-?} GB${R}"
-ok "Disk free   ${B}$(df -h "$SCRIPT_DIR" 2>/dev/null | awk 'NR==2{print $4}')${R}   ${D}(a model is ~2-5 GB)${R}"
-# GPU probes use grep/lspci pipelines — with `set -o pipefail`, a no-match grep
-# aborts the whole install (common on Intel iGPU systems at 5% / "Your system").
-_gpu_pipeline() {
-    set +o pipefail
-    "$@"
-    set -o pipefail
-}
+_DF_FREE="$(_safe_pipeline bash -c "df -h \"$SCRIPT_DIR\" 2>/dev/null | awk 'NR==2{print \$4}' || true")"
+ok "Disk free   ${B}${_DF_FREE:-?}${R}   ${D}(a model is ~2-5 GB)${R}"
 
 if command -v nvidia-smi &>/dev/null; then
     # Broken drivers often print the failure on stdout — never count that as a
@@ -496,19 +507,22 @@ print('llama-runtime-smoke-ok')
 }
 
 _llama_safe_cpu_cmake_flags() {
-    # Baseline ISA flags so the built runtime is portable across machines of
+    # Baseline ISA flags so the built runtime is portable across the machines of
     # this ARCHITECTURE, rather than tuned to the one that compiled it.
     #
     # -march=x86-64* is an x86 spelling. Emitting it unconditionally meant every
     # non-x86 host fell through to the else branch and handed an aarch64 compiler
-    # a flag it rejects — Raspberry Pi, ARM Chromebooks, ARM servers and
-    # Asahi/Linux-on-Apple-Silicon could not install at all.
+    # a flag it rejects, so the build failed outright — Raspberry Pi, ARM Chromebooks,
+    # ARM servers and Asahi/Linux-on-Apple-Silicon could not install at all. Each
+    # architecture gets its own baseline, and anything unrecognised gets GGML_NATIVE
+    # off with no -march at all, which always compiles.
     local _arch _kernel
     _arch="$(uname -m 2>/dev/null || echo unknown)"
     _kernel="$(uname -s 2>/dev/null || echo unknown)"
 
-    # Apple clang rejects -march= for arm64; every Apple Silicon part shares one
-    # ISA, and remaining Intel Macs are AVX2. Portable build, no ISA flag.
+    # Apple clang rejects -march= for arm64 and needs no baseline anyway: every
+    # Apple Silicon part is the same ISA, and the Intel Macs still supported are
+    # all AVX2. Portable build, no ISA flag.
     if [ "$_kernel" = "Darwin" ]; then
         echo "-DGGML_NATIVE=OFF"
         return 0
@@ -516,6 +530,7 @@ _llama_safe_cpu_cmake_flags() {
 
     case "$_arch" in
         x86_64|amd64)
+            # x86-64-v3 = AVX2/FMA — covers most 2013+ desktops; avoids VNNI-only wheels.
             if [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo; then
                 echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=x86-64-v3 -DCMAKE_CXX_FLAGS=-march=x86-64-v3"
             elif [ -r /proc/cpuinfo ] && grep -qE '(^|[[:space:]])sse4_2([[:space:]]|$)' /proc/cpuinfo; then
@@ -525,13 +540,15 @@ _llama_safe_cpu_cmake_flags() {
             fi
             ;;
         aarch64|arm64)
-            # ARMv8-A floor; ggml probes dotprod/fp16 at runtime.
+            # ARMv8-A is the floor for every 64-bit ARM part ELI can run on; dotprod
+            # and fp16 are probed by ggml at runtime, so no -mcpu tuning is needed.
             echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=armv8-a -DCMAKE_CXX_FLAGS=-march=armv8-a"
             ;;
         armv7l|armv7|armhf)
             echo "-DGGML_NATIVE=OFF -DCMAKE_C_FLAGS=-march=armv7-a -DCMAKE_CXX_FLAGS=-march=armv7-a"
             ;;
         ppc64le|riscv64|s390x|*)
+            # Unknown or niche: portable build, no ISA flag the compiler might reject.
             echo "-DGGML_NATIVE=OFF"
             ;;
     esac
@@ -996,12 +1013,14 @@ if [ "$NO_MODEL" -eq 0 ]; then
         fi
     else
         warn "Embedder fetch deferred — get it later with: python -m eli.core.model_download --aux"
+        warn "The GUI wizard will retry the embedder stage until nomic is present."
     fi
 fi
 
 # Voice weights (browser voice + TTS): the faster-whisper STT model and a Piper
 # voice. Required for web-server mic (phone/PC browser) — always fetch, not gated
-# on chat-model download. Best-effort + idempotent — never fatal.
+# on chat-model download. Core install stays non-fatal here; the GUI wizard
+# hard-fails the voice stage until Piper + whisper are present.
 VOICE_STATUS="skipped"
 eli_progress assets 90 "Fetching voice models"
 info "Ensuring voice models (local STT + TTS, for browser/desktop voice) are present..."
@@ -1033,12 +1052,12 @@ ok "Data        ${B}fresh local databases${R}, offline-by-default"
 
 section "Shell command"
 if [ "$ASSUME_YES" -eq 1 ]; then
-    bash "$SCRIPT_DIR/scripts/fix_eli_shell_env.sh" --yes || warn "Shell fix deferred — run: bash scripts/fix_eli_shell_env.sh"
+    bash "$SCRIPT_DIR/scripts/fix_eli_shell_env.sh" --yes 2>/dev/null || warn "Shell fix deferred — run: bash scripts/fix_eli_shell_env.sh"
 elif [ -t 0 ]; then
     printf "  Install 'eli' command and fix stale shell alias? [Y/n]  "
     read -r _shell_fix </dev/tty || _shell_fix=y
     case "${_shell_fix:-y}" in
-        [Yy]*) bash "$SCRIPT_DIR/scripts/fix_eli_shell_env.sh" --yes || warn "Shell fix failed" ;;
+        [Yy]*) bash "$SCRIPT_DIR/scripts/fix_eli_shell_env.sh" --yes 2>/dev/null || warn "Shell fix failed" ;;
         *) info "Skipped — run later: bash scripts/fix_eli_shell_env.sh" ;;
     esac
 else

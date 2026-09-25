@@ -7,6 +7,7 @@ the methods here keep reading engine state through `self` exactly as before.
 """
 from __future__ import annotations
 
+import os
 import json
 import re
 import time
@@ -514,6 +515,7 @@ Answer:"""
             _c_valid_names = ", ".join(_VALID_MODES_C.values())
             enhanced_system += (
                 f"\n\nCURRENT TIME: {_now} on {_date}."
+                " You always know today's weekday and date from this — never claim otherwise."
                 "\nWhen the user says 'me' or 'my', they mean themselves (the user), not you (ELI)."
                 + ("\nThe user wants depth — provide a full, detailed answer." if _compact_wants_depth
                    else "\nFor technical queries, stay focused. For casual check-ins, engage naturally in ELI\'s persona; no sterile status report.")
@@ -1681,3 +1683,52 @@ Answer:"""
             log.debug("suppressed exception", exc_info=True)
 
         return assembled_context, final_prompt
+
+    def _collect_recent_assistant_replies(
+        self,
+        *,
+        recent_turns: Optional[Any] = None,
+        limit_assistant: int = 3,
+        scan_turns: int = 24,
+    ) -> List[str]:
+        """Assistant replies from live session context first, then DB fallback."""
+        _prev_eli: List[str] = []
+        _sources: List[Any] = []
+        if recent_turns:
+            _sources.extend(list(recent_turns))
+        try:
+            _sources.extend(
+                self.memory.get_recent_conversation(
+                    limit=scan_turns,
+                    user_id=getattr(self, "user_id", None),
+                    session_id=getattr(self, "session_id", None),
+                ) or []
+            )
+        except TypeError:
+            try:
+                _sources.extend(self.memory.get_recent_conversation(limit=scan_turns) or [])
+            except Exception:
+                log.debug("[ANTI-REPEAT] recent conversation fetch failed", exc_info=True)
+        except Exception:
+            log.debug("[ANTI-REPEAT] recent conversation fetch failed", exc_info=True)
+
+        _seen: set[str] = set()
+        for _t in reversed(_sources):
+            if len(_prev_eli) >= limit_assistant:
+                break
+            if str((_t or {}).get("role", "")).lower() not in ("assistant", "eli"):
+                continue
+            _c = str((_t or {}).get("content", "") or "").strip()
+            if not _c or _c in _seen:
+                continue
+            try:
+                from eli.cognition.model_output_tokens import strip_special_tokens as _scrub_hist
+                _c = (_scrub_hist(_c) or "").strip()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            if not _c or _c in _seen:
+                continue
+            _seen.add(_c)
+            _prev_eli.append(_c)
+        _prev_eli.reverse()
+        return _prev_eli

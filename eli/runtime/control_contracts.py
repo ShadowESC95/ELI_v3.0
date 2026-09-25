@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict
 
-from eli.utils.log import get_logger
-
-log = get_logger(__name__)
+log = logging.getLogger(__name__)
 
 CONTROL_ACTIONS = {
     "SELF_REPORT",
@@ -40,6 +39,11 @@ CONTROL_ACTIONS = {
     "SELF_IMPROVE",
     "SELF_IMPROVEMENT_LOG",
     "SELF_UPDATE",
+    "SELF_PATCH",
+    "SELF_REPAIR_PLAYBOOK",
+    "SELF_UPGRADE",
+    "SELF_TEST",
+    "EXAMINE_CODE",
     "META_DIAGNOSTIC",
     "IMAGE_STATUS",
     "FRONTIER_STATUS",
@@ -94,6 +98,63 @@ def normalise_action(action: Any) -> str:
 
 def is_control_action(action: Any) -> bool:
     return normalise_action(action) in CONTROL_ACTIONS
+
+
+def is_persona_self_knowledge_query(user_input: Any) -> bool:
+    """Conversational self-description — CHAT + verified self-facts, not the runtime one-liner."""
+    low = re.sub(r"\s+", " ", str(user_input or "").strip().lower())
+    if not low:
+        return False
+    if re.search(
+        r"\b(model|running on|provider|context|gpu|llm|specs?|technical|runtime|"
+        r"layers|threads|batch|offload)\b",
+        low,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:what (?:else )?(?:do you )?know (?:about|of) yourself|"
+            r"what else (?:can you )?tell me about yourself|"
+            r"what (?:else )?can you tell me about yourself|"
+            r"tell me more about yourself|"
+            r"describe yourself|"
+            r"be (?:more )?(?:in depth|detailed|specific)|"
+            r"(?:go |be )?(?:more )?(?:in depth|deeper)|"
+            r"what are you(?:\s|$))\b",
+            low,
+        )
+        or (
+            re.search(r"\byoursel(?:f|ves)\b", low)
+            and re.search(
+                r"\b(know|knew|tell|telling|describe|description|explain|"
+                r"detail|detailed|about|of|else)\b",
+                low,
+            )
+        )
+    )
+
+
+def is_identity_depth_followup(user_input: Any) -> bool:
+    """Short depth/elaboration requests after an identity answer — stay conversational."""
+    low = re.sub(r"\s+", " ", str(user_input or "").strip().lower())
+    if not low:
+        return False
+    if re.search(r"\b(?:reasoning modes?|all modes|every mode)\b", low):
+        return False
+    return bool(re.search(
+        r"\b(?:"
+        r"be (?:more )?(?:in depth|detailed|specific)"
+        r"|(?:go |be )?(?:more )?(?:in depth|deeper)"
+        r"|more detail"
+        r"|tell me more"
+        r"|what else"
+        r"|go on"
+        r"|elaborate"
+        r"|expand"
+        r")\b",
+        low,
+    ))
+
 
 def route_control_text(user_input: Any, current_action: Any = None) -> str | None:
     low = re.sub(r"\s+", " ", str(user_input or "").strip().lower())
@@ -150,22 +211,21 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         r"about\s+(?:us|me\s+and\s+you|you\s+and\s+(?:me|i)))\b",
         low,
     ))
-    # A question about the USER is never a question about ELI's identity. Without
-    # this, "What do you know about me … - as a person, who am i?" matched the
-    # generic identity regex below (via the unanchored `as a person`) and was
-    # rewritten to SELF_REPORT — so a personal-memory question was answered with a
-    # runtime self-report, and the user was told "your name is alex, nothing more".
+    # A question about the USER is never a question about ELI's identity ("what do you know about me ... who am i?"
+    # must reach personal memory, not a runtime self-report), and a route a first-class contract already decided
+    # is not second-guessed by the generic patterns below.
     _is_about_the_user = bool(re.search(
         r"\b(about me|about myself|know me|remember me|who am i|what am i|"
         r"my (?:name|preferences?|profile|tastes?|habits?|style|tone))\b",
         low,
     ))
-    # A route already decided by a first-class contract must not be second-guessed
-    # by the generic patterns below. Placed here (not at the top of the function)
-    # so the deliberate upgrades above — SELF_UPDATE, EXPLAIN_LAST_RESPONSE and the
-    # persona-evolution rule — still apply.
     if _is_about_the_user and act in CONTROL_ACTIONS:
         return act
+
+    # Persona self-knowledge and depth follow-ups belong in CHAT (persona handoff injects verified self-facts).
+    if is_persona_self_knowledge_query(user_input) or is_identity_depth_followup(user_input):
+        return None
+
     if not _is_change_query and not _is_conversational_persona and not _is_about_the_user and re.search(
         r"\b("
         r"who are you"
@@ -177,15 +237,13 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         r"|do you know who you are"
         r"|tell me about yourself"
         r"|tell me .{0,40}who you are"
-        # Self-anchored: "you, as a person" / "as a person, who are you" — NOT a
-        # bare "as a person", which also occurs in questions about the user.
-        r"|you,? as (?:a |an )?(?:person|entity)"
-        r"|as (?:a |an )?(?:person|entity),? (?:who|what) are you"
+        r"|as (?:a |an )?(?:person|entity)"
         # Asked ABOUT, not merely mentioned. "nice to see your persona" is a
         # remark; it forced a runtime identity dump over the question that
         # actually followed it ("so you are feeling, fine?").
         r"|(?:what(?:'?s| is| are)?|describe|explain|tell me|show me|list)"
         r"\s+(?:me\s+)?(?:about\s+)?(?:your|the)\s+(?:identity|persona)"
+
         r"|persona evolved"
         r"|identity evolved"
         r"|defined with .{0,80}memories"
@@ -329,14 +387,15 @@ def _read_json(path: Path) -> Dict[str, Any]:
             data = json.loads(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
     except Exception:
-        log.debug("control_contracts json read skipped", exc_info=True)
+        log.debug("suppressed exception", exc_info=True)
+    return {}
 
 def _data_dirs() -> tuple[Path, Path]:
     """(artifacts, config) as the running install actually uses them.
 
     The project root is the install tree; in a packaged build it is a read-only
     AppImage mount holding neither the snapshot nor the live settings, so both
-    reads came back empty and this contract reported paths that do not exist.
+    reads came back empty. Same defect ce40453 fixed in three sibling modules.
     """
     root = _root()
     try:
@@ -516,7 +575,6 @@ def _trace_text(trace: Dict[str, Any]) -> str:
         f"- evidence_used: {trace.get('evidence_used')}",
         f"- grounded: {trace.get('grounded')}",
     ])
-
 
 def _runtime_telemetry_text(limit: int = 8) -> str:
     """Real per-cycle telemetry from the log tables — agent_dispatches (per-agent
@@ -1168,6 +1226,13 @@ def finalise_control_result(engine: Any, user_input: Any, action: str, evidence_
         "SELF_IMPROVE",
         "SELF_IMPROVEMENT_LOG",
         "SELF_UPDATE",
+        "SELF_PATCH",
+        "SELF_UPGRADE",
+        "SELF_TEST",
+        "EXAMINE_CODE",
+        "EXPLAIN_FAILURE_LOG",
+        "EXPLAIN_GGUF_DIAGNOSTICS",
+        "EXPLAIN_LAST_FAILURE",
         # Gaze engine — executor returns status text directly, no GGUF pass.
         "GAZE_ENABLE",
         "GAZE_DISABLE",

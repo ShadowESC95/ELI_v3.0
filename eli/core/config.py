@@ -31,6 +31,9 @@ from eli.core.paths import (
     project_root,
     resolve_runtime_path,
 )
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 
 def _running_under_pytest() -> bool:
@@ -91,7 +94,7 @@ def delete(key: str):
             _secure_write(settings_file, json.dumps(data, indent=2, ensure_ascii=False), mode=0o600)
             return True
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return False
 
 
@@ -186,7 +189,7 @@ def get_gguf_n_gpu_layers() -> int:
         try:
             return int(env)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return int(get("n_gpu_layers", 99))
 
 
@@ -200,7 +203,7 @@ def get_gguf_n_ctx() -> int:
         try:
             return int(env)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     try:
         return int(get("n_ctx", _DEFAULT_N_CTX))
     except Exception:
@@ -217,7 +220,7 @@ def get_gguf_n_batch() -> int:
         try:
             return int(env)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return int(get("batch_size", 512))
 
 
@@ -229,7 +232,7 @@ def set_persona(text: str):
         write_base_persona(text)
         return
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     set("eli_persona", text)
 
 
@@ -240,7 +243,7 @@ def get_persona() -> str:
         if val:
             return val
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     default = (
         "You are ELI, a local reasoning and automation assistant. "
         "Be direct, accurate, grounded, privacy-preserving, and useful."
@@ -264,13 +267,13 @@ def get_temperature() -> float:
         try:
             return float(cur)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     env = os.getenv("ELI_TEMP") or os.getenv("ELI_TEMPERATURE")
     if env:
         try:
             return float(env)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return 0.55
 
 
@@ -308,13 +311,13 @@ def get_num_predict() -> int:
         try:
             return int(cur)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     env = os.getenv("ELI_NUM_PREDICT") or os.getenv("ELI_MAX_TOKENS")
     if env:
         try:
             return int(env)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return 2048
 
 
@@ -326,13 +329,13 @@ def get_n_threads() -> int:
         try:
             return int(env)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     cur = get("n_threads", None)
     if cur is not None:
         try:
             return int(cur)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
     return max(1, (os.cpu_count() or 8) - 1)
 
 

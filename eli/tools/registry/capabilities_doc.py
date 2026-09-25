@@ -24,17 +24,11 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-def _eli_canonical_root_ELI_ROOT() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds (identical to this path in source installs).
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[3]
-
-
-ELI_ROOT = _eli_canonical_root_ELI_ROOT()
+try:
+    from eli.core.paths import canonical_root
+    ELI_ROOT = canonical_root(Path(__file__).resolve().parents[3])
+except Exception:
+    ELI_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = ELI_ROOT / "capability_manifest.json"
 OUT = ELI_ROOT / "blueprints" / "capabilities_and_actions.md"
 
@@ -142,9 +136,11 @@ _add("Voice", "TRANSCRIBE", "Transcribe an audio file", "“transcribe audio.wav
 _add("Voice", "SPEAK", "Speak text aloud (TTS)", "“say good morning”")
 _add("Voice", "LIST_VOICES", "List installed voices and what's downloadable (166 across 45 languages)", "“what voices do you have”", "“list voices”", "“which accents can I get”")
 _add("Voice", "DOWNLOAD_VOICE", "Download a voice/accent from the Piper library and switch to it", "“download a British voice”", "“get me a Scottish accent”", "“install en_US-amy-medium”")
-_add("Voice", "SET_VOICE", "Switch the active TTS voice/accent (distinct from persona tone)", "“use the alan voice”", "“switch your voice to amy”", "“use the HAL voice”")
+_add("Voice", "SET_VOICE", "Switch the active TTS voice/accent (distinct from persona tone)", "“use the alan voice”", "“switch your voice to amy”", "“use the robotic style voice”", "“use the natural voice”")
+_add("Voice", "CREATE_VOICE", "Make a new ELI voice from a recording (wav/mp3/mp4 drop-in; XTTS-v2 clone)", "“create a voice called Nova from clip.mp4”", "“make an ELI voice from recording.wav”")
+_add("Conversation & persona", "SET_TONE", "Shade ELI's expressed tone/emotion (words+voice+face) without changing his core personality", "“be comedic”", "“talk street”", "“sound more professional”", "“use a deadpan tone”")
+_add("Conversation & persona", "CLEAR_TONE", "Drop a pinned tone — back to autonomous, situation-adaptive delivery", "“go back to normal”", "“be yourself”", "“drop the tone”")
 _add("Voice", "LISTEN_FOR_COMMAND", "Start listening for a voice command", "“listen” / the wake word “computer”")
-_add("Voice", "VOICE_DIAGNOSTICS", "Run voice/STT diagnostics", "“run voice diagnostics”", "“stt diagnostics”")
 
 # ── Files & notes ───────────────────────────────────────────────────────────
 _add("Files & notes", "CREATE_FILE", "Create a file", "“create a file notes.txt”")
@@ -187,7 +183,7 @@ _add("System status & info", "GET_TIME", "Current time (alt)", "“tell me the t
 _add("System status & info", "DATE", "Current date", "“what's the date”")
 _add("System status & info", "GET_DATE", "Current date (alt)", "“what day is it”")
 _add("System status & info", "GET_WEATHER", "Weather for a place", "“weather in Paris”")
-_add("System status & info", "NEWS_FETCH", "Synthesised news digest", "“what's the news”", "“catch me up”")
+_add("System status & info", "NEWS_FETCH", "Synthesised news digest; topic-scoped re-fetch after a briefing when you go deeper", "“what's the news”", "“catch me up”", "“go deeper into Hubble”", "“more on the transformer story”")
 _add("System status & info", "WEB_SEARCH", "Web search (Net-gated)", "“search the web for X”")
 _add("System status & info", "MESSAGE_TIME_QUERY", "Time-of-a-message query", "“when did I say that”")
 _add("System status & info", "CHECK_CHRONAL_ALIGNMENT", "Playful date/time sanity check", "“check chronal alignment”")
@@ -201,6 +197,9 @@ _add("Grounded introspection", "GUI_RUNTIME_AUDIT", "Audit GUI wiring with file-
 _add("Grounded introspection", "DIAGNOSE_WRAPPERS", "Show the executor middleware/wrapper chain", "“show the executor wrapper chain”")
 _add("Grounded introspection", "COGNITION_STATUS", "Cognition runtime status", "“cognition status”")
 _add("Grounded introspection", "EXPLAIN_COGNITION_RUNTIME", "Explain the cognition runtime verbatim", "“explain your cognition runtime”")
+_add("Grounded introspection", "EXPLAIN_GGUF_DIAGNOSTICS", "Live GGUF load/inference compatibility report (runtime version, preflight, last load error)", "“gguf errors”", "“why won't nemotron load”", "“empty response from the model”")
+_add("Grounded introspection", "EXPLAIN_FAILURE_LOG", "Grounded executor failure log from agent.sqlite3 (not GGUF console lines)", "“what are the failures”", "“show the failure log”", "“what's tripping you up”")
+_add("Grounded introspection", "EXPLAIN_LAST_FAILURE", "Explain the most recent grounded or executor failure", "“what was the last failure”", "“why did that fail”")
 _add("Grounded introspection", "MEMORY_STATUS", "Memory subsystem status / counts", "“how does your memory work”")
 _add("Grounded introspection", "MEMORY_STATS", "Memory statistics", "“memory stats”")
 _add("Grounded introspection", "EXPLAIN_MEMORY_RUNTIME", "Explain the memory runtime verbatim (4 DBs)", "“explain exactly how your memory works internally”")
@@ -211,7 +210,12 @@ _add("Grounded introspection", "CODE_CHANGES", "Recent code changes", "“what c
 _add("Grounded introspection", "NAME_SOURCE_AUDIT", "Where ELI's knowledge of your name comes from", "“how do you know my name”")
 _add("Grounded introspection", "REASONING_MODE_STATUS", "Current reasoning mode", "“what reasoning mode are you in”")
 _add("Grounded introspection", "EXPLAIN_ALL_REASONING_MODES", "Describe all 5 reasoning modes", "“explain all your reasoning modes”")
-_add("Grounded introspection", "SELF_REPORT", "What ELI has recently done/worked on", "“what have you been working on”")
+# The documented phrase must be one that actually reaches SELF_REPORT. A bare
+# "what have you been working on" no longer does, deliberately: it is small talk
+# as often as it is a maintenance question, and answering conversation with a
+# git/runtime evidence dump is the worse failure. Naming updates keeps it
+# unambiguous — the claims suite fails if this phrase stops routing here.
+_add("Grounded introspection", "SELF_REPORT", "What ELI has recently done/worked on (code, commits, runtime)", "“what updates have you made recently”")
 
 # ── Memory & profile ────────────────────────────────────────────────────────
 _add("Memory & profile", "MEMORY_STORE", "Store a durable fact", "“remember that my sister's name is Anna”")
@@ -226,6 +230,7 @@ _add("Memory & profile", "SET_USER_NAME", "Set/correct the user's name", "“my 
 _add("Self-maintenance", "SELF_ANALYZE", "Analyse own failures/metrics", "“analyse your failures”")
 _add("Self-maintenance", "SELF_IMPROVE", "Run a self-improvement patch cycle", "“improve yourself”")
 _add("Self-maintenance", "SELF_PATCH", "Apply a self-improvement patch", "“patch yourself”")
+_add("Self-maintenance", "SELF_REPAIR_PLAYBOOK", "Grounded repair decision guide (self help)", "“self help”", "“repair playbook”", "“maintenance playbook”")
 _add("Self-maintenance", "SELF_IMPROVEMENT_LOG", "Show the self-improvement log", "“show your self-improvement log”")
 _add("Self-maintenance", "SELF_UPGRADE", "git pull → deps → rebuild indexes", "“upgrade yourself”")
 _add("Self-maintenance", "SELF_UPDATE", "Self-update (control-contract)", "“update yourself”")
@@ -240,6 +245,7 @@ _add("Voice", "WAKE_SET", "Set your own wake word (any phrase); ELI persists it 
 _add("Voice", "WAKE_TRAIN", "Train the local, self-supervised wake-word model (Piper-synth + noise/music augmentation; robust over background music)", "“train the wake word”")
 _add("Voice", "WAKE_ENROLL", "Record your voice saying the wake word and retrain (personalisation, over music)", "“enroll my wake word”")
 _add("Voice", "TRAIN_VOICE", "Learn your voice + tone — pitch/energy/rate, happy/angry/excited, and question-vs-statement; ELI then adapts its delivery to how you sound", "“train my voice”", "“learn how I speak”")
+_add("Voice", "STT_DIAGNOSTICS", "Mic/STT/TTS diagnostics (Whisper, wake word, ducking, Piper)", "“run voice diagnostics”", "“voice diagnostics”", "“check the microphone”", "“stt diagnostics”")
 _add("Conversation & persona", "MULTI_COMMAND", "Run several chained commands from one utterance, in order", "“close steam and set an alarm for 7am”", "“open spotify then play X”")
 
 # ── Tasks, time & planning ──────────────────────────────────────────────────

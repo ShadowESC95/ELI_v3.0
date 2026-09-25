@@ -89,7 +89,7 @@ def test_yt_mix_url_adds_radio_playlist():
 
 
 def test_yt_apply_browser_autoplay_adds_start_params():
-    from eli.execution.effectors.media import _yt_apply_browser_autoplay, _yt_mix_url
+    from eli.execution.executor_enhanced import _yt_apply_browser_autoplay, _yt_mix_url
     mix = _yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
     url = _yt_apply_browser_autoplay(mix)
     assert "autoplay=1" in url

@@ -18,7 +18,15 @@ if str(ROOT) not in sys.path:
 
 
 def _normalise_journal_mode(p: Path) -> None:
-    """Check the WAL back into the main file and ship the template in DELETE mode."""
+    """Check the WAL back into the main file and ship the template in DELETE mode.
+
+    A template is a seed that gets copied between machines, filesystems and (via
+    sudo installs) uid boundaries. WAL mode drags ``-wal``/``-shm`` sidecars along
+    for the ride, and a sidecar the running user cannot write makes SQLite report
+    "attempt to write a readonly database" on the first write — with the database
+    file and its directory both perfectly writable. DELETE mode carries no
+    sidecars; ELI switches the store to WAL itself on first open.
+    """
     import sqlite3
     conn = sqlite3.connect(str(p))
     try:
@@ -48,6 +56,7 @@ def _columns(db_path: Path) -> dict[str, set[str]]:
 
 def _check_templates_current() -> int:
     """Compare git templates against a fresh init_all_data staging build."""
+    import tempfile
     staging = Path(tempfile.mkdtemp(prefix="eli_db_check_"))
     db_dir = staging / "db"
     db_dir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +74,9 @@ def _check_templates_current() -> int:
             print(f"[ERR] missing git template: {template.name}", file=sys.stderr)
             ok = False
             continue
-        missing = sorted(_table_set(live) - _table_set(template))
+        live_tables = _table_set(live)
+        template_tables = _table_set(template)
+        missing = sorted(live_tables - template_tables)
         if missing:
             print(
                 f"[ERR] {template.name} missing tables vs live init: {', '.join(missing)}",
@@ -110,7 +121,7 @@ def main() -> int:
         _normalise_journal_mode(p)
         dest = out / p.name
         shutil.copy2(p, dest)
-        dest.chmod(0o644)
+        dest.chmod(0o644)  # copy2 preserves mode; a seed must never ship read-only
         copied += 1
         print(f"  [OK] {dest.name} ({dest.stat().st_size} bytes)")
 

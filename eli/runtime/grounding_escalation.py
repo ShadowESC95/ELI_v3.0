@@ -186,6 +186,7 @@ _REALTIME_LOOKUP_RE = re.compile(
     r"\b(came out|come out|release date|released|premiered|premiere|in theaters|in cinemas"
     r"|box office|review score|rotten tomatoes|metacritic|streaming on|now playing)\b"
     r"|\b(is it|is that|is this|are they)\s+(?:a\s+|the\s+)?classic\b"
+    r"|\b(?:is|are)\s+.{2,80}\s+a\s+classic\b"
     r"|\bhow (?:new|recent|old|good|popular)\s+(?:is|was|are|were)\b"
     r"|\bwhen did .{2,80} (?:come out|release|premiere|debut)\b",
     re.I)
@@ -195,6 +196,33 @@ _EXTERNAL_TOPIC_RE = re.compile(
     r"|spider[- ]?man|batman|director|actor|actress|oscar|grammy|emmy|premiere|trailer"
     r"|franchise|sequel|prequel|soundtrack|chart|billboard|stream(?:ing)?)\b",
     re.I)
+# Rapport about ELI's state — not a third-party fact lookup.
+_RAPPORT_EL_STATE_RE = re.compile(
+    r"\b(?:are|re)\s+you\s+(?:feeling\s+)?(?:fresh|good|ok|okay|alright|better|fine)\b"
+    r"|\bi take it you(?:'re|\s+are)\s+(?:feeling\s+)?(?:fresh|good|ok|okay)\b"
+    r"|\byou\s+feeling\s+(?:fresh|good|ok|okay)\b"
+    r"|\bwhat(?:'?s|\s+is)\s+the\s+story\b",
+    re.I,
+)
+# User telling ELI where they are in a show — "season 3, episode 6 now".
+_WATCH_PROGRESS_RE = re.compile(
+    r"\b(?:season|s)\s*\d+\s*,?\s*(?:episode|ep)\.?\s*\d+\b"
+    r"|\b(?:episode|ep)\.?\s*\d+\s+now\b"
+    r"|\bon\s+(?:season|s)\s*\d+(?:\s*,?\s*(?:episode|ep)\.?\s*\d+)?\b",
+    re.I,
+)
+# Compliment / rapport that may mention a show in passing — not a lookup.
+_RAPPORT_COMPLIMENT_RE = re.compile(
+    r"\b(?:wasn'?t expecting|fair play|fair ply|pretty\s+(?:solid|good|fucking\s+solid)"
+    r"|solid\s+memory|nice\s+one|well\s+done|good\s+memory)\b",
+    re.I,
+)
+# Explicit plot/recap/review asks — still web-candidates when grounding is low.
+_ENTERTAINMENT_LOOKUP_RE = re.compile(
+    r"\b(?:what\s+happened|what\s+(?:goes|went)\s+on|recap|summary|spoiler|reviews?"
+    r"|worth watching|any good|who dies|who died|plot of)\b",
+    re.I,
+)
 # ELI's own action/artifact/job state ("did you save/create/generate X", "is it done", "check
 # job N", "where did you save it"). Asserting any of these without grounding is the worst
 # confabulation (a fake "saved to ~/Documents/" or "job complete"). Past-tense/completion framing
@@ -255,24 +283,67 @@ def _is_degenerate(text: str) -> bool:
     return False
 
 
+def _clean_turn_text(raw: str) -> Tuple[str, str]:
+    """Return (lowercase, intensifier-stripped lowercase) for gate matching."""
+    low = str(raw or "").strip().lower()
+    low_clean = _INTENSIFIER_STRIP_RE.sub(" ", low)
+    low_clean = re.sub(r"\s+", " ", low_clean).strip()
+    return low, low_clean
+
+
+def _is_conversational_watch_turn(raw: str) -> bool:
+    """True when the user is chatting or updating watch progress — not asking for facts."""
+    low_clean = _clean_turn_text(raw)[1]
+    if _RAPPORT_EL_STATE_RE.search(low_clean):
+        return True
+    if _WATCH_PROGRESS_RE.search(low_clean) and not (
+            _FACT_Q_RE.search(low_clean)
+            or _REALTIME_LOOKUP_RE.search(low_clean)
+            or _ENTERTAINMENT_LOOKUP_RE.search(low_clean)):
+        return True
+    if (_RAPPORT_COMPLIMENT_RE.search(low_clean)
+            and not (_FACT_Q_RE.search(low_clean) or _REALTIME_LOOKUP_RE.search(low_clean)
+                     or _ENTERTAINMENT_LOOKUP_RE.search(low_clean))):
+        return True
+    return False
+
+
+def _turn_excluded_from_factual(raw: str, *, include_local: bool = False) -> bool:
+    """Shared banter/meta/dispute gates for factual and web-candidate classifiers."""
+    raw = str(raw or "").strip()
+    if not raw:
+        return True
+    low, low_clean = _clean_turn_text(raw)
+    try:
+        from eli.cognition.correction_patterns import is_correction_query as _is_corr
+        if _is_corr(raw):
+            return True
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    if (_BANTER_RE.search(low_clean) or _OPINION_RE.search(low_clean)
+            or _ADVICE_RE.search(low_clean) or _COMMAND_RE.search(low_clean)
+            or _META_SELF_RE.search(low_clean) or _RELATIONAL_VENT_RE.search(low_clean)
+            or _CONV_META_RE.search(low_clean)):
+        return True
+    if re.search(
+        r"\b(?:you(?:'re| are)|you are not|you're not)\b.{0,50}\b(?:glm|qwen|ornith|llama|mistral|model)\b",
+        low_clean, re.I,
+    ):
+        return True
+    if include_local and _LOCAL_RE.search(low):
+        return True
+    return False
+
+
 def classify_factual(text: str) -> Tuple[bool, str]:
     """Return (is_checkable_fact, domain) where domain ∈ {"external","local","none"}."""
     raw = (text or "").strip()
     low = raw.lower()
     if len(low.split()) < 2:
         return (False, "none")
-    # Strip injected intensifiers/profanity so frustration phrased as a question
-    # ("what the fuck are you talking about") still matches the meta/banter gates
-    # instead of leaking into the factual classifier. Run the gates on the
-    # cleaned text; keep `low` for the fact patterns (which are profanity-neutral).
-    low_clean = _INTENSIFIER_STRIP_RE.sub(" ", low)
-    low_clean = re.sub(r"\s+", " ", low_clean).strip()
-    if (_BANTER_RE.search(low_clean) or _OPINION_RE.search(low_clean)
-            or _ADVICE_RE.search(low_clean)
-            or _COMMAND_RE.search(low_clean) or _META_SELF_RE.search(low_clean)
-            or _RELATIONAL_VENT_RE.search(low_clean)
-            or _CONV_META_RE.search(low_clean)):
+    if _turn_excluded_from_factual(raw):
         return (False, "none")
+    low_clean = _clean_turn_text(raw)[1]
 
     is_fact = bool(
         _FACT_Q_RE.search(low_clean) or _FACT_KW_RE.search(low_clean)
@@ -297,17 +368,17 @@ def classify_web_candidate(text: str) -> bool:
     low = raw.lower()
     if len(low.split()) < 3:
         return False
-    low_clean = _INTENSIFIER_STRIP_RE.sub(" ", low)
-    low_clean = re.sub(r"\s+", " ", low_clean).strip()
-    if (_BANTER_RE.search(low_clean) or _OPINION_RE.search(low_clean)
-            or _ADVICE_RE.search(low_clean) or _COMMAND_RE.search(low_clean)
-            or _META_SELF_RE.search(low_clean) or _RELATIONAL_VENT_RE.search(low_clean)
-            or _CONV_META_RE.search(low_clean) or _LOCAL_RE.search(low)):
+    if _turn_excluded_from_factual(raw, include_local=True):
         return False
+    if _is_conversational_watch_turn(raw):
+        return False
+    low_clean = _clean_turn_text(raw)[1]
     if _REALTIME_LOOKUP_RE.search(low_clean):
         return True
-    if "?" in raw and _EXTERNAL_TOPIC_RE.search(low_clean):
-        return True
+    if _EXTERNAL_TOPIC_RE.search(low_clean):
+        if (_FACT_Q_RE.search(low_clean) or _REALTIME_LOOKUP_RE.search(low_clean)
+                or _ENTERTAINMENT_LOOKUP_RE.search(low_clean)):
+            return True
     try:
         from eli.cognition.correction_patterns import explicit_web_search_request
         if explicit_web_search_request(raw):
@@ -326,7 +397,18 @@ _PROFANITY_FILLER_RE = re.compile(
     r"|you|use the web to|do a|confirm|verify|search( for)?)\b", re.I)
 
 
-def distill_query(text: str) -> str:
+def distill_query(text: str, recent_turns: Optional[Any] = None) -> str:
+    try:
+        from eli.runtime.conversation_thread import (
+            build_thread_aware_query,
+            recent_turns_from_context,
+        )
+        turns = recent_turns if isinstance(recent_turns, list) else recent_turns_from_context(recent_turns)
+        thread_q = build_thread_aware_query(text, turns)
+        if thread_q and len(thread_q.split()) >= 2:
+            return thread_q[:160]
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
     q = re.sub(r"[^\w\s'’.-]", " ", text or "")
     q = _PROFANITY_FILLER_RE.sub(" ", q)
     q = re.sub(r"\s+", " ", q).strip(" .?!")
@@ -398,6 +480,7 @@ def escalate(
     bus_result: Any,
     reasoning_mode: Optional[str] = None,
     trace: Optional[Dict[str, Any]] = None,
+    recent_turns: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """Return a grounded/hedged result dict to short-circuit the CHAT answer, or
     None to let normal CHAT synthesis proceed."""
@@ -423,8 +506,42 @@ def escalate(
         return _result(_hedge("local", _online), grounded=False,
                        mode=_canon_mode(reasoning_mode), trace=trace)
 
+    # Ongoing session narrative (device, travel plans, corrections) — answer from
+    # live session thread + memory, not hedge/web tiers.
+    _low_sess = str(user_input or "").lower()
+    if re.search(
+        r"\b(i am|i'm|we are|right now|at the moment|this session|beside me|"
+        r"talking to you on|on (the|my) (pc|laptop|phone|machine)|not the laptop|"
+        r"you are getting|mixed up|repetitive|not listening|you got|correct there|"
+        r"i live in|he lives in|driving from|collect him|bring him)\b",
+        _low_sess,
+    ):
+        log.debug("[ESCALATION] session-continuity turn — skip factual hedge ladder")
+        return None
+
     is_fact, domain = classify_factual(user_input)
     web_candidate = classify_web_candidate(user_input)
+
+    # Entertainment-thread continuation: user is discussing a show/film and the
+    # bus grounded poorly — prefer web over plot confabulation.
+    if not is_fact and not web_candidate and very_low:
+        try:
+            from eli.runtime.conversation_thread import (
+                extract_thread_topic,
+                recent_turns_from_context,
+            )
+            turns = recent_turns_from_context(recent_turns)
+            topic = extract_thread_topic(turns)
+            if (topic
+                    and not _is_conversational_watch_turn(user_input)
+                    and (
+                _EXTERNAL_TOPIC_RE.search(user_input.lower())
+                or _REALTIME_LOOKUP_RE.search(user_input.lower())
+            )):
+                is_fact, domain, web_candidate = True, "external", True
+                log.debug("[ESCALATION] entertainment-thread override (very low grounding)")
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
 
     if not is_fact and web_candidate and very_low:
         # Pop-culture / realtime lookup the strict classifier missed — still web.
@@ -467,7 +584,7 @@ def escalate(
                 if not online:
                     continue  # can't reach the web — fall to hedge
                 from eli.execution.executor_enhanced import execute as _execute
-                q = distill_query(user_input)
+                q = distill_query(user_input, recent_turns)
                 res = _execute("WEB_SEARCH", {"query": q})
                 web_searched = True
                 if isinstance(res, dict) and res.get("web_grounded") and res.get("results"):

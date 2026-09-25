@@ -666,4 +666,6 @@ def mode_chat_agent_profile(mode: object, *, code_query: bool = False) -> Option
         return names
     if key == "self_consistency":
         return None  # broad fan-out
+    # research / expert — broad + ensure critic runs via DAG
     return None
+

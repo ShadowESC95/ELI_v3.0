@@ -26,6 +26,7 @@ def test_recent_updates_executor_surface_is_grounded():
     assert "Grounded ELI self-report / recent update evidence:" in txt
     assert "Recent Git updates:" in txt
     assert "Runtime snapshot:" in txt
+
     # The grounding rule is an instruction to the MODEL. It belongs in the report
     # payload, never in the visible answer — the user read it as ELI's reply.
     assert "Grounding rule:" not in txt

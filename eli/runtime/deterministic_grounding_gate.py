@@ -537,18 +537,39 @@ def _inference_runtime_lines() -> str:
     return "\n".join(lines)
 
 
-def _eli_cognition_pipeline_v2(focus: str = "") -> str:
+def _eli_cognition_pipeline_v2(focus: str = "", question: str = "") -> str:
+    focus_l = str(focus or "").strip().lower()
+    try:
+        from eli.runtime.inference_footprint import format_inference_footprint_report
+    except Exception:
+        format_inference_footprint_report = None  # type: ignore[assignment,misc]
+
+    if focus_l in ("inference_ram", "latency_timing") and format_inference_footprint_report:
+        return format_inference_footprint_report(
+            include_latency_note=(focus_l == "latency_timing"),
+            question=question,
+        )
+
     runtime_block = ""
     try:
         runtime_block = _inference_runtime_lines()
     except Exception:
         log.debug("inference runtime block unavailable", exc_info=True)
 
-    # A question about the inference runtime gets the NUMBERS, not a code map.
-    # The router already classifies this (diagnostic_focus=inference_runtime) and
-    # the answer ignored it, returning the architecture description regardless.
-    if runtime_block and str(focus or "").strip().lower() == "inference_runtime":
-        return runtime_block + "\n\n" + _COGNITION_PIPELINE_TEXT
+    # A question about the inference runtime leads with the numbers, then keeps the architecture
+    # description; both are required. Returning only the footprint (v2.4.16) dropped "Cognition
+    # pipeline" / Router from reports the tests and operator rely on.
+    if focus_l == "inference_runtime":
+        parts = []
+        if runtime_block:
+            parts.append(runtime_block)
+        if format_inference_footprint_report:
+            try:
+                parts.append(format_inference_footprint_report(question=question))
+            except Exception:
+                log.debug("inference footprint unavailable", exc_info=True)
+        parts.append(_COGNITION_PIPELINE_TEXT)
+        return "\n\n".join(p for p in parts if p)
 
     return ((runtime_block + "\n\n") if runtime_block else "") + _COGNITION_PIPELINE_TEXT
 
@@ -1001,7 +1022,7 @@ def _eli_memory_fact_score_v4(s: str, source_table: str = "") -> int:
 
     if any(k in low for k in ("prefers", "does not want", "doesn't want", "wants", "values")):
         score += 6
-    if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "runtime", "memory", "persona")):
+    if any(k in low for k in ("eli", "eli_v2_0", "local assistant", "gguf", "runtime", "memory", "persona")):
         score += 3
     if any(k in low for k in ("physics", "simulation", "latex", "paper")):
         score += 3
@@ -1171,7 +1192,7 @@ def _eli_memory_fact_score_v5(s: str, source_table: str = "") -> int:
 
     if any(k in low for k in ("prefers", "does not want", "doesn't want", "wants", "values")):
         score += 8
-    if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "memory", "persona", "cognition", "orchestrator")):
+    if any(k in low for k in ("eli", "eli_v2_0", "local assistant", "gguf", "memory", "persona", "cognition", "orchestrator")):
         score += 5
     if any(k in low for k in ("physics", "simulation", "latex", "paper")):
         score += 4
@@ -1375,7 +1396,7 @@ def _eli_v6_score_fact(s: str, source: str = "") -> int:
 
     if any(k in low for k in ("prefers", "does not want", "doesn't want", "wants", "values")):
         score += 10
-    if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "memory", "persona", "cognition", "orchestrator", "router", "executor")):
+    if any(k in low for k in ("eli", "eli_v2_0", "local assistant", "gguf", "memory", "persona", "cognition", "orchestrator", "router", "executor")):
         score += 6
     if any(k in low for k in ("physics", "simulation", "latex", "paper", "field", "theory")):
         score += 5
@@ -1689,7 +1710,7 @@ def _eli_v8_bucket_for_fact(fact: str) -> str:
         return "tone and working style"
 
     if any(k in low for k in (
-        "eli", "mkxi", "assistant", "gguf", "router", "executor",
+        "eli", "eli_v2_0", "assistant", "gguf", "router", "executor",
         "orchestrator", "cognition", "memory", "recall", "sqlite",
         "persona", "runtime"
     )):
@@ -1894,7 +1915,7 @@ def _eli_v9_bucket_for_fact(fact: str) -> str:
         return "tone and working style"
 
     if any(k in low for k in (
-        "eli", "mkxi", "assistant", "gguf", "router", "executor",
+        "eli", "eli_v2_0", "assistant", "gguf", "router", "executor",
         "orchestrator", "cognition", "memory", "recall", "sqlite",
         "persona", "runtime"
     )):
@@ -2223,7 +2244,7 @@ def _eli_v10_personal_memory_answer(mode_label: str = "") -> str:
         )):
             bucket = "tone and working style"
         elif any(k in low for k in (
-            "eli", "mkxi", "assistant", "gguf", "router", "executor",
+            "eli", "eli_v2_0", "assistant", "gguf", "router", "executor",
             "orchestrator", "cognition", "memory", "recall", "sqlite",
             "persona", "runtime"
         )):
@@ -3111,7 +3132,7 @@ def _eli_v14_name_tokens() -> set[str]:
         _SWLOG.debug("suppressed exception", exc_info=True)
 
     reject = {
-        "user", "local", "home", "desktop", "eli", "mkxi", "root", "python",
+        "user", "local", "home", "desktop", "eli", "eli_v2_0", "root", "python",
         "linux", "model", "runtime", "assistant", "installation", "the",
         "and", "you", "your", "this", "that", "preferred", "name",
     }

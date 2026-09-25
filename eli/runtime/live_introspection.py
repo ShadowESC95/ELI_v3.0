@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import importlib
-import json
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 
 def _root() -> Path:
-    """Canonical, environment-honouring root — not this module's own location.
-
-    Path(__file__).parents[2] points INSIDE the read-only bundle in a shipped
-    build, so anything resolved from it reads or writes the wrong tree. Same
-    class as the self-report bug fixed in 2.1.82.
-    """
     try:
-        from eli.core.paths import project_root as _canonical
-        return Path(_canonical())
+        from eli.core.paths import canonical_root
+        return canonical_root(Path(__file__).resolve().parents[2])
     except Exception:
         return Path(__file__).resolve().parents[2]
 
@@ -43,15 +40,7 @@ def _db_path() -> Path:
     return _artifacts() / "db" / "user.sqlite3"
 
 
-def _read_json(path: Path) -> Dict[str, Any]:
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
+from eli.utils.jsonio import read_json_dict as _read_json
 
 
 def runtime_snapshot() -> Dict[str, Any]:
@@ -78,7 +67,7 @@ def _state_profile() -> tuple[Dict[str, Any], Dict[str, Any]]:
         state = dict(load_state() or {})
         profile = dict(load_user_profile() or {})
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return state, profile
 
 
@@ -117,7 +106,7 @@ def _count(conn: sqlite3.Connection, table: str) -> int:
         if _table_exists(conn, table):
             return int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] or 0)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return 0
 
 
@@ -126,7 +115,7 @@ def _columns(conn: sqlite3.Connection, table: str) -> List[str]:
         if _table_exists(conn, table):
             return [str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     return []
 
 
@@ -474,7 +463,7 @@ def build_report(action: str, user_input: str = "") -> Dict[str, Any]:
             "eli.memory.memory",
             "eli.execution.router_enhanced",
             "eli.execution.executor_enhanced",
-            "eli.gui.gui_eli_original",
+            "eli.gui.eli_pro_audio_gui_v2_0",
             "eli.planning.proactive_daemon",
         ]
         entries = []
@@ -501,7 +490,7 @@ def build_report(action: str, user_input: str = "") -> Dict[str, Any]:
             "eli/execution/router_enhanced.py",
             "eli/execution/executor_enhanced.py",
             "eli/runtime/live_introspection.py",
-            "eli/gui/gui_eli_original.py",
+            "eli/gui/eli_pro_audio_gui_v2_0.py",
             "eli/planning/proactive_daemon.py",
             "eli/memory/memory.py",
             "eli/world/agency/autonomy_engine.py",
@@ -633,7 +622,7 @@ def build_report(action: str, user_input: str = "") -> Dict[str, Any]:
             "eli/cognition/gguf_inference.py",
             "eli/execution/router_enhanced.py",
             "eli/execution/executor_enhanced.py",
-            "eli/gui/gui_eli_original.py",
+            "eli/gui/eli_pro_audio_gui_v2_0.py",
             "eli/kernel/pipeline.py",
             "eli/planning/proactive_daemon.py",
         ]
@@ -658,7 +647,7 @@ def build_report(action: str, user_input: str = "") -> Dict[str, Any]:
                     "_orchestrator" in _engine_src or "self.orchestrator" in _engine_src
                 )
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         report = {
             "ok": True,
             "live_orchestration_surface": str(_engine_path),

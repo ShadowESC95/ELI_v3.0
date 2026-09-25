@@ -12,12 +12,12 @@ class QuickActionsMixin:
             try:
                 btn.setChecked(label == name)
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
         # Re-run the existing filter (which now considers the active category).
         try:
             self._qa_filter(self._qa_search.text())
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _qa_category_for(self, action: str) -> str:
         for cat, members in self._QA_CATEGORIES.items():
@@ -38,7 +38,7 @@ class QuickActionsMixin:
             from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
             caps.update(a.upper() for a in SUPPORTED_ACTIONS)
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # 2. CapabilitySync — only keep executor-backed entries
         try:
@@ -49,7 +49,7 @@ class QuickActionsMixin:
                 if meta.get("source", "").startswith("executor"):
                     caps.add(action.upper())
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         if not caps:
             # Hard fallback — always-available no-arg actions
@@ -163,7 +163,7 @@ class QuickActionsMixin:
                 encoding="utf-8",
             )
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
     def _qa_load_buttons(self):
         """Restore previously pinned actions."""
@@ -174,5 +174,5 @@ class QuickActionsMixin:
                 for name in _j.loads(f.read_text(encoding="utf-8")):
                     self._qa_board.add_card(str(name))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self._qa_on_board_changed()

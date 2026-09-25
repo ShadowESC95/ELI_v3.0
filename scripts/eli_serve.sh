@@ -14,8 +14,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/eli_isolate_env.sh"
+eli_isolate_env "$ROOT"
 PY="$ROOT/.venv/bin/python"
-[ -x "$PY" ] || { echo "[eli-serve] .venv not found — run install.sh first."; exit 1; }
+[ -x "$PY" ] || { echo "[eli-serve] .venv not found — run ./scripts/eli_setup.sh or bash install.sh first."; exit 1; }
 
 # Pin runtime paths to THIS install root so a portable copy stays self-contained,
 # regardless of the shell's working directory.
@@ -27,8 +30,8 @@ export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$ROOT/cache}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 HOST="127.0.0.1"
-# Default port: env wins, else the user's saved api_port setting, else 8081.
-PORT="${ELI_API_PORT:-$("$PY" -c 'from api.server import effective_api_port; print(effective_api_port())' 2>/dev/null || echo 8081)}"
+# Default port: explicit env wins, else the user's saved api_port setting, else 8081.
+PORT="${ELI_API_PORT:-$("$PY" -c 'from eli.runtime.server_util import effective_api_port; print(effective_api_port())' 2>/dev/null || echo 8081)}"
 TOKEN="${ELI_API_TOKEN:-}"
 LAN=0
 HTTPS=0
@@ -51,26 +54,30 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+SERVER_ARGS=()
+[ "$LAN" -eq 1 ] && SERVER_ARGS+=(--lan)
+[ "$HTTPS" -eq 1 ] && SERVER_ARGS+=(--https)
+[ -n "$TOKEN" ] && SERVER_ARGS+=(--token "$TOKEN")
+SERVER_ARGS+=(--port "$PORT")
+
 if [ "$LAN" -eq 1 ]; then
   HOST="0.0.0.0"
-  [ -n "$TOKEN" ] || TOKEN="$("$PY" -c 'import secrets; print(secrets.token_urlsafe(16))')"
   LANIP="$(hostname -I 2>/dev/null | awk '{print $1}')"
   [ -n "$LANIP" ] || LANIP="$(ipconfig getifaddr en0 2>/dev/null || echo '<this-host-ip>')"
   echo "======================================================================"
   echo " ELI server — LAN mode (token-protected, still 100% local)"
   echo "   On a phone/tablet on the SAME network, open:"
   echo ""
-  echo "     http://$LANIP:$PORT/#token=$TOKEN"
+  echo "     http://$LANIP:$PORT/"
   echo ""
-  echo "   The page stores the token; afterwards just http://$LANIP:$PORT/ works."
   if [ "$HTTPS" -eq 1 ]; then
-    echo ""
-    echo "   Phone microphone (voice) — open the HTTPS URL instead:"
-    echo "     https://$LANIP:8443/#token=$TOKEN"
+    echo "   Phone microphone (voice) — HTTPS:"
+    echo "     https://$LANIP:8443/"
     echo "   (accept the one-time self-signed cert warning on the phone)"
   else
     echo "   Tip: add --https to enable the phone microphone (voice)."
   fi
+  echo "   Token URL is printed below once the server starts."
   echo "   Inference runs on THIS machine — nothing leaves it to any cloud."
   echo "======================================================================"
 else
@@ -96,11 +103,5 @@ if [ "$_need_voice" -eq 1 ]; then
     echo "[eli-serve] WARN: Voice may fail until you run: $PY -m eli.runtime.voice_assets"
   fi
 fi
-
-SERVER_ARGS=()
-[ "$LAN" -eq 1 ] && SERVER_ARGS+=(--lan)
-[ "$HTTPS" -eq 1 ] && SERVER_ARGS+=(--https)
-[ -n "$TOKEN" ] && SERVER_ARGS+=(--token "$TOKEN")
-SERVER_ARGS+=(--port "$PORT")
 
 exec "$PY" -m api.server "${SERVER_ARGS[@]}"

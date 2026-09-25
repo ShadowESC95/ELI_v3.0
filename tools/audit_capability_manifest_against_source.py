@@ -110,8 +110,8 @@ def extract_router_actions(path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func
-            # `_mk("X", …)` and its family of wrappers (`_eli_pm_mk`, `_eli_lrf_mk`, …) all
-            # emit a route; match any *_mk name so a wrapper-routed intent isn't missed.
+            # `_mk("X", …)` and its wrappers (`_eli_pm_mk`, `_eli_lrf_mk`, …) all emit a
+            # route; match any *_mk name so a wrapper-routed intent isn't missed.
             if isinstance(fn, ast.Name) and fn.id.endswith("_mk"):
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     actions.add(node.args[0].value.strip().upper())

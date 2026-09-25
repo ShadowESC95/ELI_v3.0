@@ -385,7 +385,7 @@ def move_mouse(x: int, y: int) -> Dict[str, Any]:
             return {"ok": True, "content": f"Moved cursor to ({x},{y})", "response": f"Moved cursor to ({x},{y})"}
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-    if _check_tool("xdotool"):
+    if LINUX and _check_tool("xdotool"):
         try:
             subprocess.run(["xdotool", "mousemove", str(x), str(y)], check=True, capture_output=True)
             return {"ok": True, "content": f"Moved cursor to ({x},{y})", "response": f"Moved cursor to ({x},{y})"}
@@ -410,7 +410,7 @@ def mouse_click(button: str = "left", x: Optional[int] = None, y: Optional[int] 
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     _xbtn = {"left": "1", "middle": "2", "right": "3"}.get(btn, "1")
-    if _check_tool("xdotool"):
+    if LINUX and _check_tool("xdotool"):
         try:
             subprocess.run(["xdotool", "click", "--repeat", "2" if double else "1", _xbtn],
                            check=True, capture_output=True)

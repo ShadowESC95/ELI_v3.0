@@ -284,12 +284,30 @@ class VectorStore:
             import os
             from pathlib import Path
             from llama_cpp import Llama
+            import sys as _sys
             _models_dir = Path(os.getenv('ELI_MODELS_DIR', str(_project_root() / 'models')))
             env_embed = os.getenv('ELI_EMBED_MODEL_PATH', '').strip()
+            _EMB_REL = ('models', 'embeddings', 'nomic-embed-text-v1.5.Q4_K_M.gguf')
             if env_embed:
                 _model_path = str(Path(env_embed).expanduser().resolve())
             else:
-                _model_path = str((_project_root() / 'models' / 'embeddings' / 'nomic-embed-text-v1.5.Q4_K_M.gguf').resolve())
+                # Search several roots so a frozen build (PyInstaller/AppImage) finds the bundled
+                # embedder when the writable data-dir copy is absent. Without this the packaged app
+                # fell back to keyword-only recall ("Embed model not found").
+                _roots = [_project_root(), _models_dir.parent]
+                _meipass = getattr(_sys, '_MEIPASS', '')
+                if _meipass:
+                    _roots.append(Path(_meipass))
+                if getattr(_sys, 'frozen', False):
+                    _roots.append(Path(_sys.executable).resolve().parent)
+                _model_path = ''
+                for _root in _roots:
+                    _cand = _root.joinpath(*_EMB_REL)
+                    if _cand.exists():
+                        _model_path = str(_cand.resolve())
+                        break
+                if not _model_path:
+                    _model_path = str((_project_root() / Path(*_EMB_REL)).resolve())
             if not os.path.exists(_model_path):
                 raise FileNotFoundError('Embed model not found: ' + _model_path)
             _llm = Llama(
@@ -306,13 +324,10 @@ class VectorStore:
                 def get_llm(self): return self._llm
                 def embed(self, text):
                     pfx = '' if text.startswith(('search_query:', 'search_document:', 'classification:', 'clustering:')) else 'search_query: '
-                    # llama.cpp prints "init: embeddings required but some input
-                    # tokens were not marked as outputs -> overriding" from C on
-                    # EVERY embedding, which the verbose=False above cannot reach.
-                    # It is a harmless internal note, and memory/RAG embeds many
-                    # times per turn, so it dominated the console at startup and
-                    # made a healthy boot look like it was failing. Narrowly
-                    # scoped to this one call so a real error still surfaces.
+                    # llama.cpp prints "init: embeddings required but some input tokens were not marked as
+                    # outputs -> overriding" from C on every embedding, out of reach of verbose=False. Harmless,
+                    # but memory/RAG embeds many times per turn and it dominated the startup console, making a
+                    # healthy boot look like it was failing. Scoped narrowly to this call so a real error surfaces.
                     from eli.utils.native_io import quiet_native_stderr
                     with quiet_native_stderr():
                         r = self._llm.create_embedding(pfx + text)

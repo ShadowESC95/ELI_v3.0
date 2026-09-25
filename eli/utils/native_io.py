@@ -7,7 +7,7 @@ descriptor works.
 
 This is the canonical implementation. Three ad-hoc copies of the same dup2 dance
 predate it — ``mic_resolver._quiet_alsa``, ``audio_stt._suppress_alsa`` and an
-inline block in ``kernel/stages/lifecycle.py``. They are left in place deliberately (each is
+inline block in ``kernel/engine.py``. They are left in place deliberately (each is
 load-bearing on a path with its own tests); new callers should use this one rather
 than adding a fourth, and the existing three can converge here when they are next
 touched.

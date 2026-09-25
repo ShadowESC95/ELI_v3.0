@@ -723,12 +723,8 @@ class GenerationMixin:
                     _prompt_budget = max(200, min(len(prompt), _max_stream_chars // 4))
                     _sys_budget = max(200, _max_stream_chars - _prompt_budget)
                     if len(enhanced_system) > _sys_budget:
-                        _head = max(200, int(_sys_budget * 0.5))
-                        _tail = max(200, _sys_budget - _head)
-                        enhanced_system = (
-                            enhanced_system[:_head].rstrip()
-                            + "\n\n…[context trimmed to fit the model]…\n\n"
-                            + enhanced_system[-_tail:].lstrip()
+                        enhanced_system = self._trim_enhanced_system_for_stream(
+                            enhanced_system, _sys_budget
                         )
                     prompt = prompt[-_prompt_budget:]
                     log.debug(
@@ -1155,6 +1151,27 @@ class GenerationMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+        # Rolling session consolidation when depth >= 0.25 (background LLM hand-off).
+        try:
+            if self._engagement:
+                _depth = self._engagement.session_depth()
+                _n_turns = len(self._engagement._turns)
+                if _depth >= 0.25 and _n_turns >= 4 and (_n_turns % 4 == 0):
+                    from eli.runtime.profile_extractor import maybe_rolling_session_consolidation
+                    _ck = maybe_rolling_session_consolidation(
+                        session_id=str(getattr(self, "session_id", "") or "") or None,
+                        user_id=str(getattr(self, "user_id", "") or "") or None,
+                        turn_count=_n_turns,
+                        session_depth=_depth,
+                    )
+                    if _ck.get("inserted") and _ck.get("llm"):
+                        log.debug(
+                            "[COGNITIVE] Rolling session checkpoint stored "
+                            f"(depth={_depth:.2f}, turns={_n_turns})"
+                        )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         try:
             self.memory.upkeep_async()
         except Exception:
@@ -1503,8 +1520,12 @@ class GenerationMixin:
                 log.debug(f"[COGNITIVE] generate_stream_from_assembled_prompt handoff failed: {e}")
                 situation_brief = ""
 
-        situation_brief = self._inject_anti_repeat_contract(prompt, situation_brief)
-        memory_context = self._redact_recent_eli_from_context(memory_context)
+        situation_brief = self._inject_anti_repeat_contract(
+            prompt, situation_brief, recent_turns=recent_turns
+        )
+        memory_context = self._redact_recent_eli_from_context(
+            memory_context, recent_turns=recent_turns
+        )
         try:
             if working_memory is not None:
                 working_memory.persona_handoff = situation_brief
@@ -1921,6 +1942,17 @@ class GenerationMixin:
                     continue
 
             if situation_brief:
+                # CPU-only / iGPU-without-offload: keep phatic prompts tiny — a 3k+
+                # token eval on CPU-only hosts made short greetings take many minutes.
+                if _phatic_stream:
+                    try:
+                        from eli.core.hardware_profile import runtime_cpu_only as _cpu_only
+                        if _cpu_only():
+                            situation_brief = self._cap_text(
+                                situation_brief, 480, "phatic_handoff_cpu",
+                            )
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
                 log.debug(f"[COGNITIVE] Persona handoff → {len(situation_brief)} char brief")
                 log.debug(f"[PIPELINE] Stage 10: Context → {len(memory_context)}ch  Stage 10.5: Persona Handoff → {len(situation_brief)}ch")
                 _eli_pipe_stream("persona_handoff", chars=len(situation_brief))
@@ -1942,7 +1974,9 @@ class GenerationMixin:
             else:
                 situation_brief = semantic_guard
 
-        situation_brief = self._inject_anti_repeat_contract(user_input, situation_brief)
+        situation_brief = self._inject_anti_repeat_contract(
+            user_input, situation_brief, recent_turns=context
+        )
 
         # Do not promote raw memory_context into situation_brief.
         # Raw context is private evidence, not answer text.
@@ -1987,10 +2021,19 @@ class GenerationMixin:
                 memory_chars=len(pre_built_memory_context or str()),
                 bus_result=bool(pre_built_bus_result),
             )
+            _phatic_gen: Dict[str, Any] = {}
+            if _phatic_stream:
+                try:
+                    from eli.core.hardware_profile import runtime_cpu_only as _cpu_only2
+                    if _cpu_only2():
+                        _phatic_gen["max_tokens"] = min(96, _phatic_generation_budget())
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
             for piece in self.generate_stream_from_assembled_prompt(
                 prompt,
                 working_memory=wm,
                 reasoning_mode=reasoning_mode,
+                gen_overrides=_phatic_gen or None,
             ):
                 full_tokens.append(piece)
                 yielded = True
@@ -2274,3 +2317,30 @@ class GenerationMixin:
         log.debug(f"[COGNITIVE] {msg}")
         yield msg
         return
+
+    def _trim_enhanced_system_for_stream(self, enhanced_system: str, max_chars: int) -> str:
+        """Trim retrieved history first; keep SITUATION BRIEF + anti-repeat intact."""
+        text = str(enhanced_system or "")
+        if len(text) <= max_chars:
+            return text
+        _hist_start = "--- CONVERSATION HISTORY"
+        _hist_end = "--- END HISTORY ---"
+        if _hist_start in text and _hist_end in text:
+            pre, rest = text.split(_hist_start, 1)
+            hist_body, post = rest.split(_hist_end, 1)
+            _hist_budget = max(200, max_chars - len(pre) - len(post) - len(_hist_start) - len(_hist_end) - 8)
+            if _hist_budget < len(hist_body):
+                hist_body = hist_body[: _hist_budget - 40].rstrip() + "\n…[older history trimmed]…"
+            trimmed = pre + _hist_start + hist_body + _hist_end + post
+            if len(trimmed) <= max_chars:
+                return trimmed
+            text = trimmed
+        if len(text) > max_chars:
+            _head = max(400, int(max_chars * 0.65))
+            _tail = max(200, max_chars - _head - 48)
+            text = (
+                text[:_head].rstrip()
+                + "\n\n…[context trimmed to fit the model]…\n\n"
+                + text[-_tail:].lstrip()
+            )
+        return text

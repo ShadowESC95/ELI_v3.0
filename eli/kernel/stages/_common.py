@@ -288,6 +288,18 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     if has_eli_status and not has_task and n <= 30:
         return True
 
+    # Meta about ELI's own speech/output quality — treat as light rapport so
+    # we don't dump session memory about an unrelated prior topic and answer
+    # THAT instead ("speaking in tongues" → model-swap essay).
+    if n <= 14 and not has_task and re.search(
+        r"\b(?:still\s+)?(?:speaking|talking|writing|replying|answering)\b"
+        r".*\b(?:tongue|tongues|tounges|gibberish|garble|garbled|nonsense|weird|broken)\b"
+        r"|"
+        r"\b(?:tongue|tongues|tounges|gibberish|garble|garbled)\b",
+        normalized,
+    ):
+        return True
+
     return False
 
 

@@ -17,8 +17,7 @@ GPU trigger.
 """
 import pytest
 
-from eli.execution.router_enhanced import route
-from eli.execution.routing.memory_runtime import _eli_outside_quotes
+from eli.execution.router_enhanced import route, _eli_outside_quotes
 
 
 QUOTED_CHALLENGE = (

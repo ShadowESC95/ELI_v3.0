@@ -46,10 +46,11 @@ def test_eli_identity_questions_still_reach_self_report():
     """The narrowing must not cost ELI its own identity route."""
     for q in ("who are you",
               "who are you as a person",
-              "tell me about yourself",
-              "you, as a person, what are you",
               "how has your persona evolved"):
         assert route_control_text(q, "CHAT") == "SELF_REPORT", q
+    # Open-ended self-description is a conversation grounded in verified self-facts, not the runtime one-liner.
+    for q in ("tell me about yourself", "you, as a person, what are you"):
+        assert route_control_text(q, "CHAT") is None, q
 
 
 # ── 2. Evidence assembly ─────────────────────────────────────────────────────

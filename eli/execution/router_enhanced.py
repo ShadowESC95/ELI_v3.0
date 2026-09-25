@@ -45,7 +45,13 @@ def _eli_phase10_is_codebase_audit_request(text: str) -> bool:
         "executor_enhanced", "codebase", "code base", "repo", "repository",
     )
 
-    return any(a in s for a in audit_words) and any(c in s for c in code_words)
+    def _has(word: str) -> bool:
+        # "repo" must not match "report", "engine" must not match "engineer".
+        if re.fullmatch(r"[a-z0-9_ ]+", word):
+            return re.search(rf"\b{re.escape(word)}\b", s) is not None
+        return word in s
+
+    return any(_has(a) for a in audit_words) and any(_has(c) for c in code_words)
 
 
 
@@ -1269,6 +1275,22 @@ def _route_plugin_bridge_prepass(raw: str, low: str):
     if re.match(r"^(?:cpu\s+usage|processor\s+usage|show\s+cpu\s+usage|how\s+busy\s+is\s+the\s+cpu)$", low):
         return _mk("CPU_USAGE", {}, 0.98, matched_by="plugin.prepass.cpu_usage")
 
+    # ELI's inference RAM (model + KV cache) — not system psutil, not SQLite memory DB.
+    try:
+        from eli.runtime.inference_footprint import is_inference_ram_question
+        if is_inference_ram_question(raw):
+            return _mk(
+                "EXPLAIN_COGNITION_RUNTIME",
+                {"question": raw, "diagnostic_focus": "inference_ram"},
+                0.995,
+                matched_by="plugin.prepass.inference_ram",
+                need_grounding=True,
+                allow_chat_without_evidence=False,
+                task_family="grounded_audit",
+            )
+    except Exception:
+        log.debug("inference RAM prepass unavailable", exc_info=True)
+
     if re.match(r"^(?:ram\s+usage|memory\s+usage|show\s+ram\s+usage|show\s+memory\s+usage|how\s+much\s+ram\s+is\s+used)$", low):
         return _mk("RAM_USAGE", {}, 0.98, matched_by="plugin.prepass.ram_usage")
 
@@ -1735,9 +1757,12 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         )
 
     if not _explain_prior_claim and re.search(
-        r"\b(took you|took so long|why did you take|response time|slow response|that took ages|20 minutes|twenty minutes|you don't believe me|dont believe me|took over|took nearly|took just under)\b",
+        r"\b(took you|took so long|why did you take|response time|slow response|that took ages|"
+        r"20 minutes|twenty minutes|you don't believe me|dont believe me|took over|took nearly|"
+        r"took just under|how much ram\b|how much memory\b|ram\b.{0,30}\butili[sz]|"
+        r"memory\b.{0,30}\bfor (?:the )?model|decrease latency|reduce latency)\b",
         low,
-    ):
+    ) and not re.search(r"\b(memories|sqlite|database|faiss|embedder|remember me)\b", low):
         return _mk(
             "EXPLAIN_COGNITION_RUNTIME",
             {
@@ -1978,7 +2003,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             need_grounding=True,
             task_family="grounded_audit",
         )
-    if _is_corr_q(low):
+    if _is_corr_q(low) and not _is_wallclock_question(low):
         return _mk("CHAT", {"message": raw}, 0.92, matched_by="router.correction_chat", allow_chat_without_evidence=True)
 
     if re.search(r"\b(who are you|what are you|what is your name|what's your name)\b", low) and re.search(
@@ -2503,10 +2528,34 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("SUMMARIZE_FILE", {"path": _known_file},
                    0.9, matched_by="analyze.known_eli_file")
 
-    # Relational / wellbeing / concern questions aimed at ELI → CHAT (never a status dump
-    # like AWARENESS_STATUS / REASONING_MODE_STATUS / META_DIAGNOSTIC). These are
-    # conversational — the user checking in on ELI — and the LLM intent resolver otherwise
-    # mis-maps them to status actions ("what is happening with you" → AWARENESS_STATUS).
+    # Relational / wellbeing / concern questions aimed at ELI go to CHAT, never a status dump
+    # (AWARENESS_STATUS, REASONING_MODE_STATUS, META_DIAGNOSTIC); the resolver mis-maps them ("what
+    # is happening with you"). Meta-provenance about a prior reply ("is that hardcoded / canned")
+    # goes to EXPLAIN_LAST_RESPONSE with real trace data, not a Think-mode stream that blocks the UI.
+    if re.search(
+        r"\b(?:is|was|are|were)\s+(?:that|this|it|those|the\s+(?:answer|response|reply)|you)\b"
+        r"[^?.!]*\b(?:hard[\s-]?coded|deterministic|scripted|canned|pre[\s-]?written|"
+        r"a\s+canned\s+response|templated|generated\s+(?:live|on\s+the\s+fly))\b",
+        low,
+    ):
+        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.95,
+                   matched_by="router.explain_last_response.provenance_style",
+                   need_grounding=True, allow_chat_without_evidence=False)
+
+    # Fix provenance follow-ups ("how did you fix that file/LOC?") → deterministic
+    # patch log via EXAMINE_CODE, not an open-ended reasoning stream.
+    if re.search(
+        r"\bhow\s+(?:did|do)\s+you\s+fix\b"
+        r"|\b(?:which|what)\s+(?:line|loc|lines?)\s+(?:did\s+you|was|were)\s+(?:fix|change|patch|edit)"
+        r"|\bhow\s+did\s+you\s+(?:change|patch|edit)\s+(?:that|the|this)\s+file\b"
+        r"|\b(?:show|explain|tell\s+me)\s+(?:how|what)\s+you\s+(?:fix|change|patch)\b"
+        r"|\b(?:is|was)\s+(?:that|it|the)\s+fix\s+(?:still\s+)?(?:there|gone|applied|in\s+place)\b",
+        low,
+    ):
+        return _mk("EXAMINE_CODE", {"request": raw}, 0.95,
+                   matched_by="router.code_fix_recall",
+                   allow_chat_without_evidence=False)
+
     if re.search(
         r"\bare\s+you\s+(?:ok|okay|alright|all\s+right|good|fine|well)\b"
         r"|\bis\s+everything\s+(?:ok|okay|alright|all\s+right|fine)\b"
@@ -2516,13 +2565,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         r"|\beli[,\s]+what(?:'?s?|\s+is)\s+(?:happening|going\s+on|wrong)\b"
         r"|\bwhat(?:'?s?|\s+is)\s+(?:happening|going\s+on)\b(?=.*\byou\b)"
         # "what's going on/happening, eli" — vocative anywhere (incl. trailing).
-        r"|\bwhat(?:'?s?|\s+is)\s+(?:happening|going\s+on)\b(?=.*\beli\b)"
-        # Meta-provenance about a PRIOR reply ("is that hardcoded / deterministic / canned /
-        # scripted / pre-written / did you generate that") → conversational, NOT a full
-        # EXPLAIN_COGNITION_RUNTIME pipeline dump. ('explain how you work' is unaffected.)
-        r"|\b(?:is|was|are|were)\s+(?:that|this|it|those|the\s+(?:answer|response|reply)|you)\b"
-        r"[^?.!]*\b(?:hard[\s-]?coded|deterministic|scripted|canned|pre[\s-]?written|"
-        r"a\s+canned\s+response|templated|generated\s+(?:live|on\s+the\s+fly))\b",
+        r"|\bwhat(?:'?s?|\s+is)\s+(?:happening|going\s+on)\b(?=.*\beli\b)",
         low,
     ):
         return _mk("CHAT", {"message": raw}, 0.9, matched_by="chat.relational_concern")
@@ -2676,6 +2719,17 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
 
     if re.search(r"\bpatch\s+yourself\b|\bself.?patch\b|\bapply.*patch\b|\bfix\s+your\s+own\s+code\b", low):
         return _mk("SELF_PATCH", {}, 0.95, matched_by="self.patch_cycle")
+
+    # User file fix — must beat the generic "fix the bugs/errors" self-patch guard.
+    m = re.search(
+        r"\b(fix|debug|repair|correct|patch)\s+(?:the\s+)?(?:bugs?|errors?|issues?)\s+(?:in\s+)?([\w./~-]+\.py)\b",
+        raw,
+        re.I,
+    )
+    if m:
+        path = m.group(2).strip()
+        return _mk("FIX_FILE", {"path": path}, 0.98,
+                   matched_by="file.fix_python_early", entities={"path": path})
 
     if re.search(r"\bself[- ]?fix\w*\b|\bfix\s+yourself\b", low):
         return _mk("SELF_PATCH", {}, 0.96, matched_by="self.fix")
@@ -2868,6 +2922,20 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("AWARENESS_STATUS", {"query": raw}, 0.95, matched_by="awareness.status",
                    entities={"query": raw}, need_grounding=True, task_family="grounded_audit")
     if re.search(r"memory\s*(status|stats|report|info|summary|check|usage|count|size|total)|how many memories|memories (do you have|count|total)", low):
+        try:
+            from eli.runtime.inference_footprint import is_inference_ram_question
+            if is_inference_ram_question(raw):
+                return _mk(
+                    "EXPLAIN_COGNITION_RUNTIME",
+                    {"question": raw, "diagnostic_focus": "inference_ram"},
+                    0.995,
+                    matched_by="router.inference_ram_not_memory_status",
+                    need_grounding=True,
+                    allow_chat_without_evidence=False,
+                    task_family="grounded_audit",
+                )
+        except Exception:
+            log.debug("inference RAM guard unavailable", exc_info=True)
         return _mk("MEMORY_STATUS", {}, 0.97, matched_by="memory.status")
     if re.search(r"\bcognition\s*(runtime\s+)?status\b|\bcognition\s*(stats|report|check|health)\b", low):
         return _mk("COGNITION_STATUS", {}, 0.99, matched_by="cognition.status")
@@ -3256,6 +3324,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         (r"\bminimi[sz]e\s+(?:all|everything)\b|\bshow\s+(?:my\s+)?desktop\b|"
          r"\bclear\s+(?:my\s+)?screen\b|\bhide\s+all\s+windows?\b",
          "MINIMISE_ALL"),
+        (r"\bminimi[sz]e\s+(?:this|the|current)\s+window\b|"
+         r"\bminimi[sz]e\s+this\b|\bminimi[sz]e\s+the\s+window\b",
+         "MINIMIZE_APP"),
         (r"\bmaximi[sz]e\s+(?:current|this|the\s+window|window)\b|"
          r"\bfullscreen\s+(?:current|this|the\s+window|window)?\b|"
          r"\bmake\s+(?:this|current|window)\s+fullscreen\b",

@@ -167,14 +167,14 @@ def _eli_app_version() -> str:
         log.debug("suppressed exception", exc_info=True)
     try:
         from importlib.metadata import version, PackageNotFoundError
-        for _pkg in ("eli-v3", "eli_v3", "eli"):
+        for _pkg in ("eli-v2.0", "eli_v2_0", "eli-mkxi", "eli"):
             try:
                 return version(_pkg)
             except PackageNotFoundError:
                 continue
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    return "3.0"
+    return "2.0"
 
 
 APP_VERSION = _eli_app_version()
@@ -395,18 +395,39 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                     size_gb = 0.0
                 family = 'unknown'
                 name_low = path.name.lower()
-                if 'mistral' in name_low:
-                    family = 'mistral'
-                elif 'qwen' in name_low:
-                    family = 'qwen'
-                elif 'phi' in name_low:
-                    family = 'phi'
+                draft_only = False
+                arch = ""
+                try:
+                    from eli.cognition.model_identity import read_gguf_identity
+                    ident = read_gguf_identity(path)
+                    arch = str(ident.get("architecture") or "")
+                    fam = ident.get("family")
+                    if fam:
+                        family = str(fam)
+                    draft_only = bool(ident.get("draft_only"))
+                except Exception:
+                    try:
+                        from eli.cognition.model_load_diagnostics import is_draft_only_gguf
+                        draft_only = bool(is_draft_only_gguf(path))
+                    except Exception:
+                        draft_only = any(
+                            m in name_low
+                            for m in ("dspark", "dflash", "-draft", "_draft", "eagle", "medusa")
+                        )
+                label_name = path.name
+                if draft_only:
+                    label_name = f"{path.name} (draft — not a chat model)"
+                    family = "draft"
+                elif arch and family == "unknown":
+                    family = arch
                 results.append({
-                    'name': path.name,
+                    'name': label_name,
                     'path': str(path),
                     'size_gb': size_gb,
                     'family': family,
+                    'architecture': arch,
                     'source': classify_gguf_source(str(path)),
+                    'draft_only': draft_only,
                 })
         except Exception:
             continue
@@ -476,7 +497,11 @@ def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     else:
         n_gpu_layers = min(99, max(4, vram_mb // 150))
 
-    n_threads = max(1, cpu_count - 2)
+    try:
+        from eli.core.hardware_profile import recommend_cpu_threads as _rct
+        n_threads = _rct(cpu_count, cpu_bound=(not has_gpu or vram_mb <= 0))
+    except Exception:
+        n_threads = max(1, cpu_count - (1 if (not has_gpu or vram_mb <= 0) else 2))
 
     # Batch: proportional to free VRAM (≈ 1 unit per 10 MB), aligned to 64.
     if has_gpu and vram_mb > 0:

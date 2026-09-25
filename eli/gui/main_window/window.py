@@ -1113,10 +1113,15 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
     def eventFilter(self, obj, event):
         if obj == self.chat_input and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape and getattr(self, "is_generating", False):
+                self.stop_generation()
+                return True
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 mods = event.modifiers()
                 if mods & Qt.KeyboardModifier.ShiftModifier:
                     return False  # Shift+Enter — let Qt insert a newline
+                if getattr(self, "is_generating", False):
+                    return True  # Enter does nothing while generating — use Stop or Esc
                 self.send_message()
                 return True
         return super().eventFilter(obj, event)
@@ -1126,7 +1131,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             try:
                 event.accept()
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
             return
 
         self._eli_shutdown_started = True
@@ -1138,18 +1143,26 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             if _uv is not None:
                 _uv.should_exit = True
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         try:
             self._cancel_stream_requested = True
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
+
+        # Abort in-flight generation before CognitiveEngine.shutdown() — otherwise
+        # session-summary LLM work deadlocks on the broker lock (15+ min on CPU).
+        try:
+            from eli.cognition import gguf_inference as _ggi_close
+            _ggi_close.signal_shutdown()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
 
         try:
             if self._runtime_stats_timer is not None:
                 self._runtime_stats_timer.stop()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
         # Phase 7: stop the live-data timers too so they don't fire
         # mid-shutdown and try to read a closed memory/database handle.
@@ -1159,7 +1172,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
                 if _t is not None:
                     _t.stop()
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
         try:
             _ce = getattr(self, '_cognitive_engine', None)
@@ -1177,31 +1190,31 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         try:
             event.accept()
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
 
 
 
 def main():
     print(f"\n  {APP_NAME} {APP_VERSION}\n  ───────────────\n")
 
+    # Portable / source: refresh menu + Desktop icons via stable eli-run pointer
+    # (never leave Path=/…/ELI_v2-*-linux-portable baked into .desktop files).
     try:
         from eli.runtime.desktop_launchers import ensure_desktop_launchers
         ensure_desktop_launchers()
     except Exception:
-        pass
+        log.debug("desktop launcher refresh skipped", exc_info=True)
 
-    # Reuse an existing instance: the license gate may already have created one
-    # to show its activation dialog, and Qt permits only one per process.
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle('Fusion')
-    app.setApplicationName(APP_NAME)
     try:
         from eli.gui.branding import load_app_icon
         _app_icon = load_app_icon()
         if _app_icon is not None:
             app.setWindowIcon(_app_icon)
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
+    app.setApplicationName(APP_NAME)
 
     # ── First-boot check: show wizard if no models are installed ─────────────
     try:
@@ -1235,6 +1248,17 @@ def main():
                         "gguf_model_path": _wiz_path,
                     })
             if _accepted:
+                # Voice engine chosen in the wizard — persist before model load so a
+                # neural voice's VRAM is a deliberate up-front choice.
+                try:
+                    _we = _wizard.selected_tts_engine()
+                    update_kwargs["tts_engine"] = _we
+                    _wv = _wizard.selected_tts_voice()
+                    if _wv:
+                        update_kwargs["tts_voice"] = _wv
+                        os.environ["ELI_XTTS_DEVICE"] = "cuda"
+                except Exception:
+                    log.debug("[ELI] wizard tts engine read failed", exc_info=True)
                 _rs_update(**update_kwargs)
         except Exception as _persist_err:
             log.debug(f"[ELI] First-boot selection persist failed: {_persist_err}")
@@ -1265,9 +1289,13 @@ def main():
         import atexit as _atexit
         _atexit._run_exitfuncs()   # flush memory + session summary + unload model first
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     try:
-        sys.stdout.flush(); sys.stderr.flush()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if sys.stdout.isatty():
+            print("\n[ELI] Shutdown complete.")
+            sys.stdout.flush()
     except Exception:
-        pass
+        log.debug("suppressed exception", exc_info=True)
     os._exit(_rc if isinstance(_rc, int) else 0)

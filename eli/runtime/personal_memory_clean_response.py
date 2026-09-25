@@ -7,27 +7,23 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-def _eli_canonical_root_ROOT() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds (identical to this path in source installs).
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
-
-ROOT = _eli_canonical_root_ROOT()
+try:
+    from eli.core.paths import canonical_root
+    ROOT = canonical_root(Path(__file__).resolve().parents[2])
+except Exception:
+    ROOT = Path(__file__).resolve().parents[2]
 
 
 def _db_paths() -> tuple[Path, Path]:
     """(user_db, agent_db) as the running install actually uses them.
 
-    The project root and the artifacts dir are the SAME directory in a source
+    project_root() and the artifacts dir are the SAME directory in a source
     checkout and different ones in a shipped build: the code lives on the
     read-only AppImage mount while the databases live under
     ~/.local/share/ELI_v2/artifacts. Deriving the DB path from the project root
-    therefore pointed at a tree that does not exist.
+    therefore pointed at a tree that does not exist — see the identical failure
+    fixed in personal_memory_surface, where "who am I?" reported the user DB
+    missing at a /tmp/.mount_* path.
     """
     try:
         from eli.core.paths import get_paths as _gp
