@@ -23,6 +23,7 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'CHECK_TARGET_STATUS',
     'CLOSE_APP',
     'CONFIRM_PENDING_REMEDIATION',  # apt/mpv install confirm — executor must run, not narrate
+    'MEMORY_STORE',  # the executor's verified receipt (row, index) is the confirmation; a model paraphrase could deny it
     'CREATE_FILE',  # fs mutation: executor writes + reads back, result is authoritative — never let the heuristic agent profile drop `system` and punt "run touch yourself"
     'DATE',
     'EXPLAIN_LAST_FAILURE',
