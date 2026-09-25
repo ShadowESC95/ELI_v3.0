@@ -123,7 +123,6 @@ def _append_note_builtin(args: dict) -> dict:
 
 
 def _eli_safe_read_file(args=None):
-    from pathlib import Path
     _args = args or {}
     path = str(_args.get("path") or "").strip()
     if not path:

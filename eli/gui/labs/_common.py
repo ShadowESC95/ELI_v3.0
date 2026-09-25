@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict
 
 
 from eli.utils.log import get_logger

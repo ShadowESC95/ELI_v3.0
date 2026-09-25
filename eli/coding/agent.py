@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from eli.coding.budget import Deadline, DEFAULT_SOLVE_BUDGET_S, _shutting_down
-from eli.coding.planner import Plan, plan_task, implement
+from eli.coding.planner import plan_task, implement
 from eli.coding.verification import Candidate, verify_candidate, synthesize_tests, critique_candidate
 from eli.coding.search import tree_search, SearchResult
 from eli.coding.bug_memory import BugMemory, get_bug_memory

@@ -308,7 +308,6 @@ class ConversationMixin:
 
     def _populate_mic_device_combo(self, restore: bool = False):
         """Populate mic selector with ALSA devices + PulseAudio/PipeWire BT sources."""
-        import os as _os
         prev = self.mic_device_combo.currentData() if restore else None
         self.mic_device_combo.blockSignals(True)
         self.mic_device_combo.clear()

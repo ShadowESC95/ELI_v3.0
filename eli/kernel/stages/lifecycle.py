@@ -18,7 +18,6 @@ from typing import Dict
 
 from eli.core import runtime_settings
 from eli.kernel.stages._common import _eli_test_mode
-from eli.kernel.stages.model_runtime import gguf_inference, gguf_import_error
 from eli.utils.log import get_logger
 import logging
 
@@ -417,7 +416,7 @@ class LifecycleMixin:
         try:
             from eli.runtime.self_improvement import get_self_improvement
             get_self_improvement().start_self_improvement_loop(interval_hours=24)
-            log.debug("[COGNITIVE] Self-improvement loop started")
+            log.debug("[COGNITIVE] Self-improvement loop scheduled (analyses now, then every 24h)")
         except Exception as e:
             log.debug(f"[COGNITIVE] Self-improvement loop failed to start: {e}")
 

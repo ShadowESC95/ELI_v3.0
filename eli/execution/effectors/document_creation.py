@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from eli.utils.log import get_logger
-from eli.execution.effectors._base import _save_artifact, _full_control, _artifacts_dir
+from eli.execution.effectors._base import _artifacts_dir
 
 log = get_logger(__name__)
 
@@ -35,7 +35,6 @@ def _h_create_document(a, args):
     import os as _os
     if _os.environ.get("ELI_TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
         import re as _re
-        from pathlib import Path as _DPath
 
         safe_name = _re.sub(r"[^a-z0-9]+", "_", topic.lower())[:50].strip("_")
         ext = ".md" if fmt == "md" else f".{fmt}"

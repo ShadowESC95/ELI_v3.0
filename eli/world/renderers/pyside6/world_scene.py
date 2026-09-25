@@ -5,7 +5,6 @@ from typing import Any, Dict, Iterable, List, Tuple
 from eli.gui.qt_compat import (
     QBrush,
     QColor,
-    QFrame,
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,

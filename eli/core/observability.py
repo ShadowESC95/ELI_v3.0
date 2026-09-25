@@ -1,7 +1,7 @@
 """Runtime observability — failure ring + operator-facing diagnostics."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from eli.core.failure_ring import recent as _recent_failures, record_suppressed, stats as _failure_stats
 

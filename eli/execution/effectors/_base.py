@@ -11,7 +11,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -98,7 +98,6 @@ def _allowed_cmds_set():
 
 def _allow_or_block(argv0: str) -> bool:
     """Allow or block executables based on sandbox rules."""
-    import os
     
     # FULL CONTROL MODE: allow everything
     if _full_control():

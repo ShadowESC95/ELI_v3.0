@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 
 
@@ -519,7 +519,6 @@ def _policy_identity_memory_response(user_text: str, model_text: str) -> str:
 
 
 
-from eli.gui.panels.startup import StartupModelSelectionDialog, FirstBootWizard
 
 
 

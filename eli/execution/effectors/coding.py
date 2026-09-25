@@ -8,7 +8,7 @@ import os
 import re
 
 from eli.utils.log import get_logger
-from eli.execution.effectors._base import _save_artifact, _full_control
+from eli.execution.effectors._base import _save_artifact
 
 log = get_logger(__name__)
 
@@ -676,7 +676,6 @@ def _h_examine_code(a, args):
 
 
 def _h_fix_file(a, args):
-    from pathlib import Path as _Path
     import re as _re_ff
     path = str(args.get("path") or "").strip()
     path = _re_ff.sub(r'^file\s+', '', path, flags=_re_ff.IGNORECASE).strip()

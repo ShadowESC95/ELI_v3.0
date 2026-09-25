@@ -14,7 +14,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List
 
 _DEFAULT_CAPACITY = 256
 _lock = threading.Lock()

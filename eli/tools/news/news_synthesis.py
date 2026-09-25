@@ -24,7 +24,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 WINDOW_SECONDS = 3 * 3600  # 3 hours

@@ -3751,7 +3751,6 @@ class EliMainWindow(QMainWindow):
 
     def _populate_mic_device_combo(self, restore: bool = False):
         """Populate mic selector with ALSA devices + PulseAudio/PipeWire BT sources."""
-        import os as _os
         prev = self.mic_device_combo.currentData() if restore else None
         self.mic_device_combo.blockSignals(True)
         self.mic_device_combo.clear()
@@ -6958,7 +6957,7 @@ class EliMainWindow(QMainWindow):
         path = self._sc_screenshot_path
 
         def worker():
-            import subprocess, shutil, tempfile, os
+            import subprocess, shutil
             text = ""
 
             # ── 1. tesseract CLI — fast, no Python binding needed ──────────
@@ -9059,7 +9058,6 @@ class EliMainWindow(QMainWindow):
             log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_open_firewall_terminal(self) -> None:
-        import shlex
         cmd = (self._srv_fw_cmd.text() or "").strip()
         if not cmd:
             QMessageBox.information(
@@ -9208,7 +9206,7 @@ class EliMainWindow(QMainWindow):
         # Run the web server IN-PROCESS (a background thread) so it shares this app's
         # already-loaded model/engine instead of spawning a second process that would
         # load the model again and run the machine out of memory.
-        import os, secrets, threading
+        import os, threading
         if getattr(self, "_srv_thread", None) and self._srv_thread.is_alive():
             return  # already running
         from eli.runtime.server_util import effective_api_port

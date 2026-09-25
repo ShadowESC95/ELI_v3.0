@@ -41,17 +41,10 @@ _OUTPUT_RESERVE_TOKENS = int(os.environ.get("ELI_OUTPUT_RESERVE_TOKENS", "1024")
 
 
 from eli.kernel.stages.guards import (
-    _RepeatDetected,
     _failed_executor_is_failed_block,
     _failed_executor_query_from_prompt,
     _failed_executor_relevant_block,
     _failed_executor_surface,
-    _deprimed_persona_brief,
-    _is_greeting_turn,
-    _redact_prior_replies,
-    _REPEAT_RETRY_TEMP_BUMP,
-    _stream_holding_back_repeats,
-    _user_asked_for_a_repeat,
 )
 from eli.kernel.stages.fast_actions import (
     _PHASE45_DIRECT_FAST_ACTIONS,

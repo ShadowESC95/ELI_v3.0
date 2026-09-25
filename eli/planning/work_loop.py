@@ -22,7 +22,7 @@ that cannot tell it is stuck will happily burn a machine's evening on nothing.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from eli.utils.log import get_logger
 

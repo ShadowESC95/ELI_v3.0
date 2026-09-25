@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import importlib
 import json
 import re
@@ -12,9 +11,8 @@ import subprocess
 import logging as _swlog_logging
 _SWLOG = _swlog_logging.getLogger(__name__)
 
-import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 def _eli_canonical_root_PROJECT_ROOT() -> Path:
     # Canonical env-honoring root — __file__ resolves into the read-only
@@ -61,33 +59,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _run(cmd: list[str], timeout: int = 5) -> tuple[int, str, str]:
-    try:
-        p = subprocess.run(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-        )
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except Exception as e:
-        return 999, "", f"{type(e).__name__}: {e}"
-
-
-def _db_count(db: Path, table: str) -> str:
-    if not db.exists():
-        return "missing"
-    try:
-        con = sqlite3.connect(str(db))
-        try:
-            return str(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-        finally:
-            con.close()
-    except Exception as e:
-        return f"error:{type(e).__name__}"
-
-
 def _artifacts_dir() -> Path:
     """Where the snapshot, databases and vector index are actually written.
 
@@ -106,317 +77,6 @@ def _artifacts_dir() -> Path:
 
 def _runtime_snapshot() -> dict[str, Any]:
     return _read_json(_artifacts_dir() / "runtime_snapshot.json")
-
-
-def _settings() -> dict[str, Any]:
-    for rel in ("config/settings.json", "settings.json", "artifacts/runtime/settings.json"):
-        p = PROJECT_ROOT / rel
-        if p.exists():
-            return _read_json(p)
-    return {}
-
-
-def _gpu_line() -> str:
-    rc, out, err = _run([
-        "nvidia-smi",
-        "--query-gpu=name,memory.total,memory.free,driver_version",
-        "--format=csv,noheader,nounits",
-    ])
-    if rc == 0 and out:
-        return out.splitlines()[0]
-    # Cross-vendor fallback: this evidence line feeds grounded answers about the machine's GPU and
-    # said "unavailable" on every AMD/Intel/Apple machine, and on NVIDIA with a driver hiccup,
-    # although hardware_profile.detect_hardware() already knows the card.
-    try:
-        from eli.core.hardware_profile import detect_hardware
-        hw = detect_hardware()
-        if hw.has_gpu:
-            note = " (estimated)" if hw.gpu_detection_uncertain else ""
-            return f"{hw.gpu_name}{note}, {hw.total_vram_mb} MiB total (live query unavailable: {err or 'nvidia-smi failed'})"
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    return f"unavailable ({err or 'nvidia-smi failed'})"
-
-
-def _runtime_report() -> str:
-    snap = _runtime_snapshot()
-    settings = _settings()
-    configured = {
-        k: settings.get(k)
-        for k in ("provider", "model_path", "n_ctx", "n_gpu_layers", "n_threads", "batch_size", "max_tokens")
-        if k in settings
-    }
-    effective = {k: snap.get(k, "unknown") for k in ("n_ctx", "n_gpu_layers", "n_threads", "n_batch")}
-    return json.dumps(
-        {
-            "surface": "runtime_evidence",
-            "project_root": str(PROJECT_ROOT),
-            "python": sys.version.split()[0],
-            "platform": sys.platform,
-            "configured": configured,
-            "effective": effective,
-            "gpu": _gpu_line(),
-        },
-        ensure_ascii=False,
-        default=str,
-        indent=2,
-    )
-
-
-def _import_audit() -> str:
-    modules = {}
-    for mod in IMPORT_TARGETS:
-        try:
-            importlib.import_module(mod)
-            modules[mod] = {"ok": True}
-        except Exception as e:
-            modules[mod] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
-    return json.dumps(
-        {"surface": "import_audit_evidence", "modules": modules},
-        ensure_ascii=False,
-        default=str,
-        indent=2,
-    )
-
-
-def _gui_runtime_audit() -> str:
-    path = PROJECT_ROOT / "eli" / "gui" / "gui_eli_original.py"
-    lines = ["GUI runtime audit: deterministic file inspection", ""]
-    lines.append(f"file: {path}")
-    lines.append(f"exists: {path.exists()}")
-
-    if not path.exists():
-        lines.append("status: FAIL — GUI file missing")
-        return "\n".join(lines)
-
-    text = path.read_text(encoding="utf-8", errors="replace")
-    lines.append(f"bytes: {path.stat().st_size}")
-    lines.append(f"lines: {text.count(chr(10)) + 1}")
-
-    try:
-        ast.parse(text, filename=str(path))
-        lines.append("python_ast: OK")
-    except SyntaxError as e:
-        lines.append(f"python_ast: FAIL line={e.lineno} msg={e.msg}")
-
-    required = [
-        "CognitiveEngine",
-        "chat_response_signal",
-        "PATH1 -> CognitiveEngine.process",
-        "runtime_snapshot",
-        "apply_recommended_setup",
-    ]
-
-    lines.append("")
-    lines.append("required hook scan:")
-    split = text.splitlines()
-    for needle in required:
-        hits = [i + 1 for i, line in enumerate(split) if needle in line]
-        lines.append(f"- {needle}: {hits[:12] if hits else 'missing'}")
-
-    lines.append("")
-    lines.append("known suspicious marker scan:")
-    for needle in [
-        "_eli_gui_clean_response_20260502",
-        "fallback also returned no visible output",
-        "PATH1 -> CognitiveEngine.process",
-    ]:
-        hits = [i + 1 for i, line in enumerate(split) if needle in line]
-        lines.append(f"- {needle}: {hits[:12] if hits else 'not found'}")
-
-    return "\n".join(lines)
-
-
-def _memory_report() -> str:
-    _artifacts = _artifacts_dir()
-    user_db = _artifacts / "db" / "user.sqlite3"
-    agent_db = _artifacts / "db" / "agent.sqlite3"
-    vec = _artifacts / "vectors" / "index.faiss"
-    meta = _artifacts / "vectors" / "meta.pkl"
-
-    lines = ["Memory runtime report: deterministic", ""]
-    lines.append(f"user_db: {user_db} exists={user_db.exists()}")
-    for t in ("memories", "conversation_turns", "observations", "recall_log", "habits", "improvements"):
-        lines.append(f"- user.{t}: {_db_count(user_db, t)}")
-
-    lines.append("")
-    lines.append(f"agent_db: {agent_db} exists={agent_db.exists()}")
-    for t in ("memories", "conversation_turns", "observations", "recall_log", "habits", "improvements", "failures"):
-        lines.append(f"- agent.{t}: {_db_count(agent_db, t)}")
-
-    lines.append("")
-    lines.append(f"faiss_index: {vec} exists={vec.exists()}")
-    lines.append(f"faiss_meta: {meta} exists={meta.exists()}")
-    return "\n".join(lines)
-
-
-def _cognition_report() -> str:
-    files = [
-        "eli/kernel/engine.py",
-        "eli/execution/router_enhanced.py",
-        "eli/execution/executor_enhanced.py",
-        "eli/cognition/agent_bus.py",
-        "eli/cognition/inference_broker.py",
-        "eli/cognition/output_governor.py",
-        "eli/cognition/context_synthesiser.py",
-        "eli/memory/memory.py",
-        "eli/memory/vector_store.py",
-        "eli/gui/gui_eli_original.py",
-    ]
-
-    lines = ["Cognition pipeline report: deterministic", ""]
-    for rel in files:
-        p = PROJECT_ROOT / rel
-        n = p.read_text(encoding="utf-8", errors="replace").count(chr(10)) + 1 if p.exists() else 0
-        lines.append(f"- {rel}: exists={p.exists()} lines={n}")
-
-    lines.append("")
-    lines.append("Pipeline:")
-    lines.append("1. GUI/STT receives text.")
-    lines.append("2. Router parses action/confidence/meta.")
-    lines.append("3. Deterministic truth/audit actions return direct evidence.")
-    lines.append("4. AgentBus may gather optional support evidence.")
-    lines.append("5. GGUF synthesis is allowed for chat/synthesis, not for raw truth claims.")
-    lines.append("6. Output governance sanitises response.")
-    lines.append("7. Memory/session state is persisted.")
-    return "\n".join(lines)
-
-
-def _self_improve_report() -> str:
-    agent_db = PROJECT_ROOT / "artifacts" / "db" / "agent.sqlite3"
-    lines = ["Self-improvement cycle: deterministic report", ""]
-    lines.append(f"agent_db: {agent_db} exists={agent_db.exists()}")
-
-    if not agent_db.exists():
-        lines.append("No agent DB found; no improvement cycle could run.")
-        return "\n".join(lines)
-
-    try:
-        con = sqlite3.connect(str(agent_db))
-        cur = con.cursor()
-
-        failures = []
-        improvements = []
-
-        try:
-            failures = cur.execute(
-                "SELECT COALESCE(user_input,''), COALESCE(error,''), COALESCE(ts,timestamp,'') "
-                "FROM failures ORDER BY id DESC LIMIT 8"
-            ).fetchall()
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-        try:
-            improvements = cur.execute(
-                "SELECT COALESCE(category,''), COALESCE(description,''), COALESCE(status,''), COALESCE(ts,timestamp,'') "
-                "FROM improvements ORDER BY id DESC LIMIT 8"
-            ).fetchall()
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-        con.close()
-
-        lines.append(f"recent_failures: {len(failures)}")
-        for ui, err, ts in failures:
-            lines.append(f"- [{ts}] {str(ui)[:100]} -> {str(err)[:120]}")
-
-        lines.append("")
-        lines.append(f"recent_improvements: {len(improvements)}")
-        for cat, desc, status, ts in improvements:
-            lines.append(f"- [{status or 'pending'}] {cat}: {str(desc)[:160]} ({ts})")
-
-        lines.append("")
-        lines.append("code_changes_applied: 0")
-        lines.append("This report path does not silently patch files. It reports evidence only.")
-    except Exception as e:
-        lines.append(f"error reading improvement DB: {type(e).__name__}: {e}")
-
-    return "\n".join(lines)
-
-
-
-def _full_runtime_audit_report() -> str:
-    lines = ["Full runtime audit: deterministic", ""]
-
-    lines.append(_runtime_report())
-    lines.append("")
-    lines.append("Compile check:")
-
-    files = [
-        "eli/runtime/deterministic_grounding_gate.py",
-        "eli/runtime/generated_script_guard.py",
-        "eli/kernel/engine.py",
-        "eli/execution/router_enhanced.py",
-        "eli/execution/executor_enhanced.py",
-        "eli/gui/gui_eli_original.py",
-    ]
-
-    rc, out, err = _run([sys.executable, "-m", "py_compile", *files], timeout=30)
-    lines.append(f"- py_compile_rc: {rc}")
-    if out:
-        lines.append(f"- stdout: {out[:1000]}")
-    if err:
-        lines.append(f"- stderr: {err[:2000]}")
-
-    lines.append("")
-    lines.append(_import_audit())
-
-    lines.append("")
-    lines.append("Generated-script artifacts:")
-    scripts = PROJECT_ROOT / "artifacts" / "scripts"
-    spam = list(scripts.glob("Generate_only_the_requested_source_code._Do_not_include_markdown_commentary_unle*.sh")) if scripts.exists() else []
-    invalid = PROJECT_ROOT / "artifacts" / "scripts" / "invalid"
-    lines.append(f"- live_spam_scripts: {len(spam)}")
-    lines.append(f"- invalid_quarantine_exists: {invalid.exists()}")
-
-    lines.append("")
-    lines.append("Known architectural flags:")
-    for rel in (
-        "eli/kernel/engine.py",
-        "eli/execution/router_enhanced.py",
-        "eli/execution/executor_enhanced.py",
-        "eli/gui/gui_eli_original.py",
-    ):
-        path = PROJECT_ROOT / rel
-        if not path.exists():
-            lines.append(f"- {rel}: missing")
-            continue
-        txt = path.read_text(encoding="utf-8", errors="replace")
-        lines.append(
-            f"- {rel}: wrappers={txt.count('wrapped')} "
-            f"monkey_patch_markers={txt.lower().count('wrapper')} "
-            f"broad_except={txt.count('except Exception')}"
-        )
-
-    return "\n".join(lines)
-
-
-def render_action(action: str, args: Mapping[str, Any] | None = None, user_input: str = "") -> str:
-    a = str(action or "").upper()
-
-    if a in {"SELF_REPORT", "RESOLVE_RUNTIME_PATHS"}:
-        return _runtime_report()
-    if a == "RUNTIME_AUDIT":
-        return _full_runtime_audit_report()
-    if a == "IMPORT_AUDIT":
-        return _import_audit()
-    if a == "GUI_RUNTIME_AUDIT":
-        return _gui_runtime_audit()
-    if a == "EXPLAIN_MEMORY_RUNTIME":
-        return _memory_report()
-    if a == "EXPLAIN_COGNITION_RUNTIME":
-        return _cognition_report()
-    if a == "EXPLAIN_LAST_RESPONSE":
-        return (
-            "Last-response audit: deterministic guard active.\n\n"
-            "If no trace packet exists, the correct answer is 'no grounded trace captured', "
-            "not an invented confidence report."
-        )
-    if a in {"SELF_IMPROVE", "SELF_ANALYZE"}:
-        return _self_improve_report()
-
-    return f"Deterministic action {a} has no renderer."
 
 
 def _route_text(text: str) -> dict[str, Any] | None:
@@ -661,95 +321,6 @@ def _eli_count_rows_v2(db: _EliPath) -> dict[str, int]:
     return out
 
 
-def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:
-    db = _eli_db_paths_v2()["user_db"]
-    if not db.exists():
-        return []
-
-    texts: list[str] = []
-    noise = (
-        "Reflection (24h):",
-        "Session context:",
-        "SYNTHESISE_FROM_DETERMINISTIC_EVIDENCE",
-        "runtime_truth_evidence",
-        "You are right: that should not have been a raw memory-count dump",
-        "Database:",
-        "table                                                        rows",
-    )
-
-    try:
-        con = _eli_sqlite3.connect(str(db))
-        cur = con.cursor()
-
-        for table in ("memories", "observations", "conversation_turns"):
-            try:
-                cur.execute(f"PRAGMA table_info({table})")
-                cols = [r[1] for r in cur.fetchall()]
-                wanted = [c for c in ("text", "value", "content", "observation") if c in cols]
-                if not wanted:
-                    continue
-
-                select_expr = " || ' ' || ".join([f"COALESCE({c}, '')" for c in wanted])
-                ts_col = "ts" if "ts" in cols else ("timestamp" if "timestamp" in cols else "rowid")
-                role_filter = ""
-                if "role" in cols:
-                    role_filter = "WHERE role IN ('user', 'system', 'assistant')"
-
-                cur.execute(
-                    f"SELECT {select_expr} AS blob FROM {table} {role_filter} "
-                    f"ORDER BY {ts_col} DESC LIMIT 300"
-                )
-                for (blob,) in cur.fetchall():
-                    s = " ".join(str(blob or "").split())
-                    if not s:
-                        continue
-                    if any(n in s for n in noise):
-                        continue
-                    if len(s) < 12:
-                        continue
-                    texts.append(s[:260])
-                    if len(texts) >= limit:
-                        break
-            except Exception:
-                continue
-
-            if len(texts) >= limit:
-                break
-
-        con.close()
-    except Exception:
-        return []
-
-    deduped = []
-    seen = set()
-    for t in texts:
-        key = t.lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append(t)
-    return deduped[:limit]
-
-
-def _eli_known_user_name_v2() -> str:
-    try:
-        from eli.kernel.state import get_user_name as _eli_state_get_user_name
-        stored = str(_eli_state_get_user_name("") or "").strip()
-        if stored:
-            return stored
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-
-    for t in _eli_sample_memory_texts_v2(120):
-        m = _eli_re.search(r"(?:preferred name|user'?s preferred name|name)\s*[:=]\s*([A-Za-z][A-Za-z0-9 _.-]{1,40})", t, _eli_re.I)
-        if m:
-            return m.group(1).strip()
-
-    env_user = str(_eli_os.environ.get("USER", "")).strip()
-    if env_user:
-        return env_user[:1].upper() + env_user[1:]
-    return "the local user"
-
-
 def _eli_mode_label_v2(engine: _EliAny = None, kwargs: dict | None = None) -> str:
     kwargs = kwargs or {}
     kw_mode = str(kwargs.get("reasoning_mode") or "").strip()
@@ -873,78 +444,40 @@ def _eli_identity_answer_v2(mode_label: str = "") -> str:
     )
 
 
-def _eli_personal_memory_answer_v2(mode_label: str = "") -> str:
-    samples = _eli_sample_memory_texts_v2(60)
-
-    buckets = {
-        "ELI / local assistant engineering": [],
-        "runtime / hardware / OS": [],
-        "tone and working style": [],
-        "research / theory / writing": [],
-        "other recent signals": [],
-    }
-
-    for s in samples:
-        low = s.lower()
-        if any(k in low for k in ("eli", "mkxi", "gguf", "router", "executor", "agent", "memory", "persona", "runtime")):
-            buckets["ELI / local assistant engineering"].append(s)
-        elif any(k in low for k in ("gpu", "nvidia", "linux", "ubuntu", "fedora", "ctx", "model", "wine", "steam")):
-            buckets["runtime / hardware / OS"].append(s)
-        elif any(k in low for k in ("direct", "truth", "bullshit", "flattery", "tone", "honest", "precise", "jargon")):
-            buckets["tone and working style"].append(s)
-        elif any(k in low for k in ("physics", "simulation", "latex", "paper", "theory")):
-            buckets["research / theory / writing"].append(s)
-        else:
-            buckets["other recent signals"].append(s)
-
-    lines = [
-        "What I know about you from memory:",
-        "",
-        "I am not going to dump the database schema for this question. You asked what I know about you, not how SQLite breathes in the walls.",
-        "",
-    ]
-
-    for name, vals in buckets.items():
-        vals = vals[:8]
-        if not vals:
-            continue
-        lines.append(f"## {name}")
-        for v in vals:
-            lines.append(f"- {v}")
-        lines.append("")
-
-    if len(lines) <= 5:
-        lines.append("I found the memory database, but I did not find enough clean non-noise personal facts to summarise safely.")
-
-    lines.append("Operational note: memory evidence should be summarised here. Raw DB tables belong only in explicit memory-internals/debug questions.")
-    return "\n".join(lines).strip()
-
-
 def _eli_memory_internals_v2() -> str:
     paths = _eli_db_paths_v2()
     user_counts = _eli_count_rows_v2(paths["user_db"])
     agent_counts = _eli_count_rows_v2(paths["agent_db"])
 
-    def table_block(title: str, db: _EliPath, counts: dict[str, int]) -> list[str]:
+    from eli.memory.memory import AGENT_OWNED_TABLES
+
+    def table_block(title: str, db: _EliPath, counts: dict[str, int], keys: tuple) -> list[str]:
         out = [f"## {title}", f"path: {db}", f"exists: {db.exists()}", ""]
-        for k in ("memories", "memories_fts", "conversation_turns", "conversations", "observations", "recall_log", "habits", "habit_rules", "habit_events", "failures", "improvements", "kg_entities", "kg_relations"):
+        for k in keys:
             if k in counts:
                 out.append(f"- {k}: {counts[k]}")
         return out
+
+    user_keys = ("memories", "memories_archive", "semantic", "conversation_turns", "conversations", "observations",
+                 "recall_log", "habits", "habit_rules", "habit_events", "kg_entities", "kg_relations")
+    turns, kept = user_counts.get("conversation_turns", 0), user_counts.get("memories", 0)
 
     lines = [
         "Memory internals report:",
         "",
         "## Practical layers",
-        "1. SQLite durable store: long-term facts, conversation turns, observations, recall logs, habits, failures, improvements.",
-        "2. FTS/vector retrieval: SQLite FTS tables plus FAISS/nomic embeddings for semantic recall.",
-        "3. Cognition assembly: memory/context agents collect evidence, then the engine assembles a prompt for GGUF or deterministic response surfaces.",
+        "## Two memory layers (not a dump of every interaction)",
+        f"1. Conversation history: {turns} turns kept in order in conversation_turns. Broad and chronological; this is what date questions search.",
+        f"2. Distilled memory: {kept} memories plus semantic facts. Only what the persistence gate and storage policy judge worth keeping is written here, tagged by origin (user_said, eli_said, telemetry, news, tool), deduplicated, and faded by a forgetting curve; faded derived rows move to memories_archive.",
+        "Recall combines both: a time window is applied first when the question names a period, then keyword, semantic and knowledge-graph ranking.",
+        "Retrieval: SQLite FTS plus FAISS embeddings. Cognition assembly: memory agents collect evidence and the engine builds the prompt or a deterministic response surface.",
+        f"Self-improvement records ({', '.join(AGENT_OWNED_TABLES)}) are stored only in agent.sqlite3; user.sqlite3 holds empty copies of those tables that nothing writes.",
         "",
     ]
 
-    lines.extend(table_block("user.sqlite3", paths["user_db"], user_counts))
+    lines.extend(table_block("user.sqlite3", paths["user_db"], user_counts, user_keys))
     lines.append("")
-    lines.extend(table_block("agent.sqlite3", paths["agent_db"], agent_counts))
+    lines.extend(table_block("agent.sqlite3", paths["agent_db"], agent_counts, AGENT_OWNED_TABLES))
     lines.append("")
     lines.extend([
         "## Vector store",
@@ -1165,7 +698,7 @@ def _eli_failure_analysis_v2() -> str:
     )
 
 
-def render_action(action: str, args: _EliMapping[str, _EliAny] | None = None, user_input: str = "", mode_label: str = "") -> str:  # type: ignore[override]
+def _render_v2(action: str, args: _EliMapping[str, _EliAny] | None = None, user_input: str = "", mode_label: str = "") -> str:
     a = str(action or "").upper()
     text = str(user_input or "")
 
@@ -1194,25 +727,17 @@ def render_action(action: str, args: _EliMapping[str, _EliAny] | None = None, us
     if a in {"SELF_ANALYZE", "SELF_IMPROVE"}:
         return _eli_failure_analysis_v2()
 
-    # fall back to older renderer if present
-    try:
-        return _ORIGINAL_RENDER_ACTION_FOR_RESPONSE_SURFACE(action, args or {}, user_input)  # type: ignore[name-defined]
-    except Exception:
-        return json.dumps(
-            {
-                "surface": "missing_deterministic_renderer",
-                "action": a,
-            },
-            ensure_ascii=False,
-            default=str,
-            indent=2,
-        )
+    return json.dumps(
+        {
+            "surface": "missing_deterministic_renderer",
+            "action": a,
+        },
+        ensure_ascii=False,
+        default=str,
+        indent=2,
+    )
 
 
-try:
-    _ORIGINAL_RENDER_ACTION_FOR_RESPONSE_SURFACE = globals().get("render_action")
-except Exception:
-    _ORIGINAL_RENDER_ACTION_FOR_RESPONSE_SURFACE = None
 
 
 
@@ -1311,65 +836,6 @@ def _eli_memory_fact_score_v3(s: str) -> int:
     return score
 
 
-def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:  # type: ignore[override]
-    db = _eli_db_paths_v2()["user_db"]
-    if not db.exists():
-        return []
-
-    rows: list[str] = []
-
-    try:
-        con = _eli_sqlite3.connect(str(db))
-        cur = con.cursor()
-
-        for table in ("memories", "observations", "conversation_turns", "conversations"):
-            try:
-                cur.execute(f"PRAGMA table_info({table})")
-                cols = [r[1] for r in cur.fetchall()]
-                wanted = [c for c in ("text", "value", "content", "observation") if c in cols]
-                if not wanted:
-                    continue
-
-                expr = " || ' ' || ".join([f"COALESCE({c}, '')" for c in wanted])
-                ts_col = "ts" if "ts" in cols else ("timestamp" if "timestamp" in cols else "rowid")
-
-                where = ""
-                if "role" in cols:
-                    # Prefer durable memory/user/assistant text, but avoid pure system spam where possible.
-                    where = "WHERE role IS NULL OR role IN ('user', 'assistant')"
-
-                cur.execute(
-                    f"SELECT {expr} AS blob FROM {table} {where} "
-                    f"ORDER BY {ts_col} DESC LIMIT 800"
-                )
-
-                for (blob,) in cur.fetchall():
-                    s = " ".join(str(blob or "").split())
-                    if _eli_is_bad_personal_memory_row_v3(s):
-                        continue
-                    rows.append(s[:320])
-            except Exception:
-                continue
-
-        con.close()
-    except Exception:
-        return []
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-
-    for s in sorted(rows, key=_eli_memory_fact_score_v3, reverse=True):
-        key = s.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(s)
-        if len(deduped) >= limit:
-            break
-
-    return deduped
-
-
 def _eli_known_user_name_v2() -> str:  # type: ignore[override]
     try:
         from eli.kernel.state import get_user_name as _eli_state_get_user_name
@@ -1396,56 +862,6 @@ def _eli_known_user_name_v2() -> str:  # type: ignore[override]
 
     return "the local user"
 
-
-def _eli_personal_memory_answer_v2(mode_label: str = "") -> str:  # type: ignore[override]
-    samples = _eli_sample_memory_texts_v2(100)
-
-    buckets = {
-        "ELI / MKXI / local assistant engineering": [],
-        "runtime / hardware / OS": [],
-        "tone and working style": [],
-        "research / theory / writing": [],
-        "other stable memory": [],
-    }
-
-    for s in samples:
-        low = s.lower()
-
-        if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "router", "executor", "agent", "memory", "persona", "response surface")):
-            buckets["ELI / MKXI / local assistant engineering"].append(s)
-        elif any(k in low for k in ("gpu", "nvidia", "linux", "ubuntu", "fedora", "ctx", "model", "wine", "steam", "vram")):
-            buckets["runtime / hardware / OS"].append(s)
-        elif any(k in low for k in ("direct", "truth", "bullshit", "flattery", "tone", "honest", "precise", "jargon", "no lies")):
-            buckets["tone and working style"].append(s)
-        elif any(k in low for k in ("physics", "simulation", "latex", "paper", "theory")):
-            buckets["research / theory / writing"].append(s)
-        else:
-            buckets["other stable memory"].append(s)
-
-    lines = [
-        "What I know about you from memory:",
-        "",
-        "I am filtering out runtime dumps, HackerNews/news cache, script-generation errors, reflection spam, and prompt echoes here. This answer is for personal/user memory, not database internals.",
-        "",
-    ]
-
-    emitted = 0
-    for title, vals in buckets.items():
-        vals = vals[:8]
-        if not vals:
-            continue
-
-        lines.append(f"## {title}")
-        for v in vals:
-            lines.append(f"- {v}")
-            emitted += 1
-        lines.append("")
-
-    if emitted == 0:
-        lines.append("I found the memory database, but the clean personal-memory filter did not find enough stable user facts. That means the store is either sparse, noisy, or the useful profile facts are stored somewhere outside the sampled columns.")
-
-    lines.append("Operational note: if you ask how memory works internally, I should show files/tables/functions. If you ask what I know about you, I should summarise stable facts about you.")
-    return "\n".join(lines).strip()
 
 # Personal memory fact-clause filter v4: replaces broad row sampling with stable user-fact
 # extraction.
@@ -1597,129 +1013,6 @@ def _eli_memory_fact_score_v4(s: str, source_table: str = "") -> int:
 
     return score
 
-
-def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:  # type: ignore[override]
-    db = _eli_db_paths_v2()["user_db"]
-    if not db.exists():
-        return []
-
-    candidates: list[tuple[int, str]] = []
-
-    try:
-        con = _eli_sqlite3.connect(str(db))
-        cur = con.cursor()
-
-        # Prefer explicit memory stores. Conversation tables are last-resort only.
-        table_plan = [
-            ("memories", 1200),
-            ("observations", 600),
-            ("conversation_turns", 300),
-            ("conversations", 300),
-        ]
-
-        for table, n in table_plan:
-            try:
-                cur.execute(f"PRAGMA table_info({table})")
-                cols = [r[1] for r in cur.fetchall()]
-                wanted = [c for c in ("text", "value", "content", "observation") if c in cols]
-                if not wanted:
-                    continue
-
-                expr = " || ' ' || ".join([f"COALESCE({c}, '')" for c in wanted])
-                ts_col = "ts" if "ts" in cols else ("timestamp" if "timestamp" in cols else "rowid")
-                where = ""
-
-                if "role" in cols:
-                    # For chat logs, user turns are more likely to contain durable preference facts.
-                    where = "WHERE role IN ('user', 'assistant')"
-
-                cur.execute(
-                    f"SELECT {expr} AS blob FROM {table} {where} "
-                    f"ORDER BY {ts_col} DESC LIMIT {int(n)}"
-                )
-
-                for (blob,) in cur.fetchall():
-                    row = " ".join(str(blob or "").split())
-                    if not row:
-                        continue
-
-                    # Do not reject the whole row before clause extraction unless it is pure machine/audit noise.
-                    clauses = _eli_split_fact_clauses_v4(row)
-                    for clause in clauses:
-                        if _eli_clause_is_noise_v4(clause):
-                            continue
-                        score = _eli_memory_fact_score_v4(clause, table)
-                        candidates.append((score, clause))
-            except Exception:
-                continue
-
-        con.close()
-    except Exception:
-        return []
-
-    # Deduplicate aggressively.
-    by_key: dict[str, tuple[int, str]] = {}
-    for score, clause in candidates:
-        key = _eli_re.sub(r"[^a-z0-9]+", " ", clause.lower()).strip()
-        if not key:
-            continue
-        old = by_key.get(key)
-        if old is None or score > old[0]:
-            by_key[key] = (score, clause)
-
-    ranked = sorted(by_key.values(), key=lambda x: x[0], reverse=True)
-    return [clause for _, clause in ranked[:limit]]
-
-
-def _eli_personal_memory_answer_v2(mode_label: str = "") -> str:  # type: ignore[override]
-    samples = _eli_sample_memory_texts_v2(120)
-
-    buckets = {
-        "ELI / MKXI / local assistant engineering": [],
-        "runtime / hardware / OS": [],
-        "tone and working style": [],
-        "research / theory / writing": [],
-        "other stable memory": [],
-    }
-
-    for s in samples:
-        low = s.lower()
-
-        if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "router", "executor", "agent", "memory", "persona", "response surface")):
-            buckets["ELI / MKXI / local assistant engineering"].append(s)
-        elif any(k in low for k in ("gpu", "nvidia", "linux", "ubuntu", "fedora", "wine", "steam", "vram")):
-            buckets["runtime / hardware / OS"].append(s)
-        elif any(k in low for k in ("direct", "truth", "bullshit", "flattery", "tone", "honest", "precise", "jargon", "no lies", "prefers")):
-            buckets["tone and working style"].append(s)
-        elif any(k in low for k in ("physics", "simulation", "latex", "paper", "theory")):
-            buckets["research / theory / writing"].append(s)
-        else:
-            buckets["other stable memory"].append(s)
-
-    lines = [
-        "What I know about you from memory:",
-        "",
-        "I am using the cleaned personal-memory path here: stable user facts only. Runtime dumps, audits, news rows, script errors, and reflection summaries are filtered out.",
-        "",
-    ]
-
-    emitted = 0
-    for title, vals in buckets.items():
-        vals = vals[:7]
-        if not vals:
-            continue
-
-        lines.append(f"## {title}")
-        for v in vals:
-            lines.append(f"- {v}")
-            emitted += 1
-        lines.append("")
-
-    if emitted == 0:
-        lines.append("I found the memory database, but the strict fact filter did not find enough stable personal facts. That means the useful profile facts need to be promoted into `memories` or a dedicated profile table, rather than being buried in conversation logs.")
-
-    lines.append("Operational note: personal-memory answers should summarise you. Memory-internals answers should show DB tables, files, and functions. Those are now separate surfaces.")
-    return "\n".join(lines).strip()
 
 # Personal memory durable-profile filter v5: rejects transient interaction facts and keeps durable
 # user-profile facts only.
@@ -1890,122 +1183,6 @@ def _eli_memory_fact_score_v5(s: str, source_table: str = "") -> int:
 
     return score
 
-
-def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:  # type: ignore[override]
-    db = _eli_db_paths_v2()["user_db"]
-    if not db.exists():
-        return []
-
-    candidates: list[tuple[int, str]] = []
-
-    try:
-        con = _eli_sqlite3.connect(str(db))
-        cur = con.cursor()
-
-        # Strong preference: durable memory stores only.
-        table_plan = [
-            ("memories", 1600),
-            ("observations", 800),
-        ]
-
-        for table, n in table_plan:
-            try:
-                cur.execute(f"PRAGMA table_info({table})")
-                cols = [r[1] for r in cur.fetchall()]
-                wanted = [c for c in ("text", "value", "content", "observation") if c in cols]
-                if not wanted:
-                    continue
-
-                expr = " || ' ' || ".join([f"COALESCE({c}, '')" for c in wanted])
-                ts_col = "ts" if "ts" in cols else ("timestamp" if "timestamp" in cols else "rowid")
-
-                cur.execute(
-                    f"SELECT {expr} AS blob FROM {table} "
-                    f"ORDER BY {ts_col} DESC LIMIT {int(n)}"
-                )
-
-                for (blob,) in cur.fetchall():
-                    row = _eli_v5_norm(blob)
-                    if _eli_clause_is_noise_v5(row):
-                        continue
-
-                    for clause in _eli_split_fact_clauses_v5(row):
-                        if _eli_clause_is_user_fact_v5(clause):
-                            candidates.append((_eli_memory_fact_score_v5(clause, table), clause))
-            except Exception:
-                continue
-
-        con.close()
-    except Exception:
-        return []
-
-    ranked = sorted(candidates, key=lambda x: x[0], reverse=True)
-
-    clean: list[str] = []
-    for score, clause in ranked:
-        if score < 4:
-            continue
-        clause = _eli_v5_norm(clause)
-        if not clause:
-            continue
-        if _eli_is_near_duplicate_v5(clause, clean):
-            continue
-        clean.append(clause)
-        if len(clean) >= limit:
-            break
-
-    return clean
-
-
-def _eli_personal_memory_answer_v2(mode_label: str = "") -> str:  # type: ignore[override]
-    samples = _eli_sample_memory_texts_v2(80)
-
-    buckets = {
-        "ELI / MKXI / local assistant engineering": [],
-        "runtime / hardware / OS": [],
-        "tone and working style": [],
-        "research / theory / writing": [],
-        "other stable memory": [],
-    }
-
-    for s in samples:
-        low = s.lower()
-
-        if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "router", "executor", "agent", "memory", "persona", "cognition", "orchestrator")):
-            buckets["ELI / MKXI / local assistant engineering"].append(s)
-        elif any(k in low for k in ("gpu", "nvidia", "linux", "ubuntu", "fedora", "wine", "steam", "vram")):
-            buckets["runtime / hardware / OS"].append(s)
-        elif any(k in low for k in ("direct", "truth", "bullshit", "flattery", "tone", "honest", "precise", "jargon", "no lies", "prefers", "step-by-step", "diagnostics")):
-            buckets["tone and working style"].append(s)
-        elif any(k in low for k in ("physics", "simulation", "latex", "paper", "theory")):
-            buckets["research / theory / writing"].append(s)
-        else:
-            buckets["other stable memory"].append(s)
-
-    lines = [
-        "What I know about you from memory:",
-        "",
-        "Filtered to durable user-profile facts only. I am excluding runtime dumps, audits, news rows, uploaded-file events, one-off questions, script errors, and reflection summaries.",
-        "",
-    ]
-
-    emitted = 0
-    for title, vals in buckets.items():
-        vals = vals[:6]
-        if not vals:
-            continue
-
-        lines.append(f"## {title}")
-        for v in vals:
-            lines.append(f"- {v}")
-            emitted += 1
-        lines.append("")
-
-    if emitted == 0:
-        lines.append("I found the memory database, but the strict durable-profile filter did not find enough clean facts. That means useful user facts should be promoted into `memories` or a dedicated profile table.")
-
-    lines.append("Operational note: this surface answers who you are and what you prefer. It should not explain SQLite internals unless you explicitly ask for memory internals.")
-    return "\n".join(lines).strip()
 
 # Personal memory clause-first profile filter v6: fixes v5 over-filtering by extracting valid
 # durable clauses before rejecting mixed/noisy rows. Also reads durable profile files when present.
@@ -2302,57 +1479,6 @@ def _eli_sample_memory_texts_v2(limit: int = 80) -> list[str]:  # type: ignore[o
     return clean
 
 
-def _eli_personal_memory_answer_v2(mode_label: str = "") -> str:  # type: ignore[override]
-    samples = _eli_sample_memory_texts_v2(80)
-
-    buckets = {
-        "ELI / MKXI / local assistant engineering": [],
-        "runtime / hardware / OS": [],
-        "tone and working style": [],
-        "research / theory / writing": [],
-        "other stable memory": [],
-    }
-
-    for s in samples:
-        low = s.lower()
-
-        if any(k in low for k in ("eli", "mkxi", "local assistant", "gguf", "router", "executor", "agent", "memory", "persona", "cognition", "orchestrator")):
-            buckets["ELI / MKXI / local assistant engineering"].append(s)
-        elif any(k in low for k in ("gpu", "nvidia", "linux", "ubuntu", "fedora", "wine", "steam", "vram", "terminal", "bash", "commands")):
-            buckets["runtime / hardware / OS"].append(s)
-        elif any(k in low for k in ("direct", "truth", "bullshit", "flattery", "tone", "honest", "precise", "jargon", "no lies", "prefers", "step-by-step", "diagnostics", "thorough", "meticulous")):
-            buckets["tone and working style"].append(s)
-        elif any(k in low for k in ("physics", "simulation", "latex", "paper", "theory", "field")):
-            buckets["research / theory / writing"].append(s)
-        else:
-            buckets["other stable memory"].append(s)
-
-    lines = [
-        "What I know about you from memory:",
-        "",
-        "Filtered to durable user-profile facts only. I am excluding runtime dumps, audits, news rows, uploaded-file events, one-off questions, script errors, and reflection summaries.",
-        "",
-    ]
-
-    emitted = 0
-    for title, vals in buckets.items():
-        vals = vals[:8]
-        if not vals:
-            continue
-
-        lines.append(f"## {title}")
-        for v in vals:
-            lines.append(f"- {v}")
-            emitted += 1
-        lines.append("")
-
-    if emitted < 5:
-        lines.append("Strict filter warning: fewer than 5 durable facts survived. That means the DB contains too much event/log memory and not enough promoted profile memory. Promote stable facts into `memories`, `observations`, or `artifacts/user_info.txt`.")
-        lines.append("")
-
-    lines.append("Operational note: this surface answers who you are and what you prefer. It should not explain SQLite internals unless you explicitly ask for memory internals.")
-    return "\n".join(lines).strip()
-
 # Dynamic user profile filter v8: portable profile surface with no shipped/static user profile
 # files. Reads durable facts only from the local installation's own DB/memory.
 
@@ -2592,61 +1718,6 @@ def _eli_v8_fallback_identity() -> str:
         name = "local user"
     return f"Local account: {name}"
 
-
-def _eli_personal_memory_answer_v2(mode_label: str = "") -> str:  # type: ignore[override]
-    raw_texts = _eli_v8_collect_db_texts()
-    facts: list[str] = []
-
-    for text in raw_texts:
-        fact = _eli_v8_extract_fact(text)
-        if fact:
-            facts.append(fact)
-
-    buckets = {
-        "identity": [],
-        "tone and working style": [],
-        "ELI / local assistant engineering": [],
-        "research / theory / writing": [],
-        "runtime / hardware / OS": [],
-        "other stable memory": [],
-    }
-
-    seen: set[str] = set()
-    for fact in facts:
-        key = _eli_v8_re.sub(r"[^a-z0-9]+", " ", fact.lower()).strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        buckets[_eli_v8_bucket_for_fact(fact)].append(fact)
-
-    if not buckets["identity"]:
-        buckets["identity"].append("No confirmed user identity in local memory.")
-
-    lines = [
-        "What I know about this user from local memory:",
-        "",
-        "This is dynamic. I am not reading a shipped static profile file. I am using this installation's local SQLite/memory evidence and filtering out runtime dumps, audits, news rows, one-off questions, uploaded-file events, and script errors.",
-        "",
-    ]
-
-    emitted = 0
-    for title, vals in buckets.items():
-        vals = vals[:10]
-        if not vals:
-            continue
-
-        lines.append(f"## {title}")
-        for v in vals:
-            lines.append(f"- {v}")
-            emitted += 1
-        lines.append("")
-
-    if emitted <= 1:
-        lines.append("No durable personal profile facts have been learned yet. The user should be identified only as the current local user until they explicitly save profile facts or enough stable memories accumulate.")
-        lines.append("")
-
-    lines.append("Operational rule: never ship developer-specific facts as defaults. User identity must be learned per installation.")
-    return "\n".join(lines).strip()
 
 # The portable user-profile surface. No static profile files, no dev-specific identity
 # shipped in, it rejects prompt/image-gen/event rows, and it only keeps runtime
@@ -2924,15 +1995,13 @@ def _eli_v9_self_report(user_input: object, mode_label: str = "") -> str:
     )
 
 
-_ELI_V9_PREVIOUS_RENDER_ACTION = globals().get("render_action")
-
-
-def render_action(
+def _render_v9(
+    prev,
     action: str,
     args: _EliV9Mapping[str, _EliV9Any] | None = None,
     user_input: str = "",
     mode_label: str = "",
-) -> str:  # type: ignore[override]
+) -> str:
     a = str(action or "").upper()
     args = args or {}
 
@@ -2951,22 +2020,11 @@ def render_action(
             or "which functions" in low
             or "memory system works" in low
         ):
-            if callable(_ELI_V9_PREVIOUS_RENDER_ACTION):
-                try:
-                    return _ELI_V9_PREVIOUS_RENDER_ACTION(a, args, user_input, mode_label=mode_label)
-                except TypeError:
-                    return _ELI_V9_PREVIOUS_RENDER_ACTION(a, args, user_input)
-            return "Memory internals renderer unavailable."
+            return prev(a, args, user_input, mode_label=mode_label)
 
         return _eli_personal_memory_answer_v2(mode_label=mode_label)
 
-    if callable(_ELI_V9_PREVIOUS_RENDER_ACTION):
-        try:
-            return _ELI_V9_PREVIOUS_RENDER_ACTION(a, args, user_input, mode_label=mode_label)
-        except TypeError:
-            return _ELI_V9_PREVIOUS_RENDER_ACTION(a, args, user_input)
-
-    return ""
+    return prev(a, args, user_input, mode_label=mode_label)
 
 # Dynamic profile clause extractor v10: recovers durable user-preference clauses from noisy rows
 # without keeping prompt/image/runtime wrappers.
@@ -3328,10 +2386,7 @@ def _eli_v11_strip_identity_facts(lines: list[str]) -> list[str]:
     return out
 
 
-_ELI_V11_PREVIOUS_RENDER_ACTION = globals().get("render_action")
-
-
-def render_action(action, args=None, user_input="", mode_label=""):  # type: ignore[override]
+def _render_v11(prev, action, args=None, user_input="", mode_label=""):
     a = str(action or "").upper()
     args = args or {}
 
@@ -3364,14 +2419,7 @@ def render_action(action, args=None, user_input="", mode_label=""):  # type: ign
             or "which functions" in low
             or "memory system works" in low
         ):
-            if callable(_ELI_V11_PREVIOUS_RENDER_ACTION):
-                try:
-                    rendered = _ELI_V11_PREVIOUS_RENDER_ACTION(a, args, user_input, mode_label=mode_label)
-                except TypeError:
-                    rendered = _ELI_V11_PREVIOUS_RENDER_ACTION(a, args, user_input)
-            else:
-                rendered = "Memory internals renderer unavailable."
-            return _eli_v11_redact_user_identity(rendered)
+            return _eli_v11_redact_user_identity(prev(a, args, user_input, mode_label=mode_label))
 
         try:
             rendered = _eli_v10_personal_memory_answer(mode_label=mode_label)  # type: ignore[name-defined]
@@ -3417,14 +2465,7 @@ def render_action(action, args=None, user_input="", mode_label=""):  # type: ign
         return _eli_v11_redact_user_identity(rendered)
 
     # Everything else: delegate, then redact.
-    if callable(_ELI_V11_PREVIOUS_RENDER_ACTION):
-        try:
-            rendered = _ELI_V11_PREVIOUS_RENDER_ACTION(a, args, user_input, mode_label=mode_label)
-        except TypeError:
-            rendered = _ELI_V11_PREVIOUS_RENDER_ACTION(a, args, user_input)
-        return _eli_v11_redact_user_identity(rendered)
-
-    return ""
+    return _eli_v11_redact_user_identity(prev(a, args, user_input, mode_label=mode_label))
 
 
 _ELI_V11_PREVIOUS_INSTALL = globals().get("install")
@@ -3656,22 +2697,13 @@ def _eli_v12_identity_answer(mode_label: str = "") -> str:
     ))
 
 
-_ELI_V12_PREVIOUS_RENDER_ACTION = globals().get("render_action")
-
-
-def _eli_v12_render_surface(action: str, args=None, user_input="", mode_label="") -> str:
+def _render_v12(prev, action: str, args=None, user_input="", mode_label="") -> str:
     a = str(action or "").upper()
     args = args or {}
 
     if a == "SELF_REPORT":
         if _eli_v12_is_runtime_question(user_input):
-            if callable(_ELI_V12_PREVIOUS_RENDER_ACTION):
-                try:
-                    evidence = _ELI_V12_PREVIOUS_RENDER_ACTION(a, args, user_input, mode_label=mode_label)
-                except TypeError:
-                    evidence = _ELI_V12_PREVIOUS_RENDER_ACTION(a, args, user_input)
-            else:
-                evidence = "Runtime evidence unavailable."
+            evidence = prev(a, args, user_input, mode_label=mode_label)
 
             return _eli_v12_redact(json.dumps(
                 {
@@ -3689,18 +2721,7 @@ def _eli_v12_render_surface(action: str, args=None, user_input="", mode_label=""
 
         return _eli_v12_identity_answer(mode_label)
 
-    if callable(_ELI_V12_PREVIOUS_RENDER_ACTION):
-        try:
-            rendered = _ELI_V12_PREVIOUS_RENDER_ACTION(a, args, user_input, mode_label=mode_label)
-        except TypeError:
-            rendered = _ELI_V12_PREVIOUS_RENDER_ACTION(a, args, user_input)
-        return _eli_v12_redact(rendered)
-
-    return ""
-
-
-def render_action(action, args=None, user_input="", mode_label=""):  # type: ignore[override]
-    return _eli_v12_render_surface(str(action or "").upper(), args or {}, user_input, mode_label)
+    return _eli_v12_redact(prev(a, args, user_input, mode_label=mode_label))
 
 
 def _eli_v12_forced_self_report_from_chat(text: object) -> bool:
@@ -3722,9 +2743,6 @@ _ELI_V12_PREVIOUS_INSTALL = globals().get("install")
 # surfaces aren't handed to the model.
 
 import re as _eli_v13_re
-
-
-_ELI_V13_PREVIOUS_RENDER_ACTION = globals().get("render_action")
 
 
 def _eli_v13_safe_redact(text: object) -> str:
@@ -3763,14 +2781,11 @@ def _eli_v13_safe_redact(text: object) -> str:
 
 
 def _eli_v13_previous_self_report(user_input: str, mode_label: str) -> str:
-    if callable(_ELI_V13_PREVIOUS_RENDER_ACTION):
-        try:
-            return str(_ELI_V13_PREVIOUS_RENDER_ACTION("SELF_REPORT", {}, user_input, mode_label=mode_label))
-        except TypeError:
-            return str(_ELI_V13_PREVIOUS_RENDER_ACTION("SELF_REPORT", {}, user_input))
-        except Exception as e:
-            return f"Runtime evidence unavailable: {type(e).__name__}: {e}"
-    return "Runtime evidence unavailable: no previous render_action."
+    """SELF_REPORT as rendered by the layers below v13."""
+    try:
+        return str(_RENDER_BELOW_V13("SELF_REPORT", {}, user_input, mode_label=mode_label))
+    except Exception as e:
+        return f"Runtime evidence unavailable: {type(e).__name__}: {e}"
 
 
 def _eli_v13_extract_runtime_block(text: str) -> str:
@@ -3895,7 +2910,7 @@ def _eli_v13_forced_identity_question(text: object) -> bool:
     )
 
 
-def _eli_v13_render_action(action, args=None, user_input="", mode_label="") -> str:
+def _render_v13(prev, action, args=None, user_input="", mode_label="") -> str:
     a = str(action or "").upper()
     args = args or {}
     text = str(user_input or "")
@@ -3905,18 +2920,7 @@ def _eli_v13_render_action(action, args=None, user_input="", mode_label="") -> s
             return _eli_v13_runtime_answer(text, str(mode_label or ""))
         return _eli_v13_identity_answer(str(mode_label or ""))
 
-    if callable(_ELI_V13_PREVIOUS_RENDER_ACTION):
-        try:
-            out = _ELI_V13_PREVIOUS_RENDER_ACTION(a, args, text, mode_label=mode_label)
-        except TypeError:
-            out = _ELI_V13_PREVIOUS_RENDER_ACTION(a, args, text)
-        return _eli_v13_safe_redact(out)
-
-    return ""
-
-
-def render_action(action, args=None, user_input="", mode_label=""):  # type: ignore[override]
-    return _eli_v13_render_action(action, args or {}, user_input, mode_label)
+    return _eli_v13_safe_redact(prev(a, args, text, mode_label=mode_label))
 
 
 _ELI_V13_SURFACE_ACTIONS = set(globals().get("_ELI_V12_SURFACE_ACTIONS", set())) | {
@@ -4262,11 +3266,8 @@ def _eli_v14_bad_self_report_output(text: object) -> bool:
     )
 
 
-_ELI_V14_PREVIOUS_RENDER_ACTION = globals().get("render_action")
-
-
-def render_action(action, args=None, user_input="", mode_label=""):  # type: ignore[override]
-    a = str(action or "").upper()
+def _render_v14(prev, action, args=None, user_input="", mode_label=""):
+    a = str(action or "").upper().strip()
     text = str(user_input or "")
 
     if a == "SELF_REPORT" or _eli_v14_identity_question(text):
@@ -4276,24 +3277,16 @@ def render_action(action, args=None, user_input="", mode_label=""):  # type: ign
             return _eli_v14_persona_runtime_answer(str(mode_label or ""))
         return _eli_v14_identity_answer(str(mode_label or ""))
 
-    if callable(_ELI_V14_PREVIOUS_RENDER_ACTION):
-        try:
-            return _eli_v14_redact(_ELI_V14_PREVIOUS_RENDER_ACTION(a, args or {}, text, mode_label=mode_label))
-        except TypeError:
-            return _eli_v14_redact(_ELI_V14_PREVIOUS_RENDER_ACTION(a, args or {}, text))
-        except Exception as e:
-            return _eli_v14_redact(json.dumps(
-                {
-                    "surface": "render_action_failed",
-                    "action": a,
-                    "error": f"{type(e).__name__}: {e}",
-                },
-                ensure_ascii=False,
-                default=str,
-                indent=2,
-            ))
-
-    return ""
+    try:
+        rendered = prev(a, args or {}, text, mode_label=mode_label)
+    except Exception as e:
+        rendered = json.dumps(
+            {"surface": "render_action_failed", "action": a, "error": f"{type(e).__name__}: {e}"},
+            ensure_ascii=False,
+            default=str,
+            indent=2,
+        )
+    return _eli_v14_redact(rendered)
 
 
 _ELI_V14_SURFACE_ACTIONS = {
@@ -4324,60 +3317,20 @@ def install(CognitiveEngine):  # type: ignore[override]
     return CognitiveEngine
 
 
-# Deterministic grounding policy engine (ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1): an immutable
-# engine that replaces the stacked render_action overrides.
-try:
-    if not globals().get("_ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1"):
-        _ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1 = True
-        from dataclasses import dataclass as _eli_dg_dataclass
-        from typing import Callable as _eli_dg_Callable
+# ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1: render_action is one explicit, ordered pipeline. Each layer takes
+# the renderer below it as its first argument and either answers for itself or delegates and post-processes.
+# Innermost first: the response-surface renderer (which falls back to the original), then the v9 personal-memory
+# layer, v11 identity redaction, v12 runtime evidence, v13 safe redaction and v14 identity/runtime answers.
+def _stack(layer, below):
+    def render(action, args=None, user_input="", mode_label=""):
+        return layer(below, action, args, user_input, mode_label)
+    return render
 
-        _ELI_DG_POLICY_FALLBACK_RENDER = globals().get("_ELI_V14_PREVIOUS_RENDER_ACTION") or globals().get("render_action")
 
-        @_eli_dg_dataclass(frozen=True)
-        class _EliDeterministicGroundingPolicyEngine:
-            surface_actions: frozenset[str]
-            fallback_render: _eli_dg_Callable | None
+_ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1 = True      # read by the frontier and identity status reports
+_RENDER_BELOW_V13 = _stack(_render_v12, _stack(_render_v11, _stack(_render_v9, _render_v2)))
+_RENDER_PIPELINE = _stack(_render_v14, _stack(_render_v13, _RENDER_BELOW_V13))
 
-            def render(self, action, args=None, user_input="", mode_label="") -> str:
-                a = str(action or "").upper().strip()
-                text = str(user_input or "")
 
-                if a == "SELF_REPORT" or _eli_v14_identity_question(text):
-                    if _eli_v14_runtime_question(text):
-                        if _eli_v14_is_quick(str(mode_label or "")):
-                            return _eli_v14_quick_runtime_answer()
-                        return _eli_v14_persona_runtime_answer(str(mode_label or ""))
-                    return _eli_v14_identity_answer(str(mode_label or ""))
-
-                if callable(self.fallback_render):
-                    try:
-                        rendered = self.fallback_render(a, args or {}, text, mode_label=mode_label)
-                    except TypeError:
-                        rendered = self.fallback_render(a, args or {}, text)
-                    except Exception as e:
-                        rendered = json.dumps(
-                            {
-                                "surface": "render_action_failed",
-                                "action": a,
-                                "error": f"{type(e).__name__}: {e}",
-                            },
-                            ensure_ascii=False,
-                            default=str,
-                            indent=2,
-                        )
-                    return _eli_v14_redact(rendered)
-
-                return ""
-
-        _ELI_DG_POLICY_ENGINE = _EliDeterministicGroundingPolicyEngine(
-            surface_actions=frozenset(_ELI_V14_SURFACE_ACTIONS),
-            fallback_render=_ELI_DG_POLICY_FALLBACK_RENDER,
-        )
-
-        def render_action(action, args=None, user_input="", mode_label=""):  # type: ignore[override]
-            return _ELI_DG_POLICY_ENGINE.render(action, args=args, user_input=user_input, mode_label=mode_label)
-
-        log.debug("[GROUNDING] immutable policy engine installed")
-except Exception as _eli_dg_policy_engine_err:
-    log.debug(f"[GROUNDING] immutable policy engine install failed: {_eli_dg_policy_engine_err}")
+def render_action(action, args=None, user_input="", mode_label=""):
+    return _RENDER_PIPELINE(action, args, user_input, mode_label)

@@ -3481,7 +3481,6 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
       4. "X by Y" (no target)     → yt-dlp+mpv
       5. Generic fallback         → browser watch URL
     """
-    import subprocess as _sp
     import urllib.parse
     import re as _re
 
@@ -4547,7 +4546,7 @@ def _speak_legacy(text: str):
 
 # --- TTS PATCH ---
 import tempfile
-from eli.utils.platform_compat import open_url, open_file, notify, play_sound, play_alarm_sound, WINDOWS
+from eli.utils.platform_compat import open_url, open_file, notify, play_alarm_sound
 
 # ---- Ollama host canonical config ----
 OLLAMA_HOST = (os.environ.get("ELI_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
@@ -4730,7 +4729,6 @@ def _allowed_cmds_set():
 
 def _allow_or_block(argv0: str) -> bool:
     """Allow or block executables based on sandbox rules."""
-    import os
     
     # FULL CONTROL MODE: allow everything
     if _full_control():
@@ -5315,7 +5313,6 @@ def _save_artifact(content: str, subdir: str, filename: str, fmt: str = "md") ->
     Returns the absolute path string.
     """
     import re as _re
-    from pathlib import Path as _P
 
     root = _artifacts_dir() / subdir
     root.mkdir(parents=True, exist_ok=True)
@@ -12852,7 +12849,6 @@ def _eli_user_info_report(force=False, reason="query"):
 # The wrapper-install scaffolding was removed; pre-dispatch in execute()
 # routes READ_FILE / WRITE_NOTE / SCREENSHOT through these directly.
 def _eli_safe_read_file(args=None):
-    from pathlib import Path
     _args = args or {}
     path = str(_args.get("path") or "").strip()
     if not path:
@@ -13180,7 +13176,6 @@ except NameError:
         import platform
         import shutil
         import subprocess
-        import sys
 
         system = platform.system().lower()
 

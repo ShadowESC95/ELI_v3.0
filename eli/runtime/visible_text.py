@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 # Re-export unified pipeline — single consumer-boundary contract.
-from eli.runtime.response_pipeline import finalize_response_text, to_user_visible as _pipeline_to_user_visible
+from eli.runtime.response_pipeline import to_user_visible as _pipeline_to_user_visible
 
 
 def _consume_generator(gen: Any) -> str:

@@ -6,33 +6,25 @@ from __future__ import annotations
 
 import logging
 from eli.cognition.output_governor import govern_output
-from eli.cognition.output_governor import normalize_assistant_text as _output_governor_normalize
 from .scheduler import get_scheduler
 from eli.execution.router_enhanced import route as route_intent
-from eli.execution.executor_enhanced import chat as ollama_chat
 from eli.execution.executor_enhanced import execute as execute_action
 from eli.core.paths import get_paths
 from eli.core import runtime_settings as runtime_settings
 from eli.core import config
 from eli.runtime.self_improvement import get_self_improvement
-from eli.memory import Memory, get_memory, get_memory_status, resolve_db_paths
+from eli.memory import get_memory
 
-import difflib
 import os
 import re
 import json
-import sys
 import time
 import threading
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
-from eli.cognition.context_synthesiser import build_persona_handoff
-from eli.cognition import context_budget as _ctx_budget
-from eli.cognition import evidence_format as _evidence_format
+from typing import Any, Dict, List, Optional
 from eli.core.confidence import confidence_label as _confidence_label
 
 
-from eli.utils.log import get_logger
 
 from eli.kernel.stages.lifecycle import LifecycleMixin
 from eli.kernel.stages.generation import GenerationMixin
@@ -4200,7 +4192,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         recent_turns: Optional[Any] = None,
     ):
         """Wrap a live token stream with anti-repeat enforcement and one retry."""
-        from types import SimpleNamespace
 
         _recent_eli: List[str] = []
         _recent_user: List[str] = []

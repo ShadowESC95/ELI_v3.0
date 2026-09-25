@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import re
 import requests
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 

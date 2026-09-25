@@ -2,7 +2,7 @@
 from __future__ import annotations
 from eli.gui.main_window._common import *  # noqa: F401,F403
 
-from eli.gui.main_window.adapters import CentralMemoryAdapter, ExecutorBridge, _GUIEngineAdapter
+from eli.gui.main_window.adapters import CentralMemoryAdapter, ExecutorBridge
 from eli.gui.main_window.models import LocalModelManager, OllamaModelManager
 from eli.gui.main_window.widgets import _CapabilityList, _GlobalScrollZoom, _MiniTelemetryGraph, _QABoard, _ZoomableImagePreview, _ZoomableSettingsView  # noqa: F401
 

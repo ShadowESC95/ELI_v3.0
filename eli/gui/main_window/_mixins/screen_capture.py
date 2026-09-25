@@ -90,7 +90,7 @@ class ScreenCaptureMixin:
         path = self._sc_screenshot_path
 
         def worker():
-            import subprocess, shutil, tempfile, os
+            import subprocess, shutil
             text = ""
 
             # ── 1. tesseract CLI — fast, no Python binding needed ──────────

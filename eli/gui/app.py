@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from eli.core.paths import config_dir, models_dir, project_root
+from eli.core.paths import models_dir, project_root
 from eli.core.runtime_settings import _settings_file, load_settings, save_settings
 
 

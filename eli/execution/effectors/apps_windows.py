@@ -10,7 +10,7 @@ import os
 import re
 import shlex
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict
 from eli.utils.platform_compat import open_file
 from eli.utils.log import get_logger
 log = get_logger(__name__)

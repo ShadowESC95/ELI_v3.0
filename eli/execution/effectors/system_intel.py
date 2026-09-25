@@ -11,7 +11,7 @@ import re
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from eli.core.paths import get_paths
 from eli.utils.log import get_logger
 log = get_logger(__name__)

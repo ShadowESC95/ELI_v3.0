@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -447,7 +447,6 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
       4. "X by Y" (no target)     → yt-dlp+mpv
       5. Generic fallback         → browser watch URL
     """
-    import subprocess as _sp
     import urllib.parse
     import re as _re
 
