@@ -102,8 +102,7 @@ Read-only scan feeding the comment-trim + refactor pass:
 
 ## 6. Attribution & housekeeping
 
-- Commits authored **ShadowESC95** with `Co-authored-by: Claude Opus 4.8` (per the
-  2026-07-01 preference change).
+- Commits authored by **ShadowESC95** only.
 - README landing page rewritten in a plainer first-person voice; scale/test numbers
   refreshed across the living blueprints; PDFs regenerated.
 

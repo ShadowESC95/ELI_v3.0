@@ -120,10 +120,10 @@ def render_brief(name: str, grouped: Dict[str, List[str]], dossier: str = "") ->
     lines: List[str] = []
     head = f"USER MODEL: {name}" if name else "USER MODEL: (name not yet known)"
     ident = _join(grouped.get("identity", []))
-    # comms_style aggregates EVERY preference.* signal (learned tone/humor/depth +
-    # explicit style/persona/commands). The default n=4 silently dropped the
-    # overflow — so learned tone could be evicted from the per-turn brief by newer
-    # preferences. These are the voice directives; render them all (generous cap).
+    # comms_style aggregates every preference.* signal (learned tone/humor/depth plus explicit
+    # style/persona/commands). The default n=4 silently dropped the overflow, so learned tone could
+    # be evicted from the per-turn brief by newer preferences. These are the voice directives, so
+    # render them all (generous cap).
     style = _join(grouped.get("comms_style", []), n=12)
     bits = [b for b in (ident, style) if b]
     lines.append(head + (" — " + " ".join(bits) if bits else ""))

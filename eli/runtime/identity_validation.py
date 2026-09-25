@@ -158,10 +158,10 @@ def extract_explicit_identity_facts(text: Any) -> Dict[str, str]:
         if value and key not in facts:
             facts[key] = value
 
-    # "call me X" is the one ambiguous declarer: it also matches questions and
-    # complaints ("why did you call me X", "you called me X", "don't/stop call
-    # me X"). Only accept it as a real preferred-name declaration when it's a
-    # genuine first-person imperative — never from a question/reference/negation.
+    # "call me X" is the one ambiguous declarer: it also matches questions and complaints ("why
+    # did you call me X", "you called me X", "don't/stop call me X"). Accept it as a
+    # preferred-name declaration only as a genuine first-person imperative, never from a question,
+    # reference or negation.
     if "preferred_name" not in facts:
         _call_me_is_declaration = not re.search(
             r"\b(?:you|why|what|when|who|how|did|do|does|never|didn'?t|don'?t|"

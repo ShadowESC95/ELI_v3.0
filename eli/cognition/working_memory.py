@@ -44,12 +44,9 @@ MAX_PINS = 20          # hard cap on pinned items
 MAX_AGE_TURNS = 40     # evict if not referenced for this many turns
 IMPORTANCE_THRESHOLD = 0.65  # auto-pin memories above this score
 
-# Executor command-echo signature, e.g. "SET_USER_NAME: Got it. I'll call you
-# SCREENSHOT." — an ALL-CAPS action token followed by a colon. These are tool
-# output echoes, NOT durable user facts; pinning them poisons the persona brief
-# (the model read "I'll call you SCREENSHOT" and addressed the user as such).
-# Real facts are mixed-case ("User identity: ...", "App usage: ..."), so this
-# never rejects a legitimate pin.
+# Executor command echoes ("SET_USER_NAME: Got it. I'll call you SCREENSHOT.") are ALL-CAPS token +
+# colon. They are tool output, not user facts, and pinning them made the model call the user
+# SCREENSHOT. Real facts are mixed-case, so no legitimate pin is rejected.
 _ACTION_ECHO_RE = re.compile(r"^\s*[A-Z][A-Z0-9_]{3,}\s*:")
 
 
