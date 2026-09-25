@@ -1,5 +1,7 @@
 # ELI — Complete Findings & Corrections (deep-read session, 2026-06-07)
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 > **⏱ Current status (2026-06-28).** This doc is the *2026-06-07* deep-read record; its
 > numbers are point-in-time. For the authoritative current state see
 > **[state_snapshot.md](state_snapshot.md)**. As of 2026-06-28: **142,325 LOC / 369 `.py`

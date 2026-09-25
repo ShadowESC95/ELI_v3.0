@@ -1,5 +1,7 @@
 # ELI v3 — Coverage Increase Analysis
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 **Question:** can the 48.1% testable coverage go higher, and if so, where?
 **Short answer:** yes — a focused pass on *testable-but-untested logic* can realistically
 reach **~54–56%**. Beyond that is a hard floor of code that cannot be honestly tested in

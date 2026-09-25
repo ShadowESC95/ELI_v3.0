@@ -1,5 +1,7 @@
 # ELI — Redistribution & Health Audit
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *A full audit for redistribution suitability and functional health. Run 2026-07-03 against
 the working tree. Method: automated scans of tracked vs untracked content, a compile pass over
 every module, an engine smoke test, the capability manifest, and the test-suite state.*

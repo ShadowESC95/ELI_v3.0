@@ -32,7 +32,7 @@ def test_recommend_user_input_not_patch():
 def test_playbook_report_contains_mechanisms():
     text = build_repair_playbook_report("how do I fix ELI", live=False)
     assert "self fix" in text.lower()
-    assert "examine eli/gui/eli_pro_audio_gui_v2_0.py" in text
+    assert "examine eli/gui/main_window/window.py" in text
     assert "Tier 3" in text
     assert "USER_INPUT" in text
 

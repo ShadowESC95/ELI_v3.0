@@ -1,5 +1,7 @@
 # ELI v3 — Monolith decomposition & edition mapping
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 How the five god-files break into cohesive modules, and how each function family maps
 to the **shared core** vs a **specialised edition** — so versions/sectors compose
 dynamically. Grounded in an AST + name-prefix analysis of the actual code (Jul 2026).

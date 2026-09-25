@@ -1,5 +1,7 @@
 # ELI v3 — Monolith Decomposition Map
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *Exactly how the five god-files were broken down, where every function family now
 resides, and why the result is more customisable and easier to maintain. All
 counts are `wc -l` / file-count measured against the pre-refactor baseline (git

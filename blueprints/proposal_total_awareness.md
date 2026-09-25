@@ -73,7 +73,7 @@ is proposed in §5 (ELI-assisted test generation) rather than faked with padding
 
 ## 2. Full audit snapshot (files / folders / tests / eval)
 
-- **Code:** ~190k LOC, 593 `.py` under `eli/` (+ the FastAPI web app `api/server.py`; 12
+- **Code:** ~231k LOC, 593 `.py` under `eli/` (+ the FastAPI web app `api/server.py`; 12
   main GUI tabs; 15 bus agents + CodeAgent; 4 SQLite stores; 208 manifest capabilities /
   174 SUPPORTED_ACTIONS). *(measured 2026-06-28.)*
 - **Tests:** **7,019 passed**, 42 skipped, 2 xfail (documented routing gaps). The 5 reds

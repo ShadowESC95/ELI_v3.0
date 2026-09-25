@@ -1,14 +1,14 @@
 # ELI v3.0 — Commands & Installers Reference
 
-> **Updated for v3.0.115 (September 2026).** One hardware-aware GUI wizard. Prebuilt installers on
-> [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.115). Full beginner map:
+> **Updated for 3.0.128 (September 2026).** One hardware-aware GUI wizard. Prebuilt installers on
+> [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.127). Full beginner map:
 > `first time Installation/INSTALLATION_GUIDE.md`.
 
 
 *Every install path and command in one place. Copy-paste ready. Run everything from
 inside the ELI folder unless noted.*
 
-Canonical version: **3.0.115**. Best-tested platform: **Linux x86_64 + NVIDIA**. Windows,
+Canonical version: **3.0.128**. Best-tested platform: **Linux x86_64 + NVIDIA**. Windows,
 macOS, AMD, Intel Arc, and Apple Silicon ship supported paths; Iris Xe / ≤8 GB use CPU policy.
 
 ---
@@ -18,8 +18,8 @@ macOS, AMD, Intel Arc, and Apple Silicon ship supported paths; Iris Xe / ≤8 
 ### From a downloaded portable release
 
 ```bash
-tar -xzf ELI_v3-3.0.115-linux-portable.tar.gz
-cd ELI_v3-3.0.115-linux-portable
+tar -xzf ELI_v3-3.0.127-linux-portable.tar.gz
+cd ELI_v3-3.0.127-linux-portable
 chmod +x ELI_Setup.sh
 ./ELI_Setup.sh
 ```
@@ -44,8 +44,8 @@ cd ELI_v3.0
 ### Linux AppImage
 
 ```bash
-chmod +x ELI_v3-3.0.115-x86_64.AppImage
-./ELI_v3-3.0.115-x86_64.AppImage
+chmod +x ELI_v3-3.0.127-x86_64.AppImage
+./ELI_v3-3.0.127-x86_64.AppImage
 ```
 
 ### Compatibility aliases (not separate installers)
@@ -211,7 +211,7 @@ bash build_packages.sh wheel appimage windows-lean   # pick targets
 
 ```powershell
 bash build_packages.sh windows-lean
-powershell -ExecutionPolicy Bypass -File packaging/windows/build-windows.ps1 -Version 2.4.6
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-windows.ps1 -Version 3.0.128
 ```
 
 A signed/notarized macOS `.dmg` must be built on a Mac. Large model/voice binaries ship
@@ -291,9 +291,7 @@ delete the `.desktop` files from `~/.local/share/applications/`.
 Use License 1.0.0. Questions: jaybridgeman0095@gmail.com*
 
 
-## Update — 2.3.7
-
-### New CLI-reachable surfaces
+## CLI-reachable surfaces
 
 | Module | `python -m` entry | What it does |
 |---|---|---|

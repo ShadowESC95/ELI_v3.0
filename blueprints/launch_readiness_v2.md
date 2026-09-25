@@ -1,5 +1,7 @@
 # ELI v2.0 — Launch Readiness Report
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *A complete, freshly-measured validation of the whole project for v2.0 launch: test suite,
 eval harness + judge, coverage, the contract layer, structural health, redistribution safety,
 and cross-platform status. Every number here was re-measured on ELI's real interpreter

@@ -1,6 +1,6 @@
 # ELI — Common Errors & Fixes
 
-> **Updated for v3.0.116 (September 2026).** Primary path: GitHub Releases
+> **Updated for 3.0.128 (September 2026).** Primary path: GitHub Releases
 > (`ELI-Setup-*.exe`, macOS dmg, Linux AppImage, portable `./ELI_Setup.sh`).
 > Wizard core stages hard-fail until nomic + voice + chat model are present.
 > Windows: one desktop ELI + GUI singleton. **Home** tab ≠ Home Assistant.
@@ -38,7 +38,7 @@ on the shared `gpu-packs` GitHub release.
 **Cause:** Desktop used to pin both `ELI.exe` and `ELI-Server.exe`; post-install could race.
 **Fix (v3.0.114+):** Desktop shortcut is **ELI only**; Server stays in Start Menu. Frozen GUI
 takes a singleton lock — a second launch shows “ELI is already running” and exits.
-Close the extra window; upgrade to 3.0.114+ (current **3.0.116**).
+Close the extra window; upgrade to the current release.
 
 ---
 
@@ -266,10 +266,10 @@ The **AppImage** is the easiest path: it bundles its own **Python 3.11**, so Arc
 Python 3.14 (which has no `llama-cpp-python` wheel) is irrelevant, and as of **v2.1.21** it
 bundles every Qt xcb library too. Download and run:
 ```bash
-U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v2.3.55
-wget "$U/ELI_v3-2.4.12-x86_64.AppImage"
-chmod +x ELI_v3-2.4.12-x86_64.AppImage
-./ELI_v3-2.4.12-x86_64.AppImage
+U=https://github.com/ShadowESC95/ELI_v3.0/releases/download/v3.0.127
+wget "$U/ELI_v3-3.0.127-x86_64.AppImage"
+chmod +x ELI_v3-3.0.127-x86_64.AppImage
+./ELI_v3-3.0.127-x86_64.AppImage
 ```
 **Run it directly** (as above) so it FUSE-mounts in place — `--appimage-extract-and-run`
 unpacks ~4 GB into `/tmp`, which fails with `libz.so.1: file too short` when `/tmp` is a small
@@ -431,10 +431,10 @@ web-searched — surfacing whatever the search returned.
 
 ---
 
-## Natural voice / cloning: `pip install "eli-v2.0[natural]"` fails with "No matching distribution"
-**Symptom:** following an in-app message or older doc literally (`pip install "eli-v2.0[natural]"`)
-fails — pip tries to fetch `eli-v2.0` from PyPI, where this project isn't published.
-**Cause:** that string only resolves once `eli-v2.0` is already installed under that name from a
+## Natural voice / cloning: `pip install "eli-v3[natural]"` fails with "No matching distribution"
+**Symptom:** following an in-app message or older doc literally (`pip install "eli-v3[natural]"`)
+fails — pip tries to fetch `eli-v3` from PyPI, where this project isn't published.
+**Cause:** that string only resolves once `eli-v3` is already installed under that name from a
 real index; a source checkout needs the local-path form instead.
 **Fix:** from the ELI project root: `pip install -e ".[natural]"` (or `.[clone]`/`.[voice]` —
 all three are aliases for the same Coqui XTTS-v2 extra). Fixed at the source in v2.1.29 — every

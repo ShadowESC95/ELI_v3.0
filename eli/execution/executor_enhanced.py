@@ -2333,6 +2333,15 @@ SUPPORTED_ACTIONS = [
     'ANALYZE_PDF_FOLDER',
     'IMAGE_STATUS',
     'LISTEN_FOR_COMMAND',
+    'CANCEL_TASK',
+    'COMPUTER_USE',
+    'GOAL_PROGRESS',
+    'LIST_SPEAKERS',
+    'LIST_TASKS',
+    'RESCHEDULE_TASK',
+    'SPEAKER_ENROLL',
+    'SPEAKER_STATUS',
+    'VOICE_DIAGNOSTICS',
     'PLUGIN_STATUS',
     'STT_DIAGNOSTICS',
     'ADD_EVENT',
@@ -12034,6 +12043,19 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as _sme:
             return {"ok": False, "action": a, "error": str(_sme), "content": str(_sme), "response": str(_sme)}
 
+    # Actions that only exist as effector modules (COMPUTER_USE, the speaker actions, task control).
+    # The built-in chain above runs first so its newer handlers are never shadowed.
+    try:
+        from eli.execution.effectors import load_all as _load_effectors
+        from eli.execution.effectors.registry import get as _effector_get
+        _load_effectors()
+        _effector = _effector_get(a)
+        if _effector is not None:
+            return _effector(a, args)
+    except Exception as _eff_err:
+        log.debug("[EXECUTOR] effector dispatch failed for %s", a, exc_info=True)
+        return {"ok": False, "action": a, "error": str(_eff_err), "content": str(_eff_err), "response": str(_eff_err)}
+
     # Last stop before "unsupported": an installed plugin may own this action. Checked late so a
     # plugin can never shadow a built-in (a listing declaring SHUTDOWN or SEND_EMAIL would take over
     # that verb for the whole assistant).
@@ -15921,3 +15943,10 @@ try:
         log.debug("[EXECUTOR] canonical middleware table installed")
 except Exception as _eli_executor_canonical_middleware_err:
     log.debug(f"[EXECUTOR] canonical middleware table install failed: {_eli_executor_canonical_middleware_err}")
+
+
+try:
+    from eli.execution.effectors import load_all as _load_effectors_at_import
+    _load_effectors_at_import()
+except Exception:
+    log.debug("[EXECUTOR] effector modules failed to load", exc_info=True)

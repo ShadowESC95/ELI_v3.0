@@ -1,6 +1,6 @@
 # Using Ollama with ELI — a start-to-finish guide (no tech knowledge needed)
 
-> **Updated for 3.0.81.** The Ollama model picker in Settings / startup works on
+> **Updated for 3.0.128.** The Ollama model picker in Settings / startup works on
 > AppImage and portable builds (Qt compat shim exports `QDialogButtonBox`).
 
 This guide is for anyone who wants ELI to use an **Ollama** model. You don't need

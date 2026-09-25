@@ -1,5 +1,7 @@
 # ELI v3 — Test Coverage Suite & Results (Full Report)
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 A full test-coverage suite was built for ELI and run end-to-end across **four lanes**.
 This document is the complete record: the suite, the methodology, the measured results
 (headline + per-subsystem + a visual chart), an honest analysis of the low-scoring

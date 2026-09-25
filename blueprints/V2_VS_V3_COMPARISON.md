@@ -1,5 +1,7 @@
 # ELI v2 vs v3 — What Changed
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *Factual comparison of the two lines. v2 is the shipping public product
 (2.1.x); v3 is in active private development (3.0.x) on the
 `v3-modularisation` branch. Same cognitive runtime and capability set — v3 is

@@ -1,5 +1,7 @@
 # ELI MK-XI — Full Project Audit (Engineering Reference)
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 **Purpose:** A durable, accurate map of the codebase to be used when **refactoring,
 upgrading, and fixing**. It records what each subsystem is, where it lives, its entry
 points, its current status, and every known issue — so future work starts from facts, not

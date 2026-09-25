@@ -1,7 +1,7 @@
 # Voice Creation / Cloning Engine — end-to-end (2026-07-28)
 
-> **Updated for 3.0.81.** Character presets (ffmpeg) vs XTTS zero-shot cloning;
-> see also `blueprints/perception.md` for mic auto-detect (3.0.81+).
+> **Updated for 3.0.128.** Character presets (ffmpeg) vs XTTS zero-shot cloning;
+> see also `blueprints/perception.md` for mic auto-detect (v2.3.44+).
 
 How ELI turns a short audio/video clip of *any* voice — a character, an actor, a
 friend — into a usable ELI voice. Covers the full path from a dropped-in file to

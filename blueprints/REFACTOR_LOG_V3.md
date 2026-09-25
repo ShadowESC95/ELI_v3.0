@@ -1,5 +1,7 @@
 # ELI v3 Refactor Log — Before & After
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 > **Update 2026-09-25.** The engine decomposition described below was silently undone on 2026-09-08
 > (v3.0.99, "port v2.3.92 …"), which reinstated the v2 monolith as `engine.py` and left `kernel/stages/` unwired
 > while later fixes landed in both places. It has been restored: the production code was moved verbatim into the

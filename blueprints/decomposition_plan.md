@@ -1,5 +1,7 @@
 # ELI — Full code review: issues, proposals & decomposition
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *2026-06-07. **PLAN AND DOCUMENT ONLY — no code changes.** Grounded in a structural
 scan of the actual repository.*
 

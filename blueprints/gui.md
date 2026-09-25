@@ -1,19 +1,17 @@
 # ELI GUI
 
-> **Updated for 3.0.128.** v3 decomposed the v2 GUI monolith into packages
-> (see `main_window/` below — `eli_pro_audio_gui_v2_0.py` is now dead code,
-> superseded but not yet deleted). Ollama model selector fixed on packaged
-> builds (`QDialogButtonBox` via `eli/gui/qt_compat.py`).
+> **Updated for 3.0.128.** Ollama model selector fixed on packaged builds
+> (`QDialogButtonBox` exported via `eli/gui/qt_compat.py`).
 
-`eli/gui/` — **27,612 LOC**, **61 modules** (decomposed packages + panels/tabs/docks/widgets).
-A full native PySide6/PyQt desktop app (with a Qt-binding compat shim), plus a
-first-boot launcher and a scientific **Labs** workspace in `eli/gui/labs/`.
+`eli/gui/` — 42.5k LOC across 63 modules (top-level launcher, `main_window/` package, `labs/` package, panels, tabs, docks, widgets). A full native PySide6/PyQt desktop app (with a
+Qt-binding compat shim), plus a first-boot launcher and a large scientific
+"Labs" workspace.
 
-## Tab map (current — 13 main tabs)
+## Tab map (current — 15 main tabs)
 
 ```mermaid
 flowchart TD
-    W([ELI Pro window]) --> T{13 main tabs}
+    W([ELI Pro window]) --> T{15 main tabs}
     T --> Chat[Chat]
     T --> Pro[Proactive · 6 sub-tabs]
     T --> Img[Images]
@@ -23,6 +21,8 @@ flowchart TD
     T --> Cod[Coding]
     T --> Tsk[Tasks · all background jobs]
     T --> Rep[Report Builder]
+    T --> Ide[IDE]
+    T --> Ext[Extensions]
     T --> Exp[Experimental · read-only workbench]
     T --> Wld[Eli's World]
     T --> Set[Settings · 10 pages: Model · Runtime · Generation ·<br/>Identity · Audio · Application ·<br/>Agents · Gaze · Web Server · Advanced]
@@ -35,7 +35,7 @@ flowchart TD
     Set --> S2[Marketplace · browse · scan · permissions · sources]
 ```
 
-### New in 2.3.7
+### Marketplace and training additions
 
 | Surface | Where | What it is |
 |---|---|---|
@@ -44,24 +44,32 @@ flowchart TD
 | **Permission dialog** | anywhere | Android-style consent: Allow once · Always allow · Not now · Never allow |
 | 🎯 **Eval board** / ⚖️ **Eval + judge** | Labs ▸ Test & Review | behaviour regression board, run in-process |
 
-## Files (v3 layout — measured 2026-08-29)
+## Files
 
-| Package / file | LOC | Role |
+| File | LOC | Role |
 |---|---:|---|
-| **`main_window/`** (16 files) | ~12,570 | Decomposed main window: mixins, adapters, models, widgets |
-| `main_window/window.py` | 1,154 | `EliMainWindow` shell |
-| `main_window/adapters.py` | — | `CentralMemoryAdapter`, `ExecutorBridge`, `_GUIEngineAdapter` |
-| `main_window/models.py` | — | `LocalModelManager`, `OllamaModelManager` |
-| **`labs/`** (17 files) | ~5,964 | Scientific workspace — one module per sub-tab |
-| `labs_tab.py` | 30 | **Shim only** — re-exports from `eli.gui.labs` |
-| `app.py` | 784 | launcher / first-boot auto-tune / entry `main()` |
-| `panels/startup.py` | 1,305 | model picker + FirstBootWizard |
-| `panels/settings.py` | 733 | settings dialog incl. Plugins + Marketplace |
-| `tabs/training_tab.py` | 841 | Labs ▸ Training — LoRA wizard |
-| `tabs/marketplace_tab.py` | 707 | Settings ▸ Marketplace |
-| `panels/permission_dialog.py` | 223 | plugin consent dialog |
+| `app.py` | 840 | launcher, first-boot auto-tune, entry `main()` |
+| `main_window/window.py` | 1301 | `EliMainWindow` and `main()`, composed from the mixins below |
+| `main_window/_mixins/settings_model.py` | 2489 | settings pages and model loading |
+| `main_window/_mixins/chrome_io.py` | 1842 | window chrome, input/output plumbing |
+| `main_window/_mixins/tabs.py` | 1384 | builds the main tabs |
+| `main_window/_mixins/conversation.py` | 1219 | chat turn handling |
+| `main_window/_mixins/features.py` | 889 | feature toggles and panels |
+| `main_window/models.py` | 1029 | `LocalModelManager`, `OllamaModelManager` |
+| `main_window/adapters.py` | 617 | `CentralMemoryAdapter`, `ExecutorBridge`, `_GUIEngineAdapter` |
+| `main_window/widgets.py`, `_common.py` | 493, 557 | shared widgets and helpers |
+| `labs/` (16 modules) | 6.4k | the Labs sub-tabs; `report_tab.py` is the largest (3327) |
+| `labs_tab.py`, `gui_eli_original.py` | 30, 7 | compatibility shims that re-export the packages above |
+| `eli_pro_audio_gui_v2_0.py` | 12816 | the pre-decomposition monolith, kept for compatibility; `app.py` does not launch it |
+| `panels/startup.py` | 1974 | guided first boot: hardware, model pick or download, tuning |
+| `panels/settings.py` | 825 | settings dialog including the Plugins and Marketplace sub-tabs |
+| `tabs/extensions_tab.py` | 1991 | Extensions tab |
+| `tabs/marketplace_tab.py` | 991 | Settings ▸ Marketplace |
+| `tabs/training_tab.py` | 841 | Labs ▸ Training, the LoRA wizard |
+| `panels/permission_dialog.py` | 232 | plugin consent dialog and its thread bridge |
 | `docks/operator_console_dock.py` | 303 | operator console dock |
-| `widgets/ollama_model_selector.py` | 294 | optional Ollama model picker |
+| `widgets/ollama_model_selector.py` | 444 | optional Ollama model picker |
+| `license_dialog.py` | 208 | licence acceptance dialog |
 
 ## Launcher (`app.py`)
 
@@ -69,35 +77,38 @@ The entry path: `_detect_hardware` (queries **free** VRAM — the display server
 consumes VRAM before ELI launches, so free ≠ total), `_auto_tune(model_path, hw)`
 (picks n_ctx/layers/batch), `_pick_model`, `_confirm_params`, config load/save.
 `main()` either shows the startup model picker (first boot) or delegates to
-`eli.gui.main_window.window.main()`. `--setup` forces the wizard.
+`gui_eli_original.main()` (the shim onto `main_window.window.main`). `--setup` forces the wizard.
 
 ## Main window (`main_window/`)
 
-v3 split the former ~12.6k-line monolith into a package:
+`EliMainWindow` in `window.py` is composed from the mixins under `_mixins/`. The classes below
+live beside it and are application logic, not just UI:
+- `CentralMemoryAdapter` — bridges the GUI to the memory subsystem.
+- `LocalModelManager` (`models.py`) — discover/load/swap local GGUF models.
+- `OllamaModelManager` (`models.py`) — optional Ollama integration (legacy/optional;
+  ELI's stance is 100% local GGUF, so this is a secondary path).
+- `ExecutorBridge` (`adapters.py`) — routes GUI actions into the executor/engine.
+- `_GUIEngineAdapter` — engine façade for the UI.
+- UI widgets: `_QABoard` (quick-action card board), `_MiniTelemetryGraph` (live
+  telemetry), `_ZoomableSettingsView`, `_ZoomableImagePreview`, `_FlowLayout`,
+  `_CapabilityList`.
+- `pyqtSignal`/`Slot` aliased through `qt_compat.py` so it runs on PyQt **or**
+  PySide.
 
-- **`window.py`** — `EliMainWindow` and tab wiring.
-- **`_mixins/`** — feature slices (chat, settings, quick actions, screen capture, …).
-- **`adapters.py`** — bridges to memory, executor, and engine (`CentralMemoryAdapter`,
-  `ExecutorBridge`, `_GUIEngineAdapter`).
-- **`models.py`** — `LocalModelManager`, `OllamaModelManager`.
-- **`widgets.py`** — `_QABoard`, `_MiniTelemetryGraph`, zoomable views, `_CapabilityList`.
-
-Threading: long-running workers marshal results back to the GUI thread via a
-class-level `pyqtSignal` on `window.py`'s `EliMainWindow`, connected with an
-explicit `Qt.ConnectionType.QueuedConnection` (same pattern Training already
-used correctly, see below). Two screen-control call sites in
-`_mixins/screen_capture.py` (OCR results, "ask ELI" results) used
-`QTimer.singleShot(0, ...)` called *from* the worker thread instead, which has
-no guaranteed event loop — fixed to use the same signal pattern as the
-neighbouring capture handler.
+Threading: every long-running worker in this file marshals results back to
+the GUI thread via a class-level `pyqtSignal` connected with an explicit
+`Qt.ConnectionType.QueuedConnection` — the safe cross-thread pattern (same
+one Training already used correctly, see below). Two screen-control call
+sites (OCR results, "ask ELI" results) used `QTimer.singleShot(0, ...)`
+called *from* the worker thread instead, which has no guaranteed event loop —
+fixed to use the same signal pattern as the neighbouring capture handler.
 
 ## Labs workspace (`labs/`)
 
-The former ~5.7k-line `labs_tab.py` monolith is now **`eli/gui/labs/`** — 17 modules,
-~6k LOC total, one file per sub-tab: Notebook, Memory & Conversations, Jupyter,
-Calculator, Physics, File Chat, Workspaces, Sim/IDE, Orchestration, Test & Review,
-Training, Report Builder. `labs_tab.py` remains a **30-line compatibility shim** for
-existing imports.
+The "scientific workspace" tab (`labs/container.py` builds it; `labs_tab.py` is a shim) with **11 sub-tabs**: Notebook, Memory &
+Conversations, Jupyter, Calculator, Physics constants, File Chat, Workspaces,
+Sim/IDE, **Orchestration**, **Test & Review**, **Training**. (Report Builder is its own main tab; Orchestration and Test & Review live in Labs as developer and diagnostic tools.) This is the research-bench surface (reflects whatever technical/research work
+the active user does, surfaced dynamically from their own data).
 
 ### Labs ▸ 🎓 Training (`tabs/training_tab.py`)
 
@@ -106,8 +117,10 @@ Training reaches the GUI through **signals only** on a **QThread** with cancel.
 
 ### Settings ▸ 🛒 Marketplace (`tabs/marketplace_tab.py`)
 
-Four panes: **Browse**, **Installed**, **Permissions**, **Sources**. See `security.md`
-for the verification and scanning model.
+Five panes: **Browse**, **Installed**, **Permissions**, **MCP servers**, **Sources**. See `security.md` for the verification and scanning
+model — the short version is that the install path is deliberately slow, nothing is
+written to disk before the operator has seen a scan result, and what is written
+arrives switched off with no permissions granted.
 
 ### The consent dialog (`panels/permission_dialog.py`)
 
@@ -128,12 +141,16 @@ timeout that **denies** if the GUI never answers.
   live telemetry, local model management, first-boot wizard, scientific workspace.
   v3 decomposition makes the GUI easier to navigate and test than the v2 god-file.
 - **Weak / watch:**
-  1. **`memory.py`-scale coupling** — adapters still instantiate engine/memory directly;
-     a shared service layer would help headless mode.
-  2. **Ollama manager** — optional/legacy path carrying real weight; candidate for
-     quarantine or removal.
-  3. **`main_window/` mixins** — still large collectively (~12.6k); continue splitting
-     by tab/feature as touch points arise.
+  1. **Two copies of the window.** The decomposed `main_window/` package is what launches; the
+     12.8k-line `eli_pro_audio_gui_v2_0.py` monolith is still in the tree and is still imported
+     by `panels/settings.py` and other modules, so it can drift from the package.
+  2. **Ollama manager** (about 130 lines, plus the 444-line model selector widget) sits oddly against the "100% local GGUF,
+     don't-care-about-Ollama" stance — it's an optional/legacy path carrying
+     real weight; candidate for removal or clear quarantine.
+  3. UI logic instantiating engine/memory directly makes a clean headless mode
+     harder (there *is* `eli --headless`, but the GUI module re-implements
+     bridges rather than sharing one service layer).
+
 
 ### Marketplace panes and the one-click path
 

@@ -13,7 +13,7 @@
 
 | | |
 |---|---|
-| `eli/` Python | **224,368 lines** · **595 modules** |
+| `eli/` Python | **231,141 lines** · **609 modules** |
 | `api/server.py` | **5,303 lines** (FastAPI web app + dashboard) |
 | `capability_manifest.json` | **232** total actions |
 | Doc-routable (`routable` ∨ `in_supported_list`) | **215** |

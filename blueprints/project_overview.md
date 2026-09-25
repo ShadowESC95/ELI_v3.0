@@ -1,234 +1,155 @@
-# ELI v3 — Full Project Breakdown & Assessment
+# ELI — Full Project Breakdown & Assessment
 
-> **Updated for 3.0.85 (August 2026).** Cognition pipeline unified: gradient
-> orchestrator for all CHAT modes, shared retrieval, canonical S01–S12 tracing.
-> 3.0.85+ restores cross-platform microphone auto-resolve (USB / Bluetooth /
-> headset before built-in; live subprocess probes). Primary install: CI-launch-tested
-> installers on [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases).
+> **Updated for 3.0.128 (September 2026).** Every CHAT mode runs the gradient
+> orchestrator, retrieval is shared in `eli/memory/retrieval.py`, memory is governed by a
+> storage policy (`eli/memory/policy.py`), and the S01–S12 pipeline is traced canonically.
+> Installers are CI-launch-tested and published on
+> [GitHub Releases](https://github.com/ShadowESC95/ELI_v3.0/releases).
 
-A grounded, total-project read: what ELI is, its scale and shape, the
-architecture layer by layer, what's strong, where it's weak (with numbers), an
-honest verdict, and the highest-leverage work. Companion to
-`orchestration_and_agents.md` (agent/bus detail).
+A grounded read of the whole project: what ELI is, its scale and shape, the architecture
+layer by layer, where it is strong, where it is weak (with measured numbers), and what
+would help most. Companion to `orchestration_and_agents.md` (agent and bus detail).
 
-> Method note: this is built from deep reads of the core modules (engine,
-> executor, router, agent_bus, orchestrator, planners, memory, grounding gate,
-> vision, identity, security, reasoning modes) plus a complete structural and
-> code-health sweep (LOC distribution, debt markers, duplication, repo
-> hygiene). It is grounded in a deep read of every package this session — claims are grounded
-> in what was actually inspected.
+> Method note: the numbers below were computed from the tree on 2026-09-25 (AST parse of
+> every file under `eli/`, `pytest --collect-only`, the capability manifest). Prose claims
+> were checked against the code they describe.
 
 ---
 
 ## 1. What ELI is
 
-A **local-first, model-agnostic personal AI** — no cloud, no telemetry, offline-by-default
-and hard-gated at the socket boundary (internet is an owner-controlled, monitored opt-in,
-not a runtime dependency; one-time opt-in HuggingFace model downloads are the only network
-event unless the owner enables the Internet toggle). It bundles: GGUF inference (llama-cpp),
-a PySide6 desktop GUI, persistent SQLite+FTS5+FAISS memory, a knowledge graph, a 12-stage
-cognitive pipeline with a parallel multi-agent bus, a deterministic grounding/evidence layer
-to fight confabulation, local vision (Qwen2.5-VL hot-swap + Moondream co-resident), TTS/STT,
-OS control, a plugin system, a proactive daemon, and a LoRA self-training loop.
+A **local-first, model-agnostic personal AI**: no cloud, no telemetry, offline by default and
+hard-gated at the socket boundary. Internet access is an owner-controlled, monitored opt-in;
+one-time opt-in model downloads are the only network event unless the owner enables the
+Internet toggle. It bundles GGUF inference (llama.cpp), a PySide6 desktop GUI, persistent
+SQLite + FTS5 + FAISS memory, a knowledge graph, a 12-stage cognitive pipeline with a
+parallel 15-agent bus, a deterministic grounding and evidence layer that fights
+confabulation, local vision (Qwen2.5-VL hot-swap and Moondream), TTS and STT, OS control, a
+plugin system, a proactive daemon, and a LoRA self-training loop.
 
-**As of 2026-06-28 it has a second front end:** a self-hosted **FastAPI web app + dashboard
-PWA** (`api/server.py`) — chat, a live telemetry dashboard, **ELI's own MQTT smart-home**
-(rooms, scenes, real automations; Home Assistant removed), multi-user **RBAC**
-(admin/member/viewer), a **tamper-evident hash-chained audit trail**, collaborative
-**research corpora**, **browser voice** (local whisper STT + Piper TTS), and the monitored
-Internet toggle — launchable in-process from the desktop GUI. It is a cognitive operating
-system for one machine (and, optionally, the people the owner shares it with), not a chat
-wrapper.
+It also has a second front end: a self-hosted **FastAPI web app and dashboard PWA**
+(`api/server.py`): chat, a live telemetry dashboard, ELI's own MQTT smart-home (rooms,
+scenes, automations), multi-user roles (admin, member, viewer), a hash-chained audit trail,
+shared research corpora, browser voice and the monitored Internet toggle. It is launchable
+in-process from the desktop GUI.
 
-## 2. Scale & shape
+## 2. Scale and shape
 
-**224,368 LOC across 595 Python files** (`eli/`), plus the FastAPI web server
-(`api/server.py`, **5,303 lines** with an embedded dashboard PWA) and 389 test files.
-*(measured 2026-08-29.)*
+**231,141 lines across 609 Python files** in `eli/`, plus `api/server.py` (5,282 lines with
+an embedded dashboard) and **544 test files** under `tests/`.
 
-| Subsystem | LOC | Files | Role |
+| Subsystem | Lines | Files | Role |
 |---|---:|---:|---|
-| `runtime/` | 33.3k | 97 | grounding, evidence, introspection, surfaces |
-| `execution/` | 29.3k | 81 | router + executor + **42 effectors** |
-| `gui/` | 27.6k | 61 | PySide6 desktop — **`main_window/` + `labs/`** |
-| `cognition/` | 19.1k | 39 | agent bus, orchestrator, inference, persona, modes |
-| `kernel/` | 17.3k | 23 | engine + **`kernel/stages/`** + pipeline_trace |
-| `perception/` | 10.2k | 26 | vision, STT, TTS, OS control |
-| `core/` | 9.7k | 33 | paths, settings, hardware profile, netguard |
-| `memory/` | 8.3k | 15 | SQLite/FTS5 + FAISS + KG + **retrieval.py** |
-| `tools/` | 7.5k | 29 | image engine, capability registry, diagnostics |
-| `plugins/` | 5.9k | 34 | runtime plugin manager |
-| `planning/` | 4.7k | 26 | proactive daemon, habits, scheduled tasks |
+| `gui/` | 42.5k | 63 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs (12.8k of it is the retained monolith) |
+| `execution/` | 41.8k | 79 | router and executor (action dispatch), plus decomposition modules not yet called by the live executor |
+| `runtime/` | 36.4k | 101 | grounding, evidence, introspection, surfaces, daemons |
+| `cognition/` | 21.3k | 48 | agent bus, orchestrator, inference, persona, modes |
+| `kernel/` | 18.3k | 22 | the engine composed from `stages/` mixins, pipeline tracing |
+| `core/` | 11.6k | 33 | paths, settings, hardware profile |
+| `perception/` | 11.1k | 26 | vision, STT, TTS, OS control |
+| `memory/` | 8.9k | 12 | SQLite, FTS5, FAISS, knowledge graph, storage policy |
+| `tools/` | 7.6k | 29 | image engine, news, registry |
+| `plugins/` | 5.9k | 34 | plugin manager, marketplace client |
+| `planning/` | 4.6k | 21 | proactive daemon, habits, queues |
 | `learning/` | 4.3k | 14 | LoRA self-training |
-| `coding/` | 2.7k | 15 | CodeAgent |
-| `world/` | 1.9k | 26 | world event bus, local world bridge |
-| `integrations/` | 1.8k | 12 | Ollama, MCP |
-| `utils/`, `contracts/`, `system/`, `cli/` | ~5.5k | — | misc |
+| `integrations/` | 3.4k | 18 | Ollama, MCP, cross-platform media |
+| `coding/` | 2.7k | 15 | the coding agent |
+| `setup/`, `utils/`, `licensing/`, `world/`, `system/`, `contracts/`, `onboarding/`, `editions/`, `cli/`, top level | 10.8k | 94 | installer, helpers, licensing, world model, portable control |
 
-**Largest modules (v3 decomposed — not v2 monolith sizes):**
-`executor_enhanced.py` (~6.9k), `engine.py` (~7.4k), `gui/main_window/` (~12.6k
-package), `router_enhanced.py` (~4.5k), `gui/labs/` (~6.0k package),
-`memory.py` (~5.1k), `deterministic_grounding_gate.py` (~4.4k).
+**Five files carry about a fifth of the codebase:** `executor_enhanced.py` (15.9k),
+`gui/eli_pro_audio_gui_v2_0.py` (12.8k), `router_enhanced.py` (8.3k), `engine.py` (8.0k, with
+another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server.py` (5.3k),
+`agent_bus.py` (3.5k), `deterministic_grounding_gate.py` (3.4k), `gui/labs/report_tab.py` (3.3k).
 
 ## 3. Architecture, layer by layer
 
-- **Boot / hardware** — `core/hardware_profile.py` + `core/startup_hardware_optimizer.py`
-  adapt n_ctx / gpu_layers / batch to whatever model + GPU are present
-  (filename→ctx table; VRAM compute-buffer reservation). Model-agnostic.
-- **Routing** — `execution/router_enhanced.py`: regex-first with LLM-intent
-  fallback + an explicit priority pipeline → one of **232 manifest capabilities**
-  (**215** doc-routable; **211** executor `SUPPORTED_ACTIONS`; **189** router-routable).
-  Full reference with activation phrases: `capabilities_and_actions.md`.
-- **Orchestration** — `kernel/engine.py` runs **gradient orchestrator** for all
-  CHAT modes (Quick = light/fast; Expert = full/deep); `dispatch_specialists()`
-  composes the 15-agent `cognition/agent_bus.py` after shared retrieval
-  (`memory/retrieval.py`). AgentBus remains a **fallback** if orchestration fails.
-  ReAct tool-chaining for non-CHAT actions. See `orchestration_and_agents.md`.
-- **Inference** — `cognition/gguf_inference.py`: model-path resolved from env /
-  settings (no baked model); RLock-serialized; live runtime override; hot-swap
-  with vision models.
-- **Memory** — `memory/retrieval.py` owns turn retrieval; `memory/memory.py` is
-  the SQLite/FTS5/FAISS/KG foundation; FAISS tombstones on delete.
-- **Grounding / evidence (the crown jewel)** — `runtime/deterministic_grounding_gate.py`
-  (4.3k), `runtime/evidence_ledger.py`, `runtime/evidence_arbitration.py`,
-  `runtime/control_contracts.py`, `runtime/grounded_remediation.py` (1.6k),
-  `cognition/output_governor.py`. A layered, deterministic anti-confabulation
-  system wrapped around the probabilistic model. Most local-LLM projects have
-  nothing comparable.
-- **Security** — `runtime/security.py` `SecurityManager`: **fail-closed shell gate**
-  (`ELI_ALLOWED_CMDS` / the ELI Full Control toggle; unset ⇒ commands blocked), path
-  allow-roots (`ELI_ALLOW_ROOTS`, defaults to project + home), app allowlist with
-  a default-safe set, **SHA-256 custom-agent trust registry**
-  (`config/trusted_agents.json`), prompt-injection guard, SQL identifier
-  validation.
-- **Self-model** — `cognition/reasoning_modes.py`: `quick`/`fast`/`balanced` all
-  fastpath to quick, plus four private modes (`chain_of_thought`,
-  `self_consistency`, `tree_of_thoughts`, `constitutional_ai`). Persona overlay,
-  `runtime/self_improvement.py`, LoRA self-training (`learning/`). Emergent
-  internal-state surfacing (autonomy pressure, "anomaly room") is intentional —
-  see memory `eli-emergent-voice`.
+- **Boot and hardware**: `core/hardware_profile.py` and `core/startup_hardware_optimizer.py`
+  fit context, GPU layers and batch to whatever model and GPU are present. One fit
+  calculation is shared by the loader and the startup dialog; the fit priority
+  (balanced, max GPU, max context) is a setting.
+- **Routing**: `execution/router_enhanced.py` is regex-first with an LLM-intent fallback
+  and an explicit priority pipeline, resolving to one of **235 manifest capabilities**
+  (190 routable, 214 in the executor's supported list, 219 in either). The full reference
+  with activation phrases is `capabilities_and_actions.md`.
+- **Orchestration**: `kernel/engine.py` runs the gradient orchestrator for all CHAT modes
+  (Quick is light, Expert is deep); `dispatch_specialists()` composes the 15-agent
+  `cognition/agent_bus.py` after shared retrieval. The bus is a fallback if orchestration
+  fails. See `orchestration_and_agents.md`.
+- **Inference**: `cognition/gguf_inference.py` resolves the model path from environment and
+  settings (no baked model), serialises calls behind a lock, supports a live runtime
+  override, and hot-swaps with vision models. Model family and chat template come from GGUF
+  metadata (`model_identity.py`).
+- **Memory**: `memory/retrieval.py` owns turn retrieval (a question naming a period is
+  filtered by date first); `memory/memory.py` is the SQLite, FTS5, FAISS and knowledge
+  graph foundation; `memory/policy.py` decides what is stored, merged, decayed and
+  archived (`memory.md`).
+- **Grounding and evidence**: `runtime/deterministic_grounding_gate.py`,
+  `evidence_ledger.py`, `evidence_arbitration.py`, `control_contracts.py`,
+  `grounded_remediation.py` and `cognition/output_governor.py`: a layered, deterministic
+  anti-confabulation system around the probabilistic model.
+- **Security**: `runtime/security.py` `SecurityManager` with a fail-closed shell gate
+  (`ELI_ALLOWED_CMDS` or the Full Control toggle; unset means blocked), path allow-roots
+  (`ELI_ALLOW_ROOTS`), an app allowlist, a SHA-256 custom-agent trust registry
+  (`cognition/agent_trust.py`, stored in `config/trusted_agents.json`), SQL identifier
+  validation in `memory/memory.py`, and prompt-injection screening in the engine.
+- **Self-model**: `cognition/reasoning_modes.py`: `quick`, `fast` and `balanced` all fast-path
+  to quick, plus four private modes (`chain_of_thought`, `self_consistency`,
+  `tree_of_thoughts`, `constitutional_ai`). Persona overlay, `runtime/self_improvement.py`
+  and LoRA self-training (`learning/`).
 
-## 4. What's genuinely strong
+## 4. What is genuinely strong
 
-1. **The grounding / evidence layer.** Unusually rigorous; deterministic evidence
-   gating around a probabilistic model is the right idea and well-developed. This
-   is the part closest to genuinely frontier.
-2. **Truly local + truly model-agnostic.** No call-home, hardware-adaptive,
-   swappable models (verified — inference path carries no baked model identity).
-3. **Real, fail-closed security.** Shell blocked by default, hash-gated custom
-   agents, path/app allowlists. Most "AI agent" projects ship wide open.
-4. **Breadth, integrated.** Vision, voice, OS control, memory, KG, plugins,
-   self-training — all local, all wired into one pipeline.
+1. **The grounding and evidence layer.** Deterministic evidence gating around a
+   probabilistic model, developed to a high degree.
+2. **Local and model-agnostic.** No call-home, hardware-adaptive, swappable models.
+3. **Fail-closed security.** Shell blocked by default, hash-gated custom agents, path and
+   app allowlists.
+4. **Breadth, integrated.** Vision, voice, OS control, memory, knowledge graph, plugins and
+   self-training in one pipeline.
+5. **A large safety net.** 13,585 tests are collected; the structural tests catch broken
+   imports, stale action lists and unpinned routes.
 
-## 5. Where it's weak (grounded in the sweep)
+## 5. Where it is weak (measured)
 
-1. **2,565 `except Exception:` blocks (+7 bare `except:`).** The dominant
-   structural problem. Errors are swallowed into "skipped"/fallback/empty
-   everywhere — which is precisely why bugs surface only via runtime logs.
-   Failures are invisible by design. Frontier software makes failures **loud in
-   dev, quiet in prod**; this swallows them uniformly. Also the main reason the
-   system is hard to reason about. (Only 12 TODO/FIXME markers exist — not because
-   the code is clean, but because failures are absorbed rather than flagged.)
-2. **God-files.** Two ~13–14k-line modules (`executor_enhanced.py`, `engine.py`) plus
-   an 11k GUI. The executor is a giant if/elif action ladder. High regression
-   surface, hard to hold in the head, painful to unit-test.
-3. **Duplication & overlap.** The shadowed standalone image-engine module (1.75k LOC) was
-   removed, leaving the single `eli/tools/image_engine/` package. `runtime/` (93 files) has
-   many near-duplicate `personal_memory_*` /
-   `*_surface` / `*_response` modules doing overlapping grounding work. Several
-   plan representations coexisted (partly consolidated). Fingerprint of fast solo
-   iteration — new code added beside the old, not folded in.
-4. **Repo hygiene.** Committed junk at root: empty `...` and `[package-index-options]`
-   files, one-off `patch_gpu_dynamic.py` / `patch_s11_bugs.py`, three
-   `verify_eli_claims*.sh` versions, diag outputs, `.coverage`, and
-   `experimental/*.zip` binaries. Makes the repo look less serious than the code
-   is.
-5. **Tests are GREEN (measured 2026-08-28).** 389 test files; `pytest tests/` =
-   **10,970 collected / 10,900+ passed / 54 skipped / 2 xfailed** (~13.5 min on the `.venv`/GPU). The 5
-   former reds (deprecated `smart_home` plugin, silent-swallow ratchet, stale blueprint
-   ref) were all cleared 2026-07-03. The
-   `tests/claims/` contract layer makes it a real safety net.
-6. **13 monkeypatch/`globals()` hacks** — mostly load-bearing (e.g. the CPU-clip
-   vision fix), but they're fragile seams worth tracking.
+1. **Swallowed errors.** 5,258 handlers catch `Exception` (most log at debug level), 6 are
+   bare `except:`, and 207 are a lone `pass`. A ratchet test
+   (`tests/claims/test_no_silent_swallow.py`) stops the silent count rising.
+2. **Large files.** The executor is an action ladder and the engine a long orchestration
+   method; the regression surface is high and unit-testing is hard.
+3. **Overlap in `runtime/`.** Many `personal_memory_*`, `*_surface` and `*_response` modules
+   do neighbouring grounding work.
+4. **Two copies of the main window.** The decomposed `gui/main_window/` package launches; the 12.8k-line `eli_pro_audio_gui_v2_0.py` monolith is retained and still imported by a few modules.
+5. **Test-suite state.** See `operations.md` for the current pass count; tests that touch
+   settings and path caches are isolated from one another by fixtures in `tests/conftest.py`.
+6. **Network containment is Python-level.** There is no eBPF, seccomp, landlock, namespace or
+   firewall integration. The socket guard covers in-process code only; anything that spawns
+   a subprocess (MCP servers, `pip`, generated scripts) is outside it.
 
-## 6. Honest verdict on "frontier, ground-breaking"
+## 6. Verdict
 
-**In ambition and in specific subsystems — yes.** The grounding layer, the fully
-local model-agnostic design, and the integrated multi-modal local agent are
-genuinely ahead of most open local-assistant projects. The ideas are
-frontier-grade.
+**In ambition and in specific subsystems, ELI is ahead of most open local-assistant
+projects:** the grounding layer, the fully local model-agnostic design and the integrated
+multimodal agent. **In engineering discipline it is not finished:** the swallowed
+exceptions, the large files and the overlapping modules separate an extraordinarily
+ambitious solo project from software others can build on. The gap is subtraction and
+observability, not more features.
 
-**In engineering discipline — not yet.** The 2,565 swallowed exceptions, the
-god-files, the duplication, and the clutter separate "an extraordinarily
-ambitious solo project" from "software others can build on." None of that is a
-vision problem — it is consolidation and observability. The gap to
-"ground-breaking" is **subtraction and discipline, not more features.**
+## 7. Highest-leverage work
 
-## 7. Highest-leverage work (the next month)
+1. **Make swallowed errors observable.** Replace blanket `except Exception: pass` with scoped
+   types and a single structured error log, keeping graceful degradation.
+2. **Split the two largest files** along their natural seams (executor action groups behind
+   the dispatch table; engine stages into modules).
+3. **Fold overlapping `runtime/` surfaces** into a handful of well-named modules.
+4. **Split the GUI monoliths** the way the engine is meant to be split.
 
-Ranked by effect-per-effort:
+## 8. Honest limits that are by design
 
-1. **Tame error-swallowing.** Replace blanket `except Exception: pass`/fallback
-   with scoped exception types + a single structured error log (a ring buffer /
-   table) you can actually watch. Keep the graceful degradation, but record every
-   swallow. This alone makes the whole system debuggable and is the precondition
-   for trusting any other change.
-2. **Continue decomposing large modules** — v3 already split GUI (`main_window/`,
-   `labs/`) and executor effectors; next targets: finish `engine.py` stage
-   extraction, shrink `memory.py` and remaining 6k+ modules.
-3. **Delete duplication + clutter.** Collapse the overlapping `runtime/` surfaces,
-   remove root junk/one-off scripts. *(The suite is already green — 8,815 passing;
-   this is now signal-to-noise hygiene, not a red-test cleanup.)*
-4. **Consolidate the `runtime/` surfaces.** The many `personal_memory_*` /
-   `*_surface` / `*_response` modules want to be a handful of well-named ones.
-
-Do 1–3 and the engineering would match the ideas — which is the only thing
-standing between ELI and the label "frontier, ground-breaking software people
-can rely on."
-
-
-## Update — 2.3.7
-
-Four subsystems moved from "present but unreachable" to "usable", which is the theme
-of this release rather than new invention:
-
-1. **LoRA training** had a complete trainer, guard, eval suite and DAG, whose own
-   docstring said it was driven by "the GUI / scheduled task". The GUI half was never
-   built, and the human review gate the trainer requires had no interface — 615
-   candidate rows, 0 trainable, `will_train` permanently false. Labs ▸ Training now
-   closes that, and the Phi-3 lock is replaced by an operator-declared target
-   registry.
-
-2. **The eval harness** under `tools/eval/` — including rubric assertions graded by
-   ELI's own local model — was terminal-only. `run_board()` extracted a programmatic
-   entry point and Labs ▸ Test & Review gained two buttons. It runs **in-process**
-   deliberately: the judge asks the already-loaded model, so a subprocess would pull
-   a second copy of the chat model into the same VRAM.
-
-3. **Plugins** were arbitrary Python `exec_module`'d in ELI's process with no
-   declaration, no checksum, no scan and no consent. They now carry a manifest, are
-   verified and scanned before touching disk, and ask permission per capability.
-
-4. **Custom agents** had no objective, no prompt structure, no triggers and no
-   success measure, loaded from a read-only install path, and registered only at
-   import. They now have a real specification, a provenance-carrying trust chain, and
-   live reload.
-
-### On honesty as a design constraint
-
-The recurring pattern in this release is refusing to claim more than was checked:
-
-- a scanner engine that could not run **never** counts as a pass, and the verdict
-  says coverage was partial;
-- an unsigned plugin is reported as unverified rather than treated as fine;
-- ELI never says a community plugin is safe, because nobody vetted it;
-- the training tab says the live model has *not* changed until the adapter is merged;
-- the MCP screens state that netguard cannot contain a child process, rather than
-  implying a sandbox that does not exist.
-
-That last one is worth being explicit about at the overview level: **there is no
-eBPF, seccomp, landlock, network-namespace or firewall integration in ELI.** Network
-gating is a Python-level socket guard, which covers in-process code and nothing else.
-Anything that spawns a subprocess — MCP servers, `pip`, generated scripts — is
-outside it. Closing that would need per-platform kernel egress control routed through
-an ELI-owned proxy, and that work has not been done.
+- Refusing to claim more than was checked: a scanner engine that could not run never counts
+  as a pass and the verdict says coverage was partial; an unsigned plugin is reported as
+  unverified; ELI never says a community plugin is safe; the training tab says the live model
+  has not changed until the adapter is merged; the MCP screens state that the network guard
+  cannot contain a child process.
+- Plugins are declared, verified, scanned and permission-gated; custom agents carry a
+  specification and a provenance-carrying trust chain; the LoRA trainer has a human review
+  gate.

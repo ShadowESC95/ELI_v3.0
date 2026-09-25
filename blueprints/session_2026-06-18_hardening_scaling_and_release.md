@@ -1,5 +1,7 @@
 # Session 2026-06-18 — Public-Release Hardening, Distribution, and Scaling
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 Reference doc for the work done the day ELI v3 went public. Two threads ran together:
 **(A)** make the repo safe and clean for public distribution, and **(B)** make the whole
 surface — installer, launchers, docs, model path — consistent across **platform, hardware,

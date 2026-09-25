@@ -13,6 +13,7 @@ import ast
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,7 +66,7 @@ def _capability_stats() -> dict:
 
 def _test_stats() -> dict:
     proc = subprocess.run(
-        ["python3", "-m", "pytest", "--collect-only", "-q"],
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
         cwd=ROOT, capture_output=True, text=True, timeout=120,
     )
     m = re.search(r"(\d[\d,]*)\s+tests collected", proc.stdout + proc.stderr)
@@ -278,7 +279,9 @@ def refresh_file(path: Path, replacements: list[tuple[str, str]]) -> bool:
     for old, new in replacements:
         if old == new:
             continue
-        text = text.replace(old, new)
+        # An old version string can be a prefix of the current one, so only replace it where it
+        # is not followed by another digit.
+        text = re.sub(re.escape(old) + r"(?![0-9])", lambda _m, _n=new: _n, text)
     if path.suffix == ".md":
         if path.name in _LIVING:
             text = _refresh_totals(text, _loc_stats())

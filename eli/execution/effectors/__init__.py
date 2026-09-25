@@ -23,3 +23,18 @@ frozen ELI.spec build keep working untouched.
 
 Empty until the first executor family is moved.
 """
+
+
+def load_all() -> None:
+    """Import every effector module once so each registers its handlers."""
+    global _LOADED
+    if _LOADED:
+        return
+    _LOADED = True
+    import importlib
+    import pkgutil
+    for _m in pkgutil.iter_modules(__path__):
+        importlib.import_module(f"{__name__}.{_m.name}")
+
+
+_LOADED = False

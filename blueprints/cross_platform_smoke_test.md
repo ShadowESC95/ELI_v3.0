@@ -1,5 +1,7 @@
 # ELI — Cross-Platform Smoke-Test Checklist
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *A ~10-minute-per-OS validation that a fresh GitHub clone installs and runs correctly on a
 different machine/OS/device. Run it on each target (Linux / macOS / Windows) and tick the
 boxes. Anything that fails is a real, reproducible bug to file.*

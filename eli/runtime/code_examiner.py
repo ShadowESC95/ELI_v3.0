@@ -63,11 +63,11 @@ _MODULE_ALIASES = {
     "self upgrade": "eli/kernel/self_upgrade.py",
     "self-upgrade": "eli/kernel/self_upgrade.py",
     "self improvement": "eli/runtime/self_improvement.py",
-    "gui file": "eli/gui/eli_pro_audio_gui_v2_0.py",
-    "the gui file": "eli/gui/eli_pro_audio_gui_v2_0.py",
-    "your gui file": "eli/gui/eli_pro_audio_gui_v2_0.py",
-    "pro audio gui": "eli/gui/eli_pro_audio_gui_v2_0.py",
-    "eli pro audio gui": "eli/gui/eli_pro_audio_gui_v2_0.py",
+    "gui file": "eli/gui/main_window/window.py",
+    "the gui file": "eli/gui/main_window/window.py",
+    "your gui file": "eli/gui/main_window/window.py",
+    "pro audio gui": "eli/gui/main_window/window.py",
+    "eli pro audio gui": "eli/gui/main_window/window.py",
 }
 
 # Curated fallback set when no files are named and git gives us nothing.
@@ -148,7 +148,7 @@ def _extract_named_paths(request: str) -> List[Path]:
     if re.search(r"\b(gui|gui file|your gui)\b", low) and re.search(
         r"\b(audit|examine|review|inspect|scan|check|wired|wiring)\b", low
     ):
-        _add(PROJECT_ROOT / "eli/gui/eli_pro_audio_gui_v2_0.py")
+        _add(PROJECT_ROOT / "eli/gui/main_window/window.py")
 
     return out
 

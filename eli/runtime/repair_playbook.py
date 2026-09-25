@@ -32,7 +32,7 @@ _REPAIR_ROUTES: Tuple[Tuple[str, str, str], ...] = (
     ),
     (
         "gui_wiring_audit",
-        'Say: "examine eli/gui/eli_pro_audio_gui_v2_0.py for errors"',
+        'Say: "examine eli/gui/main_window/window.py for errors"',
         "EXAMINE_CODE",
     ),
     (
@@ -90,7 +90,7 @@ def recommend_repair_path(user_input: str) -> Dict[str, Any]:
             "action": "EXAMINE_CODE",
             "reason": "scoped_gui_examine",
             "confidence": 0.94,
-            "hint": "examine eli/gui/eli_pro_audio_gui_v2_0.py for errors",
+            "hint": "examine eli/gui/main_window/window.py for errors",
         }
 
     if re.search(r"\b(examine|audit|scan)\b.{0,30}\b(file|module|\.py)\b", low):
@@ -175,7 +175,7 @@ def build_repair_playbook_report(question: str = "", *, live: bool = True) -> st
         "   Code: eli/runtime/code_examiner.py (Tier 1–2 fixable; Tier 3 confirm only)",
         "",
         "4. GUI wiring audit (not a 25-file git sweep)",
-        "   → examine eli/gui/eli_pro_audio_gui_v2_0.py for errors",
+        "   → examine eli/gui/main_window/window.py for errors",
         "",
         "5. Install / version bump (AppImage, git pull, pip, index rebuild)",
         "   → self upgrade",

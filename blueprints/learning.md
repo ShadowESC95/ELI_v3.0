@@ -1,6 +1,6 @@
 # ELI Learning — LoRA Self-Training Pipeline
 
-> **Updated for 3.0.81.** Stage 12 learning hooks for chat turns are centralized in
+> **Updated for 3.0.128.** Stage 12 learning hooks for chat turns are centralized in
 > `eli/cognition/learning_coordinator.py` (`finalize_turn()`).
 
 `eli/learning/` — 4.3k LOC, 14 files. ELI's self-improvement-via-fine-tuning
@@ -8,7 +8,7 @@ path. **Important framing:** this is a *curated, human-gated, operator-invoked*
 training pipeline — **not** an autonomous self-modifying loop, and it targets a
 **separate trainable Hugging Face base**, not the inference GGUF.
 
-Since 2.3.7 it is driven from **Labs ▸ 🎓 Training** (a four-step wizard) as well
+It is driven from **Labs ▸ 🎓 Training** (a four-step wizard) as well
 as from chat actions and the overnight scheduled task. Two long-standing blockers
 were removed at the same time: the human review gate now has an interface, and the
 target system is no longer locked to Phi-3.
@@ -19,16 +19,16 @@ The stages, roughly in order:
 
 | File | LOC | Stage |
 |---|---|---|
-| `dataset_builder.py` | 558 | turn ELI's logged turns/corrections into supervised examples |
-| `dataset_filters.py` | 154 | quality gates (`is_bad_response`, `row_is_reviewed`) |
-| `export_trainable_dataset.py` | 168 | export reviewed rows → trainable JSONL |
-| `merge_reviewed_datasets.py` | 135 | merge reviewed dataset shards |
-| `bootstrap_phi3_base.py` | 245 | one-time download of the trainable HF Phi-3 base |
-| `base_model_resolver.py` | 257 | locate/validate the trainable base (vs an adapter) |
-| `training_preflight.py` | 142 | check peft/transformers/datasets present + target ready |
-| `lora_trainer_guard.py` | 636 | `TrainerTarget` plans (paths, base_family) + guard checks |
-| `lora_trainer.py` | 840 | device selection, QLoRA, chat-template prompts, PEFT loop |
-| `lora_eval.py` | 491 | eval harness (score vs expected/forbidden, inspect adapter) |
+| `dataset_builder.py` | 552 | turn ELI's logged turns/corrections into supervised examples |
+| `dataset_filters.py` | 148 | quality gates (`is_bad_response`, `row_is_reviewed`) |
+| `export_trainable_dataset.py` | 162 | export reviewed rows → trainable JSONL |
+| `merge_reviewed_datasets.py` | 129 | merge reviewed dataset shards |
+| `bootstrap_phi3_base.py` | 239 | one-time download of the trainable HF Phi-3 base |
+| `base_model_resolver.py` | 251 | locate/validate the trainable base (vs an adapter) |
+| `training_preflight.py` | 136 | check peft/transformers/datasets present + target ready |
+| `lora_trainer_guard.py` | 630 | `TrainerTarget` plans (paths, base_family) + guard checks |
+| `lora_trainer.py` | 834 | device selection, QLoRA, chat-template prompts, PEFT loop |
+| `lora_eval.py` | 485 | eval harness (score vs expected/forbidden, inspect adapter) |
 | `target_registry.py` | 266 | operator-declared training targets, any model family |
 | `review_queue.py` | 270 | the human review gate: triage, approve/edit, write trainable rows |
 

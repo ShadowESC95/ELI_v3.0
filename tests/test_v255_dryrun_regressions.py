@@ -31,7 +31,7 @@ def test_full_profile_dump_dont_summarise():
 def test_gui_file_audit_scopes_single_file():
     paths = resolve_targets("Audit your GUI file and tell me if anything is wired incorrectly.")
     assert len(paths) == 1
-    assert paths[0].name == "eli_pro_audio_gui_v2_0.py"
+    assert paths[0].name == "window.py"
 
 
 def test_explain_last_response_reads_last_request_meta():

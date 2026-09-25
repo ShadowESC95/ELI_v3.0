@@ -6,9 +6,10 @@ from deep reads of the core + a full structural/code-health sweep — covering e
 package's structure + the algorithm-bearing bodies; claims are grounded in what was
 inspected.
 
-> **Updated for 3.0.85 (August 2026).** Cognition unified with v2.3.44+ (gradient
-> orchestrator, shared retrieval, S01–S12). **~224,368 LOC / 593 `.py` files**,
-> **232** capabilities (**215** doc-routable; **211** `SUPPORTED_ACTIONS`). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
+> **Updated for 3.0.128.** Cognition unified with the v2 line (gradient orchestrator, shared
+> retrieval, S01–S12 tracing, memory storage policy). **231,141 lines across 609 `.py` files**,
+> **235** capabilities (**190** routable, **214** in `SUPPORTED_ACTIONS`, **219** in either). See
+> **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
 >
 > **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
 > (`api/server.py`) with MQTT smart-home, RBAC, tamper-evident audit, browser voice.
@@ -23,7 +24,7 @@ inspected.
   it is more customisable + easier to maintain (measured).
 - **[GODFILE_SESSION_DIFF.md](GODFILE_SESSION_DIFF.md)** — the five god-files'
   change over the refactor session: start→now tables + the executor's
-  commit-by-commit strangle (14,592 → 6,442, −56%).
+  commit-by-commit strangle (14,592 → 6,442, −56% at the time; the executor is 15.9k lines again today, see `architecture.md`).
 - **[EXTENDING_ELI.md](EXTENDING_ELI.md)** — hands-on guide: step-by-step
   procedure, commands, and files to add your own feature/capability (effector +
   registry), plus the plugin and edition extension surfaces.
@@ -47,7 +48,7 @@ inspected.
 - **[capability_catalogue.md](capability_catalogue.md)** — exhaustive, ground-truth
   catalogue of all actions (232) + every package's modules (5 parts).
 - **[project_overview.md](project_overview.md)** — start here for the engineering
-  view. What ELI is, scale (~190k LOC / 595 files + web app), architecture by layer, the
+  view. What ELI is, scale (~231k LOC / 609 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
   topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.

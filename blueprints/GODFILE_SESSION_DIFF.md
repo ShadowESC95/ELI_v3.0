@@ -1,5 +1,7 @@
 # ELI v3 — The Five God-Files: Session Change Report
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *What changed across the five monolith "god-files" over this refactor session, in
 full. "Session start" is the pre-refactor baseline (git merge-base `dc5f04b`, the
 v2-lineage code, all five monoliths untouched); "now" is `HEAD` on

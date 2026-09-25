@@ -12,10 +12,10 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
 | `wakeword.py` | ~450 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head) |
 | `voice_profile.py` | ~420 | **prosody + labelled-emotion** (tone/question detection) |
-| `tts_router.py` | 1220 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
+| `tts_router.py` | 1219 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
-| `tts_xtts.py` | 362 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
-| `vision.py` | 680 |
+| `tts_xtts.py` | 378 | **voice cloning** from a reference sample (Coqui XTTS-v2). Zero-shot: `add_clone()` only registers a reference clip, conditioning happens at synthesis. Bundled in the Linux AppImage from v2.1.65; when absent the voice still registers and synthesis falls back to Piper — **loudly**, not silently, which was a live fault |
+| `vision.py` | 698 |
 | `os_controller.py` | 572 |
 | `screen_locator.py` | 497 | locate UI elements on screen (AT-SPI → local VL-ground → OCR) |
 | `screen_analysis.py` | ~180 | depth modes, prior-screen memory, research-context prompts |
@@ -26,7 +26,7 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 | `log_rotation.py` | 224 | log housekeeping |
 | `analyze_pdfs/image/mesh/csv.py` | ~600 | file-type analysers |
 | `ambient_vision.py` | 206 | periodic screen glances (off by default) |
-| `local_whisper_stt.py` | 315 |
+| `local_whisper_stt.py` | 335 |
 | `voice_worker_streaming.py` | small | streaming voice worker |
 
 ## Vision (`vision.py` + `ambient_vision.py` + `analyze_image.py`)
@@ -307,7 +307,7 @@ extracted content (text/OCR/structure) into the grounded pipeline.
 - **Weak / watch:**
   1. **Vision latency** — the hot-swap unloads/reloads the text model per glance;
      even the co-resident path runs CPU clip (~3.5s). Acceptable, not fast.
-  2. `audio_stt.py` is a **1.48k-line** module mixing capture, ducking, echo
+  2. `audio_stt.py` is a **2.5k-line** module mixing capture, ducking, echo
      suppression, command aliasing, and cleanup — wants splitting.
   3. **Residual "7B" comment** in `ambient_vision.py` ("the 7B vision model
      hot-swaps…") — cosmetic, but inconsistent with the model-agnostic line;

@@ -1,5 +1,7 @@
 # Blueprint — Decomposing `_execute_impl` (the executor god-function)
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 *Status: **IN PROGRESS** on `v3-modularisation`. Design dated 2026-06-26; build ongoing.*
 
 **Progress (measured):** the handler registry (§3) is built and load-bearing —

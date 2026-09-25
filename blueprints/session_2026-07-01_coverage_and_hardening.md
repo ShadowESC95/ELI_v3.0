@@ -1,5 +1,7 @@
 # Session — 2026-07-01: Web/News Hardening, Test Coverage & Code-Health Pass
 
+> **Historical record.** Line counts, test counts and file names below are as of when this was written. For current figures see `project_overview.md` and `architecture.md`.
+
 Complete record of everything run and produced this session. Numbers are measured
 on the real interpreter (`.venv/bin/python`); coverage is reproducible via
 `scripts/coverage_full.sh`. Companion: [COVERAGE methodology](../docs/COVERAGE.md).
