@@ -219,3 +219,4 @@ config/voices/
 /test_reports/
 models/_download.log
 /clearbuild/
+eli_ci_*.log
