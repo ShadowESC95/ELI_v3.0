@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 
+from eli.execution.routing.intents._sentinel import ROUTE_NONE
 from eli.execution.routing._helpers import (
     _extract_path_from_text,
     _is_likely_path,
@@ -33,6 +34,7 @@ _SCREEN_CAPABILITY_QUESTION_RX = re.compile(
 )
 
 def route_capture_input(text: str, raw: str, low: str, text_l: str):
+    # mkdir X (bare)
     m = re.match(r"^mkdir\s+(.+)$", raw, re.I)
     if m:
         folder_name = m.group(1).strip()
@@ -158,24 +160,37 @@ def route_capture_input(text: str, raw: str, low: str, text_l: str):
     if re.search(
             r"\b(?:read|analyse?|analyze|describe|interpret|look\s+at|what(?:'s|\s+is)\s+on)\s+"
             r"(?:the|my)\s+(?:screen|display|monitor|desktop)\b", raw, re.I):
-        return _mk("SCREEN_READ_ANALYZE", {}, 0.95, matched_by="screen.read_analyze")
+        _depth = "deep" if re.search(r"\b(in\s+depth|deep(?:ly)?|full(?:y)?|exact(?:ly)?|comprehensive)\b", raw, re.I) else ""
+        return _mk("SCREEN_READ_ANALYZE", {"query": raw, **({"depth": _depth} if _depth else {})},
+                   0.95, matched_by="screen.read_analyze")
+
+    if re.search(
+            r"\b(?:analyse?|analyze)\s+(?:my|the)\s+screen\s+(?:in\s+depth|deep(?:ly)?|fully|completely)\b",
+            raw, re.I):
+        return _mk("SCREEN_READ_ANALYZE", {"query": raw, "depth": "deep"},
+                   0.96, matched_by="screen.read_deep")
+
+    if re.search(r"\bexactly\s+what(?:'s|\s+is)\s+on\s+(?:my|the)\s+(?:screen|display)\b", raw, re.I):
+        return _mk("SCREEN_READ_ANALYZE", {"query": raw, "depth": "deep"},
+                   0.96, matched_by="screen.read_exact")
+
+    if re.search(
+            r"\b(?:what(?:'s|\s+is)\s+on\s+(?:my|the)\s+screen).*\b(research|relate|remember|previous\s+session)\b",
+            raw, re.I) or re.search(
+            r"\b(?:remember|recall).*\b(?:screen|seeing\s+this|saw\s+this)\b", raw, re.I):
+        return _mk("SCREEN_READ_ANALYZE", {"query": raw, "depth": "deep"},
+                   0.94, matched_by="screen.read_memory_research")
 
     if re.search(r"\bscreen\s*(?:read|analyse?|analyze|ocr)\b", raw, re.I):
         return _mk("SCREEN_READ_ANALYZE", {}, 0.93, matched_by="screen.read_ocr")
 
-    # A question ABOUT the capability is not a request to use it. Live at 2.3.0
-    # the user asked "So, you can see my screen?" and then "just confirming that
-    # you can actually see what i see" — both fired another SCREEN_READ_ANALYZE,
-    # each costing ~20s and a fresh screenshot, and neither answered the yes/no
-    # that was actually asked. By the third one: "STOP reading the fucking
-    # screen, and answer my question!".
-    #
-    # The split is syntactic and reliable: a REQUEST puts the modal first
-    # ("can you see my screen?"), a CONFIRMATION puts the subject first
-    # ("so you can see my screen?"). Falling through here lets normal CHAT
-    # routing answer the question instead of taking another glance.
+    # A question about the capability isn't a request to use it. "So, you can see my screen?" and
+    # "just confirming that you can actually see what i see" each fired another SCREEN_READ_ANALYZE
+    # (~20s, new screenshot) and answered neither. The split is syntactic: a request puts the modal
+    # first ("can you see my screen?"), a confirmation puts the subject first. Falling through lets
+    # CHAT answer the yes/no.
     if _SCREEN_CAPABILITY_QUESTION_RX.search(raw):
-        return None
+        return ROUTE_NONE
 
     # Conversational vision: "what do you see", "can you see this/my screen",
     # "look at my screen", "what am I looking at", "see what I see".
@@ -186,13 +201,10 @@ def route_capture_input(text: str, raw: str, low: str, text_l: str):
             r"(?:this|what\s+i'?m\s+doing)|see\s+my\s+screen)\b", raw, re.I):
         return _mk("SCREEN_READ_ANALYZE", {}, 0.9, matched_by="screen.vision_conversational")
 
-    # Content questions ABOUT what's on the screen — "what season is on the
-    # screen?", "can you see star trek on the screen?", "which app is on my
-    # display?". These are VISUAL questions: gather a real glance and answer from
-    # pixels. Without this they fall through to CHAT and the model GUESSES
-    # (user-reported: ELI invented a TV season/episode it never looked at). The
-    # user's own question is handed to the vision model with a hard "answer only
-    # from what's visible; if you can't tell, say so" instruction.
+    # Content questions about what's on screen ("what season is on the screen?", "which app is on
+    # my display?") are visual: take a real glance and answer from pixels. Otherwise they fall to CHAT
+    # and the model guesses (it invented a TV season). The vision model gets a hard "answer only
+    # from what's visible; if you can't tell, say so".
     if re.search(r"\bon\s+(?:the\s+|my\s+)?(?:screen|display|monitor)\b", raw, re.I) and \
        re.search(r"\b(?:what|which|who|where|when|is|are|how\s+many|name|"
                  r"see|show|can\s+you|do\s+you|tell\s+me)\b", raw, re.I):
@@ -274,11 +286,56 @@ def route_capture_input(text: str, raw: str, low: str, text_l: str):
         return _mk("MOUSE_CONTROL", {"action": "move", "x": x, "y": y},
                    0.95, matched_by="ui.mouse_move", entities={"x": x, "y": y})
 
+    m = re.search(
+        r"\b(?:move|nudge|shift)\s+(?:the\s+)?(?:mouse|cursor|pointer)\s+"
+        r"(left|right|up|down)(?:\s+(?:by\s+)?(\d+)\s*(?:pixels?|px)?)?\b",
+        raw, re.I,
+    )
+    if m:
+        direction = m.group(1).lower()
+        amount = int(m.group(2) or 100)
+        return _mk(
+            "MOUSE_CONTROL",
+            {"action": "move", "direction": direction, "amount": amount, "pixels": amount},
+            0.94,
+            matched_by="ui.mouse_move_relative",
+            entities={"direction": direction, "amount": amount},
+        )
+
+    if re.search(r"\b(?:mouse|cursor|pointer)\b", low):
+        m = re.search(
+            r"\b(?:move|nudge|shift)\s+(left|right|up|down)"
+            r"(?:\s+(?:by\s+)?(\d+)\s*(?:pixels?|px)?)?\b",
+            raw, re.I,
+        )
+        if m:
+            direction = m.group(1).lower()
+            amount = int(m.group(2) or 100)
+            return _mk(
+                "MOUSE_CONTROL",
+                {"action": "move", "direction": direction, "amount": amount, "pixels": amount},
+                0.91,
+                matched_by="ui.mouse_move_relative_implicit",
+                entities={"direction": direction, "amount": amount},
+            )
+
+    if re.search(
+        r"\b(?:click|left\s+click|right\s+click|double\s+click)\s+(?:here|at\s+(?:the\s+)?cursor)\b",
+        low,
+    ):
+        btn = "right" if "right" in low else "left"
+        dbl = "double" in low
+        return _mk(
+            "MOUSE_CONTROL",
+            {"action": "click", "button": btn, "double": dbl},
+            0.9,
+            matched_by="ui.mouse_click_at_cursor",
+        )
+
     if re.search(r"\bscroll\s+(up|down)(?:\s+(\d+))?\b", raw, re.I):
         sm = re.search(r"\bscroll\s+(up|down)(?:\s+(\d+))?\b", raw, re.I)
         direction = sm.group(1).lower()
         amount = int(sm.group(2) or 3)
         return _mk("MOUSE_CONTROL", {"action": "scroll", "direction": direction, "amount": amount},
                    0.93, matched_by="ui.mouse_scroll")
-
     return None

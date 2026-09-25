@@ -26,8 +26,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
+# clearbuild and clearbuild-company are separate projects (a submodule and its sibling), not ELI code.
 SKIP_DIRS = {".venv", "venv", "build", "dist", ".git", ".claude",
-             "node_modules", "__pycache__", "experimental", "training"}
+             "node_modules", "__pycache__", "experimental", "training",
+             "clearbuild", "clearbuild-company"}
 
 
 def _declared_minimum() -> tuple:

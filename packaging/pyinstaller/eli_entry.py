@@ -983,6 +983,20 @@ def _mode() -> str:
 
 
 if __name__ == "__main__":
+    # License flags first: this entry point never goes through eli/__main__.py,
+    # so without this the GUI's own gate fires before the flags are seen and
+    # `ELI --activate-key …` can never succeed on a frozen build.
+    try:
+        from eli.licensing.flags import handle_license_flags
+
+        _license_rc = handle_license_flags(sys.argv[1:])
+        if _license_rc is not None:
+            sys.exit(_license_rc)
+    except SystemExit:
+        raise
+    except Exception as _exc:  # never let flag handling block a normal launch
+        print(f"[ELI] license flag handling unavailable: {_exc}", file=sys.stderr)
+
     mode = _mode()
     if mode == "selftest":
         sys.exit(_selftest())

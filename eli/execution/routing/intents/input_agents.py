@@ -34,13 +34,10 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
             return _mk("GAZE_CLICK", {"button": "left"}, 0.94, matched_by="gaze.click.left")
     # ── end gaze engine control ───────────────────────────────────────────────
 
-    # ── File Audit (must precede RUNTIME_AUDIT — "do a file audit" would
-    # otherwise be stolen by the broad 'do ... audit' RUNTIME_AUDIT pattern) ──
-    # NOTE: "list" is intentionally excluded from bare "files?" matching.
-    # "list the files in my downloads folder" must fall through to LIST_DIR.
-    # Only audit|examine|inspect|scan|inventory pair with bare "files?".
-    # "list" only triggers FILE_AUDIT when paired with code-specific nouns
-    # (codebase, source, modules, scripts, project files) or explicit qualifiers.
+    # File Audit must come before RUNTIME_AUDIT or the broad 'do ... audit' pattern steals it.
+    # "list" is kept out of bare "files?" matching so "list the files in my downloads folder" reaches
+    # LIST_DIR. Only audit|examine|inspect|scan|inventory pair with bare "files?"; "list" needs a
+    # code-specific noun or qualifier.
     if re.search(
         r"\b(audit|examine|inspect|scan|inventory)\b.{0,40}\b(files?|codebase|source|modules?|scripts?|project\s+files?)\b"
         r"|\b(list|inventory)\b.{0,40}\b(codebase|source|modules?|scripts?|project\s+files?)\b"
@@ -86,10 +83,9 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(memory system|memory runtime|how does your memory work internally|which files|which db tables|which functions)\b", low):
         return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_status_to_grounded", allow_chat_without_evidence=False)
 
-    # ELI_ROUTER_REASONING_MODE_STATUS_FIX_20260505: answer the active mode label; do not hijack into full runtime diagnostics.
-    # Only intercept queries specifically asking about the CURRENT/ACTIVE mode.
-    # Queries about ALL modes, every mode, how many modes, explain modes, differences, etc.
-    # must fall through to CHAT so the full pipeline synthesises from the source files.
+    # Reasoning-mode status (ELI_ROUTER_REASONING_MODE_STATUS_FIX_20260505): answer the active mode
+    # label without hijacking into full runtime diagnostics. Only queries about the current mode
+    # are caught; "all modes", "how many" or differences go to CHAT so it reads the source files.
     _asking_about_all_modes = re.search(
         r"\b(all|every|each|how many|list|explain|full|describe|detail|difference|differ|compare|what are|tell me about|tell me all|tell me everything|what do|how do|modes?\s+you\s+have|modes?\s+does|all.*mode|every.*mode)\b",
         low,
@@ -100,13 +96,10 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
     ):
         return _mk("REASONING_MODE_STATUS", {}, 0.995, matched_by="reasoning.mode_status", allow_chat_without_evidence=False)
 
-    # Route broad "explain / describe / breakdown / list all reasoning modes" queries to
-    # EXPLAIN_ALL_REASONING_MODES so the executor reads directly from reasoning_modes.py
-    # and the GGUF synthesises from real file evidence, not training knowledge.
-    # A frustrated correction that merely MENTIONS a mode ("you are not in quick mode",
-    # "what are you talking about") is a relational CHAT turn, not a request to list the
-    # modes. Require an actual modes TOPIC ("reasoning mode(s)" / plural "modes"), not a
-    # bare singular "<x> mode" mention.
+    # Broad "explain / describe / list all reasoning modes" goes to EXPLAIN_ALL_REASONING_MODES so
+    # the answer is built from reasoning_modes.py. A frustrated correction that just mentions a mode
+    # ("you are not in quick mode") is relational CHAT. Needs a modes topic ("reasoning mode(s)" /
+    # plural "modes"), not a bare singular "<x> mode".
     _is_mode_correction = bool(re.search(
         r"\byou('?re| are| were)\s+not\b|\bnot\s+in\b|\bwhat\s+are\s+you\s+talking\s+about\b"
         r"|\bthat('?s| is| was)\s+not\b|\byou\s+said\b|\bnot\s+(?:quick|normal|advanced|research|expert)\b",
@@ -125,10 +118,9 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(cognition pipeline|input to output|every step|no vague descriptions)\b", low):
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.cognition_status_to_chat")
 
-    # "What do you know about me from memory" is open-ended and needs HyDE
-    # expansion + rerank. The MEMORY_RECALL preempt produced single weak hits
-    # (observed conf 0.34) and synth_actions skipped stages 3/9, so the LLM
-    # filled gaps with invented details. CHAT engages the full retrieval path.
+    # "What do you know about me from memory" is open-ended and needs HyDE expansion and rerank. The
+    # MEMORY_RECALL preempt produced single weak hits (conf 0.34) and the LLM filled gaps with
+    # invented details. CHAT engages the full retrieval path.
 
 
     if re.search(
@@ -151,5 +143,4 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
             matched_by="identity.user_info.report",
             allow_chat_without_evidence=False,
         )
-
     return None

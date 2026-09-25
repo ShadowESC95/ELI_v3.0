@@ -54,8 +54,8 @@ def _eli_phase10_is_codebase_audit_request(text: str) -> bool:
     return any(_has(a) for a in audit_words) and any(_has(c) for c in code_words)
 
 
-
 import os
+import json
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
@@ -88,69 +88,20 @@ _RE_RUNTIME_AUDIT = re.compile(
 # Wall-clock requests, shared by the TIME/DATE routes and the long-question guard. The guard must
 # not divert a clock question into CHAT, where the model has no clock and truthfully says it can't
 # read one, which reads as ELI denying a capability it has.
-_WALLCLOCK_TIME_PATTERNS = (
-    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?time\b",
-    r"\bcurrent time\b", r"\bclock\b", r"^time[?!.\s]*$", r"\btell me the time\b",
-    r"\bwhat\s+time\s+is\s+it\b",
-    # Compound asks — "the day and time", "date & time".
-    r"\b(?:day|date)\s*(?:,)?\s*(?:and|&|\+)\s*(?:the\s+)?time\b",
-    r"\btime\s*(?:,)?\s*(?:and|&|\+)\s*(?:the\s+)?(?:day|date)\b",
-    # Tolerate words between "the" and "time" — "what the actual time is",
-    # "what the fucking time is". The trailing is/it-is keeps this off phrases
-    # like "what is the best time to call".
-    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?(?:\w+\s+){0,2}time\s+(?:is|it\s+is|was)\b",
-)
-_WALLCLOCK_DATE_PATTERNS = (
-    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?date\b",
-    r"\bcurrent date\b",
-    # today's date / today is the date — no greedy .* (would match "update")
-    r"\btoday'?s?\s+(?:is\s+the\s+|the\s+)?date\b",
-    r"^date[?!.\s]*$",
-    r"\bwhat(?:'s| is) today\b",
-    r"\bwhat day is it\b", r"\bwhat day is this\b",
-    r"\bwhat'?s?\s+the\s+day\b", r"\bwhat'?s?\s+the\s+days\b",
-    r"\bwhat days\b", r"\bwhat is the day\b", r"\bday is it\b",
-    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?(?:\w+\s+){0,2}(?:date|day)\s+(?:is|it\s+is|was)\b",
+from eli.execution.routing._helpers import (  # noqa: F401  (moved there so intent stages can share them)
+    _NEGATORS,
+    _WALLCLOCK_DATE_PATTERNS,
+    _WALLCLOCK_META_RE,
+    _WALLCLOCK_TIME_PATTERNS,
+    _has_wallclock_pattern,
+    _is_wallclock_meta_question,
+    _is_wallclock_question,
+    _tone_is_negated,
 )
 
 # Meta-critique of DATE/TIME behaviour ("explain how you can tell me the date by calling that
 # function...") embeds a clock clause and used to hijack into DATE, answering the date and never the
 # planning question. Detect that class explicitly.
-_WALLCLOCK_META_RE = re.compile(
-    r"(?i)\b(?:"
-    r"care to explain|explain how|explain why|"
-    r"why (?:didn'?t|did not|weren'?t|were not|couldn'?t|wouldn'?t) you|"
-    r"not smart enough|making a plan|execut(?:e|ing|uing)|incorporat\w+|"
-    r"calling that function|by calling (?:that |the )?function|"
-    r"how (?:can|do|did) you (?:tell|know|get)|"
-    r"should (?:have|'ve) (?:known|checked|called|used)|"
-    r"without (?:showing|calling|checking|verifying|making)"
-    r")\b"
-)
-
-
-def _has_wallclock_pattern(low: str) -> bool:
-    return any(re.search(p, low) for p in _WALLCLOCK_TIME_PATTERNS + _WALLCLOCK_DATE_PATTERNS)
-
-
-def _is_wallclock_meta_question(low: str) -> bool:
-    """True when the user is criticising DATE/TIME behaviour, not asking the clock."""
-    if not low or not _has_wallclock_pattern(low):
-        return False
-    if _WALLCLOCK_META_RE.search(low):
-        return True
-    # Long compound with explain/why/plan + an embedded date/day clause.
-    if len(low.split()) >= 18 and re.search(
-        r"\b(explain|why|how come|instead of|plan(?:ning)?|function|incorporat)\b",
-        low,
-    ):
-        return True
-    return False
-
-
-def _is_wallclock_question(low: str) -> bool:
-    """Genuine clock/date ask — excludes meta-critique that merely embeds 'what day'."""
-    return _has_wallclock_pattern(low) and not _is_wallclock_meta_question(low)
 
 
 _RE_SYSTEM_STATS = re.compile(
@@ -208,21 +159,27 @@ def _eli_latest_screenshot() -> str | None:
 # STATIC CONFIG
 # ============================================================
 
-try:
-    # Resolved per-machine (honours XDG user-dirs, so localised folder names
-    # like ~/Téléchargements work) rather than assuming the English defaults.
-    from eli.utils.platform_compat import user_dirs as _user_dirs
-    COMMON_DIRS = _user_dirs()
-except Exception:
-    COMMON_DIRS = {
-        "home": "~",
-        "desktop": str(Path.home() / "Desktop"),
-        "downloads": str(Path.home() / "Downloads"),
-        "documents": str(Path.home() / "Documents"),
-        "music": str(Path.home() / "Music"),
-        "pictures": str(Path.home() / "Pictures"),
-        "videos": str(Path.home() / "Videos"),
-    }
+from eli.execution.routing.intents import (
+    INTENT_STAGES_EARLY,
+    INTENT_STAGES_TAIL,
+    ROUTE_NONE,
+)
+# Route helpers live in eli.execution.routing._helpers (v3 modularisation). Change them there:
+# an inline copy here is what let a v2 port silently drop _mk(meta_extra=).
+from eli.execution.routing._helpers import (  # noqa: F401
+    COMMON_DIRS,
+    WEBSITE_ALIASES,
+    _known_dir_path,
+    _extract_int,
+    _extract_path_from_text,
+    _extract_pdf_path,
+    _extract_pdf_paths,
+    _is_likely_path,
+    _is_likely_url,
+    _mk,
+    _normalize_text,
+    _normalize_url,
+)
 
 DESKTOP_APP_PRIORITY = {
     "spotify", "steam", "discord", "slack", "code", "vscode", "codium",
@@ -250,30 +207,6 @@ DESKTOP_APP_PRIORITY = {
     "terminal",
 }
 
-WEBSITE_ALIASES = {
-    "youtube": "https://youtube.com",
-    "google": "https://google.com",
-    "facebook": "https://facebook.com",
-    "twitter": "https://twitter.com",
-    "x": "https://x.com",
-    "instagram": "https://instagram.com",
-    "linkedin": "https://linkedin.com",
-    "reddit": "https://reddit.com",
-    "github": "https://github.com",
-    "stackoverflow": "https://stackoverflow.com",
-    "wikipedia": "https://wikipedia.org",
-    "amazon": "https://amazon.com",
-    "ebay": "https://ebay.com",
-    "netflix": "https://netflix.com",
-    "hulu": "https://hulu.com",
-    "twitch": "https://twitch.tv",
-    "gmail": "https://mail.google.com",
-    "outlook": "https://outlook.live.com",
-    "yahoo": "https://mail.yahoo.com",
-    "maps": "https://maps.google.com",
-    "news": "https://news.google.com",
-    "weather": "https://weather.com",
-}
 
 # Canonical alias table — see eli/execution/app_aliases.py. It used to be
 # duplicated here and in executor_enhanced with ZERO overlap between them,
@@ -482,7 +415,6 @@ def _eli_final_clause(text: str) -> str:
     return parts[-1] if parts else str(text or "").strip()
 
 
-
 def _eli_schedule_prepass(user_text: str):
     """Detect 'do <any command> at <future time>' → SCHEDULE_TASK (background workers).
 
@@ -554,54 +486,6 @@ def _eli_multi_command_prepass(user_text: str):
     }
 
 
-def _mk(
-    action: str,
-    args: Optional[Dict[str, Any]] = None,
-    confidence: float = 0.7,
-    *,
-    matched_by: Optional[str] = None,
-    entities: Optional[Dict[str, Any]] = None,
-    need_grounding: Optional[bool] = None,
-    required_capabilities: Optional[List[str]] = None,
-    allow_chat_without_evidence: Optional[bool] = None,
-    task_family: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Canonical route object with debug/planner metadata."""
-    out = {
-        "action": action,
-        "args": args or {},
-        "confidence": float(max(0.0, min(1.0, confidence))),
-    }
-    meta: Dict[str, Any] = {}
-    if matched_by:
-        meta["matched_by"] = matched_by
-    if entities:
-        meta["entities"] = entities
-    if need_grounding is not None:
-        meta["need_grounding"] = bool(need_grounding)
-    if required_capabilities:
-        meta["required_capabilities"] = list(required_capabilities)
-    if allow_chat_without_evidence is not None:
-        meta["allow_chat_without_evidence"] = bool(allow_chat_without_evidence)
-    if task_family:
-        meta["task_family"] = task_family
-    if meta:
-        out["meta"] = meta
-    return out
-
-
-def _normalize_text(text: str) -> Tuple[str, str]:
-    """
-    Returns (raw_clean, low_clean)
-    Removes weird whitespace/control chars that can break regexes.
-    """
-    raw = (text or "")
-    raw = raw.replace("\u200b", " ").replace("\ufeff", " ")
-    raw = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", raw)  # strip control chars
-    raw = re.sub(r"\s+", " ", raw).strip()
-    return raw, raw.lower()
-
-
 # Person-attribute nouns for personal-knowledge routing ("what do you know about
 # my <attr>" → PERSONAL_MEMORY_SUMMARY). Kept as one shared group so the two
 # question frames stay in sync.
@@ -647,92 +531,6 @@ def _clean_app_name(s: str) -> str:
     return s
 
 
-def _is_likely_url(s: str) -> bool:
-    """
-    Detects URLs and bare domains (google.com, www.x.y, foo.io/bar).
-    Avoids false positives for local files when possible.
-    """
-    s = s.strip().lower()
-    if not s:
-        return False
-
-    if s.startswith(("http://", "https://", "www.")):
-        return True
-
-    # domain.tld[/...]
-    # conservative but broad enough for practical routing
-    if re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,24}(?:[:/].*)?$", s):
-        return True
-
-    return False
-
-
-def _normalize_url(s: str) -> str:
-    s = s.strip()
-    if s.lower().startswith(("http://", "https://")):
-        return s
-    if s.lower().startswith("www."):
-        return f"https://{s}"
-    if _is_likely_url(s):
-        return f"https://{s}"
-    return s
-
-
-def _is_likely_path(s: str) -> bool:
-    s = s.strip()
-    if not s:
-        return False
-
-    # URL check first to avoid "google.com" becoming a file
-    if _is_likely_url(s):
-        return False
-
-    if s.startswith(("./", "../", "~", "/")):
-        return True
-
-    if "/" in s or "\\" in s:
-        return True
-
-    if s.lower() in COMMON_DIRS:
-        return True
-
-    # file.ext style
-    if "." in s:
-        ext = s.rsplit(".", 1)[-1]
-        if ext.isalpha() and 1 <= len(ext) <= 8:
-            return True
-
-    keywords = {
-        "directory", "folder", "file", "path", "location",
-        "desktop", "documents", "downloads", "music", "pictures", "videos"
-    }
-    toks = set(re.findall(r"[a-zA-Z]+", s.lower()))
-    if toks & keywords:
-        return True
-
-    return False
-
-
-def _known_dir_path(s: str) -> str:
-    """Expanded path when *s* NAMES a well-known user folder, else "".
-
-    The decision counterpart to _expand_common_dir, which always returns
-    something (falling back to the raw token) and therefore cannot be used to
-    decide whether a phrase IS a folder. Without a predicate, "open downloads"
-    was indistinguishable from "open spotify" and got launched as an app —
-    answered with "downloads is not installed, shall I install it?".
-
-    Singular/plural tolerant: people say "download directory", the map is keyed
-    on "downloads".
-    """
-    try:
-        from eli.utils.platform_compat import known_user_dir as _kud
-        return _kud(s)
-    except Exception:
-        log.debug("known_user_dir unavailable", exc_info=True)
-        return ""
-
-
 def _expand_common_dir(s: str) -> str:
     key = s.strip()
 
@@ -758,129 +556,6 @@ def _expand_common_dir(s: str) -> str:
         return str(Path(_known).expanduser())
 
     return COMMON_DIRS.get(low, str(Path(key).expanduser()))
-
-
-def _extract_path_from_text(raw: str) -> Optional[str]:
-    # Remove common command prefixes like "file", "in", etc.
-    raw = re.sub(
-        r'^(?:fix|read|show|open|list)\s+(?:file|directory)?\s*',
-        '',
-        raw,
-        flags=re.IGNORECASE)
-    raw = re.sub(r'\s+in\s+', ' ', raw)  # "file in /path" -> "/path"
-    patterns = [
-        r'([~/][\w.\- /]+(?:\.\w+)?)',
-        r'(\./[\w.\- /]+(?:\.\w+)?)',
-        r'(\.\./[\w.\- /]+(?:\.\w+)?)',
-        r'([\w.\-]+/\S+)',
-        r'([A-Za-z0-9_.-]+\.(?:py|txt|md|json|yaml|yml|csv|pdf|log|ini|cfg|toml|sh))',
-    ]
-    for p in patterns:
-        m = re.search(p, raw)
-        if m:
-            return m.group(1).strip()
-    return None
-
-
-
-def _extract_pdf_paths(raw: str) -> list[str]:
-    """
-    Robust PDF path extractor.
-
-    Fixes the old bug where:
-        <path-to-pdf-file>
-    became:
-        /File.pdf
-
-    Supports:
-    - absolute paths
-    - ~/ paths
-    - ./ and ../ paths
-    - multiple PDFs in one prompt
-    - basename fallback search for bracketed PDF-content prompts
-    """
-    import os
-    import re
-    from pathlib import Path
-
-    text = str(raw or "")
-    # ELI PATCH: correct common STT errors
-    if 'taste' in text and ('today' in text or 'now' in text):
-        text = text.replace('taste','date')
-    found: list[str] = []
-
-    full_path_re = re.compile(
-        r'(?P<path>(?:~|/|\.{1,2}/)[^\n\r\t"\'<>]*?\.pdf)\b',
-        re.IGNORECASE,
-    )
-
-    for m in full_path_re.finditer(text):
-        p = m.group("path").strip()
-        p = p.strip(" ,.;:)]}>")
-        p = os.path.abspath(os.path.expanduser(p))
-        found.append(p)
-
-    # Basename fallback for prompts like:
-    #   [PDF content — Exergetic_Coherence_Revoloution.pdf]
-    # Only used to help route; executor still verifies existence.
-    name_re = re.compile(r'(?P<name>[A-Za-z0-9_. -]+\.pdf)\b', re.IGNORECASE)
-    roots = [
-        Path.cwd(),
-        Path.home(),
-        Path.home() / "Desktop",
-        Path.home() / "Desktop/Physics",
-        Path.home() / "Desktop/Physics/Theory_MATHEMATICS",
-    ]
-
-    for m in name_re.finditer(text):
-        name = m.group("name").strip().strip(" ,.;:)]}>")
-        if any(Path(x).name == name for x in found):
-            continue
-
-        # If user supplied only a basename, try known local roots.
-        for root in roots:
-            if not root.exists():
-                continue
-            try:
-                direct = root / name
-                if direct.exists():
-                    found.append(str(direct.resolve()))
-                    break
-
-                # Keep this bounded to likely user document locations.
-                matches = list(root.rglob(name))
-                if matches:
-                    found.append(str(matches[0].resolve()))
-                    break
-            except Exception:
-                continue
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for p in found:
-        if p not in seen:
-            seen.add(p)
-            deduped.append(p)
-
-    return deduped
-
-
-def _extract_pdf_path(raw: str) -> Optional[str]:
-    """
-    Backward-compatible single-PDF wrapper.
-    Prefer _extract_pdf_paths() for new routing.
-    """
-    paths = _extract_pdf_paths(raw)
-    return paths[0] if paths else None
-
-
-def _extract_int(raw: str, default: int, min_value: int,
-                 max_value: int) -> int:
-    m = re.search(r'(\d+)', raw)
-    if not m:
-        return default
-    n = int(m.group(1))
-    return max(min_value, min(max_value, n))
 
 
 def _canonical_media_command(low: str) -> Optional[str]:
@@ -1067,9 +742,6 @@ def _route_set_communication_style(raw: str, low: str) -> Optional[Dict[str, Any
     return None
 
 
-_NEGATORS = ("not", "n't", "never", "aint", "ain't", "isnt", "isn't", "wasnt", "wasn't",
-             "dont", "don't", "stop", "no")
-
 # Stems that make a turn a request rather than a remark. The personal-memory route is a
 # substring test over a keyword table and can't tell a question from a passing mention ("My
 # memory is fine, it is yours that we are concerned about" hit PERSONAL_MEMORY_DEEP_EXPLAIN at
@@ -1102,37 +774,6 @@ def _pm_asks_something(low: str) -> bool:
     if "?" in t:
         return True
     return bool(_ASKING_RE.search(t))
-
-
-def _tone_is_negated(low: str, tone: str) -> bool:
-    """True when the emotion word is being DENIED rather than requested.
-
-    "i am not sad" must never set the tone to sad. Without this, ELI's own
-    proactive check-in ("you've been reading more sad lately") provoked a reply
-    containing the word, that reply was parsed as an order to BE sad, the sad
-    reading was recorded, and the check-in fired again — a loop that escalated
-    sad×3 to sad×7 in one session, each round telling the user they seemed sad
-    because they had just said they were not.
-
-    Scans a short window before the tone word rather than the whole sentence, so
-    "not really working, sound cheerful" still sets cheerful.
-    """
-    try:
-        from eli.cognition.emotion_palette import resolve_tone as _rt
-    except Exception:
-        return False
-    words = re.findall(r"[a-z']+", low)
-    for i, w in enumerate(words):
-        # Find the token that produced this tone, then look back a few words.
-        try:
-            if _rt(w) != tone:
-                continue
-        except Exception:
-            continue
-        window = words[max(0, i - 4):i]
-        if any(n in window or any(x.endswith("n't") for x in window) for n in _NEGATORS):
-            return True
-    return False
 
 
 # Technical runtime questions ("what model are you running", "how many gpu layers"). The old
@@ -1230,6 +871,28 @@ def _route_grounded_runtime_intent(
     if re.search(r"\b(confidence in (?:your|my) last response|which agents contributed|what agents contributed|agents contributed|grounded trace|trace metadata|last turn trace|previous response trace)\b", raw, re.I):
         return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.99,
                    matched_by="router.explain_last_response",
+                   allow_chat_without_evidence=False)
+
+    # Belief audit — "why did you think I'm a developer?" → stored memories + ledger.
+    if re.search(
+        r"\bwhy\s+did\s+you\s+(?:think|believe|assume|remember|say)\b"
+        r"|\bwhy\s+do\s+you\s+think\s+(?:that|this|i)\b"
+        r"|\bmemory\s+audit\s+for\b"
+        r"|\bexplain\s+(?:your|the)\s+(?:belief|memory|assumption)\b",
+        raw, re.I,
+    ):
+        q = raw
+        m = re.search(
+            r"\bwhy\s+did\s+you\s+(?:think|believe|assume|remember|say)\s+(.+?)[?.!]*$",
+            raw, re.I,
+        )
+        if m:
+            q = m.group(1).strip(" ?.")
+        m2 = re.search(r"\bmemory\s+audit\s+for\s+(.+?)[?.!]*$", raw, re.I)
+        if m2:
+            q = m2.group(1).strip(" ?.")
+        return _mk("MEMORY_AUDIT", {"query": q or raw}, 0.96,
+                   matched_by="router.memory_audit.belief", need_grounding=True,
                    allow_chat_without_evidence=False)
 
     if _is_identity and not _has_system_kw:
@@ -1433,7 +1096,6 @@ def _route_plugin_bridge_prepass(raw: str, low: str):
                    matched_by="smart_home.device_command", entities={"command": _cmd})
 
     return None
-
 
 
 # === ELI non-Quick/meta-continuity routing contract v1 ===
@@ -1735,7 +1397,6 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _react_prepass
 
 
-
     # Asking ELI to explain something it said isn't a runtime-diagnostics request, even if it
     # quotes words like 'context window' or 'max_tokens'. Ungated, "can you explain what you meant
     # by 'the context window was full of noise'?" got a raw runtime dump. Real diagnostics ("why did
@@ -1854,614 +1515,16 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     # --- end primary contract diagnostics ---
 
 
-    # Primary-contract diagnostics: self-report recent updates. Questions about what checks or
-    # updates ELI performed must route to grounded evidence or GGUF invents maintenance activity.
-    # Introspective ones ("have you noticed changes in how you feel") are about cognitive state, not
-    # a git-update report, and belong in CHAT.
-    _introspective_subject = re.search(
-        r"\b(memory continuity|how you feel|how you'?re feeling|your feelings?|your mood|"
-        r"your awareness|your (?:consciousness|experience|thoughts|continuity|wellbeing|"
-        r"head|mind|state of mind))\b",
-        low,
-    )
-    _dev_update_subject = re.search(
-        r"\b(code|git|commit|version|build|patch|capabilit|module|test|upgrade|"
-        r"checks?|updates?|maintenance|deploy)\b",
-        low,
-    )
-    if _introspective_subject and not _dev_update_subject:
-        pass  # fall through to reflective CHAT / introspection routing
-    elif re.search(
-        r"\b(?:notice|sense|feel)\b.{0,60}\b(?:any\s+)?changes?\b.{0,60}\b(?:in|to)\s+your\s+code\b",
-        low,
-    ) and not re.search(r"\b(?:git|commit|changelog|diff|show me|list|which)\b", low):
-        pass  # casual rapport ("notice any changes in your code?") → CHAT, not audit dump
-    elif re.search(
-        r"\b(?:notice|sense|feel)\b.{0,40}\b(?:any\s+)?changes?\b.{0,40}\b(?:recently|lately|as of late)\b",
-        low,
-    ) and not re.search(r"\b(?:git|commit|changelog|diff|show me|list|which|updates?\s+and\s+checks?)\b", low):
-        pass  # casual check-in ("notice any changes recently?") → CHAT, not git dump
-    elif re.search(
-        r"\b(what|which|any|show|tell|list)\b.{0,80}\b(updates?|checks?|repairs?|changes?|maintenance|work)\b.{0,80}\b(as of late|recently|lately|performed|done|happened|made)\b",
-        low,
-    ) or (
-        re.search(
-            r"\b(what have you been doing|what have you been working on"
-            r"|what have you checked|what have you updated)\b",
-            low,
-        )
-        # A bare "what have you been doing?" in conversation is small talk, not a
-        # request for a git/runtime evidence dump — see the shared disambiguator.
-        and _eli_activity_question_is_about_dev_work(low)
-    ):
-        return {
-            "action": "SELF_REPORT",
-            "args": {
-                "question": raw,
-                "self_report_scope": "recent_updates",
-            },
-            "confidence": 0.995,
-            "meta": {
-                "matched_by": "router.primary_contract_diagnostics.self_report_recent_updates",
-                "need_grounding": True,
-                "allow_chat_without_evidence": False,
-                "task_family": "self_report_runtime",
-                "forbid_chat_fallback": True,
-                "forbid_fake_update_claims": True,
-            },
-        }
-    # --- end primary contract diagnostics: self-report recent updates ---
-
-    # Strict control actions never fall through to generic CHAT
-    # (ELI_PATCH_PERSONAL_MEMORY_ROUTE_PRECEDENCE_20260511). Personal-memory questions beat the
-    # generic memory-runtime route. System architecture ("your memory system... which files/db
-    # tables") is EXPLAIN_MEMORY_RUNTIME; the old block matched architecture keywords alone.
-    _pm_text = low  # `low` is always defined: low = raw.lower()
-    if (
-        not _eli_memory_runtime_route_lock_should_trigger(_pm_text)
-        and _pm_asks_something(_pm_text)
-        and ("memory" in _pm_text)
-        and (
-            "personal" in _pm_text
-            or "personalised" in _pm_text
-            or "personalized" in _pm_text
-            or "about me" in _pm_text
-            or "my memory" in _pm_text
-            or (
-                ("internals" in _pm_text or "internally" in _pm_text)
-                and re.search(r"\b(my|me|about me|stored about me)\b", _pm_text)
-            )
-        )
-    ):
-        return {
-            "action": "PERSONAL_MEMORY_DEEP_EXPLAIN",
-            "confidence": 0.99,
-            "source": "router.personal_memory_precedence",
-            "reason": "personalised/internal memory explanation must not be captured by generic memory runtime route",
-            "query": text if 'text' in locals() else (_pm_text or ""),
-        }
-
-    # Tolerate natural leading filler ("do a", "run a", "please", "now") and trailing punctuation so
-    # "do a self update" routes to SELF_UPDATE and not CHAT (which then says a fake "I'm updating
-    # myself now"). "self upgrade" intentionally doesn't match; it routes to SELF_UPGRADE below.
-    if re.fullmatch(
-        r"(?:(?:please|pls|can you|could you|now)\s+)*"
-        r"(?:(?:do|run|perform|execute|go)\s+(?:a|an|the)?\s*)?"
-        r"(?:self[- ]?update|update yourself|refresh yourself|refresh all overlays)"
-        r"(?:\s+now)?[.!\s]*",
-        low):
-        return _mk("SELF_UPDATE", {}, 0.99, matched_by="router.self_update", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(confidence in (?:your|my) last response|which agents contributed|what agents contributed|last response trace|previous response trace|last turn trace)\b", low):
-        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.99, matched_by="router.explain_last_response", allow_chat_without_evidence=False)
-
-    # Where did ELI get its last statement, in plain words. The jargon route above missed "where are
-    # you getting this information?", so the model invented a source. The bus knows which agents
-    # contributed, so answer from that. Needs that/this/it to stay about the prior statement.
-    if re.search(
-        r"\bwhere\s+(?:are|did)\s+you\s+get(?:ting)?\s+(?:that|this|it|the\s+\w+)\b"
-        r"|\bwhere\s+(?:is|did)\s+(?:that|this|it)\s+(?:com(?:e|ing)\s+)?from\b"
-        r"|\bhow\s+do\s+you\s+know\s+(?:that|this|any\s+of\s+(?:that|this))\b"
-        r"|\bwhat\s+are\s+you\s+basing\s+(?:that|this|it)\s+on\b"
-        r"|\bwhat(?:'s|\s+is)\s+(?:that|this)\s+based\s+on\b"
-        r"|\bsays\s+who\b",
-        low,
-    ):
-        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.95,
-                   matched_by="router.explain_last_response.provenance",
-                   need_grounding=True, allow_chat_without_evidence=False)
-
-    # A request for raw metrics/agent logs/telemetry of a recent cycle must surface the real logged
-    # telemetry (agent_dispatches + runtime_events via EXPLAIN_LAST_RESPONSE), not the settings
-    # snapshot SELF_REPORT returns, which led ELI to claim "I have no logs".
-    if (re.search(r"\b(metric|metrics|telemetry|agent log|agent logs|raw log|raw logs|"
-                  r"dispatch log|breakdown|trace|logs?)\b", low)
-            and re.search(r"\b(that|this|last|previous|prior|the)\s+"
-                          r"(cycle|response|turn|request|run|answer|reply)\b", low)
-            and not re.search(r"\b(delete|clear|disable|turn off|stop)\b", low)):
-        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.98,
-                   matched_by="router.explain_last_response.metrics",
-                   need_grounding=True, allow_chat_without_evidence=False)
-
-    # --- explicit grounded speech-act route authority ---
-    # This is routing authority, not a canned response layer.
-    try:
-        from eli.cognition.correction_patterns import (
-            is_correction_query as _is_corr_q,
-            is_model_identity_dispute as _is_model_dispute,
-            is_runtime_recheck_correction as _is_runtime_recheck,
-            is_codebase_health_query as _is_codebase_health,
-        )
-    except Exception:
-        _is_corr_q = lambda t: False  # noqa: E731
-        _is_model_dispute = lambda t: False  # noqa: E731
-        _is_runtime_recheck = lambda t: False  # noqa: E731
-        _is_codebase_health = lambda t: False  # noqa: E731
-    if _is_model_dispute(low):
-        return _mk("RUNTIME_STATUS", {}, 0.98, matched_by="router.model_identity_dispute",
-                   allow_chat_without_evidence=False)
-    if _is_runtime_recheck(low):
-        return _mk("RUNTIME_STATUS", {"question": raw}, 0.96,
-                   matched_by="router.runtime_recheck_correction",
-                   allow_chat_without_evidence=False)
-    if _is_codebase_health(low):
-        return _mk(
-            "RUNTIME_AUDIT",
-            {"query": raw, "audit_depth": "codebase"},
-            0.98,
-            matched_by="router.codebase_health",
-            allow_chat_without_evidence=False,
-            need_grounding=True,
-            task_family="grounded_audit",
-        )
-    if _is_corr_q(low) and not _is_wallclock_question(low):
-        return _mk("CHAT", {"message": raw}, 0.92, matched_by="router.correction_chat", allow_chat_without_evidence=True)
-
-    if re.search(r"\b(who are you|what are you|what is your name|what's your name)\b", low) and re.search(
-        r"\b(running on|model|context size|gpu layers|threads|batch|provider|runtime)\b",
-        low,
-    ):
-        return _mk("SELF_REPORT", {}, 0.99, matched_by="router.self_report_with_runtime", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(what are you actually running on|running on right now|context size|gpu layers|threads|batch|provider|runtime status)\b", low):
-        return _mk("RUNTIME_STATUS", {}, 0.99, matched_by="router.runtime_status", allow_chat_without_evidence=False)
-
-    if re.search(r"\bwhat(?:'s|\s+is)\s+(?:your\s+)?model\b", low):
-        return _mk("RUNTIME_STATUS", {"question": raw}, 0.99,
-                   matched_by="router.runtime_status_model_query", allow_chat_without_evidence=False)
-
-    if re.search(r"\bcheck(?:\s+the|\s+your)?\s+model\b|\blook at (?:the|your) model\b", low):
-        return _mk("RUNTIME_STATUS", {"question": raw}, 0.98,
-                   matched_by="router.runtime_status_model_check", allow_chat_without_evidence=False)
-
-    # Self-referential temperature: "what's your temperature", "your temperature out now",
-    # "what is your inference temperature", "what temp are you running at" etc.
-    # Must fire BEFORE the weather prepass which also matches "temperature".
-    if re.search(
-        r"\b(?:your|eli(?:'s)?|its)\s+(?:inference\s+)?temp(?:erature)?\b"
-        r"|\binference\s+temp(?:erature)?\b"
-        r"|\bgeneration\s+temp(?:erature)?\b"
-        r"|\btemp(?:erature)?\s+(?:(?:are\s+)?you(?:'re|\s+are)?\s+(?:running|at|set|using|on)|out\s+now|setting|parameter|value|right\s+now|currently)\b",
-        low,
-    ):
-        return _mk("RUNTIME_STATUS", {}, 0.97, matched_by="router.self_temp_runtime_status", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(explain exactly how your memory system works internally|memory system works internally|which files.*which db tables.*which functions|memory runtime surface|memory runtime)\b", low):
-        return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_runtime", allow_chat_without_evidence=False)
-
-    if "memory" in low and re.search(
-        r"\b(db paths?|database|sqlite|tables?|functions?|internally|semantic|rag|faiss|fts5|vector(?:ing|s)?|index(?:ing|es)?|hyde|short[- ]?term|long[- ]?term)\b",
-        low,
-    ):
-        return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_runtime_architecture", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(explain your cognition pipeline|cognition pipeline from input to output|input to output.*every step|cognitive pipeline)\b", low):
-        return _mk("EXPLAIN_COGNITION_RUNTIME", {}, 0.99, matched_by="router.cognition_runtime", allow_chat_without_evidence=False)
-
-    # "how do your agents work", "explain your agent bus": answered from the grounded cognition
-    # report (EXPLAIN_COGNITION_RUNTIME). Must beat web_search and system.capabilities. "write a
-    # report about your agent bus" is still GENERATE_DOCUMENT, so leave that alone.
-    _doc_gen_intent = bool(re.search(
-        r"\b(generate|create|write|make|draft|produce|compose|prepare|build)\b"
-        r".{0,30}\b(document|doc|report|essay|article|paper|write-?up|brief|memo|"
-        r"guide|overview|summary|story|blog|post|readme)\b", low))
-    if not _doc_gen_intent and (
-        re.search(r"\b(?:how|what|explain|describe|tell me|show me)\b.{0,40}\b(?:your|the|eli'?s)\s+agents?\b", low)
-        or re.search(r"\b(?:your|the|eli'?s)\s+agents?\b.{0,40}\b(work|works|function|functions|operate|operates|run|runs|behave|coordinate|interact|process)\b", low)
-        or re.search(r"\bagent\s+bus\b", low)
-        or re.search(r"\bhow\s+(?:do|does|the\s+(?:fuck|hell|heck)\s+do)\b.{0,30}\bagents?\b", low)
-        or (re.search(r"\bsearch\s+(?:your|the|my)\s+(?:own\s+)?code", low)
-            and re.search(r"\b(agents?|cognition|memory|pipeline|reasoning)\b", low))
-    ):
-        return _mk("EXPLAIN_COGNITION_RUNTIME", {"question": raw}, 0.99,
-                   matched_by="router.agents_architecture", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(what do you know about me from memory|what do you know about me|what do you remember of me|who am i|what is my name|do you remember me|do you know me|my preferences|my persona|my ethos)\b", low):
-        return _mk("USER_IDENTITY_SUMMARY", {}, 0.99, matched_by="router.user_identity_summary", allow_chat_without_evidence=False)
-
-    # Meta-questions about static profile files vs live/evolving memory — must not
-    # fall through long_question_guard → generic CHAT with a 128-token answer cap.
-    if re.search(
-        r"\b(?:hard[\s-]?coded|template|stub|static)\b.{0,80}\b(?:profile|preference|about me|memory|user info)\b"
-        r"|\b(?:dynamic|emergent|evolv\w+)\b.{0,80}\b(?:understand\w*|profile|preference|memory|you)\b"
-        r"|\babout me section\b.{0,80}\b(?:static|dynamic|template|stub|hard[\s-]?coded)\b",
-        low,
-    ):
-        return _mk(
-            "USER_IDENTITY_SUMMARY",
-            {"question": raw, "detail": "full", "include_memory_provenance": True},
-            0.99,
-            matched_by="router.user_identity_dynamic_vs_static",
-            allow_chat_without_evidence=False,
-        )
-
-    # Pure persona questions (no runtime keywords) → CHAT so ELI answers from
-    # its own character and memory, not a raw JSON spec dump.
-    if re.search(r"\b(who are you|what are you(?!\s+\w)|what is your name|what's your name|tell me about yourself|what is your purpose)\b", low) and not re.search(r"\b(model|running on|provider|context|gpu|llm|specs?|technical|runtime|layers|threads|batch)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.99, matched_by="router.identity_persona_chat", allow_chat_without_evidence=True)
-    # Technical model/runtime queries → RUNTIME_STATUS (live mounted model evidence).
-    if re.search(r"\b(what model(?: are you| do you use| is this)?|which model(?: are you| do you use| is this)?|what llm|which llm|what are you running on|what are you actually)\b", low):
-        return _mk("RUNTIME_STATUS", {"question": raw}, 0.99, matched_by="router.runtime_status_model_query", allow_chat_without_evidence=False)
-    # --- end explicit grounded speech-act route authority ---
-
-    # --- dynamic evidence preempts ---
-    if re.search(r"\b(who are you.*running on right now|model.*context size.*gpu layers|what are you actually running on right now|you know who you are)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.runtime_status_to_chat", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(what do you know about me from memory|what do you know about me|what do you remember of me|who am i|what is my name|do you remember me)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.memory_status_to_chat", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(explain exactly how your memory system works internally|memory system works internally|which files.*which db tables.*which functions)\b", low):
-        return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_runtime_to_grounded", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(run a full runtime audit|runtime audit.*broken or missing)\b", low):
-        return _mk("RUNTIME_AUDIT", {}, 0.99, matched_by="router.runtime_audit", allow_chat_without_evidence=False, need_grounding=True, task_family="grounded_audit")
-
-    if re.search(r"\b(what imports are failing|what imports are missing|imports are failing or missing)\b", low):
-        return _mk("IMPORT_AUDIT", {}, 0.99, matched_by="router.import_audit", allow_chat_without_evidence=False, need_grounding=True, task_family="grounded_audit")
-
-    if re.search(
-        r"\b(diagnose\s+wrappers?|show\s+(?:the\s+)?(?:executor\s+)?(?:wrapper|middleware)\s+(?:chain|stack|table)|"
-        r"what\s+wraps?\s+(?:the\s+)?executor|executor\s+middleware\s+(?:chain|stack|table)|"
-        r"list\s+(?:the\s+)?executor\s+wrappers?)\b",
-        low,
-    ):
-        return _mk(
-            "DIAGNOSE_WRAPPERS", {}, 0.99,
-            matched_by="router.diagnose_wrappers",
-            allow_chat_without_evidence=False,
-            need_grounding=True,
-            task_family="grounded_audit",
-        )
-
-    if re.search(r"\b(show me the resolved runtime paths|resolved runtime paths|runtime paths for every critical file|critical file you depend on)\b", low):
-        return _mk("RESOLVE_RUNTIME_PATHS", {}, 0.99, matched_by="runtime.paths.preempt", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(audit your gui file|gui runtime audit|gui file.*wired incorrectly)\b", low):
-        return _mk(
-            "GUI_RUNTIME_AUDIT",
-            {},
-            0.99,
-            matched_by="router.gui_runtime_audit",
-            allow_chat_without_evidence=False,
-            need_grounding=True,
-            task_family="grounded_audit",
-        )
-
-    if re.search(r"\b(show me the resolved runtime paths|resolved runtime paths|runtime paths for every critical file|critical file you depend on)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.runtime_paths_to_chat")
-
-    if re.search(r"\b(audit your gui file|gui runtime audit|gui file.*wired incorrectly)\b", low):
-        return _mk("GUI_RUNTIME_AUDIT", {}, 0.99, matched_by="gui.runtime.preempt")
-
-    # Voice/STT diagnostics must be checked BEFORE general RUNTIME_AUDIT
-    # because RUNTIME_AUDIT's regex catches bare "diagnostic/diagnostics" which
-    # swallows "voice diagnostics", "mic diagnostics", etc.
-    if re.search(r"\b(voice|stt|speech[- ]to[- ]text|whisper|microphone|mic)\s+"
-                 r"(diagnostic|diagnostics|status|test|check|health)\b"
-                 r"|\b(diagnostic|diagnostics|status|test|check|health)\s+(voice|stt|speech|whisper|mic)\b"
-                 r"|\bcheck\s+(the\s+)?(microphone|mic)\b"
-                 r"|\bstt\s+diagnostics?\b",
-                 low):
-        return _mk("STT_DIAGNOSTICS", {}, 0.93, matched_by="voice.diagnostics.preempt")
-
-    # Wake-word and voice-profile management. Deterministic because the LLM resolver mis-routes
-    # these ("set my wake word" -> SET_CLIPBOARD). change/set -> WAKE_SET, train/build -> WAKE_TRAIN,
-    # enroll/personalise -> WAKE_ENROLL, train/learn my voice -> TRAIN_VOICE (prosody, separate).
-    if re.search(r"\b(wake[\s-]*word|wakeword)\b", low):
-        m = re.search(r"\b(?:change|set|update|make|rename)\b.*\bwake[\s-]*word\b\s*(?:to|is|as|=)?\s*(.*)$",
-                      raw, re.I)
-        if re.search(r"\b(?:change|set|update|make|rename|pick|choose|customi[sz]e)\b", low) and \
-           not re.search(r"\b(train|enroll|enrol|teach|record|personali[sz]e|tune)\b", low):
-            phrase = (m.group(1).strip().strip('."\'') if m and m.group(1) else "")
-            return _mk("WAKE_SET", {"phrase": phrase, "_raw_user_text": raw}, 0.95,
-                       matched_by="wake.set", entities={"phrase": phrase})
-        if re.search(r"\b(enroll|enrol|personali[sz]e|tune|record)\b", low):
-            return _mk("WAKE_ENROLL", {}, 0.95, matched_by="wake.enroll")
-        if re.search(r"\b(train|build|retrain|rebuild|create)\b", low):
-            return _mk("WAKE_TRAIN", {}, 0.95, matched_by="wake.train")
-    if re.search(r"\b(train|learn|teach|profile|study|analyse|analyze)\b.*\b(my\s+)?voice\b", low) or \
-       re.search(r"\b(my\s+)?voice\b.*\b(train|profile|baseline|tone|emotion)\b", low):
-        if "wake" not in low:
-            return _mk("TRAIN_VOICE", {}, 0.93, matched_by="voice.train_profile")
-
-    # Voice library: list, download or switch the TTS voice. Not persona tone, that's
-    # SET_COMMUNICATION_STYLE. Sits here so the later persona-style route can't swallow it. Tone
-    # shades delivery only; CLEAR first, and "are you back to normal yet?" is chat, not a command.
-    if re.search(r"\b(back to (normal|yourself)|be yourself|normal tone|drop the (tone|act|voice)"
-                 r"|stop (that|the tone|acting)|reset your tone|clear (the )?tone)\b", low):
-        _tone_status_q = (
-            re.search(r"\b(?:are you|is it|have you)\b.*\bback to (?:normal|yourself)\b", low)
-            or (
-                re.search(r"\bback to (?:normal|yourself)\b", low)
-                and ("?" in (raw or "") or re.search(r"\b(?:yet|or not)\b", low))
-            )
-        )
-        if not _tone_status_q:
-            return _mk("CLEAR_TONE", {}, 0.9, matched_by="tone.clear")
-    # SET: an explicit tone directive naming a palette tone/alias. Needs a tone-setting verb and a
-    # phrase that resolves to a real tone, so "be comedic" fires but "that joke was comedic gold"
-    # doesn't. The verb list used to include more/less/get/go, so "i am not sad eli, i am just
-    # trying to get your codebas correct" set the tone to sad. "be more cheerful" still works via `be`.
-    if re.search(r"\b(be|sound|talk|speak|act|use|make it|keep it)\b", low):
-        try:
-            from eli.cognition.emotion_palette import resolve_tone as _rt
-            _tone = _rt(raw)
-            if _tone and _tone != "neutral" and not _tone_is_negated(low, _tone):
-                return _mk("SET_TONE", {"tone": _tone}, 0.9, matched_by="tone.set")
-        except Exception:
-            log.debug("tone.set resolve failed", exc_info=True)
-
-    # CREATE / clone a voice from a dropped-in recording (wav/mp3/mp4). Checked
-    # before the download/set routes so "create a voice from …" isn't mis-read.
-    if re.search(r"\b(voice|clone)\b", low) and re.search(
-            r"\b(creat|make|build|clone|generat|record)\w*\b", low) and (
-            re.search(r"\.(wav|mp3|mp4|m4a|ogg|flac|aac|webm)\b", low)
-            or re.search(r"\b(from|using|out of|with)\b.*\b(recording|audio|clip|sample|file|voice)\b", low)
-            or re.search(r"\b(my|this|the)\s+(recording|audio|clip|sample|voice)\b", low)):
-        _m = re.search(r"\b(?:called|named|name it|as)\s+([A-Za-z0-9_ -]{1,40})", raw)
-        _f = re.search(r"([~/\w. -]+\.(?:wav|mp3|mp4|m4a|ogg|flac|aac|webm))\b", raw, re.I)
-        _args = {"query": raw}
-        if _m:
-            _args["name"] = _m.group(1).strip()
-        if _f:
-            _args["file"] = _f.group(1).strip()
-        return _mk("CREATE_VOICE", _args, 0.9, matched_by="voice.create")
-
-    # DESIGN_VOICE — build your own voice from a base + pitch/speed (no audio clip needed).
-    # "design a voice called Nova, deep and slow". Sits AFTER voice.create so a request that
-    # names an audio file still clones rather than designing from scratch.
-    if (re.search(r"\b(design|make|create|build|set\s*up)\b", low)
-            and re.search(r"\bvoice\b", low)
-            and re.search(r"\b(?:called|named|name it)\s+[A-Za-z0-9_-]", raw, re.I)):
-        _dm = re.search(r"\b(?:called|named|name it)\s+([A-Za-z0-9_ -]{1,40})", raw, re.I)
-        _dargs = {"query": raw}
-        if _dm:
-            _dargs["name"] = _dm.group(1).strip().rstrip(",.")
-        _p = re.search(r"\bpitch\s*([+-]?\d+(?:\.\d+)?)", low)
-        _sp = re.search(r"\bspeed\s*(\d+(?:\.\d+)?)", low)
-        if _p:
-            _dargs["pitch"] = _p.group(1)
-        if _sp:
-            _dargs["speed"] = _sp.group(1)
-        # plain-English shaping
-        if re.search(r"\b(deep|low|lower)\b", low) and not _p:
-            _dargs["pitch"] = -2.0
-        if re.search(r"\b(high|higher|bright)\b", low) and not _p:
-            _dargs["pitch"] = 2.0
-        if re.search(r"\b(slow|slower)\b", low) and not _sp:
-            _dargs["speed"] = 0.9
-        if re.search(r"\b(fast|faster|quick)\b", low) and not _sp:
-            _dargs["speed"] = 1.1
-        return _mk("DESIGN_VOICE", _dargs, 0.9, matched_by="voice.design")
-
-    if re.search(r"\bvoices?\b|\baccents?\b", low):
-        _has_dl = bool(re.search(r"\b(download|install|fetch|add|grab)\b", low))
-        # LIST — asking what's available (no fetch/switch verb)
-        if (re.search(r"\b(what|which|list|show|available)\b", low)
-                and not _has_dl
-                and not re.search(r"\b(use|switch|change|set|make)\b", low)):
-            return _mk("LIST_VOICES", {}, 0.9, matched_by="voice.list")
-        # DOWNLOAD — explicit fetch ("download a British voice", "get me a Scottish accent")
-        if _has_dl or re.search(r"\bget\s+(?:me\s+)?(?:a|an|the|some)\b.*\b(voice|accent)\b", low):
-            return _mk("DOWNLOAD_VOICE", {"query": raw}, 0.92, matched_by="voice.download")
-        # SET — only when it resolves to a real voice, so "change your voice to
-        # sarcastic" still falls through to persona tone (SET_COMMUNICATION_STYLE).
-        if re.search(r"\b(use|switch|change|set|make)\b", low):
-            try:
-                from eli.runtime.voice_assets import resolve_voice_query
-                if resolve_voice_query(raw).get("voice"):
-                    return _mk("SET_VOICE", {"query": raw}, 0.9, matched_by="voice.set")
-            except Exception:
-                log.debug("voice.set resolve failed", exc_info=True)
-        return None  # mentions "voice/accent" but no actionable verb → let CHAT handle
-
-    # A bare install/download of a named voice id/accent with no "voice" word ("install
-    # en_US-amy-medium"). Gated on the query resolving to a catalog voice, so "install firefox" is
-    # unaffected. Skip news intents ("get news about X" must not match et_EE-news-medium).
-    if re.search(r"\b(download|install|fetch|add|get)\b", low) and not re.search(r"\bnews\b", low):
-        try:
-            from eli.runtime.voice_assets import resolve_voice_query
-            _vr = resolve_voice_query(raw)
-            if _vr.get("voice") and _vr.get("kind") in ("id", "name", "accent"):
-                return _mk("DOWNLOAD_VOICE", {"query": raw}, 0.9, matched_by="voice.download.byid")
-        except Exception:
-            log.debug("voice.download.byid resolve failed", exc_info=True)
-
-    # ── Gaze engine control ────────────────────────────────────────────────────
-    # Must sit before RUNTIME_AUDIT so "gaze status" / "gaze diagnostics" don't
-    # get absorbed by the generic audit preempt.
-    if re.search(
-        r"\b(gaze\s*(engine|tracker|tracking|system)?\s*(status|diagnostics?|check|health|info))\b"
-        r"|\b(is\s+gaze\s+(running|active|on|enabled))\b"
-        r"|\b(gaze\s+engine\s+status)\b",
-        low,
-    ):
-        return _mk("GAZE_STATUS", {}, 0.95, matched_by="gaze.status.preempt")
-
-    # Dwell-click (accessibility): "enable gaze clicking" / "turn on dwell click" starts the
-    # gaze engine AND switches on look-and-hold clicking — hands-free AND voice-free. Checked
-    # first (higher priority) so "gaze clicking" doesn't fall through to plain gaze-enable.
-    if re.search(
-        r"\b(enable|start|turn\s+on|activate|switch\s+on)\s+(the\s+)?"
-        r"(dwell[\s-]?click(ing)?|gaze[\s-]?click(ing)?|eye[\s-]?click(ing)?|click(ing)?\s+by\s+(gaze|eye|looking))\b"
-        r"|\b(dwell[\s-]?click(ing)?|gaze[\s-]?click(ing)?)\s+(on|enable)\b",
-        low,
-    ):
-        return _mk("GAZE_ENABLE", {"dwell": True}, 0.97, matched_by="gaze.dwell.enable.preempt")
-
-    if re.search(
-        r"\b(enable|start|turn\s+on|activate|switch\s+on)\s+(the\s+)?(gaze|gaze\s+engine|gaze\s+track(er|ing))\b"
-        r"|\bgaze\s+(engine\s+)?(on|enable|start|activate)\b",
-        low,
-    ):
-        return _mk("GAZE_ENABLE", {}, 0.96, matched_by="gaze.enable.preempt")
-
-    if re.search(
-        r"\b(disable|stop|turn\s+off|deactivate|switch\s+off)\s+(the\s+)?(gaze|gaze\s+engine|gaze\s+track(er|ing))\b"
-        r"|\bgaze\s+(engine\s+)?(off|disable|stop|deactivate)\b",
-        low,
-    ):
-        return _mk("GAZE_DISABLE", {}, 0.96, matched_by="gaze.disable.preempt")
-
-    if re.search(
-        r"\b(calibrate\s+gaze|gaze\s+calibr|run\s+gaze\s+calibr|gaze\s+setup)"
-        r"|\b(calibrate\s+(the\s+)?gaze\s+engine)",
-        low,
-    ):
-        return _mk("GAZE_CALIBRATE", {}, 0.95, matched_by="gaze.calibrate.preempt")
-
-    # Gaze-cursor click: act on what the user is looking at. Explicit click commands ("double/left/
-    # right click") always route. "open it" / "click that" means a gaze click only when gaze tracking
-    # is on; off, "open it" means the file/app just mentioned (it used to fire a phantom GAZE_CLICK).
-    if re.search(r"\bright[\s-]?click\b", low):
-        return _mk("GAZE_CLICK", {"button": "right"}, 0.95, matched_by="gaze.click.right")
-    if re.search(r"\bdouble[\s-]?click\b", low):
-        return _mk("GAZE_CLICK", {"button": "left", "double": True}, 0.95, matched_by="gaze.click.double")
-    if re.search(r"\bleft[\s-]?click\b|^\s*click\s*$", low):
-        return _mk("GAZE_CLICK", {"button": "left"}, 0.94, matched_by="gaze.click.left")
-    _gaze_on = False
-    try:
-        from eli.perception.gaze_engine import is_gaze_running as _igr
-        _gaze_on = bool(_igr())
-    except Exception:
-        _gaze_on = False
-    if _gaze_on:
-        if re.search(r"\bopen\s+(?:that|it|this|here|there)\b", low):
-            return _mk("GAZE_CLICK", {"button": "left", "double": True}, 0.95, matched_by="gaze.click.double")
-        if re.search(r"\bclick\s+(?:it|that|this|here|there)\b", low):
-            return _mk("GAZE_CLICK", {"button": "left"}, 0.94, matched_by="gaze.click.left")
-    # ── end gaze engine control ───────────────────────────────────────────────
-
-    # File Audit must come before RUNTIME_AUDIT or the broad 'do ... audit' pattern steals it.
-    # "list" is kept out of bare "files?" matching so "list the files in my downloads folder" reaches
-    # LIST_DIR. Only audit|examine|inspect|scan|inventory pair with bare "files?"; "list" needs a
-    # code-specific noun or qualifier.
-    if re.search(
-        r"\b(audit|examine|inspect|scan|inventory)\b.{0,40}\b(files?|codebase|source|modules?|scripts?|project\s+files?)\b"
-        r"|\b(list|inventory)\b.{0,40}\b(codebase|source|modules?|scripts?|project\s+files?)\b"
-        r"|\bfile\s+(audit|scan|inventory|check|examination)\b"
-        r"|\baudis?\s+(?:all\s+(?:of\s+)?(?:your|the)\s+)?files?\b"
-        r"|\b(do|perform|run)\s+(?:a\s+)?file\s+audit\b"
-        r"|\blist\s+(?:all\s+)?(?:your\s+)?files?\b",
-        low,
-    ):
-        return _mk(
-            "FILE_AUDIT",
-            {"scope": "eli", "message": raw},
-            0.95,
-            matched_by="router.file_audit",
-            need_grounding=True,
-            task_family="grounded_audit",
-        )
-
-    if re.search(
-        r"\b(run a full runtime audit|run full runtime audit|runtime audit|system audit|health check|diagnostic|diagnostics|what'?s actually broken|what is actually broken)\b"
-        r"|\b(perform|do|run|wanna run|want to run|let'?s run)\b.{0,30}\b(full.?time\s+audit|full\s+audit|runtime audit|system audit|audit)\b"
-        r"|\b(fulltime|full.time)\s+audit\b"
-        r"|\bdo an? audit\b"
-        # "run a full runtime <X>" / "do a full system <X>": the "full runtime|system" phrase IS
-        # the audit intent — the trailing word is often STT noise ("audit" mis-heard as "artist",
-        # which otherwise got launched as an app via the greedy OPEN_APP contract).
-        r"|\b(?:run|do|perform|start|execute)\s+(?:a\s+)?full\s+(?:runtime|system)\b"
-        r"|\bcheck (the\s+)?(runtime|system|modules?|pipeline)\b",
-        low,
-    ):
-        return _mk("RUNTIME_AUDIT", {}, 0.95, matched_by="audit.runtime.preempt",
-                   need_grounding=True, task_family="grounded_audit")
-
-    if re.search(r"\b(what are you actually running on|running on right now|context size|gpu layers|threads|batch|provider)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.runtime_status_grounded_to_chat", allow_chat_without_evidence=False)
-
-    # See notes on cognition.trace.chat_handoff in _route_grounded_runtime_intent.
-    if re.search(r"\b(confidence in your last response|which agents contributed|agents contributed|grounded trace|trace metadata)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.98,
-                   matched_by="cognition.trace.chat_handoff",
-                   allow_chat_without_evidence=False)
-
-    if re.search(r"\b(memory system|memory runtime|how does your memory work internally|which files|which db tables|which functions)\b", low):
-        return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_status_to_grounded", allow_chat_without_evidence=False)
-
-    # Reasoning-mode status (ELI_ROUTER_REASONING_MODE_STATUS_FIX_20260505): answer the active mode
-    # label without hijacking into full runtime diagnostics. Only queries about the current mode
-    # are caught; "all modes", "how many" or differences go to CHAT so it reads the source files.
-    _asking_about_all_modes = re.search(
-        r"\b(all|every|each|how many|list|explain|full|describe|detail|difference|differ|compare|what are|tell me about|tell me all|tell me everything|what do|how do|modes?\s+you\s+have|modes?\s+does|all.*mode|every.*mode)\b",
-        low,
-    )
-    if not _asking_about_all_modes and (
-        re.fullmatch(r"(?:what(?:'s| is)|which is|tell me|show me)?\s*(?:your|eli'?s|the|my)?\s*(?:current|active)?\s*reasoning mode(?:\s*,?\s*eli)?\??", low)
-        or re.search(r"\b(?:what(?:'s| is)|which|current|active)\b.{0,40}\breasoning mode\b", low)
-    ):
-        return _mk("REASONING_MODE_STATUS", {}, 0.995, matched_by="reasoning.mode_status", allow_chat_without_evidence=False)
-
-    # Broad "explain / describe / list all reasoning modes" goes to EXPLAIN_ALL_REASONING_MODES so
-    # the answer is built from reasoning_modes.py. A frustrated correction that just mentions a mode
-    # ("you are not in quick mode") is relational CHAT. Needs a modes topic ("reasoning mode(s)" /
-    # plural "modes"), not a bare singular "<x> mode".
-    _is_mode_correction = bool(re.search(
-        r"\byou('?re| are| were)\s+not\b|\bnot\s+in\b|\bwhat\s+are\s+you\s+talking\s+about\b"
-        r"|\bthat('?s| is| was)\s+not\b|\byou\s+said\b|\bnot\s+(?:quick|normal|advanced|research|expert)\b",
-        low))
-    if (_asking_about_all_modes and not _is_mode_correction
-            and re.search(r"\b(reasoning modes?|modes)\b", low)):
-        return _mk(
-            "EXPLAIN_ALL_REASONING_MODES", {},
-            0.99,
-            matched_by="reasoning.all_modes_grounded",
-            allow_chat_without_evidence=False,
-            need_grounding=True,
-            task_family="grounded_audit",
-        )
-
-    if re.search(r"\b(cognition pipeline|input to output|every step|no vague descriptions)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.cognition_status_to_chat")
-
-    # "What do you know about me from memory" is open-ended and needs HyDE expansion and rerank. The
-    # MEMORY_RECALL preempt produced single weak hits (conf 0.34) and the LLM filled gaps with
-    # invented details. CHAT engages the full retrieval path.
-
-
-    if re.search(
-        r"\b("
-        r"what do you know about me|"
-        r"what do you know from memory|"
-        r"show (?:my|the) stored memor(?:y|ies)(?: about me)?|"
-        r"dump (?:my )?(?:user )?(?:profile|info|memory)|"
-        r"who am i(?: to you)?|"
-        r"show user info|"
-        r"user info report|"
-        r"profile report"
-        r")\b",
-        text_l,
-    ):
-        return _mk(
-            "MEMORY_RECALL",
-            {"query": text, "_prefer_user_info_report": True},
-            0.99,
-            matched_by="identity.user_info.report",
-            allow_chat_without_evidence=False,
-        )
+    # ── Intent stages (early group) ───────────────────────────────────────────
+    # Ordered guards lifted into eli.execution.routing.intents (self-report, runtime/voice,
+    # input/agents). First match wins, exactly as the inline chain did; a stage returns None to pass.
+    # Change a guard in its stage module, not here.
+    for _stage_name, _stage in INTENT_STAGES_EARLY:
+        _hit = _stage(text, raw, low, text_l)
+        if _hit is ROUTE_NONE:
+            return None          # the stage ended routing outright
+        if _hit is not None:
+            return _hit
 
     # Persona / active-profile refresh and stale-overlay purge. Backs the offer "purge the stale
     # context and update the active profile" so a "yes" executes it (PERSONA_REFRESH =
@@ -3179,6 +2242,35 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if re.search(r"\b(?:background\s+jobs|list\s+(?:background\s+|running\s+)?jobs|running\s+jobs|what\s+jobs)\b", low):
         return _mk("BACKGROUND_JOBS", {}, 0.9, matched_by="dev.background_jobs")
 
+    # ── Scheduled-task control ────────────────────────────────────────────────
+    # Chat had no way to see or change the scheduler: the triggers above demand the
+    # literal word "jobs", so "delete background TASK for 02:00 on Sunday" matched
+    # nothing, fell through to CHAT, and the model asserted there were no scheduled
+    # tasks while four were armed. These claim the "task" phrasings authoritatively.
+    _TASK_WORD = r"(?:task|tasks|scheduled\s+task|background\s+task|scheduled\s+job)"
+
+    if re.search(r"\b(?:cancel|delete|remove|kill|drop|clear|stop)\b[^.?!]{0,40}\b" + _TASK_WORD + r"\b", low):
+        _m_id = re.search(r"\b(?:task|job)\s*#?\s*(\d{1,6})\b", low)
+        return _mk("CANCEL_TASK",
+                   {"job_id": _m_id.group(1) if _m_id else None, "text": raw},
+                   0.95, matched_by="tasks.cancel")
+
+    if re.search(r"\b(?:reschedule|re-schedule|move|push|shift|change)\b[^.?!]{0,40}\b" + _TASK_WORD + r"\b", low):
+        _m_id = re.search(r"\b(?:task|job)\s*#?\s*(\d{1,6})\b", low)
+        # The new time is whatever follows to/for/until/at.
+        _m_when = re.search(r"\b(?:to|for|until|till|at)\s+(.{2,40})$", low)
+        return _mk("RESCHEDULE_TASK",
+                   {"job_id": _m_id.group(1) if _m_id else None,
+                    "when": (_m_when.group(1).strip() if _m_when else ""), "text": raw},
+                   0.95, matched_by="tasks.reschedule")
+
+    if re.search(r"\b(?:list|show|what(?:'s| is| are)?|which|any)\b[^.?!]{0,30}\b"
+                 r"(?:scheduled|background|pending|upcoming|queued)\b[^.?!]{0,20}\b" + _TASK_WORD + r"\b", low) \
+            or re.search(r"\b" + _TASK_WORD + r"\b[^.?!]{0,20}\b(?:scheduled|pending|queued|upcoming)\b", low) \
+            or re.search(r"\b(?:my|the)\s+(?:scheduled\s+)?tasks\b", low) \
+            or re.search(r"\bwhat(?:'s| is| have you got)\s+(?:scheduled|queued|pending|planned)\b", low):
+        return _mk("LIST_TASKS", {}, 0.9, matched_by="tasks.list")
+
     # CODE_SOLVE — the verified coding agent (plan → DAG/tree search → execute →
     # repair). Takes precedence over GENERATE_SCRIPT for requests that ask for
     # verification/testing/robustness; plain "write a script" stays GENERATE_SCRIPT.
@@ -3263,6 +2355,17 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if _note_m2:
         return _mk("WRITE_NOTE", {"text": _note_m2.group(
             1).strip()}, 0.95, matched_by="notes.add_early")
+
+    m = re.match(r"^confirm\s+forget\s+memor(?:y|ies)\s+([\d\s,]+)$", raw.strip(), re.I)
+    if m:
+        ids = [int(x) for x in re.findall(r"\d+", m.group(1))]
+        return _mk("MEMORY_FORGET", {"ids": ids, "confirm": True}, 1.0, matched_by="memory.forget_confirm")
+    m = re.match(
+        r"^(?:please\s+)?(?:forget\s+(?:about\s+|that\s+|what\s+i\s+(?:said|told\s+you)\s+about\s+|everything\s+about\s+)?"
+        r"|(?:delete|erase|remove)\s+(?:the\s+)?(?:memory|memories)\s+(?:about|of|that)\s+"
+        r"|erase\s+what\s+you\s+know\s+about\s+)(.{4,200}?)[.!]?$", raw.strip(), re.I)
+    if m and not re.match(r"^(?:(?:it|this|that|me)$|(?:everything|all)\b)", m.group(1).strip(), re.I):
+        return _mk("MEMORY_FORGET", {"query": m.group(1).strip()}, 0.97, matched_by="memory.forget_request")
 
     # "Please store this fact in memory: X. Then confirm ..." stores X; the trailing request is not part of it.
     m = re.match(
@@ -4363,811 +3466,16 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                    "use_advanced_generator": True, "use_gguf_only": True,
                    "forbid_ollama": True}, 0.95, matched_by="doc.generate_generic", entities={"topic": topic or raw})
 
-    m = re.search(
-        r"\b(create|write|generate|draft|make|place|raise)\s+(?:a\s+)?(?:doc|document|report|notes?)\s+(?:about|on|for)\s+(.+)$",
-        raw,
-        re.I)
-    if m:
-        topic = m.group(2).strip()
-        return _mk("CREATE_DOCUMENT", {"topic": topic, "format": "md", "use_advanced_generator": True, "use_gguf_only": True,
-                   "forbid_ollama": True}, 0.9, matched_by="doc.generate_structured", entities={"topic": topic})
-
-    # Data fabricator alias
-    if re.search(
-            r"\b(?:fabricate|create|make)\s+data\s+(?:construct|fabricator)\b", raw, re.I):
-        topic_match = re.search(
-            r"fabricate data construct(?:\s+about\s+|\s+on\s+)?(.+)$", raw, re.I)
-        if topic_match:
-            topic = topic_match.group(1).strip()
-            return _mk("DATA_FABRICATOR", {
-                       "topic": topic}, 0.98, matched_by="alias.data_fabricator", entities={"topic": topic})
-        return _mk("DATA_FABRICATOR", {}, 0.98,
-                   matched_by="alias.data_fabricator")
-
-    # ------------------------------------------------------------
-    # 11) CLIPBOARD / WEATHER / CALENDAR
-    # ------------------------------------------------------------
-    if any(w in low for w in ["clipboard", "copy", "paste"]):
-        if "copy" in low or "set clipboard" in low:
-            content = re.sub(
-                r'.*(copy|set clipboard to|clipboard)\s+',
-                '',
-                raw,
-                flags=re.I).strip()
-            return _mk("SET_CLIPBOARD", {
-                       "text": content}, 0.9, matched_by="clipboard.set", entities={"text": content})
-        if "get" in low or "what" in low or "show" in low:
-            return _mk("GET_CLIPBOARD", {}, 0.9, matched_by="clipboard.get")
-
-    if any(w in low for w in ["weather", "forecast", "temperature"]):
-        # Only route when the sentence is an actual weather *request*, not a
-        # sentence that merely mentions weather as a subject/object/topic.
-        _wx_request = re.search(
-            r"\b(?:what(?:'s|s|\s+is|\s+will)?\s+(?:the\s+)?(?:weather|forecast|temperature)|"
-            r"how(?:'s|\s+is)\s+(?:the\s+)?weather|"
-            r"(?:check|get|tell\s+me|show(?:\s+me)?|give\s+me)\s+(?:the\s+)?(?:weather|forecast|temperature)|"
-            r"(?:will\s+it|is\s+it|going\s+to)\s+(?:rain|snow|be\s+(?:hot|cold|warm|sunny|cloudy)))\b",
-            low, re.I)
-        _wx_topic = re.search(
-            r"\b(?:script|code|program|file|function|task|fix|issue|error|this|that)\s+"
-            r"(?:is|was|are|were|for|about)\s+(?:a\s+)?(?:weather|forecast)|"
-            r"\b(?:stop|don'?t|cease|quit)\b.{0,30}\bweather\b",
-            low, re.I)
-        if _wx_request and not _wx_topic:
-            location_match = re.search(
-                r'\b(?:in|at|for)\b\s+([\w\s\-]+?)(?:\s*[,?!.]|\s+and\s+|\s+(?:provide|tell|show|give|also|then|next|tomorrow|today|forecast)|$)',
-                raw,
-                re.I)
-            location = location_match.group(1).strip().rstrip("?.!, ") if location_match else None
-            return _mk("GET_WEATHER", {"location": location, "_raw_user_text": raw}, 0.95, matched_by="info.weather", entities={
-                       "location": location} if location else None)
-
-    if any(w in low for w in ["calendar", "calender",
-           "calander", "event", "appointment", "meeting"]):
-        if any(w in low for w in ["show", "list",
-               "my", "what", "open", "display"]):
-            return _mk("LIST_EVENTS", {}, 0.95, matched_by="calendar.list")
-        if any(w in low for w in ["add", "create", "schedule"]):
-            return _mk("ADD_EVENT", {"text": raw}, 0.95,
-                       matched_by="calendar.add", entities={"text": raw})
-
-    # ------------------------------------------------------------
-    # 12) SYSTEM SETTINGS / PANELS / ALIASES
-    # ------------------------------------------------------------
-    if re.search(
-            r"\b(?:initiate|open|launch|access|start)\s+audio\s+(?:interface|settings)\b", raw, re.I):
-        return _mk("OPEN_AUDIO_SETTINGS", {}, 1.0,
-                   matched_by="alias.audio_interface")
-
-    if re.search(
-            r"\b(?:access|open|launch|start)\s+communication\s+hub\b", raw, re.I):
-        return _mk("OPEN_COMMUNICATION_HUB", {}, 1.0,
-                   matched_by="alias.communication_hub")
-
-    if re.search(r"\bopen\s+power\b", raw, re.I):
-        return _mk("OPEN_POWER_SETTINGS", {}, 0.95, matched_by="system.power")
-
-    if re.match(r"^(?:open|launch|start|show)\s+(?:system\s+)?settings?\b", low):
-        return _mk("OPEN_SYSTEM_SETTINGS", {}, 0.98,
-                   matched_by="system.settings")
-
-    # ------------------------------------------------------------
-    # 12b) PROACTIVE DAEMON — must be before section 13 open/launch/start catch-all
-    # ------------------------------------------------------------
-    if (
-        re.search(r"\bproactive\s+(?:daemon\s+)?(?:status|state|running|doing|up\s+to|activity|active|alive)\b", low)
-        or re.search(r"\b(?:status|state)\s+of\s+(?:the\s+)?proactive\s+daemon\b", low)
-        or re.search(r"\bwhat(?:'s| is)\s+(?:the\s+)?status\s+of\s+(?:the\s+)?proactive\s+daemon\b", low)
-        # "what is the proactive daemon doing (right now)", "what's the proactive
-        # daemon up to" — fell to CHAT and confabulated "performing its normal
-        # background tasks" instead of reporting real pid/running/log state.
-        or re.search(r"\bwhat(?:'s| is)\s+(?:the\s+)?proactive\s+daemon\b", low)
-        or re.search(r"\b(?:is|are)\s+(?:the\s+)?proactive\s+(?:daemon|loop)\b.*\b(running|active|on|working|alive)\b", low)
-    ):
-        return _mk("PROACTIVE_STATUS", {}, 0.95,
-                   matched_by="system.proactive_status")
-    if re.search(
-            r"\b(?:start|launch|run)\s+(?:the\s+)?(?:proactive\s+(?:daemon|mode)|proactive)\b", low):
-        return _mk("PROACTIVE_START", {}, 0.95,
-                   matched_by="system.proactive_start")
-    if re.search(
-            r"\b(?:stop|kill|shut\s+down)\s+(?:the\s+)?(?:proactive\s+(?:daemon|mode)|proactive)\b", low):
-        return _mk("PROACTIVE_STOP", {}, 0.95,
-                   matched_by="system.proactive_stop")
-
-    # 13) Open / launch (apps, aliases, websites, paths). A bare domain ("open github.com") is a
-    # URL, not an app. Checked first in its own variable: it used to overwrite the shared `m` before
-    # the open/launch block read it, making the path/folder branch unreachable, so every "open
-    # <path|folder>" became OPEN_APP and "not installed, shall I install it?".
-    _url_m = re.match(r"^\s*open\s+((?:https?://)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s]*)?)\s*$", text_l)
-    if _url_m:
-        _url = _url_m.group(1).strip()
-        if not _url.startswith(("http://", "https://")):
-            _url = "https://" + _url
-        return _mk(
-            "OPEN_URL",
-            {"url": _url},
-            0.99,
-            matched_by="open.domain.preempt",
-            allow_chat_without_evidence=False,
-        )
-
-    _open_m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
-    if _open_m:
-        target = re.sub(r"\s+app$", "", _open_m.group(2).strip(), flags=re.I)
-        # An article is never part of the target. Without this, "open the
-        # trash" missed the filesystem branch (which knows "trash") and fell
-        # all the way through to OPEN_APP with the literal name "the trash".
-        target = re.sub(r"^(?:a|an|the)\s+", "", target, flags=re.I).strip() or target
-        target_low = target.lower()
-
-        generic_ide = {
-            "ide", "the ide", "editor", "the editor",
-            "built in ide", "built-in ide", "gui ide", "eli ide",
-            "internal ide", "ide tab", "the ide tab",
-        }
-
-        # Canonical table (eli/execution/app_aliases.py). This inline copy also mapped "chrome" and
-        # "google chrome" to `chromium`, a different browser; the canonical table resolves against
-        # what is installed.
-        from eli.execution.app_aliases import APP_ALIASES as app_aliases
-
-        def _fs_target(tok: str) -> str:
-            """Path for one open-target when it denotes a location, else ""."""
-            tok = tok.strip()
-            if not tok:
-                return ""
-            if tok.startswith(("/", "~")):
-                return tok
-            if tok.lower() in {"trash", "/trash"}:
-                return "trash"
-            return _known_dir_path(tok)
-
-        # "open home directory and the downloads directory": one verb, two locations. The old
-        # single-path routes dropped everything after the first target and reported success. Split
-        # only when every part is a real location, so "open steam and chill" is untouched.
-        _parts = [p for p in re.split(r"\s+and\s+(?:then\s+)?", target, flags=re.I) if p.strip()]
-        if len(_parts) > 1:
-            _resolved = [_fs_target(p) for p in _parts]
-            if all(_resolved):
-                return _mk(
-                    "SEQUENCE",
-                    {"steps": [{"action": "OPEN_FILE_SYSTEM", "args": {"path": p}}
-                               for p in _resolved]},
-                    0.98,
-                    matched_by="open.filesystem.multi_target",
-                )
-
-        _single = _fs_target(target)
-        if (
-            _single
-            or re.search(r"\b(folder|directory|path)\b", target, re.I)
-            or target_low in {"trash", "home", "home directory"}
-        ):
-            return _mk("OPEN_FILE_SYSTEM", {"path": _single or target}, 0.99,
-                       matched_by="open.filesystem.literal_preempt")
-
-        if target_low in generic_ide:
-            return _mk("OPEN_IDE", {"name": "ide"}, 0.99, matched_by="open.ide.literal_preempt")
-
-        if target_low in WEBSITE_ALIASES:
-            return _mk(
-                "OPEN_URL",
-                {"url": WEBSITE_ALIASES[target_low]},
-                0.99,
-                matched_by="open.website.literal_preempt",
-            )
-
-        # "open a web browser on quantum field theory" was taken whole as an app name and offered
-        # for install. It is a browser request with a search query (OPEN_BROWSER accepts one). The
-        # detector is shared with portable_intent_contract so the two matchers can't drift apart.
-        from eli.execution.portable_intent_contract import _browser_open_target
-        _bq = _browser_open_target(target)
-        if _bq is not None:
-            return _mk("OPEN_BROWSER", ({"query": _bq} if _bq else {}), 0.98,
-                       matched_by="open.browser.literal_preempt")
-
-        canonical = app_aliases.get(target_low, target)
-        return _mk("OPEN_APP", {"name": canonical, "target": canonical}, 0.99,
-                   matched_by="open.app.literal_preempt")
-
-    # ------------------------------------------------------------
-    # 14) SHELL EXEC (explicit only)
-    # ------------------------------------------------------------
-    shell_prefixes = (
-        "execute ",
-        "run cmd ",
-        "bash ",
-        "shell cmd ",
-        "$ ",
-        "terminal: ")
-    for pfx in shell_prefixes:
-        if low.startswith(pfx):
-            cmd = raw[len(pfx):].strip().strip("`")
-            if cmd:
-                return _mk("SHELL_EXEC", {
-                           "cmd": cmd}, 0.95, matched_by="shell.prefix", entities={"cmd": cmd})
-
-    m = re.match(r'^(grep\s+.+)$', raw, re.I)
-    if m:
-        return _mk("SHELL_EXEC", {"cmd": m.group(
-            1)}, 0.95, matched_by="shell.grep", entities={"cmd": m.group(1)})
-
-    if re.match(r'^(ls|cat|head|tail|find|diff|wc)\s+[~/\.]', raw, re.I):
-        return _mk("SHELL_EXEC", {
-                   "cmd": raw}, 0.92, matched_by="shell.safeish_builtin", entities={"cmd": raw})
-
-    m = re.match(r'^`([^`]+)`$', raw)
-    if m:
-        return _mk("SHELL_EXEC", {"cmd": m.group(
-            1)}, 0.93, matched_by="shell.backticks", entities={"cmd": m.group(1)})
-
-    # 14b placeholder — proactive daemon patterns moved before section 13
-
-    # 14c) CREATE FOLDER
-    m = re.match(
-        r"^(?:create|make|mkdir)\s+(?:a\s+)?(?:new\s+)?(?:folder|directory|dir)(?:\s+called|\s+named)?\s+(.+)$",
-        raw,
-        re.I)
-    if m:
-        raw_name = m.group(1).strip()
-        # Extract explicit path like /home/... or ~/...
-        path_m = re.search(r"((?:~|/[^\s]+(?:/[^\s]+)*)/[^\s]+)", raw_name)
-        if path_m:
-            folder_path = path_m.group(1)
-            # folder name is word before "in" or the path basename
-            name_m = re.match(r"(\S+)\s+(?:in|at|inside|under)", raw_name)
-            folder_name = name_m.group(
-                1) if name_m else os.path.basename(folder_path)
-            full_path = os.path.join(
-                os.path.expanduser(folder_path),
-                folder_name) if not folder_path.endswith(folder_name) else os.path.expanduser(folder_path)
-        else:
-            # Just take first token as folder name
-            folder_name = re.split(
-                r"\s+(?:in|at|inside|under|on)\s",
-                raw_name)[0].strip()
-            full_path = os.path.expanduser(f"~/{folder_name}")
-        return _mk("CREATE_FOLDER", {"name": full_path}, 0.95,
-                   matched_by="fs.create_folder", entities={"name": full_path})
-
-    # 14d) CLOSE / KILL APP
-    m = re.match(r"^(?:close|quit|kill|exit)\s+(.+)$", raw, re.I)
-    if m:
-        name = m.group(1).strip()
-        return _mk("CLOSE_APP", {"name": name}, 0.9,
-                   matched_by="system.close_app")
-
-    # ------------------------------------------------------------
-    # 15) DEFAULT CHAT
-    # ------------------------------------------------------------
-    m = re.match(
-        r"^(?:run|execute)\s+(?:the\s+)?(?:shell\s+)?command\s+(.+)$",
-        raw,
-        flags=re.I)
-    if m:
-        cmd = m.group(1).strip()
-        if cmd:
-            return _mk("SHELL_EXEC", {
-                       "cmd": cmd}, 0.95, matched_by="shell.run_command", entities={"cmd": cmd})
-
-    # Bare "run <unix_command>" — match common CLI tools
-    _UNIX_CMDS = {"ls", "cd", "pwd", "cat", "head", "tail", "grep", "find", "wc",
-                  "date", "df", "du", "free", "top", "ps", "kill", "chmod", "chown",
-                  "cp", "mv", "rm", "mkdir", "rmdir", "touch", "echo", "which", "whoami",
-                  "uname", "uptime", "hostname", "ip", "ifconfig", "ping", "curl", "wget",
-                  "tar", "zip", "unzip", "apt", "pip", "npm", "git", "docker", "systemctl"}
-    m = re.match(r"^(?:run|execute)\s+(\S+(?:\s+.*)?)$", raw, flags=re.I)
-    if m:
-        parts = m.group(1).strip().split()
-        if parts and parts[0].lower() in _UNIX_CMDS:
-            cmd = m.group(1).strip()
-            return _mk("SHELL_EXEC", {
-                       "cmd": cmd}, 0.93, matched_by="shell.run_bare_unix", entities={"cmd": cmd})
-
-    m = re.match(r"^(?:list|ls)\s+(.+)$", raw, flags=re.I)
-    if m:
-        captured = m.group(1).strip()
-        # "list my notes" is about saved notes, not a directory — route to LIST_NOTES
-        # (the old ≤2-word fallback below turned "my notes" into LIST_DIR path='my notes.').
-        if re.fullmatch(r"(?:my\s+|the\s+)?notes?\.?", captured, re.I):
-            return _mk("LIST_NOTES", {}, 0.95, matched_by="notes.list_from_list_verb")
-        # Extract only the path-like segment, not natural language
-        path_match = re.search(r'([~/.][\w/._~-]+|/[\w/._~-]+)', captured)
-        if path_match:
-            path_value = path_match.group(1).strip().rstrip(".,;:")
-            return _mk("LIST_DIR", {"path": path_value}, 0.98,
-                       matched_by="fs.list_dir_bare", entities={"path": path_value})
-        # If no path found but it's a single bare token, treat as relative path. Require
-        # ONE token (no spaces) so multi-word prose ("my notes", "the reports") falls
-        # through to CHAT/LLM-resolver instead of being mistaken for a directory name.
-        elif len(captured.split()) == 1 and not any(w in captured.lower() for w in ("every", "all", "each", "the")):
-            return _mk("LIST_DIR", {"path": captured.rstrip(".,;:")}, 0.90,
-                       matched_by="fs.list_dir_bare", entities={"path": captured.rstrip(".,;:")})
-        # Otherwise it's natural language about listing — fall through to CHAT
-
-    # ── Disk usage queries → SHELL_EXEC ──────────────────────────────────────
-    _du_match = re.search(
-        r"(?:disk\s+usage|size|how\s+(?:big|large|much\s+space))\s+(?:of\s+|for\s+|in\s+)?([~/][\w/._~-]+)",
-        raw, re.I
-    )
-    if _du_match or re.search(r"\bdu\s+[-shH]", raw):
-        _du_path = _du_match.group(1).strip() if _du_match else ""
-        if _du_path:
-            import os as _os
-            _du_path_exp = _os.path.expanduser(_du_path)
-            _du_cmd = f"du -sh {_du_path_exp!r}"
-        else:
-            _du_cmd = raw
-        return _mk("SHELL_EXEC", {"cmd": _du_cmd}, 0.95, matched_by="shell.disk_usage",
-                   entities={"cmd": _du_cmd})
-
-    # Habit status
-    if re.match(r"^(?:show\s+)?habits?(?:\s+status)?$",
-                low) or re.match(r"^(?:my\s+)?habits?$", low):
-        return _mk("HABIT_STATUS", {}, 0.95, matched_by="habits.status")
-    # "what habits have you detected/noticed", "which habits do you have for me", "any habits you've
-    # spotted" go to grounded HABIT_STATUS (real habit_rules/events) instead of CHAT, which
-    # confabulated a literal template placeholder.
-    if re.search(r"\bhabits?\b", low) and re.search(
-        r"\b(detect(?:ed)?|notic(?:e|ed)|spot(?:ted)?|observed|"
-        r"have you (?:found|seen|got|detected|noticed)|do you have|"
-        r"picked up|learned|recogni[sz]ed)\b",
-        low,
-    ):
-        return _mk("HABIT_STATUS", {}, 0.95, matched_by="habits.detected_query")
-
-    # ── Coverage patch: additional patterns before fallback ──
-
-    # Power (shutdown/restart/reboot) only as a real command. The bare words turn up in ordinary
-    # talk ("feeling better after a restart?") and a keyword match opened gnome power settings on a
-    # greeting. Needs an imperative frame (verb leads, optionally after please/can-you, or takes
-    # the machine as its object) and never fires on a how-to or state question.
-    _power_cmd = (
-        re.match(r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+|pls\s+)?"
-                 r"(?:shut\s*down|power\s*off|poweroff|restart|reboot)\b", low)
-        or re.search(r"\b(?:shut\s*down|power\s*off|poweroff|restart|reboot)\s+"
-                     r"(?:the\s+|my\s+|this\s+)?"
-                     r"(?:computer|system|pc|machine|laptop|device|server|box)\b", low)
-    )
-    _power_question = re.match(r"^\s*(?:how|what|why|when|where|do i|should i|is it|does)\b", low)
-    if _power_cmd and not _power_question:
-        return _mk("OPEN_POWER_SETTINGS", {}, 0.95, matched_by="system.power")
-
-    # System settings (bare)
-    if low.strip() in ("system settings", "settings", "preferences"):
-        return _mk("OPEN_SYSTEM_SETTINGS", {}, 0.98,
-                   matched_by="system.settings")
-
-    # Skip (bare) → NEXT_MEDIA
-    if low.strip() in ("skip", "skip it", "next"):
-        return _mk("NEXT_MEDIA", {}, 0.88, matched_by="media.next_legacy")
-
-    # Self test
-    if re.search(r"\bself[\s_-]*test\b",
-                 low) or low.strip() in ("run self test", "self test"):
-        return _mk("SELF_TEST", {}, 0.95, matched_by="self.self_test")
-
-    # Self analyze (space separated)
-    if low.strip() in ("self analyze", "self analyse", "self-analyze", "self-analyse"):
-        return _mk("SELF_ANALYZE", {}, 0.95, matched_by="self.analyze")
-
-    # Google X → web search
-    if re.match(r"^google\s+(.+)$", raw, re.I):
-        query = re.match(r"^google\s+(.+)$", raw, re.I).group(1).strip()
-        return _mk("OPEN_BROWSER", {"query": query}, 0.95, matched_by="web.search",
-                   entities={"query": query})
-
-    # Look up X → web search (but NOT "look in memory")
-    if re.match(r"^look\s+up\s+(.+)$", raw, re.I):
-        query = re.match(r"^look\s+up\s+(.+)$", raw, re.I).group(1).strip()
-        return _mk("OPEN_BROWSER", {"query": query}, 0.93, matched_by="web.search",
-                   entities={"query": query})
-
-    # Find X → web search (generic, after memory patterns already checked)
-    _find_m = re.match(
-        r"^find\s+(?:me\s+)?(?:a\s+|the\s+)?(.{10,})$",
-        raw,
-        re.I)
-    if _find_m:
-        query = _find_m.group(1).strip()
-        if query:
-            return _mk("OPEN_BROWSER", {"query": query}, 0.90, matched_by="web.search",
-                       entities={"query": query})
-
-    # Installed plugins / plugin status
-    if re.search(r"\binstalled\s+plugins\b",
-                 low) or low.strip() == "plugin status":
-        return _mk("PLUGIN_LIST", {"scope": "installed"},
-                   0.95, matched_by="plugin.list_installed")
-
-    # Bare unix commands: whoami, uptime, hostname, etc.
-    _BARE_UNIX = {
-        "whoami",
-        "uptime",
-        "hostname",
-        "uname",
-        "date",
-        "pwd",
-        "df",
-        "free"}
-    if low.strip() in _BARE_UNIX:
-        return _mk("SHELL_EXEC", {"cmd": raw.strip()}, 0.92, matched_by="shell.safeish_builtin",
-                   entities={"cmd": raw.strip()})
-
-    # Disk usage (bare, no path)
-    if low.strip() in ("disk usage", "disk space", "storage space"):
-        return _mk("SHELL_EXEC", {"cmd": "df -h"}, 0.95, matched_by="shell.disk_usage",
-                   entities={"cmd": "df -h"})
-
-    # mkdir X (bare)
-    m = re.match(r"^mkdir\s+(.+)$", raw, re.I)
-    if m:
-        folder_name = m.group(1).strip()
-        # os already imported at module level
-        full_path = os.path.expanduser(
-            f"~/{folder_name}") if not folder_name.startswith(
-            ("/", "~")) else os.path.expanduser(folder_name)
-        return _mk("CREATE_FOLDER", {"name": full_path}, 0.95, matched_by="fs.create_folder",
-                   entities={"name": full_path})
-
-    # note: X (colon format)
-    m = re.match(r"^note:\s*(.+)$", raw, re.I)
-    if m:
-        return _mk("WRITE_NOTE", {"text": m.group(
-            1).strip()}, 0.95, matched_by="notes.write")
-
-    # Set a timer (bare, no duration) → prompt for duration
-    if re.search(r"\bset\s+(?:a\s+)?timer\b",
-                 low) and not re.search(r"\d", raw):
-        return _mk("SET_TIMER", {"duration": None}, 0.7,
-                   matched_by="timer.set_duration_loose")
-
-    # Analyze X.csv / X.pdf (bare, without "summarize")
-    m = re.match(r"^(?:analyze|analyse)\s+(.+\.csv)\s*$", raw, re.I)
-    if m:
-        # os already imported at module level
-        return _mk("ANALYZE_CSV", {"path": os.path.abspath(os.path.expanduser(m.group(1).strip()))},
-                   0.95, matched_by="analyze.csv")
-
-    m = re.match(r"^(?:analyze|analyse)\s+(.+\.pdf)\s*$", raw, re.I)
-    if m:
-        # os already imported at module level
-        return _mk("ANALYZE_PDF", {"path": os.path.abspath(os.path.expanduser(m.group(1).strip())),
-                                   "instruction": raw},
-                   0.95, matched_by="analyze.pdf")
-
-    # Generate project with description
-    if re.search(
-            r"\bgenerate\s+(?:a\s+)?(?:new\s+)?(?:python\s+)?project\b", low):
-        return _mk("GENERATE_PROJECT", {"description": raw, "use_gguf_only": True, "forbid_ollama": True},
-                   0.95, matched_by="dev.generate_project")
-
-    # Hardware: broader triggers
-    if re.search(
-            r"\b(?:hardware|gpu|cpu|ram|vram)\s+(?:info|specs?|status|check|details?)\b", low):
-        return _mk("HARDWARE_PROFILE", {}, 0.90, matched_by="hardware.profile",
-                   need_grounding=True, task_family="grounded_audit")
-
-    if re.search(r"\boptimize\s+(?:my\s+)?hardware\b",
-                 low) or re.search(r"\b(?:profile|scan)\s+hardware\b", low):
-        return _mk("HARDWARE_PROFILE", {}, 0.90, matched_by="hardware.optimize",
-                   need_grounding=True, task_family="grounded_audit")
-
-    # Weather: umbrella / rain queries
-    if re.search(r"\b(?:umbrella|rain(?:ing)?|snow(?:ing)?|storm)\b", low):
-        location_match = re.search(
-            r'\b(?:in|at|for)\b\s+([\w\s\-]+?)(?:\s*[,?!.]|\s+and\s+|\s+(?:provide|tell|show|give|also|then|next|tomorrow|today|forecast)|$)',
-            raw,
-            re.I)
-        location = location_match.group(1).strip().rstrip("?.!, ") if location_match else None
-        return _mk("GET_WEATHER", {"location": location, "_raw_user_text": raw}, 0.90, matched_by="info.weather",
-                   entities={"location": location} if location else None)
-
-    # "what is the time" / "what's the time" (expanded TIME patterns)
-    if re.search(r"\bwhat\s+is\s+the\s+time\b",
-                 low) or re.search(r"\bwhat's\s+the\s+time\b", low):
-        return _mk("TIME", {}, 1.0, matched_by="system.time")
-    # --- WRITE_NOTE with colon ---
-    if re.match(r"^write note:", low):
-        return _mk("WRITE_NOTE", {"text": re.sub(
-            r"^write note:\s*", "", raw, flags=re.I).strip()}, 0.97, matched_by="notes.write_colon")
-    # --- SCREENSHOT: final fallback catch ---
-    if re.search(
-            r"\b(take|capture)\s+(a\s+)?(screenshot|screen\s*shot|screen\s*capture|screen)\b", raw, re.I):
-        region = "area" if re.search(
-            r"\b(area|region|selection|part)\b", raw, re.I) else "full"
-        return _mk("SCREENSHOT", {"region": region}, 0.98,
-                   matched_by="io.screenshot", entities={"region": region})
-
-    # Bare "screenshot" without "take a"
-    if low.strip() == "screenshot":
-        return _mk("SCREENSHOT", {}, 0.95, matched_by="io.screenshot_bare")
-
-    # "write a report/guide/essay/document about X"
-    _doc_m = re.match(
-        r"^(?:write|create|generate|draft|produce)\s+(?:a\s+|an\s+)?"
-        r"(report|guide|tutorial|essay|article|blog\s*post|document|manual|handbook|specification|proposal|plan|summary|brief)\s+"
-        r"(?:about|on|for|regarding)\s+(.+)$", raw, re.I
-    )
-    if _doc_m:
-        doc_type = _doc_m.group(1).strip()
-        topic = _doc_m.group(2).strip()
-        return _mk("GENERATE_DOCUMENT", {"topic": topic, "doc_type": doc_type, "format": "md"},
-                   0.95, matched_by="doc.generate_typed", entities={"type": doc_type, "topic": topic})
-
-    # ------------------------------------------------------------
-    # OCR — extract text from image file
-    # ------------------------------------------------------------
-    m = re.match(
-        r"^(?:ocr|read\s+(?:text\s+(?:from|in|on)|image)|extract\s+text\s+(?:from|in))\s+(.+)$",
-        raw, re.I)
-    if m:
-        path = m.group(1).strip()
-        return _mk("OCR_IMAGE", {"path": os.path.abspath(os.path.expanduser(path))},
-                   0.95, matched_by="ocr.extract", entities={"path": path})
-
-    # AMBIENT_VISION — continuous "watch my screen" toggle (distinct from a
-    # one-shot "what's on my screen"). Check OFF before ON.
-    if re.search(r"\b(?:stop|quit|disable|turn\s+off|cease)\b.{0,30}\b(?:watch|watching|"
-                 r"look(?:ing)?\s+at|ambient\s+vision|keep\s+an\s+eye)\b", raw, re.I) or \
-       re.search(r"\b(?:turn\s+off|disable)\s+ambient\s+vision\b", raw, re.I) or \
-       re.search(r"\bstop\s+watching\b", raw, re.I):
-        return _mk("AMBIENT_VISION", {"enabled": False, "text": raw}, 0.95,
-                   matched_by="vision.ambient_off")
-    if re.search(r"\b(?:watch|keep\s+watching|keep\s+an\s+eye\s+on|monitor)\s+(?:my|the)\s+screen\b",
-                 raw, re.I) or \
-       re.search(r"\b(?:enable|turn\s+on|start|activate)\s+ambient\s+vision\b", raw, re.I) or \
-       re.search(r"\b(?:keep\s+)?(?:watching|looking\s+at)\s+what\s+i(?:'m|\s+am)\s+doing\b", raw, re.I):
-        return _mk("AMBIENT_VISION", {"enabled": True, "text": raw}, 0.95,
-                   matched_by="vision.ambient_on")
-
-    # SCREEN_READ_ANALYZE — screenshot then vision (VL model) + OCR
-    if re.search(
-            r"\b(?:read|analyse?|analyze|describe|interpret|look\s+at|what(?:'s|\s+is)\s+on)\s+"
-            r"(?:the|my)\s+(?:screen|display|monitor|desktop)\b", raw, re.I):
-        _depth = "deep" if re.search(r"\b(in\s+depth|deep(?:ly)?|full(?:y)?|exact(?:ly)?|comprehensive)\b", raw, re.I) else ""
-        return _mk("SCREEN_READ_ANALYZE", {"query": raw, **({"depth": _depth} if _depth else {})},
-                   0.95, matched_by="screen.read_analyze")
-
-    if re.search(
-            r"\b(?:analyse?|analyze)\s+(?:my|the)\s+screen\s+(?:in\s+depth|deep(?:ly)?|fully|completely)\b",
-            raw, re.I):
-        return _mk("SCREEN_READ_ANALYZE", {"query": raw, "depth": "deep"},
-                   0.96, matched_by="screen.read_deep")
-
-    if re.search(r"\bexactly\s+what(?:'s|\s+is)\s+on\s+(?:my|the)\s+(?:screen|display)\b", raw, re.I):
-        return _mk("SCREEN_READ_ANALYZE", {"query": raw, "depth": "deep"},
-                   0.96, matched_by="screen.read_exact")
-
-    if re.search(
-            r"\b(?:what(?:'s|\s+is)\s+on\s+(?:my|the)\s+screen).*\b(research|relate|remember|previous\s+session)\b",
-            raw, re.I) or re.search(
-            r"\b(?:remember|recall).*\b(?:screen|seeing\s+this|saw\s+this)\b", raw, re.I):
-        return _mk("SCREEN_READ_ANALYZE", {"query": raw, "depth": "deep"},
-                   0.94, matched_by="screen.read_memory_research")
-
-    if re.search(r"\bscreen\s*(?:read|analyse?|analyze|ocr)\b", raw, re.I):
-        return _mk("SCREEN_READ_ANALYZE", {}, 0.93, matched_by="screen.read_ocr")
-
-    # A question about the capability isn't a request to use it. "So, you can see my screen?" and
-    # "just confirming that you can actually see what i see" each fired another SCREEN_READ_ANALYZE
-    # (~20s, new screenshot) and answered neither. The split is syntactic: a request puts the modal
-    # first ("can you see my screen?"), a confirmation puts the subject first. Falling through lets
-    # CHAT answer the yes/no.
-    if _SCREEN_CAPABILITY_QUESTION_RX.search(raw):
-        return None
-
-    # Conversational vision: "what do you see", "can you see this/my screen",
-    # "look at my screen", "what am I looking at", "see what I see".
-    if re.search(
-            r"\b(?:what\s+do\s+you\s+see|what\s+can\s+you\s+see|can\s+you\s+see\s+"
-            r"(?:this|that|my\s+screen|what|the\s+screen)|see\s+what\s+i(?:'m|\s+am)?\s*"
-            r"(?:see|seeing|looking\s+at)|what\s+am\s+i\s+looking\s+at|look\s+at\s+"
-            r"(?:this|what\s+i'?m\s+doing)|see\s+my\s+screen)\b", raw, re.I):
-        return _mk("SCREEN_READ_ANALYZE", {}, 0.9, matched_by="screen.vision_conversational")
-
-    # Content questions about what's on screen ("what season is on the screen?", "which app is on
-    # my display?") are visual: take a real glance and answer from pixels. Otherwise they fall to CHAT
-    # and the model guesses (it invented a TV season). The vision model gets a hard "answer only
-    # from what's visible; if you can't tell, say so".
-    if re.search(r"\bon\s+(?:the\s+|my\s+)?(?:screen|display|monitor)\b", raw, re.I) and \
-       re.search(r"\b(?:what|which|who|where|when|is|are|how\s+many|name|"
-                 r"see|show|can\s+you|do\s+you|tell\s+me)\b", raw, re.I):
-        _vq = raw.strip()
-        _vp = (f'You are ELI looking at the user\'s screen right now. Answer this '
-               f'question using ONLY what is actually visible on screen: "{_vq}". '
-               f'Be specific about what you can see. If the answer is not visible, '
-               f'say you cannot tell from the screen — never guess or invent.')
-        return _mk("SCREEN_READ_ANALYZE", {"prompt": _vp}, 0.87,
-                   matched_by="screen.content_question")
-
-    # ------------------------------------------------------------
-    # CONVERT_DOCUMENT — convert between document formats
-    # ------------------------------------------------------------
-    m = re.search(
-        r"convert\s+(.+?)\s+to\s+(pdf|docx?|html?|markdown|md|txt|tex|latex|lualatex|odt|rtf|epub)",
-        raw, re.I)
-    if m:
-        src = m.group(1).strip()
-        fmt = m.group(2).strip().lower()
-        src_path = os.path.abspath(os.path.expanduser(src)) if _is_likely_path(src) or "." in src else src
-        return _mk("CONVERT_DOCUMENT", {"source": src_path, "format": fmt},
-                   0.95, matched_by="doc.convert", entities={"source": src_path, "format": fmt})
-
-    m = re.search(
-        r"export\s+(?:as|to)\s+(pdf|docx?|html?|markdown|md|txt|tex|latex|lualatex|odt|rtf|epub)",
-        raw, re.I)
-    if m:
-        fmt = m.group(1).strip().lower()
-        path_m = re.search(r'(?:from|file|document)\s+([\w./~\- ]+\.\w+)', raw, re.I)
-        src_path = os.path.abspath(os.path.expanduser(path_m.group(1).strip())) if path_m else ""
-        return _mk("CONVERT_DOCUMENT", {"source": src_path, "format": fmt},
-                   0.90, matched_by="doc.export", entities={"source": src_path, "format": fmt})
-
-    if re.search(r'\blualatex\b', raw, re.I):
-        src_path = _extract_path_from_text(raw) or ""
-        return _mk("CONVERT_DOCUMENT", {"source": src_path, "format": "lualatex"},
-                   0.90, matched_by="doc.lualatex")
-
-    # ------------------------------------------------------------
-    # DICTATE / TRANSCRIBE — voice dictation and audio transcription
-    # ------------------------------------------------------------
-    if re.search(r"\b(?:start|begin|enable)\s+dictati(?:on|ng)\b", raw, re.I):
-        return _mk("DICTATE", {"action": "start"}, 0.97, matched_by="voice.dictate_start")
-
-    if re.search(r"\b(?:stop|end|disable)\s+dictati(?:on|ng)\b", raw, re.I):
-        return _mk("DICTATE", {"action": "stop"}, 0.97, matched_by="voice.dictate_stop")
-
-    if re.match(r"^dictate\b", raw, re.I):
-        return _mk("DICTATE", {"action": "start"}, 0.95, matched_by="voice.dictate_bare")
-
-    m = re.search(
-        r"\btranscri(?:be|pt)\s+(.+)$", raw, re.I)
-    if m:
-        src = m.group(1).strip()
-        src_path = os.path.abspath(os.path.expanduser(src)) if _is_likely_path(src) or "." in src else src
-        return _mk("TRANSCRIBE", {"source": src_path},
-                   0.95, matched_by="voice.transcribe", entities={"source": src_path})
-
-    if re.search(r"\btranscri(?:be|pt)\b", raw, re.I):
-        return _mk("TRANSCRIBE", {}, 0.90, matched_by="voice.transcribe_bare")
-
-    # ------------------------------------------------------------
-    # MOUSE_CONTROL — move, click, scroll
-    # ------------------------------------------------------------
-    m = re.search(
-        r"\b(?:mouse\s+)?(?:click|left.click|right.click|double.click)\s+"
-        r"(?:at\s+|on\s+)?(?:(\d+)\s*[,x]\s*(\d+))?", raw, re.I)
-    if m and m.group(1):
-        x, y = int(m.group(1)), int(m.group(2))
-        btn = "right" if "right" in raw.lower() else "left"
-        dbl = "double" in raw.lower()
-        return _mk("MOUSE_CONTROL", {"action": "click", "x": x, "y": y, "button": btn, "double": dbl},
-                   0.95, matched_by="ui.mouse_click", entities={"x": x, "y": y})
-
-    if re.search(r"\bmove\s+(?:the\s+)?(?:mouse|cursor)\s+to\s+(\d+)\s*[,x]\s*(\d+)", raw, re.I):
-        mm = re.search(r"(\d+)\s*[,x]\s*(\d+)", raw)
-        x, y = int(mm.group(1)), int(mm.group(2))
-        return _mk("MOUSE_CONTROL", {"action": "move", "x": x, "y": y},
-                   0.95, matched_by="ui.mouse_move", entities={"x": x, "y": y})
-
-    m = re.search(
-        r"\b(?:move|nudge|shift)\s+(?:the\s+)?(?:mouse|cursor|pointer)\s+"
-        r"(left|right|up|down)(?:\s+(?:by\s+)?(\d+)\s*(?:pixels?|px)?)?\b",
-        raw, re.I,
-    )
-    if m:
-        direction = m.group(1).lower()
-        amount = int(m.group(2) or 100)
-        return _mk(
-            "MOUSE_CONTROL",
-            {"action": "move", "direction": direction, "amount": amount, "pixels": amount},
-            0.94,
-            matched_by="ui.mouse_move_relative",
-            entities={"direction": direction, "amount": amount},
-        )
-
-    if re.search(r"\b(?:mouse|cursor|pointer)\b", low):
-        m = re.search(
-            r"\b(?:move|nudge|shift)\s+(left|right|up|down)"
-            r"(?:\s+(?:by\s+)?(\d+)\s*(?:pixels?|px)?)?\b",
-            raw, re.I,
-        )
-        if m:
-            direction = m.group(1).lower()
-            amount = int(m.group(2) or 100)
-            return _mk(
-                "MOUSE_CONTROL",
-                {"action": "move", "direction": direction, "amount": amount, "pixels": amount},
-                0.91,
-                matched_by="ui.mouse_move_relative_implicit",
-                entities={"direction": direction, "amount": amount},
-            )
-
-    if re.search(
-        r"\b(?:click|left\s+click|right\s+click|double\s+click)\s+(?:here|at\s+(?:the\s+)?cursor)\b",
-        low,
-    ):
-        btn = "right" if "right" in low else "left"
-        dbl = "double" in low
-        return _mk(
-            "MOUSE_CONTROL",
-            {"action": "click", "button": btn, "double": dbl},
-            0.9,
-            matched_by="ui.mouse_click_at_cursor",
-        )
-
-    if re.search(r"\bscroll\s+(up|down)(?:\s+(\d+))?\b", raw, re.I):
-        sm = re.search(r"\bscroll\s+(up|down)(?:\s+(\d+))?\b", raw, re.I)
-        direction = sm.group(1).lower()
-        amount = int(sm.group(2) or 3)
-        return _mk("MOUSE_CONTROL", {"action": "scroll", "direction": direction, "amount": amount},
-                   0.93, matched_by="ui.mouse_scroll")
-
-    _low_raw = str(raw or "").lower()
-    if any(_p in _low_raw for _p in (
-        "one answer", "short answer", "short answers", "terribly short",
-        "lobotom", "continuity", "awareness", "reasoning mode",
-        "constitutional", "chain of thought", "cot", "pipeline",
-        "fallback", "runtime audit", "runtime diagnostic",
-        "what is with", "what's with", "why are you"
-    )):
-        return _mk(
-            "CHAT",
-            {"message": raw},
-            0.92,
-            matched_by="chat.meta_continuity_diagnostic",
-            meta_extra={
-                "requires_plan": True,
-                "requires_memory": True,
-                "quick_direct_allowed": False,
-                "response_contract": "nonquick_continuity_diagnostic",
-            },
-        )
-
-    # ── Persona lock ──────────────────────────────────────────────────────────
-    # STATUS must be checked first — "persona lock status" contains "persona lock"
-    # which would be caught by the SET regex if ordered after it.
-    if re.search(r"\bpersona\s+lock\s+status\b|\bcheck\s+persona\s+lock\b|\bis\s+persona\s+locked\b", low):
-        return _mk("PERSONA_LOCK_STATUS", {}, 0.92, matched_by="persona.lock_status")
-
-    if re.search(r"\bunlock\s+persona\b|\bclear\s+persona\s+lock\b|\bpersona\s+unlock\b|"
-                 r"\bremove\s+persona\s+lock\b|\breset\s+persona\s+lock\b", low):
-        return _mk("PERSONA_LOCK_CLEAR", {}, 0.92, matched_by="persona.lock_clear")
-
-    if re.search(r"\bpersona\s+lock\b|\block\s+persona\b|\bset\s+persona\s+lock\b", low):
-        _model_arg = {}
-        _m_model = re.search(r"\bto\s+([a-zA-Z0-9_:/-]+\.(?:gguf|bin|ggml))\b", low)
-        if _m_model:
-            _model_arg["model"] = _m_model.group(1)
-        return _mk("PERSONA_LOCK_SET", _model_arg, 0.92, matched_by="persona.lock_set")
-
-    # ── Skip YouTube ad ───────────────────────────────────────────────────────
-    if re.search(r"\bskip\s+(?:the\s+)?(?:youtube\s+)?ad\b|\bskip\s+this\s+ad\b|"
-                 r"\bbypass\s+(?:the\s+)?ad\b|\bskip\s+advertisement\b", low):
-        return _mk("SKIP_YOUTUBE_AD", {}, 0.95, matched_by="media.skip_ad")
-
-    # ── Clear chat history ───────────────────────────────────────────────────
-    if re.search(r"\bclear\s+(?:chat|conversation|history|our\s+conversation)\b|"
-                 r"\breset\s+(?:chat|conversation|history)\b|\berase\s+(?:chat|history)\b|"
-                 r"\bwipe\s+(?:chat|conversation|history)\b", low):
-        return _mk("CLEAR_CHAT_HISTORY", {}, 0.93, matched_by="system.clear_chat")
-
-    # ── Listen for command ───────────────────────────────────────────────────
-    if re.search(r"\b(listen\s+for\s+(?:a\s+)?command|start\s+listening|listen\s+for\s+speech|"
-                 r"activate\s+(?:voice|speech)\s+input|begin\s+listening)\b", low):
-        _timeout = 5.0
-        _m_to = re.search(r"(\d+)\s*(?:second|sec|s)\b", low)
-        if _m_to:
-            _timeout = float(_m_to.group(1))
-        return _mk("LISTEN_FOR_COMMAND", {"timeout": _timeout}, 0.90, matched_by="voice.listen_for_command")
-
-    # ── Help ─────────────────────────────────────────────────────────────────
-    if re.search(r"^\s*(?:help|commands?|what\s+(?:can\s+i|commands?|actions?)|"
-                 r"what\s+(?:do\s+you|are\s+your)\s+(?:command|capability|action)|"
-                 r"show\s+(?:me\s+)?(?:help|commands?|capabilities?)|list\s+command)\b", low):
-        return _mk("HELP", {}, 0.90, matched_by="system.help")
+    # ── Intent stages (tail group) ────────────────────────────────────────────
+    # The tail of this function lives in eli.execution.routing.intents as ordered stages. They run
+    # in the legacy order and the first to match wins, exactly as the inline guards did; a stage
+    # returns None to pass. Change a guard in its stage module, not here.
+    for _stage_name, _stage in INTENT_STAGES_TAIL:
+        _hit = _stage(text, raw, low, text_l)
+        if _hit is ROUTE_NONE:
+            return None          # the stage ended routing outright
+        if _hit is not None:
+            return _hit
 
     _eli_pipeline_trace("router.fallback_chat_selected", text=str(raw)[:160])
     return _mk("CHAT", {"message": raw}, 0.6, matched_by="fallback.chat")
@@ -5186,7 +3494,6 @@ def _eli_open_typo_norm(v):
     t = _eli_open_typo_re.sub(r"^opens\s+", "open ", t)
     t = _eli_open_typo_re.sub(r"\bspot\s*ify\b|\bspot\s+if\s+i\b|\bspotifyify\b|\bpotify\b", "spotify", t)
     return t
-
 
 
 # Media query cleaner: normalize search query before media routing
@@ -5221,10 +3528,8 @@ def _eli_mqc_clean_query(q: str) -> str:
     return _eli_mqc_re.sub(r"\s+", " ", q).strip()
 
 
-
 # Identity route wrapper, tiny-chat guard, follow-up pass-through,
 # and persona-route override all use the top-level re import.
-
 
 
 # voice_runtime_contract_guard: deterministic voice-command grammar for common local-control
@@ -5488,9 +3793,6 @@ def _eli_lrf_pre_route(text):
     return None
 
 
-
-
-
 # ELI_PERSONAL_MEMORY_MODE_AWARE_ROUTER_FIX_20260505
 # High-priority route wrapper: personal memory questions need synthesis, not raw truth reports/search.
 import re as _eli_pm_re
@@ -5579,9 +3881,6 @@ def _eli_pm_pre_route(text):
         )
 
     return None
-
-
-
 
 
 # --- ELI high-priority self-improvement route guard ---
@@ -5988,8 +4287,6 @@ def _eli_runtime_cognition_failure_guard(text):
 # --- end ELI runtime/cognition/failure high-priority route guard ---
 
 
-
-
 # =============================================================================
 
 # Identity / name-source route fix: a single closure-safe install.
@@ -6102,7 +4399,6 @@ def _eli_is_memory_count_question(text):
 import re as _eli_recent_mem_re
 
 
-
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
@@ -6154,46 +4450,15 @@ def _eli_recent_memory_processing_question(text: object) -> bool:
 # it's the maintenance question this contract is for; mid-chat about Oblivion it's small talk and
 # a git/runtime dump is worse than the invented activity it prevents. Bare activity phrasings
 # need a development subject somewhere in the question; ones that name it themselves don't.
-_BARE_ACTIVITY_PHRASES = (
-    "what have you been doing",
-    "what have you been processing",
-    "what have you been working on",
-    "what have you been up to",
-    "what you been doing",
-    "what you been up to",
+from eli.execution.routing.memory_runtime import (  # noqa: F401  (moved there so intent stages can share them)
+    _BARE_ACTIVITY_PHRASES,
+    _DEV_UPDATE_SUBJECT_RE,
+    _MEMORY_MACHINERY_RE,
+    _RECALL_CONTENT_RE,
+    _asks_for_remembered_content,
+    _eli_activity_question_is_about_dev_work,
+    _eli_memory_runtime_route_lock_should_trigger,
 )
-
-_DEV_UPDATE_SUBJECT_RE = re.compile(
-    r"\b(code|codebase|repo|repositor\w*|git|commit\w*|version|build|patch\w*|"
-    r"capabilit\w*|module|tests?\b|upgrade\w*|"
-    # "checks"/"checked"/"updates" as maintenance nouns — NOT "checking in/up"
-    # (Jess Iris Xe live: "just checking in on you. what have you been doing
-    # the past week?" matched check(?:ing)? and forced a packaged SELF_REPORT dump).
-    r"checks?\b|checked\b|updates?\b|updated\b|"
-    r"maintenance|deploy\w*|repair\w*|refactor\w*|"
-    r"fix(?:es|ed|ing)?|"
-    r"runtime|pipeline|system)\b",
-    re.I,
-)
-
-
-def _eli_activity_question_is_about_dev_work(low: str) -> bool:
-    """True when an activity question names development work as its subject.
-
-    Shared by both routes that can reach the recent-updates report, so the two
-    cannot drift apart and answer the same sentence differently.
-    """
-    text = str(low or "")
-    if not any(p in text for p in _BARE_ACTIVITY_PHRASES):
-        return True          # not a bare activity question; caller's own match governs
-    # Rapport "checking in/up on you" must not count as a maintenance "check".
-    scrubbed = re.sub(
-        r"\bcheck(?:ing|ed)?\s+(?:in|up)\b(?:\s+on\b)?(?:\s+you\b)?",
-        " ",
-        text,
-        flags=re.I,
-    )
-    return bool(_DEV_UPDATE_SUBJECT_RE.search(scrubbed))
 
 
 def _eli_self_report_recent_updates_question(text):
@@ -6230,7 +4495,6 @@ def _eli_self_report_recent_updates_question(text):
     return bool(update_ref and (self_ref or " you " in f" {low} " or " your " in f" {low} "))
 
 
-
 # GUI audit actual-scan proof route: catches direct "did you actually scan/read the file in full"
 # probes.
 
@@ -6263,86 +4527,9 @@ def _eli_gui_audit_actual_scan_v2(text):
     return bool(file_hit and scan_hit)
 
 
-
 # Memory-runtime route lock (ELI_MEMORY_RUNTIME_ROUTE_LOCK_V1): architecture/control questions
 # about memory are grounded telemetry and must not be stolen by generic CHAT, OPEN_APP or
 # personal-memory routing. It only guarantees the right evidence action, it doesn't answer.
-
-_RECALL_CONTENT_RE = re.compile(
-    r"\bwhat\s+(?:was|were|is|are)\s+(?:the\s+)?[^.?!]{0,90}?\b(?:i|we)\s+(?:gave|told|said|mentioned|stored|saved|asked\s+you\s+to\s+remember)\b"
-    r"|\bwithout\s+me\s+restating\b|\bwhat\s+did\s+i\s+(?:tell|give|ask)\s+you\b", re.I)
-_MEMORY_MACHINERY_RE = re.compile(
-    r"\b(?:files?|db|databases?|sqlite|tables?|schema|functions?|internally|architecture|pipeline|faiss|fts5?|vectors?|runtime)\b", re.I)
-
-
-def _asks_for_remembered_content(low: str) -> bool:
-    """Asks what was said or stored (the content), not how memory works. Recall it before explaining anything."""
-    return bool(_RECALL_CONTENT_RE.search(low) and not _MEMORY_MACHINERY_RE.search(low))
-
-
-def _eli_memory_runtime_route_lock_should_trigger(text):
-    import re as _re
-
-    raw = str(text or "").strip()
-    low = raw.lower()
-
-    if not low:
-        return False
-
-    if _asks_for_remembered_content(low):
-        return False
-    # "GPU memory", "VRAM temperature": hardware, not the memory subsystem, unless it also names the machinery.
-    if _re.search(r"\b(?:gpu|vram|cuda|nvidia|graphics|thermal|temperature|temp)\b", low) and not _re.search(
-            r"\b(?:sqlite|databases?|db|tables?|faiss|fts5?|schema|explain_memory_runtime|memory (?:system|internals|architecture))\b", low):
-        return False
-
-    # Literal control/action invocation.
-    if _re.search(r"\b(?:run|execute|call|invoke)?\s*`?explain_memory_runtime`?\b", low):
-        return True
-
-    # Direct architecture/internal-memory requests.
-    if _re.search(
-        r"\b("
-        r"explain exactly how your memory system works internally|"
-        r"memory system works internally|"
-        r"how (?:does|do) your memory system work|"
-        r"how does your memory work internally|"
-        r"which files.*which db tables.*which functions|"
-        r"memory runtime(?: surface)?|"
-        r"memory architecture|"
-        r"memory internals"
-        r")\b",
-        low,
-    ):
-        return True
-
-    # Broader DB/schema/function phrasing.
-    if _re.search(r"\bmemor(?:y|ies)\b", low) and _re.search(
-        r"\b("
-        r"database files?|db files?|databases?|sqlite|tables?|schema|"
-        r"functions?|internally|architecture|runtime|"
-        r"faiss|fts5|vectors?|vectoring|recall_log|conversation_turns|"
-        r"user\.sqlite3|agent\.sqlite3|memory\.sqlite3"
-        r")\b",
-        low,
-    ):
-        # Personal profile questions should stay personal-memory unless the
-        # user explicitly asks architecture/schema/files/functions.
-        asks_profile = _re.search(
-            r"\b(what do you know about me|what do you remember about me|"
-            r"my preferences|my profile|who am i|what is my name)\b",
-            low,
-        )
-        asks_arch = _re.search(
-            r"\b(files?|db|database|sqlite|tables?|functions?|schema|"
-            r"internally|runtime|architecture)\b",
-            low,
-        )
-        if asks_profile and not asks_arch:
-            return False
-        return True
-
-    return False
 
 
 def _eli_memory_runtime_route_lock_result(raw):
@@ -6364,15 +4551,6 @@ def _eli_memory_runtime_route_lock_result(raw):
 # Final route wrapper (ELI_PATCH_FINAL_PERSONAL_MEMORY_ROUTE_PRECEDENCE_AFTER_ROUTE_LOCK_20260511),
 # installed after the late memory-runtime locks. Phrase logic is in eli.execution.route_contracts;
 # this stays at EOF only to keep precedence over legacy route wrappers.
-
-
-
-
-
-
-
-
-
 
 
 # Multi-PDF route contract wrapper. Existing branches call _extract_pdf_path(raw), which
@@ -6424,7 +4602,6 @@ def _eli_phase11_enrich_pdf_route(raw, result):
         return result
     except Exception:
         return result
-
 
 
 # Canonical public router surface (ELI_PHASE33_CANONICAL_PUBLIC_ROUTER_SURFACE_EXPORT). The
@@ -7709,6 +5886,39 @@ try:
             def _stage_frontier_status(text, *_a, **_k):
                 return _eli_phase38_frontier_status_contract(text)
 
+            def _stage_mcp_explicit(text, *_a, **_k):
+                # "run mcp tool X" names the mechanism outright and must outrank the
+                # generic "run <thing>" app-launch route further down.
+                m = re.search(r"\b(?:run|call|use|invoke)\s+(?:the\s+)?mcp\s+tool\s+"
+                              r"(?P<t>[\w.\-]+)(?:\s+with\s+(?P<rest>.+))?$",
+                              str(text or ""), re.I)
+                if not m:
+                    return None
+                args = {"tool": m.group("t")}
+                rest = (m.groupdict().get("rest") or "").strip()
+                if rest:
+                    try:
+                        parsed = json.loads(rest)
+                        if isinstance(parsed, dict):
+                            args["arguments"] = parsed
+                    except Exception:
+                        args["arguments"] = {"input": rest}
+                return {"action": "MCP_CALL", "args": args, "confidence": 0.97,
+                        "matched_by": "mcp.call_explicit"}
+
+            def _stage_computer_use_explicit(text, *_a, **_k):
+                # An explicit "computer use: <goal>" prefix is the user stating the
+                # mechanism outright, so it must outrank keyword heuristics further
+                # down (a goal mentioning "search for X" was landing on WEB_SEARCH).
+                m = re.match(r"^\s*computer[\s_-]?use\b[:,]?\s*(.+)$", str(text or ""), re.I)
+                if not m:
+                    return None
+                goal = m.group(1).strip(" .?!,")
+                if not goal:
+                    return None
+                return {"action": "COMPUTER_USE", "args": {"goal": goal},
+                        "confidence": 0.97, "matched_by": "computer_use.explicit"}
+
             def _stage_identity_audit(text, *_a, **_k):
                 return _eli_phase39_identity_audit_contract(text)
 
@@ -8174,6 +6384,8 @@ try:
                 ("timestamp_and_shell_followup", _stage_timestamp_and_shell_followup),
                 ("pending_proposal_confirm", _stage_pending_proposal_confirm),
                 ("react_to_pasted_content", _stage_react_to_pasted_content),
+                ("mcp_explicit", _stage_mcp_explicit),
+                ("computer_use_explicit", _stage_computer_use_explicit),
                 ("precedence", _stage_precedence),
                 ("identity_audit", _stage_identity_audit),
                 ("frontier_status", _stage_frontier_status),

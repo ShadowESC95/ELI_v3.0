@@ -2070,6 +2070,15 @@ class AgentBus:
         results: List[AgentResult] = self._run_agents(
             active_agents, user_input, intent, session_id, user_id)
 
+        # Critic-driven converge loop: when the CriticAgent finds the retrievers contradict each
+        # other, re-dispatch the deepening-capable ones with a wider gather and re-verify, adopting
+        # the deeper pass only if it raised agreement. Bounded; ELI_BUS_CONVERGE=0 disables it.
+        try:
+            results = self._maybe_converge(
+                results, active_agents, user_input, intent, session_id, user_id)
+        except Exception:
+            log.debug("bus: converge loop skipped", exc_info=True)
+
         # Assemble memory context: MemoryAgent first, then KnowledgeGraphAgent appended
         memory_context = ""
         for r in results:
@@ -2155,6 +2164,59 @@ class AgentBus:
             orchestrator_plan=orchestrator_plan,
             execution_plan=execution_plan_dict,
         )
+
+    # ── Frontier: critic-driven converge loop ──────────────────────────────
+    def _maybe_converge(self, results: List[AgentResult], active_agents: List["_BaseAgent"],
+                        user_input: str, intent: Dict[str, Any], session_id: str,
+                        user_id: str) -> List[AgentResult]:
+        """When the CriticAgent reports the retrievers CONTRADICT each other (low mutual
+        agreement), give the deepening-capable retrievers a wider gather (reusing the
+        existing `_gather_mult` deepen hook) and re-verify with the critic. Adopt the deeper
+        pass ONLY if it raised agreement — so a converge attempt can never make a turn worse.
+        Bounded (≤2 rounds), and disabled by ELI_BUS_CONVERGE=0."""
+        if os.environ.get("ELI_BUS_CONVERGE", "1").strip().lower() in ("0", "false", "no", "off"):
+            return results
+        critic = next((r for r in results if r.agent == "critic"), None)
+        if not critic or not (critic.data or {}).get("contradiction"):
+            return results  # nothing flagged — the sources already agree
+        deepen = [a for a in active_agents if a.name in ("memory", "knowledge_graph")]
+        if not deepen:
+            return results
+        try:
+            max_rounds = max(1, min(2, int(os.environ.get("ELI_BUS_CONVERGE_ROUNDS", "1") or 1)))
+        except Exception:
+            max_rounds = 1
+        by_name: Dict[str, AgentResult] = {r.agent: r for r in results}
+        best_agreement = float((critic.data or {}).get("agreement", 0.0) or 0.0)
+        mult = float((intent or {}).get("_gather_mult", 1.0) or 1.0)
+        for rnd in range(1, max_rounds + 1):
+            mult = round(mult + 0.75, 2)  # widen the recall net each round
+            conv_intent = {**(intent or {}), "_gather_mult": mult,
+                           "_converge": {"round": rnd, "note": (critic.data or {}).get("content", "")}}
+            deep = self._run_agents(deepen, user_input, conv_intent, session_id, user_id)
+            merged = dict(by_name)
+            for r in deep:
+                if r.ok and not (r.data or {}).get("skipped"):
+                    merged[r.agent] = r
+            crit_intent = {**(intent or {}),
+                           "_upstream": {n: r.data for n, r in merged.items()
+                                         if n != "critic" and r.ok}}
+            try:
+                new_crit = CriticAgent().run(user_input, crit_intent, session_id, user_id)
+            except Exception:
+                log.debug("bus converge: critic re-run failed", exc_info=True)
+                break
+            new_agreement = float((new_crit.data or {}).get("agreement", 0.0) or 0.0)
+            if new_agreement > best_agreement + 0.01:
+                new_crit.data["converged_round"] = rnd  # telemetry: convergence happened
+                merged["critic"] = new_crit
+                by_name = merged
+                best_agreement = new_agreement
+                if not (new_crit.data or {}).get("contradiction"):
+                    break  # sources now agree — converged
+            else:
+                break  # the deeper pass didn't help — keep the prior (better) result
+        return list(by_name.values())
 
     # ── Agent execution (DAG-layered, with flat fallback) ───────────────────
     def _run_agents(self, active_agents: List["_BaseAgent"], user_input: str,

@@ -233,19 +233,35 @@ _BARE_ACTIVITY_PHRASES = (
 
 _DEV_UPDATE_SUBJECT_RE = re.compile(
     r"\b(code|codebase|repo|repositor\w*|git|commit\w*|version|build|patch\w*|"
-    r"capabilit\w*|module|test\w*|upgrade\w*|check(?:s|ed|ing)?|update(?:s|d)?|"
-    r"maintenance|deploy\w*|repair\w*|refactor\w*|fix(?:es|ed|ing)?|"
+    r"capabilit\w*|module|tests?\b|upgrade\w*|"
+    # "checks"/"checked"/"updates" as maintenance nouns — NOT "checking in/up"
+    # (Jess Iris Xe live: "just checking in on you. what have you been doing
+    # the past week?" matched check(?:ing)? and forced a packaged SELF_REPORT dump).
+    r"checks?\b|checked\b|updates?\b|updated\b|"
+    r"maintenance|deploy\w*|repair\w*|refactor\w*|"
+    r"fix(?:es|ed|ing)?|"
     r"runtime|pipeline|system)\b",
     re.I,
 )
 
 
 def _eli_activity_question_is_about_dev_work(low: str) -> bool:
-    """True when an activity question names development work as its subject."""
+    """True when an activity question names development work as its subject.
+
+    Shared by both routes that can reach the recent-updates report, so the two
+    cannot drift apart and answer the same sentence differently.
+    """
     text = str(low or "")
     if not any(p in text for p in _BARE_ACTIVITY_PHRASES):
-        return True          # not a bare activity question; caller's match governs
-    return bool(_DEV_UPDATE_SUBJECT_RE.search(text))
+        return True          # not a bare activity question; caller's own match governs
+    # Rapport "checking in/up on you" must not count as a maintenance "check".
+    scrubbed = re.sub(
+        r"\bcheck(?:ing|ed)?\s+(?:in|up)\b(?:\s+on\b)?(?:\s+you\b)?",
+        " ",
+        text,
+        flags=re.I,
+    )
+    return bool(_DEV_UPDATE_SUBJECT_RE.search(scrubbed))
 
 
 def _eli_self_report_recent_updates_question(text):
@@ -289,6 +305,13 @@ def _eli_memory_runtime_route_lock_should_trigger(text):
     low = raw.lower()
 
     if not low:
+        return False
+
+    if _asks_for_remembered_content(low):
+        return False
+    # "GPU memory", "VRAM temperature": hardware, not the memory subsystem, unless it also names the machinery.
+    if _re.search(r"\b(?:gpu|vram|cuda|nvidia|graphics|thermal|temperature|temp)\b", low) and not _re.search(
+            r"\b(?:sqlite|databases?|db|tables?|faiss|fts5?|schema|explain_memory_runtime|memory (?:system|internals|architecture))\b", low):
         return False
 
     # Literal control/action invocation.
@@ -353,3 +376,17 @@ def _eli_memory_runtime_route_lock_result(raw):
             "response_contract": "canonical_grounded_memory_runtime_no_raw_gguf",
         },
     }
+
+
+_RECALL_CONTENT_RE = re.compile(
+    r"\bwhat\s+(?:was|were|is|are)\s+(?:the\s+)?[^.?!]{0,90}?\b(?:i|we)\s+(?:gave|told|said|mentioned|stored|saved|asked\s+you\s+to\s+remember)\b"
+    r"|\bwithout\s+me\s+restating\b|\bwhat\s+did\s+i\s+(?:tell|give|ask)\s+you\b", re.I)
+
+
+_MEMORY_MACHINERY_RE = re.compile(
+    r"\b(?:files?|db|databases?|sqlite|tables?|schema|functions?|internally|architecture|pipeline|faiss|fts5?|vectors?|runtime)\b", re.I)
+
+
+def _asks_for_remembered_content(low: str) -> bool:
+    """Asks what was said or stored (the content), not how memory works. Recall it before explaining anything."""
+    return bool(_RECALL_CONTENT_RE.search(low) and not _MEMORY_MACHINERY_RE.search(low))

@@ -80,5 +80,4 @@ def route_session_ops(text: str, raw: str, low: str, text_l: str):
                  r"what\s+(?:do\s+you|are\s+your)\s+(?:command|capability|action)|"
                  r"show\s+(?:me\s+)?(?:help|commands?|capabilities?)|list\s+command)\b", low):
         return _mk("HELP", {}, 0.90, matched_by="system.help")
-
     return None

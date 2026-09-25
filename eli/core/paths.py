@@ -92,7 +92,13 @@ def ensure_install_env() -> None:
     Shell aliases often export ``ELI_PROJECT_ROOT`` from another checkout (e.g. a
     lingering v2 path while running v3). That makes proactive/memory write into
     the wrong ``artifacts/`` tree. The imported package location is authoritative.
+
+    Not in a frozen build: the bundle ships pyproject.toml, so the "checkout" found here is the
+    read-only bundle, and pinning to it would move user data out of the per-user root that
+    rthook_eli_frozen_paths.py already set.
     """
+    if is_frozen():
+        return
     pkg_root = _find_project_root()
     if pkg_root is None:
         return

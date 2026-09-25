@@ -54,6 +54,11 @@ def _pm_asks_something(low: str) -> bool:
         return True
     return bool(_ASKING_RE.search(t))
 
+from eli.execution.routing._helpers import _is_wallclock_question
+from eli.execution.routing.memory_runtime import (
+    _eli_activity_question_is_about_dev_work,
+    _eli_memory_runtime_route_lock_should_trigger,
+)
 from eli.execution.routing._helpers import (
     _mk,
 )
@@ -74,11 +79,27 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if _introspective_subject and not _dev_update_subject:
         pass  # fall through to reflective CHAT / introspection routing
     elif re.search(
+        r"\b(?:notice|sense|feel)\b.{0,60}\b(?:any\s+)?changes?\b.{0,60}\b(?:in|to)\s+your\s+code\b",
+        low,
+    ) and not re.search(r"\b(?:git|commit|changelog|diff|show me|list|which)\b", low):
+        pass  # casual rapport ("notice any changes in your code?") → CHAT, not audit dump
+    elif re.search(
+        r"\b(?:notice|sense|feel)\b.{0,40}\b(?:any\s+)?changes?\b.{0,40}\b(?:recently|lately|as of late)\b",
+        low,
+    ) and not re.search(r"\b(?:git|commit|changelog|diff|show me|list|which|updates?\s+and\s+checks?)\b", low):
+        pass  # casual check-in ("notice any changes recently?") → CHAT, not git dump
+    elif re.search(
         r"\b(what|which|any|show|tell|list)\b.{0,80}\b(updates?|checks?|repairs?|changes?|maintenance|work)\b.{0,80}\b(as of late|recently|lately|performed|done|happened|made)\b",
         low,
-    ) or re.search(
-        r"\b(what have you been doing|what have you been working on|what have you checked|what have you updated)\b",
-        low,
+    ) or (
+        re.search(
+            r"\b(what have you been doing|what have you been working on"
+            r"|what have you checked|what have you updated)\b",
+            low,
+        )
+        # A bare "what have you been doing?" in conversation is small talk, not a
+        # request for a git/runtime evidence dump — see the shared disambiguator.
+        and _eli_activity_question_is_about_dev_work(low)
     ):
         return {
             "action": "SELF_REPORT",
@@ -98,12 +119,14 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
         }
     # --- end primary contract diagnostics: self-report recent updates ---
 
-    # --- strict control actions: never fall through to generic CHAT ---    # ELI_PATCH_PERSONAL_MEMORY_ROUTE_PRECEDENCE_20260511
-    # Personalised/internal-memory questions must beat the generic memory-runtime route.
-    # This is routing precedence only; final response synthesis remains downstream.
+    # Strict control actions never fall through to generic CHAT
+    # (ELI_PATCH_PERSONAL_MEMORY_ROUTE_PRECEDENCE_20260511). Personal-memory questions beat the
+    # generic memory-runtime route. System architecture ("your memory system... which files/db
+    # tables") is EXPLAIN_MEMORY_RUNTIME; the old block matched architecture keywords alone.
     _pm_text = low  # `low` is always defined: low = raw.lower()
     if (
-        _pm_asks_something(_pm_text)
+        not _eli_memory_runtime_route_lock_should_trigger(_pm_text)
+        and _pm_asks_something(_pm_text)
         and ("memory" in _pm_text)
         and (
             "personal" in _pm_text
@@ -111,12 +134,10 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
             or "personalized" in _pm_text
             or "about me" in _pm_text
             or "my memory" in _pm_text
-            or "internals" in _pm_text
-            or "internally" in _pm_text
-            or "which files" in _pm_text
-            or "which db" in _pm_text
-            or "which tables" in _pm_text
-            or "which functions" in _pm_text
+            or (
+                ("internals" in _pm_text or "internally" in _pm_text)
+                and re.search(r"\b(my|me|about me|stored about me)\b", _pm_text)
+            )
         )
     ):
         return {
@@ -127,11 +148,9 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
             "query": text if 'text' in locals() else (_pm_text or ""),
         }
 
-    # Tolerate natural leading filler ("do a", "run a", "please", "now") and
-    # trailing punctuation so "do a self update" still routes to SELF_UPDATE
-    # instead of falling through to CHAT (which then confabulates "I'm updating
-    # myself now" — a fake action). "self upgrade" intentionally does NOT match
-    # here; it routes to SELF_UPGRADE further down.
+    # Tolerate natural leading filler ("do a", "run a", "please", "now") and trailing punctuation so
+    # "do a self update" routes to SELF_UPDATE and not CHAT (which then says a fake "I'm updating
+    # myself now"). "self upgrade" intentionally doesn't match; it routes to SELF_UPGRADE below.
     if re.fullmatch(
         r"(?:(?:please|pls|can you|could you|now)\s+)*"
         r"(?:(?:do|run|perform|execute|go)\s+(?:a|an|the)?\s*)?"
@@ -143,11 +162,25 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(confidence in (?:your|my) last response|which agents contributed|what agents contributed|last response trace|previous response trace|last turn trace)\b", low):
         return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.99, matched_by="router.explain_last_response", allow_chat_without_evidence=False)
 
-    # A request for the RAW metrics / agent logs / telemetry / trace of a recent
-    # cycle must surface the real logged telemetry (agent_dispatches + runtime_events
-    # via EXPLAIN_LAST_RESPONSE), NOT the settings snapshot SELF_REPORT returns. A
-    # real session asked "I want raw metric breakdowns and agent logs for that cycle"
-    # → SELF_REPORT → ELI wrongly claimed "I have no logs" and confabulated.
+    # Where did ELI get its last statement, in plain words. The jargon route above missed "where are
+    # you getting this information?", so the model invented a source. The bus knows which agents
+    # contributed, so answer from that. Needs that/this/it to stay about the prior statement.
+    if re.search(
+        r"\bwhere\s+(?:are|did)\s+you\s+get(?:ting)?\s+(?:that|this|it|the\s+\w+)\b"
+        r"|\bwhere\s+(?:is|did)\s+(?:that|this|it)\s+(?:com(?:e|ing)\s+)?from\b"
+        r"|\bhow\s+do\s+you\s+know\s+(?:that|this|any\s+of\s+(?:that|this))\b"
+        r"|\bwhat\s+are\s+you\s+basing\s+(?:that|this|it)\s+on\b"
+        r"|\bwhat(?:'s|\s+is)\s+(?:that|this)\s+based\s+on\b"
+        r"|\bsays\s+who\b",
+        low,
+    ):
+        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.95,
+                   matched_by="router.explain_last_response.provenance",
+                   need_grounding=True, allow_chat_without_evidence=False)
+
+    # A request for raw metrics/agent logs/telemetry of a recent cycle must surface the real logged
+    # telemetry (agent_dispatches + runtime_events via EXPLAIN_LAST_RESPONSE), not the settings
+    # snapshot SELF_REPORT returns, which led ELI to claim "I have no logs".
     if (re.search(r"\b(metric|metrics|telemetry|agent log|agent logs|raw log|raw logs|"
                   r"dispatch log|breakdown|trace|logs?)\b", low)
             and re.search(r"\b(that|this|last|previous|prior|the)\s+"
@@ -160,10 +193,35 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     # --- explicit grounded speech-act route authority ---
     # This is routing authority, not a canned response layer.
     try:
-        from eli.cognition.correction_patterns import is_correction_query as _is_corr_q
+        from eli.cognition.correction_patterns import (
+            is_correction_query as _is_corr_q,
+            is_model_identity_dispute as _is_model_dispute,
+            is_runtime_recheck_correction as _is_runtime_recheck,
+            is_codebase_health_query as _is_codebase_health,
+        )
     except Exception:
         _is_corr_q = lambda t: False  # noqa: E731
-    if _is_corr_q(low):
+        _is_model_dispute = lambda t: False  # noqa: E731
+        _is_runtime_recheck = lambda t: False  # noqa: E731
+        _is_codebase_health = lambda t: False  # noqa: E731
+    if _is_model_dispute(low):
+        return _mk("RUNTIME_STATUS", {}, 0.98, matched_by="router.model_identity_dispute",
+                   allow_chat_without_evidence=False)
+    if _is_runtime_recheck(low):
+        return _mk("RUNTIME_STATUS", {"question": raw}, 0.96,
+                   matched_by="router.runtime_recheck_correction",
+                   allow_chat_without_evidence=False)
+    if _is_codebase_health(low):
+        return _mk(
+            "RUNTIME_AUDIT",
+            {"query": raw, "audit_depth": "codebase"},
+            0.98,
+            matched_by="router.codebase_health",
+            allow_chat_without_evidence=False,
+            need_grounding=True,
+            task_family="grounded_audit",
+        )
+    if _is_corr_q(low) and not _is_wallclock_question(low):
         return _mk("CHAT", {"message": raw}, 0.92, matched_by="router.correction_chat", allow_chat_without_evidence=True)
 
     if re.search(r"\b(who are you|what are you|what is your name|what's your name)\b", low) and re.search(
@@ -174,6 +232,14 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
 
     if re.search(r"\b(what are you actually running on|running on right now|context size|gpu layers|threads|batch|provider|runtime status)\b", low):
         return _mk("RUNTIME_STATUS", {}, 0.99, matched_by="router.runtime_status", allow_chat_without_evidence=False)
+
+    if re.search(r"\bwhat(?:'s|\s+is)\s+(?:your\s+)?model\b", low):
+        return _mk("RUNTIME_STATUS", {"question": raw}, 0.99,
+                   matched_by="router.runtime_status_model_query", allow_chat_without_evidence=False)
+
+    if re.search(r"\bcheck(?:\s+the|\s+your)?\s+model\b|\blook at (?:the|your) model\b", low):
+        return _mk("RUNTIME_STATUS", {"question": raw}, 0.98,
+                   matched_by="router.runtime_status_model_check", allow_chat_without_evidence=False)
 
     # Self-referential temperature: "what's your temperature", "your temperature out now",
     # "what is your inference temperature", "what temp are you running at" etc.
@@ -199,17 +265,9 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(explain your cognition pipeline|cognition pipeline from input to output|input to output.*every step|cognitive pipeline)\b", low):
         return _mk("EXPLAIN_COGNITION_RUNTIME", {}, 0.99, matched_by="router.cognition_runtime", allow_chat_without_evidence=False)
 
-    # Self-referential: "how do your AGENTS work/function/operate", "explain your agents",
-    # "how does your agent bus work", "search your code and tell me how your agents work".
-    # This is a question about ELI's OWN agent architecture — answered by the grounded cognition
-    # report (the agent bus, the 14 agents + roles, the ThreadPoolExecutor). MUST fire here,
-    # before: (a) web_search — 'search your code…' was web-searched and returned external VS Code
-    # articles; (b) system.capabilities — 'your agents' dumped the raw 207-ACTION list (agents ≠
-    # capabilities). Routes to EXPLAIN_COGNITION_RUNTIME.
-    # …UNLESS the user is asking ELI to PRODUCE an artifact about its internals
-    # ("generate/write/create a document/report about your agent bus"). That is a
-    # generative request (GENERATE_DOCUMENT), not a runtime-dump request — the
-    # introspection guard used to swallow it because it merely mentions "agent bus".
+    # "how do your agents work", "explain your agent bus": answered from the grounded cognition
+    # report (EXPLAIN_COGNITION_RUNTIME). Must beat web_search and system.capabilities. "write a
+    # report about your agent bus" is still GENERATE_DOCUMENT, so leave that alone.
     _doc_gen_intent = bool(re.search(
         r"\b(generate|create|write|make|draft|produce|compose|prepare|build)\b"
         r".{0,30}\b(document|doc|report|essay|article|paper|write-?up|brief|memo|"
@@ -228,13 +286,29 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(what do you know about me from memory|what do you know about me|what do you remember of me|who am i|what is my name|do you remember me|do you know me|my preferences|my persona|my ethos)\b", low):
         return _mk("USER_IDENTITY_SUMMARY", {}, 0.99, matched_by="router.user_identity_summary", allow_chat_without_evidence=False)
 
+    # Meta-questions about static profile files vs live/evolving memory — must not
+    # fall through long_question_guard → generic CHAT with a 128-token answer cap.
+    if re.search(
+        r"\b(?:hard[\s-]?coded|template|stub|static)\b.{0,80}\b(?:profile|preference|about me|memory|user info)\b"
+        r"|\b(?:dynamic|emergent|evolv\w+)\b.{0,80}\b(?:understand\w*|profile|preference|memory|you)\b"
+        r"|\babout me section\b.{0,80}\b(?:static|dynamic|template|stub|hard[\s-]?coded)\b",
+        low,
+    ):
+        return _mk(
+            "USER_IDENTITY_SUMMARY",
+            {"question": raw, "detail": "full", "include_memory_provenance": True},
+            0.99,
+            matched_by="router.user_identity_dynamic_vs_static",
+            allow_chat_without_evidence=False,
+        )
+
     # Pure persona questions (no runtime keywords) → CHAT so ELI answers from
     # its own character and memory, not a raw JSON spec dump.
     if re.search(r"\b(who are you|what are you(?!\s+\w)|what is your name|what's your name|tell me about yourself|what is your purpose)\b", low) and not re.search(r"\b(model|running on|provider|context|gpu|llm|specs?|technical|runtime|layers|threads|batch)\b", low):
         return _mk("CHAT", {"message": raw}, 0.99, matched_by="router.identity_persona_chat", allow_chat_without_evidence=True)
-    # Technical model/runtime queries → SELF_REPORT (actual spec evidence needed)
+    # Technical model/runtime queries → RUNTIME_STATUS (live mounted model evidence).
     if re.search(r"\b(what model(?: are you| do you use| is this)?|which model(?: are you| do you use| is this)?|what llm|which llm|what are you running on|what are you actually)\b", low):
-        return _mk("SELF_REPORT", {}, 0.99, matched_by="router.self_report", allow_chat_without_evidence=False)
+        return _mk("RUNTIME_STATUS", {"question": raw}, 0.99, matched_by="router.runtime_status_model_query", allow_chat_without_evidence=False)
     # --- end explicit grounded speech-act route authority ---
 
     # --- dynamic evidence preempts ---
@@ -280,5 +354,4 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
             need_grounding=True,
             task_family="grounded_audit",
         )
-
     return None

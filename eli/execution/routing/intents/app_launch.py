@@ -35,18 +35,10 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
             "internal ide", "ide tab", "the ide tab",
         }
 
-        app_aliases = {
-            "vscode": "code",
-            "visual studio code": "code",
-            "virtual studio code": "code",
-            "vs code": "code",
-            "code": "code",
-            "gedit": "gedit",
-            "chrome": "chromium",
-            "google chrome": "chromium",
-            "calendar": "gnome-calendar",
-            "camera": "snapshot",
-        }
+        # Canonical table (eli/execution/app_aliases.py). This inline copy also mapped "chrome" and
+        # "google chrome" to `chromium`, a different browser; the canonical table resolves against
+        # what is installed.
+        from eli.execution.app_aliases import APP_ALIASES as app_aliases
 
         def _fs_target(tok: str) -> str:
             """Path for one open-target when it denotes a location, else ""."""
@@ -59,11 +51,9 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
                 return "trash"
             return _known_dir_path(tok)
 
-        # "open home directory and the downloads directory" — one verb, two
-        # locations. The old single-path routes silently dropped everything
-        # after the first target and reported success for the one folder they
-        # did open. Only split when EVERY part is a real location, so
-        # "open steam and chill" is untouched.
+        # "open home directory and the downloads directory": one verb, two locations. The old
+        # single-path routes dropped everything after the first target and reported success. Split
+        # only when every part is a real location, so "open steam and chill" is untouched.
         _parts = [p for p in re.split(r"\s+and\s+(?:then\s+)?", target, flags=re.I) if p.strip()]
         if len(_parts) > 1:
             _resolved = [_fs_target(p) for p in _parts]
@@ -96,11 +86,9 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
                 matched_by="open.website.literal_preempt",
             )
 
-        # "open a web browser on quantum field theory" was captured whole as
-        # an app name and offered for installation. It is a browser request
-        # with a search query; OPEN_BROWSER has taken a query all along. The
-        # detector is shared with portable_intent_contract rather than
-        # duplicated, so the two matchers cannot drift apart again.
+        # "open a web browser on quantum field theory" was taken whole as an app name and offered
+        # for install. It is a browser request with a search query (OPEN_BROWSER accepts one). The
+        # detector is shared with portable_intent_contract so the two matchers can't drift apart.
         from eli.execution.portable_intent_contract import _browser_open_target
         _bq = _browser_open_target(target)
         if _bq is not None:
@@ -110,5 +98,4 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
         canonical = app_aliases.get(target_low, target)
         return _mk("OPEN_APP", {"name": canonical, "target": canonical}, 0.99,
                    matched_by="open.app.literal_preempt")
-
     return None

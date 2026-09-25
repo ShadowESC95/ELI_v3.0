@@ -17,6 +17,9 @@ from eli.execution.routing._helpers import (
 
 
 def route_system_settings(text: str, raw: str, low: str, text_l: str):
+    # ------------------------------------------------------------
+    # 12) SYSTEM SETTINGS / PANELS / ALIASES
+    # ------------------------------------------------------------
     if re.search(
             r"\b(?:initiate|open|launch|access|start)\s+audio\s+(?:interface|settings)\b", raw, re.I):
         return _mk("OPEN_AUDIO_SETTINGS", {}, 1.0,
@@ -58,14 +61,10 @@ def route_system_settings(text: str, raw: str, low: str, text_l: str):
         return _mk("PROACTIVE_STOP", {}, 0.95,
                    matched_by="system.proactive_stop")
 
-    # ------------------------------------------------------------
-    # 13) OPEN / LAUNCH (apps, aliases, websites, paths)
-    # ------------------------------------------------------------
-    # A bare domain ("open github.com") is a URL, not an app. Checked first and
-    # kept in its OWN variable: this match used to overwrite the shared `m`
-    # before the open/launch block below could read it, which silently made the
-    # whole path/folder branch unreachable — every "open <path|folder>" fell
-    # through to OPEN_APP and was answered "not installed, shall I install it?".
+    # 13) Open / launch (apps, aliases, websites, paths). A bare domain ("open github.com") is a
+    # URL, not an app. Checked first in its own variable: it used to overwrite the shared `m` before
+    # the open/launch block read it, making the path/folder branch unreachable, so every "open
+    # <path|folder>" became OPEN_APP and "not installed, shall I install it?".
     _url_m = re.match(r"^\s*open\s+((?:https?://)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s]*)?)\s*$", text_l)
     if _url_m:
         _url = _url_m.group(1).strip()
@@ -78,5 +77,4 @@ def route_system_settings(text: str, raw: str, low: str, text_l: str):
             matched_by="open.domain.preempt",
             allow_chat_without_evidence=False,
         )
-
     return None

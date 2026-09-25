@@ -14,6 +14,7 @@ import re
 from eli.utils.log import get_logger
 
 from eli.execution.routing.intents._sentinel import ROUTE_NONE
+from eli.execution.routing._helpers import _tone_is_negated
 from eli.execution.routing._helpers import (
     _mk,
 )
@@ -34,17 +35,15 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
     # swallows "voice diagnostics", "mic diagnostics", etc.
     if re.search(r"\b(voice|stt|speech[- ]to[- ]text|whisper|microphone|mic)\s+"
                  r"(diagnostic|diagnostics|status|test|check|health)\b"
-                 r"|\b(diagnostic|diagnostics|status|test|check|health)\s+(voice|stt|speech|whisper|mic)\b",
+                 r"|\b(diagnostic|diagnostics|status|test|check|health)\s+(voice|stt|speech|whisper|mic)\b"
+                 r"|\bcheck\s+(the\s+)?(microphone|mic)\b"
+                 r"|\bstt\s+diagnostics?\b",
                  low):
-        return _mk("VOICE_DIAGNOSTICS", {}, 0.93, matched_by="voice.diagnostics.preempt")
+        return _mk("STT_DIAGNOSTICS", {}, 0.93, matched_by="voice.diagnostics.preempt")
 
-    # ── Wake-word + voice-profile management ───────────────────────────────────
-    # Deterministic because these are explicitly-named commands the LLM resolver
-    # mis-routes ("set my wake word" → SET_CLIPBOARD). Distinct flows:
-    #   change/set wake word [to X]  → WAKE_SET (user picks their own wake word)
-    #   train/build wake word        → WAKE_TRAIN (synthetic model)
-    #   enroll/personalise wake word → WAKE_ENROLL (record me saying it)
-    #   train/learn my voice         → TRAIN_VOICE (prosody/tone foundation — separate)
+    # Wake-word and voice-profile management. Deterministic because the LLM resolver mis-routes
+    # these ("set my wake word" -> SET_CLIPBOARD). change/set -> WAKE_SET, train/build -> WAKE_TRAIN,
+    # enroll/personalise -> WAKE_ENROLL, train/learn my voice -> TRAIN_VOICE (prosody, separate).
     if re.search(r"\b(wake[\s-]*word|wakeword)\b", low):
         m = re.search(r"\b(?:change|set|update|make|rename)\b.*\bwake[\s-]*word\b\s*(?:to|is|as|=)?\s*(.*)$",
                       raw, re.I)
@@ -62,47 +61,29 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
         if "wake" not in low:
             return _mk("TRAIN_VOICE", {}, 0.93, matched_by="voice.train_profile")
 
-    # Speaker ID — shared-machine enrollment ("enroll speaker Jay")
-    if re.search(
-        r"\b(enroll|register|add|teach)\b.*\b(speaker|speakers)\b"
-        r"|\b(enroll|register)\b.*\b(my\s+)?voice\b.*\b(as|named)\b"
-        r"|\bwho\s+am\s+i\b.*\b(enroll|register|train)\b",
-        low,
-    ):
-        m = re.search(r"\b(?:as|named|name|speaker)\s+([A-Za-z][A-Za-z0-9 _-]{1,30})", raw, re.I)
-        name = (m.group(1).strip() if m else "")
-        if not name:
-            m2 = re.search(r"\benroll\s+speaker\s+([A-Za-z][A-Za-z0-9 _-]{1,30})", raw, re.I)
-            name = (m2.group(1).strip() if m2 else "")
-        return _mk("SPEAKER_ENROLL", {"name": name}, 0.93, matched_by="speaker.enroll")
-    if re.search(r"\b(list|show|who are)\b.*\b(enrolled\s+)?speakers\b", low):
-        return _mk("LIST_SPEAKERS", {}, 0.9, matched_by="speaker.list")
-    if re.search(r"\b(speaker|voice)\s+(id|identification|recognition)\s+(status|capabilities|diagnostic)\b", low):
-        return _mk("SPEAKER_STATUS", {}, 0.9, matched_by="speaker.status")
-
-    # ── Voice library: list / download / switch the TTS voice ──────────────────
-    # Distinct from persona TONE (SET_COMMUNICATION_STYLE): this changes the actual
-    # spoken voice/accent and can fetch new ones from the Piper library. Placed in
-    # this deterministic region so a concrete voice request isn't swallowed by the
-    # later persona-style route ("use a X voice"). Runs AFTER wake/train above, so
-    # "train my voice" and "voice diagnostics" have already returned.
-    # ── Tone / emotion register (shades ELI's delivery; core personality unchanged) ──
-    # Ported from v2: tone_adaptor.set_tone/clear_tone and the emotion palette were
-    # already here, and the Settings dropdown already called them — only the spoken
-    # route was missing, so "be comedic" did nothing.
-    # CLEAR first ("back to normal", "be yourself", "drop the tone").
+    # Voice library: list, download or switch the TTS voice. Not persona tone, that's
+    # SET_COMMUNICATION_STYLE. Sits here so the later persona-style route can't swallow it. Tone
+    # shades delivery only; CLEAR first, and "are you back to normal yet?" is chat, not a command.
     if re.search(r"\b(back to (normal|yourself)|be yourself|normal tone|drop the (tone|act|voice)"
                  r"|stop (that|the tone|acting)|reset your tone|clear (the )?tone)\b", low):
-        return _mk("CLEAR_TONE", {}, 0.9, matched_by="tone.clear")
-    # SET — an explicit tone directive that names a palette tone/alias. Gated on BOTH
-    # a tone-setting verb AND the phrase resolving to a real tone, so "be comedic" /
-    # "talk street" / "sound more professional" fire, but a passing mention
-    # ("that joke was comedic gold") does not.
-    if re.search(r"\b(be|sound|talk|speak|act|go|get|use|make it|keep it|more|less)\b", low):
+        _tone_status_q = (
+            re.search(r"\b(?:are you|is it|have you)\b.*\bback to (?:normal|yourself)\b", low)
+            or (
+                re.search(r"\bback to (?:normal|yourself)\b", low)
+                and ("?" in (raw or "") or re.search(r"\b(?:yet|or not)\b", low))
+            )
+        )
+        if not _tone_status_q:
+            return _mk("CLEAR_TONE", {}, 0.9, matched_by="tone.clear")
+    # SET: an explicit tone directive naming a palette tone/alias. Needs a tone-setting verb and a
+    # phrase that resolves to a real tone, so "be comedic" fires but "that joke was comedic gold"
+    # doesn't. The verb list used to include more/less/get/go, so "i am not sad eli, i am just
+    # trying to get your codebas correct" set the tone to sad. "be more cheerful" still works via `be`.
+    if re.search(r"\b(be|sound|talk|speak|act|use|make it|keep it)\b", low):
         try:
             from eli.cognition.emotion_palette import resolve_tone as _rt
             _tone = _rt(raw)
-            if _tone and _tone != "neutral":
+            if _tone and _tone != "neutral" and not _tone_is_negated(low, _tone):
                 return _mk("SET_TONE", {"tone": _tone}, 0.9, matched_by="tone.set")
         except Exception:
             log.debug("tone.set resolve failed", exc_info=True)
@@ -169,14 +150,12 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
                     return _mk("SET_VOICE", {"query": raw}, 0.9, matched_by="voice.set")
             except Exception:
                 log.debug("voice.set resolve failed", exc_info=True)
-        # Deliberately ends routing (was a bare `return None` inline): the turn
-        # mentions voice/accent but names no action, so it is not ours to claim.
-        return ROUTE_NONE
+        return ROUTE_NONE  # mentions "voice/accent" but no actionable verb → let CHAT handle
 
-    # A bare install/download of a named voice id/accent with NO "voice" word,
-    # e.g. "install en_US-amy-medium" or "download en_GB-alan". Gated on the query
-    # actually resolving to a catalog voice, so "install firefox" is unaffected.
-    if re.search(r"\b(download|install|fetch|add|get)\b", low):
+    # A bare install/download of a named voice id/accent with no "voice" word ("install
+    # en_US-amy-medium"). Gated on the query resolving to a catalog voice, so "install firefox" is
+    # unaffected. Skip news intents ("get news about X" must not match et_EE-news-medium).
+    if re.search(r"\b(download|install|fetch|add|get)\b", low) and not re.search(r"\bnews\b", low):
         try:
             from eli.runtime.voice_assets import resolve_voice_query
             _vr = resolve_voice_query(raw)
@@ -228,15 +207,9 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
     ):
         return _mk("GAZE_CALIBRATE", {}, 0.95, matched_by="gaze.calibrate.preempt")
 
-    # Gaze-cursor click: act on whatever the user is LOOKING at. The gaze engine
-    # supplies the live screen point; GAZE_CLICK moves the cursor there and clicks.
-    # EXPLICIT click commands ("double/left/right click") are unambiguous and route
-    # always. But NATURAL-LANGUAGE targeting ("open it", "click that") only means a
-    # gaze click when gaze tracking is actually ON — with gaze OFF, "open it" means
-    # open the file/app just referenced, so it must fall through (the transcript's
-    # "open it" mis-fired into a phantom GAZE_CLICK / "gaze enabled" hallucination
-    # while gaze was disabled).
+    # Gaze-cursor click: act on what the user is looking at. Explicit click commands ("double/left/
+    # right click") always route. "open it" / "click that" means a gaze click only when gaze tracking
+    # is on; off, "open it" means the file/app just mentioned (it used to fire a phantom GAZE_CLICK).
     if re.search(r"\bright[\s-]?click\b", low):
         return _mk("GAZE_CLICK", {"button": "right"}, 0.95, matched_by="gaze.click.right")
-
     return None

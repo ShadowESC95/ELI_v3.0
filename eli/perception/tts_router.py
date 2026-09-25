@@ -573,6 +573,17 @@ def _neural_engine_available() -> bool:
         return False
 
 
+def _clone_backend_available(which: str) -> bool:
+    """Report whether a neural clone backend is importable — for diagnostics/UI. Never raises."""
+    try:
+        if which == "chatterbox":
+            from eli.perception import tts_chatterbox
+            return bool(tts_chatterbox.chatterbox_available())
+        return _neural_engine_available()
+    except Exception:
+        return False
+
+
 def available_backends() -> dict:
     installed = list_voices()
     active = get_active_voice()
@@ -594,6 +605,9 @@ def available_backends() -> dict:
         "pyttsx3": True,
         "espeak_ng": shutil.which("espeak-ng") is not None,
         "espeak": shutil.which("espeak") is not None,
+        # Neural clone backends (clone:<name>): Chatterbox (MIT, preferred) → XTTS (legacy).
+        "chatterbox": _clone_backend_available("chatterbox"),
+        "xtts": _clone_backend_available("xtts"),
     }
 
 
@@ -691,14 +705,10 @@ _NEURAL_FALLBACK: Dict[str, Any] = {"active": False, "requested": "", "reason": 
 
 def _neural_unavailable_reason() -> str:
     """Why a neural voice cannot synthesise right now, in one line."""
-    try:
-        from eli.perception import tts_xtts
-        if not tts_xtts.xtts_available():
-            return ("the neural voice engine (coqui-tts + torch) is not installed in "
-                    "this build")
-    except Exception:
-        return "the neural voice engine could not be loaded"
-    return "the neural engine is present but produced no audio for this voice"
+    if _clone_backend_available("chatterbox") or _clone_backend_available("xtts"):
+        return "the neural engine is present but produced no audio for this voice"
+    return ("the neural voice engine is not installed in this build "
+            "(chatterbox-tts for clones, coqui-tts + torch for natural voices)")
 
 
 def _note_neural_fallback(requested) -> None:
@@ -1173,9 +1183,24 @@ def synthesize_wav(text: str, voice_name: str | None = None) -> Optional[bytes]:
             log.debug("[TTS_WAV] natural voice resolve failed", exc_info=True)
             _note_neural_fallback(active)
         active = _DEFAULT_VOICE
-    # Cloned voice (clone:<name>): Coqui XTTS-v2 from a reference sample. If the extra
-    # isn't installed / no reference, returns None → we fall back to the default voice.
+    # Cloned voice (clone:<name>): Chatterbox (MIT, preferred) from the reference sample, then
+    # Coqui XTTS-v2. Either returns None when its extra isn't installed or there is no
+    # reference, and we fall back to the default voice.
     if str(active).startswith("clone:"):
+        try:
+            from eli.cognition import tone_adaptor as _ta
+            _exag = _ta.voice_exaggeration()
+        except Exception:
+            _exag = None
+            log.debug("[TTS_WAV] tone exaggeration read skipped", exc_info=True)
+        try:
+            from eli.perception import tts_chatterbox
+            wav = tts_chatterbox.synthesize_wav(text, active, exaggeration=_exag)
+            if wav:
+                _note_neural_fallback(None)
+                return wav  # Chatterbox handles emotion natively — no post-hoc pitch shift
+        except Exception:
+            log.debug("[TTS_WAV] chatterbox clone resolve failed", exc_info=True)
         try:
             from eli.perception import tts_xtts
             wav = tts_xtts.synthesize_wav(text, active)

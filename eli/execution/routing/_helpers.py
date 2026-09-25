@@ -9,6 +9,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 
 try:
     # Resolved per-machine (honours XDG user-dirs, so localised folder names
@@ -64,11 +68,15 @@ def _known_dir_path(s: str) -> str:
     decide whether a phrase IS a folder. Without a predicate, "open downloads"
     was indistinguishable from "open spotify" and got launched as an app —
     answered with "downloads is not installed, shall I install it?".
+
+    Singular/plural tolerant: people say "download directory", the map is keyed
+    on "downloads".
     """
     try:
         from eli.utils.platform_compat import known_user_dir as _kud
         return _kud(s)
     except Exception:
+        log.debug("known_user_dir unavailable", exc_info=True)
         return ""
 
 
@@ -312,5 +320,107 @@ def _extract_int(raw: str, default: int, min_value: int,
         return default
     n = int(m.group(1))
     return max(min_value, min(max_value, n))
+
+
+
+_WALLCLOCK_TIME_PATTERNS = (
+    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?time\b",
+    r"\bcurrent time\b", r"\bclock\b", r"^time[?!.\s]*$", r"\btell me the time\b",
+    r"\bwhat\s+time\s+is\s+it\b",
+    # Compound asks — "the day and time", "date & time".
+    r"\b(?:day|date)\s*(?:,)?\s*(?:and|&|\+)\s*(?:the\s+)?time\b",
+    r"\btime\s*(?:,)?\s*(?:and|&|\+)\s*(?:the\s+)?(?:day|date)\b",
+    # Tolerate words between "the" and "time" — "what the actual time is",
+    # "what the fucking time is". The trailing is/it-is keeps this off phrases
+    # like "what is the best time to call".
+    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?(?:\w+\s+){0,2}time\s+(?:is|it\s+is|was)\b",
+)
+
+
+_WALLCLOCK_DATE_PATTERNS = (
+    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?date\b",
+    r"\bcurrent date\b",
+    # today's date / today is the date — no greedy .* (would match "update")
+    r"\btoday'?s?\s+(?:is\s+the\s+|the\s+)?date\b",
+    r"^date[?!.\s]*$",
+    r"\bwhat(?:'s| is) today\b",
+    r"\bwhat day is it\b", r"\bwhat day is this\b",
+    r"\bwhat'?s?\s+the\s+day\b", r"\bwhat'?s?\s+the\s+days\b",
+    r"\bwhat days\b", r"\bwhat is the day\b", r"\bday is it\b",
+    r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?(?:\w+\s+){0,2}(?:date|day)\s+(?:is|it\s+is|was)\b",
+)
+
+
+_WALLCLOCK_META_RE = re.compile(
+    r"(?i)\b(?:"
+    r"care to explain|explain how|explain why|"
+    r"why (?:didn'?t|did not|weren'?t|were not|couldn'?t|wouldn'?t) you|"
+    r"not smart enough|making a plan|execut(?:e|ing|uing)|incorporat\w+|"
+    r"calling that function|by calling (?:that |the )?function|"
+    r"how (?:can|do|did) you (?:tell|know|get)|"
+    r"should (?:have|'ve) (?:known|checked|called|used)|"
+    r"without (?:showing|calling|checking|verifying|making)"
+    r")\b"
+)
+
+
+def _has_wallclock_pattern(low: str) -> bool:
+    return any(re.search(p, low) for p in _WALLCLOCK_TIME_PATTERNS + _WALLCLOCK_DATE_PATTERNS)
+
+
+def _is_wallclock_meta_question(low: str) -> bool:
+    """True when the user is criticising DATE/TIME behaviour, not asking the clock."""
+    if not low or not _has_wallclock_pattern(low):
+        return False
+    if _WALLCLOCK_META_RE.search(low):
+        return True
+    # Long compound with explain/why/plan + an embedded date/day clause.
+    if len(low.split()) >= 18 and re.search(
+        r"\b(explain|why|how come|instead of|plan(?:ning)?|function|incorporat)\b",
+        low,
+    ):
+        return True
+    return False
+
+
+def _is_wallclock_question(low: str) -> bool:
+    """Genuine clock/date ask — excludes meta-critique that merely embeds 'what day'."""
+    return _has_wallclock_pattern(low) and not _is_wallclock_meta_question(low)
+
+
+_NEGATORS = ("not", "n't", "never", "aint", "ain't", "isnt", "isn't", "wasnt", "wasn't",
+             "dont", "don't", "stop", "no")
+
+
+def _tone_is_negated(low: str, tone: str) -> bool:
+    """True when the emotion word is being DENIED rather than requested.
+
+    "i am not sad" must never set the tone to sad. Without this, ELI's own
+    proactive check-in ("you've been reading more sad lately") provoked a reply
+    containing the word, that reply was parsed as an order to BE sad, the sad
+    reading was recorded, and the check-in fired again — a loop that escalated
+    sad×3 to sad×7 in one session, each round telling the user they seemed sad
+    because they had just said they were not.
+
+    Scans a short window before the tone word rather than the whole sentence, so
+    "not really working, sound cheerful" still sets cheerful.
+    """
+    try:
+        from eli.cognition.emotion_palette import resolve_tone as _rt
+    except Exception:
+        return False
+    words = re.findall(r"[a-z']+", low)
+    for i, w in enumerate(words):
+        # Find the token that produced this tone, then look back a few words.
+        try:
+            if _rt(w) != tone:
+                continue
+        except Exception:
+            continue
+        window = words[max(0, i - 4):i]
+        if any(n in window or any(x.endswith("n't") for x in window) for n in _NEGATORS):
+            return True
+    return False
+
 
 __all__ = ['COMMON_DIRS', '_known_dir_path', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']

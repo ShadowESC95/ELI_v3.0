@@ -19,6 +19,9 @@ from eli.execution.routing._helpers import (
 
 
 def route_shell_ops(text: str, raw: str, low: str, text_l: str):
+    # ------------------------------------------------------------
+    # 14) SHELL EXEC (explicit only)
+    # ------------------------------------------------------------
     shell_prefixes = (
         "execute ",
         "run cmd ",
@@ -151,10 +154,9 @@ def route_shell_ops(text: str, raw: str, low: str, text_l: str):
     if re.match(r"^(?:show\s+)?habits?(?:\s+status)?$",
                 low) or re.match(r"^(?:my\s+)?habits?$", low):
         return _mk("HABIT_STATUS", {}, 0.95, matched_by="habits.status")
-    # "what habits have you detected/noticed (in my behaviour)", "which habits do
-    # you have for me", "any habits you've spotted" → grounded HABIT_STATUS (reads
-    # real habit_rules/events) instead of generic CHAT, which confabulated a
-    # literal template placeholder "[list up to 3 habits…]" (user-reported).
+    # "what habits have you detected/noticed", "which habits do you have for me", "any habits you've
+    # spotted" go to grounded HABIT_STATUS (real habit_rules/events) instead of CHAT, which
+    # confabulated a literal template placeholder.
     if re.search(r"\bhabits?\b", low) and re.search(
         r"\b(detect(?:ed)?|notic(?:e|ed)|spot(?:ted)?|observed|"
         r"have you (?:found|seen|got|detected|noticed)|do you have|"
@@ -165,12 +167,10 @@ def route_shell_ops(text: str, raw: str, low: str, text_l: str):
 
     # ── Coverage patch: additional patterns before fallback ──
 
-    # Power: shutdown / restart / reboot — ONLY as an actual command. The bare words
-    # "restart"/"reboot" occur in ordinary conversation ("feeling better after a
-    # restart?", "the server needs a restart"), so a bare keyword match here opened
-    # gnome power settings on a greeting (user-reported). Require an imperative frame:
-    # the power verb LEADS the message (optionally behind please/can-you), OR it takes
-    # the machine as its explicit object — and never fire on a how-to/state question.
+    # Power (shutdown/restart/reboot) only as a real command. The bare words turn up in ordinary
+    # talk ("feeling better after a restart?") and a keyword match opened gnome power settings on a
+    # greeting. Needs an imperative frame (verb leads, optionally after please/can-you, or takes
+    # the machine as its object) and never fires on a how-to or state question.
     _power_cmd = (
         re.match(r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+|pls\s+)?"
                  r"(?:shut\s*down|power\s*off|poweroff|restart|reboot)\b", low)
@@ -247,5 +247,4 @@ def route_shell_ops(text: str, raw: str, low: str, text_l: str):
     if low.strip() in ("disk usage", "disk space", "storage space"):
         return _mk("SHELL_EXEC", {"cmd": "df -h"}, 0.95, matched_by="shell.disk_usage",
                    entities={"cmd": "df -h"})
-
     return None

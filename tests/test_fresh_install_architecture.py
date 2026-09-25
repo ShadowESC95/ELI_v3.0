@@ -152,6 +152,9 @@ def test_frozen_project_root_rejects_read_only_explicit_env(tmp_path, monkeypatc
     read_only.mkdir()
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setenv("ELI_PROJECT_ROOT", str(read_only))
+    # Importing paths in this (unfrozen) test process pinned ELI_DATA_DIR to the checkout; a frozen
+    # launch gets it from the runtime hook instead.
+    monkeypatch.delenv("ELI_DATA_DIR", raising=False)
     os.chmod(read_only, 0o555)
 
     from eli.core import paths
@@ -233,3 +236,22 @@ def test_rthook_safe_copy_reads_from_readonly_source(tmp_path):
     hook._safe_copy_file(src_file, dst_root / "tts_piper" / "piper" / "voice.onnx")
     copied = dst_root / "tts_piper" / "piper" / "voice.onnx"
     assert copied.read_bytes() == b"onnx-bytes"
+
+
+def test_frozen_build_keeps_the_runtime_hooks_env(tmp_path, monkeypatch):
+    """The bundle ships pyproject.toml, so ensure_install_env() found the read-only bundle as
+    "the checkout" and re-pointed ELI_PROJECT_ROOT/ELI_DATA_DIR into it, moving user data out of
+    the per-user root that rthook_eli_frozen_paths.py had set."""
+    import os
+    import sys
+
+    user_root = tmp_path / "ELI_v3"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("ELI_PROJECT_ROOT", str(user_root))
+    monkeypatch.setenv("ELI_DATA_DIR", str(user_root / "artifacts"))
+
+    from eli.core import paths
+
+    paths.ensure_install_env()
+    assert os.environ["ELI_PROJECT_ROOT"] == str(user_root)
+    assert os.environ["ELI_DATA_DIR"] == str(user_root / "artifacts")

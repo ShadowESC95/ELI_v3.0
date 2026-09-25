@@ -1,4 +1,4 @@
-# ELI v2 — cross-platform release pipeline.
+# ELI v3 — cross-platform release pipeline.
 #
 # Trigger: push a tag `v<version>` (must match [project].version in
 # pyproject.toml — the guard job fails the run with a clear message if not).
@@ -6,11 +6,11 @@
 #   git tag v2.1.0 && git push origin v2.1.0
 #
 # Builds in parallel and uploads to the GitHub Release for that tag:
-#   Windows : ELI-Setup-<v>.exe (Inno Setup) + ELI_v2-<v>-windows-x64.zip (portable, ELI.exe inside)
-#   WoA     : ELI_v2-<v>-windows-arm64-portable.zip (lean, experimental — cross-built on ubuntu)
-#   macOS   : ELI_v2-<v>-macos-arm64.dmg (drag-to-Applications, ad-hoc signed)
-#   Linux   : ELI_v2-<v>-x86_64.AppImage + ELI_v2-<v>-linux-portable.tar.gz
-#   Source  : eli_v2_0-<v>.whl + sdist .tar.gz + .deb + windows-portable.zip
+#   Windows : ELI-Setup-<v>.exe (Inno Setup) + ELI_v3-<v>-windows-x64.zip (portable, ELI.exe inside)
+#   WoA     : ELI_v3-<v>-windows-arm64-portable.zip (lean, experimental — cross-built on ubuntu)
+#   macOS   : ELI_v3-<v>-macos-arm64.dmg (drag-to-Applications, ad-hoc signed)
+#   Linux   : ELI_v3.0-<v>-x86_64.AppImage + ELI_v3.0-<v>-linux-portable.tar.gz
+#   Source  : eli_v3-<v>.whl + sdist .tar.gz + .deb + windows-portable.zip
 #             + windows-portable-full.zip + wheelhouse.tar.gz + WHEELHOUSE.txt
 # plus SHA256SUMS.txt + RELEASE_NOTES.md.
 #
@@ -189,7 +189,7 @@ jobs:
         shell: bash
         run: |
           V=${{ needs.guard.outputs.version }}
-          7z a -tzip "dist/ELI_v2-$V-windows-x64.zip" ./dist/ELI
+          7z a -tzip "dist/ELI_v3-$V-windows-x64.zip" ./dist/ELI
 
       - name: Download VC++ redistributable (bundled into installer)
         shell: bash
@@ -369,6 +369,15 @@ jobs:
       # compiled with CUDA enabled" — and even working, it costs GPU/CPU far out of
       # proportion to a voice. Piper is the shipped engine. Cloning still works from a
       # source install (`pip install -e ".[natural]"`), where torch matches the host.
+      #
+      # Linux-only: the Chatterbox clone engine IS bundled, so `clone:` voices actually
+      # synthesise instead of silently falling back to Piper. Chatterbox is MIT and
+      # commercial-clean, while the XTTS-v2 *model* is non-commercial — v3 prefers
+      # Chatterbox for exactly that reason (tts_router: "Chatterbox (MIT, preferred) ->
+      # XTTS (legacy)"). Safe here and only here: this job installs the CPU torch stack
+      # from the pytorch CPU index before the extras loop and fails on any nvidia-*
+      # wheel. Model weights are NOT bundled; they download on first use.
+      OPTIONAL_EXTRAS: "tts asr image vision web wakeword chatterbox"
     name: linux (AppImage)
     needs: guard
     runs-on: ubuntu-latest
@@ -567,7 +576,7 @@ jobs:
         run: |
           pip install build
           ELI_PORTABLE_WHEELHOUSE=1 SKIP_TESTS=1 bash scripts/package_desktop_app.sh --with-assets
-          mv dist/app_packages/ELI_v2-*-linux-portable.tar.gz dist/
+          mv dist/app_packages/ELI_v3.0-*-linux-portable.tar.gz dist/
           ls -lh dist/*.tar.gz
 
       - name: Checksums + GitHub 2 GiB asset-size guard
@@ -638,30 +647,30 @@ jobs:
         run: |
           bash build_packages.sh wheelhouse windows-lean windows wheelhouse-arm64 windows-arm64-lean
           if [ -d dist/wheelhouse ]; then
-            tar -czf "dist/ELI_v2-${{ needs.guard.outputs.version }}-wheelhouse.tar.gz" -C dist wheelhouse
+            tar -czf "dist/ELI_v3-${{ needs.guard.outputs.version }}-wheelhouse.tar.gz" -C dist wheelhouse
             ls -1 dist/wheelhouse > dist/WHEELHOUSE.txt
           else
             echo "::error::wheelhouse directory missing after build_packages.sh wheelhouse"
             exit 1
           fi
           if [ -d dist/wheelhouse-arm64 ]; then
-            tar -czf "dist/ELI_v2-${{ needs.guard.outputs.version }}-wheelhouse-arm64.tar.gz" -C dist wheelhouse-arm64
+            tar -czf "dist/ELI_v3-${{ needs.guard.outputs.version }}-wheelhouse-arm64.tar.gz" -C dist wheelhouse-arm64
             ls -1 dist/wheelhouse-arm64 > dist/WHEELHOUSE-arm64.txt
           else
             echo "::warning::wheelhouse-arm64 directory missing — WoA offline install may be incomplete"
           fi
-          test -f "dist/ELI_v2-${{ needs.guard.outputs.version }}-windows-portable.zip" \
+          test -f "dist/ELI_v3-${{ needs.guard.outputs.version }}-windows-portable.zip" \
             || { echo "::error::windows lean portable zip missing"; exit 1; }
-          test -f "dist/ELI_v2-${{ needs.guard.outputs.version }}-windows-portable-full.zip" \
+          test -f "dist/ELI_v3-${{ needs.guard.outputs.version }}-windows-portable-full.zip" \
             || { echo "::error::windows full offline portable zip missing"; exit 1; }
-          test -f "dist/ELI_v2-${{ needs.guard.outputs.version }}-windows-arm64-portable.zip" \
+          test -f "dist/ELI_v3-${{ needs.guard.outputs.version }}-windows-arm64-portable.zip" \
             || { echo "::error::windows-arm64 lean portable zip missing"; exit 1; }
 
       - name: Write release notes stub
         run: |
           V=${{ needs.guard.outputs.version }}
           cat > dist/RELEASE_NOTES.md <<EOF
-          # ELI v2 ${V}
+          # ELI v3 ${V}
 
           Full release: frozen bundles (AppImage / dmg / exe) plus pip-installable wheel,
           source tarball, Debian package, Windows lean portable (source + wheel),
@@ -675,7 +684,7 @@ jobs:
       - name: Checksums + GitHub 2 GiB asset-size guard
         run: |
           cd dist
-          for f in *.whl *.deb *.zip *wheelhouse*.tar.gz eli_v2_0-*.tar.gz RELEASE_NOTES.md WHEELHOUSE*.txt; do
+          for f in *.whl *.deb *.zip *wheelhouse*.tar.gz eli_v3-*.tar.gz RELEASE_NOTES.md WHEELHOUSE*.txt; do
             [ -e "$f" ] || continue
             sha256sum "$f" >> SHA256SUMS-source.txt
             size=$(stat -c%s "$f")
@@ -692,7 +701,7 @@ jobs:
           retention-days: 3
           path: |
             dist/*.whl
-            dist/eli_v2_0-*.tar.gz
+            dist/eli_v3-*.tar.gz
             dist/*.deb
             dist/*windows-portable.zip
             dist/*windows-portable-full.zip

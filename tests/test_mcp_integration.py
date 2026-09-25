@@ -118,7 +118,7 @@ def test_entries_without_a_command_are_ignored(monkeypatch, tmp_path):
 def test_missing_binary_reports_the_real_reason(monkeypatch, tmp_path):
     cfg = tmp_path / "mcp_servers.json"
     cfg.write_text(json.dumps({"mcpServers": {
-        "ghost": {"command": "definitely-not-installed-xyz"}}}), encoding="utf-8")
+        "ghost": {"command": "definitely-not-installed-xyz", "enabled": True}}}), encoding="utf-8")
     monkeypatch.setattr(mcp_client, "config_path", lambda: cfg)
     mcp_client.shutdown_all()
     res = mcp_client.call_tool("ghost.anything", {})
@@ -188,7 +188,9 @@ def test_eli_client_talks_to_eli_server_over_stdio(monkeypatch, tmp_path):
 
     cfg = tmp_path / "mcp_servers.json"
     cfg.write_text(json.dumps({"mcpServers": {
-        "eli": {"command": sys.executable, "args": [str(launcher)]}}}), encoding="utf-8")
+        # The sandbox hides $HOME; the server needs the repo (code + venv) and the launcher.
+        "eli": {"command": sys.executable, "args": [str(launcher)], "enabled": True,
+                "read_paths": [str(_repo_root()), str(tmp_path)]}}}), encoding="utf-8")
     monkeypatch.setattr(mcp_client, "config_path", lambda: cfg)
 
     mcp_client.shutdown_all()
