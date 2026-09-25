@@ -14,6 +14,7 @@ from eli.execution.executor_enhanced import execute as execute_action
 from eli.memory import Memory, get_memory_status, resolve_db_paths
 from eli.kernel.stages._common import _eli_path_get, _is_brief_phatic_prompt
 from eli.utils.log import get_logger
+import logging
 
 log = get_logger(__name__)
 
@@ -86,10 +87,9 @@ class RetrievalMixin:
         if n is not None:
             fetch_limit = n
         since_date = self._extract_since_date(query)
-        # Budget-aware fetch_limit cap — prevents context overflow on deep
-        # modes
-        # Use the live loaded ctx (dynamic loader's actual choice), never a
-        # hard-coded default — the configured n_ctx is often stale.
+        # Budget-aware fetch_limit cap, to prevent context overflow on deep modes. Use the live
+        # loaded ctx (the dynamic loader's actual choice), never a default: the configured n_ctx is
+        # often stale.
         try:
             _ctx_for_cap = self._runtime_n_ctx()
         except Exception:
@@ -150,14 +150,10 @@ class RetrievalMixin:
                     conversations = filtered[-fetch_limit:] if fetch_limit < len(
                         filtered) else filtered
                 else:
-                    # Scope to THIS session. Turns are written with self.session_id but were
-                    # read back without it, so "Active chat history" actually meant "the last
-                    # 20 turns from any session" — a fresh "hello" inherited the previous
-                    # conversation and ELI carried on mid-thread, replying to things the user
-                    # had never said in this one. That is also why deleting the offending text
-                    # never helped: the next session simply inherited whatever was newest.
-                    # Genuine cross-session recall is unaffected — it has its own explicit
-                    # path above and semantic memory below.
+                    # Scope to this session. Turns were written with self.session_id but read back without it, so
+                    # "Active chat history" was the last 20 turns from any session: a fresh "hello" inherited the
+                    # previous conversation and ELI answered things never said here. Real cross-session recall has
+                    # its own path above and semantic memory below.
                     conversations = self.memory.get_recent_conversation(
                         limit=fetch_limit, user_id=self.user_id,
                         session_id=getattr(self, "session_id", None))
@@ -191,24 +187,26 @@ class RetrievalMixin:
         "\n", " ")[
             :200]
                         lines_out.append(f"[{i:03d}] [{ts}] {role}: {content}")
+                    # `ELI:` lines are ELI's own past output, not evidence. As plain history the model repeats them
+                    # as fact (it invented "you're in the Simulation Lab" and that came back next session). Label
+                    # them instead of dropping them, we still need the continuity.
                     context_parts.append(
-    "Active chat history (chronological, oldest→newest):\n" +
+    "Active chat history (chronological, oldest→newest). Lines marked ELI are your own "
+    "previous statements — treat them as things you said, NOT as verified facts, and do "
+    "not repeat a claim from them unless separate evidence supports it:\n" +
      "\n".join(lines_out))
-                    # The model can copy its OWN last line straight out of this history —
-                    # observed live across three phrasings ("still glitchy…", then
-                    # "post-breakfast haze and Rick and Morty on repeat"), re-asking "How
-                    # are you?" after the user answered and told it to stop. Purging the
-                    # text doesn't help: it just latches onto a new phrase. The output-side
-                    # guard can't run here because streaming never reaches finalize, so
-                    # state the contract in the prompt — same shape as the no-fake-actions
-                    # rule, a constraint rather than a scripted line.
+                    # The model can copy its own last line out of this history ("still glitchy..."), even re-asking
+                    # "How are you?" after being told to stop. Purging text doesn't help, it latches onto a new
+                    # phrase. The output-side guard can't run here (streaming never reaches finalize), so state the
+                    # contract in the prompt, like the no-fake-actions rule.
                     try:
                         _eli_said = [str(t.get("content") or "").strip()
                                      for t in conversations
                                      if str(t.get("role") or "").lower() in ("assistant", "eli")
                                      and str(t.get("content") or "").strip()]
                         if _eli_said:
-                            _quoted = "\n".join(f"  - {s[:220]}" for s in _eli_said[:3])
+                            _recent = _eli_said[:3]  # newest-first as stored
+                            _quoted = "\n".join(f"  - {s[:220]}" for s in _recent)
                             context_parts.append(
                                 "YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of "
                                 "it, and do not re-ask a question the user has already "
@@ -271,19 +269,17 @@ class RetrievalMixin:
                     mem_results = self.memory.recall_memory(
                         query=query, limit=limit)
 
-                    # --- Stage 3: HyDE Query Expansion for deeper semantic recall ---
-                    # HyDE fires a second GGUF call (≈10s on slow hardware).
-                    # Skip it unless the query is complex enough to benefit AND
-                    # the vector store is populated AND HyDE is not disabled.
+                    # Stage 3: HyDE query expansion for deeper semantic recall. HyDE fires a second
+                    # GGUF call (~10s on slow hardware), so skip it unless the query is complex
+                    # enough to benefit, the vector store is populated and HyDE isn't disabled.
                     _hyde_disabled = (
                         os.environ.get("ELI_HYDE_DISABLED", "0").strip().lower()
                         in ("1", "true", "yes", "on")
                     )
                     _hyde_words = len((query or "").split())
-                    # Skip HyDE when the query is a control/action command — the
-                    # generic knowledge-assistant system prompt produces irrelevant
-                    # hypothetical documents (e.g. "financial audit" definitions for
-                    # "run a fulltime audit") which then pollute memory retrieval.
+                    # Skip HyDE for control/action commands: the generic knowledge-assistant prompt
+                    # writes irrelevant hypothetical documents ("financial audit" definitions for
+                    # "run a fulltime audit") that pollute retrieval.
                     _query_low = (query or "").lower()
                     _hyde_is_control_cmd = bool(re.search(
                         r"\b(audit|diagnos[ei]|health.?check|runtime|pipeline|"
@@ -292,12 +288,9 @@ class RetrievalMixin:
                         r"list\s+\w+|enable|disable|start|stop|reset|reload)\b",
                         _query_low,
                     ))
-                    # Skip HyDE for questions directed AT ELI about its own state or
-                    # recent activities. These generate first-person hypotheticals
-                    # ("I've been processing queries / tuning parameters") that bias
-                    # semantic memory retrieval toward the most recent task memories
-                    # regardless of what the user actually wants, causing the retrieved
-                    # memories to poison the context and produce looping responses.
+                    # Skip HyDE for questions aimed at ELI about its own state or activity. They produce
+                    # first-person hypotheticals ("I've been processing queries / tuning parameters") that bias
+                    # retrieval toward recent task memories and cause looping replies.
                     _hyde_is_eli_status_query = bool(re.search(
                         r"\b(?:how|what).{0,30}(?:you|your|eli).{0,30}"
                         r"\b(?:been|doing|up\s+to|last\s+\d+|past\s+\d+|recently|lately|since)\b",
@@ -398,10 +391,10 @@ class RetrievalMixin:
     f"[MEMORY] Canonical memory-db recall failed: {legacy_e}")
                     log.debug(
                         f"[MEMORY] Stored memory search returned: {len(mem_results) if mem_results else 0} results")
-                    # ELI's OWN past replies must never come back as "Stored knowledge".
-                    # Live failure: a chat line ("still glitchy, still running on the same
-                    # old code") was stored, the reflection engine summarised it as a "top
-                    # topic", and it was recalled in a LATER session as a fact and recited.
+                    # ELI's own past replies must never come back as "Stored knowledge". A chat line ("still
+                    # glitchy, still running on the same old code") was stored, recalled as a fact and recited,
+                    # because the model was told it was knowledge to report. Drop any recalled memory that ELI
+                    # said; the user's own words stay.
                     try:
                         from eli.cognition.output_governor import is_echo_of_recent
                         _own = []
@@ -537,7 +530,7 @@ class RetrievalMixin:
                     if row:
                         hits.append(row)
             except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
         if not hits:
             try:
@@ -582,7 +575,7 @@ class RetrievalMixin:
                             hits.append(
                                 f"[{target_date}] {role}: {content[:220]}")
             except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
         if not hits and target_date:
             try:

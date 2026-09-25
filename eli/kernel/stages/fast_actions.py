@@ -7,8 +7,12 @@ helpers that force a direct result. Extracted from engine.py (v3 modularisation)
 imported back there so existing references are unchanged.
 """
 from __future__ import annotations
+import logging
 
 
+# Deterministic OS/media/control actions must never wait for AgentBus,
+# memory retrieval, persona synthesis, or GGUF. Chat/questions still use
+# the full cognitive path.
 _PHASE45_DIRECT_FAST_ACTIONS = {
     'AMBIENT_VISION',  # deterministic toggle — return the executor's confirmation directly
     'ANALYZE_IMAGE',  # executor OCR/metadata is authoritative — never let the model "describe" an image it can't see
@@ -34,7 +38,7 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'MUTE',
     'NEXT_MEDIA',
     'NOOP',
-    'NOW_PLAYING',
+    'NOW_PLAYING',  # live playerctl read — must never be GGUF-synthesised
     'OPEN_APP',
     'OPEN_BROWSER',
     'OPEN_FILE_SYSTEM',
@@ -43,6 +47,7 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'PLAY_MEDIA',
     'PREPARE_REMEDIATION',
     'PREVIOUS_MEDIA',
+    'REPEAT_MEDIA',
     'SCREEN_LOCATE',
     'SCREEN_READ_ANALYZE',  # vision/OCR result is authoritative — never re-narrate the screen
     'SHELL_EXEC',  # executor result is authoritative — never let model contradict it
@@ -50,6 +55,7 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'SPEAK',
     'STOP_MEDIA',
     'TIME',
+    'TIMESTAMP_DIAG',  # wall clock + stored conversation turn timestamps
     'UNMUTE',
     'VOLUME'
 }
@@ -57,10 +63,10 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
 # NOOP = fragment rejected or truly empty input; return silence, store nothing
 _PHASE45_SILENT_FAST_ACTIONS = {'NOOP'}
 
-# Actions where the executor payload IS the answer — the single source of truth for
-# the direct-return block and for _is_soft_informational_action(). Fail-closed: if the
-# authority gate throws or returns garbage, DENY these side-effecting actions rather
-# than risk it (read-only ones degrade open, so a gate bug can never leave ELI mute).
+# Actions where the executor payload is the answer (control/OS, status/self-report), returned
+# straight out rather than back through the model. Single source of truth for the direct-return
+# block and _is_soft_informational_action(). Fails closed for side-effecting actions if the
+# authority gate misbehaves; read-only ones fail open so ELI is never mute.
 _AUTHORITY_FAILCLOSED_ACTIONS = frozenset({
     "RUN_CMD", "SHELL_EXEC", "GENERATE_SCRIPT", "GENERATE_PROJECT",
     "FIX_FILE", "CODE_SOLVE", "CREATE_FOLDER", "DELETE_FILE",
@@ -84,13 +90,14 @@ _DIRECT_FINAL_ACTIONS = frozenset({
     "GUI_RUNTIME_AUDIT", "RUNTIME_AUDIT", "IMPORT_AUDIT",
     "RESOLVE_RUNTIME_PATHS", "EXPLAIN_LAST_RESPONSE",
     "EXPLAIN_LAST_FAILURE", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
+    "EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_FAILURE_LOG",
     "CHECK_TARGET_STATUS", "PREPARE_REMEDIATION",
     "CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION",
     "SELF_REPORT", "USER_IDENTITY_SUMMARY", "PERSONAL_MEMORY_SUMMARY",
     "PERSONAL_MEMORY_DEEP_EXPLAIN", "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT",
     "SELF_ANALYZE", "SELF_IMPROVE", "SELF_IMPROVEMENT_LOG", "SELF_UPDATE",
     "SELF_TEST",
-    "SELF_UPGRADE", "SELF_PATCH",
+    "SELF_UPGRADE", "SELF_PATCH", "SELF_REPAIR_PLAYBOOK",
     "EXAMINE_CODE", "CONFIRM_CODE_FIX", "CANCEL_CODE_FIX",
     "CONFIRM_HABIT", "DECLINE_HABIT",
     "MORNING_REPORT", "PROACTIVE_STATUS", "HABIT_STATUS", "LIST_CAPABILITIES",
@@ -104,18 +111,10 @@ _DIRECT_FINAL_ACTIONS = frozenset({
 })
 
 
-# Actions whose answer is produced by READING LIVE STATE (a socket, a player, a
-# device, a runtime singleton) rather than by synthesising prose. These inherently
-# score grounding 0.00 on the agent bus — there is nothing in memory to ground a
-# question about what is playing *right now* — so the low-grounding downgrade would
-# fire on them every single time and hand the question to CHAT, which then invents an
-# answer. That is exactly backwards: these are the actions that can answer truthfully,
-# because executing them IS the fact-check.
-#
-# The naming convention carries the meaning, so match on it rather than trusting a
-# hand-kept list to stay complete — that list already drifted once and let NOW_PLAYING
-# through, which is how ELI came to confabulate a YouTube playback explanation instead
-# of reporting "Nothing is playing right now."
+# Actions that read live state (socket, player, device). They score 0.00 grounding because
+# memory can't ground "what is playing right now", so the low-grounding downgrade would hand
+# them to chat, which invents an answer. Executing them is the fact-check. Matched by naming
+# convention, not a hand-kept list, since that list drifted once.
 _LIVE_STATE_ACTION_SUFFIXES = ("_STATUS", "_STATS", "_USAGE")
 # Only names the suffix rule cannot catch belong here.
 _LIVE_STATE_ACTIONS = frozenset({
@@ -129,10 +128,11 @@ def _is_live_state_action(a: str) -> bool:
 
 
 def _is_soft_informational_action(action) -> bool:
-    """True only for synthesised informational actions — the sole kind safe to
-    silently re-route to CHAT on low grounding. CHAT itself and every control / OS /
-    media / status / report action carry their own grounded payload and must never
-    be downgraded."""
+    """True when `action` is a synthesised informational action (the only kind safe to silently
+    re-route to CHAT on low grounding). False for CHAT itself and for every control / OS / media /
+    status / report / deterministic action — those carry their own grounded payload and must never
+    be downgraded. Reuses the module-level direct-final + phase45 + control-contract sets, plus the
+    live-state naming convention above."""
     a = str(action or "").upper().strip()
     if not a or a == "CHAT":
         return False
@@ -145,7 +145,7 @@ def _is_soft_informational_action(action) -> bool:
         if a in {str(x).upper() for x in (_CC or set())}:
             return False
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
     return True
 
 

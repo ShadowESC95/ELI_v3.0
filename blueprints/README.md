@@ -7,7 +7,7 @@ package's structure + the algorithm-bearing bodies; claims are grounded in what 
 inspected.
 
 > **Updated for 3.0.85 (August 2026).** Cognition unified with v2.3.44+ (gradient
-> orchestrator, shared retrieval, S01–S12). **~232,507 LOC / 593 `.py` files**,
+> orchestrator, shared retrieval, S01–S12). **~224,368 LOC / 593 `.py` files**,
 > **232** capabilities (**215** doc-routable; **211** `SUPPORTED_ACTIONS`). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
 >
 > **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
@@ -149,7 +149,7 @@ inspected.
    integrated multimodality.
 2. **The dominant weakness is engineering discipline, not vision:**
    - **God-files (largely dismantled in v3)** — the two GUI monoliths are gutted
-     to shims, `engine.py` is decomposed to 6,977 LOC (six stage mixins on
+     to shims, `engine.py` is decomposed to 7,980 LOC (six stage mixins on
      `CognitiveEngine`), `router_enhanced.py` to 5,315 (intent families lifted),
      `executor_enhanced.py` to 6,442 (56% strangled). Baselines were 14.6k / 13.5k /
      11.6k / 7.3k. See `MONOLITH_DECOMPOSITION_MAP.md`.

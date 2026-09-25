@@ -172,7 +172,7 @@ def test_the_engine_does_not_double_store_reflection_insights():
     was the unbounded-growth half of the bug."""
     import inspect
 
-    from eli.kernel import engine as lifecycle
+    from eli.kernel.stages import lifecycle
 
     src = inspect.getsource(lifecycle)
     i = src.index("eli-reflection:")

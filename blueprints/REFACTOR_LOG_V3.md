@@ -1,5 +1,14 @@
 # ELI v3 Refactor Log — Before & After
 
+> **Update 2026-09-25.** The engine decomposition described below was silently undone on 2026-09-08
+> (v3.0.99, "port v2.3.92 …"), which reinstated the v2 monolith as `engine.py` and left `kernel/stages/` unwired
+> while later fixes landed in both places. It has been restored: the production code was moved verbatim into the
+> stage modules and `CognitiveEngine` is again composed from the six mixins (`engine.py` is now about 8k lines).
+> Two v3-only behaviours missing from production in between (28 read-and-describe actions exempt from the
+> failed-executor guard, and the conditional system-prompt rules in `kernel/prompt_rules.py`) were restored.
+> The pre-restoration tree is recoverable at the git tag `v3-kernel-stages-archive`.
+
+
 *Complete, measured record of the v3 structural refactor (branch
 `v3-modularisation`) versus the pre-refactor baseline (git merge-base
 `dc5f04b`, the v2-lineage code). Every number is `wc -l` / file-count measured

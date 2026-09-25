@@ -29,7 +29,7 @@ session **[V]**.
 |---|---|
 | Python files under `eli/` | **490** *(+ `api/server.py`, the FastAPI web app, ~3,884 lines)* |
 | Python LOC under `eli/` | **153,299** *(measured 2026-07-13, post decomposition)* |
-| Largest modules | engine 6,977 (was 13.5k, −48%, → `kernel/stages/`) · executor_enhanced 6,442 (was 14.6k, −56%) · router 5,315 (was 7.3k, → `execution/routing/`) · memory 4,641 · deterministic_grounding_gate 4,301 · labs/report_tab 3,327 · agent_bus 3,235 · gguf_inference 2,758 *(GUI + labs monoliths gutted → `gui/main_window/`, `gui/labs/`)* |
+| Largest modules | engine 7,980 (was 13.5k, −48%, → `kernel/stages/`) · executor_enhanced 6,442 (was 14.6k, −56%) · router 5,315 (was 7.3k, → `execution/routing/`) · memory 4,641 · deterministic_grounding_gate 4,301 · labs/report_tab 3,327 · agent_bus 3,235 · gguf_inference 2,758 *(GUI + labs monoliths gutted → `gui/main_window/`, `gui/labs/`)* |
 | Capabilities (`capability_manifest.json`) | **205** |
 | `SUPPORTED_ACTIONS` (`executor_enhanced.py`) | **185** |
 | Specialist bus agents | **15** (named in §4.4) |

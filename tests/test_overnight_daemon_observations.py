@@ -208,7 +208,7 @@ def test_no_inference_is_spent_when_only_plumbing_remains(monkeypatch, tmp_path)
     "evening", "evening Eli", "good evening", "good day",
 ])
 def test_bare_time_of_day_greetings_are_phatic(greeting):
-    from eli.kernel.engine import _is_brief_phatic_prompt as phatic
+    from eli.kernel.stages._common import _is_brief_phatic_prompt as phatic
 
     assert phatic(greeting)
 
@@ -221,7 +221,7 @@ def test_the_router_agreed_all_along():
 
 
 def test_a_substantive_afternoon_sentence_is_not_phatic():
-    from eli.kernel.engine import _is_brief_phatic_prompt as phatic
+    from eli.kernel.stages._common import _is_brief_phatic_prompt as phatic
 
     assert not phatic("what is the weather this afternoon in Cork")
     assert not phatic("the sun is not that cheerful and it is only afternoon for 30 minutes")

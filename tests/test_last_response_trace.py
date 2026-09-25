@@ -142,10 +142,10 @@ def test_streaming_path_persists_the_trace():
     import inspect
 
     # v3 decomposes the engine into stage mixins; _stream_chat lives on
-    # CognitiveEngine rather than on CognitiveEngine directly.
-    from eli.kernel.engine import CognitiveEngine
+    # GenerationMixin rather than on CognitiveEngine directly.
+    from eli.kernel.stages.generation import GenerationMixin
 
-    src = inspect.getsource(CognitiveEngine._stream_chat)
+    src = inspect.getsource(GenerationMixin._stream_chat)
     assert "save_last_trace" in src, \
         "streamed replies still do not persist a trace"
     assert "response_text" in src, \

@@ -20,20 +20,25 @@ from eli.core import runtime_settings
 from eli.kernel.stages._common import _eli_test_mode
 from eli.kernel.stages.model_runtime import gguf_inference, gguf_import_error
 from eli.utils.log import get_logger
+import logging
 
 log = get_logger(__name__)
 
-# Idempotent native-teardown guard: shutdown() flips this once so a second call
-# (e.g. atexit firing after an explicit shutdown) can't double-free the model.
+# Run the destructive teardown once per process. The close steps (memory/vector/GGUF) hit
+# module-level singletons shared by every CognitiveEngine, so a second instance shutting down
+# after the first freed the CUDA handles would double-free and segfault. This flag holds however
+# many instances or atexit hooks fire.
 _ELI_NATIVE_TEARDOWN_DONE = False
 
 
 class LifecycleMixin:
     def cancel_generation(self) -> None:
+        """Stop the in-flight chat generation at the next token (GUI Stop button)."""
         try:
-            gguf_inference.request_cancel_generation()
+            from eli.cognition import gguf_inference as _ggi
+            _ggi.request_cancel_generation()
         except Exception:
-            log.debug('[COGNITIVE] cancel_generation failed', exc_info=True)
+            log.debug("[COGNITIVE] cancel_generation failed", exc_info=True)
 
     def shutdown(self) -> None:
         """
@@ -142,13 +147,17 @@ class LifecycleMixin:
             from eli.runtime.reflection import reflect_on_memories
             reflect_on_memories(days=1)
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
-        # 5. (removed) Self-improvement analysis on exit.
-        #    signal_shutdown() has already fired above, so the broker short-circuits
-        #    every generation to "" — this step walked the whole self-improvement /
-        #    coding-agent stack during teardown to produce nothing, while delaying
-        #    the model unload. Analysis belongs on the 24h background loop.
+        # 5. Brief self-improvement analysis on exit (if there were failures). Analysis only: generating
+        # fix proposals dispatches the coding agent over a thread pool and blocks on inference, which
+        # hung window close until Ctrl-C. The daemon tick still proposes.
+        try:
+            from eli.runtime.self_improvement import get_self_improvement
+            si = get_self_improvement()
+            si.analyze_and_improve(propose=False)
+        except Exception:
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
         # 6. Close the memory store — final WAL checkpoint, then SQLite handles.
         try:
@@ -187,12 +196,10 @@ class LifecycleMixin:
         except Exception as _rv_err:
             log.debug(f"[COGNITIVE] Shutdown: resident vision close failed (non-fatal): {_rv_err}")
 
-        # 8. Explicit GGUF unload — prevents Llama.__del__ segfault on exit.
-        # Suppress NATIVE (C-level) stderr only around the unload: llama.cpp's
-        # destructor prints a benign, non-actionable warning ("CUDA_Host compute
-        # buffer size … does not match expectation"). fd-level redirect (not
-        # contextlib) because the message comes from C, not Python. Scoped +
-        # restored in finally so ELI's own logging is unaffected.
+        # 8. Explicit GGUF unload, to avoid a Llama.__del__ segfault on exit. Suppress native stderr
+        # only around the unload: llama.cpp's destructor prints a benign "CUDA_Host compute buffer size
+        # ... does not match expectation". fd-level redirect because it comes from C, restored in
+        # finally.
         try:
             import os as _os_sd, sys as _sys_sd
             from eli.cognition.gguf_inference import unload_model
@@ -215,7 +222,7 @@ class LifecycleMixin:
                     if _devnull is not None:
                         _os_sd.close(_devnull)
                 except Exception:
-                    log.debug("suppressed exception", exc_info=True)
+                    logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
             log.debug("[COGNITIVE] Shutdown: GGUF model unloaded")
         except Exception as _gguf_err:
             log.debug(f"[COGNITIVE] Shutdown: GGUF unload failed (non-fatal): {_gguf_err}")
@@ -223,6 +230,7 @@ class LifecycleMixin:
         log.debug("[COGNITIVE] Shutdown: complete.")
 
     def _init_gguf(self) -> None:
+        global gguf_inference
         self._gguf_available = False
         self._gguf_load_error = None
         # Initialize runtime facts to defaults
@@ -231,21 +239,11 @@ class LifecycleMixin:
         self._gpu_layers = 0
         try:
             if gguf_inference is None:
-                # The inference module wouldn't import. gguf_import_error carries
-                # the root cause (e.g. a llama-cpp GPU backend .so that won't load)
-                # so a broken CUDA/ROCm/Metal build is diagnosable, not just "off".
-                self._gguf_load_error = (
-                    f"GGUF module not available — {gguf_import_error}"
-                    if gguf_import_error else "GGUF module not available")
-                if _eli_test_mode():
-                    log.debug(f"[COGNITIVE] {self._gguf_load_error}")
-                else:
-                    log.warning(f"[COGNITIVE] local inference unavailable: "
-                                f"{self._gguf_load_error}")
+                self._gguf_load_error = "GGUF module not available"
+                log.debug(f"[COGNITIVE] {self._gguf_load_error}")
                 return
             model_path = gguf_inference.get_model_path()
             if not model_path:
-                # Normal on a fresh install with no model downloaded yet — not an error.
                 self._gguf_load_error = "No GGUF model found"
                 log.debug(f"[COGNITIVE] {self._gguf_load_error}")
                 return
@@ -279,19 +277,11 @@ class LifecycleMixin:
                 self._gguf_available = False
                 getter = getattr(gguf_inference, "get_last_error", None)
                 self._gguf_load_error = getter() if callable(getter) else "GGUF load failed"
-                # A model IS present but wouldn't load (VRAM, corrupt GGUF, GPU
-                # backend fault) — the user expects inference, so make it visible.
-                if _eli_test_mode():
-                    log.debug(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
-                else:
-                    log.warning(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
+                log.debug(f"[COGNITIVE] GGUF model load failed: {self._gguf_load_error}")
         except Exception as e:
             self._gguf_available = False
             self._gguf_load_error = str(e)
-            if _eli_test_mode():
-                log.debug(f"[COGNITIVE] GGUF init failed: {e}")
-            else:
-                log.warning(f"[COGNITIVE] GGUF init failed: {e}", exc_info=True)
+            log.debug(f"[COGNITIVE] GGUF init failed: {e}")
 
     def _generate_session_digest(self) -> None:
         """Summarise the last 20 conversation turns into a searchable session digest memory."""
@@ -368,15 +358,9 @@ class LifecycleMixin:
                 insights = result.get("insights", [])
                 if insights:
                     log.debug(f"[COGNITIVE] eli-reflection: {len(insights)} insights generated")
-                    # Persisting them here as well was a DOUBLE write:
-                    # run_reflection -> reflect_on_period already stores each
-                    # insight, and this loop stored the same rows again with no
-                    # duplicate check of any kind. Every reflection cycle
-                    # therefore appended two copies of every insight, which is
-                    # how one machine reached 135 reflection rows with 34 exact
-                    # duplicates — six identical copies of a single row — all of
-                    # them ranking in recall by weight of numbers.
-                    # reflect_on_period owns this; do not write it twice.
+                    # Persisting them here was a double write: run_reflection -> reflect_on_period already stores
+                    # each insight, and this loop stored the same rows again with no duplicate check (135 reflection
+                    # rows on one machine, 34 exact duplicates). reflect_on_period owns it.
             except Exception as e:
                 log.debug(f"[COGNITIVE] Reflection failed: {e}")
         finally:

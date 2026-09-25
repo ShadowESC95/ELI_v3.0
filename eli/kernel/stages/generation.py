@@ -31,6 +31,8 @@ from eli.kernel.stages.persona_text import (
 )
 from eli.kernel.stages.output_text import _normalize_assistant_text
 from eli.kernel.stages.model_runtime import gguf_inference, _get_inference_broker
+from eli.cognition import context_budget as _ctx_budget
+from eli.kernel.stages._common import _phatic_generation_budget
 # Tokens reserved for the reply when sizing the evidence budget. `max_tokens` is a
 # ceiling (~3461 in quick mode) and reserving all of it starved the evidence — see
 # the note at the streaming context-size guard. A reply longer than this simply eats
@@ -239,11 +241,9 @@ class GenerationMixin:
         # Broad fallback: scoped extraction may miss inline failures.
         _p_low = str(prompt or "").lower()
         if (
-            # Structured markers only. "filenotfounderror"/"file not found" are
-            # dropped here: they match narrative (a commit message, a quoted
-            # log) and the co-occurrence test below could not save them —
-            # "grounded_evidence" is present on EVERY grounded turn, so any
-            # mention of an error name anywhere in the prompt satisfied it.
+            # Structured markers only. "filenotfounderror" / "file not found" were dropped: they
+            # match narrative (a commit message, a quoted log) and "grounded_evidence" is present on
+            # every grounded turn, so any error name in the prompt passed the co-occurrence test.
             ("'ok': false" in _p_low or '"ok": false' in _p_low
              or "ok=false" in _p_low or "successful: 0 | failed:" in _p_low)
             and ("execute result" in _p_low or "agent:system" in _p_low
@@ -253,13 +253,10 @@ class GenerationMixin:
                 prompt, _failed_executor_query_from_prompt(prompt)
             )
 
-        # ── Verbatim guard for deterministic grounded reports (EXAMINE_CODE / FILE_AUDIT) ──
-        # These are deterministic grounded output (tiered findings / a directory file-count).
-        # Re-narrating them through this chat path makes the model confabulate: EXAMINE_CODE
-        # gets the file_code agent's snippets/comments paraphrased as "bugs" (observed: 5
-        # invented findings that were existing comments); FILE_AUDIT (a plain file-counter)
-        # gets synthesised into files-with-bugs that DON'T EXIST (observed: 5 fabricated
-        # files). If the report is present in the evidence, return it VERBATIM.
+        # Verbatim guard for deterministic grounded reports (EXAMINE_CODE / FILE_AUDIT). Re-narrating
+        # made the model confabulate: EXAMINE_CODE snippets became 5 invented "bugs" that were existing
+        # comments, and FILE_AUDIT counts became 5 fabricated buggy files. If the report is in the
+        # evidence, return it verbatim.
         _verbatim_evidence_patterns = (
             (r"(Examined\s+\d+\s+file\(s\)\s*:[\s\S]+)",
              ("Tier 1", "No errors found", "PLEASE CONFIRM")),
@@ -275,10 +272,9 @@ class GenerationMixin:
                     if _rep:
                         return _rep
 
-        # FIX_FILE success event: the executor JSON-encodes {event:artifact_generated,
-        # fixed:true, path, filename, backup}. Synthesising it made the model narrate a FALSE
-        # refusal ("I cannot fix the file from here") even though the file WAS written. Surface
-        # the real outcome instead of letting the model confabulate one.
+        # FIX_FILE success event: the executor JSON-encodes {event: artifact_generated, fixed: true,
+        # path, filename, backup}. Synthesising it made the model narrate a false refusal ("I cannot
+        # fix the file from here") though the file was written. Surface the real outcome.
         for _ff_src in (situation_brief, memory_context, prompt):
             _ff_txt = str(_ff_src or "")
             if re.search(r'"event"\s*:\s*"artifact_generated"', _ff_txt) and \
@@ -296,6 +292,8 @@ class GenerationMixin:
             gen_overrides["max_tokens"] = min(
                 int(gen_overrides.get("max_tokens", 96)), 96)
             gen_overrides["temperature"] = 0.0
+
+        prompt = self._prepend_recent_exchange(prompt)
 
         provider = self._current_provider()
         gen = self._generation_settings()
@@ -326,35 +324,27 @@ class GenerationMixin:
                 if gguf_inference is None:
                     raise RuntimeError("GGUF module not available")
 
-                # ── Context size guard ──────────────────────────────────────
-                # For short queries on small context windows, trim memory to
-                # prevent prompt bloat and multi-minute first-token latency.
-                # Rule: persona (~2k chars) + user_input + max_tokens must fit
-                # in n_ctx with room to spare. Memory context gets the budget
-                # that remains after persona + query.
+                # Context size guard. For short queries on small windows, trim memory to prevent prompt bloat
+                # and multi-minute first-token latency: persona (~2k chars) + user_input + max_tokens must fit in
+                # n_ctx with room to spare, and memory gets what's left.
                 _n_ctx_guard = self._runtime_n_ctx()
                 _max_tok_guard = int(gen.get('max_tokens', 512))
                 _persona_chars = len(_load_persona_text())
                 _query_chars = len(prompt or '')
-                # Rough: 1 token ≈ 3.5 chars; leave 20% headroom
-                _total_char_budget = int(_n_ctx_guard * 3.5 * 0.80)
-                _mem_char_budget = max(
-                    400,  # always allow at least some context
-                    _total_char_budget - _persona_chars - _query_chars - (_max_tok_guard * 4)
-                )
                 _trimmed_mem = _eli_sanitize_identity_context_block(memory_context, prompt)
-                if len(memory_context) > _mem_char_budget:
+                _mem_char_budget = _ctx_budget.memory_char_budget(
+                    _n_ctx_guard, _persona_chars + _query_chars, _max_tok_guard,
+                    wanted_chars=len(_trimmed_mem),
+                    protect_memory=_ctx_budget.is_recall_question(prompt))
+                if len(_trimmed_mem) > _mem_char_budget:
                     log.debug(
                         f"[COGNITIVE] Trimming memory context "
-                        f"{len(memory_context)}→{_mem_char_budget} chars "
+                        f"{len(_trimmed_mem)}→{_mem_char_budget} chars "
                         f"(n_ctx={_n_ctx_guard}, max_tokens={_max_tok_guard})"
                     )
-                    # Prefer keeping the most recent turns (end of string)
-                    _trimmed_mem = memory_context[-_mem_char_budget:]
-                    # Don't cut mid-line
-                    _nl = _trimmed_mem.find('\n')
-                    if _nl > 0:
-                        _trimmed_mem = _trimmed_mem[_nl:]
+                    _before = len(_trimmed_mem)
+                    _trimmed_mem = _ctx_budget.trim_memory_context(_trimmed_mem, _mem_char_budget)
+                    self._note_memory_trim(_before, len(_trimmed_mem))
                 # ─────────────────────────────────────────────────────────────
 
                 enhanced_system = self._build_enhanced_system(
@@ -366,29 +356,16 @@ class GenerationMixin:
                     situation_brief=situation_brief,
                 )
                 log.debug("[COGNITIVE] Generating response with GGUF...")
-                try:
-                    from eli.cognition import expression_state as _es_inf
-                    _es_inf.set_thinking(True)
-                except Exception:
-                    log.debug("expression_state set_thinking skipped", exc_info=True)
                 broker = _get_inference_broker() if _get_inference_broker else None
                 if broker and broker.gguf_ready:
                     log.debug("[COGNITIVE] Using broker path")
-                    # Pre-flight: clamp max_tokens so prompt+output fits n_ctx.
-                    # CRITICAL: use the LIVE loaded model's n_ctx, not the
-                    # configured value. Mistral may have fallen back to 1024
-                    # ctx if VRAM was tight; the configured 4096 is a lie.
-                    # Start from the live loaded ctx (authoritative), not a
-                    # hard-coded default; the override chain below confirms it.
+                    # Pre-flight: clamp max_tokens so prompt+output fits n_ctx, using the live loaded model's
+                    # n_ctx, not the configured one (a model may have fallen back to 1024 ctx when VRAM was tight and
+                    # the configured 4096 is a lie). Start from the live ctx, not a default.
                     _n_ctx_pf1 = self._runtime_n_ctx()
-                    # Override with the LIVE loaded value.  Priority chain:
-                    #   1. _live_runtime_params["n_ctx"] — set by gguf_inference
-                    #      after a successful load; always correct.
-                    #   2. runtime_snapshot.json effective.n_ctx — written by
-                    #      the GUI launcher immediately after load.
-                    #   3. llm.n_ctx() method — last resort (may throw).
-                    # gen.get("n_ctx") / settings["n_ctx"] is the CONFIGURED
-                    # value and is often stale — do NOT use it as the source.
+                    # Use the live loaded value, in this order: _live_runtime_params["n_ctx"] (set after a
+                    # successful load), runtime_snapshot.json effective.n_ctx, then llm.n_ctx() (may throw). The
+                    # configured n_ctx is often stale, so never use it as the source.
                     try:
                         import eli.cognition.gguf_inference as _eli_gguf_mod
                         _lrp = getattr(_eli_gguf_mod, "_live_runtime_params", None) or {}
@@ -425,12 +402,9 @@ class GenerationMixin:
                     # it before sending — an oversized prompt crashes llama.cpp.
                     # Use 3.0 chars/token here (conservative) so we under-budget.
                     _max_prompt_chars = max(400, int((_n_ctx_pf1 - _safe_max_pf1 - 128) * 3.0))
-                    # Quality ceiling (context-bloat cap): the small local model
-                    # degenerates into a lone "-"/"-G" on very large prompts long
-                    # BEFORE n_ctx fills — a 39k-char WEB_SEARCH synthesis produced
-                    # "-G" even though it fit n_ctx. Cap to a sane size independent
-                    # of n_ctx so the model gets a prompt it can actually answer.
-                    # Tunable: ELI_SYNTH_MAX_PROMPT_CHARS (set 0 to disable).
+                    # Quality ceiling (context-bloat cap): the small local model degenerates into a lone "-" on
+                    # very large prompts long before n_ctx fills (a 39k-char WEB_SEARCH synthesis gave "-G" though it
+                    # fit). Cap to a sane size independent of n_ctx. ELI_SYNTH_MAX_PROMPT_CHARS tunes it (0 disables).
                     try:
                         from eli.core.cognition_tunables import get_tunable as _cog_get
                         _qenv = os.environ.get("ELI_SYNTH_MAX_PROMPT_CHARS")
@@ -438,10 +412,9 @@ class GenerationMixin:
                         if _qenv is not None:
                             _qcap = int(_qenv or "0")  # explicit env override wins
                         elif _cog_get("cog.synth_cap_auto"):
-                            # Auto-scale to the loaded model: ~45% of the context
-                            # window (chars≈3×tokens) × capability tier, never
-                            # below the fixed cap. For the current small model this
-                            # stays at the fixed cap (floor dominates).
+                            # Auto-scale to the loaded model: ~45% of the window (chars ~ 3 x
+                            # tokens) x capability tier, never below the fixed cap. For the current
+                            # small model the floor dominates.
                             try:
                                 from eli.core.model_tier import tier_scale as _ts
                                 _derived = int(_n_ctx_pf1 * 3.0 * 0.45 * _ts())
@@ -460,10 +433,9 @@ class GenerationMixin:
                         _prompt_budget = max(200, min(len(prompt), _max_prompt_chars // 4))
                         _sys_budget = max(200, _max_prompt_chars - _prompt_budget)
                         if len(enhanced_system) > _sys_budget:
-                            # Keep persona HEAD (voice + hard constraints) AND the
-                            # grounded evidence TAIL (appended last); drop the bulky
-                            # middle (profile/scaffolding/memory dump) — that is what
-                            # bloats the prompt without being the answer's substance.
+                            # Keep the persona head (voice + hard constraints) and the grounded-evidence tail (appended
+                            # last), drop the bulky middle (profile, scaffolding, memory dump) that bloats the prompt
+                            # without being the answer.
                             _head = max(200, int(_sys_budget * 0.5))
                             _tail = max(200, _sys_budget - _head)
                             enhanced_system = (
@@ -475,19 +447,10 @@ class GenerationMixin:
                         log.debug(
     f"[COGNITIVE] Prompt capped to {_max_prompt_chars}chars "
     f"(head+tail; n_ctx={_n_ctx_pf1}, qcap={_qcap})")
-                    # Re-fit the answer budget to the prompt ACTUALLY being sent.
-                    #
-                    # _avail_pf1 above was computed from the prompt BEFORE the
-                    # truncation that just ran, and it floors at 128. So a large
-                    # pre-truncation prompt drove the estimate past n_ctx, the
-                    # floor engaged, the prompt was then cut down to fit — and the
-                    # answer was still capped at the 128 chosen when the prompt was
-                    # twice its final size. Observed at 2.2.2: prompt_tokens=5693
-                    # in a 10384 window (≈4,600 free) generating with max_tokens=128,
-                    # cutting the reply mid-word.
-                    #
-                    # Estimate → clamp → truncate is the wrong order. Truncating
-                    # frees room; the budget has to be recomputed once it has.
+
+                    # Re-fit the answer budget to the prompt actually being sent. The earlier estimate floored at
+                    # 128 and ran before truncation, so a big prompt got cut and the answer stayed capped at 128.
+                    # Truncating frees room, so recompute after it.
                     _pt_final = max(1, int((len(enhanced_system) + len(prompt)) / 3.5))
                     _avail_final = max(128, _n_ctx_pf1 - _pt_final - 64)
                     if _avail_final > _safe_max_pf1:
@@ -530,28 +493,57 @@ class GenerationMixin:
                             temperature=gen["temperature"],
                         )
                 if response:
-                    try:
-                        from eli.cognition import expression_state as _es_inf
-                        _es_inf.set_thinking(False)
-                    except Exception:
-                        log.debug("expression_state set_thinking skipped", exc_info=True)
                     return _normalize_assistant_text(prompt, response)
+                # Empty after broker's own retry — usually a thinking model that burned
+                # its budget inside a hidden reasoning block. One more pass with think
+                # suppressed; do NOT mark the whole GGUF backend unavailable.
+                log.debug("[COGNITIVE] GGUF empty response — retrying with force_no_think")
+                _retry_tokens = max(256, min(int(locals().get("_safe_max_pf1", 512) or 512), 1024))
                 try:
-                    from eli.cognition import expression_state as _es_inf
-                    _es_inf.set_thinking(False)
-                except Exception:
-                    log.debug("expression_state set_thinking skipped", exc_info=True)
-                raise RuntimeError("GGUF returned empty response")
+                    from eli.cognition.gguf_inference import force_no_think as _fnt
+                    with _fnt():
+                        if broker and broker.gguf_ready:
+                            response = broker.infer(
+                                prompt,
+                                system=enhanced_system,
+                                max_tokens=_retry_tokens,
+                                temperature=gen["temperature"],
+                                retry=False,
+                            )
+                        elif gguf_inference is not None:
+                            with self._gguf_lock:
+                                response = gguf_inference.chat_completion(
+                                    prompt,
+                                    system=enhanced_system,
+                                    max_tokens=_retry_tokens,
+                                    temperature=gen["temperature"],
+                                )
+                except Exception as _empty_retry_err:
+                    log.debug(f"[COGNITIVE] force_no_think empty retry failed: {_empty_retry_err}")
+                    response = ""
+                if response:
+                    return _normalize_assistant_text(prompt, response)
+                raise RuntimeError("GGUF returned empty response after retry")
             except Exception as e:
-                try:
-                    from eli.cognition import expression_state as _es_inf
-                    _es_inf.set_thinking(False)
-                except Exception:
-                    log.debug("expression_state set_thinking skipped", exc_info=True)
-                self._gguf_available = False
-                self._gguf_load_error = str(e)
+                _emsg = str(e)
+                _empty = "empty response" in _emsg.lower()
+                _ctx_overflow = (
+                    "context window" in _emsg.lower()
+                    or "requested tokens" in _emsg.lower()
+                )
+                if not _empty and not _ctx_overflow:
+                    self._gguf_available = False
+                self._gguf_load_error = _emsg
                 log.debug(f"[COGNITIVE] GGUF chat failed: {e}")
                 if provider not in ("ollama",):
+                    if _empty:
+                        return (
+                            "The local model returned an empty answer after retry. "
+                            "Common causes: a thinking model spent its token budget in a "
+                            "hidden reasoning block; generation was interrupted during shutdown; "
+                            "or the prompt was too large for the effective GPU offload. "
+                            "Try again, use quick mode, or ask for a GGUF diagnostics report."
+                        )
                     return f"[ELI] GGUF error: {e}"
         if provider not in ("ollama",):
             detail = self._gguf_load_error or "GGUF model unavailable"
@@ -588,6 +580,15 @@ class GenerationMixin:
             gen.update({k: v for k, v in dict(
                 gen_overrides).items() if v is not None})
 
+        _is_phatic_stream = False
+        try:
+            _is_phatic_stream = _is_brief_phatic_prompt(str(prompt or "").strip().lower())
+        except Exception:
+            _is_phatic_stream = False
+        if _is_phatic_stream:
+            gen["max_tokens"] = min(int(gen.get("max_tokens") or 256), _phatic_generation_budget())
+            gen["temperature"] = max(float(gen.get("temperature") or 0.7), 0.72)
+
         # Self-heal: GUI loads model via live override without setting _gguf_available
         if not self._gguf_available and gguf_inference is not None:
             _ovr = gguf_inference.get_live_runtime_override() or {}
@@ -602,12 +603,10 @@ class GenerationMixin:
                         self._maybe_apply_mode_runtime_adaptation(reasoning_mode, _mode_contract)
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
-                # ── Context size guard (same logic as non-streaming path) ──
-                # Use the model's REAL usable ceiling (min of loaded n_ctx and
-                # n_ctx_train), not the config default — a model whose trained context
-                # is smaller than the requested/loaded ctx must be sized to its trained
-                # length or the prompt overflows ("Requested tokens exceed context
-                # window"). Falls back to the config value only if no model is loaded.
+                # Context size guard (same logic as the non-streaming path). Use the model's real usable
+                # ceiling (min of loaded n_ctx and n_ctx_train), not the config default: a model trained on less
+                # than the requested ctx must be sized to its trained length or the prompt overflows. Config
+                # value only if no model is loaded.
                 _n_ctx = 0
                 try:
                     if hasattr(gguf_inference, "current_context_limit"):
@@ -619,44 +618,25 @@ class GenerationMixin:
                 _max_tok_s = int(gen.get('max_tokens', 512))
                 _persona_chars_s = len(_load_persona_text())
                 _query_chars_s = len(prompt or '')
-                _total_char_budget_s = int(_n_ctx * 3.5 * 0.80)
-                # Reserve for OUTPUT realistically. `max_tokens` is a CEILING, not an
-                # expectation: in quick mode it is ~3461, so `_max_tok_s * 4` reserved
-                # ~13.8k chars of a ~29k budget for output a chat reply never produces.
-                # Observed live in v2: the bus gathered 6,352 chars of evidence for
-                # "are these dynamic and true awareness, not hard-coding?" — including a
-                # 1,415-char introspection result — at grounding 0.98, and this line
-                # trimmed it to 685 chars. The model then answered "let's pretend it
-                # works for now", handed almost none of the evidence fetched to answer it.
-                #
-                # The budget already keeps 20% headroom (the 0.80 above), and llama.cpp
-                # enforces n_ctx regardless, so reserving the full ceiling was doubly
-                # conservative. A longer generation simply uses the headroom.
-                _out_reserve_tok_s = min(_max_tok_s, _OUTPUT_RESERVE_TOKENS)
-                _mem_char_budget_s = max(
-                    400,
-                    _total_char_budget_s - _persona_chars_s - _query_chars_s - (_out_reserve_tok_s * 4)
-                )
                 _trimmed_mem_s = _eli_sanitize_identity_context_block(memory_context, prompt)
-                if len(memory_context) > _mem_char_budget_s:
+                _mem_char_budget_s = _ctx_budget.memory_char_budget(
+                    _n_ctx, _persona_chars_s + _query_chars_s, _max_tok_s,
+                    wanted_chars=len(_trimmed_mem_s),
+                    protect_memory=_ctx_budget.is_recall_question(prompt))
+                if len(_trimmed_mem_s) > _mem_char_budget_s:
                     log.debug(
                         f"[COGNITIVE] Stream: trimming memory context "
-                        f"{len(memory_context)}→{_mem_char_budget_s} chars"
+                        f"{len(_trimmed_mem_s)}→{_mem_char_budget_s} chars"
                     )
-                    _trimmed_mem_s = memory_context[-_mem_char_budget_s:]
-                    _nl_s = _trimmed_mem_s.find('\n')
-                    if _nl_s > 0:
-                        _trimmed_mem_s = _trimmed_mem_s[_nl_s:]
+                    _before = len(_trimmed_mem_s)
+                    _trimmed_mem_s = _ctx_budget.trim_memory_context(_trimmed_mem_s, _mem_char_budget_s)
+                    self._note_memory_trim(_before, len(_trimmed_mem_s))
                 # ──────────────────────────────────────────────────────────
 
-                # Conversational context injection (current session only, last 30 min).
-                #  (a) Short follow-ups (≤6 words) get the recent exchange inline so
-                #      the model sees the current message in immediate context.
-                #  (b) CONFUSION signals — "what do you mean", "i don't understand",
-                #      "can you elaborate", "huh?", "what?", "you're looping", etc. —
-                #      ALSO get the recent exchange PLUS a directive to locate exactly
-                #      where the confusion arose and resolve it, instead of looping or
-                #      repeating the previous reply.
+                # Conversational context injection (current session only, last 30 min). (a) Short follow-ups
+                # (<=6 words) get the recent exchange inline. (b) Confusion signals ("what do you mean", "i don't
+                # understand", "huh?", "you're looping") also get a directive to find where the confusion arose
+                # and resolve it, not loop or repeat the last reply.
                 _orig_msg = (prompt or "").strip()
                 _low_msg = _orig_msg.lower()
                 _confusion = bool(re.search(
@@ -668,31 +648,46 @@ class GenerationMixin:
                     r"are you (?:talking about|on about|referring to)|"
                     r"you keep (?:saying|asking)|"
                     r"that'?s not what i|i didn'?t ask|"
+                    r"that was a question|that is a question|that'?s a question|"
+                    r"you asked me\b|like what\b|"
                     r"you'?re (?:slack(?:ing)?|drift(?:ing)?|repeating|looping)|"
                     r"starting to (?:slack|drift|loop|repeat))\b",
                     _low_msg,
-                )) or _low_msg.rstrip("?!. ") in {"what", "huh", "eh", "sorry", "pardon", "you what"}
-                _short_followup = len(_orig_msg.split()) <= 6
-                if _confusion or _short_followup:
+                )) or _low_msg.rstrip("?!. ") in {"what", "huh", "eh", "sorry", "pardon", "you what", "like what"}
+                _inject_session = False
+                if not _is_phatic_stream:
                     try:
-                        _session_cutoff = time.time() - 1800  # 30 minutes
+                        from eli.runtime.session_continuity import session_has_prior_turns
                         _recent = self.memory.get_recent_conversation(
-                            limit=8, user_id=self.user_id)
-                        _prompt_key = _orig_msg[:80]
-                        _thread = [
-                            t for t in _recent
-                            if float(t.get("timestamp") or 0) >= _session_cutoff
-                            and not (t.get("role") == "user"
-                                     and (t.get("content") or "").strip()[:80] == _prompt_key)
-                        ]
+                            limit=14, user_id=getattr(self, "user_id", None)) or []
+                        _inject_session = session_has_prior_turns(_recent, _orig_msg)
+                    except Exception:
+                        _inject_session = False
+                if _confusion or _inject_session:
+                    try:
+                        from eli.runtime.session_continuity import build_inline_exchange_block
+                        if not _inject_session:
+                            _session_cutoff = time.time() - 1800  # 30 minutes
+                            _recent = self.memory.get_recent_conversation(
+                                limit=14, user_id=self.user_id)
+                            _prompt_key = _orig_msg[:80]
+                            _thread = [
+                                t for t in _recent
+                                if float(t.get("timestamp") or 0) >= _session_cutoff
+                                and not (t.get("role") == "user"
+                                         and (t.get("content") or "").strip()[:80] == _prompt_key)
+                            ]
+                        else:
+                            _thread = list(_recent)
                         if len(_thread) >= 2:
-                            _n = 5 if _confusion else 3
-                            _thread_lines = []
-                            for _t in _thread[-_n:]:
-                                _r = "You" if _t.get("role") == "user" else "ELI"
-                                _c = (_t.get("content") or "").replace("\n", " ")[:180]
-                                _thread_lines.append(f"{_r}: {_c}")
-                            _block = "[Recent exchange]\n" + "\n".join(_thread_lines)
+                            _block = build_inline_exchange_block(_thread, user_input=_orig_msg)
+                            if not _block:
+                                _thread_lines = []
+                                for _t in _thread[-12:]:
+                                    _r = "You" if _t.get("role") == "user" else "ELI"
+                                    _c = (_t.get("content") or "").replace("\n", " ")[:280]
+                                    _thread_lines.append(f"{_r}: {_c}")
+                                _block = "[Recent session]\n" + "\n".join(_thread_lines)
                             if _confusion:
                                 _block += (
                                     "\n\n[The user is signalling confusion or asking you to clarify. "
@@ -708,8 +703,11 @@ class GenerationMixin:
 
                 enhanced_system = self._build_enhanced_system(
                     _trimmed_mem_s,
-                    compact=self._use_compact_system(
-                        prompt, _trimmed_mem_s, reasoning_mode=reasoning_mode),
+                    compact=(
+                        _is_phatic_stream
+                        or self._use_compact_system(
+                            prompt, _trimmed_mem_s, reasoning_mode=reasoning_mode)
+                    ),
                     user_input=prompt,
                     reasoning_mode=reasoning_mode,
                     situation_brief=situation_brief,
@@ -726,18 +724,45 @@ class GenerationMixin:
                 # before calling generate() — an oversized prompt causes segfault.
                 _max_stream_chars = max(400, (_n_ctx - _safe_max - 64) * 3)
                 if len(enhanced_system) + len(prompt) > _max_stream_chars:
-                    _sys_bud = min(len(enhanced_system), _max_stream_chars // 2)
-                    _prm_bud = _max_stream_chars - _sys_bud
-                    enhanced_system = enhanced_system[-_sys_bud:]
-                    prompt = prompt[-_prm_bud:]
+                    # Keep persona HEAD + evidence TAIL (same as non-stream path).
+                    # Tail-only truncation was dropping voice/constraints and leaving
+                    # a raw memory dump the model could not finish within max_tokens.
+                    _prompt_budget = max(200, min(len(prompt), _max_stream_chars // 4))
+                    _sys_budget = max(200, _max_stream_chars - _prompt_budget)
+                    if len(enhanced_system) > _sys_budget:
+                        _head = max(200, int(_sys_budget * 0.5))
+                        _tail = max(200, _sys_budget - _head)
+                        enhanced_system = (
+                            enhanced_system[:_head].rstrip()
+                            + "\n\n…[context trimmed to fit the model]…\n\n"
+                            + enhanced_system[-_tail:].lstrip()
+                        )
+                    prompt = prompt[-_prompt_budget:]
                     log.debug(
     f"[COGNITIVE] Stream overflow: truncated to fit n_ctx={_n_ctx}")
+                    # Re-fit answer budget against the prompt actually sent (see non-stream
+                    # path: estimate→clamp→truncate pins max_tokens=128 when the pre-cut
+                    # prompt was huge, then truncation frees thousands of tokens).
+                    _pt_final = max(1, int((len(enhanced_system) + len(prompt)) / 3.5))
+                    _avail_final = max(128, _n_ctx - _pt_final - 64)
+                    if _avail_final > _safe_max:
+                        _req_ok = _req_s if _req_s > 0 else _avail_final
+                        _safe_max = max(_safe_max, min(_req_ok, _avail_final))
+                        log.debug(
+    f"[COGNITIVE] Stream budget re-fitted after truncation: "
+    f"max_tokens→{_safe_max} (prompt≈{_pt_final} tok, n_ctx={_n_ctx})")
 
                 generate = getattr(gguf_inference, "generate", None)
                 if callable(generate):
                     log.debug("[COGNITIVE] Stream: using generate() with stream=True")
                     _yielded = False
-                    with self._gguf_lock:
+                    try:
+                        from eli.cognition.gguf_inference import force_no_think as _fnt_stream
+                        from contextlib import nullcontext as _nullctx_stream
+                    except Exception:
+                        from contextlib import nullcontext as _fnt_stream, nullcontext as _nullctx_stream  # type: ignore
+                    _stream_think_ctx = _fnt_stream() if _is_phatic_stream else _nullctx_stream()
+                    with self._gguf_lock, _stream_think_ctx:
                         for chunk in generate(
                             prompt,
                             system=enhanced_system,
@@ -746,7 +771,8 @@ class GenerationMixin:
                             stream=True,
                         ):
                             try:
-                                if gguf_inference.is_cancel_requested():
+                                from eli.cognition import gguf_inference as _ggi_abort
+                                if _ggi_abort.is_cancel_requested():
                                     break
                             except Exception:
                                 log.debug("suppressed exception", exc_info=True)
@@ -761,6 +787,36 @@ class GenerationMixin:
                     if _yielded:
                         return
                     log.debug("[COGNITIVE] Stream: generate() produced zero visible tokens; falling back to non-streaming Stage 11")
+                    if _is_phatic_stream:
+                        try:
+                            from eli.cognition.gguf_inference import force_no_think as _fnt_ph_fallback
+                            _phatic_sys = self._build_enhanced_system(
+                                "",
+                                compact=True,
+                                user_input=prompt,
+                                reasoning_mode=reasoning_mode or "quick",
+                                situation_brief=self._build_phatic_handoff_brief(prompt),
+                            )
+                            with _fnt_ph_fallback():
+                                with self._gguf_lock:
+                                    _ph_raw = generate(
+                                        prompt,
+                                        system=_phatic_sys,
+                                        max_tokens=min(_phatic_generation_budget(), _safe_max),
+                                        temperature=gen["temperature"],
+                                        stream=False,
+                                    )
+                            _ph_text = ""
+                            if isinstance(_ph_raw, dict):
+                                _ph_text = str(_ph_raw.get("response") or _ph_raw.get("content") or "").strip()
+                            else:
+                                _ph_text = str(_ph_raw or "").strip()
+                            if _ph_text:
+                                for token in self._yield_text_chunks(_ph_text, chunk_size=12):
+                                    yield token
+                                return
+                        except Exception as _ph_fb_err:
+                            log.debug(f"[COGNITIVE] phatic zero-token fallback failed: {_ph_fb_err}")
                     response = self._get_chat_response(
                         prompt,
                         memory_context,
@@ -795,13 +851,13 @@ class GenerationMixin:
                 _emsg = str(e)
                 _ctx_overflow = ("context window" in _emsg.lower()
                                  or "requested tokens" in _emsg.lower())
+                _empty = "empty response" in _emsg.lower()
                 log.debug(f"[COGNITIVE] GGUF streaming failed: {_emsg}")
-                # A context-window overflow is RECOVERABLE — it does not mean the GGUF
-                # backend is dead. Don't flip _gguf_available (that poisons every later
-                # turn), and never surface the raw exception text as ELI's reply. Retry
-                # once via the non-streaming path: generate() now truncates an over-ctx
-                # prompt to the model's real n_ctx_train instead of failing.
-                if not _ctx_overflow:
+                # A context-window overflow is recoverable and doesn't mean the GGUF backend is dead. Don't
+                # flip _gguf_available (that poisons every later turn) and never show the raw exception as
+                # ELI's reply. Retry once non-streaming; generate() now truncates an over-ctx prompt to the
+                # model's n_ctx_train.
+                if not _ctx_overflow and not _empty:
                     self._gguf_available = False
                 self._gguf_load_error = _emsg
                 if provider != "ollama":
@@ -828,6 +884,11 @@ class GenerationMixin:
                                "context window is smaller than the prompt I need to reason over. "
                                "Load a model with a larger context (e.g. Qwen3-8B) and I'll be back "
                                "to normal.")
+                    elif _empty:
+                        yield ("The local model returned an empty answer after retry. "
+                               "Common causes: a thinking model spent its token budget in a "
+                               "hidden reasoning block; generation was interrupted during shutdown. "
+                               "Try again, use quick mode, or ask for a GGUF diagnostics report.")
                     else:
                         yield ("Something went wrong reaching the local model just now. The error "
                                "was logged — try again, and if it persists, reload the model.")
@@ -916,14 +977,12 @@ class GenerationMixin:
             _gov_hist = _gm().get_recent_conversation(limit=8)
         except Exception:
             log.debug("[GOVERNOR] recent-turn lookup skipped", exc_info=True)
-        response = govern_output(response, is_grounded=evidence_used, history=_gov_hist)
+        response = govern_output(response, is_grounded=evidence_used, history=_gov_hist,
+                                 memory_diag=getattr(self, "_memory_diag", None))
         response = str(response or "").strip()
-        # ── Anti-echo: never serve ELI's own previous reply back to the user ──
-        # ELI's replies are stored and later recalled as context, so on a short turn the
-        # model can latch onto its own last line and re-emit it. Observed live: the same
-        # "still glitchy, still running on the same old code" three turns running, once
-        # with the speaker flipped ("You're still glitchy") while ignoring what the user
-        # had just said. Token-level repeat_penalty cannot see across turns.
+        # Anti-echo: never serve ELI's previous reply back to the user. Replies get stored and recalled,
+        # so on a short turn the model latches onto its own last line. repeat_penalty can't see across
+        # turns. Regenerate once with a do-not-repeat instruction; if it still echoes keep the original.
         try:
             from eli.cognition.output_governor import is_echo_of_recent
             _prev_replies = []
@@ -977,11 +1036,30 @@ class GenerationMixin:
                         f"USER REQUEST:\n{user_input}\n\nTRUNCATED DRAFT:\n{response}\n\nCOMPLETED ANSWER:"
                     )
                     _wc = len(str(response or "").split())
+                    _expand_tokens = 512
+                    try:
+                        from eli.cognition.reasoning_modes import (
+                            canonical_mode as _cm_exp,
+                            _base_tokens_from_profile as _btfp,
+                        )
+                        _expand_tokens = max(
+                            512,
+                            min(
+                                2048,
+                                _btfp(
+                                    _cm_exp(reasoning_mode),
+                                    self._mode_profile(reasoning_mode),
+                                )
+                                // 2,
+                            ),
+                        )
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
                     _expanded = self._get_chat_response(
                         _expand_prompt,
                         "",
                         reasoning_mode=reasoning_mode,
-                        gen_overrides={"max_tokens": 512, "temperature": 0.25},
+                        gen_overrides={"max_tokens": _expand_tokens, "temperature": 0.25},
                     )
                     _expanded = str(_expanded or "").strip()
                     _expanded_low = _expanded.lower()
@@ -1059,38 +1137,6 @@ class GenerationMixin:
             "evidence_used": grounded,
         }
 
-        # ── P0 honesty gate: no ungrounded factual CHAT without hedge/marker ──
-        response_mode = "grounded" if grounded else "synthesized"
-        honesty_meta: Dict[str, Any] = {}
-        try:
-            from eli.runtime.chat_honesty_gate import apply_chat_honesty_gate
-            _gconf = float((trace or {}).get("grounding_confidence") or 0.0)
-            response, response_mode, honesty_meta = apply_chat_honesty_gate(
-                response,
-                user_input=user_input,
-                evidence_used=grounded,
-                grounding_confidence=_gconf,
-                reasoning_mode=reasoning_mode,
-            )
-        except Exception as _hg_err:
-            log.debug(f"[COGNITIVE] chat honesty gate skipped: {_hg_err}")
-
-        # ── Unified response surface: never ship raw JSON/generator repr ──
-        try:
-            from eli.runtime.response_pipeline import finalize_response_text
-            response = finalize_response_text(
-                response, user_input=user_input, mode=str(reasoning_mode or ""), action="CHAT",
-            )
-        except Exception as _rp_err:
-            log.debug(f"[COGNITIVE] response pipeline skipped: {_rp_err}")
-
-        try:
-            from eli.cognition import tone_adaptor as _ta
-            response = _ta.repair_coherence(response, user_input or "")
-            _ta.sync_world()
-        except Exception as _tc_err:
-            log.debug(f"[COGNITIVE] tone coherence skipped: {_tc_err}")
-
         try:
             self._publish_last_response_meta(
                 trace,
@@ -1116,23 +1162,8 @@ class GenerationMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Blueprint Post-Response: memory maintenance (sampled, to amortise cost).
-        # Decay is a pure function of a memory's age and importance, so sampling it
-        # is safe — a missed tick changes nothing, and the next one lands on the
-        # same answer. Consolidation deletes rows, so it runs an order of magnitude
-        # more rarely and only ever merges text that is already byte-identical.
         try:
-            import random as _random
-            _roll = _random.random()
-            if _roll < 0.01:
-                _decayed = self.memory.apply_weight_decay()
-                if _decayed:
-                    log.debug(f"[MEMORY] Weight decay applied to {_decayed} old memories")
-            if _roll < 0.001:
-                _merged = self.memory.consolidate_memories()
-                if _merged.get("removed"):
-                    log.info("[MEMORY] consolidated %d duplicate memories into %d "
-                             "canonical rows", _merged["removed"], _merged["groups"])
+            self.memory.upkeep_async()
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -1182,13 +1213,7 @@ class GenerationMixin:
             "confidence_score": score,
             "confidence_threshold": threshold,
             "evidence_used": grounded,
-            "response_mode": response_mode,
-            "meta": {
-                "reasoning": reasoning_meta,
-                "trace": trace,
-                "response_mode": response_mode,
-                **honesty_meta,
-            },
+            "meta": {"reasoning": reasoning_meta, "trace": trace},
             "trace": trace,
         }
 
@@ -1295,10 +1320,9 @@ class GenerationMixin:
         response = _normalize_assistant_text(user_input, str(text or "").strip())
         response = _output_governor_normalize(user_input, response)
         if _HAS_GOVERNANCE:
-            # normalize_response = the GGUF-artifact cleaner
-            # clean_gguf_artifacts(response, user_input). The old swapped-arg
-            # TypeError fallback is gone now the signature collision with
-            # output_governor.normalize_response(user_input, text) is resolved.
+            # normalize_response is the GGUF-artifact cleaner clean_gguf_artifacts(response,
+            # user_input). The swapped-arg TypeError fallback is gone now that the signature
+            # collision with output_governor.normalize_response(user_input, text) is resolved.
             try:
                 response = normalize_response(response, user_input)
             except Exception:
@@ -1380,10 +1404,9 @@ class GenerationMixin:
             memory_context = ""
             situation_brief = ""
 
-        # Private reasoning modes run the real multi-pass algorithms (CoT, ToT,
-        # CAI, SC) then buffer the finished result before yielding chunks.
-        # Quick mode streams live.  Raw private-strategy chunks must never reach
-        # the GUI before the final sanitiser runs on them.
+        # Private reasoning modes run the real multi-pass algorithms (CoT, ToT, CAI, SC) and buffer
+        # the finished result before yielding chunks; quick mode streams live. Raw private-strategy
+        # chunks must never reach the GUI before the final sanitiser.
         try:
             from eli.cognition.reasoning_modes import (
                 is_private_reasoning_mode as _rm_private,
@@ -1395,6 +1418,12 @@ class GenerationMixin:
                 _rm_gen_overrides = self._chat_generation_overrides(
                     prompt, memory_context, reasoning_mode=_rm_key,
                 )
+                if gen_overrides:
+                    # Caller-supplied sampling wins — this is how the anti-repeat
+                    # retry raises temperature so attempt 2 is not attempt 1 again.
+                    _rm_gen_overrides = dict(_rm_gen_overrides or {})
+                    _rm_gen_overrides.update(
+                        {k: v for k, v in dict(gen_overrides).items() if v is not None})
                 situation_brief_rm = ""
                 try:
                     _stm_rm = getattr(working_memory, "short_term_memory", None)
@@ -1481,23 +1510,21 @@ class GenerationMixin:
                 log.debug(f"[COGNITIVE] generate_stream_from_assembled_prompt handoff failed: {e}")
                 situation_brief = ""
 
-        def _live_stream() -> Generator[str, None, None]:
-            """
-            True GUI streaming path.
+        situation_brief = self._inject_anti_repeat_contract(prompt, situation_brief)
+        memory_context = self._redact_recent_eli_from_context(memory_context)
+        try:
+            if working_memory is not None:
+                working_memory.persona_handoff = situation_brief
+                working_memory.assembled_context = memory_context
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
 
-            Important:
-            - Yield model chunks as they arrive.
-            - Do not wait for full completion before yielding.
-            - Do only tiny prefix cleanup at stream start.
-            - Full final governance/storage happens outside this generator.
-            """
+        def _live_stream_factory(brief: str, ctx: str, overrides: Optional[Dict[str, Any]] = None):
+            """True GUI streaming path with optional brief/context overrides for retry."""
             import re as _re
 
             raw_parts: List[str] = []
             yielded_any = False
-
-            # Small start buffer prevents leaking "ELI:" / "Assistant:" prefixes
-            # without destroying real streaming.
             start_buffer = ""
             prefix_resolved = False
 
@@ -1523,12 +1550,16 @@ class GenerationMixin:
                 )
                 return stripped in prefixes and len(low) < 24
 
+            _merged_overrides = dict(gen_overrides or {})
+            if overrides:
+                _merged_overrides.update({k: v for k, v in dict(overrides).items() if v is not None})
+
             for chunk in self._stream_model_response(
                 prompt,
-                memory_context,
+                ctx,
                 reasoning_mode=reasoning_mode,
-                gen_overrides=gen_overrides,
-                situation_brief=situation_brief,
+                gen_overrides=_merged_overrides or None,
+                situation_brief=brief,
             ):
                 piece = str(chunk or "")
                 if not piece:
@@ -1539,7 +1570,6 @@ class GenerationMixin:
                 if not prefix_resolved:
                     start_buffer += piece
 
-                    # Hold only while the model is clearly spelling a role prefix.
                     if _still_possible_role_prefix(start_buffer):
                         continue
 
@@ -1553,28 +1583,33 @@ class GenerationMixin:
                 yielded_any = True
                 yield piece
 
-            # If the model only emitted a tiny prefix buffer, flush a cleaned version.
             if not prefix_resolved and start_buffer:
                 cleaned = _clean_start(start_buffer)
                 if cleaned:
                     yielded_any = True
                     yield cleaned
 
-            # Emergency fallback only. Normal path should already have yielded live.
             if not yielded_any:
                 final_text = self._govern_visible_response(
                     prompt,
                     "".join(raw_parts),
-                    memory_context=memory_context or situation_brief,
-                    is_grounded=bool(memory_context or situation_brief),
+                    memory_context=ctx or brief,
+                    is_grounded=bool(ctx or brief),
                 )
                 if final_text:
                     for token in self._yield_text_chunks(final_text, chunk_size=12):
                         yield token
 
-        # Streaming generator handoff must yield sub-generator tokens live.
-        # Returning the generator object here can collapse visible streaming.
-        yield from _live_stream()
+        yield from self._yield_with_anti_repeat_guard(
+            prompt,
+            _live_stream_factory,
+            memory_context=memory_context,
+            situation_brief=situation_brief,
+            reasoning_mode=reasoning_mode,
+            working_memory=working_memory,
+            bus_result=_bus_result,
+            recent_turns=recent_turns,
+        )
         return
 
     def _stream_with_followthrough(self, inner, user_input: str,
@@ -1603,10 +1638,9 @@ class GenerationMixin:
             return
         self._in_followthrough = True
         try:
-            # Topic-deepen guard: if the previous real action was a news briefing
-            # and the user asked to go deeper on a specific topic ("look closer
-            # into Hubble"), re-fetch THAT topic — not ELI's lossy paraphrase,
-            # which drops the topic and dumps the whole briefing again.
+            # Topic-deepen guard: if the previous real action was a news briefing and the user asks
+            # to go deeper on a specific topic ("look closer into Hubble"), re-fetch that topic, not
+            # ELI's lossy paraphrase, which drops the topic and dumps the whole briefing again.
             _query = commit["clause"]
             try:
                 import re as _ft_re
@@ -1628,11 +1662,9 @@ class GenerationMixin:
                 real_txt = str(real.get("content") or real.get("response") or "").strip()
             else:
                 real_act, real_txt = "", str(real or "").strip()
-            # Followthrough is for ACTIONS ELI promised to perform FOR the user (fetch news,
-            # play media, search, open) — never for internal status/introspection DUMPS. A
-            # casual narration ("I've been checking my memory") must not auto-run MEMORY_STATUS
-            # and carpet-bomb the user with evidence they didn't ask for (the "why did you send
-            # me that data dump" complaint).
+            # Followthrough is for actions ELI promised to perform for the user (fetch news, play media,
+            # search, open), never for internal status dumps. A casual "I've been checking my memory" must
+            # not auto-run MEMORY_STATUS and bury the user in evidence they didn't ask for.
             _ft_dump_actions = {
                 "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY",
                 "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS",
@@ -1645,17 +1677,9 @@ class GenerationMixin:
                 log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' → executed {real_act}")
                 yield "\n\n" + real_txt
             elif real_act in _ft_dump_actions:
-                # Suppressing a dump nobody asked for is right. Suppressing one
-                # ELI just PROMISED to report is breaking its own word: live, it
-                # said "run the full acceleration diagnostics again, and I'll
-                # flag any lingering hiccups", ran RUNTIME_AUDIT, found a real
-                # duplicate-symbol defect, and threw the result away. The user
-                # saw nothing.
-                #
-                # So: when the reply contains an explicit undertaking to report,
-                # surface the FINDINGS only -- never the full PASS/PASS/PASS
-                # listing, which is the data dump the suppression exists to
-                # prevent. Both complaints are satisfied at once.
+                # Suppressing a dump nobody asked for is right. Suppressing one ELI just promised to report
+                # breaks its word (it said "I'll flag any lingering hiccups", found a real defect and dropped
+                # it). If the reply promised to report, surface the findings only, never the full PASS listing.
                 _ft_promised = bool(_ft_re.search(
                     r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
                     r"(?:flag|report|tell you|let you know|surface|call out|point out|"
@@ -1774,10 +1798,9 @@ class GenerationMixin:
         # "Hi" now reach the model normally instead of being rejected with
         # "Didn't catch that — say it again?")
 
-        # ELI_REASONING_MODE_RECOVERY_V1
-        # Some indirect stream paths may omit the explicit reasoning_mode kwarg.
-        # process() stamps the active mode on self; recover it here to preserve
-        # non-Quick mode contracts in Stage 11 and fallback guards.
+        # Reasoning-mode recovery (ELI_REASONING_MODE_RECOVERY_V1): some indirect stream paths omit
+        # the reasoning_mode kwarg. process() stamps the active mode on self; recover it here to
+        # keep the non-Quick contracts in Stage 11 and the fallback guards.
         if not reasoning_mode:
             reasoning_mode = getattr(self, "_current_reasoning_mode", None) or None
 
@@ -1813,20 +1836,20 @@ class GenerationMixin:
         _rapport_mode = _eli_is_rapport_prompt(prompt)
 
         try:
-            import re as _re
-            _phatic_low = _re.sub(r"[^a-z0-9\' ]+", "", prompt.lower()).strip()
-            _phatic_stream = _phatic_low in {
-                "hi", "hello", "hey", "yo", "hiya", "how are you",
-                "whats up", "what\'s up", "whats up pal", "what\'s up pal",
-                "alright", "you there", "are you there"
-            }
+            _phatic_stream = _is_brief_phatic_prompt(str(user_input or prompt or "").strip().lower())
         except Exception:
             _phatic_stream = False
+        if _phatic_stream:
+            _rapport_mode = False
 
         # 1. Memory / evidence context. Reuse process()-built context when present.
         # Rapport prompts deliberately skip deep memory/HyDE retrieval: casual banter should not be
         # converted into a corporate status query or safety lecture.
-        if _rapport_mode:
+        if _phatic_stream:
+            memory_context = ""
+            log.debug("[COGNITIVE] Stream: phatic prompt — skipping memory/evidence context")
+            _eli_pipe_stream("context_mode", mode="phatic_skip")
+        elif _rapport_mode:
             # Skip deep memory/HyDE retrieval but inject the user profile so
             # ELI knows who it's talking to and can respond personally rather
             # than with generic chatbot filler.
@@ -1840,10 +1863,6 @@ class GenerationMixin:
                 log.debug("suppressed exception", exc_info=True)
             log.debug("[COGNITIVE] Stream: rapport prompt — lightweight profile context only")
             _eli_pipe_stream("context_mode", mode="rapport_profile_only")
-        elif _phatic_stream:
-            memory_context = ""
-            log.debug("[COGNITIVE] Stream: phatic prompt — skipping memory/evidence context")
-            _eli_pipe_stream("context_mode", mode="phatic_skip")
         elif pre_built_memory_context and not any(p in prompt.lower() for p in (
             # Force a fresh cross-session fetch for memory/recall queries — the
             # prebuilt context was built for the *prior* turn without cross-session
@@ -1930,40 +1949,7 @@ class GenerationMixin:
             else:
                 situation_brief = semantic_guard
 
-        # ── Anti-repeat contract (streaming) ──
-        # ELI re-served its own last reply verbatim across turns, re-asking a question the
-        # user had already answered. Guards in finalize and in the memory-context builder
-        # both missed it: streaming never reaches finalize, and the memory context is
-        # discarded or skipped ("reusing pre-built bus memory context"). situation_brief IS
-        # the streaming prompt (stage_11 measures ctx_chars=len(situation_brief)), and it
-        # is where the rapport/semantic guards already land — so the constraint goes here.
-        try:
-            _prev_eli = []
-            # Skipped on a greeting for the same reason the enforcement guard is:
-            # telling the model "do not repeat any of this" while it decides how to
-            # say hello is the pressure that pushed a correct "Evening" into the
-            # user's misspelled "Aftrnoon".
-            _greeting_turn = _is_greeting_turn(user_input)
-            if _greeting_turn:
-                log.debug("[ANTI-REPEAT] greeting — contract not injected")
-            else:
-              for _t in (self.memory.get_recent_conversation(limit=8) or []):
-                if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
-                    _c = str((_t or {}).get("content", "") or "").strip()
-                    if _c:
-                        _prev_eli.append(_c)
-            if _prev_eli:
-                _quoted = "\n".join(f"  - {s[:220]}" for s in _prev_eli[:3])
-                _no_repeat = (
-                    "YOU HAVE ALREADY SAID THE FOLLOWING — do not repeat any of it, and do "
-                    "not re-ask a question the user has already answered:\n" + _quoted +
-                    "\nReply to what the user just said. If you have already described your "
-                    "own state or mood, do not describe it again unless asked."
-                )
-                situation_brief = (_no_repeat + "\n\n" + situation_brief).strip()
-                log.debug(f"[ANTI-REPEAT] contract injected ({len(_prev_eli[:3])} prior replies)")
-        except Exception:
-            log.debug("[ANTI-REPEAT] contract skipped", exc_info=True)
+        situation_brief = self._inject_anti_repeat_contract(user_input, situation_brief)
 
         # Do not promote raw memory_context into situation_brief.
         # Raw context is private evidence, not answer text.
@@ -2008,135 +1994,14 @@ class GenerationMixin:
                 memory_chars=len(pre_built_memory_context or str()),
                 bus_result=bool(pre_built_bus_result),
             )
-            stream = self.generate_stream_from_assembled_prompt(
+            for piece in self.generate_stream_from_assembled_prompt(
                 prompt,
                 working_memory=wm,
                 reasoning_mode=reasoning_mode,
-            )
-
-            # ── Anti-repeat ENFORCEMENT (see guards._is_repeat_of_recent) ─────
-            # The contract injected into situation_brief above only *asks*. This
-            # checks. It acts on the opening rather than the finished reply: once a
-            # chunk is yielded it is on the user's screen, so a check that waits for
-            # the full text can only report a repeat, never prevent one.
-            _recent_eli = []
-            # Recent USER turns, as anti-echo sources. The guard originally
-            # compared only against the CURRENT message, which was not enough:
-            # at v2 2.1.97 ELI opened a turn with
-            #   "Still on loop, seson 3 now. How is your memory after all the
-            #    codebse changes?"
-            # — a user message from a session three hours earlier, replayed
-            # verbatim down to both typos, in reply to "just checking in on you".
-            # Past user turns reach the model through recalled memory, so they
-            # have to be in the guard's corpus too, not just the live input.
-            _recent_user: list = []
-            try:
-                for _t in (self.memory.get_recent_conversation(limit=16) or []):
-                    if str((_t or {}).get("role", "")).lower() == "user":
-                        _c = str((_t or {}).get("content", "") or "").strip()
-                        if _c:
-                            _recent_user.append(_c)
-            except Exception:
-                log.debug("[ANTI-ECHO] recent-user fetch failed", exc_info=True)
-            _echo_sources = [user_input] + _recent_user
-            if _user_asked_for_a_repeat(user_input):
-                log.debug("[ANTI-REPEAT] user asked for a repeat — guard stood down")
-            else:
-                # A greeting turn used to disarm this guard completely, on the
-                # reasoning that "a time-of-day greeting is meant to recur". It
-                # disarmed it for the WHOLE reply, so a 120-character paragraph
-                # could be served back verbatim — live at 2.3.5, "HELLO ELI" was
-                # classed a greeting and ELI answered with a near-copy of its
-                # previous reply, twice, and the user asked what it was talking
-                # about.
-                #
-                # The exemption is unnecessary: _is_repeat_of_recent already
-                # returns False for anything under 40 normalised characters, so a
-                # real greeting ("Morning, Alex.") still recurs freely while a
-                # recycled paragraph does not.
-                #
-                # Note the pairing with the anti-repeat CONTRACT above, which is
-                # still skipped on greetings: injecting "do not repeat any of
-                # this" while the model decides how to say hello is what pushed a
-                # correct "Evening" into the user's misspelled "Aftrnoon". So the
-                # instruction stays off and the check comes back on — which is the
-                # project's rule anyway: guards verify, they do not instruct.
-                try:
-                    for _t in (self.memory.get_recent_conversation(limit=8) or []):
-                        if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
-                            _c = str((_t or {}).get("content", "") or "").strip()
-                            if _c:
-                                _recent_eli.append(_c)
-                except Exception:
-                    log.debug("[ANTI-REPEAT] recent-reply fetch failed", exc_info=True)
-
-            try:
-                for piece in _stream_holding_back_repeats(
-                        stream, _recent_eli, allow_retry=True,
-                        echo_sources=_echo_sources):
-                    full_tokens.append(piece)
-                    yielded = True
-                    yield piece
-            except _RepeatDetected:
-                log.debug("[ANTI-REPEAT] opening matched a recent reply — regenerating")
-                # Regenerate ONCE, with the constraint restated as a hard rule rather
-                # than a preamble the model can drift past. A second repeat is served
-                # as-is: an honest duplicate beats an empty turn or an infinite retry.
-                full_tokens.clear()
-                # De-prime the PERSONA HANDOFF, which is where the contract lives.
-                # `prompt` is the user's message and must reach the model unaltered.
-                # Stripping the contract is necessary but not sufficient: the same
-                # reply also reaches the model through the assembled memory context
-                # and the handoff's evidence block, so attempt 2 was still reading
-                # its own last paragraph. Redact it from every block feeding the retry.
-                _retry_brief = _redact_prior_replies(
-                    _deprimed_persona_brief(situation_brief), _recent_eli)
-                _retry_context = _redact_prior_replies(memory_context, _recent_eli)
-                _retry_wm = SimpleNamespace(
-                    user_input=user_input,
-                    assembled_context=_retry_context,
-                    persona_handoff=_retry_brief,
-                    final_response="",
-                    trace={},
-                    bus_result=pre_built_bus_result,
-                    short_term_memory=SimpleNamespace(recent_turns=_wm_recent_turns),
-                )
-                # Same prompt at the same temperature is the same reply. A retry that
-                # changes only the framing leaves the sampler free to walk the identical
-                # path, which is exactly what it did; widen it.
-                _retry_gen = None
-                try:
-                    _base_temp = float(self._generation_settings().get("temperature", 0.7) or 0.7)
-                    _retry_gen = {"temperature": round(min(1.2, _base_temp + _REPEAT_RETRY_TEMP_BUMP), 3)}
-                except Exception:
-                    log.debug("[ANTI-REPEAT] retry temperature bump skipped", exc_info=True)
-                log.debug("[ANTI-REPEAT] retry generation issued (persona handoff "
-                          "de-primed: %d -> %d chars, context %d -> %d chars, temp=%s)",
-                          len(situation_brief), len(_retry_brief),
-                          len(memory_context or ""), len(_retry_context or ""),
-                          (_retry_gen or {}).get("temperature", "unchanged"))
-                _retry = self.generate_stream_from_assembled_prompt(
-                    prompt,
-                    working_memory=_retry_wm,
-                    reasoning_mode=reasoning_mode,
-                    gen_overrides=_retry_gen,
-                )
-                # The de-primed prompt is materially different from the first, so a
-                # second attempt is worth one more generation. Live evidence: attempt
-                # 2 reproduced the opening verbatim when it was still primed. Beyond
-                # this, serve it — an honest duplicate beats silence or a loop.
-                # allow_retry=False: this IS the second chance. Passing True made a
-                # repeated retry raise again and trigger a THIRD generation — observed
-                # at 20.1s for one reply, with the log claiming "serving it" while it
-                # silently regenerated. Two generations is the cap. salvage=True so the
-                # cap is not a surrender: if attempt 2 opens with the same recycled
-                # sentences and then answers, the recycled part is dropped.
-                for piece in _stream_holding_back_repeats(
-                        _retry, _recent_eli, allow_retry=False, salvage=True,
-                        echo_sources=_echo_sources):
-                    full_tokens.append(piece)
-                    yielded = True
-                    yield piece
+            ):
+                full_tokens.append(piece)
+                yielded = True
+                yield piece
 
             if yielded:
                 final_text = self._govern_visible_response(
@@ -2171,11 +2036,9 @@ class GenerationMixin:
                             f"response={_s12_score:.2f} agent={_s12_agent_conf:.2f} "
                             f"({_s12_label}) threshold={_s12_threshold:.2f} [{_s12_pass}]"
                         )
-                        # A low confidence SCORE is a quality signal, not a code bug — there is no
-                        # traceback/file for the self-heal patcher to act on, so logging it as a
-                        # code-failure only polluted the failure log + recent-failures probe and
-                        # made low-confidence casual turns look like recurring bugs. Debug-log the
-                        # signal for observability; do not file it as a failure.
+                        # A low confidence score is a quality signal, not a code bug: no traceback or file for the
+                        # self-heal patcher, and filing it polluted the failure log and made casual low-confidence
+                        # turns look like recurring bugs. Debug-log it, don't file it.
                         if _s12_score < _s12_threshold:
                             log.debug(f"[COGNITIVE] low stream confidence score={_s12_score:.2f} "
                                       f"(agent={_s12_agent_conf:.2f}, mode={reasoning_mode or 'quick'})")
@@ -2215,13 +2078,10 @@ class GenerationMixin:
                         "response_truncated": len(final_text) > _TRACE_TEXT_CHARS,
                         "user_input": str(user_input or "")[:400],
                     }
-                    # PERSIST it, not just the in-memory badge. This block already
-                    # existed and only ever set _last_request_meta, so a streamed
-                    # CHAT — which is every ordinary GUI turn — never wrote
-                    # last_trace.json. "What was the last message you sent?" then
-                    # answered from whichever run last wrote the file: observed in
-                    # v2 2.1.96 reporting a turn from 106 minutes and one restart
-                    # earlier, with full confidence and no indication it was stale.
+                    # Persist it, not just the in-memory badge. This block only set _last_request_meta, so a
+                    # streamed CHAT (every ordinary GUI turn) never wrote last_trace.json, and "What was the last
+                    # message you sent?" answered from whichever run last wrote the file (106 minutes and a restart
+                    # earlier, with full confidence).
                     from eli.runtime.last_trace import save_last_trace as _save_lt
                     _save_lt(dict(self._last_request_meta))
                 except Exception as _smeta_err:

@@ -1,7 +1,7 @@
 """Locks on defects from live v2 sessions (13:51, 15:13, 17:47), ported to v3.
 
-In v3 the repeat guard lives in eli/kernel/engine.py and the generation
-stage in eli/kernel/engine.py; the deepen guard stays in engine.py.
+In v3 the repeat guard lives in eli/kernel/stages/guards.py and the generation
+stage in eli/kernel/stages/generation.py; the deepen guard stays in engine.py.
 
 The transcript is the specification here, so the fixtures are its actual text.
 
@@ -26,7 +26,7 @@ import time
 
 import pytest
 
-from eli.kernel.engine import (
+from eli.kernel.stages.guards import (
     _ANTI_REPEAT_BLOCK_RE,
     _RepeatDetected,
     _deprimed_persona_brief,
@@ -287,9 +287,9 @@ def test_contract_and_stripper_stay_in_sync():
     """If the contract wording is edited without updating the regex, the stripper
     silently stops working and the retry is primed again — exactly the live bug."""
     import inspect
-    from eli.kernel import engine as eng
+    from eli.kernel.engine import CognitiveEngine
 
-    src = inspect.getsource(eng)
+    src = inspect.getsource(CognitiveEngine._inject_anti_repeat_contract)
     assert "YOU HAVE ALREADY SAID THE FOLLOWING" in src
     assert _ANTI_REPEAT_BLOCK_RE.search(_CONTRACT), (
         "the regex no longer matches the contract this module injects"

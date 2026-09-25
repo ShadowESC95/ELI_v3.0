@@ -17,7 +17,7 @@ import pytest
 try:
     from eli.kernel.engine import _is_repeat_of_recent, _opening_stem
 except ImportError:
-    from eli.kernel.engine import _is_repeat_of_recent, _opening_stem
+    from eli.kernel.stages.guards import _is_repeat_of_recent, _opening_stem
 
 _FIRST = "You're not wrong — I was running a 27B param model earlier today, and it's a beast."
 

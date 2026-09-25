@@ -16,6 +16,7 @@ from typing import List
 from eli.core import config
 
 from eli.utils.log import get_logger
+import logging
 
 log = get_logger(__name__)
 
@@ -71,11 +72,9 @@ def _load_persona_text() -> str:
     files are missing. The old lookup paths caused ELI to ignore its real
     persona and drift into base-model AI-disclaimer behaviour.
     """
-    # Single source of truth: delegate the base+overlay read to the canonical
-    # eli.cognition.persona module (one `_clean_persona`, env-override aware). Compose
-    # exactly as before (base + "\n\n" + overlay) so the persona text is unchanged.
-    # The legacy candidate/config chain below stays only as a fallback for non-default
-    # layouts or when the canonical files are absent.
+    # Single source of truth: delegate the base+overlay read to eli.cognition.persona (one
+    # `_clean_persona`, env-override aware), composed as before (base + "\n\n" + overlay). The
+    # legacy candidate/config chain below is only a fallback for odd layouts or missing files.
     try:
         from eli.cognition.persona import read_base_persona as _canon_base, read_auto_persona as _canon_auto
         _cb = (_canon_base() or "").strip()
@@ -87,7 +86,7 @@ def _load_persona_text() -> str:
         if _ca:
             return _ca
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     root = Path(__file__).resolve().parents[2]
 
@@ -114,7 +113,7 @@ def _load_persona_text() -> str:
                     base = cleaned
                     break
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     overlay = ""
     for cand in overlay_candidates:
@@ -126,7 +125,7 @@ def _load_persona_text() -> str:
                     overlay = cleaned
                     break
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     if base and overlay:
         return base + "\n\n" + overlay
@@ -140,14 +139,14 @@ def _load_persona_text() -> str:
         if forced:
             return forced
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     try:
         configured = (config.get_persona() or "").strip()
         if configured:
             return configured
     except Exception:
-        log.debug("suppressed exception", exc_info=True)
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     return (
         "You are ELI — Enhanced Learning Interface. You run locally on this "

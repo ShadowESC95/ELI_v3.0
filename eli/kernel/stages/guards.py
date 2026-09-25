@@ -16,35 +16,21 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from typing import List
+from eli.kernel.stages._common import _clarifier_norm
 
-# Actions whose evidence is a REPORT ABOUT the system. Their bundles quote git
-# logs, failure counts and telemetry by design, so scanning that prose for error
-# words cannot distinguish "this action failed" from "this action is describing a
-# failure". The caller already knows whether these succeeded — SELF_REPORT came
-# back ok=True with synthesis_validated=True while this guard was overwriting its
-# content with "I did not successfully complete `ACTION`".
-#
-# The trigger was a git commit message quoted in the evidence:
-#   "...stop printing a FileNotFoundError stack when clearing a pending fix"
-# A commit about FIXING an error was read as an error. Which is why the test for
-# this passed all morning and failed the same afternoon on an unchanged commit:
-# the commit LOG had changed, not the code.
-#
-# Membership is decided by what the action DOES, never by how it is named. The
-# self-* actions that APPLY changes — SELF_PATCH, SELF_IMPROVE, SELF_UPDATE,
-# SELF_UPGRADE — are deliberately absent: a failed self-patch narrated as success
-# is precisely the fabrication this guard exists to stop. Only actions that read
-# and describe belong here.
+# Actions whose evidence is a report about the system. Their bundles quote git logs and failure
+# counts by design, so scanning for error words can't tell "failed" from "describing a failure".
+# The caller already knows whether they succeeded.
 _REPORTS_ABOUT_STATE = frozenset({
-    # Reports carried over from v2.
     "SELF_REPORT", "RUNTIME_STATUS", "RUNTIME_AUDIT", "IMPORT_AUDIT",
     "GUI_RUNTIME_AUDIT", "MEMORY_STATUS", "COGNITION_STATUS", "META_DIAGNOSTIC",
     "SELF_ANALYZE", "SELF_IMPROVEMENT_LOG", "EXPLAIN_LAST_RESPONSE",
     "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "ROUTING_FAULT_EXPLAIN",
     "PERSONAL_MEMORY_DEEP_EXPLAIN", "PERSONAL_MEMORY_SUMMARY", "EXAMINE_CODE",
-    # v3-only read-and-describe actions, vulnerable to the same confusion.
-    # EXPLAIN_LAST_FAILURE is the clearest case in the tree: its evidence is a
-    # failure by definition, so the unpatched guard could never let it answer.
+    "SELF_REPAIR_PLAYBOOK",
+    # v3 read-and-describe actions. EXPLAIN_LAST_FAILURE's evidence is a failure by definition, so
+    # without this it could never answer.
     "EXPLAIN_LAST_FAILURE", "EXPLAIN_ALL_REASONING_MODES", "AWARENESS_STATUS",
     "CHECK_TARGET_STATUS", "DIAGNOSE_WRAPPERS", "ELI_IDENTITY_AUDIT",
     "FILE_AUDIT", "FRONTIER_STATUS", "GAZE_STATUS", "GET_STATUS", "GPU_STATUS",
@@ -55,12 +41,8 @@ _REPORTS_ABOUT_STATE = frozenset({
     "USER_IDENTITY_SUMMARY", "USER_INFO_REPORT", "VOICE_DIAGNOSTICS",
 })
 
-# Actions that CHANGE something. Never exempt, however report-like the name
-# looks — asserted by tests/test_failure_words_in_prose.py so a later edit
-# cannot quietly move one into the set above.
-_MUTATING_SELF_ACTIONS = frozenset({
-    "SELF_PATCH", "SELF_IMPROVE", "SELF_UPDATE", "SELF_UPGRADE",
-})
+# Actions that change something are never exempt, however report-like the name looks.
+_MUTATING_SELF_ACTIONS = frozenset({"SELF_PATCH", "SELF_IMPROVE", "SELF_UPDATE", "SELF_UPGRADE"})
 
 
 def _failed_executor_is_failed(evidence: str, action: str = "") -> bool:
@@ -85,25 +67,10 @@ def _failed_executor_is_failed(evidence: str, action: str = "") -> bool:
     if not actionish:
         return False
 
-    # A REPORT ABOUT failures is not a failed report.
-    #
-    # When no action was passed, "this evidence is an executor result" is inferred
-    # from markers like `action=` appearing anywhere — and a self-report bundles
-    # agent-dispatch telemetry, whose every line looks exactly like that:
-    #
-    #     action=CHAT agents=[memory, orchestrator] confidence=0.84 ok=True
-    #     action=MEMORY_RECALL ... ok=False
-    #
-    # So one failed dispatch recorded anywhere in the log made SELF_REPORT return
-    # "I did not successfully complete `ACTION`" — with a placeholder name,
-    # because there was no action to name — while the report itself carried
-    # ok=True and synthesis_validated=True. It passed for months and started
-    # failing the day a failure row existed.
-    #
-    # On the inferred path, require a marker that a specific EXECUTOR RESULT
-    # failed, rather than any `ok=false` that might be a logged row about some
-    # other turn. An explicitly-passed action keeps the original, broader check:
-    # there the caller has told us which action's result this is.
+    # A report about failures is not a failed report. With no action passed we infer "executor
+    # result" from markers, and a self-report is full of them, so one failed dispatch anywhere made
+    # it say "I did not successfully complete". On the inferred path require a marker for a specific
+    # failed result. An explicit action keeps the broader check.
     if _inferred:
         _dict_form = bool(
             _re.search(r'["\']ok["\']\s*:\s*false\b', low)
@@ -189,12 +156,10 @@ def _failed_executor_is_failed_block(block: str) -> bool:
             or "ok=false" in low or "ok: false" in low
             or "successful: 0 | failed:" in low or "analyze_pdf failure" in low):
         return True
-    # A bare error NAME in prose is not a failure. A self-report quotes git
-    # commit messages, and one of them —
-    #   "stop printing a FileNotFoundError stack when clearing a pending fix"
-    # — was read as a live FileNotFoundError, so a successful report was
-    # replaced with "I did not successfully complete `ACTION`". Require the name
-    # to sit next to something that marks an actual result.
+    # A bare error name in prose isn't a failure. A self-report quotes commit messages ("stop
+    # printing a FileNotFoundError stack..."), which read as a live error and replaced a good report
+    # with "I did not successfully complete `ACTION`". Require the name next to something that
+    # marks an actual result.
     return (("filenotfounderror" in low or "file not found" in low)
             and ("execute result" in low or "traceback" in low))
 
@@ -268,12 +233,9 @@ def _failed_executor_surface(evidence: str, query: str = "", action: str = "") -
     paths = _failed_executor_paths(block, query)
     errors = _failed_executor_errors(block)
 
-    # "ACTION" is the sentinel _failed_executor_action_name() returns when it
-    # cannot recover a real name from the evidence. Interpolating it produced
-    # the literal line "I did not successfully complete `ACTION`" in front of
-    # the user -- a template placeholder presented as a fact, on a turn that
-    # named no action at all. If we cannot say WHAT failed, say that, rather
-    # than inventing a name for it.
+    # "ACTION" is the sentinel _failed_executor_action_name() returns when it can't recover a name.
+    # Interpolating it printed "I did not successfully complete `ACTION`", a placeholder presented
+    # as fact. If we can't say what failed, say that.
     if act == "ANALYZE_PDF":
         lines = ["I did not successfully analyse the PDF request."]
     elif act and act != "ACTION":
@@ -334,8 +296,8 @@ def _eli_bad_identity_self_report_output(user_input: str, response: str) -> bool
                 and {"persona", "memory"} <= {str(x).lower() for x in (sources or [])}
             ):
                 return False
-    except Exception:
-        pass
+    except (ValueError, TypeError):
+        pass  # a plain-text reply isn't JSON — expected, fall through to the text checks
     low = text.lower()
     if re.search(r"\byour (?:identity|persona)\b", low):
         return True
@@ -389,20 +351,14 @@ def _strip_reasoning_scaffold(text: str) -> str:
     return t
 
 
-# ── Anti-repeat: verification, not just instruction ──────────────────────────
-# The prompt-level contract in the generation stage ("YOU HAVE ALREADY SAID THE
-# FOLLOWING — do not repeat any of it") is advisory. In one observed v2 session an
-# 8B model ignored it four times, serving the same 40-word paragraph verbatim at
-# 13:52, 13:52, 13:55 and 13:56 — including right after the user told it to stop and
-# it answered "I'll stop". Asking a model not to repeat itself is not a control;
-# checking whether it did is.
-#
-# Self-contained by necessity: engine.py imports the stages, so reaching back for
-# engine._clarifier_norm would close an import cycle.
-_REPEAT_HEAD_CHARS = 200      # buffered before first paint
+# Anti-repeat: verification, not just instruction. The prompt-level contract ("YOU HAVE ALREADY
+# SAID THE FOLLOWING") is advisory, and an 8B model ignored it four times and served the same
+# paragraph, even after the user said to stop. Asking a model not to repeat itself isn't a
+# control, checking whether it did is.
+_REPEAT_HEAD_CHARS = 200      # buffered before first paint — see the streaming guard
 _REPEAT_RATIO = 0.86          # difflib ratio over normalised text
-# A stock opener repeated across replies reads as a tic even when the rest
-# differs. Short openers ("Yes.", "Okay.") are exempt — not a stylistic rut.
+# A stock opener repeated across replies reads as a tic even when the rest differs.
+# Short openers ("Yes.", "Okay.") are exempt — they are not a stylistic rut.
 _REPEAT_OPENING_MIN_CHARS = 12
 _REPEAT_OPENING_RATIO = 0.92
 _REPEAT_COMPARE_AGAINST = 4   # how many recent ELI turns to test
@@ -434,20 +390,9 @@ def _user_asked_for_a_repeat(user_input: str) -> bool:
     return bool(_REPEAT_REQUESTED_RE.search(str(user_input or "")))
 
 
-# A greeting is the other case where recurring is correct. "Evening" at 23:00 is
-# ELI reading the authoritative clock in its own system prompt, not recycling a
-# paragraph — but to the guard it looked like the previous session's opener.
-#
-# Live at 2.1.83, 23:10: the first generation opened 'Even…' (right), the guard
-# matched it against a recent reply and regenerated, and the retry — explicitly
-# instructed to produce "different content" — echoed the user's own misspelling
-# echoing the user's own typo and then telling him off for it. A correct answer
-# was replaced by a wrong one because it resembled a previous hello.
-#
-# Trade-off, stated plainly: greeting turns lose anti-repeat protection, so ELI
-# may open two sessions the same way. That is a far smaller failure than naming
-# the wrong time of day, and it is the same call already made for "say that
-# again" above — when repetition is the correct answer, the guard stands down.
+# A greeting is the one case where repeating is right: "Evening" at 23:00 is ELI reading the
+# clock. Greeting turns skip anti-repeat, same as "say that again". Two sessions opening alike
+# costs far less than naming the wrong time of day.
 _GREETING_STEMS = (
     "hello", "hi", "hey", "hiya", "howya", "howdy", "yo", "sup",
     "morning", "afternoon", "evening", "night", "nite", "greetings",
@@ -473,7 +418,7 @@ def _is_greeting_turn(user_input: str) -> bool:
     a check that only recognised correctly-spelled greetings would not have stood
     down for the very message that exposed the bug.
     """
-    norm = _repeat_norm(user_input)
+    norm = _clarifier_norm(user_input)
     if not norm:
         return False
     if _GREETING_DISQUALIFIER_RE.search(str(user_input or "")):
@@ -506,26 +451,20 @@ _ANTI_REPEAT_BLOCK_RE = re.compile(
 def _deprimed_persona_brief(situation_brief: str) -> str:
     """Strip the verbatim prior replies from the PERSONA HANDOFF before regenerating.
 
-    Named for its argument on purpose. The first version took `prompt` and was a
-    no-op: in the generation stage `prompt` is the user's own message
+    Named for its argument on purpose. The first version of this took `prompt` and
+    was a no-op: in stream_chat, `prompt` is the user's own message
     (``prompt = str((args or {}).get("message") or user_input or "").strip()``),
-    while the anti-repeat contract is injected into `situation_brief`, which reaches
-    the model as ``wm.persona_handoff``. Stripping the user's message removed
-    nothing and prepended an instruction to their words instead. The live v2 log
-    said so plainly — "prior replies stripped from prompt: 26 -> 143 chars", and 26
-    is the length of "fair point pal, fair point".
+    while the anti-repeat contract is injected into `situation_brief`, which
+    reaches the model as ``wm.persona_handoff``. Stripping the user's message
+    removed nothing and prepended an instruction to their words instead. The live
+    log said so plainly — "prior replies stripped from prompt: 26 -> 143 chars",
+    and 26 is the length of "fair point pal, fair point".
 
-    Observed live (v2.1.60, 15:13): the guard caught a repeat, retried, and the
-    retry produced the SAME opening — prompt_tokens barely moved, 4501 -> 4495,
-    because the retry was `instruction + prompt` and `prompt` still carried the
-    anti-repeat contract quoting three prior replies at up to 220 chars each.
-
-    So the retry handed the model the exact text it must not produce and asked it
-    not to produce it. For a small model that is priming, not prevention: the
-    surest way to make it say something is to put it in the context window. The
-    remedy is subtraction — remove the quotes, keep a constraint that names no
-    content. (A turn earlier the same guard retried successfully, 'You' -> 'Hello';
-    the failure is not universal, which is why it needed a live session to find.)
+    Why strip at all: the contract quotes up to three prior replies verbatim at 220
+    chars each, so the retry handed the model the exact text it must not produce
+    and asked it not to produce it. For a small model that is priming, not
+    prevention. The remedy is subtraction — remove the quotes, keep a constraint
+    that names no content.
     """
     stripped = _ANTI_REPEAT_BLOCK_RE.sub(
         "Do not repeat anything you have already said in this conversation, and do "
@@ -539,45 +478,43 @@ def _deprimed_persona_brief(situation_brief: str) -> str:
 
 
 def _repeat_ratio(a: str, b: str) -> float:
-    na, nb = _repeat_norm(a), _repeat_norm(b)
+    """Similarity of two replies, punctuation- and case-insensitive."""
+    na, nb = _clarifier_norm(a), _clarifier_norm(b)
     if not na or not nb:
         return 0.0
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
-# ── Anti-echo: ELI must not speak the user's own sentence back as its own ────
-# Observed live (v2 2.1.95). User: "Still on loop, seson 3 now. How is your
-# memory after all the codebse changes?"  ELI: "I'm still on loop, season 3 now.
-# Your memory's a bit fuzzy…" — the user's line returned in the first person,
-# with the roles inverted, and RAW_HEAD confirms the model generated it rather
-# than any display layer adding it.
-#
-# The repeat guard above cannot catch this. It compares head-to-head over equal
-# lengths, which scores that pair at 0.667 against the 0.86 bar, because only
-# the FIRST SENTENCE was copied and the rest diverged. Compared sentence to
-# sentence the same pair scores 0.926. So this checks the opening sentence
-# specifically, and is deliberately separate from _is_repeat_of_recent: that
-# function means "ELI already said this", a different claim about a different
-# corpus, and widening it would change every caller.
-#
-# A false positive costs one regeneration and the caller's salvage path still
-# serves a sane reply, so the threshold favours catching the echo.
+# Anti-echo: ELI must not say the user's own sentence back as its own. The repeat guard compares
+# whole replies and missed a copy of just the first sentence, so this checks the opening sentence
+# on its own. A false positive costs one regeneration, so it leans towards catching the echo.
 _ECHO_MIN_SENTENCE_CHARS = 18     # shorter than this, agreement is not plagiarism
 _ECHO_RATIO = 0.80
-# The corpus is the current message PLUS recent user turns, because the echo that
-# prompted this widening came from a session three hours earlier, reintroduced
-# through recalled memory. Comparing a single opening sentence against ~17 short
-# strings is trivial next to the generation it guards.
+# The corpus is the current message plus recent user turns: the echo that prompted this came from a
+# session hours earlier, reintroduced through recalled memory. One opening sentence against ~17
+# short strings is trivial next to the generation it guards.
 _ECHO_MAX_SOURCES = 20
 # Reproducing a whole message back is an echo however its first sentence
-# tokenises. Long enough that a short shared phrase ("yeah, fair enough") is not
-# mistaken for one.
+# tokenises. Long enough that a short shared phrase ("yeah, fair enough") is
+# not mistaken for one.
 _ECHO_MIN_HEAD_CHARS = 40
 
 
-def _first_sentence(text: str) -> str:
-    parts = _SENTENCE_SPLIT_RE.split(str(text or "").strip(), maxsplit=1)
-    return (parts[0] if parts else "").strip()
+def _first_sentence(text) -> str:
+    """The opening sentence of a reply, for the opener-repeat and echo tests.
+
+    There were TWO module-level definitions of this name (ELI's own
+    RUNTIME_AUDIT flagged it: "_first_sentence also defined at lines [3508,
+    3561]"). Python keeps the last one, so the earlier definition -- the one
+    that used _SENTENCE_SPLIT_RE and therefore understood ellipses and closing
+    quotes -- was dead code, and _opens_by_echoing() silently got the weaker
+    splitter instead. Merged: the better pattern with the safer fallback.
+    """
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(body) if p.strip()]
+    return parts[0] if parts else body
 
 
 def _opens_by_echoing(opening: str, sources) -> bool:
@@ -587,15 +524,13 @@ def _opens_by_echoing(opening: str, sources) -> bool:
     that's why…") is legitimate and common. Leading with their sentence as your
     own is the failure.
     """
-    # WHOLE-HEAD test first. Judging only the opening sentence meant a SHORT
-    # opening sentence disabled the guard entirely — live at v2 2.3.0 ELI replied
-    # with the user's own message reproduced verbatim (ratio 1.000), and this
-    # returned False because its first sentence, "You're not wrong.", is 15
-    # normalised characters against the 18-character minimum below.
-    _head = _repeat_norm(opening)
+    # Whole-head test first. Judging only the opening sentence let a short one disable the guard: a
+    # reply that reproduced the user's message verbatim (ratio 1.000) returned False because its
+    # first sentence ("You're not wrong.") was under the 18-character minimum.
+    _head = _clarifier_norm(opening)
     if len(_head) >= _ECHO_MIN_HEAD_CHARS:
         for src in list(sources or [])[:_ECHO_MAX_SOURCES]:
-            _src = _repeat_norm(src)
+            _src = _clarifier_norm(src)
             if len(_src) < _ECHO_MIN_HEAD_CHARS:
                 continue
             n = min(len(_head), len(_src))
@@ -603,12 +538,12 @@ def _opens_by_echoing(opening: str, sources) -> bool:
                 return True
 
     first = _first_sentence(opening)
-    if len(_repeat_norm(first)) < _ECHO_MIN_SENTENCE_CHARS:
+    if len(_clarifier_norm(first)) < _ECHO_MIN_SENTENCE_CHARS:
         return False
     for src in list(sources or [])[:_ECHO_MAX_SOURCES]:
         for sentence in _SENTENCE_SPLIT_RE.split(str(src or "").strip()):
             sentence = sentence.strip()
-            if len(_repeat_norm(sentence)) < _ECHO_MIN_SENTENCE_CHARS:
+            if len(_clarifier_norm(sentence)) < _ECHO_MIN_SENTENCE_CHARS:
                 continue
             if _repeat_ratio(first, sentence) >= _ECHO_RATIO:
                 return True
@@ -624,7 +559,7 @@ _REPEAT_STEM_MIN_CHARS = 12
 def _opening_stem(text: str) -> str:
     """The first few words of the opening, before any continuation clause.
 
-    The earlier fix compared whole first sentences and worked while the tic WAS
+    The 2.3.0 fix compared whole first sentences and worked while the tic WAS
     the whole sentence ("You're not wrong."). The model since learned to append
     an em-dash clause, and because the clause varies every time, first-sentence
     similarity drops to ~0.5 against a 0.92 threshold -- so four replies in one
@@ -635,7 +570,7 @@ def _opening_stem(text: str) -> str:
     """
     raw = _first_sentence(str(text or "")).strip()
     stem_raw = re.split(r"[-\u2013\u2014,;:]", raw, 1)[0].strip() or raw
-    stem = _repeat_norm(stem_raw)
+    stem = _clarifier_norm(stem_raw)
     return " ".join(stem.split()[:_REPEAT_STEM_WORDS])
 
 
@@ -645,31 +580,28 @@ def _is_repeat_of_recent(candidate: str, prior_replies, *,
 
     Compared head-to-head over the same number of characters: a reply that opens
     identically and then continues is still a repeat to the reader, and comparing a
-    200-char head against a 600-char prior reply would score low purely on the
-    length difference and let it through.
+    200-char head against a 600-char prior reply would score low purely on the length
+    difference and let it through.
     """
     cand = str(candidate or "").strip()
-    if len(_repeat_norm(cand)) < 40:
+    if len(_clarifier_norm(cand)) < 40:
         return False                      # too short to judge; "Okay." is not a repeat
 
-    # A recycled OPENING SENTENCE is a repeat to the reader even when everything
-    # after it is new — the head-to-head ratio below cannot see it, because the
-    # differing remainder drags the score under the threshold. Live at v2 2.3.0
-    # seven consecutive replies opened "You're not wrong." and the guard fired on
-    # only two of them.
-    # Same OPENING STEM is a repeat however the sentence continues (see
-    # _opening_stem). Checked before the whole-sentence test, which the varying
-    # continuation defeats.
+    # A recycled opening sentence is a repeat to the reader even when the rest is new, and the
+    # head-to-head ratio can't see it because the differing remainder drags the score down (seven
+    # replies opened "You're not wrong." and the guard fired on two). Same opening stem is a repeat
+    # however it continues (see _opening_stem). Checked before the whole-sentence test.
     _cand_stem = _opening_stem(cand)
     if len(_cand_stem) >= _REPEAT_STEM_MIN_CHARS and len(_cand_stem.split()) >= 3:
-        for _p in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
-            if _opening_stem(_p) == _cand_stem:
+        for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            if _opening_stem(prior) == _cand_stem:
                 return True
 
-    _cand_open = _repeat_norm(_first_sentence(cand))
+    # Compare first sentence to first sentence, exactly, as its own test.
+    _cand_open = _clarifier_norm(_first_sentence(cand))
     if len(_cand_open) >= _REPEAT_OPENING_MIN_CHARS:
-        for _prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
-            _prior_open = _repeat_norm(_first_sentence(_prior))
+        for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            _prior_open = _clarifier_norm(_first_sentence(prior))
             if len(_prior_open) < _REPEAT_OPENING_MIN_CHARS:
                 continue
             if _repeat_ratio(_cand_open, _prior_open) >= _REPEAT_OPENING_RATIO:
@@ -697,8 +629,7 @@ class _RepeatDetected(Exception):
 
 
 def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
-                                 echo_sources=None,
-                                 salvage: bool = False):
+                                 salvage: bool = False, echo_sources=None):
     """Yield `stream`, withholding the opening until it is cleared as non-repeating.
 
     Module-level and dependency-free so the guard can be driven directly by tests;
@@ -745,11 +676,10 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
             salvaging = True
         if salvaging:
             novel = _strip_repeated_opening(opening, recent_replies)
-            if len(_repeat_norm(novel)) < _REPEAT_MIN_SENTENCE_CHARS:
-                # Still inside the recycled preamble, or holding a fragment too
-                # short to judge — keep buffering rather than paint it. Releasing
-                # on a 3-character tail ("How") would let the rest of a sentence
-                # ELI has already said stream out behind it.
+            if len(_clarifier_norm(novel)) < _REPEAT_MIN_SENTENCE_CHARS:
+                # Still inside the recycled preamble, or holding a fragment too short to judge: keep
+                # buffering. Releasing on a 3-character tail ("How") would let the rest of an
+                # already-said sentence stream out behind it.
                 continue
             released = True
             yield novel
@@ -774,7 +704,7 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
                     novel = _strip_repeated_opening(opening, recent_replies)
                     # Nothing but repeat, and no more stream to wait for: serve the
                     # duplicate rather than a fragment or an empty turn.
-                    if len(_repeat_norm(novel)) >= _REPEAT_MIN_SENTENCE_CHARS:
+                    if len(_clarifier_norm(novel)) >= _REPEAT_MIN_SENTENCE_CHARS:
                         yield novel
                     else:
                         yield opening
@@ -782,17 +712,10 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
             yield opening
 
 
-# ── Anti-repeat: salvage instead of serving the duplicate ────────────────────
-# Live evidence (2.1.80): attempt 1 opened "You're not wrong — I'm a bit of a hot
-# mess…", the guard caught it, the retry opened with the SAME two sentences, and
-# the duplicate was served because the retry was the last chance. But the retry
-# was not a total loss: after those two recycled sentences it went on to answer
-# the question that had actually been asked. Serving or discarding the whole
-# reply were both wrong — the repeat was a preamble, not the answer.
-#
-# So the last attempt trims rather than surrenders: leading sentences that
-# restate a recent reply are dropped and the novel remainder is served. Only if
-# nothing novel survives does the honest-duplicate rule still apply.
+# Anti-repeat: salvage instead of serving the duplicate. On the last attempt the retry repeated
+# the same two sentences and then answered, so serving or discarding the reply were both wrong.
+# Drop the leading sentences that restate a recent reply and serve the novel rest. Only if
+# nothing novel survives does the honest-duplicate rule apply.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])[\"'’”)\]]*\s+")
 _REPEAT_MIN_SENTENCE_CHARS = 12   # below this a sentence carries no content to match on
 _REPEAT_MIN_REDACT_CHARS = 40     # shorter lines are too generic to redact on a match
@@ -830,11 +753,11 @@ def _sentence_seen_before(sentence: str, prior_sentences, *, partial: bool) -> b
     compared against the OPENING of each prior sentence, so a repeat that is only
     half-emitted is recognised as one instead of reading as novel text.
     """
-    cand = _repeat_norm(sentence)
+    cand = _clarifier_norm(sentence)
     if len(cand) < _REPEAT_MIN_SENTENCE_CHARS:
         return False
     for prior in prior_sentences:
-        pn = _repeat_norm(prior)
+        pn = _clarifier_norm(prior)
         if len(pn) < _REPEAT_MIN_SENTENCE_CHARS:
             continue
         if partial:
@@ -885,15 +808,15 @@ def _redact_prior_replies(text: str, prior_replies) -> str:
     """
     body = str(text or "")
     priors = [str(p or "").strip() for p in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]]
-    priors = [p for p in priors if len(_repeat_norm(p)) >= _REPEAT_MIN_REDACT_CHARS]
+    priors = [p for p in priors if len(_clarifier_norm(p)) >= _REPEAT_MIN_REDACT_CHARS]
     if not body or not priors:
         return body
     kept = []
     for line in body.splitlines():
-        norm = _repeat_norm(line)
+        norm = _clarifier_norm(line)
         if len(norm) >= _REPEAT_MIN_REDACT_CHARS and any(
                 _repeat_ratio(line, p) >= _REPEAT_RATIO
-                or _repeat_norm(p) in norm
+                or _clarifier_norm(p) in norm
                 for p in priors):
             continue
         kept.append(line)

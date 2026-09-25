@@ -76,10 +76,9 @@ class ReasoningModesMixin:
         log.debug(f"[REASONING][ToT] proposed {k} candidates ({len(candidates)} chars, "
               f"max_tok={max_tok_propose}, temp={temp_propose})")
 
-        # Multi-level tree deepening (depth > 1 — capable models only). Beam-width-1: keep the
-        # SINGLE strongest path and expand it into deeper, more specific sub-angles one level at
-        # a time. Cost is k proposals per extra level (not k**depth). For the small model
-        # depth == 1, so this loop never runs and ToT stays single-level (behaviour-preserving).
+        # Multi-level tree deepening (depth > 1, capable models only). Beam width 1: keep the strongest
+        # path and expand it into more specific sub-angles a level at a time, so cost is k proposals per
+        # extra level, not k**depth. For the small model depth == 1, so this never runs.
         for _level in range(2, depth + 1):
             try:
                 from eli.world.world_event_bus import fire_reasoning_stage_event as _frs
@@ -188,13 +187,15 @@ class ReasoningModesMixin:
 
         # One sample (e.g. speed-capped on a slow model) → no consensus to take; return it
         # directly rather than spending a wasted extra "select" generation on a single answer.
+        # No agreement signal is possible with one sample, so leave it unset.
+        self._last_sc_agreement_ratio = None
         if len(samples) <= 1:
             return _strip_reasoning_scaffold(samples[0]) if samples else ""
 
-        # TRUE CONSENSUS FIRST: if a strict majority of the independent samples converge on
-        # the same answer, return it — self-consistency means agreement across samples, not
-        # "pick the most eloquent one". This is the meaningful case for facts/values/short
-        # answers; long divergent prose falls through to consensus-synthesis below.
+        # True consensus first: if a strict majority of the independent samples converge on the same
+        # answer, return it. Self-consistency means agreement across samples, not picking the most
+        # eloquent one. That's the case for facts, values and short answers; long divergent prose falls
+        # through to consensus synthesis below.
         _maj = self._self_consistency_majority(samples)
         if _maj is not None:
             log.debug(f"[REASONING][SelfConsistency] majority consensus ({len(_maj)} chars, "
@@ -227,11 +228,9 @@ class ReasoningModesMixin:
             situation_brief=situation_brief,
         )
 
-        # Phase 11 fix (2026-05-11): on a Q3 7B model the selector often echoes
-        # the labelled bundle back instead of choosing one ("=== SAMPLE 1 ===\n
-        # I'll perform a runtime audit..."). Detect that and pick the longest
-        # non-trivial sample as a deterministic fallback. Also strip any
-        # stray "=== SAMPLE N ===" markers if the model included one as a header.
+        # On a Q3 7B the selector often echoes the labelled bundle back instead of choosing ("===
+        # SAMPLE 1 ===\nI'll perform a runtime audit..."). Detect that, fall back deterministically to
+        # the longest non-trivial sample, and strip stray "=== SAMPLE N ===" headers.
         import re as _re_sc
         # Catch BOTH leaked forms the 7B produces: "=== SAMPLE 2 ===" and a bare
         # "SAMPLE 2:" header prefix.
@@ -294,14 +293,11 @@ class ReasoningModesMixin:
         reason_overrides = dict(gen_overrides or {})
         reason_overrides["temperature"] = temp_reason
         reason_overrides["max_tokens"]  = max_tok_reason
-        # Suppress the model's own <think> wrapper on a reasoning model. This stage
-        # ALREADY asks for explicit numbered-step prose reasoning that stage 2 must
-        # read — but a reasoning model wraps that prose in <think>…</think>, and when
-        # it hits max_tokens before closing the tag, the think-strip drops the whole
-        # thing to empty. Stage 2 then gets an empty scratchpad and re-thinks from
-        # scratch (observed: 170-230s burned per pass, then a full retry). With the
-        # closed-think prefill the reasoning is written directly as the prose this
-        # two-stage design intends. See gguf_inference.force_no_think.
+        # Suppress the model's own <think> wrapper on a reasoning model. This stage asks for
+        # numbered-step prose that stage 2 reads, but the model wraps it in <think> and if it hits
+        # max_tokens before closing, _strip_think_text drops everything, so stage 2 gets an empty
+        # scratchpad and re-thinks (170-230s burned per pass). With the closed-think prefill the
+        # reasoning is written as prose. See gguf_inference.force_no_think.
         try:
             from eli.cognition.gguf_inference import force_no_think as _fnt
         except Exception:
@@ -397,10 +393,10 @@ class ReasoningModesMixin:
             _frs("constitutional_ai", 2, 3, "principle_critique")
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        # Grounded-trust: when the engine already considers this turn well-grounded, the weak
-        # local critic must not invent factual problems and delete a correct answer (a grounded
-        # the user's name was once nuked to "[no memories found]"). Applied as a PROMPT instruction here
-        # AND as a post-filter on the issue list below.
+        # Grounded trust: when the engine already thinks this turn is well grounded, the weak local
+        # critic must not invent factual problems and delete a correct answer (a stored name was once
+        # nuked to "[no memories found]"). A prompt instruction here and a post-filter on the issue
+        # list below.
         try:
             _grounding_conf = float(getattr(self, "_current_grounding_confidence", 0.0) or 0.0)
         except Exception:
@@ -628,12 +624,9 @@ class ReasoningModesMixin:
         best_answer = ''
         best_score = 0.0
 
-        # Algorithmic-mode dispatch: ToT / Constitutional / Self-Consistency
-        # run a multi-stage pipeline of LLM calls (propose-and-develop,
-        # generate-critique-revise, sample-and-select) instead of just
-        # repeating the same single call N times. The pass-loop below still
-        # acts as a confidence safety net if the algorithmic output scores
-        # too low.
+        # Algorithmic-mode dispatch: ToT / Constitutional / Self-Consistency run a multi-stage LLM
+        # pipeline (propose-and-develop, generate-critique-revise, sample-and-select) instead of one
+        # call N times. The pass-loop below is still a confidence safety net if the score is too low.
         _mode_str = str(profile.get('mode') or reasoning_mode or '').strip().lower()
         # Expose this turn's grounding confidence to the per-mode algorithms
         # (read by the constitutional grounded-trust override, #3b/Option C).
@@ -653,6 +646,13 @@ class ReasoningModesMixin:
                 algo_score = self._score_response_confidence(
                     user_input, algo_resp, working_context, intent_conf, evidence
                 )
+                if _mode_str == "self_consistency":
+                    # Fold in how much the samples actually agreed — otherwise a
+                    # forced synthesis of contradictory samples scores identically
+                    # to genuine consensus.
+                    _sc_ratio = getattr(self, "_last_sc_agreement_ratio", None)
+                    if _sc_ratio is not None:
+                        algo_score = max(0.0, algo_score - (1.0 - _sc_ratio) * 0.35)
                 log.debug(f"[REASONING][{_mode_str}] final score={algo_score:.2f} threshold={threshold:.2f}")
                 if trace is not None:
                     trace.setdefault('confidence', []).append(
@@ -682,27 +682,16 @@ class ReasoningModesMixin:
     situation_brief=situation_brief)
             elapsed = time.perf_counter() - started
             log.debug(f'[COGNITIVE][TIMING] chat_pass_{pass_no}={elapsed:.3f}s')
-            # Govern HERE, once, before scoring and before any of this
-            # function's four return paths. The streaming path is governed at
-            # its own choke point, but this non-streaming loop was not: it
-            # served roughly a third of live turns straight out of
-            # _get_chat_response, so every output guard -- invented health,
-            # invented runtime state, invented internals, leaked prompt
-            # labels -- was simply absent from those replies. Live at 2.3.27
-            # "I'm still running on fumes" reached the user this way while the
-            # MEMORY side correctly refused to store the same sentence.
-            #
-            # It cannot go inside _get_chat_response: that helper also produces
-            # private reasoning and internal summaries, which are not speech
-            # and must not be governed as if they were.
-            #
-            # Scoring runs on the governed text deliberately -- confidence
-            # should describe the reply the user actually receives.
+            # Govern here, once, before scoring and before any of the four return paths. The streaming path
+            # is governed at its own choke point, but this loop wasn't and it serves about a third of live
+            # turns. Can't go inside _get_chat_response, it also makes private reasoning. Score the governed
+            # text so confidence describes what the user actually gets.
             try:
                 response = govern_output(
                     response,
                     is_grounded=bool(evidence),
                     evidence=evidence if isinstance(evidence, str) else None,
+                    memory_diag=getattr(self, "_memory_diag", None),
                 )
             except Exception:
                 log.debug("[COGNITIVE] output governor skipped", exc_info=True)
@@ -723,7 +712,12 @@ class ReasoningModesMixin:
             if pass_no < passes:
                 working_context = (
     working_context +
-     "\n\nRevision directive:\n- Previous candidate was below confidence threshold.\n- Remove hedging.\n- Use only grounded facts from context and executor evidence.\n- If exact file paths or line numbers are required, include them explicitly.\n").strip()
+     "\n\nRevision directive:\n- Previous candidate was below confidence threshold.\n"
+     "- If you are genuinely uncertain, say so plainly rather than guessing — do not "
+     "remove honest hedging just to sound more certain; that is worse than the "
+     "original answer, not better.\n"
+     "- Use only grounded facts from context and executor evidence.\n"
+     "- If exact file paths or line numbers are required, include them explicitly.\n").strip()
                 log.debug(
                     f'[COGNITIVE][FINAL] retry next_pass={pass_no + 1} reason=below_threshold')
         if best_score < threshold and profile.get(
@@ -736,15 +730,9 @@ class ReasoningModesMixin:
             except Exception:
                 _eli_gc_action = ""
 
-            _eli_gc_grounded_actions = {
-                "RUNTIME_STATUS",
-                "MEMORY_COUNT",
-                "RECENT_MEMORY_PROCESSING",
-                "SELF_REPORT_RECENT_UPDATES",
-                "GUI_RUNTIME_AUDIT",
-            }
+            from eli.contracts.grounded_control import is_grounded_control_action
 
-            if _eli_gc_action in _eli_gc_grounded_actions:
+            if is_grounded_control_action(_eli_gc_action):
                 log.debug(
                     f"[COGNITIVE][FINAL] grounded-control no-clarify v2 suppressed "
                     f"action={_eli_gc_action} score={best_score:.2f} threshold={threshold:.2f}",
@@ -830,16 +818,9 @@ class ReasoningModesMixin:
             if _nonquick_depth else
             "For simple command results, answer in one short sentence. "
         )
-        _tone_block = ""
-        try:
-            from eli.cognition import tone_adaptor as _ta
-            _tone_block = _ta.synthesis_directives(query or "")
-        except Exception:
-            log.debug("synthesis tone directives skipped", exc_info=True)
         prompt = (
             f"{persona}\n\n"
-            + (f"{_tone_block}\n\n" if _tone_block else "")
-            + "INSTRUCTIONS: The data below was gathered by your internal agents. "
+            "INSTRUCTIONS: The data below was gathered by your internal agents. "
             "Answer the user's current request only. "
             "Write a clear, natural, first-person answer using ONLY this data. "
             "Do not output raw JSON, bracket labels, or agent metadata. "
@@ -868,12 +849,10 @@ class ReasoningModesMixin:
             _max_tokens = int(max_tokens_override) if (max_tokens_override is not None and max_tokens_override != 0) else -1
             if _nonquick_depth and _max_tokens == -1:
                 _max_tokens = 1800
-            # A grounded factual answer (web/news lookup) is a few sentences, not
-            # an essay. In quick mode max_tokens=-1 means "fill the rest of the
-            # context" (~8.8k tokens observed) — that both slows the reply AND
-            # starves the prompt budget, forcing the system prompt + grounding
-            # instruction to be truncated. Cap it so the evidence fits and the
-            # answer stays tight. Non-quick keeps its larger 1800 budget above.
+            # A grounded factual answer (web/news lookup) is a few sentences, not an essay. In quick mode
+            # max_tokens=-1 means "fill the rest of the context" (~8.8k tokens), which slows the reply and
+            # starves the prompt budget so the system prompt and grounding get truncated. Cap it so the
+            # evidence fits. Non-quick keeps its larger 1800.
             if _max_tokens == -1 and str(action or "").upper() in ("WEB_SEARCH", "NEWS_FETCH"):
                 _max_tokens = 700
             _gen_kwargs = _eli_apply_response_kwargs(
@@ -886,14 +865,7 @@ class ReasoningModesMixin:
             )
             _eli_clear_current_action()
             if response and response.strip():
-                out = response.strip()
-                try:
-                    from eli.cognition import tone_adaptor as _ta
-                    out = _ta.repair_coherence(out, query or "")
-                    _ta.sync_world()
-                except Exception:
-                    log.debug("synthesis tone coherence skipped", exc_info=True)
-                return out
+                return response.strip()
         except Exception as e:
             try:
                 _eli_clear_current_action()
@@ -906,7 +878,11 @@ class ReasoningModesMixin:
         """True self-consistency vote: if a STRICT majority of the independent samples
         normalise to the same answer, return the fullest original sample in that group;
         else None (caller falls back to LLM consensus-synthesis). Meaningful for short
-        factual/value answers — long divergent prose rarely exact-matches and returns None."""
+        factual/value answers — long divergent prose rarely exact-matches and returns None.
+
+        Side effect: records the agreement ratio (``self._last_sc_agreement_ratio``,
+        top-answer share of valid samples) so the caller can lower its confidence
+        score when samples disagreed instead of discarding that signal."""
         import re as _re
         from collections import Counter
 
@@ -917,12 +893,15 @@ class ReasoningModesMixin:
 
         valid = [s for s in samples if s and len(str(s).strip()) >= 2]
         if len(valid) < 3:
+            self._last_sc_agreement_ratio = None
             return None
         norms = [_norm(s) for s in valid]
         counts = Counter(n for n in norms if n)
         if not counts:
+            self._last_sc_agreement_ratio = 0.0
             return None
         top_norm, top_count = counts.most_common(1)[0]
+        self._last_sc_agreement_ratio = top_count / len(valid)
         # Strict majority, and the agreed answer is short enough that exact-match is a real
         # signal (a fact/value), not coincidental overlap of long prose.
         if top_count > len(valid) / 2 and len(top_norm) <= 400:

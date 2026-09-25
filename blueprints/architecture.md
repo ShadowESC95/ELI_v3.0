@@ -13,7 +13,7 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime
 > + assistant GUI (and, as of 2026-06-28, a self-hosted web app — `api/server.py`,
 > documented in `ELI_USER_MANUAL.md`). No cloud, no APIs on the inference path, no hardcoded
-> model. **232,507 LOC** across **595** Python files in `eli/`; **`api/server.py`**
+> model. **224,368 LOC** across **595** Python files in `eli/`; **`api/server.py`**
 > adds **5,303** lines; **232** manifest capabilities (**215** doc-routable;
 > **211** `SUPPORTED_ACTIONS`; **189** router-routable). Measured 2026-08-29.
 
@@ -60,10 +60,10 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 
 | File | LOC | Notes |
 |---|---:|---|
-| `eli/kernel/engine.py` | 15,895 | Core engine (stages extracted to `kernel/stages/`) |
+| `eli/kernel/engine.py` | 7,980 | Core engine (stages extracted to `kernel/stages/`) |
 | `eli/execution/executor_enhanced.py` | 15,821 | Dispatch hub (effectors split out) |
 | `eli/memory/memory.py` | 5,648 | Memory god-class |
-| `eli/execution/router_enhanced.py` | 8,202 | Intent router |
+| `eli/execution/router_enhanced.py` | 8,201 | Intent router |
 | `eli/runtime/deterministic_grounding_gate.py` | 4,383 | Grounding gate |
 | `eli/cognition/agent_bus.py` | 3,513 | 15-agent parallel bus |
 | `eli/gui/labs/report_tab.py` | 3,327 | Labs report builder |

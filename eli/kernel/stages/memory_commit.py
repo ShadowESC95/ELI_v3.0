@@ -56,20 +56,32 @@ class MemoryCommitMixin:
                 "i'm here.", "i'm here", "got it.", "got it", "ok.", "ok"
             }:
                 return
-            # ELI talking ABOUT ITSELF is not knowledge. Stored, it returns in a later
-            # session under "Stored knowledge:" and gets recited as fact.
+            # ELI talking about itself is not knowledge. Stored as a memory it comes back in a later
+            # session under "Stored knowledge:" and is recited as fact ("I'm standing by, still glitchy..."
+            # answered "morning"). Conversation history already keeps what was said, so only substantive
+            # content earns a memory.
             _t_low = text.lower()
             _self_status = (
+                # first person + a state word ("I'm good", "I am ready")
                 (re.search(r"\b(i'?m|i am|i've|i have been|my)\b", _t_low)
                  and re.search(r"\b(glitch\w*|standing by|running on|same old code|"
                                r"still here|buggy|broken|fine|okay|ok|good|alright|well|"
                                r"ready|online|operational|functioning|state|status|mood|"
                                r"feeling)\b", _t_low))
+                # …or an unmistakable self-status phrase even without the pronoun
+                # ("Sahns. Still glitchy, still running on the same old code.")
                 or re.search(r"\b(still glitch\w*|same old code|standing by|"
                              r"running on the same)\b", _t_low)
             )
             if _self_status:
                 log.debug("[MEMORY] not storing ELI's own self-status remark as knowledge")
+                return
+            # Runtime state is measured live and goes stale; a stored statement of it
+            # (or an invented one) comes back later as fact.
+            if (re.search(r"\b(n_ctx|context (?:length|window|size)|ctx|gpu|vram|layers?|"
+                          r"batch|threads?|ram)\b", _t_low)
+                    and re.search(r"\d{2,}", _t_low)):
+                log.debug("[MEMORY] not storing ELI's own runtime-state statement as knowledge")
                 return
             kind = "assistant_insight"
             source = "assistant"
@@ -222,11 +234,9 @@ class MemoryCommitMixin:
         try:
             from eli.runtime.diagnostic_patterns import should_exclude_turn_from_prompt
             if should_exclude_turn_from_prompt("assistant", text):
-                # Benign and BY DESIGN: an image/status-loop frame is deliberately not stored in
-                # conversation context. This is NOT a failure — logging it as one polluted the
-                # failure log, made it a "recurring error", and drove the self-heal loop to "fix"
-                # a non-bug (it generated bogus 'assistant_dynamic_status_claim' web-API code at
-                # shutdown). Debug-log only.
+                # Benign and by design: an image/status-loop frame is deliberately not stored in
+                # conversation context. It isn't a failure; logging it as one polluted the failure
+                # log and drove the self-heal loop to "fix" a non-bug. Debug-log only.
                 log.debug("[COGNITIVE] skipped storing unsupported assistant image/status frame")
                 return
         except Exception:
@@ -235,12 +245,10 @@ class MemoryCommitMixin:
             self._last_response = str(text)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        # Capture any follow-up offer ELI just made ("Want me to update the
-        # profile?") so a later "yes" re-routes and actually executes it. This
-        # lives at the single store chokepoint every reply path funnels through
-        # (quick CHAT, synthesis, fastpath) — previously it was gated to
-        # WEB_SEARCH only, so conversational offers were never captured and the
-        # affirmation was swallowed as chat.
+        # Capture any follow-up offer ELI just made ("Want me to update the profile?") so a later
+        # "yes" re-routes and runs it. Lives at the one store chokepoint every reply path uses. It was
+        # gated to WEB_SEARCH only, so conversational offers were never captured and the "yes" was
+        # swallowed as chat.
         try:
             from eli.runtime.pending_proposal import (
                 extract_proposal, set_pending_proposal, clear_pending_proposal,

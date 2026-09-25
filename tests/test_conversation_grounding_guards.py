@@ -18,7 +18,7 @@ import pytest
 
 from eli.execution.routing.intents.self_report import _pm_asks_something
 from eli.execution.router_enhanced import route
-from eli.kernel.engine import (
+from eli.kernel.stages.guards import (
     _RepeatDetected, _opens_by_echoing, _stream_holding_back_repeats,
 )
 from eli.runtime.pending_proposal import extract_proposal
@@ -134,7 +134,7 @@ def test_widened_corpus_does_not_flag_a_normal_reply():
 def test_source_cap_covers_a_full_recent_window():
     """Recent user turns are passed alongside the live one; a cap of 4 would
     silently drop most of them."""
-    from eli.kernel.engine import _ECHO_MAX_SOURCES
+    from eli.kernel.stages.guards import _ECHO_MAX_SOURCES
     assert _ECHO_MAX_SOURCES >= 16
 
 

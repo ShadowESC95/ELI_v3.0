@@ -41,8 +41,8 @@ VOICE_FILES = [
     "eli/cognition/persona.txt",
     "eli/cognition/context_synthesiser.py",
     # v3 decomposes the engine: the voice prompts live in the stage modules.
-    "eli/kernel/engine.py",
-    "eli/kernel/engine.py",
+    "eli/kernel/stages/persona_text.py",
+    "eli/kernel/stages/prompt_assembly.py",
 ]
 
 

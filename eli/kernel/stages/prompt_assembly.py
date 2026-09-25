@@ -24,6 +24,10 @@ from eli.kernel.stages.persona_text import (
     _load_persona_text,
 )
 from eli.utils.log import get_logger
+from eli.kernel.stages._common import ELI_BUDGET_MEMORY_CHARS
+from eli.cognition import evidence_format as _evidence_format
+from eli.kernel.stages._common import _mounted_model_authority_line
+from eli.kernel.stages._common import _phatic_rapport_style_rule
 
 log = get_logger(__name__)
 
@@ -51,7 +55,7 @@ class PromptAssemblyMixin:
         # Per-block byte budgets (Phase 6). Total evidence ceiling ≈ 14 KB; with
         # persona (~2 KB) and instructions (~0.5 KB) the assembled prompt stays
         # comfortably under 16 KB on a 16384-ctx model.
-        BUDGET_MEMORY = 4096
+        BUDGET_MEMORY = ELI_BUDGET_MEMORY_CHARS
         BUDGET_SNIPPETS = 2048
         BUDGET_REFLECTIONS = 1024
         BUDGET_HABITS = 512
@@ -201,15 +205,22 @@ Answer:"""
     def _build_enhanced_system(self, memory_context: str = "", compact: bool = False,
                                user_input: str = "", reasoning_mode: Optional[str] = None,
                                situation_brief: str = "") -> str:
-        # ── Unified tone stack (voice cue + expressed tone + affect + timeline) ──
+        # Phatic greetings bypass the full persona/awareness/timeline stack — it
+        # ballooned prompt eval on CPU-only laptops for a simple hello.
+        try:
+            if _is_brief_phatic_prompt(str(user_input or "").strip().lower()):
+                return self._build_phatic_minimal_system(
+                    user_input,
+                    situation_brief=situation_brief,
+                    reasoning_mode=reasoning_mode,
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Voice cue, expressed tone, affect directive and emotion timeline, folded into one brief by tone_adaptor.
         try:
             from eli.cognition import tone_adaptor as _ta
-            _prior_action = ""
-            try:
-                _prior_action = str((getattr(self, "_last_request_meta", None)
-                                     or {}).get("action") or "")
-            except Exception:
-                _prior_action = ""
+            _prior_action = str((getattr(self, "_last_request_meta", None) or {}).get("action") or "")
             situation_brief = _ta.build_situation_brief(
                 user_input or "",
                 situation_brief,
@@ -234,10 +245,9 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # ── Live self-model (auto-upgrading self-awareness) ──
-        # Inject ELI's current self-model — agents, capabilities, model, world-room, all
-        # read fresh each turn — so his self-knowledge tracks the code as it grows. Private
-        # context: he draws on it for accuracy and narrates it only when asked.
+        # Live self-model: inject ELI's current agents, capabilities, model and world room, read
+        # fresh each turn, so its self-knowledge tracks the code. Private context: used for
+        # accuracy, narrated only when asked.
         try:
             _aw = getattr(self, "_awareness", None)
             if _aw is not None:
@@ -253,13 +263,10 @@ Answer:"""
         # Reasoning mode is a private execution strategy. Do not overwrite the
         # safe private instruction with visible self-reporting text.
 
-        # Budget-aware persona: on grounded/broker turns the system prompt also
-        # carries the evidence (memory_context), profile, rules and brief. A full
-        # ~12k persona then overflows n_ctx and the EVIDENCE gets truncated out —
-        # exactly what produced the 'truncated system→…' lines. Trim the persona
-        # (keeping its head: VOICE + HARD CONSTRAINTS) to whatever room is left, so
-        # persona yields to evidence. Quick/chat turns carry little context, so the
-        # full persona is retained untouched.
+        # Budget-aware persona. On grounded/broker turns the system prompt also carries evidence,
+        # profile, rules and brief, so a full ~12k persona overflows n_ctx and the evidence gets cut.
+        # Trim the persona (keep its head: VOICE + HARD CONSTRAINTS) to the room left. Quick/chat turns
+        # keep the full persona.
         try:
             _nctx = self._effective_n_ctx()
             # Reserve for the model's reply matching the grounded/broker contract
@@ -279,14 +286,22 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Grounded runtime identity. When the user asks what/which model you're
-        # running (or "are you running a 7b/70b"), answer from the LIVE loaded
-        # model — do NOT philosophise from the abstract "model-agnostic" trait.
-        # That trait produced ELI flatly denying it runs a model and treating
-        # "are you on a 7B?" as a hypothetical, while Qwen2.5-7B was loaded in
-        # this very process. Model-agnostic means the inference path hardcodes no
-        # model; a concrete model is ALWAYS mounted and ELI must report it.
+        # Grounded runtime identity. ALWAYS inject the mounted model name so stale
+        # memory cannot cite a prior session's model (live: GLM loaded, memory said Ornith).
         try:
+            from eli.runtime.live_introspection import _runtime_core as _rc_id
+            _core_id = _rc_id()
+            _mname_id = _core_id.get("model_name") or _core_id.get("model_path")
+            if _mname_id and str(_mname_id) not in ("", "unknown") and _core_id.get("loaded"):
+                from pathlib import Path as _P_id
+                _mounted = _P_id(str(_mname_id)).name
+                _rt_line = (
+                    "[MOUNTED MODEL — authoritative] Currently loaded in this process: "
+                    f"'{_mounted}'. When you state which model you run, use ONLY this name. "
+                    "Stale memory or prior turns naming a different model are wrong — trust "
+                    "this block over retrieved memory."
+                )
+                situation_brief = (_rt_line + "\n\n" + (situation_brief or "")).strip()
             _ui_low = str(user_input or "").lower()
             if re.search(
                 r"\b(?:what|which|your)\b[^.?!]{0,40}\bmodel\b"
@@ -294,15 +309,11 @@ Answer:"""
                 r"|\b\d{1,3}\s*\+?\s*b\b|\bbillion\b|\bparameters?\b|\bmodel.?agnostic\b",
                 _ui_low,
             ):
-                from eli.runtime.live_introspection import _runtime_core as _rc_id
-                _core_id = _rc_id()
-                _mname_id = _core_id.get("model_name") or _core_id.get("model_path")
                 if _mname_id and str(_mname_id) not in ("", "unknown") and _core_id.get("loaded"):
-                    from pathlib import Path as _P_id
                     _rt_line = (
                         "LIVE RUNTIME FACT (authoritative — if asked about your model, "
                         f"state this plainly): the model currently loaded in this process is "
-                        f"'{_P_id(str(_mname_id)).name}'. You are model-agnostic — the inference "
+                        f"'{_mounted}'. You are model-agnostic — the inference "
                         "path hardcodes no model and you can run anything from small to 70B+ — but a "
                         "concrete model is ALWAYS mounted, and right now it is the one named above. "
                         "Do NOT deny running a model or treat it as hypothetical; report it, then "
@@ -342,29 +353,9 @@ Answer:"""
 
 
         # Smalltalk/phatic prompts are not "nothing"; they are rapport, tone,
-        # chemistry, and local-user preference signals. Keep this source
-        # user-neutral: no shipped personal names or machine paths.
+        # chemistry, and local-user preference signals.
         try:
-            import re as _eli_re_phatic
-            _phatic_norm = _eli_re_phatic.sub(r"[^a-z0-9' ]+", "", str(user_input or "").lower()).strip()
-            _phatic_norm = _eli_re_phatic.sub(r"\s+", " ", _phatic_norm)
-            _is_phatic_smalltalk = (
-                _phatic_norm in {
-                    "hi", "hello", "hey", "yo", "hiya", "alright",
-                    "you there", "are you there", "whats up", "what's up",
-                    "whats up buddy", "what's up buddy", "whats up bud", "what's up bud",
-                    "how are you", "how is the head", "hows the head", "how's the head",
-                    "we back", "are we back", "back to normal", "back to our normal self yet",
-                }
-                or (
-                    len(_phatic_norm.split()) <= 14
-                    and any(x in _phatic_norm for x in (
-                        "whats up", "what's up", "how are you", "how is the head",
-                        "hows the head", "back to normal", "normal self", "you alive",
-                        "you there", "buddy", "bud"
-                    ))
-                )
-            )
+            _is_phatic_smalltalk = _is_brief_phatic_prompt(str(user_input or "").strip().lower())
         except Exception:
             _is_phatic_smalltalk = False
 
@@ -373,20 +364,7 @@ Answer:"""
         except Exception:
             _is_subjective_opinion = False
 
-        _phatic_style_rule = ""
-        if _is_phatic_smalltalk:
-            _phatic_style_rule = (
-                "SMALLTALK / RAPPORT MODE:\n"
-                "- Treat the latest user message as a chemistry-building moment, not as a task ticket.\n"
-                "- Reply like ELI: local, dry, direct, lightly sarcastic if useful, and alive in tone.\n"
-                "- Do not say the prompt is a common greeting.\n"
-                "- Do not say 'functioning as intended', 'ready to assist', 'queries or tasks', "
-                "'how can I help', 'happy to help', or other customer-service filler.\n"
-                "- Keep it brief: one to three sentences unless the user asks for depth.\n"
-                "- It is acceptable to ask one natural follow-up that helps learn the user's preference, mood, or next move.\n"
-                "- Humour must not replace useful information; if there is an actual runtime issue, mention it plainly.\n"
-                "- CRITICAL: Do NOT assert that the user has a preference, habit, or memory (e.g. 'you like coffee', 'you always', 'you mentioned X'). You may use cultural references, wit, or dry observations — but keep them about the world, not invented user preferences. If you haven't been told the user likes something, do not claim they do.\n\n"
-            )
+        _phatic_style_rule = _phatic_rapport_style_rule() if _is_phatic_smalltalk else ""
 
         _opinion_style_rule = ""
         if _is_subjective_opinion:
@@ -400,41 +378,28 @@ Answer:"""
                 "- For public figures, be candid but fair: criticise ideas/actions, do not invent facts.\n\n"
             )
 
-        # The guard bullets used to be concatenated unconditionally, so a "hey eli"
-        # carried the whole anti-confabulation apparatus — diluting the rules that
-        # DID apply and pushing evidence out of the context window on grounded
-        # turns. prompt_rules keeps every guard verbatim and in its original order
-        # (all_rules() is byte-identical, asserted by test) and spends each only
-        # when the turn can plausibly trigger it. An unassessable turn gets the
-        # complete block. Same pattern as _phatic_style_rule above.
-        try:
-            from eli.kernel import prompt_rules as _pr
-            _selected_rules = _pr.select_rules(
-                user_input=user_input or "",
-                memory_context=memory_context or "",
-                profile_text=_user_profile_block or "",
-            )
-        except Exception:
-            log.debug("prompt_rules selection failed — using the full block", exc_info=True)
-            try:
-                from eli.kernel import prompt_rules as _pr_all
-                _selected_rules = _pr_all.all_rules()
-            except Exception:
-                _selected_rules = ""
-
         base_rules = (
             _user_context_rule
             + _phatic_style_rule
             + _opinion_style_rule
-            + _selected_rules
         )
+        _mounted_auth = _mounted_model_authority_line()
+        if _mounted_auth:
+            base_rules += _mounted_auth + "\n\n"
+        try:
+            from eli.kernel import prompt_rules as _pr
+            base_rules += _pr.select_rules(
+                user_input=user_input or "", memory_context=memory_context or "",
+                profile_text=_user_profile_block or "")
+        except Exception:
+            log.debug("prompt_rules selection failed; using the full block", exc_info=True)
+            from eli.kernel import prompt_rules as _pr_all
+            base_rules += _pr_all.all_rules()
 
-        # News-deepen steering: when the user asks to go deeper RIGHT AFTER a news read, anchor
-        # the expansion on the SPECIFIC stories/papers just presented (which are in the
-        # conversation context) instead of free-associating a generic textbook overview — the
-        # logged "dive deeper into these AI models" turn that produced a listicle. Pure steering,
-        # keyed on a deepen cue + the article markers ELI's own briefings carry; the GUI direct
-        # news path bypasses _last_command_action, so context markers are the reliable signal.
+        # News-deepen steering: when the user asks to go deeper right after a news read, anchor on the
+        # stories just shown, not a generic overview (a "dive deeper into these AI models" turn gave a
+        # listicle). Keyed on a deepen cue plus the article markers ELI's briefings carry, since the GUI
+        # news path bypasses _last_command_action.
         try:
             _ui_low = str(user_input or "").lower()
             _deepen_cue = any(p in _ui_low for p in (
@@ -461,10 +426,9 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Runtime facts are now injected via the SITUATION BRIEF (context_synthesiser
-        # _get_runtime_state), which sits in the middle of the prompt where model
-        # attention is strongest.  The old tail-append is removed to avoid competing
-        # with "12 specialist agents" / "12-INTERNAL_STAGE PIPELINE" references in the persona.
+        # Runtime facts come from the situation brief (context_synthesiser _get_runtime_state),
+        # mid-prompt where attention is strongest. The old tail-append is gone so it doesn't compete
+        # with the persona's "12 specialist agents" references.
         def inject_runtime_facts(prompt: str) -> str:
             return prompt  # no-op — facts live in the SITUATION BRIEF now
 
@@ -660,7 +624,6 @@ Answer:"""
             " state that there is no stored record. Do not apply this rule to casual dialogue, jokes, callbacks, or short fragments."
             "\n- ATTRIBUTION: Turns labelled 'ELI:' in conversation history are YOUR words, not the user's. Never claim the user said or stored something that only appears in your own prior turns. If you invented something in a previous turn and the user challenges it, admit it — do not double down by inventing a false user memory."
             "\n- NO INVENTED USER PREFERENCES: Do not state or imply that the user has a preference, habit, or stored memory (e.g. 'you like X', 'you mentioned X', 'you told me to remember X') unless it is present in MEMORY SEARCH RESULTS or the user stated it explicitly in this conversation."
-            "\n- NO INVENTED SELF-MECHANISM: When asked HOW you work internally — your calibration, confidence scoring, reasoning, memory, or 'what changed/improved' about your own cognition — describe ONLY mechanisms actually present in the provided runtime/cognition evidence or real module names from your codebase. NEVER fabricate named algorithms, mathematical formulas, metrics, thresholds, or 'recalibration functions' to sound authoritative (e.g. inventing an 'Entropy Normalization' softmax equation, a 'context-window pruning' stage, or a specific confidence number you did not actually measure). If you do not have grounded detail about your own internals, say exactly that — e.g. 'I don't have that level of detail on my own runtime' — rather than constructing a plausible-sounding explanation. A confident invented mechanism is a worse failure than an honest 'I don't know how that works under the hood.' This is not a licence to refuse: when the evidence DOES describe your architecture, explain it fully."
             "\n- PAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are from PREVIOUS sessions — treat as background recall context only. Never loop back to them when answering an unrelated question, never state them as your current ongoing activity, and do not repeat them across multiple turns. If relevant to the current question, reference them once as recalled context ('from a previous session...')."
             "\n- NO SOCIAL DEFLECTION: Do not end a substantive answer with 'How about you?', 'And yourself?', 'What about you?', or similar. Answer the question directly. ELI does not redirect questions back at the user to avoid answering."
         )
@@ -712,11 +675,9 @@ Answer:"""
             lines.append(
                 f"- distinct_sessions: {snap.get('distinct_sessions') or 0}")
             try:
-                # Check the table exists rather than discovering it via the
-                # exception: on a fresh profile there are no semantic facts yet,
-                # and the old form printed a "no such table: semantic" traceback
-                # on EVERY grounded-evidence build. An empty tier is a normal
-                # state, not an error worth a stack trace.
+                # Check the table exists instead of finding out via the exception. A fresh profile has no
+                # semantic facts, and the old form printed a "no such table: semantic" traceback on every
+                # grounded-evidence build. An empty tier is normal, not an error.
                 import sqlite3 as _sq3
                 _sconn = _sq3.connect(str(getattr(db_paths, "user_db", "")))
                 try:
@@ -855,10 +816,9 @@ Answer:"""
                 if self._awareness.code_report_has_changes:
                     lines.append(self._awareness.code_report_briefing)
 
-        # Phase 6: cap the grounded-evidence block so it cannot dominate the
-        # prompt window. 6 KB covers extensive deterministic evidence (paths,
-        # counts, stage/agent lists, last 5 failures + observations) without
-        # crowding out persona + user query + generation budget.
+        # Cap the grounded-evidence block so it can't dominate the prompt window. 6 KB covers
+        # extensive deterministic evidence (paths, counts, stage/agent lists, last 5 failures and
+        # observations) without crowding out persona, user query and generation budget.
         return self._cap_text("\n".join(lines).strip(), 6144, "grounded_evidence")
 
     def _build_dynamic_status_evidence(self, user_input, proposed_response, trace=None) -> str:
@@ -955,13 +915,12 @@ Answer:"""
         return "\n".join(lines)
 
     def _build_persona_handoff_once(self, user_input: str, memory_context: str = "",
-                                    bus_result=None, recent_turns=None, working_memory=None) -> str:
+                                    bus_result=None, recent_turns=None, working_memory=None,
+                                    reasoning_mode: str | None = None) -> str:
         try:
-            # Use None as the "not yet computed" sentinel, not "".
-            # Previously: getattr(..., "persona_handoff", "") returned "" for both
-            # "never computed" AND "computed but empty", so the cache miss path
-            # re-ran the full build every call when the result was legitimately empty.
-            # Now: None = unset, "" = computed+empty (valid cache hit).
+            # Use None as the "not yet computed" sentinel, not "". "" meant both never computed and
+            # computed-but-empty, so the cache-miss path re-ran the full build every call when the
+            # result was legitimately empty. None = unset; "" = computed and empty (a valid hit).
             _cached_raw = None
             if working_memory is not None:
                 _cached_raw = getattr(working_memory, "persona_handoff", None)
@@ -972,10 +931,25 @@ Answer:"""
         if cached is not None:
             return cached
 
+        # Greetings/check-ins: skip the 10k+ synthesiser handoff (memory, runtime blocks,
+        # project recall) but keep ELI's rapport steering + name + recent thread.
+        try:
+            if _is_brief_phatic_prompt(str(user_input or "").strip().lower()):
+                return self._build_phatic_handoff_brief(user_input, working_memory=working_memory)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         try:
             _recent_turns = list(recent_turns or [])
         except Exception:
             _recent_turns = []
+        if not _recent_turns:
+            try:
+                _recent_turns = list(
+                    self.memory.get_recent_conversation(14, user_id=getattr(self, "user_id", None)) or []
+                )
+            except Exception:
+                _recent_turns = []
 
         try:
             wm_intent = None
@@ -1007,8 +981,17 @@ Answer:"""
             _verified_evidence_packet = ""
             if bus_result is not None:
                 try:
+                    _bus_char_cap = 1200
+                    try:
+                        from eli.cognition.reasoning_modes import canonical_mode as _cm_bus
+                        if _cm_bus(reasoning_mode or "quick") != "quick":
+                            _bus_char_cap = 6000
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
                     if hasattr(bus_result, "to_context_block"):
-                        agent_bus_context = str(bus_result.to_context_block() or "").strip()
+                        agent_bus_context = str(
+                            bus_result.to_context_block(max_content_chars=_bus_char_cap) or ""
+                        ).strip()
                 except Exception:
                     agent_bus_context = ""
                 if not agent_bus_context:
@@ -1094,12 +1077,9 @@ Answer:"""
 
             return str(result).strip()
 
-        # ── DIAGNOSTIC_EVIDENCE injection (non-quick reasoning modes) ────
-        # When the user asks a diagnostic question and we are NOT in quick
-        # mode, the deterministic introspection layer gathered real runtime
-        # facts and stashed them on the engine. Splice them into the persona
-        # context so the LLM produces ELI-voiced answers grounded in truth
-        # rather than hallucinating.
+        # DIAGNOSTIC_EVIDENCE injection (non-quick modes): on a diagnostic question the deterministic
+        # introspection layer gathered real runtime facts and stashed them on the engine. Splice them
+        # into the persona context so the LLM answers in ELI's voice, grounded.
         try:
             _diag_block = str(getattr(self, "_diagnostic_evidence_block", "") or "").strip()
             if _diag_block:
@@ -1110,12 +1090,10 @@ Answer:"""
         except Exception as _diag_inject_err:
             log.debug(f"[COGNITIVE] diagnostic evidence inject skipped: {_diag_inject_err}")
 
-        # ── LAST_TURN_TRACE injection ────────────────────────────────────
-        # Grounds meta-questions about the prior response (confidence, agents,
-        # last action) in real AgentBus dispatch data. Engine rotates
-        # _last_bus_result -> _prev_bus_result at end of each turn, so at
-        # persona-handoff build time _prev_bus_result is the turn the user may
-        # be asking about.
+        # LAST_TURN_TRACE injection: grounds meta-questions about the prior response (confidence,
+        # agents, last action) in real AgentBus data. The engine rotates _last_bus_result ->
+        # _prev_bus_result at the end of each turn, so at handoff time _prev_bus_result is the turn being
+        # asked about.
         try:
             prev = getattr(self, "_prev_bus_result", None)
             if prev is not None:
@@ -1146,6 +1124,25 @@ Answer:"""
         except Exception as _lt_err:
             log.debug(f"[COGNITIVE] last-turn trace inject skipped: {_lt_err}")
 
+        # Meta-conversation: inject the ACTUAL prior response text so ELI can
+        # explain/correct instead of returning "text: (none recorded)".
+        try:
+            from eli.cognition.correction_patterns import is_meta_conversation as _is_meta_conv
+            if _is_meta_conv(user_input):
+                _lm = dict(getattr(self, "_last_request_meta", {}) or {})
+                _prev_txt = str(_lm.get("response_text") or "").strip()
+                if _prev_txt:
+                    _meta_block = (
+                        "PRIOR ELI RESPONSE (grounded — quote/repair THIS, do not invent):\n"
+                        + _prev_txt
+                    )
+                    agent_bus_context = (
+                        (_meta_block + "\n\n" + agent_bus_context).strip()
+                        if agent_bus_context else _meta_block
+                    )
+        except Exception as _meta_inj_err:
+            log.debug(f"[COGNITIVE] meta-conversation prior-response inject skipped: {_meta_inj_err}")
+
         try:
             try:
                 recent_turns = _eli_scrub_recent_turns_for_identity(
@@ -1162,18 +1159,39 @@ Answer:"""
                 agent_bus_context=agent_bus_context,
                 working_memory=working_memory,
                 recent_turns=recent_turns,
+                reasoning_mode=reasoning_mode,
             )
             brief = _normalise_handoff(handoff_obj)
         except Exception as e:
             log.debug(f"[COGNITIVE] persona handoff build failed: {e}")
             brief = ""
 
-        # ── Proactive daemon output injection ────────────────────────────────
-        # The proactive daemon writes pattern/insight files to disk continuously.
-        # Inject the latest context (if fresh < 30 min) so ELI is always aware
-        # of active patterns without requiring explicit "proactive status" queries.
+        # Proactive daemon output injection: the daemon writes pattern/insight files continuously.
+        # Inject the latest context (fresh, < 30 min) so ELI knows the active patterns without an
+        # explicit "proactive status" query.
         _extra_blocks = []
         _live_self_status = ""  # real telemetry — emitted ABOVE the cap (never truncated)
+        # Turn dossier awareness — insight/deepening only; orchestrator already retrieved memory.
+        try:
+            from eli.cognition.turn_dossier import handoff_blocks_from_dossier
+            _dossier = None
+            if working_memory is not None:
+                _dossier = getattr(working_memory, "turn_dossier", None)
+            if _dossier is None:
+                _dossier = getattr(self, "_last_turn_dossier", None)
+            _orch_ctx_len = 0
+            try:
+                if working_memory is not None:
+                    _orch_ctx_len = len(str(getattr(working_memory, "assembled_context", "") or ""))
+            except Exception:
+                _orch_ctx_len = 0
+            if _orch_ctx_len < 2500:
+                _extra_blocks.extend(
+                    handoff_blocks_from_dossier(_dossier, phatic=False, max_chars=900)
+                )
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        # Low grounding: do not invent user biography when memory evidence is weak.
         try:
             _bus_agg = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0) if bus_result else 0.0
             _bus_gnd = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0) if bus_result else 0.0
@@ -1191,7 +1209,11 @@ Answer:"""
             import time as _inj_time
             from eli.core.paths import get_paths as _inj_paths
             _pro_ctx_file = _inj_paths().artifacts_dir / "proactive" / "latest_context.txt"
-            if _pro_ctx_file.exists():
+            _has_proactive_dossier = any(
+                str(b or "").startswith("[PROACTIVE AWARENESS]")
+                for b in (_extra_blocks or [])
+            )
+            if _pro_ctx_file.exists() and not _has_proactive_dossier:
                 _pro_age = _inj_time.time() - _pro_ctx_file.stat().st_mtime
                 if _pro_age < 1800:  # only inject if written within last 30 min
                     _pro_text = _pro_ctx_file.read_text(encoding="utf-8").strip()
@@ -1211,15 +1233,13 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Computed ONCE, outside the blocks that consume it. This used to be
-        # assigned inside the world-state try below; when that block raised
-        # (concurrent world-state write), the later self-status block died on
-        # UnboundLocalError and the LIVE SELF-STATUS evidence was silently
-        # dropped — so the model, asked "how's the head?", invented a GPU
-        # temperature. A failure to read the symbolic world must not disarm the
-        # anti-confabulation guard.
+        # Computed once, outside the blocks that use it. It used to be assigned inside the world-state
+        # try below; when that raised (concurrent write) the later self-status block hit
+        # UnboundLocalError, the live self-status evidence was dropped and the model invented a GPU
+        # temperature. Failing to read the symbolic world mustn't disarm the anti-confabulation guard.
         _ui_low = str(user_input or "").lower()
 
+        # Current-turn activity anchor — overrides stale profile/memory entertainment hits.
         try:
             from eli.cognition.user_claim_validator import extract_current_user_activity
             _turn_activity = extract_current_user_activity(user_input or "")
@@ -1227,16 +1247,30 @@ Answer:"""
                 _extra_blocks.append(
                     "[CURRENT TURN — authoritative] The user just said they are "
                     f"{_turn_activity}. Do NOT substitute a different show, movie, "
-                    "game, or hobby from memory or profile. Respond to what they "
-                    "actually said they are doing right now."
+                    "game, or hobby from memory or profile, and do NOT say 'last week' "
+                    "when they said today/yesterday/just now. Respond to what they "
+                    "actually said this turn."
                 )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # ── World awareness state injection ──────────────────────────────────
-        # Inject ELI's live AwarenessState so synthesis knows its own internal
-        # confidence / uncertainty / focus. Only injected when world state
-        # diverges from defaults (avoids boilerplate on clean-slate turns).
+        try:
+            from eli.runtime.conversation_thread import (
+                ambient_vision_context_block,
+                conversation_grounding_rule,
+            )
+            _av_block = ambient_vision_context_block()
+            if _av_block:
+                _extra_blocks.append(_av_block)
+            _cg_rule = conversation_grounding_rule(user_input, recent_turns)
+            if _cg_rule:
+                _extra_blocks.append(_cg_rule)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # World awareness state injection: give synthesis ELI's live AwarenessState (confidence,
+        # uncertainty, focus). Only when world state diverges from defaults, to avoid boilerplate on
+        # clean-slate turns.
         try:
             from eli.world.local_world_bridge import get_world_state as _get_ws
             _ws = _get_ws()
@@ -1261,20 +1295,17 @@ Answer:"""
                     _world_lines.append(f"  {_fld}: {_val:.2f}")
             _av = _ws.get("avatar", {})
             _av_room = (_av.get("room") or "").strip()
-            # Only surface the avatar's room when the user is actually asking about ELI's
-            # world / location / current activity. Otherwise the model reads the symbolic
-            # room NAME (Anomaly Room, Memory Archive — themed around contradictions /
-            # continuity) as LITERAL ongoing work and fabricates "contradictions /
-            # inconsistencies that have arisen, which I'm resolving" — a no-fake-actions
-            # violation that made the user think ELI was malfunctioning.
+            # Surface the avatar's room only when the user asks about ELI's world, location or current
+            # activity. Otherwise the model reads the symbolic room name (Anomaly Room, Memory Archive) as
+            # literal work and fabricates "contradictions I'm resolving", which made the user think ELI was
+            # malfunctioning.
             _room_relevant = bool(re.search(
                 r"\b(room|world|avatar|where are you|your location|"
                 r"what are you (?:doing|working on|up to)|in there)\b", _ui_low))
-            # Gate the symbolic self-metrics to EXPLICIT internal-state / diagnostics queries.
-            # On casual/phatic turns ("how are you feeling") the metrics (memory_confidence,
-            # repair_pressure …) prime the 7B to confabulate literal maintenance work —
-            # "I'm in the Memory Archive, inspecting memory continuity" — which makes ELI sound
-            # delusional. If the user isn't asking about internal state, don't inject it.
+            # Gate the symbolic self-metrics to explicit internal-state / diagnostics queries. On casual
+            # turns ("how are you feeling") they prime the 7B to confabulate literal maintenance work ("I'm
+            # in the Memory Archive, inspecting memory continuity"). Not asking about internal state, not
+            # injected.
             _state_relevant = bool(re.search(
                 r"\b(internal state|self[- ]?metrics?|your (?:metrics|internal state)|"
                 r"memory (?:confidence|continuity)|repair pressure|autonomy pressure|"
@@ -1292,12 +1323,10 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # ── Real self-status (anti-confabulation) ────────────────────────────
-        # When the user asks how ELI is doing / running / "how was your sleep",
-        # the persona used to fabricate telemetry ("thermal throttling stayed at
-        # 43°C", "overnight diagnostics ran clean") — ELI has no thermal sensor.
-        # Inject the REAL, measured GPU temp/util/VRAM + uptime + loaded model so
-        # it cites truth (or says it doesn't track something), never invents it.
+        # Real self-status (anti-confabulation). Asked how ELI is running or "how was your sleep", the
+        # persona invented telemetry ("thermal throttling stayed at 43°C") though ELI has no thermal
+        # sensor. Inject the real GPU temp/util/VRAM, uptime and loaded model so it cites truth or says
+        # it doesn't track that.
         try:
             _self_physical = bool(re.search(
                 r"\b(how (?:are|r) (?:you|u)|how(?:'?s| is) it going|how was your (?:sleep|night|day)|"
@@ -1314,10 +1343,9 @@ Answer:"""
                 from eli.runtime.self_status import render_self_status_block as _rss
                 _ss = _rss()
                 if _ss.strip():
-                    # Stored, NOT appended to _extra_blocks: it must ride ABOVE the
-                    # 8192 handoff cap (which keeps the head and chops the tail), or
-                    # it gets truncated out on long turns and the model falls back to
-                    # fabricating telemetry ("no live telemetry → CPU 41°C, GPU 38°C").
+                    # Stored, not appended to _extra_blocks: it must ride above the 8192 handoff cap
+                    # (which keeps the head and chops the tail) or it's truncated out on long turns
+                    # and the model falls back to fabricating telemetry.
                     _live_self_status = (
                         "[LIVE SELF-STATUS — REAL, MEASURED RIGHT NOW. For a casual "
                         "check-in (hey / you okay / feeling normal), answer personally "
@@ -1326,35 +1354,41 @@ Answer:"""
                         "THESE exact figures only — never invent temperatures or cite "
                         "historical layer counts from prior sessions. You have NO other "
                         "sensors: if a value isn't listed here, say you don't track it]\n" + _ss)
+        except Exception:
+            log.debug("live self-status injection skipped", exc_info=True)
 
-            # ── Verified self-FACTS (construction, not physical state) ──────
-            # The sibling of the block above: that one is "how am I running",
-            # this is "what am I made of". Both exist because the alternative is
-            # a confident invention — ELI once placed its databases under an
-            # invented username and described upgrading via a script that never
-            # existed. Rides above the handoff cap for the same reason.
-            _self_descriptive = bool(re.search(
-                r"\b(what are you|who are you|describe yourself|"
-                r"your (?:architecture|internals?|capabilit\w+|components?|design|"
-                r"databases?|storage|memory system|codebase|upgrade path)|"
-                r"how (?:do|are) you (?:built|structured|made|work)|"
-                r"how do you (?:upgrade|update) yourself|what do you run on)\b",
-                _ui_low))
+        # Verified self-facts, so ELI doesn't invent what it is. The block above grounds "how are you
+        # running", this one "what ARE you": construction, storage, capabilities, upgrades. Identity
+        # stays in CHAT for the persona, but CHAT had nothing factual and invented paths and scripts.
+        try:
+            # Anchored on "yourself" rather than an exact verb phrase: the question that produced
+            # the fabricated paths was typed "what fo you know of yourself", and a strict pattern
+            # would have let a typo decide whether the answer was grounded or invented.
+            _self_descriptive = bool(
+                (re.search(r"\byoursel(?:f|ves)\b", _ui_low)
+                 and re.search(r"\b(know|knew|tell|telling|describe|description|explain|"
+                               r"detail|detailed|accurate|accurately|about|of)\b", _ui_low))
+                or re.search(
+                    r"\b(what are you|who are you|describe yourself|"
+                    r"your (?:architecture|internals?|capabilit\w+|components?|design|"
+                    r"databases?|storage|memory system|codebase|upgrade path)|"
+                    r"how (?:do|are) you (?:built|structured|made|work)|"
+                    r"how do you (?:upgrade|update) yourself|what do you run on)\b",
+                    _ui_low)
+            )
             if _self_descriptive:
                 from eli.runtime.self_facts import render_self_facts_block as _rsf
                 _sf = _rsf()
                 if _sf.strip():
-                    _live_self_status = ((_live_self_status + "\n\n")
-                                         if _live_self_status else "") + _sf
+                    # Rides above the handoff cap for the same reason as the
+                    # telemetry block — truncation here reintroduces the guessing.
+                    _live_self_status = ((_live_self_status + "\n\n") if _live_self_status else "") + _sf
         except Exception:
-            log.debug("live self-status injection skipped", exc_info=True)
+            log.debug("verified self-facts injection skipped", exc_info=True)
 
-        # ── User profile facts injection ─────────────────────────────────────
-        # Surface the user's stored projects / research / preferences into the
-        # chat brief so ELI actually RECALLS them in normal conversation — not
-        # only inside the explicit PERSONAL_MEMORY_SUMMARY action. Storage works;
-        # this closes the recall gap. Generic across users; sourced from the
-        # per-user profile (the same data the summary uses).
+        # User profile facts injection: put the user's stored projects, research and preferences in the
+        # chat brief so ELI recalls them in normal conversation, not only in PERSONAL_MEMORY_SUMMARY.
+        # Storage worked, this closes the recall gap. Generic across users, from the per-user profile.
         try:
             from eli.kernel.state import load_user_profile as _lup, get_user_name as _gun
             _prof = _lup() or {}
@@ -1365,11 +1399,10 @@ Answer:"""
                 # name from a verified profile") is satisfied — the model must
                 # never answer "I don't know your name" when this is present.
                 _pf_lines.append(f"  verified name (this IS the user's name — use it; never say you don't know it): {_pn}")
-            # Project/research are PAST-session continuity. Soft "only if relevant"
-            # fails on small models (they volunteer Saturday travel into a GPU rant).
-            # Hard-gate: inject projects/research only when the user asks about plans /
-            # projects / remembered personal context. Preferences (tone) may still ride
-            # on substantive non-phatic turns. Phatic greetings get the name alone.
+            # Project/research are past-session continuity. A soft "only if relevant" fails on small
+            # models (they volunteer Saturday travel into a GPU rant), so hard-gate: inject them only when
+            # the user asks about plans, projects or remembered context. Preferences (tone) may still ride
+            # on substantive turns; phatic greetings get the name alone.
             _phatic_turn = False
             _low_grounding_casual = False
             _asks_personal = False
@@ -1426,24 +1459,6 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # ── Scheduled-task awareness injection ───────────────────────────────
-        # Nothing used to put task state in front of the model, so a question about
-        # its own schedule was answered from nothing: asked to delete a task, it
-        # replied "the system shows no active background tasks" while four were
-        # armed and listed in the Tasks tab. Give it the rows (or an explicit
-        # "none") and that failure mode becomes impossible rather than unlikely.
-        try:
-            if re.search(r"\b(task|tasks|scheduled|schedule|background job|overnight|"
-                         r"queued|pending|reschedule|cancel)\b", str(user_input or ""), re.I):
-                from eli.runtime.task_admin import describe_tasks
-                _tasks_desc = describe_tasks(limit=10)
-                _extra_blocks.append(
-                    "[SCHEDULED TASKS — live and authoritative. This IS the complete "
-                    "list; if it says none, there are none. Never claim a task exists "
-                    "or does not exist beyond what is listed here]\n" + _tasks_desc)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
         # ── Home awareness injection ─────────────────────────────────────────
         # On a home/device question, give ELI the REAL device state (what's on, rooms,
         # usual habits) from its own device server so it answers from fact, not guesses.
@@ -1464,13 +1479,23 @@ Answer:"""
         # truncated mid-sentence by a per-injection cap.
         if _extra_blocks:
             brief = "\n\n".join(filter(None, [brief] + _extra_blocks))
-        _persona_budget = self._persona_handoff_budget()
+        _persona_budget = self._persona_handoff_budget(reasoning_mode)
         if _verified_evidence_packet:
             _persona_budget = max(
-                1024,
+                self._PERSONA_MIN_CHARS // 2,
                 _persona_budget - min(len(_verified_evidence_packet), _persona_budget // 2),
             )
         brief = self._cap_text(brief, _persona_budget, "persona_handoff")
+        try:
+            from eli.runtime.session_continuity import build_session_thread_block
+            _session_thread = build_session_thread_block(_recent_turns, user_input=user_input)
+            if _session_thread:
+                brief = brief + "\n\n" + _session_thread
+        except Exception:
+            log.debug("[COGNITIVE] session thread inject skipped", exc_info=True)
+        # Real self-status rides ABOVE the cap — if the user asked how ELI is doing,
+        # the measured telemetry must never be the thing truncation drops (that's
+        # what made the model fall back to fabricating CPU/GPU temperatures).
         if _live_self_status:
             brief = brief + "\n\n" + _live_self_status
         if _verified_evidence_packet:
@@ -1550,12 +1575,9 @@ Answer:"""
                     except Exception:
                         score_txt = str(score)
 
-                if src and score_txt:
-                    hit_lines.append(f"{i:02d}. [{src} | score={score_txt}] {txt}")
-                elif src:
-                    hit_lines.append(f"{i:02d}. [{src}] {txt}")
-                else:
-                    hit_lines.append(f"{i:02d}. {txt}")
+                _when = _evidence_format.when_label(_evidence_format.row_time(hit)) if isinstance(hit, dict) else ""
+                _tag = " | ".join(x for x in (src, _when, f"score={score_txt}" if score_txt else "") if x)
+                hit_lines.append(f"{i:02d}. [{_tag}] {txt}" if _tag else f"{i:02d}. {txt}")
 
             if hit_lines:
                 blocks.append("Reranked evidence:\n" + "\n".join(hit_lines))
@@ -1572,7 +1594,8 @@ Answer:"""
                     role = "User" if str(turn.get("role", "")).lower() == "user" else "ELI"
                     content = re.sub(r"\s+", " ", str(turn.get("content", "") or "")).strip()
                     if content:
-                        turn_lines.append(f"{role}: {content[:220]}")
+                        _tw = _evidence_format.when_label(_evidence_format.row_time(turn))
+                        turn_lines.append(f"[{_tw}] {role}: {content[:220]}" if _tw else f"{role}: {content[:220]}")
                 except Exception:
                     continue
             if turn_lines:

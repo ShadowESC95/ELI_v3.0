@@ -6,7 +6,7 @@ from eli.execution.router_enhanced import (
     _is_wallclock_question,
     route,
 )
-from eli.kernel.engine import _is_brief_phatic_prompt
+from eli.kernel.stages._common import _is_brief_phatic_prompt
 from eli.cognition.personal_context_gate import continuity_guard_block
 
 LIVE_META = (

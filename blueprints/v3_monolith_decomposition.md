@@ -18,7 +18,7 @@ Done so far:
   (−56%)** and shrinking. One family per commit, tests between.
 - `engine.py` (13.5k) → `eli.kernel.stages` — **six stage mixins** composed onto
   `CognitiveEngine` (retrieval, prompt_assembly, reasoning_modes, generation,
-  memory_commit, lifecycle) + shared leaf modules. Engine **13,507 → 6,977 LOC
+  memory_commit, lifecycle) + shared leaf modules. Engine **13,507 → 7,980 LOC
   (−48%)**; `process()` + `__init__` stay on the class. One stage per commit.
 - Router intent families → `eli.execution.routing` (13 modules); router 7,267 → 5,315.
 
@@ -84,7 +84,7 @@ Decomposed with the **mixin pattern**: `class CognitiveEngine(LifecycleMixin,
 GenerationMixin, PromptAssemblyMixin, ReasoningModesMixin, RetrievalMixin,
 MemoryCommitMixin)`. Every method still reads engine state through `self`.
 `process()` (~3k LOC, the orchestrator) and `__init__` (the constructor — **not**
-lifecycle) stay on the class. Engine **13,507 → 6,977 LOC**.
+lifecycle) stay on the class. Engine **13,507 → 7,980 LOC**.
 
 **Stage mixins** (measured, not estimated):
 

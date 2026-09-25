@@ -30,8 +30,8 @@ from pathlib import Path
 import pytest
 
 from eli.cognition import output_governor as og
-from eli.kernel.engine import _ft_summarise_findings
-from eli.kernel.engine import _first_sentence
+from eli.kernel.stages.generation import _ft_summarise_findings
+from eli.kernel.stages.guards import _first_sentence
 
 
 # ── 1. invented self-status ────────────────────────────────────────────────
@@ -125,7 +125,7 @@ def test_a_clean_run_says_nothing():
 
 
 def test_the_gate_still_suppresses_unpromised_dumps():
-    src = Path("eli/kernel/engine.py").read_text(encoding="utf-8")
+    src = Path("eli/kernel/stages/generation.py").read_text(encoding="utf-8")
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "_ft_promised" in code, "promise detection is gone"
     assert "suppressed status/dump action" in code, \
@@ -169,7 +169,7 @@ def test_the_voice_survives(persona):
 
 # ── the defect ELI's own audit found ───────────────────────────────────────
 def test_first_sentence_is_defined_once():
-    src = Path("eli/kernel/engine.py").read_text(encoding="utf-8")
+    src = Path("eli/kernel/stages/guards.py").read_text(encoding="utf-8")
     assert src.count("\ndef _first_sentence(") == 1, \
         "the duplicate definition is back; the later one silently wins"
 

@@ -29,14 +29,19 @@ _SYS_DIAG_RE = re.compile(
 
 
 def _strip_special_tokens(text: str) -> str:
-    t = text or ""
-    for tok in ("[INST]", "[/INST]", "<s>", "</s>",
-                "<|im_start|>", "<|im_end|>", "<|endoftext|>"):
-        t = t.replace(tok, "")
-    # Strip ChatML role lines leaked into the response
-    # e.g. "user\nHey eli...\nassistant\n" or "system\n...\nuser\n"
-    t = re.sub(r"^(?:system|user|assistant)\n", "", t, flags=re.I)
-    return t.strip()
+    try:
+        from eli.cognition.model_output_tokens import strip_special_tokens as _strip_all
+        return _strip_all(text)
+    except Exception:
+        t = text or ""
+        for tok in ("[INST]", "[/INST]", "<s>", "</s>",
+                    "<|im_start|>", "<|im_end|>", "<|endoftext|>",
+                    "<|end_of_turn|>", "<end_of_turn>", "<start_of_turn>", "</start_of_turn>"):
+            t = t.replace(tok, "")
+        t = re.sub(r"<\|end_of_turn\|>", "", t, flags=re.I)
+        t = re.sub(r"</?start_of_turn>", "", t, flags=re.I)
+        t = re.sub(r"^(?:system|user|assistant)\n", "", t, flags=re.I)
+        return t.strip()
 
 def _sanitize_identity_drift(text: str) -> str:
     t = (text or "").strip()
@@ -130,12 +135,10 @@ def _normalize_assistant_text(user_text: str, text: str) -> str:
     # Strip model meta-commentary: "(Note: This response deviates...)" patterns
     t = re.sub(r'\s*\(Note:[^)]{0,300}\)', '', t, flags=re.I).strip()
     t = re.sub(r'\s*\[Note:[^\]]{0,300}\]', '', t, flags=re.I).strip()
-    # Strip leaked INTERNAL-STATE / context-metadata lines the model echoed verbatim from its
-    # brief — "[Your current activity: …, attention: …]", "[Remembered past topics: …]",
-    # "[ELI INTERNAL STATE]" etc. These are context scaffolding, never user-facing. Anchored to
-    # whole lines with a known internal label, so it never touches legitimate bracketed text
-    # like "[MEMORY SEARCH RESULT: …]" or an array index. (2026-06-09: a casual "back in a
-    # minute" drew a reply that ended in these bracketed metadata lines.)
+    # Strip leaked internal-state lines the model echoed from its brief ("[Your current
+    # activity: ...]", "[Remembered past topics: ...]", "[ELI INTERNAL STATE]"). Anchored to whole
+    # lines with a known internal label, so real bracketed text ("[MEMORY SEARCH RESULT: ...]", an
+    # array index) is untouched.
     t = re.sub(
         r'(?im)^[ \t]*\[(?:your\s+)?(?:current\s+activity|attention|remembered\s+past\s+topics'
         r'|recalled\s+(?:past\s+)?topics|recalled\s+research|eli\s+internal\s+state'

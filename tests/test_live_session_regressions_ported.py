@@ -8,7 +8,7 @@
 import pytest
 
 from eli.execution.router_enhanced import route
-from eli.kernel.engine import _is_repeat_of_recent
+from eli.kernel.stages.guards import _is_repeat_of_recent
 
 
 # ── 2. asking about the capability is not asking to use it ────────────────
@@ -64,7 +64,7 @@ def test_a_verbatim_echo_of_the_user_is_detected():
     characters against an 18-character minimum. A short opening sentence
     disabled the guard completely, however perfect the copy behind it.
     """
-    from eli.kernel.engine import _opens_by_echoing
+    from eli.kernel.stages.guards import _opens_by_echoing
     reply = _USER_MSG.replace("--", "—")
     assert _opens_by_echoing(reply, [_USER_MSG])
 
@@ -72,14 +72,14 @@ def test_a_verbatim_echo_of_the_user_is_detected():
 def test_quoting_the_user_mid_reply_is_still_allowed():
     """"you said X, and that's why…" is legitimate; leading with their sentence
     as your own is the failure."""
-    from eli.kernel.engine import _opens_by_echoing
+    from eli.kernel.stages.guards import _opens_by_echoing
     assert not _opens_by_echoing(
         "No. You said you were watching severance, so I assumed as much.",
         [_USER_MSG])
 
 
 def test_a_short_shared_phrase_is_not_an_echo():
-    from eli.kernel.engine import _opens_by_echoing
+    from eli.kernel.stages.guards import _opens_by_echoing
     assert not _opens_by_echoing(
         "Yeah, fair enough. Here is a completely different thought entirely.",
         ["Yeah, fair enough."])
@@ -88,7 +88,7 @@ def test_a_short_shared_phrase_is_not_an_echo():
 def test_the_stream_guard_refuses_to_paint_an_echo():
     """Drive the SHIPPED streaming guard, not the detector: an echoing first
     attempt must raise so a regeneration happens, rather than reaching screen."""
-    from eli.kernel.engine import _stream_holding_back_repeats, _RepeatDetected
+    from eli.kernel.stages.guards import _stream_holding_back_repeats, _RepeatDetected
 
     reply = _USER_MSG.replace("--", "—")
     stream = (reply[i:i + 20] for i in range(0, len(reply), 20))
@@ -98,7 +98,7 @@ def test_the_stream_guard_refuses_to_paint_an_echo():
 
 
 def test_a_genuine_answer_streams_through_untouched():
-    from eli.kernel.engine import _stream_holding_back_repeats
+    from eli.kernel.stages.guards import _stream_holding_back_repeats
     answer = ("I can't see your screen unless you ask me to look at it, and I did "
               "not look this time. Ask me plainly and I will answer plainly.")
     stream = (answer[i:i + 20] for i in range(0, len(answer), 20))
@@ -169,7 +169,7 @@ def test_a_greeting_turn_no_longer_disarms_the_repeat_guard():
     The exemption was never needed: _is_repeat_of_recent already ignores
     anything under 40 normalised characters, so a real greeting recurs freely.
     """
-    from eli.kernel.engine import _stream_holding_back_repeats, _RepeatDetected
+    from eli.kernel.stages.guards import _stream_holding_back_repeats, _RepeatDetected
 
     prior = ["You're not just saying helo — you're testing if I'll catch the typo. "
              "Either way, I'm here. What's the real deal, Alex?"]
@@ -183,7 +183,7 @@ def test_a_greeting_turn_no_longer_disarms_the_repeat_guard():
 def test_a_real_greeting_may_still_recur():
     """"Morning, Alex." two mornings running is not a fault — the 40-character
     floor is what protects it, not a blanket exemption."""
-    from eli.kernel.engine import _stream_holding_back_repeats
+    from eli.kernel.stages.guards import _stream_holding_back_repeats
 
     greet = "Morning, Alex."
     out = "".join(_stream_holding_back_repeats(
@@ -195,8 +195,8 @@ def test_the_prompt_contract_is_still_skipped_on_greetings():
     """The pairing matters: injecting "do not repeat any of this" while the model
     decides how to say hello is what pushed a correct "Evening" into the user's
     misspelled "Aftrnoon". The instruction stays off; only the CHECK comes back."""
-    import pathlib as _p
-    src = (_p.Path(__file__).resolve().parents[1] / "eli" / "kernel" / "stages"
-           / "generation.py").read_text(encoding="utf-8")
+    import inspect
+    from eli.kernel.engine import CognitiveEngine
+    src = inspect.getsource(CognitiveEngine._inject_anti_repeat_contract)
     assert "[ANTI-REPEAT] greeting — contract not injected" in src
     assert "greeting — guard stood down" not in src

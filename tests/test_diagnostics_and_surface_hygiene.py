@@ -121,7 +121,7 @@ def test_conversational_complaints_are_not_code_audits(phrase):
     "are there bugs in the codebase",
     "the code has problems",
     "examine the codebase for bugs",
-    "check eli/kernel/engine.py for errors",
+    "check eli/kernel/stages/guards.py for errors",
 ])
 def test_real_code_audit_requests_still_route(phrase):
     assert router.route(phrase)["action"] == "EXAMINE_CODE", f"{phrase!r} regressed"

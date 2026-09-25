@@ -10,6 +10,11 @@ import os
 import sys
 
 import re
+from eli.cognition import context_budget as _ctx_budget
+import logging
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 # Response governance is optional (it may not be installed). The engine uses
 # normalize_response (GGUF-artifact cleaning); the memory-commit stage uses
@@ -44,30 +49,29 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", normalized).strip()
     if not normalized:
         return False
-    # Strip a trailing direct-address of the assistant's name ("good afternoon eli" ->
-    # "good afternoon", "hello there eli" -> "hello there") so greetings that tack the wake
-    # name on the end still match the phatic phrase set below. "good afternoon eli" used to
-    # fall through as non-phatic, which let the past-session project topics get injected and
-    # the model resumed them off a plain hello.
+    # a greeting that asks ELI to remember is a memory request, not small talk
+    if _ctx_budget.is_recall_question(raw):
+        return False
+    # Strip a trailing direct address ("good afternoon eli" -> "good afternoon") so greetings with
+    # the wake name still match the phatic set. Without it "good afternoon eli" was non-phatic,
+    # which injected past-session topics and the model resumed them off a plain hello.
     normalized = re.sub(
         r"\s+(?:eli|pal|bud|buddy|mate|man|dude|bro|friend)$", "", normalized
     ).strip() or normalized
-    # Strip a LEADING greeting so a greeting compounded with a phatic check-in still matches
-    # ("good afternoon what's the story" -> "what's the story"). This only HELPS a phatic
-    # remainder reach the phrase set; a substantive remainder ("good morning fix the bug")
-    # still falls through as non-phatic, so it can't swallow a real request.
+    # Strip a leading greeting so a greeting plus a phatic check-in still matches ("good afternoon
+    # what's the story"). A substantive remainder ("good morning fix the bug") still falls through
+    # as non-phatic, so it can't swallow a real request.
     _lead = re.sub(r"^(?:good\s+)?(?:morning|afternoon|evening)\b[\s,.]*", "", normalized)
     _lead = re.sub(r"^(?:hi|hey|hello|hiya|howya|yo|sup)\b[\s,.]+", "", _lead).strip()
-    # A LEADING direct-address, mirroring the trailing strip above: "hey buddy,
-    # how's the head" is the same utterance as "how's the head". Without this the
-    # address counted as a content word and pushed the check-in past the <=5-word
-    # gate on the casual patterns below.
+    # A leading direct address mirrors the trailing strip: "hey buddy, how's the head" is "how's the
+    # head". Otherwise the address counted as a content word and pushed the check-in past the
+    # <=5-word gate.
     _lead = re.sub(
         r"^(?:pal|bud|buddy|mate|man|dude|bro|lad|friend|eli)\b[\s,.]+", "", _lead
     ).strip() or _lead
     # Trailing conversational filler on a check-in — "how's the head doing, now"
-    # is "how's the head". Only stripped once an idiom stem is present, so it
-    # cannot shorten a substantive request into a phatic one.
+    # is "how's the head". Only stripped after an idiom stem is already present,
+    # so it cannot shorten a substantive request into a phatic one.
     if re.match(r"^how'?s?\s+(?:is\s+)?(?:the|your)\b", _lead):
         _lead = re.sub(
             r"[\s,]+(?:doing|going|keeping|holding up)?[\s,]*"
@@ -101,7 +105,8 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         "how are you", "how you doing", "how ya doing", "hows things", "how's things",
         "how is things", "how are things", "hows everything", "how's everything",
         "hows it going", "how's it going", "hows it", "how's it",
-        "all good", "you good", "you ok", "you okay",
+        "all good", "you good",         "you ok", "you okay",
+        "you any better", "any better",
         "good morning", "good afternoon", "good evening", "morning eli", "evening eli",
         # Irish / colloquial check-ins (idiom for "how are things", NOT a request for a story)
         "whats the story", "what's the story", "what is the story", "story bud", "story pal",
@@ -119,11 +124,9 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         # Sign-offs / closers — purely phatic; a substantive remainder is caught
         # by the follow-up guard or falls through as non-phatic.
         "night", "good night", "goodnight", "gnight", "night night", "nighty night",
-        # Bare time-of-day greetings. "good morning" was here and "morning" was
-        # not, so "afternoon, Eli" — which the ROUTER classifies as
-        # chat.greeting at 0.90 — was not phatic to this detector, and the two
-        # disagreed about the same utterance. The trailing/leading address strip
-        # above already reduces "afternoon, Eli" to "afternoon".
+        # Bare time-of-day greetings. "good morning" was listed and "morning" wasn't, so "afternoon,
+        # Eli" (which the router calls chat.greeting at 0.90) wasn't phatic here and the two
+        # disagreed. The address strip above already reduces it to "afternoon".
         "morning", "afternoon", "evening",
         "mornin", "evenin", "good evening", "good day", "gday", "g'day",
         "see ya", "see you", "see you later", "see ya later", "talk later",
@@ -132,13 +135,16 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     if normalized in phrases:
         return True
 
-    # Short (≤5 word) casual check-in patterns
-    # "how's the X" is a wellbeing idiom — EXCEPT when X is something ELI runs on.
-    # "how's the head" is a hello; "how's the GPU" is a real question that must
-    # keep its evidence gathering.
-    # "how IS the x" as well as "how's the x" — the strip above already accepts
-    # both, so the patterns below have to as well or the longer form falls through
-    # to the LLM resolver (46s on a CPU-offloaded model, to answer "CHAT").
+    # Compound phatic: "what's the story? you good?" — Irish greeting + check-in.
+    if re.search(r"\b(?:whats|what'?s|what is) the story\b", normalized) and re.search(
+        r"\b(?:you good|you ok|you okay|you alright|you better|you sorted)\b", normalized
+    ):
+        return True
+
+    # Short (<=5 word) casual check-in patterns. "how's the X" is a wellbeing idiom unless X is
+    # something ELI runs on: "how's the head" is a hello, "how's the GPU" is a real question. Listing
+    # the technical nouns is narrower and safer than guessing intent. "how IS the x" too, or the
+    # longer form goes to the LLM resolver (46s on CPU) to answer "CHAT".
     _technical_subject = re.match(
         r"^how'?s? (?:is )?(?:the|your) (gpu|cpu|ram|vram|server|model|build|tests?|code|api|"
         r"db|database|memory|disk|network|index|suite|pipeline|daemon|queue|log)\b",
@@ -147,27 +153,33 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     _casual_patterns = () if _technical_subject else (
         r"^how'?s? (?:is )?the \w+(\s+\w+)?$",
         r"^how'?s? (?:is )?your \w+(\s+\w+)?$",
-        # A second-person STATE check aimed at ELI: "are you ok", "you better now".
-        # Pronoun + state adjective + optional temporal tail, anchored end-to-end,
-        # so there is no verb-plus-object slot for a real request to hide in
-        # ("fix the router" cannot match). "you ok" was already in the phrase set;
-        # the natural forms around it were not, and each one cost a full
+        # A second-person state check aimed at ELI ("are you ok", "you better now"): pronoun + state
+        # adjective + optional temporal tail, anchored end to end, so there's no verb-plus-object slot
+        # for a real request ("fix the router") to hide in. Each of these used to cost a full
         # intent-classification generation.
-        r"^(?:are |r )?you "
+        r"^(?:are |r )?you(?:\s+any)?\s+"
         r"(?:ok|okay|alright|allright|good|well|better|fine|right|sorted|sound|normal"
         r"|back(?: to (?:normal|yourself|form))?)"
         r"(?: now| yet| today| again| then)?$",
-        r"^how are (you|things|we)( doing| going)?$",
+        r"^how are (you|things|we)(?:\s+(?:doing|going))?(?:\s+(?:today|tonight|now|this\s+(?:morning|afternoon|evening)))?$",
         r"^what'?s (up|good|new|happening)(\s+\w+)?$",
         r"^\w+ \w+ buddy$",
         r"^hey \w+$",
     )
-    if n <= 5:
+    if n <= 7:
         for pat in _casual_patterns:
             if re.match(pat, normalized):
                 return True
+    # Longer check-ins: "are you back to normal yet, or not?" — still rapport, not CLEAR_TONE.
+    if n <= 10 and re.match(
+        r"^(?:are |r )?you back to (?:normal|yourself)(?: yet|, or not)?(?:\?)?$",
+        normalized,
+    ):
+        return True
 
-    # "feeling normal again" / typo-tolerant "you oaynow" after greeting strip.
+    # "feeling normal again" / typo-tolerant "you oaynow" after greeting strip —
+    # live: "hey buddy, you oaynow? feeling normal again?" must stay phatic so
+    # continuity guards apply and stale GPU layer memory is not volunteered.
     if n <= 6 and re.match(
         r"^feeling (?:normal|better|ok|okay|fine|alright)(?: again| now| yet)?$",
         normalized,
@@ -209,6 +221,8 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         _task_words_check = (
             "help", "fix", "write", "create", "open", "run", "search", "find",
             "explain", "tell me", "show me", "generate", "code", "script",
+            "gimme", "give me", "lowdown", "stats", "stat", "report", "rundown",
+            "summary", "capabilities", "inventory", "update me", "status report",
         )
         if not any(t in normalized for t in _task_words_check):
             return True
@@ -242,6 +256,9 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         "help", "fix", "write", "create", "open", "run", "search", "find",
         "what is", "explain", "tell me", "show me", "can you", "could you",
         "why", "when", "where", "which", "generate", "code", "script",
+        "gimme", "give me", "lowdown", "stats", "stat", "report", "rundown",
+        "summary", "capabilities", "inventory", "update me", "status report",
+        "hardcoded", "template", "stub", "static info", "dynamic",
     )
     has_task = any(t in normalized for t in _task_words)
 
@@ -257,8 +274,9 @@ def _is_brief_phatic_prompt(text: str) -> bool:
         "just checking in",
     )
     has_eli_status = any(p in normalized for p in _eli_status_phrases)
-    # "just checking in" alone is phatic; combined with "what have you been doing
-    # the past week" is a substantive social ask — keep the user's selected mode.
+    # "just checking in" alone is phatic; "just checking in … what have you been
+    # doing the past week?" is a substantive social ask — must not force quick
+    # (which then dumps SELF_REPORT when "checking" falsely looks like maintenance).
     _substantive_activity = any(p in normalized for p in (
         "what have you been doing", "what have you been up to",
         "what have you been working on", "what you been doing", "what you been up to",
@@ -310,7 +328,7 @@ def _eli_bus_first_ok_result(bus_result, action):
         if _ok_with_content(ar):
             return dict(ar)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     try:
         for r in list(getattr(bus_result, "agent_results", []) or []):
@@ -320,7 +338,7 @@ def _eli_bus_first_ok_result(bus_result, action):
             if _ok_with_content(data):
                 return dict(data)
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
     return None
 
@@ -333,3 +351,97 @@ __all__ = [
     "normalize_response",
     "should_store_as_memory",
 ]
+
+
+def _phatic_generation_budget() -> int:
+    """Enough room for a voiced greeting; not a full essay."""
+    try:
+        _raw = str(os.environ.get("ELI_PHATIC_MAX_TOKENS", "256") or "256").strip()
+        _n = int(_raw)
+        return max(128, min(_n, 384))
+    except Exception:
+        return 256
+
+
+def _clarifier_norm(text: str) -> str:
+    """Punctuation- and case-insensitive form, for comparing an utterance to itself.
+
+    Apostrophes are deleted rather than spaced so "what's" and "whats" collapse to
+    the same token; spacing them would leave "what s" and let a contraction slip an
+    otherwise identical replay past the comparison.
+    """
+    lowered = str(text or "").lower().replace("'", "").replace("’", "")
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", lowered)).strip()
+
+
+# Character budget for the memory block in the assembled prompt.
+ELI_BUDGET_MEMORY_CHARS = 4096
+
+
+def _mounted_model_authority_line() -> str:
+    """Authoritative mounted-model line — injected every turn so memory cannot lie."""
+    _mounted = ""
+    try:
+        from eli.runtime.live_introspection import _runtime_core as _rc
+        _core = _rc()
+        _mname = _core.get("model_name") or _core.get("model_path")
+        if _mname and str(_mname) not in ("", "unknown") and _core.get("loaded"):
+            from pathlib import Path as _P_mm
+            _mounted = _P_mm(str(_mname)).name
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    if not _mounted:
+        try:
+            import json as _j_mm
+            from eli.core.paths import artifacts_dir as _art_mm
+            _snap = _art_mm() / "runtime_snapshot.json"
+            if _snap.exists():
+                _s = _j_mm.loads(_snap.read_text(encoding="utf-8"))
+                _mn = (
+                    ((_s.get("effective") or {}).get("model_name") or "")
+                    or _s.get("model_name")
+                    or ""
+                )
+                if _mn:
+                    from pathlib import Path as _P_mm2
+                    _mounted = _P_mm2(str(_mn)).name
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+    if not _mounted:
+        return ""
+    return (
+        "[MOUNTED MODEL — authoritative] Currently loaded in this process: "
+        f"'{_mounted}'. When you state which model you run, use ONLY this name. "
+        "Stale memory, prior turns, or family guesses (GLM, Qwen, Ornith, etc.) are "
+        "wrong unless they match this filename exactly."
+    )
+
+
+def _phatic_rapport_style_rule() -> str:
+    """Steering block for greetings/check-ins — keeps ELI's voice without memory dumps."""
+    return (
+        "SMALLTALK / RAPPORT MODE:\n"
+        "- Treat the latest user message as a chemistry-building moment, not as a task ticket.\n"
+        "- Reply AS ELI with your full voice: local, dry, direct, lightly sarcastic when it fits, "
+        "and alive in tone — not a stripped-down echo of their words.\n"
+        "- Give a real greeting: 2–4 sentences with personality. Mirror their energy (morning warmth, "
+        "casual banter, check-in warmth). A dry observation, gentle wit, or natural follow-up is welcome.\n"
+        "- FORBIDDEN: telegraphic parroting ('It's morning.' after 'good morning'), weather-report "
+        "minimalism, or empty mirroring. You are ELI, not a notification banner.\n"
+        "- Do not say the prompt is a common greeting, or use 'functioning as intended', "
+        "'ready to assist', 'queries or tasks', 'how can I help', 'happy to help', or customer-service filler.\n"
+        "- Do NOT resume old projects, invent user preferences/habits, or dump runtime stats unprompted.\n"
+        "- It is fine to ask one natural follow-up about mood or what they're up to — but never as "
+        "a substitute for actually greeting them.\n"
+        "- CRITICAL: Do NOT assert that the user has a preference, habit, or memory unless it "
+        "appears in verified profile or this conversation. Wit and cultural references are fine; "
+        "invented user biography is not.\n"
+        "- Do NOT claim a different local time, timezone, or weather than CURRENT TIME above.\n"
+        "- You already know today's day/date from CURRENT TIME — never claim otherwise.\n"
+        "- Do NOT invent model names, GPU stats, or runtime telemetry — use MOUNTED MODEL only.\n"
+        "- Do NOT volunteer GPU layer counts, VRAM %, or load parameters on a casual check-in "
+        "unless the user asked about hardware/status.\n"
+        "- Humour must not replace warmth; if there is an actual runtime issue, mention it plainly.\n"
+        "- If you already greeted with the same opener this session (e.g. 'Hey bud'), vary it — "
+        "do not open twice in a row with the identical phrase.\n\n"
+    )
