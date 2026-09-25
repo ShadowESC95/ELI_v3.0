@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from eli.cognition.agent_bus import SystemAgent
 from eli.execution.effectors import media as em
-from eli.kernel.stages.fast_actions import (
+from eli.kernel.engine import (
     _DIRECT_FINAL_ACTIONS,
     _PHASE45_DIRECT_FAST_ACTIONS,
 )

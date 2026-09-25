@@ -25,6 +25,9 @@ import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 
 from eli.utils import platform_compat as platform
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────

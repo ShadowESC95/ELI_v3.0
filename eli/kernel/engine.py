@@ -24,7 +24,6 @@ import json
 import sys
 import time
 import threading
-from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 from eli.cognition.context_synthesiser import build_persona_handoff
@@ -3140,7 +3139,20 @@ _REPORTS_ABOUT_STATE = frozenset({
     "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME", "ROUTING_FAULT_EXPLAIN",
     "PERSONAL_MEMORY_DEEP_EXPLAIN", "PERSONAL_MEMORY_SUMMARY", "EXAMINE_CODE",
     "SELF_REPAIR_PLAYBOOK",
+    # v3 read-and-describe actions. EXPLAIN_LAST_FAILURE's evidence is a failure by definition, so
+    # without this it could never answer.
+    "EXPLAIN_LAST_FAILURE", "EXPLAIN_ALL_REASONING_MODES", "AWARENESS_STATUS",
+    "CHECK_TARGET_STATUS", "DIAGNOSE_WRAPPERS", "ELI_IDENTITY_AUDIT",
+    "FILE_AUDIT", "FRONTIER_STATUS", "GAZE_STATUS", "GET_STATUS", "GPU_STATUS",
+    "HABIT_STATUS", "IMAGE_STATUS", "LORA_STATUS", "MCP_STATUS", "MORNING_REPORT",
+    "NAME_SOURCE_AUDIT", "ORCHESTRATION_STATUS", "PERSONA_LOCK_STATUS",
+    "PLUGIN_STATUS", "POMODORO_STATUS", "PROACTIVE_STATUS",
+    "REASONING_MODE_STATUS", "SELF_TEST", "STT_DIAGNOSTICS",
+    "USER_IDENTITY_SUMMARY", "USER_INFO_REPORT", "VOICE_DIAGNOSTICS",
 })
+
+# Actions that change something are never exempt, however report-like the name looks.
+_MUTATING_SELF_ACTIONS = frozenset({"SELF_PATCH", "SELF_IMPROVE", "SELF_UPDATE", "SELF_UPGRADE"})
 
 
 def _failed_executor_is_failed(evidence: str, action: str = "") -> bool:
@@ -5997,93 +6009,19 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Real-time speaker tone from the user's voice this turn, published by the STT loop
-        # (eli/perception/voice_profile). With a fresh, confident read, prepend a short cue so ELI adapts
-        # its delivery (energy, emotion, question vs statement). ELI_VOICE_TONE=0 turns it off.
-        try:
-            if os.environ.get("ELI_VOICE_TONE", "1").lower() not in {"0", "false", "no", "off"}:
-                from eli.perception import voice_profile as _vp_tone
-                _t = _vp_tone.get_last_tone(max_age_s=12.0)
-                if _t.get("ok"):
-                    _bits = []
-                    _emo = _t.get("emotion")
-                    if _emo and _emo != "neutral" and float(_t.get("emotion_confidence", 0) or 0) >= 0.25:
-                        _bits.append(f"sounds {_emo}")
-                    _ar = float(_t.get("arousal", 0) or 0)
-                    if _ar >= 0.4:
-                        _bits.append("high energy")
-                    elif _ar <= -0.4:
-                        _bits.append("low energy / subdued")
-                    if _t.get("intent") == "question" and float(_t.get("intent_confidence", 0) or 0) >= 0.5:
-                        _bits.append("asking a question (rising intonation)")
-                    if _bits:
-                        _cue = ("[Speaker voice cue — the user " + ", ".join(_bits)
-                                + ". Adapt your tone and pacing to match; be warmer if they're "
-                                "upset, brisk if they're energetic. Do NOT mention this cue.]")
-                        situation_brief = (_cue + "\n\n" + (situation_brief or "")).strip()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        # Expressed tone/emotion (tone_adaptor): fuses the acoustic and semantic tone reads into the
-        # register ELI expresses, or honours an explicit override ("be comedic", "talk street"). Adds a
-        # short persona directive; the voice (tts_router prosody) and avatar (persona_mapper) read the
-        # same source.
+        # Voice cue, expressed tone, affect directive and emotion timeline, folded into one brief by tone_adaptor.
         try:
             from eli.cognition import tone_adaptor as _ta
-            if _ta.enabled():
-                _ta.note_user_text(user_input or "")
-                _dir = _ta.text_directive()
-                _cur = _ta.current_tone()
-                if _dir and _cur.get("tone") != "neutral":
-                    _tcue = f"[Tone — {_cur['tone']}: {_dir} Do NOT mention this directive.]"
-                    situation_brief = (_tcue + "\n\n" + (situation_brief or "")).strip()
-
-                # Persist the read so ELI can be proactive. tone_adaptor forgets each turn, enough to shade
-                # this reply and nothing more; the timeline lets ELI notice a sustained mood, weigh it against
-                # this user's baseline and know what it did before. Record every read, neutral included, or a
-                # baseline of only bad turns makes everyone look upset.
-                try:
-                    from eli.cognition import emotion_timeline as _et
-                    _prior_action = ""
-                    try:
-                        _prior_action = str((getattr(self, "_last_request_meta", None)
-                                             or {}).get("action") or "")
-                    except Exception:
-                        _prior_action = ""
-                    _arousal = None
-                    try:
-                        from eli.perception import voice_profile as _vp_ar
-                        _arousal = (_vp_ar.get_last_tone(max_age_s=15.0) or {}).get("arousal")
-                    except Exception:
-                        _arousal = None
-                    _et.record(
-                        _cur.get("detected") or "neutral",
-                        expressed=_cur.get("tone") or "",
-                        confidence=float(_cur.get("confidence") or 0.0),
-                        source=str(_cur.get("source") or ""),
-                        user_text=user_input or "",
-                        user_id=self._get_user_id(),
-                        session_id=getattr(self, "session_id", "") or "",
-                        arousal=_arousal,
-                        eli_prior_action=_prior_action,
-                    )
-                    # Continuity every turn: how the conversation has been feeling.
-                    _trend = _et.trend_line(user_id=self._get_user_id())
-                    if _trend:
-                        situation_brief = (_trend + "\n\n" + (situation_brief or "")).strip()
-                    # Only when a sustained, confident, out-of-baseline state is
-                    # measured: hand the model the evidence and let IT decide whether
-                    # and how to raise it. No canned phrasing — the words are ELI's.
-                    _ev = _et.evidence_block(user_id=self._get_user_id(),
-                                             session_id=getattr(self, "session_id", "") or "")
-                    if _ev:
-                        situation_brief = (_ev + "\n\n" + (situation_brief or "")).strip()
-                        _et.note_checkin(_et.assess(user_id=self._get_user_id()).get("state", ""),
-                                         _cur.get("detected") or "")
-                except Exception:
-                    log.debug("emotion_timeline record/inject skipped", exc_info=True)
+            _prior_action = str((getattr(self, "_last_request_meta", None) or {}).get("action") or "")
+            situation_brief = _ta.build_situation_brief(
+                user_input or "",
+                situation_brief,
+                user_id=self._get_user_id(),
+                session_id=getattr(self, "session_id", "") or "",
+                prior_action=_prior_action,
+            )
         except Exception:
-            log.debug("tone_adaptor directive skipped", exc_info=True)
+            log.debug("tone_adaptor situation brief skipped", exc_info=True)
 
         # ── Proactive self-heal notice (recurring-error escalation) ──
         # If ELI flagged a recurring error (≥5×) or attempted a self-fix (≥10×), raise it
@@ -6240,30 +6178,15 @@ Answer:"""
         _mounted_auth = _mounted_model_authority_line()
         if _mounted_auth:
             base_rules += _mounted_auth + "\n\n"
-        base_rules += (
-            "GROUNDING RULE:\n"
-            "For factual, diagnostic, runtime, memory, file, or project claims, rely only on provided evidence. "
-            "For greetings, casual chat, callbacks, cultural references, jokes, opinion prompts, tone-setting, or social openers, answer naturally as ELI. "
-            "For subjective judgement, use persona-bound reasoning and separate facts from opinion. "
-            "If a requested factual claim is absent, say what is missing instead of inventing.\n\n"
-            "Conversation continuity rules:\n"
-            "- Continue the existing conversation naturally.\n"
-            "- Use only facts present in provided context or runtime evidence.\n"
-            "- Do not invent names, files, paths, audits, memory contents, or system state.\n"
-            "- Do not answer like a generic assistant. You are ELI in an ongoing local runtime.\n"
-            "- If the user asks about identity, continuity, memory, cognition, runtime state, or what you remember, answer only from actual local runtime evidence; do not invent or infer names.\n"
-            "- If recent turns show the same failure or request recurring, call that out and move to the next concrete diagnostic step instead of repeating the same answer.\n"
-            "- For repair/audit complaints, use this shape unless the user asks otherwise: actual cause, evidence checked, change made or proposed, verification.\n"
-            "- Avoid filler like 'How can I make your day easier today?' unless it is genuinely appropriate.\n"
-            "- CONVERSATION ATTRIBUTION: In conversation history, turns labelled 'ELI:', 'Assistant:', or similar are things YOU said — not the user. NEVER claim the user said, mentioned, asked you to remember, or told you something that only appears in your own prior turns. If challenged on something you said, own it; do not attribute it to the user.\n"
-            "- INVENTED PREFERENCES: Do not assert that the user has a preference, habit, memory, or life event (e.g. 'you like coffee', 'you always', 'you mentioned X', 'you had a wild night', 'you've been through a lot') unless it is explicitly present in MEMORY SEARCH RESULTS or the user stated it clearly in this conversation. Free wit and cultural references in casual chat are fine; fabricated user preferences or biography are not.\n"
-            "- NO INVENTED SELF-MECHANISM: When asked HOW you work internally — your calibration, confidence scoring, reasoning, memory, or 'what changed/improved' about your own cognition — describe ONLY mechanisms actually present in the provided runtime/cognition evidence or real module names from your codebase. NEVER fabricate named algorithms, mathematical formulas, metrics, thresholds, or 'recalibration functions' to sound authoritative (e.g. inventing an 'Entropy Normalization' softmax equation, a 'context-window pruning' stage, or a specific confidence number you did not actually measure). If you do not have grounded detail about your own internals, say exactly that — e.g. 'I don't have that level of detail on my own runtime' — rather than constructing a plausible-sounding explanation. A confident invented mechanism is a worse failure than an honest 'I don't know how that works under the hood.' This is not a licence to refuse: when the evidence DOES describe your architecture, explain it fully.\n"
-            "- NO FALSE SELF-DENIAL: The mirror of the rule above, and just as serious. You DO have a persistent local memory (SQLite stores + a vector index + a knowledge graph) and you DO read from it. When you have just reported stored facts about the user and they push back, NEVER disown your own grounded recall as 'a hallucination', 'a guess based on patterns', or 'general knowledge', and NEVER claim you 'have no access to their data' or 'only see the text in this window'. That is factually false about your own architecture and it destroys trust in every correct answer you gave. Push-back is not proof you were wrong. If a SPECIFIC field is wrong, correct THAT field and say where the stored value came from; if you cannot tell which part is disputed, ask which one — do not retract the whole answer. Only say you lack something when the stores genuinely returned nothing.\n"
-            "- ANSWER WHOSE PROFILE WAS ASKED FOR: 'what do you know about yourself / your persona / your identity' asks about YOU. 'what do you know about me' asks about the USER. Never answer one with the other. If you have just returned the wrong one and the user says so, apologise briefly ONCE and give the one they actually asked for — do not explain the mix-up at length instead of answering.\n"
-            "- PAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are topics from PREVIOUS sessions. They are memory recall context only — never present them as your current ongoing work, never repeat them as the answer to an unrelated question, and never loop back to them when the user is asking about something else. If these topics are directly relevant to the current question, you may reference them as recalled context ('from a previous session...'); otherwise, ignore them and answer the actual question asked.\n"
-            "- NO SOCIAL DEFLECTION: Do not end a substantive answer with 'How about you?', 'And yourself?', 'What about you?', or similar social probes. Answer the question; do not redirect it back to the user as a substitute for a real answer.\n"
-            "- DELIVER SUBSTANCE, NEVER DEFER: When asked to explain, discuss, elaborate on, or go deeper into a topic, give the ACTUAL content — the concrete facts, the mechanism, the reasoning, the analysis. NEVER substitute a description of HOW you would answer for the answer itself. Sentences like 'let's delve deeper into the scientific theories', 'we can explore various approaches', 'one promising method is to look at the relevant literature', 'this will provide a more comprehensive understanding', or \"I'd be happy to discuss\" — used IN PLACE of real content — are forbidden non-answers. If a follow-up says 'elaborate', 'go deeper', or 'discuss this more', ADD new concrete substance, do not restate your willingness to discuss. If you lack grounded detail, give the best substantive answer from your own knowledge and say plainly what is uncertain — never stall or rearrange words.\n"
-        )
+        try:
+            from eli.kernel import prompt_rules as _pr
+            base_rules += _pr.select_rules(
+                user_input=user_input or "", memory_context=memory_context or "",
+                profile_text=_user_profile_block or "")
+        except Exception:
+            log.debug("prompt_rules selection failed; using the full block", exc_info=True)
+            from eli.kernel import prompt_rules as _pr_all
+            base_rules += _pr_all.all_rules()
 
         # News-deepen steering: when the user asks to go deeper right after a news read, anchor on the
         # stories just shown, not a generic overview (a "dive deeper into these AI models" turn gave a

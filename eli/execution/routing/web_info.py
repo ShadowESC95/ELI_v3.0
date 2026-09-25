@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 
-from eli.utils.log import get_logger
 from eli.execution.routing._helpers import _mk  # noqa: F401
 
 

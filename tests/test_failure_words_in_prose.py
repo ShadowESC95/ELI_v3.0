@@ -30,14 +30,14 @@ that failed. What they must not do is treat prose as telemetry. Three changes:
   * the broad prompt scan dropped "grounded_evidence" from its co-occurrence
     set — every grounded turn contains it, so it could not disqualify anything.
 
-v3 keeps these guards in eli/kernel/stages/guards.py and the broad fallback in
-eli/kernel/stages/generation.py. v3 also carries report actions v2 has no
+v3 keeps these guards in eli/kernel/engine.py and the broad fallback in
+eli/kernel/engine.py. v3 also carries report actions v2 has no
 equivalent for, so the exempt set is larger here — EXPLAIN_LAST_FAILURE most of
 all, whose evidence is a failure by definition.
 """
 import pytest
 
-from eli.kernel.stages.guards import (
+from eli.kernel.engine import (
     _MUTATING_SELF_ACTIONS, _REPORTS_ABOUT_STATE, _failed_executor_is_failed,
     _failed_executor_is_failed_block,
 )

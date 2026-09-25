@@ -130,7 +130,7 @@ def test_emotional_checkin_is_not_gated_by_the_same_path():
 
 def test_prompt_assembly_carries_the_behavioural_directive():
     import inspect
-    from eli.kernel.stages import prompt_assembly
+    from eli.kernel import engine as prompt_assembly
     src = inspect.getsource(prompt_assembly)
     assert "build_situation_brief" in src
     from eli.cognition import tone_adaptor

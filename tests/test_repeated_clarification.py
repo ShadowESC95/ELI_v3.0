@@ -122,7 +122,7 @@ def test_governor_accepts_history_and_stays_backward_compatible():
 
 def test_engine_passes_recent_turns_to_the_governor():
     from pathlib import Path
-    src = Path("eli/kernel/stages/generation.py").read_text(encoding="utf-8")
+    src = Path("eli/kernel/engine.py").read_text(encoding="utf-8")
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "history=_gov_hist" in code, "the governor never receives conversation history"
     assert "get_recent_conversation(limit=8)" in code

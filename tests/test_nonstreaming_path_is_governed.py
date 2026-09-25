@@ -18,7 +18,7 @@ from pathlib import Path
 def _loop_source():
     import eli.cognition.output_governor as og
     root = Path(og.__file__).resolve().parents[2]
-    for rel in ("eli/kernel/engine.py", "eli/kernel/stages/reasoning_modes.py"):
+    for rel in ("eli/kernel/engine.py", "eli/kernel/engine.py"):
         f = root / rel
         if f.is_file():
             t = f.read_text(encoding="utf-8")

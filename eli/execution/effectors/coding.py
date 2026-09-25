@@ -3,11 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import ast
 import json
 import os
 import re
-import time
 
 from eli.utils.log import get_logger
 from eli.execution.effectors._base import _save_artifact, _full_control

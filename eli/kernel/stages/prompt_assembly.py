@@ -8,7 +8,6 @@ the methods here keep reading engine state through `self` exactly as before.
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -409,7 +408,7 @@ Answer:"""
         # when the turn can plausibly trigger it. An unassessable turn gets the
         # complete block. Same pattern as _phatic_style_rule above.
         try:
-            from eli.kernel.stages import prompt_rules as _pr
+            from eli.kernel import prompt_rules as _pr
             _selected_rules = _pr.select_rules(
                 user_input=user_input or "",
                 memory_context=memory_context or "",
@@ -418,7 +417,7 @@ Answer:"""
         except Exception:
             log.debug("prompt_rules selection failed — using the full block", exc_info=True)
             try:
-                from eli.kernel.stages import prompt_rules as _pr_all
+                from eli.kernel import prompt_rules as _pr_all
                 _selected_rules = _pr_all.all_rules()
             except Exception:
                 _selected_rules = ""

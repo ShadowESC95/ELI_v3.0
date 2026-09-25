@@ -5,7 +5,6 @@ import sqlite3
 from eli.core.sqlite_util import apply_pragmas
 import time
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 

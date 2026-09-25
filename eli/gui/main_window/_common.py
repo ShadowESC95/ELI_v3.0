@@ -16,25 +16,18 @@ import os
 import sys
 
 
-import json
 
 
-import time
 
 
-import threading
 
 
-import traceback
 
 
-import gc
 
 
-import subprocess
 
 
-import urllib.request
 
 
 from pathlib import Path
@@ -43,19 +36,15 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 
-from queue import Empty
 
 
 from datetime import datetime
 
 
-import re
 
 
-import shutil
 
 
-from collections import deque
 
 
 from eli.utils.log import get_logger
@@ -528,16 +517,13 @@ def _policy_identity_memory_response(user_text: str, model_text: str) -> str:
     return model_text
 
 
-from eli.gui.panels.startup import HardwareTuningDock
 
 
 from eli.gui.panels.startup import StartupModelSelectionDialog, FirstBootWizard
 
 
-from eli.gui.panels.agent_wizard import AgentEditDialog
 
 
-from eli.gui.panels.settings import AdvancedSettingsDialog
 
 
 if __name__ == "__main__":

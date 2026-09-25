@@ -1,7 +1,7 @@
 """Locks on defects from live v2 sessions (13:51, 15:13, 17:47), ported to v3.
 
-In v3 the repeat guard lives in eli/kernel/stages/guards.py and the generation
-stage in eli/kernel/stages/generation.py; the deepen guard stays in engine.py.
+In v3 the repeat guard lives in eli/kernel/engine.py and the generation
+stage in eli/kernel/engine.py; the deepen guard stays in engine.py.
 
 The transcript is the specification here, so the fixtures are its actual text.
 
@@ -26,7 +26,7 @@ import time
 
 import pytest
 
-from eli.kernel.stages.guards import (
+from eli.kernel.engine import (
     _ANTI_REPEAT_BLOCK_RE,
     _RepeatDetected,
     _deprimed_persona_brief,
@@ -258,21 +258,24 @@ def test_the_user_message_is_never_the_de_priming_target():
     )
     # and the guard that actually matters: the shipped call site passes the brief
     import inspect
-    from eli.kernel.stages import generation as eng
-    src = inspect.getsource(eng.GenerationMixin._stream_chat)
+    from eli.kernel import engine as eng
+    src = inspect.getsource(eng.CognitiveEngine._yield_with_anti_repeat_guard)
     assert "_deprimed_persona_brief(situation_brief)" in src, (
         "the retry must de-prime situation_brief, not prompt"
     )
+    assert "_deprimed_persona_brief(prompt)" not in src
 
 
 def test_retry_reaches_the_model_with_the_user_message_unaltered():
     """The first version prepended its instruction to the user's own words."""
     import inspect
-    from eli.kernel.stages import generation as eng
-    src = inspect.getsource(eng.GenerationMixin._stream_chat)
-    # the retry generation call must pass `prompt` itself, not a rewritten variant
-    assert "generate_stream_from_assembled_prompt(\n                    prompt," in src \
-        or "generate_stream_from_assembled_prompt(prompt," in src
+    from eli.kernel import engine as eng
+    src = inspect.getsource(eng.CognitiveEngine._yield_with_anti_repeat_guard)
+    # the retry rewrites only the persona brief and the context; the user's message is never touched
+    assert "stream_factory(_retry_brief, _retry_context, _retry_gen)" in src
+    assert "prompt = " not in src.split("_retry_brief", 1)[1]
+    # and the streaming entry point routes every live stream through the guard
+    assert "_yield_with_anti_repeat_guard" in inspect.getsource(eng.CognitiveEngine.generate_stream_from_assembled_prompt)
 
 
 @pytest.mark.parametrize("bad", ["", None])
@@ -284,7 +287,7 @@ def test_contract_and_stripper_stay_in_sync():
     """If the contract wording is edited without updating the regex, the stripper
     silently stops working and the retry is primed again — exactly the live bug."""
     import inspect
-    from eli.kernel.stages import generation as eng
+    from eli.kernel import engine as eng
 
     src = inspect.getsource(eng)
     assert "YOU HAVE ALREADY SAID THE FOLLOWING" in src

@@ -4,11 +4,6 @@ Clean leaf lifted from executor_enhanced.py (v3 modularisation).
 """
 from __future__ import annotations
 
-import os
-import re
-import time
-from datetime import datetime
-from pathlib import Path
 from eli.core.paths import resolve_user_repo_path
 from eli.utils.platform_compat import open_file
 from eli.utils.log import get_logger

@@ -5,7 +5,6 @@ ask "why did ELI think X?" without reading raw logs.
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List
 
 from eli.utils.log import get_logger

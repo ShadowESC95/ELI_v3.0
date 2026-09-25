@@ -13,7 +13,6 @@ import subprocess
 import tempfile
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from eli.utils.log import get_logger
 log = get_logger(__name__)

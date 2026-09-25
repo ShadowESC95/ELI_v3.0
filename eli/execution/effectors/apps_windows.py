@@ -9,9 +9,7 @@ import math
 import os
 import re
 import shlex
-import shutil
 import subprocess
-import time
 from typing import Any, Dict, List, Optional, Tuple
 from eli.utils.platform_compat import open_file
 from eli.utils.log import get_logger

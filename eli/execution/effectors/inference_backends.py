@@ -4,11 +4,8 @@ Lifted from executor_enhanced.py (v3 modularisation). OLLAMA_HOST is reproduced;
 """
 from __future__ import annotations
 
-import json
 import os
 import re
-import subprocess
-import time
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 from eli.utils.log import get_logger

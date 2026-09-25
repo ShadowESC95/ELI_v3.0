@@ -3,7 +3,6 @@ and the preference/inventory/full-dump/memory-count predicates.
 Moved from router_enhanced.py."""
 from __future__ import annotations
 
-import re
 
 from eli.utils.log import get_logger
 

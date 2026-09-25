@@ -1,7 +1,6 @@
 """Window-control effector — minimise/maximise/focus/close/cycle/workspace."""
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 from typing import Any, Dict

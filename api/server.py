@@ -62,7 +62,6 @@ from pathlib import Path
 import uvicorn
 
 from eli.kernel.engine import get_engine
-from eli.memory.memory import get_memory
 
 # Bearer-token gate. Enforced ONLY when ELI_API_TOKEN is set — which the launcher does
 # automatically when binding beyond loopback (--lan). Loopback (default) runs tokenless
@@ -3590,8 +3589,9 @@ _MCP_PAGE = """<!doctype html>
 """
 
 
-_mcp_log = get_logger(__name__) if "get_logger" in dir() else __import__(
-    "eli.utils.log", fromlist=["get_logger"]).get_logger(__name__)
+from eli.utils.log import get_logger
+
+_mcp_log = get_logger(__name__)
 
 
 @app.get("/mcp", response_class=HTMLResponse, tags=["Root"])

@@ -4,7 +4,6 @@ import base64
 import json
 import re
 from pathlib import Path
-from typing import Any
 
 from eli.licensing.types import LICENSE_VERSION, VALID_TIERS, LicensePayload
 

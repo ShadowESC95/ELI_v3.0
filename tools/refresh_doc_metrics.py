@@ -10,9 +10,7 @@ release tag (pyproject.toml version).
 from __future__ import annotations
 
 import ast
-import glob
 import json
-import os
 import re
 import subprocess
 from pathlib import Path

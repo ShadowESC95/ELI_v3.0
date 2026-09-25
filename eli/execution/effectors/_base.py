@@ -8,11 +8,7 @@ without an import cycle. Extracted from executor_enhanced.py (v3 modularisation)
 from __future__ import annotations
 
 import os
-import shlex
-import shutil
 import subprocess
-import tempfile
-import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
