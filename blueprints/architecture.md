@@ -13,7 +13,7 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime
 > + assistant GUI (and, as of 2026-06-28, a self-hosted web app — `api/server.py`,
 > documented in `ELI_USER_MANUAL.md`). No cloud, no APIs on the inference path, no hardcoded
-> model. **190,438 LOC** across **593** Python files in `eli/`; **`api/server.py`**
+> model. **232,507 LOC** across **595** Python files in `eli/`; **`api/server.py`**
 > adds **5,303** lines; **232** manifest capabilities (**215** doc-routable;
 > **211** `SUPPORTED_ACTIONS`; **189** router-routable). Measured 2026-08-29.
 
@@ -60,12 +60,12 @@ is observed-at-runtime rather than read-from-code it is marked *(runtime)*.
 
 | File | LOC | Notes |
 |---|---:|---|
-| `eli/kernel/engine.py` | 7,448 | Core engine (stages extracted to `kernel/stages/`) |
-| `eli/execution/executor_enhanced.py` | 6,921 | Dispatch hub (effectors split out) |
-| `eli/memory/memory.py` | 5,098 | Memory god-class |
-| `eli/execution/router_enhanced.py` | 4,547 | Intent router |
-| `eli/runtime/deterministic_grounding_gate.py` | 4,376 | Grounding gate |
-| `eli/cognition/agent_bus.py` | 3,626 | 15-agent parallel bus |
+| `eli/kernel/engine.py` | 15,895 | Core engine (stages extracted to `kernel/stages/`) |
+| `eli/execution/executor_enhanced.py` | 15,821 | Dispatch hub (effectors split out) |
+| `eli/memory/memory.py` | 5,648 | Memory god-class |
+| `eli/execution/router_enhanced.py` | 8,202 | Intent router |
+| `eli/runtime/deterministic_grounding_gate.py` | 4,383 | Grounding gate |
+| `eli/cognition/agent_bus.py` | 3,513 | 15-agent parallel bus |
 | `eli/gui/labs/report_tab.py` | 3,327 | Labs report builder |
 | `eli/gui/main_window/` (package) | ~12,570 | Decomposed main window + mixins |
 | `eli/gui/labs/` (package) | ~5,964 | Decomposed Labs workspace |
@@ -479,13 +479,13 @@ voices/  Piper ONNX
 
 | Module | LOC | Role |
 |---|---|---|
-| `manager.py` | 616 | discovery, enable/disable, install/uninstall (pre-existing, now data-dir aware) |
+| `manager.py` | 708 | discovery, enable/disable, install/uninstall (pre-existing, now data-dir aware) |
 | `permissions.py` | 395 | capability vocabulary, consent decisions, grants, audit ledger |
 | `manifest.py` | 302 | manifest schema + static capability verification against source |
-| `integrity.py` | 237 | sha256 pinning, ed25519 signatures, operator-trusted publishers |
+| `integrity.py` | 292 | sha256 pinning, ed25519 signatures, operator-trusted publishers |
 | `security_scan.py` | 547 | 11-engine malware scanner |
-| `marketplace.py` | 487 | federated registries, preview/install, licence keys |
-| `mcp.py` | 440 | MCP server config + runtime preflight + handshake verification |
+| `marketplace.py` | 793 | federated registries, preview/install, licence keys |
+| `mcp.py` | 502 | MCP server config + runtime preflight + handshake verification |
 
 `_plugins_dir()` now resolves through `paths.plugins_dir()` rather than returning the
 source tree; `_plugin_search_dirs()` scans bundled built-ins **and** user installs, so
@@ -495,7 +495,7 @@ a downloaded plugin never has to be written into a read-only installation.
 
 | Module | LOC | Role |
 |---|---|---|
-| `agent_spec.py` | 372 | `AgentSpec`: objective, prompt, triggers, success criteria, examples |
+| `agent_spec.py` | 436 | `AgentSpec`: objective, prompt, triggers, success criteria, examples |
 | `agent_trust.py` | 262 | path-keyed trust with provenance, scanning, revocation |
 
 `agent_bus.SpecAgent` runs a spec against the local model and scores the output

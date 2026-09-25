@@ -173,7 +173,7 @@ evidence-planner first (real code/web/memory analysis) before synthesising.
 | `GET_TIME` | Current time (alt) | “tell me the time” | Core |
 | `DATE` | Current date | “what's the date” | Core |
 | `GET_DATE` | Current date (alt) | “what day is it” | Core |
-| `GET_WEATHER` | Weather for a place | “weather in Wexford” | Plugin |
+| `GET_WEATHER` | Weather for a place | “weather in Paris” | Plugin |
 | `NEWS_FETCH` | Synthesised news digest | “what's the news” · “catch me up” | Core |
 | `WEB_SEARCH` | Web search (Net-gated) | “search the web for X” | Plugin |
 | `MESSAGE_TIME_QUERY` | Time-of-a-message query | “when did I say that” | Core |

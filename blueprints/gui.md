@@ -54,7 +54,7 @@ flowchart TD
 | `main_window/models.py` | — | `LocalModelManager`, `OllamaModelManager` |
 | **`labs/`** (17 files) | ~5,964 | Scientific workspace — one module per sub-tab |
 | `labs_tab.py` | 30 | **Shim only** — re-exports from `eli.gui.labs` |
-| `app.py` | 704 | launcher / first-boot auto-tune / entry `main()` |
+| `app.py` | 784 | launcher / first-boot auto-tune / entry `main()` |
 | `panels/startup.py` | 1,305 | model picker + FirstBootWizard |
 | `panels/settings.py` | 733 | settings dialog incl. Plugins + Marketplace |
 | `tabs/training_tab.py` | 841 | Labs ▸ Training — LoRA wizard |

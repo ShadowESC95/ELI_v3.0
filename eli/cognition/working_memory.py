@@ -59,14 +59,14 @@ class _PinnedFact:
                  "hit_count", "importance", "ts")
 
     def __init__(self, text: str, source: str, turn: int,
-                 importance: float = 0.5):
+                 importance: float = 0.5, ts: Optional[float] = None):
         self.text = text
         self.source = source
         self.pinned_at_turn = turn
         self.last_hit_turn = turn
         self.hit_count = 1
         self.importance = importance
-        self.ts = time.time()
+        self.ts = float(ts) if ts is not None else time.time()
 
     def touch(self, turn: int) -> None:
         self.last_hit_turn = turn
@@ -103,7 +103,7 @@ class WorkingMemory:
         self._evict_stale()
 
     def pin(self, text: str, source: str = "auto",
-            importance: float = 0.5) -> bool:
+            importance: float = 0.5, ts: Optional[float] = None) -> bool:
         """
         Pin a fact.  Returns True if newly added, False if already present
         (which still refreshes the hit counter).
@@ -125,7 +125,7 @@ class WorkingMemory:
         if len(self._facts) >= MAX_PINS:
             self._evict_one()
 
-        self._facts[key] = _PinnedFact(text, source, self._turn, importance)
+        self._facts[key] = _PinnedFact(text, source, self._turn, importance, ts=ts)
         return True
 
     def absorb_memory_hits(
@@ -144,7 +144,13 @@ class WorkingMemory:
             if not text:
                 continue
             if imp >= IMPORTANCE_THRESHOLD:
-                if self.pin(text, source="memory_recall", importance=imp):
+                # keep the memory's own date, not "now"
+                _hit_ts = hit.get("event_ts") or hit.get("ts") or hit.get("timestamp")
+                try:
+                    _hit_ts = float(_hit_ts) if _hit_ts else None
+                except (TypeError, ValueError):
+                    _hit_ts = None
+                if self.pin(text, source="memory_recall", importance=imp, ts=_hit_ts):
                     pinned += 1
         return pinned
 
@@ -210,6 +216,9 @@ class WorkingMemory:
         """
         saved = 0
         for fact in self._facts.values():
+            # recalled pins are already stored; re-saving them re-dated old statements and duplicated them
+            if fact.source == "memory_recall":
+                continue
             if fact.importance >= 0.8 and fact.hit_count >= 2:
                 try:
                     memory_store.store_memory(

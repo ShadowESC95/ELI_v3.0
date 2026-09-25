@@ -57,7 +57,7 @@ def _h_get_weather(a, args):
                     break
 
         if not location:
-            _msg = "I need a location. Try: 'What's the weather in Wexford?'"
+            _msg = "I need a location. Try: 'What's the weather in Paris?'"
             return {"ok": False, "action": a, "error": "missing_location", "content": _msg, "response": _msg}
 
         # Network gate: weather is a live open-meteo call. Refuse honestly

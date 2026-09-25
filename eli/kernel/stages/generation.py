@@ -2052,7 +2052,7 @@ class GenerationMixin:
                 #
                 # The exemption is unnecessary: _is_repeat_of_recent already
                 # returns False for anything under 40 normalised characters, so a
-                # real greeting ("Morning, Jason.") still recurs freely while a
+                # real greeting ("Morning, Alex.") still recurs freely while a
                 # recycled paragraph does not.
                 #
                 # Note the pairing with the anti-repeat CONTRACT above, which is

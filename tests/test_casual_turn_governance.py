@@ -35,7 +35,7 @@ from eli.kernel.stages.guards import _first_sentence
 
 
 # ── 1. invented self-status ────────────────────────────────────────────────
-REAL_OPENING = ("evening, jason. all systems nominal - no glitches detected in "
+REAL_OPENING = ("evening, alex. all systems nominal - no glitches detected in "
                 "the last 12 hours. how's your day shaping up?")
 
 
@@ -54,7 +54,7 @@ def test_self_status_claims_are_detected(claim):
 def test_the_real_opening_line_loses_its_invented_status():
     out = og.drop_unverified_self_status(REAL_OPENING, is_grounded=False)
     assert "nominal" not in out and "12 hours" not in out
-    assert "evening, jason" in out, "the greeting was destroyed with the claim"
+    assert "evening, alex" in out, "the greeting was destroyed with the claim"
     assert "how's your day" in out
 
 
@@ -135,7 +135,7 @@ def test_the_gate_still_suppresses_unpromised_dumps():
 # ── 4. ELI claiming the user's life as its own ─────────────────────────────
 REAL_EVENING_REPLY = (
     "Well, the plan for the evening is to chill out, get some weed, and maybe "
-    "play Fallout 4 while watching The Walking Dead. I'll be around, just "
+    "play Fallout 4 while watching Severance. I'll be around, just "
     "don't expect me to do anything too complicated."
 )
 

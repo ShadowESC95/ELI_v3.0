@@ -24,9 +24,9 @@ The stages, roughly in order:
 | `export_trainable_dataset.py` | 168 | export reviewed rows → trainable JSONL |
 | `merge_reviewed_datasets.py` | 135 | merge reviewed dataset shards |
 | `bootstrap_phi3_base.py` | 245 | one-time download of the trainable HF Phi-3 base |
-| `base_model_resolver.py` | 185 | locate/validate the trainable base (vs an adapter) |
+| `base_model_resolver.py` | 257 | locate/validate the trainable base (vs an adapter) |
 | `training_preflight.py` | 142 | check peft/transformers/datasets present + target ready |
-| `lora_trainer_guard.py` | 571 | `TrainerTarget` plans (paths, base_family) + guard checks |
+| `lora_trainer_guard.py` | 636 | `TrainerTarget` plans (paths, base_family) + guard checks |
 | `lora_trainer.py` | 840 | device selection, QLoRA, chat-template prompts, PEFT loop |
 | `lora_eval.py` | 491 | eval harness (score vs expected/forbidden, inspect adapter) |
 | `target_registry.py` | 266 | operator-declared training targets, any model family |

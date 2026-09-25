@@ -7,7 +7,7 @@ package's structure + the algorithm-bearing bodies; claims are grounded in what 
 inspected.
 
 > **Updated for 3.0.85 (August 2026).** Cognition unified with v2.3.44+ (gradient
-> orchestrator, shared retrieval, S01–S12). **~190,438 LOC / 593 `.py` files**,
+> orchestrator, shared retrieval, S01–S12). **~232,507 LOC / 593 `.py` files**,
 > **232** capabilities (**215** doc-routable; **211** `SUPPORTED_ACTIONS`). See **[docs/ARCHITECTURE_MAP.md](../docs/ARCHITECTURE_MAP.md)**.
 >
 > **Also:** two-front local-first system — PySide6 desktop **and** FastAPI web app
@@ -47,7 +47,7 @@ inspected.
 - **[capability_catalogue.md](capability_catalogue.md)** — exhaustive, ground-truth
   catalogue of all actions (232) + every package's modules (5 parts).
 - **[project_overview.md](project_overview.md)** — start here for the engineering
-  view. What ELI is, scale (~190k LOC / 593 files + web app), architecture by layer, the
+  view. What ELI is, scale (~190k LOC / 595 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
   topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.

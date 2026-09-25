@@ -13,12 +13,12 @@ full-text + vector + graph, all local SQLite/FAISS. Companion to
 | File | LOC | Role |
 |---|---|---|
 | `memory.py` | 4.7k | the `Memory` god-class + `DBPaths` + module facade |
-| `knowledge_graph.py` | 643 | entity/relation graph (KG) |
-| `habits_memory_db.py` | 470 |
-| `vector_store.py` | 430 | FAISS vector index + embedder + tombstones |
+| `knowledge_graph.py` | 641 | entity/relation graph (KG) |
+| `habits_memory_db.py` | 466 |
+| `vector_store.py` | 622 | FAISS vector index + embedder + tombstones |
 | `retrieval.py` | ~150 | shared turn retrieval (`retrieve_for_turn`) + 8 s cache |
 | `__init__.py` | 0 |
-| `system_index.py` | 278 | indexed apps/executables/files |
+| `system_index.py` | 281 | indexed apps/executables/files |
 | `memory_truth.py` | 190 |
 | `memory_adapter.py` | 131 | compat adapter |
 

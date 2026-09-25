@@ -42,7 +42,7 @@ wrapper.
 
 ## 2. Scale & shape
 
-**190,438 LOC across 593 Python files** (`eli/`), plus the FastAPI web server
+**232,507 LOC across 595 Python files** (`eli/`), plus the FastAPI web server
 (`api/server.py`, **5,303 lines** with an embedded dashboard PWA) and 389 test files.
 *(measured 2026-08-29.)*
 

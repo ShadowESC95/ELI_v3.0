@@ -14,7 +14,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ╔══════════════════════════════════════════════════════════════════════════════════╗
 ║                            ELI v3 — FULL ARCHITECTURE                            ║
 ║                100% local  ·  offline-by-default  ·  model-agnostic                ║
-║               ~190,438 LOC · 593 files · desktop GUI + web app server              ║
+║               ~232,507 LOC · 595 files · desktop GUI + web app server              ║
 ╚══════════════════════════════════════════════════════════════════════════════════╝
 
 ┌─ PRESENTATION ────────────────────────────────────────────────────────────────────┐
@@ -133,7 +133,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ## C. Module tree (LOC · key files · role)
 
 ```
-eli/  (~190,438 LOC, 593 files)  ·  api/server.py  (FastAPI web app + dashboard)
+eli/  (~232,507 LOC, 595 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │
 ├── __main__.py ················ entry dispatch (GUI | --headless)
 │
