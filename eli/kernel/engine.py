@@ -7430,6 +7430,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # Unmatched → grounded LLM intent resolver (real catalogue, cached). Only
         # adopt a confident, actionable result; otherwise fall through to chat.
         try:
+            from eli.cognition.llm_intent import is_plain_statement
+            if router_intent and _matched_by == "fallback.chat" and is_plain_statement(text):
+                return router_intent
+        except Exception:
+            log.debug("statement check failed", exc_info=True)
+        try:
             from eli.cognition.llm_intent import parse_cached
             li = parse_cached(text)
             # Banter guard: the resolver sometimes maps playful input ("use your imagination!") to a

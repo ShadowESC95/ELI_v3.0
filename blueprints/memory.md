@@ -212,6 +212,8 @@ budgets.
   hits outside the window are dropped, and the user's turns inside the window are read from
   `conversation_turns`. The result carries `window_stats` (candidates, added by date, in
   window, turns) and the orchestrator logs and reports it (`memory_diag`).
+- **Only questions get a window.** `plan_window` applies a period only to a question or recall request, so a
+  statement that says "last night" or "today" cannot narrow retrieval to that period.
 - **Explicit dates.** `parse_window` reads ISO dates ("2026-03-03"), "3 March", "March 3rd 2025",
   ranges ("between 1 May and 10 May"), "in June 2025" and "during 2024" as well as relative periods.
   A date with no year is its latest past occurrence.
