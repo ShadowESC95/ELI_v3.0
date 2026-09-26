@@ -72,7 +72,8 @@ def test_a_store_receipt_names_the_row_and_a_rejection_says_so(tmp_path, monkeyp
     monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: None)
     mem = Memory(db_path=tmp_path / "user.sqlite3")
     monkeypatch.setattr("eli.memory.get_memory", lambda *a, **k: mem)
-    monkeypatch.setattr(ex, "_get_memory_path", lambda: tmp_path / "user.sqlite3")
+    from eli.execution.effectors import memory_ops  # MEMORY_STORE is handled there
+    monkeypatch.setattr(memory_ops, "_get_memory_path", lambda: tmp_path / "user.sqlite3")
     ok = ex.execute("MEMORY_STORE", {"text": "The garage code is 4471 and the spare key is under the blue pot"})
     assert ok["ok"] and "row" in ok["response"] and "4471" in ok["response"]
     monkeypatch.setattr(mem, "store_memory", lambda **k: {"ok": True, "skipped": True, "reason": "persistence_gate"})

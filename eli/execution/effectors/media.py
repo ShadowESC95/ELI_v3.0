@@ -33,7 +33,9 @@ _BROWSER_PLAYERS = {"firefox", "Firefox", "chromium", "Chromium", "chrome"}
 _DUCKED_MEDIA = False
 _DUCK_LOCK = threading.Lock()
 _DUCK_TIMER = None
-_MEDIA_STATE: Dict[str, Any] = {"source": None, "title": None, "mpv_sock": None}
+_MEDIA_STATE: Dict[str, Any] = {
+    "source": None, "title": None, "mpv_sock": None, "mpv_headless": False,
+}
 _TARGET_ALIASES: dict = {
     # streaming services → browser player
     "netflix":    "browser",
@@ -73,29 +75,26 @@ def _get_active_player() -> Optional[str]:
 
 
 def _playerctl(cmd: str, player: Optional[str] = None) -> Dict[str, Any]:
-    """Run a targeted playerctl command. Self-contained, no external imports."""
-    pass  # shutil already imported at module level
-    if not shutil.which("playerctl"):
-        return {"ok": False, "error": "playerctl not installed — run: sudo apt install playerctl",
-                "content": "playerctl not installed", "response": "playerctl not installed"}
-    p = player or _get_active_player()
-    if not p:
-        return {"ok": False, "error": "No media player running",
-                "content": "No media player running", "response": "No media player running"}
-    try:
-        r = subprocess.run(["playerctl", "-p", p, cmd], capture_output=True, text=True, timeout=3)
-        if r.returncode == 0:
-            labels = {"play": "▶ Playing", "pause": "⏸ Paused", "stop": "⏹ Stopped",
-                      "next": "⏭ Next track", "previous": "⏮ Previous track"}
-            msg = f"{labels.get(cmd, cmd)} — {p}"
-            return {"ok": True, "player": p, "content": msg, "response": msg}
-        else:
-            msg = f"playerctl {cmd} failed: {r.stderr.strip() or 'unknown error'}"
-            return {"ok": False, "player": p, "error": r.stderr.strip(), "content": msg, "response": msg}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"playerctl {cmd} timed out", "content": "Command timed out", "response": "Command timed out"}
-    except Exception as e:
-        return {"ok": False, "error": str(e), "content": str(e), "response": str(e)}
+    """Run a media control command via the shared playerctl_backend."""
+    from eli.integrations.mpris import playerctl_backend as pb
+
+    dispatch = {
+        "play": pb.play,
+        "pause": pb.pause,
+        "stop": pb.stop,
+        "next": pb.next_track,
+        "previous": pb.previous_track,
+        "play-pause": pb.play_pause,
+    }
+    fn = dispatch.get(cmd)
+    if not fn:
+        return {
+            "ok": False,
+            "error": f"unsupported media command: {cmd}",
+            "content": f"unsupported media command: {cmd}",
+            "response": f"unsupported media command: {cmd}",
+        }
+    return fn(player)
 
 
 def _resolve_media_target(target: str | None) -> str | None:
@@ -115,7 +114,7 @@ def _resolve_media_target(target: str | None) -> str | None:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         return "firefox"   # fallback name
-    return alias
+    return alias   # e.g. "spotify", "vlc"
 
 
 def _targets_mpv(target: str | None) -> bool:
@@ -198,38 +197,16 @@ def _yt_mix_url(watch_url: str | None) -> str | None:
     return watch_url
 
 
-def _yt_apply_browser_autoplay(url: str) -> str:
-    if not url or "youtube.com" not in url:
-        return url
-    sep = "&" if "?" in url else "?"
-    extras: list[str] = []
-    if "autoplay=" not in url.lower():
-        extras.append("autoplay=1")
-    if "list=RD" in url and "start_radio=" not in url.lower():
-        extras.append("start_radio=1")
-    return f"{url}{sep}{'&'.join(extras)}" if extras else url
-
-
-def _yt_resolve_watch_url_ytdlp(query: str) -> str | None:
-    if not shutil.which("yt-dlp"):
-        return None
-    try:
-        r = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "--print", "url", f"ytsearch1:{query}"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode == 0:
-            for line in (r.stdout or "").splitlines():
-                url = line.strip()
-                if url.startswith("http") and "watch?v=" in url:
-                    return url
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return None
+from eli.integrations.media.youtube_playback import (
+    yt_apply_browser_autoplay as _yt_apply_browser_autoplay,
+    yt_resolve_watch_url_ytdlp as _yt_resolve_watch_url_ytdlp,
+)
 
 
 def _yt_browser_play_url(query: str) -> str:
+    """Resolve a song query to a browser URL that autoplays and continues (Mix)."""
     import urllib.parse as _up2
+
     watch = _yt_resolve_watch_url(query) or _yt_resolve_watch_url_ytdlp(query)
     if watch and _yt_autoplay_enabled():
         watch = _yt_mix_url(watch)
@@ -325,11 +302,12 @@ def _spotify_open_liked_songs() -> bool:
 
 
 def _spotify_try_open_and_play(uri: str, *, label: str, kind: str) -> Dict[str, Any] | None:
+    """Open a concrete Spotify URI and start playback. None → try another path."""
     import time as _time
     if not uri:
         return None
     if not _spotify_running():
-        _open_in_browser("spotify:")
+        _ensure_spotify_running()
         _spotify_wait_running(timeout=8.0)
     if not _spotify_open_uri(uri):
         return None
@@ -354,6 +332,7 @@ _LIKED_SONGS_RE = re.compile(
 
 
 def _spotify_is_liked_songs_request(name: str) -> bool:
+    """True when the user means Spotify's Liked Songs collection, not a search."""
     return bool(_LIKED_SONGS_RE.match(str(name or "").strip()))
 
 
@@ -368,13 +347,46 @@ def _mpv_socket_path() -> str:
 
 
 def _yt_player_clients() -> list:
-    from eli.integrations.media.youtube_playback import yt_player_clients
-    return yt_player_clients()
+    """yt-dlp YouTube clients to try, in order.
+
+    A googlevideo "HTTP error 403 Forbidden" during playback does not mean the
+    video is unavailable — it means yt-dlp resolved a stream URL that is bound
+    to the client which requested it, and ffmpeg (inside mpv) cannot reproduce
+    that request. The live failure carried `c=ANDROID_VR`, whose URLs are tied
+    to the requesting client and reliably 403 when handed to another fetcher.
+
+    The empty string means "whatever yt-dlp picks by default" and it goes
+    FIRST, deliberately. Measured against live YouTube on yt-dlp 2026.03.17,
+    the default client resolved and fetched (HTTP 206) while web_safari, tv,
+    ios, mweb and web_embedded did not resolve at all — pinning a "preferred"
+    client would have broken working playback for everyone to chase an
+    intermittent failure. So the default path is never altered; the ladder is
+    only ever walked after a 403 has actually happened, and it lists the
+    clients that were observed to resolve.
+
+    Which clients work shifts as YouTube changes, so the order is overridable
+    with ELI_YT_PLAYER_CLIENTS (comma-separated) without touching code. A
+    stale yt-dlp is the other common cause and no client can compensate for
+    it, which is why the failure message says so.
+    """
+    raw = (os.environ.get("ELI_YT_PLAYER_CLIENTS") or "").strip()
+    if raw:
+        return [("" if c.strip().lower() == "default" else c.strip())
+                for c in raw.split(",") if c.strip()]
+    return ["android", "tv", "ios", "mweb", ""]
 
 
 def _yt_is_client_bound_failure(stderr_tail: str) -> bool:
-    from eli.integrations.media.youtube_playback import yt_is_client_bound_failure
-    return yt_is_client_bound_failure(stderr_tail)
+    """True when the failure is the kind a different client can fix.
+
+    A 403 is worth retrying with another client. "Video unavailable", a
+    geo-block or an empty search result are not — retrying those just burns
+    seconds before the browser fallback the user was always going to get.
+    """
+    low = str(stderr_tail or "").lower()
+    if "empty playlist" in low or "unavailable" in low or "private video" in low:
+        return False
+    return "403" in low or "forbidden" in low
 
 
 def _mpv_alive() -> bool:
@@ -384,6 +396,8 @@ def _mpv_alive() -> bool:
 
 
 def _mpv_ipc(command: list, *, want_response: bool = False):
+    """Send one JSON IPC command to the headless YouTube mpv. Returns True/data, or
+    False/None on failure. Never raises."""
     from eli.integrations.media.cross_platform import mpv_ipc_send
     p = _MEDIA_STATE.get("mpv_sock") or _mpv_socket_path()
     return mpv_ipc_send(command, sock_path=p, want_response=want_response)
@@ -428,22 +442,33 @@ def _mpv_quit() -> None:
         _mpv_ipc(["quit"])
 
 
-def _set_now_playing(source: str, title: str | None, *, mpv_sock: str | None = None) -> None:
-    # Switching to a different source: stop the old headless mpv so two things don't
-    # play at once (e.g. YouTube audio + Spotify).
+def _set_now_playing(
+    source: str,
+    title: str | None,
+    *,
+    mpv_sock: str | None = None,
+    mpv_headless: bool = False,
+) -> None:
+    # Switching to a different source: stop the old mpv so two things don't
+    # play at once (e.g. YouTube + Spotify).
     if _MEDIA_STATE.get("source") == "mpv" and source != "mpv":
         _mpv_quit()
-    _MEDIA_STATE.update({"source": source, "title": title, "mpv_sock": mpv_sock})
+    _MEDIA_STATE.update({
+        "source": source,
+        "title": title,
+        "mpv_sock": mpv_sock,
+        "mpv_headless": bool(mpv_headless),
+    })
 
 
-def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
+def play_specific(query: str, target: str | None = None, *, browser: bool = False) -> Dict[str, Any]:
     """Play a specific song/artist/genre.
 
     Dispatch priority:
-      0. Explicit streaming platform (netflix/prime/disney/…) → browser deep-link search
-      1. Explicit spotify target  → Spotify (dbus if open, else xdg-open URI)
-      2. Explicit youtube target  → yt-dlp+mpv if available, else browser watch URL
-      3. "youtube web/website"    → browser watch URL (never mpv)
+      0. Explicit streaming platform (netflix/prime/disney/…) → native app (browser only if browser=True)
+      1. Explicit spotify target  → Spotify native app (dbus/URI, never web)
+      2. Explicit youtube target  → yt-dlp+mpv (visible video window by default)
+      3. "youtube web/website/.com"    → browser watch URL (never mpv)
       4. "X by Y" (no target)     → yt-dlp+mpv
       5. Generic fallback         → browser watch URL
     """
@@ -461,7 +486,7 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
         )
         canon = normalize_streaming_target(target or t)
         if canon:
-            msg = _play_on_streaming(target or t, query)
+            msg = _play_on_streaming(target or t, query, browser=browser)
             if msg:
                 return {"ok": True, "action": "PLAY_MEDIA", "played": False,
                         "search_only": True, "target": canon,
@@ -492,7 +517,10 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
     is_spotify = "spotify" in t or (player and "spotify" in (player or "").lower())
     is_youtube = "youtube" in t or t in ("yt",)
     is_yt_web  = is_youtube and bool(_re.search(r"\bweb(?:site)?\b", t))
-    is_yt_browser = is_yt_web or bool(_re.search(r"youtube\.com", t, _re.I))
+    is_yt_browser = (
+        is_yt_web
+        or bool(_re.search(r"youtube\s*(?:\.com|\s+com)\b", t, _re.I))
+    )
 
     if (not is_spotify and not is_youtube
             and _spotify_running()
@@ -505,6 +533,7 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
         if _by_m and not _si.album_request(query)[0]:
             search_q = f"{_by_m.group(1).strip()} {_by_m.group(2).strip()}"
 
+        # ── Liked Songs ──
         _pl_name = "" if _by_m else _spotify_playlist_name(search_q)
         if _pl_name and _spotify_is_liked_songs_request(_pl_name):
             try:
@@ -519,6 +548,7 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
+        # ── Named playlist ──
         if _pl_name and not _spotify_is_liked_songs_request(_pl_name):
             _hit = _spotify_try_open_and_play(
                 _spotify_resolve_playlist_uri(_pl_name),
@@ -527,6 +557,7 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
             if _hit:
                 return _hit
 
+        # ── Album (optionally by artist) ──
         _album, _album_artist = _si.album_request(query)
         if _album:
             _hit = _spotify_try_open_and_play(
@@ -536,18 +567,27 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
             )
             if _hit:
                 return _hit
+            # Fall back to album search tab + play top result
             if not _spotify_running():
-                _open_in_browser("spotify:")
+                _ensure_spotify_running()
                 _spotify_wait_running(timeout=8.0)
             if _spotify_search(f"{_album} {_album_artist or ''}".strip(), prefer="albums"):
-                _time.sleep(1.8)
+                _time.sleep(2.4)
                 _spotify_clear_track_repeat()
                 if _spotify_play():
                     _set_now_playing("spotify", f"{_album} (album)")
                     msg = f"Playing the “{_album}” album on Spotify."
                     return {"ok": True, "action": "PLAY_MEDIA", "played": True,
                             "kind": "album", "content": msg, "response": msg}
+                # Retry play once after album search UI settles
+                _time.sleep(1.2)
+                if _spotify_play():
+                    _set_now_playing("spotify", f"{_album} (album)")
+                    msg = f"Playing the “{_album}” album on Spotify."
+                    return {"ok": True, "action": "PLAY_MEDIA", "played": True,
+                            "kind": "album", "content": msg, "response": msg}
 
+        # ── Artist discography / "songs by X" ──
         _artist = _si.artist_songs_request(query)
         if _artist:
             _hit = _spotify_try_open_and_play(
@@ -557,11 +597,13 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
             if _hit:
                 return _hit
 
+        # ── Named playlist (search fallback only if URI scrape failed above) ──
         if _pl_name and not _spotify_is_liked_songs_request(_pl_name):
             _pl_opened = _spotify_search(_pl_name, prefer="playlists")
             if not _pl_opened:
                 try:
-                    _open_in_browser(f"spotify:search:{urllib.parse.quote(_pl_name)}")
+                    _ensure_spotify_running()
+                    _spotify_open_uri(f"spotify:search:{_pl_name}/playlists")
                     for _ in range(8):
                         _time.sleep(1.0)
                         if _spotify_running():
@@ -589,14 +631,15 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
                     "search_only": True, "target": "spotify", "kind": "playlist",
                     "content": msg, "response": msg}
 
+        # ── Track / generic search (tracks tab, not playlists) ──
         _track_q = search_q
         if not _spotify_running():
-            _open_in_browser("spotify:")
+            _ensure_spotify_running()
             _spotify_wait_running(timeout=8.0)
         _opened = _spotify_search(_track_q, prefer="tracks")
         if not _opened:
             try:
-                _open_in_browser(f"spotify:search:{urllib.parse.quote(_track_q)}")
+                _spotify_open_uri(f"spotify:search:{_track_q}")
                 for _ in range(8):
                     _time.sleep(1.0)
                     if _spotify_running():
@@ -648,48 +691,85 @@ def play_specific(query: str, target: str | None = None) -> Dict[str, Any]:
     yt_search = _yt_mpv_q(query, by_artist=_by_pair)
 
     _yt_direct_err = ""
-    _yt_have_tools = bool(shutil.which("yt-dlp") and shutil.which("mpv"))
+    _yt_have_tools = False
+    _missing_yt: list[str] = []
+    try:
+        from eli.integrations.media.media_deps import youtube_mpv_ready, missing_youtube_tools
+        _yt_have_tools = youtube_mpv_ready()
+        _missing_yt = missing_youtube_tools()
+    except Exception:
+        _missing_yt = ["mpv", "yt-dlp"]
     if _yt_have_tools:
         try:
-            from eli.integrations.media.youtube_playback import attempt_youtube_mpv
+            from eli.integrations.media.youtube_playback import (
+                attempt_youtube_mpv,
+                yt_mpv_headless,
+            )
             ipc = _mpv_socket_path()
             _mpv_quit()
-            _yt_result = attempt_youtube_mpv(yt_search, ipc_path=ipc)
+            _headless = yt_mpv_headless()
+            _yt_result = attempt_youtube_mpv(
+                yt_search, ipc_path=ipc, headless=_headless,
+            )
             _fallback_what = (f"'{_by_m.group(1).strip()}' by {_by_m.group(2).strip()}"
                               if _by_m else f"'{query}'")
             if _yt_result.get("played"):
                 _title = (f"{_by_m.group(1).strip()} by {_by_m.group(2).strip()}"
                           if _by_m else query)
-                _set_now_playing("mpv", _title, mpv_sock=ipc)
+                _set_now_playing(
+                    "mpv", _title, mpv_sock=ipc,
+                    mpv_headless=_yt_result.get("headless", _headless),
+                )
                 _resolved = _mpv_ipc(["get_property", "media-title"], want_response=True)
                 _what = (_resolved.strip()
                          if isinstance(_resolved, str) and _resolved.strip()
                          else _fallback_what)
-                msg = f"Playing {_what} on YouTube (audio, in the background)."
+                if _yt_result.get("headless", _headless):
+                    msg = f"Playing {_what} on YouTube (audio, in the background)."
+                else:
+                    msg = f"Playing {_what} on YouTube in mpv — video on screen."
                 return {"ok": True, "action": "PLAY_MEDIA", "played": True,
                         "content": msg, "response": msg}
             if _yt_result.get("pending"):
                 _title = (f"{_by_m.group(1).strip()} by {_by_m.group(2).strip()}"
                           if _by_m else query)
-                _set_now_playing("mpv", _title, mpv_sock=ipc)
-                msg = (f"Starting {_fallback_what} on YouTube — it is still resolving, so "
+                _set_now_playing(
+                    "mpv", _title, mpv_sock=ipc,
+                    mpv_headless=_yt_result.get("headless", _headless),
+                )
+                msg = (f"Starting {_fallback_what} on YouTube in mpv — it is still resolving, so "
                        f"I have not confirmed playback yet. Ask what's playing in a moment.")
                 return {"ok": True, "action": "PLAY_MEDIA", "played": False,
                         "pending": True, "content": msg, "response": msg}
             _yt_direct_err = str(_yt_result.get("error") or "mpv could not start playback")
+            if _yt_result.get("reason") == "missing_tools":
+                _missing_yt = list(_yt_result.get("missing_tools") or _missing_yt)
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    # ── 4. No yt-dlp/mpv (or mpv failed) → resolve watch URL and open in browser ─
-    # Direct in-app playback needs yt-dlp + mpv. Be HONEST that this is a fallback,
-    # not real playback (no-fake-actions) — and say what would actually unlock "play"
-    # for THIS user: an install hint is wrong when the tools are present and mpv died,
-    # so report the real reason in that case instead.
+            log.warning("[MEDIA] YouTube mpv path raised unexpectedly", exc_info=True)
+            _yt_direct_err = "internal error during YouTube playback"
+    elif _missing_yt and is_youtube:
+        names = " and ".join(_missing_yt)
+        msg = (
+            f"I can't play that on YouTube yet — {names} "
+            f"{'is' if len(_missing_yt) == 1 else 'are'} not available on this machine."
+        )
+        return {
+            "ok": False,
+            "action": "PLAY_MEDIA",
+            "played": False,
+            "target": "youtube",
+            "reason": "missing_tools",
+            "missing_tools": _missing_yt,
+            "content": msg,
+            "response": msg,
+        }
+    # Direct in-app playback needs yt-dlp and mpv. Be honest that this is a fallback, not playback
+    # (no-fake-actions), and say what would unlock "play" for this user; an install hint is wrong
+    # when the tools are present and mpv died, so report the real reason.
     _play_hint = (
         f" — direct playback failed ({_yt_direct_err})" if _yt_direct_err
         else "" if _yt_have_tools
-        else (" — for direct playback install mpv + yt-dlp "
-              "(sudo apt install mpv && pipx install yt-dlp)")
+        else (" — say yes if I offer to install mpv or yt-dlp")
     )
     watch = _yt_browser_play_url(yt_search)
     if "watch?v=" in watch:
@@ -735,26 +815,20 @@ def _playerctl_p(*args):
 
 
 def _duck_media_pause():
-    # Pause ONLY if it was actually playing; remember we ducked it.
-    global _DUCKED_MEDIA
-    if not MEDIA_DUCK:
-        return
-    if _DUCKED_MEDIA:
-        return
-    rc, out, _ = _playerctl_p("status")
-    if rc == 0 and out.lower() == "playing":
-        _playerctl_p("pause")
-        _DUCKED_MEDIA = True
+    # Canonical implementation lives in audio_stt (shared with wake-word ducking).
+    try:
+        from eli.perception.audio_stt import media_player_duck_pause
+        media_player_duck_pause()
+    except Exception:
+        log.debug("[MEDIA_DUCK] pause skipped", exc_info=True)
 
 
 def _duck_media_resume():
-    global _DUCKED_MEDIA
-    if not MEDIA_DUCK:
-        return
-    if not _DUCKED_MEDIA:
-        return
-    _playerctl_p("play")
-    _DUCKED_MEDIA = False
+    try:
+        from eli.perception.audio_stt import media_player_duck_resume
+        media_player_duck_resume()
+    except Exception:
+        log.debug("[MEDIA_DUCK] resume skipped", exc_info=True)
 
 
 def _duck_schedule_resume(deadline_s: float):
@@ -879,7 +953,6 @@ def _spotify_ctl(command: str, auto_launch: bool = True):
     return {"ok": r.get("ok", False), "result": r, "player": player}
 
 
-
 # ── public transport API ──
 def stop_media(target: str | None = None) -> Dict[str, Any]:
     """Stop media. Spotify doesn't support MPRIS Stop so uses pause."""
@@ -907,13 +980,14 @@ def pause_media(target: str | None = None) -> Dict[str, Any]:
     return result
 
 
-def next_media() -> Dict[str, Any]:
+def next_media(target: str | None = None) -> Dict[str, Any]:
     """Skip to next track."""
-    if _targets_mpv(None):
+    if _targets_mpv(target):
         _mpv_ipc(["playlist-next", "weak"])
         return {"ok": True, "action": "NEXT_MEDIA", "content": "⏭ Next — YouTube",
                 "response": "⏭ Next — YouTube"}
-    result = _playerctl("next")
+    p = _resolve_media_target(target) or _get_active_player()
+    result = _playerctl("next", p)
     result["action"] = "NEXT_MEDIA"
     return result
 
@@ -973,8 +1047,13 @@ def now_playing() -> Dict[str, Any]:
             title = mt.strip()
         paused = _mpv_ipc(["get_property", "pause"], want_response=True)
         head = "⏸ Paused" if paused is True else "▶ Playing"
-        msg = f"{head}: {title} — YouTube audio (headless mpv)."
+        mode = "audio (background)" if _MEDIA_STATE.get("mpv_headless") else "mpv video"
+        msg = f"{head}: {title} — YouTube ({mode})."
         return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+
+    # Live playerctl metadata beats the cached _MEDIA_STATE title — the cache
+    # stores what we *asked* Spotify to play ("liked songs (playlist)"), not
+    # what is actually playing (artist — track).
     _player = "spotify" if src == "spotify" else (_get_active_player() or "")
     if _player:
         head, artist, track = _spotify_live_meta(_player)
@@ -987,23 +1066,16 @@ def now_playing() -> Dict[str, Any]:
         head = "▶ Playing" if _spotify_is_playing() else "⏸ Paused"
         msg = f"{head}: {title} — Spotify."
         return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
-    # Fall back to whatever MPRIS player is active.
-    try:
-        p = _get_active_player()
-        if p:
-            import subprocess as _sp3
-            r = _sp3.run(["playerctl", "-p", p, "metadata", "--format",
-                          "{{artist}} — {{title}}"], capture_output=True, text=True, timeout=3)
-            meta = (r.stdout or "").strip()
-            if meta and meta != "—":
-                return {"ok": True, "action": "NOW_PLAYING",
-                        "content": f"▶ {meta} — {p}.", "response": f"▶ {meta} — {p}."}
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
     msg = "Nothing is playing right now."
     return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
 __all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_yt_resolve_watch_url', '_yt_mix_url', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
+
+
+def _ensure_spotify_running() -> bool:
+    """Launch the native Spotify app — never a browser tab."""
+    from eli.integrations.media.cross_platform import spotify_launch_if_needed
+    return spotify_launch_if_needed()
 
 
 # ── dispatch handlers (v3 registry) ──
@@ -1016,19 +1088,26 @@ def _h_media_control(a, args):
         "play": "PLAY_MEDIA", "resume": "PLAY_MEDIA",
         "next": "NEXT_MEDIA", "skip": "NEXT_MEDIA",
         "previous": "PREVIOUS_MEDIA", "prev": "PREVIOUS_MEDIA",
+        "shuffle": "SHUFFLE_MEDIA", "repeat": "REPEAT_MEDIA", "loop": "REPEAT_MEDIA",
     }
     mapped = cmd_map.get(cmd)
     if mapped:
-        # Forward target into sub-handler args
         forwarded = dict(args)
         forwarded["_target"] = target
-        # Call targeted versions directly when target present
         if target and mapped == "PAUSE_MEDIA":
             return pause_media(target=target)
         if target and mapped in ("PLAY_MEDIA",):
             return play_media(target=target)
         if target and mapped == "STOP_MEDIA":
             return stop_media(target=target)
+        if target and mapped == "NEXT_MEDIA":
+            return next_media(target=target)
+        if target and mapped == "PREVIOUS_MEDIA":
+            return previous_media(target=target)
+        if mapped == "SHUFFLE_MEDIA":
+            return shuffle_media(target=target)
+        if mapped == "REPEAT_MEDIA":
+            return repeat_media(target=target)
         return _execute_impl(mapped, forwarded)
     # Fallback: playerctl generic
     try:
@@ -1054,14 +1133,21 @@ def _h_volume(a, args):
     return _volume_fallback(direction=direction, delta=delta, level=level)
 
 
+def _media_target(args) -> Optional[str]:
+    """The player a transport command names ("pause spotify"), or None for whatever is playing."""
+    args = args or {}
+    return (args.get("target") or args.get("service") or args.get("player") or "").strip() or None
+
+
 from eli.execution.effectors.registry import register as _register
 
 
 def _h_play_media(action, args):
     query = (args.get("query") or args.get("song") or args.get("artist") or "").strip()
-    target = (args.get("target") or "").strip() or None
+    target = _media_target(args)
+    browser = bool(args.get("browser"))
     if query:
-        return play_specific(query, target)
+        return play_specific(query, target, browser=browser)
     return play_media(target)
 
 
@@ -1077,11 +1163,11 @@ def _h_repeat_media(action, args):
 
 for _action, _fn in {
     "PLAY_MEDIA": _h_play_media,
-    "STOP_MEDIA": lambda a, args: stop_media(),
-    "PAUSE_MEDIA": lambda a, args: pause_media(),
+    "STOP_MEDIA": lambda a, args: stop_media(_media_target(args)),
+    "PAUSE_MEDIA": lambda a, args: pause_media(_media_target(args)),
     "NOW_PLAYING": lambda a, args: now_playing(),
-    "NEXT_MEDIA": lambda a, args: next_media(),
-    "PREVIOUS_MEDIA": lambda a, args: previous_media(),
+    "NEXT_MEDIA": lambda a, args: next_media(_media_target(args)),
+    "PREVIOUS_MEDIA": lambda a, args: previous_media(_media_target(args)),
     "SHUFFLE_MEDIA": _h_shuffle_media,
     "REPEAT_MEDIA": _h_repeat_media,
 }.items():

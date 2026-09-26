@@ -28,7 +28,7 @@ def _write_note_builtin(args: dict) -> dict:
         import os, re, time, subprocess
         from pathlib import Path
 
-        root = Path(__file__).resolve().parent.parent
+        root = Path(__file__).resolve().parents[2]
         doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
         doc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +76,7 @@ def _append_note_builtin(args: dict) -> dict:
         import os, re, time, subprocess
         from pathlib import Path
 
-        root = Path(__file__).resolve().parent.parent
+        root = Path(__file__).resolve().parents[2]
         doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
         doc_dir.mkdir(parents=True, exist_ok=True)
 

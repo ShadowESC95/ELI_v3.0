@@ -44,12 +44,24 @@ def _h_ambient_vision(a, args):
 def _h_screen_read_analyze(a, args):
     try:
         import tempfile
+        from eli.perception.screen_analysis import (
+            analysis_depth_from_text,
+            build_screen_analysis_prompt,
+            prefer_fast_for_depth,
+        )
+        user_q = str(args.get("query") or args.get("text") or args.get("instruction") or "").strip()
+        depth = str(args.get("depth") or analysis_depth_from_text(user_q) or "").strip()
+        if not depth:
+            try:
+                from eli.core.runtime_settings import load_settings
+                depth = str(load_settings().get("screen_analysis_depth", "standard") or "standard")
+            except Exception:
+                depth = "standard"
         # 1. Take screenshot
         from eli.perception.os_controller import take_screenshot
-        ss_result = take_screenshot(region="full")
+        ss_result = take_screenshot(region=str(args.get("area") or args.get("region") or "full"))
         ss_path = ss_result.get("path") or ss_result.get("file") or ""
         if not ss_path or not Path(ss_path).exists():
-            # Try PIL fallback
             try:
                 import subprocess as _sp
                 tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -60,15 +72,21 @@ def _h_screen_read_analyze(a, args):
                 return {"ok": False, "action": a,
                         "error": "Screenshot failed — no screenshot path returned.",
                         "content": "Screenshot failed.", "response": "Screenshot failed."}
-        # 2. Analyse the screenshot with real vision (VL model) + OCR.
-        #    ANALYZE_IMAGE does the hot-swap vision call and falls back to
-        #    OCR-only honestly when no vision model is installed.
-        _sra_prompt = str(args.get("prompt") or args.get("instruction") or "").strip() or (
-            "You are ELI looking at the user's screen right now. Describe what is on "
-            "screen: the focused application, what the user appears to be doing, and any "
-            "important text, code, errors, or UI state. Be specific; never invent."
+        _sra_prompt = build_screen_analysis_prompt(
+            user_q,
+            explicit_prompt=str(args.get("prompt") or args.get("instruction") or "").strip(),
+            depth=depth,
         )
-        _sra = _execute_impl("ANALYZE_IMAGE", {"path": ss_path, "prompt": _sra_prompt, "prefer_fast": True})
+        _prefer_fast = bool(args.get("prefer_fast")) if "prefer_fast" in (args or {}) else prefer_fast_for_depth(depth)
+        _sra = _execute_impl(
+            "ANALYZE_IMAGE",
+            {
+                "path": ss_path,
+                "prompt": _sra_prompt,
+                "prefer_fast": _prefer_fast and depth == "quick",
+                "fuse_with_text": depth in ("standard", "deep"),
+            },
+        )
         _sra_body = str(_sra.get("content") or _sra.get("response") or "").strip()
         if not _sra_body:
             _sra_body = "I captured the screen but couldn't produce a description."
@@ -76,7 +94,7 @@ def _h_screen_read_analyze(a, args):
                 "content": _sra_body, "response": _sra_body,
                 "vision_text": _sra.get("vision_text", ""),
                 "ocr_text": _sra.get("ocr_text", ""),
-                "screenshot_path": ss_path}
+                "screenshot_path": ss_path, "depth": depth}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

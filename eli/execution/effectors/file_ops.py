@@ -149,6 +149,7 @@ def _h_create_file(a, args):
     if not path:
         msg = "Specify a file path to create (e.g. /tmp/note.txt)."
         return {"ok": False, "action": a, "error": "missing path", "content": msg, "response": msg}
+    content = _content_from_line_spec(content)
     # Light, safe substitution so "containing today's date / your version" resolves.
     _today = _dt_cf.date.today().isoformat()
     _ver = ""
@@ -201,9 +202,12 @@ def _h_create_file(a, args):
         msg = f"Could not create {p}: {_cf_e}"
         return {"ok": False, "action": a, "error": str(_cf_e), "content": msg, "response": msg}
     _rb_show = _readback if len(_readback) <= 2000 else _readback[:2000] + "…"
-    msg = f"Created {p} ({len(content)} chars). Read back:\n{_rb_show}"
-    return {"ok": True, "action": a, "path": str(p), "created": True,
-            "bytes": len(content.encode('utf-8')), "readback": _readback,
+    _lines_written = len(_readback.splitlines())
+    _matches = _readback.replace("\r\n", "\n") == content.replace("\r\n", "\n")
+    msg = (f"Created {p} ({len(content)} chars, {_lines_written} line{'s' if _lines_written != 1 else ''}"
+           f"{'' if _matches else ', read-back differs from what was requested'}). Read back:\n{_rb_show}")
+    return {"ok": _matches, "action": a, "path": str(p), "created": True,
+            "bytes": len(content.encode('utf-8')), "readback": _readback, "lines": _lines_written,
             "content": msg, "response": msg}
 
 
@@ -329,3 +333,7 @@ for _action, _fn in {
     "SUMMARIZE_FILE": _h_summarize_file,
 }.items():
     _register(_action, _fn)
+
+def _content_from_line_spec(*a, **k):
+    from eli.execution.executor_enhanced import _content_from_line_spec as _f
+    return _f(*a, **k)

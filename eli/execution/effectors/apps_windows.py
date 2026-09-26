@@ -49,34 +49,18 @@ def open_audio_settings() -> Dict[str, Any]:
 
 
 def open_file_system(path: str = "~") -> Dict[str, Any]:
-    try:
-        target = os.path.expanduser(path)
-        open_file(target)
-        msg = f"Opened folder: {target}"
-        return {"ok": True, "action": "OPEN_FILE_SYSTEM", "path": target, "content": msg, "response": msg}
-    except Exception as e:
-        msg = "Failed to open file system."
-        return {"ok": False, "action": "OPEN_FILE_SYSTEM", "error": repr(e), "content": msg, "response": msg}
+    from eli.execution.effectors.system_helpers import open_file_system as _ofs
+    return _ofs(path)
 
 
 def open_browser(url: str = "https://duckduckgo.com", urls: list = None) -> Dict[str, Any]:
-    """Open one or more URLs in the default browser. Cross-platform via platform_compat
-    (webbrowser on Linux/macOS/Windows, termux-open-url on Android)."""
-    try:
-        from eli.utils.platform_compat import open_url
-        targets = [str(u) for u in (urls or []) if str(u).strip()]
-        if not targets:
-            targets = [str(url)]
-        for target in targets:
-            open_url(target)
-        if len(targets) == 1:
-            msg = f"Opened browser: {targets[0]}"
-            return {"ok": True, "action": "OPEN_BROWSER", "url": targets[0], "content": msg, "response": msg}
-        msg = f"Opened {len(targets)} browser tabs."
-        return {"ok": True, "action": "OPEN_BROWSER", "urls": targets, "content": msg, "response": msg}
-    except Exception as e:
-        msg = f"Failed to open browser: {e}"
-        return {"ok": False, "action": "OPEN_BROWSER", "error": repr(e), "content": msg, "response": msg}
+    """Open one or more URLs in the default browser.
+
+    One implementation (system_helpers), which reports a browser that did not open instead of
+    claiming success; this copy used to say "Opened browser" regardless.
+    """
+    from eli.execution.effectors.system_helpers import open_browser as _ob
+    return _ob(url, urls=urls)
 
 
 def _normalize_app(spoken: str) -> str:
@@ -87,23 +71,8 @@ def _normalize_app(spoken: str) -> str:
 
 
 def _open_app_with_timeout(argv, timeout=30):
-    # GUI apps shouldn't be waited on. Spawn + return success unless it exits immediately with error.
-    import subprocess
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True
-        )
-        try:
-            out, err = proc.communicate(timeout=0.7)
-            return {"ok": (proc.returncode == 0), "returncode": proc.returncode, "stdout": out, "stderr": err, "argv": argv}
-        except subprocess.TimeoutExpired:
-            return {"ok": True, "spawned": True, "pid": proc.pid, "argv": argv}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "argv": argv}
+    from eli.execution.effectors.system_helpers import open_app_with_timeout
+    return open_app_with_timeout(argv, timeout=timeout)
 
 
 def _open_app_builtin(app_name: str) -> dict:

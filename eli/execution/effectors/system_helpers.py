@@ -94,7 +94,7 @@ def open_browser(url: str = "https://duckduckgo.com", urls: list | None = None) 
                 "content": msg, "response": msg}
 
 
-def _run_ok(argv, timeout=2.0) -> bool:
+def _run_ok(argv, timeout: int = 5) -> bool:
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         return r.returncode == 0

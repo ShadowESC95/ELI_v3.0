@@ -70,11 +70,18 @@ def test_mocked_torch_never_produces_a_mock_vram_number():
     assert isinstance(acc["total_gb"], float)
 
 
+def _sparse(path, size):
+    """A file that reports `size` bytes but takes no disk. These tests used to write 1 GB and
+    4 GB of real zeros (built in RAM first), about 5 GB of temp per run, enough to fill the disk."""
+    with open(path, "wb") as f:
+        f.truncate(size)
+
+
 def test_small_model_fits_a_small_card(tmp_path):
     """The old flat 10 GiB floor refused a 1B on a 6 GB card that fits easily."""
     tiny = tmp_path / "tiny"
     tiny.mkdir()
-    (tiny / "model.safetensors").write_bytes(b"\0" * (1024 ** 3))  # ~1 GB
+    _sparse(tiny / "model.safetensors", 1024 ** 3)  # ~1 GB
     with patch.dict("sys.modules", {"torch": _torch(free=6 * 1024 ** 3, total=8 * 1024 ** 3)}):
         d = lt._pick_device("auto", base_model_path=tiny)
     assert d["selected"] == "cuda"
@@ -103,7 +110,7 @@ def test_cpu_only_machine_says_so_plainly():
 def test_four_bit_lowers_the_requirement(tmp_path):
     m = tmp_path / "m"
     m.mkdir()
-    (m / "model.safetensors").write_bytes(b"\0" * (4 * 1024 ** 3))
+    _sparse(m / "model.safetensors", 4 * 1024 ** 3)
     assert lt.estimate_vram_gb(m, four_bit=True) < lt.estimate_vram_gb(m, four_bit=False)
 
 

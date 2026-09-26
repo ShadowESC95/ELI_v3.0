@@ -631,6 +631,15 @@ def _h_examine_code(a, args):
     request = (args or {}).get('request') or (args or {}).get('query') or ''
     try:
         from eli.runtime import code_examiner as _ce
+        # Fix provenance: "how did you fix that file/LOC?" — answer from the
+        # verified patch log, not a multi-minute Think-mode CHAT stream.
+        if _ce.is_fix_recall_request(request):
+            report = _ce.format_fix_provenance(request)
+            return {'ok': True, 'action': a, 'content': report, 'response': report,
+                    'evidence_source': 'code_examiner_fix_provenance'}
+        _bg = _maybe_background_code_work(a, args)
+        if _bg is not None:
+            return _bg
         # Cross-turn recall: "list the errors you found" replays the persisted
         # last audit verbatim instead of re-scanning (or the model improvising).
         if _ce.is_recall_request(request):
@@ -648,11 +657,9 @@ def _h_examine_code(a, args):
                     'evidence_source': 'code_examiner_no_targets'}
         findings = _ce.examine(paths)
         _ce.save_last_audit(paths, findings)
-        # Report-only policy (2026-06-09): a broad/sweep audit NEVER offers to patch, and
-        # cosmetic lint is never auto-fixed. Fixing is offered only when the user named
-        # specific files AND there's genuine breakage (syntax / failed import / undefined
-        # name). This stops a vague "run full audit" from applying botched 7B lint patches
-        # to ELI's own core files.
+        # Report-only policy: a broad audit never offers to patch, and cosmetic lint is never
+        # auto-fixed. Fixing is offered only for named files with real breakage (syntax, failed import,
+        # undefined name), so a vague "run full audit" can't apply botched 7B lint patches to the core.
         _named = _ce._extract_named_paths(request)
         # Anchor the conversational "current file" when the user named one,
         # so a later "prove you actually read it" audits that file.
@@ -676,6 +683,10 @@ def _h_examine_code(a, args):
 
 
 def _h_fix_file(a, args):
+    _bg = _maybe_background_code_work(a, args)
+    if _bg is not None:
+        return _bg
+    from pathlib import Path as _Path
     import re as _re_ff
     path = str(args.get("path") or "").strip()
     path = _re_ff.sub(r'^file\s+', '', path, flags=_re_ff.IGNORECASE).strip()
@@ -701,6 +712,17 @@ def _h_fix_file(a, args):
     if not pp.exists():
         msg = f"Path not found: {pp}"
         return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+    # Protected-path guard — same list self_improvement.py's autonomous
+    # patcher refuses to touch. Checked before any model work so a
+    # request against a guardrail file fails fast.
+    try:
+        from eli.runtime.self_improvement import is_protected_patch_path
+        if is_protected_patch_path(pp):
+            msg = (f"Refused: {pp} is a protected safety guardrail and cannot "
+                   "be auto-fixed. Edit it by hand if this is intentional.")
+            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
     original = pp.read_text(encoding='utf-8', errors='replace')
     extra_error = str(args.get("error") or args.get("stderr") or "").strip()
     ext_to_lang = {
@@ -779,10 +801,9 @@ def _h_fix_file(a, args):
 
     fixed_code = ""
     ff_reject_reason = None
-    # Python: route the fix through the VERIFIED CodeAgent first — syntax + static-lint
-    # (pyflakes) + execution + repo-context + self-critique (the A–E ladder) — so a fix
-    # can't ship broken code like `def main:`. Falls through to the legacy loop below for
-    # non-Python, or if the agent yields nothing usable.
+    # Python: route the fix through the verified CodeAgent first (syntax, pyflakes, execution,
+    # repo context, self-critique) so it can't ship broken code like `def main:`. Falls through
+    # to the legacy loop for non-Python or if the agent yields nothing usable.
     if pp.suffix.lower() == ".py":
         try:
             from eli.coding import solve as _code_solve
@@ -804,13 +825,10 @@ def _h_fix_file(a, args):
                 (f" Reported error: {extra_error}." if extra_error else "")
                 + f"\n\n--- FILE: {pp.name} ---\n{original[:24000]}"
             )
-            # FULL verified pass — beam search + repair iterations + self-critique.
-            # Quality over latency by explicit choice: a thorough, correct fix is worth
-            # the wait. Do NOT cut beam/iterations to save time.
-            # use_dag=False: a single-file fix is ONE coherent rewrite, NOT a multi-
-            # component build. The DAG path decomposes into components that each
-            # regenerate the whole file and compose() concatenates them (deduping only
-            # imports), which DUPLICATED the file 6× on the live run. Single-solve only.
+            # Full verified pass: beam search, repair iterations, self-critique. Quality over latency by
+            # choice, don't cut beam or iterations to save time.
+            # use_dag=False: a single-file fix is one coherent rewrite. The DAG path regenerated the whole
+            # file per component and compose() only dedupes imports, which duplicated the file 6x.
             _cr = _code_solve(_fix_task, language="python", use_tests=False,
                               beam=2, max_iterations=3, use_dag=False)
             _cand = str((_cr or {}).get("code") or "").strip()
@@ -892,7 +910,45 @@ def _h_fix_file(a, args):
     except Exception as _bak_err:
         msg = f"FIX_FILE aborted: could not write backup for {pp}: {_bak_err}"
         return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+
+    # Differential import baseline — while `pp` still holds the original,
+    # check it imports cleanly. Only blame a broken import on THIS fix if
+    # it was clean beforehand (same approach self_improvement.py uses).
+    _ff_dotted = None
+    _ff_pre_ok = False
+    if pp.suffix.lower() == ".py":
+        try:
+            from eli.runtime.self_improvement import _dotted_module_for_path, _smoke_import_module
+            _ff_dotted = _dotted_module_for_path(pp)
+            if _ff_dotted:
+                _ff_pre_ok, _ = _smoke_import_module(_ff_dotted)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
     pp.write_text(fixed_code, encoding="utf-8")
+
+    # Behavioural verification — a fix can compile and still break the
+    # module at import time. Reuses self_improvement.py's smoke-import +
+    # targeted-test + rollback functions rather than a second implementation.
+    if pp.suffix.lower() == ".py" and _ff_dotted and _ff_pre_ok:
+        try:
+            from eli.runtime.self_improvement import _smoke_import_module, _run_targeted_tests
+            _imp_ok, _imp_detail = _smoke_import_module(_ff_dotted)
+            if not _imp_ok:
+                pp.write_text(original, encoding="utf-8")
+                msg = f"Fix broke module import (reverted to original): {_imp_detail}"
+                return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg,
+                        "backup": str(backup)}
+            if os.environ.get("ELI_SELFPATCH_VERIFY_TESTS", "1").strip().lower() not in ("0", "false", "no", "off"):
+                _t_ran, _t_passed, _t_detail = _run_targeted_tests(pp)
+                if _t_ran and not _t_passed:
+                    pp.write_text(original, encoding="utf-8")
+                    msg = f"Fix broke targeted tests (reverted to original): {_t_detail[:300]}"
+                    return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg,
+                            "backup": str(backup)}
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
     evt = {
         "event": "artifact_generated",
         "kind": "script",
@@ -941,7 +997,7 @@ def _h_file_audit(a, args):
         from pathlib import Path as _Path
 
         # Determine scan root: default to the ELI package directory
-        _project_root = _Path(__file__).resolve().parents[2]
+        _project_root = _Path(__file__).resolve().parents[3]
         _eli_root = _project_root / "eli"
         _scope = (args or {}).get("scope", "eli")
 
@@ -1185,3 +1241,7 @@ for _action, _fn in {
 _register("RUN_TESTS", _h_run_tests)
 _register("TEST_REVIEW", _h_test_review)
 _register("LORA_TRAIN", _h_lora_train)
+
+def _maybe_background_code_work(*a, **k):
+    from eli.execution.executor_enhanced import _maybe_background_code_work as _f
+    return _f(*a, **k)

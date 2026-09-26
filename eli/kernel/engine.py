@@ -6023,6 +6023,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             "SELF_UPGRADE",
                             "SELF_PATCH",
                             "SELF_UPDATE",
+                            # Scheduler state and deletions: the model once said "no scheduled tasks"
+                            # while four were armed. COMPUTER_USE reports the actions really taken.
+                            "LIST_TASKS",
+                            "CANCEL_TASK",
+                            "RESCHEDULE_TASK",
+                            "MEMORY_FORGET",
+                            "COMPUTER_USE",
                         }
                         # Quick mode skips synthesis for grounded control actions (deterministic evidence, no GGUF).
                         # Non-quick may synthesise on a compact evidence-only context to avoid prompt overflow, except

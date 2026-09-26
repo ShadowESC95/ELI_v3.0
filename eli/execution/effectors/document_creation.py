@@ -10,7 +10,11 @@ log = get_logger(__name__)
 
 
 def _h_create_document(a, args):
-    topic = (args.get("topic") or args.get("text") or args.get("description") or args.get("prompt") or "").strip()
+    topic = (
+        args.get("topic") or args.get("text") or args.get("description")
+        or args.get("prompt") or args.get("name") or args.get("target")
+        or args.get("title") or args.get("query") or ""
+    ).strip()
     if not topic:
         msg = "Missing topic for document generation"
         return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
@@ -35,6 +39,7 @@ def _h_create_document(a, args):
     import os as _os
     if _os.environ.get("ELI_TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
         import re as _re
+        from pathlib import Path as _DPath
 
         safe_name = _re.sub(r"[^a-z0-9]+", "_", topic.lower())[:50].strip("_")
         ext = ".md" if fmt == "md" else f".{fmt}"
@@ -187,10 +192,9 @@ def _h_create_document(a, args):
         _model = _gguf.load_model()
         if _model is not None:
             content = ""
-            # Multi-stage grounded pipeline (plan/outline → grounded sections →
-            # review→revise → polish), grounded in the evidence the central hook
-            # gathered, with a deepen-retry that escalates agent tiers when the
-            # evidence is thin. Falls back to a single pass on any miss / kill switch.
+            # Multi-stage grounded pipeline (outline, grounded sections, review/revise, polish) on the
+            # evidence the central hook gathered, with a deepen-retry that escalates agent tiers when
+            # evidence is thin. Falls back to a single pass on any miss or kill switch.
             try:
                 from eli.runtime import report_pipeline as _rp
                 if _rp.enabled():
@@ -239,10 +243,9 @@ def _h_create_document(a, args):
                     ext = ".md" if fmt == "md" else f".{fmt}"
                     fname = f"{safe_name}{ext}" if safe_name else f"document{ext}"
 
-                    # Use the canonical artifacts root (honours ELI_ARTIFACTS_DIR;
-                    # monkeypatchable in tests). NB the env var alone is unreliable —
-                    # runtime_settings strips out-of-project ELI_ARTIFACTS_DIR on
-                    # load_settings(), so tests must patch _artifacts_dir, not setenv.
+                    # Use the canonical artifacts root (honours ELI_ARTIFACTS_DIR, monkeypatchable). The env var
+                    # alone is unreliable: load_settings() strips an out-of-project ELI_ARTIFACTS_DIR, so tests must
+                    # patch _artifacts_dir, not setenv.
                     doc_dir = _artifacts_dir() / "documents"
                     doc_dir.mkdir(parents=True, exist_ok=True)
                     doc_path = doc_dir / fname

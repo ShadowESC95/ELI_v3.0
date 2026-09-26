@@ -113,10 +113,12 @@ AUDITED_2026_09_18_PASS4 = {
 # verifiable single handler (CHAT is the model call itself; SHOW_DIFF routes
 # straight to chat(); WEB_SEARCH's own comment says its results are evidence
 # for the model, not the answer; EXECUTE_GOAL has no executor handler at all;
-# NOOP has no single handler in the dispatch ladder).
+# NOOP has no single handler in the dispatch ladder). MEMORY_AUDIT is an evidence
+# builder (control_contracts._EVIDENCE_BUILDER_ACTIONS): its packet grounds the model's
+# answer to "why did you think X", it is not the answer.
 AUDITED_2026_09_18_EXCLUDED = {
     "FIX_FILE", "RUN_TESTS", "CODE_SOLVE", "GENERATE_SCRIPT", "CHAT",
-    "SHOW_DIFF", "WEB_SEARCH", "EXECUTE_GOAL", "NOOP",
+    "SHOW_DIFF", "WEB_SEARCH", "EXECUTE_GOAL", "NOOP", "MEMORY_AUDIT",
 }
 
 # The highest-risk entries: raw content/tool output that must never be

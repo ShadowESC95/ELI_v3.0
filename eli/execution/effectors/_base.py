@@ -89,7 +89,7 @@ def _allowed_cmds_set():
     add("./.venv/bin/python")
     add(".venv/bin/python")
     try:
-        add(str((_Path(__file__).resolve().parent.parent / ".venv/bin/python").resolve()))
+        add(str((_Path(__file__).resolve().parents[2] / ".venv/bin/python").resolve()))
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 
@@ -144,7 +144,7 @@ def _run_argv(argv, timeout=30):
             _v = os.path.normpath(_v)
             # allow exactly the project venv python
             _venv_py_rel = os.path.normpath("./.venv/bin/python")
-            _venv_py_abs = os.path.normpath(str((Path(__file__).resolve().parent / ".venv/bin/python")))
+            _venv_py_abs = os.path.normpath(str((Path(__file__).resolve().parent.parent / ".venv/bin/python")))
             if _v in (_venv_py_rel, _venv_py_abs) or _v.endswith("/.venv/bin/python"):
                 # overwrite the checked value if it's a simple name
                 if isinstance(argv[0], str):

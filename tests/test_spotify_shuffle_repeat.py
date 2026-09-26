@@ -1,5 +1,6 @@
 """Shuffle/repeat media control tests."""
-from eli.execution import executor_enhanced as ex
+# The media layer lives in effectors/media.py (the executor re-exports it), so patch it there.
+from eli.execution.effectors import media as ex
 
 
 def test_shuffle_media_uses_cross_platform(monkeypatch):

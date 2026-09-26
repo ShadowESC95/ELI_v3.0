@@ -103,22 +103,10 @@ def _get_memory_path():
     return get_user_db_path()
 
 
-def memory_store(text, tags=None, kind="note", source="chat", confidence=0.7, ts=None):
-    try:
-        from eli.memory import get_memory
-        mem = get_memory(db_path=_get_memory_path())
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        result = mem.store_memory(
-            text=str(text),
-            tags=tags or [],
-            source=str(source),
-            kind=str(kind),
-            confidence=float(confidence),
-        )
-        return {"ok": True, "path": str(_get_memory_path())}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "path": str(_get_memory_path())}
+def memory_store(*a, **k):
+    # One implementation: this copy dropped the row id, skip reason and index flag.
+    from eli.execution.executor_enhanced import memory_store as _f
+    return _f(*a, **k)
 
 
 def memory_recall(query, limit=20):
@@ -226,7 +214,7 @@ def _recall_memory_builtin(args: dict) -> dict:
         from pathlib import Path
 
         limit = int(args.get("limit", 20))
-        root = Path(__file__).resolve().parent.parent
+        root = Path(__file__).resolve().parents[2]
         memory_log = root / "data" / "memory" / "utterances.jsonl"
 
         if not memory_log.exists():
@@ -293,9 +281,19 @@ def _h_memory_store(a, args):
         result = memory_store(txt, tags=tags)
         if isinstance(result, dict):
             result.setdefault("action", a)
-            result.setdefault("ok", True)
-            result.setdefault("content", result.get("content") or "memory stored")
-            result.setdefault("response", result.get("response") or result["content"])
+            if result.get("ok"):
+                _idx = result.get("vector_indexed")
+                _where = Path(str(result.get("path") or "user.sqlite3")).name
+                _msg = (f'Stored in long-term memory ({_where}'
+                        + (f", row {result['id']}" if result.get("id") else "")
+                        + ("; semantic index: yes" if _idx else "; semantic index: no" if _idx is False else "")
+                        + f'): "{txt}"')
+            elif result.get("skipped"):
+                _msg = f"Not stored: the memory filter rejected it ({result.get('reason') or 'not durable knowledge'})."
+            else:
+                _msg = f"Not stored: {result.get('error') or result.get('reason') or 'the memory write failed'}."
+            result["content"] = _msg
+            result["response"] = _msg
         return result
     except Exception as e:
         # If local fails, try adapter
