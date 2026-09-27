@@ -365,6 +365,20 @@ def _complexity_mode_hint(text: str) -> Optional[str]:
     return None
 
 
+def _correction_embeds_memory_question(text: str) -> bool:
+    """A correction can also be asking a real memory/log/history question ("nothing in your
+    logs? aware of anything from the last week?"). The correction-repair shortcut has no
+    retrieval, only the last few raw turns, so that question must escalate to the full
+    pipeline instead of getting a context-free deflection.
+    """
+    return bool(re.search(
+        r"\b(?:your (?:memory|conversation) logs?|check your (?:memory|logs)|"
+        r"nothing in your logs|aware of anything|what happened|"
+        r"do you (?:remember|recall)|what do you remember|memory recall)\b",
+        (text or "").lower(),
+    ))
+
+
 def _phatic_time_authority_block() -> str:
     """Wall-clock anchor for greetings — prevents 'night here' timezone confabulation."""
     try:
@@ -3535,6 +3549,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug("[COGNITIVE] correction: prior turn lookup failed", exc_info=True)
 
         _low_corr = (user_input or "").lower()
+
+        if _correction_embeds_memory_question(user_input):
+            log.debug("[COGNITIVE] Correction: embeds a real memory/log question, escalating to GENERAL pipeline")
+            return None
+
         _reject_data_dump = bool(
             re.search(
                 r"\b(data dump|did not ask for|didn't ask for|not what i asked|"
