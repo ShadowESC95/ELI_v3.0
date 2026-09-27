@@ -986,6 +986,12 @@ class LocalModelManager:
                                   f"in RAM, all {_moe_gui['layers']} layers on the GPU")
                 except Exception:
                     log.debug("[GUI] MoE plan lookup failed", exc_info=True)
+            if _moe_gui:
+                # The "GPU-layer load parameter" line above was printed before this plan existed,
+                # so it showed the pre-offload count with nothing explaining the higher count that
+                # shows up further down the log once the offload actually loads.
+                print(f"   MoE expert offload will raise this to all {_moe_gui['layers']} layers; "
+                      f"~{_moe_gui['experts_gb']}GB of experts stay in RAM")
             self.n_ctx = int(n_ctx)
             self.n_threads = int(n_threads)
             self.n_gpu_layers = int(effective_n_gpu_layers)
