@@ -11,7 +11,7 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime and
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in
 > `ELI_USER_MANUAL.md`). No cloud on the inference path, no hardcoded model.
-> **231,687 lines across 612 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
+> **232,414 lines across 613 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
 > 237 capabilities in `capability_manifest.json`, 192 of them routable and 214 in the
 > executor's supported list.
 

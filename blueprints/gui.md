@@ -60,7 +60,7 @@ flowchart TD
 | `main_window/widgets.py`, `_common.py` | 493, 557 | shared widgets and helpers |
 | `labs/` (16 modules) | 6.4k | the Labs sub-tabs; `report_tab.py` is the largest (3327) |
 | `labs_tab.py`, `gui_eli_original.py` | 30, 7 | compatibility shims that re-export the packages above |
-| `eli_pro_audio_gui_v2_0.py` | 12822 | the pre-decomposition monolith, kept for compatibility; `app.py` does not launch it |
+| `eli_pro_audio_gui_v2_0.py` | 12859 | the pre-decomposition monolith, kept for compatibility; `app.py` does not launch it |
 | `panels/startup.py` | 1974 | guided first boot: hardware, model pick or download, tuning |
 | `panels/settings.py` | 825 | settings dialog including the Plugins and Marketplace sub-tabs |
 | `tabs/extensions_tab.py` | 1991 | Extensions tab |
@@ -102,6 +102,29 @@ one Training already used correctly, see below). Two screen-control call
 sites (OCR results, "ask ELI" results) used `QTimer.singleShot(0, ...)`
 called *from* the worker thread instead, which has no guaranteed event loop —
 fixed to use the same signal pattern as the neighbouring capture handler.
+
+### The status-bar confidence/grounding badge
+
+`_update_confidence_meta_label()` (`main_window/_mixins/conversation.py`) reads
+`CognitiveEngine._last_request_meta`, refreshed once per turn via the
+`_conf_meta_update_sig` signal fired at the end of the send-message worker. Two gaps let it
+show stale or wrong numbers:
+
+- The GUI always calls `process(..., stream=True)`, regardless of reasoning mode. A
+  chain-of-thought/tree-of-thoughts/constitutional-AI/self-consistency turn runs its passes as
+  discrete non-streaming GGUF calls, so `_run_internal_orchestrator` returns a plain dict, not a
+  generator — `stream=True` with a non-generator result matched neither of the function's two
+  meta-publish branches, so `_publish_orchestrator_turn_meta` was never called and the badge kept
+  whatever an earlier, unrelated turn had left in it (observed: a 0.94-scoring CoT reply left the
+  badge reading "0.00 (phatic_light)" from a prior greeting). Fixed by unifying the branch
+  condition around whether the result actually is a generator, not just whether streaming was
+  requested.
+- Separately, the streaming/phatic meta-publish block (`kernel/stages/generation.py`) computed
+  the turn's real Stage-12 response score but then discarded it, publishing the agent-bus
+  aggregate confidence instead — which is genuinely 0.0 on a phatic turn, since the agent bus is
+  deliberately skipped for those. Fixed by publishing the Stage-12 score.
+
+See `tests/test_confidence_badge_reflects_the_real_turn.py`.
 
 ## Labs workspace (`labs/`)
 

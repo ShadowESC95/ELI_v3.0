@@ -4025,9 +4025,20 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         finally:
             self._orchestrator_active = False
 
-        if not stream:
-            # Every non-streamed orchestrated turn exits here; publish its meta so the badge and
-            # last_trace.json are not left stale.
+        import types as _types
+        _result_is_generator = isinstance(result, (_types.GeneratorType,)) or hasattr(result, '__next__')
+
+        if not stream or not _result_is_generator:
+            # Every non-streamed orchestrated turn exits here — publish its meta so the badge and
+            # last_trace.json are not left stale. The GUI always calls process(..., stream=True)
+            # regardless of reasoning mode (eli_pro_audio_gui_v2_0.py's generate_worker), but a
+            # chain-of-thought/tree-of-thoughts turn runs its passes as discrete non-streaming GGUF
+            # calls and the orchestrator returns a plain dict/string, not a generator, even though
+            # stream=True was requested. That combination — stream requested, non-generator result —
+            # fell through both branches below untouched: not `if not stream` (stream was True) and
+            # not the generator branch (result wasn't one), so `_publish_orchestrator_turn_meta` was
+            # never called and the confidence/grounding badge stayed on whatever the last phatic or
+            # quick turn had written, sometimes for the rest of the session.
             try:
                 _txt = ""
                 if isinstance(result, dict):
@@ -4043,8 +4054,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 log.debug(f"[COGNITIVE] orchestrator meta publish failed: {_meta_err}")
             return result
 
-        import types as _types
-        if isinstance(result, (_types.GeneratorType,)) or hasattr(result, '__next__'):
+        if _result_is_generator:
             def _wrapped():
                 parts = []
                 try:
