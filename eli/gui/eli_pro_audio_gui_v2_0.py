@@ -1481,6 +1481,8 @@ class LocalModelManager:
                     _applied = dict(_cand)
                     _applied["n_gpu_layers"] = _cand_gpu_layers
                     _applied["moe_expert_offload"] = bool(_moe_gui)
+                    _applied["moe_resident_gb"] = (_moe_gui or {}).get("resident_gb") if _moe_gui else None
+                    _applied["moe_experts_gb"] = (_moe_gui or {}).get("experts_gb") if _moe_gui else None
                     break
                 except Exception as _attempt_err:
                     self.model = None
@@ -1548,6 +1550,8 @@ class LocalModelManager:
                     "gpu_offload_supported": gpu_offload_supported,
                     "load_mode": "GPU" if int(self.n_gpu_layers) > 0 else "CPU",
                     "moe_expert_offload": bool(_moe_gui),
+                    "moe_resident_gb": (_moe_gui or {}).get("resident_gb") if _moe_gui else None,
+                    "moe_experts_gb": (_moe_gui or {}).get("experts_gb") if _moe_gui else None,
                 })
                 print("✅ gguf_inference live runtime override published")
             except Exception as e:
