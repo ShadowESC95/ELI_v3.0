@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 
 # Canonical confidence primitives — one owner for the per-agent evidence→confidence policy
 # (was 10 ad-hoc inline formulas).
-from eli.cognition.scoring import conf_from_flag, conf_from_count
+from eli.cognition.scoring import conf_from_flag, conf_from_count, term_overlap, relevance_gate
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -187,6 +187,38 @@ _EVIDENCE_KEYS = (
     "snippets", "results", "hits", "items", "content",
     "entries", "rules", "insights", "memory_context",
 )
+
+# Below this, term_overlap is noise (a couple words can hit 100% by chance) — leave ungated.
+_RELEVANCE_MIN_TEXT_CHARS = 40
+
+
+def _relevance_gate_enabled() -> bool:
+    return os.environ.get("ELI_AGENT_BUS_RELEVANCE_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _representative_text(data: Dict[str, Any]) -> str:
+    """Pull a short representative string from an agent result's `data` — the same
+    text a human would read to judge whether this result is about the query at all."""
+    if not isinstance(data, dict):
+        return ""
+    for k in ("content", "summary", "answer", "text"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    for k in ("results", "hits", "conv_hits", "snippets", "entries"):
+        hits = data.get(k)
+        if isinstance(hits, (list, tuple)):
+            parts: List[str] = []
+            for h in hits[:3]:
+                if isinstance(h, dict):
+                    t = h.get("text") or h.get("content") or h.get("summary") or ""
+                    if t:
+                        parts.append(str(t))
+                elif isinstance(h, str):
+                    parts.append(h)
+            if parts:
+                return " ".join(parts)
+    return ""
 
 _metrics_cache_lock = threading.Lock()
 _metrics_cache: Dict[str, Any] = {"loaded_at": 0.0, "rows": {}}
@@ -1619,6 +1651,7 @@ def _aggregate_confidence(
     intent_conf: float,
     results: List[AgentResult],
     intent_action: str,
+    user_input: str = "",
 ) -> Tuple[float, float]:
     """Evidence-driven aggregation. No hardcoded per-agent weights.
 
@@ -1626,7 +1659,7 @@ def _aggregate_confidence(
       - aggregated_confidence: route-certainty + agent evidence, blended
       - grounding_confidence:  pure agent-evidence score (route-independent)
 
-    Per-agent contribution = evidence_quality × density × calibration
+    Per-agent contribution = evidence_quality × density × calibration × relevance
     where:
       - evidence_quality is the agent's self-reported confidence, optionally
         blended (geometric mean) with evidence_arbitration._score_tool_result
@@ -1635,10 +1668,14 @@ def _aggregate_confidence(
         (see _evidence_density), smooth and asymptotic to 1.
       - calibration is a rolling per-(agent, action) multiplier learned from
         the agent_metrics table (starts neutral at 1.0).
+      - relevance gates evidence_quality/density on whether the result's text
+        is actually about `user_input` (term_overlap via relevance_gate).
+        1.0 (no-op) when user_input is empty/short or the gate env var is off.
 
     Single-agent contributions are capped at _SINGLE_AGENT_CAP so no one
     agent can dominate. Empty-bus dispatches are capped at _EMPTY_BUS_CEILING.
     """
+    _gate_on = _relevance_gate_enabled()
     base = _ROUTE_BASE_WEIGHT * float(intent_conf or 0.0)
     score = base
     grounding = 0.0
@@ -1673,7 +1710,13 @@ def _aggregate_confidence(
         else:
             evidence_quality = self_conf
 
-        contribution = evidence_quality * density * cal
+        relevance = 1.0
+        if _gate_on and user_input:
+            rep_text = _representative_text(r.data or {})
+            if len(rep_text) >= _RELEVANCE_MIN_TEXT_CHARS:
+                relevance = relevance_gate(term_overlap(user_input, rep_text))
+
+        contribution = evidence_quality * density * cal * relevance
         contribution = max(0.0, min(_SINGLE_AGENT_CAP, contribution))
         if contribution <= 0.0:
             continue
@@ -2118,7 +2161,7 @@ class AgentBus:
                     failed_result = dict(r.data)
             action_result = ok_result if ok_result is not None else failed_result
 
-        agg_conf, grounding_conf = _aggregate_confidence(intent_conf, results, action)
+        agg_conf, grounding_conf = _aggregate_confidence(intent_conf, results, action, user_input)
         label = _confidence_label(agg_conf)
         agents_used = [r.agent for r in results
                        if r.ok and not r.data.get("skipped")]
@@ -3178,30 +3221,6 @@ class CriticAgent(_BaseAgent):
     name = "critic"
     timeout_s = 2.0
 
-    @staticmethod
-    def _representative_text(data: Dict[str, Any]) -> str:
-        """Pull a short representative string from a retriever's result `data`."""
-        if not isinstance(data, dict):
-            return ""
-        for k in ("content", "summary", "answer", "text"):
-            v = data.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        for k in ("results", "hits", "conv_hits", "snippets", "entries"):
-            hits = data.get(k)
-            if isinstance(hits, (list, tuple)):
-                parts: List[str] = []
-                for h in hits[:3]:
-                    if isinstance(h, dict):
-                        t = h.get("text") or h.get("content") or h.get("summary") or ""
-                        if t:
-                            parts.append(str(t))
-                    elif isinstance(h, str):
-                        parts.append(h)
-                if parts:
-                    return " ".join(parts)
-        return ""
-
     def run(self, user_input: str, intent: Dict[str, Any],
             session_id: str, user_id: str) -> AgentResult:
         t0 = time.perf_counter()
@@ -3211,7 +3230,7 @@ class CriticAgent(_BaseAgent):
             for _name, _data in up.items():
                 if _name == self.name:
                     continue
-                txt = self._representative_text(_data)
+                txt = _representative_text(_data)
                 if txt and len(txt) >= 12:
                     contribs[_name] = txt[:600]
             if len(contribs) < 2:
@@ -3220,9 +3239,8 @@ class CriticAgent(_BaseAgent):
                                    data={"skipped": True, "sources": list(contribs)},
                                    elapsed_ms=(time.perf_counter() - t0) * 1000)
             import itertools
-            from eli.cognition.scoring import term_overlap as _overlap
             texts = list(contribs.values())
-            sims = [_overlap(a, b) for a, b in itertools.combinations(texts, 2)]
+            sims = [term_overlap(a, b) for a, b in itertools.combinations(texts, 2)]
             agreement = round(sum(sims) / max(1, len(sims)), 3)
             contradiction = agreement < 0.08
             srcs = ", ".join(sorted(contribs))
@@ -3232,9 +3250,17 @@ class CriticAgent(_BaseAgent):
                         f"mutual agreement (overlap {agreement}); treat with lower "
                         f"confidence and prefer the deterministic/grounded path.")
             else:
-                conf = round(min(0.9, 0.4 + agreement), 3)
-                note = (f"Verification: {len(contribs)} sources ({srcs}) corroborate "
-                        f"(agreement {agreement}).")
+                # Sources can agree with EACH OTHER while both being off-topic — discount
+                # agreement by query match, not just mutual match.
+                relevance = 1.0
+                if _relevance_gate_enabled():
+                    long_texts = [t for t in texts if len(t) >= _RELEVANCE_MIN_TEXT_CHARS]
+                    if long_texts:
+                        avg_q_overlap = sum(term_overlap(user_input, t) for t in long_texts) / len(long_texts)
+                        relevance = relevance_gate(avg_q_overlap)
+                conf = round(min(0.9, (0.4 + agreement) * relevance), 3)
+                _tail = f", query relevance {round(relevance, 2)})." if relevance < 1.0 else ")."
+                note = f"Verification: {len(contribs)} sources ({srcs}) corroborate (agreement {agreement}{_tail}"
             return AgentResult(
                 agent=self.name, ok=True, confidence=conf,
                 data={"content": note, "sources": sorted(contribs),
