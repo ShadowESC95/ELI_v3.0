@@ -7447,6 +7447,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 grounding_confidence=float(trace.get("grounding_confidence") or 0.0),
                 agents_used=list(trace.get("agents_used") or []),
                 req_id=str(getattr(self, "_pipeline_req_id", "") or ""),
+                source=source,
             )
         except Exception:
             self._store_assistant_turn(final_response)
