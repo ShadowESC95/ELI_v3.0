@@ -6513,6 +6513,28 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
+    if a == "RESUME_TASK":
+        # Real goal_store lookup, not a chat-routed guess — always states staleness.
+        try:
+            topic = str((args or {}).get("topic") or (args or {}).get("query") or "").strip()
+            if not topic:
+                msg = "I don't have a project name to look up — what should I resume?"
+                return {"ok": False, "action": a, "content": msg, "response": msg}
+            from eli.planning.goal_store import find_task, task_brief_for
+            g = find_task(topic, include_idle=True)
+            if g is None:
+                msg = f"I don't have a saved task matching \"{topic}\" — nothing to resume."
+                return {"ok": True, "action": a, "content": msg, "response": msg, "found": False}
+            days = max(0.0, (time.time() - float(getattr(g, "updated_at", 0.0) or 0.0)) / 86400.0)
+            staleness = "touched today" if days < 1.0 else f"last touched {days:.0f} day{'s' if days >= 2 else ''} ago"
+            brief = task_brief_for(g).strip()
+            msg = (f"Resuming \"{g.title}\" — {staleness}.\n{brief}" if brief
+                   else f"Resuming \"{g.title}\" — {staleness}. No recorded details yet.")
+            return {"ok": True, "action": a, "content": msg, "response": msg, "found": True,
+                    "goal_id": g.goal_id, "days_stale": round(days, 1)}
+        except Exception as e:
+            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
     if a == "PROACTIVE_STATUS":
         try:
             st = proactive_status()

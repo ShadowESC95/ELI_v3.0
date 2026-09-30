@@ -3728,6 +3728,36 @@ def _eli_lrf_word_to_int(s):
         return int(s)
     return table.get(s)
 
+# "continue/resume the X project" -> goal_store lookup, not a CHAT guess. The task-noun
+# requirement is load-bearing: bare "resume X" also matches media's dynamic_control_contract
+# post-contract ("resume spotify" -> MEDIA_CONTROL) and would otherwise lose to it — see
+# _eli_media_contract_post's RESUME_TASK short-circuit below.
+_RESUME_TASK_RX = re.compile(
+    r"\b(?:continue|resume|pick\s+(?:back\s+)?up|go\s+back\s+to|get\s+back\s+to)\s+"
+    r"(?:working\s+on\s+)?(?:the\s+|my\s+|that\s+|our\s+)?"
+    r"([^.?!,;]{2,80}\b(?:project|task|work|assignment|plan|build|effort)\b[^.?!,;]{0,30})",
+    re.I,
+)
+
+
+def _eli_resume_task_pre_route(text):
+    raw = str(text or "").strip()
+    low = raw.lower()
+    m = _RESUME_TASK_RX.search(low)
+    if not m:
+        return None
+    topic = m.group(1).strip().rstrip(" .")
+    if not topic:
+        return None
+    return _mk(
+        "RESUME_TASK",
+        {"topic": topic, "question": raw},
+        0.9,
+        matched_by="resume_task.explicit_continue",
+        need_grounding=True,
+    )
+
+
 def _eli_lrf_pre_route(text):
     raw = str(text or "").strip()
     low = raw.lower().strip()
@@ -5186,6 +5216,10 @@ def _eli_media_contract_post(raw, result):
         # "and close spotify"; let the executor run each segment in order.
         if isinstance(result, dict) and str(result.get("action") or "").upper() == "MULTI_COMMAND":
             return result
+        # Already resolved to a real task lookup — don't let the "resume X" catch-all below
+        # reinterpret it as media playback.
+        if isinstance(result, dict) and str(result.get("action") or "").upper() == "RESUME_TASK":
+            return result
         original = str(raw or "")
         low = re.sub(r"\s+", " ", original.lower()).strip(" .,!?:;")
         if not low:
@@ -6159,6 +6193,17 @@ try:
                         _SWLOG.debug("suppressed exception", exc_info=True)
                 return None
 
+            def _stage_resume_task_pre_route(text, *_a, **_k):
+                resume_pre = globals().get("_eli_resume_task_pre_route")
+                if callable(resume_pre):
+                    try:
+                        out = resume_pre(text)
+                        if out is not None:
+                            return out
+                    except Exception:
+                        _SWLOG.debug("suppressed exception", exc_info=True)
+                return None
+
             def _stage_portable_route(text, *_a, **_k):
                 if callable(_eli_phase38_portable_try_route):
                     try:
@@ -6421,6 +6466,7 @@ try:
                 ("self_improvement_guard", _stage_self_improvement_guard),
                 ("personal_memory_pre_route", _stage_personal_memory_pre_route),
                 ("lrf_pre_route", _stage_lrf_pre_route),
+                ("resume_task_pre_route", _stage_resume_task_pre_route),
                 # set_user_name runs before portable_route so "call me Alex" / "my name is X" aren't taken for
                 # media-play requests by portable_intent_contract. multi_command_prepass runs first so a chained
                 # utterance is split and each command routed on its own.
