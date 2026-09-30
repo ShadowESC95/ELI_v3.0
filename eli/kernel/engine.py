@@ -37,6 +37,7 @@ from eli.kernel.stages._common import (  # noqa: F401
     _eli_path_get,
     _eli_test_mode,
     _is_brief_phatic_prompt,
+    _is_autonomous_source,
 )
 from eli.kernel.stages.fast_actions import (  # noqa: F401
     _AUTHORITY_FAILCLOSED_ACTIONS,
@@ -4327,7 +4328,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
     def _settle_recall_outcome(self, user_input: str, source: str) -> None:
         """The memories behind the previous answer were used if this turn does not correct it."""
         ids = getattr(self, "_pending_recall_ids", None)
-        if not ids or str(source or "user").lower() in ("habit", "proactive", "scheduler", "system", "autonomy"):
+        if not ids or _is_autonomous_source(source):
             return
         self._pending_recall_ids = None
         try:
@@ -5088,11 +5089,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             source="identity", importance=0.92)
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
-                try:
-                    from eli.cognition.persona import append_preference
-                    append_preference(f"User's preferred name: {_candidate}")
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
+                # write_patterns_from_turn() (called for every user turn via
+                # memory.add_conversation_turn()) already extracts identity.preferred_name
+                # from this same user_input via the same extract_explicit_identity_facts() —
+                # no separate write needed here.
                 log.debug(f"[COGNITIVE] Explicit user identity detected and stored: {_candidate}")
         except Exception:
             log.debug("suppressed exception", exc_info=True)
@@ -5506,7 +5506,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 _p45_raw = execute_action(_p45_action, args or {})
                 _p45_result = _phase45_force_direct_result(_p45_action, _p45_raw)
                 try:
-                    self._learn_from_result(intent, _p45_result)
+                    self._learn_from_result(intent, _p45_result, source=source)
                 except Exception as _p45_learn_err:
                     log.debug(f"[PHASE45] learn skipped: {_p45_learn_err}")
                 try:
@@ -6173,7 +6173,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 except Exception:
                                     log.debug("suppressed exception", exc_info=True)
                                 try:
-                                    self._learn_from_result(intent, _chosen_payload)
+                                    self._learn_from_result(intent, _chosen_payload, source=source)
                                 except Exception:
                                     log.debug("suppressed exception", exc_info=True)
                                 try:
@@ -6242,7 +6242,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             except Exception:
                                 log.debug("suppressed exception", exc_info=True)
                             try:
-                                self._learn_from_result(intent, _chosen_payload)
+                                self._learn_from_result(intent, _chosen_payload, source=source)
                             except Exception:
                                 log.debug("suppressed exception", exc_info=True)
                             try:
@@ -6336,7 +6336,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             except Exception:
                                 log.debug("suppressed exception", exc_info=True)
                             try:
-                                self._learn_from_result(intent, _chosen_payload)
+                                self._learn_from_result(intent, _chosen_payload, source=source)
                             except Exception:
                                 log.debug("suppressed exception", exc_info=True)
                             try:
@@ -6567,7 +6567,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
                 try:
-                    self._learn_from_result(intent, _ev_result)
+                    self._learn_from_result(intent, _ev_result, source=source)
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
                 try:
@@ -6663,7 +6663,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         except Exception:
                             log.debug("suppressed exception", exc_info=True)
                         try:
-                            self._learn_from_result(intent, _self_payload)
+                            self._learn_from_result(intent, _self_payload, source=source)
                         except Exception:
                             log.debug("suppressed exception", exc_info=True)
                         try:
@@ -6790,7 +6790,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 "trace": trace,
                             }
                             try:
-                                self._learn_from_result(intent, bus_result.action_result or {})
+                                self._learn_from_result(intent, bus_result.action_result or {}, source=source)
                             except Exception as learn_err:
                                 log.debug(f"[COGNITIVE] Grounded learn hook failed: {learn_err}")
                             try:
@@ -6881,7 +6881,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     # WEB_SEARCH), so no special-casing is needed here.
                     self._store_assistant_turn(synthesized)
                     self._learn_from_result(
-    intent, bus_result.action_result or {})
+                        intent, bus_result.action_result or {}, source=source)
                     try:
                         self._execute_post_actions(
     trace, bus_result.action_result or {})
@@ -7277,7 +7277,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 final_text = govern_output(str(final_source or "").strip(), is_grounded=True)
 
                 self._store_assistant_turn(final_text)
-                self._learn_from_result(intent, raw_result)
+                self._learn_from_result(intent, raw_result, source=source)
 
                 return {
                     "ok": ok_flag,
@@ -7450,7 +7450,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             )
         except Exception:
             self._store_assistant_turn(final_response)
-            self._learn_from_result(intent, result)
+            self._learn_from_result(intent, result, source=source)
         result["content"] = final_response
         result["response"] = final_response
         result["trace"] = trace

@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict
 
 from eli.cognition.output_governor import govern_output
-from eli.kernel.stages._common import _HAS_GOVERNANCE, should_store_as_memory  # noqa: F401
+from eli.kernel.stages._common import _HAS_GOVERNANCE, should_store_as_memory, _is_autonomous_source  # noqa: F401
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -272,11 +272,16 @@ class MemoryCommitMixin:
             log.debug(f"[COGNITIVE] Assistant turn store failed: {e}")
 
     def _learn_from_result(
-        self, intent: Dict[str, Any], result: Dict[str, Any]) -> None:
+        self, intent: Dict[str, Any], result: Dict[str, Any], source: str = "user") -> None:
         action = str(intent.get("action") or "").upper()
         args = intent.get("args", {}) or {}
         ok = bool((result or {}).get("ok", True))
         meta = intent.get("meta", {}) or {}
+        # ELI's own automation (habit firing, scheduled tasks, ...) re-running an action must
+        # not feed habit_events — detect_habits() mines that table for recurring USER routines,
+        # and a self-triggered run would let ELI's automation reinforce itself as if it were
+        # fresh, independent evidence of a pattern.
+        autonomous = _is_autonomous_source(source)
 
         try:
             self.memory.log_learning_event(
@@ -290,30 +295,32 @@ class MemoryCommitMixin:
                     "args": args,
                     "matched_by": meta.get("matched_by"),
                     "result_error": (result or {}).get("error"),
+                    "source": source,
                 },
             )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        try:
-            self.memory.log_habit_event(
-                "command_result",
-                {
-                    "action": action,
-                    "args": args,
-                    "ok": ok,
-                    "matched_by": meta.get("matched_by"),
-                    "source": "cognitive_engine",
-                },
-            )
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+        if not autonomous:
+            try:
+                self.memory.log_habit_event(
+                    "command_result",
+                    {
+                        "action": action,
+                        "args": args,
+                        "ok": ok,
+                        "matched_by": meta.get("matched_by"),
+                        "source": "cognitive_engine",
+                    },
+                )
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
 
         try:
             from eli.runtime.evidence_ledger import record_event as _eli_record_event
             _eli_record_event(
                 "command_result",
-                source="cognitive_engine.learn_from_result",
+                source=f"cognitive_engine.learn_from_result.{source}",
                 action=action,
                 subject=str(args.get("path") or args.get("target") or args.get("name") or args.get("topic") or ""),
                 content=str((result or {}).get("content") or (result or {}).get("response") or (result or {}).get("error") or ""),
@@ -331,6 +338,9 @@ class MemoryCommitMixin:
             )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+
+        if autonomous:
+            return   # below this point is app/file usage — real routine-clustering input
 
         if action == "OPEN_APP" and ok:
             name = args.get("name") or args.get("target") or args.get("app")

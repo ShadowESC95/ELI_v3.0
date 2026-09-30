@@ -303,6 +303,15 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     return False
 
 
+_AUTONOMOUS_SOURCES = ("habit", "proactive", "scheduler", "system", "autonomy")
+
+
+def _is_autonomous_source(source: str) -> bool:
+    """True when `source` (process()'s own origin tag) is ELI's own automation, not a
+    real user turn — one vocabulary, shared by every place that needs the distinction."""
+    return str(source or "user").lower() in _AUTONOMOUS_SOURCES
+
+
 def _eli_test_mode() -> bool:
     if os.environ.get("ELI_TEST_MODE", "").strip().lower() in {
         "1", "true", "yes", "on"
@@ -362,6 +371,8 @@ __all__ = [
     "_is_brief_phatic_prompt",
     "normalize_response",
     "should_store_as_memory",
+    "_is_autonomous_source",
+    "_AUTONOMOUS_SOURCES",
 ]
 
 
