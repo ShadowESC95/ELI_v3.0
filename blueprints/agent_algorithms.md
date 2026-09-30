@@ -1,6 +1,8 @@
 # ELI Agent Algorithms — what each of the 15 agents actually computes
 
-> **Updated for 3.0.128.** Orchestrator runs for all CHAT modes; bus composed at S06.
+> **Updated 2026-09-30.** Orchestrator runs for all CHAT modes; bus composed at S06.
+> `_aggregate_confidence` and `critic`'s corroboration score both gained a query-relevance
+> term (ported from v2).
 
 Your framing is the right lens: **the DAG structures the reasoning steps; RAG is
 the engine that pulls the raw information during those steps.** ELI maps onto
@@ -32,7 +34,11 @@ test → skip with `confidence=0` if irrelevant, so the bus stays fast) → its
 algorithm → an `AgentResult(ok, confidence, data)`. The bus runs them in
 **topological layers** with **per-agent hard timeouts**, then `_aggregate_confidence`
 fuses them: `contribution = evidence_quality × evidence_density × learned
-calibration`, single-agent-capped, corroboration-bonused.
+calibration × query relevance`, single-agent-capped, corroboration-bonused. The
+query-relevance term (2026-09-30, ported from v2, distinct from the per-agent gate
+above) is `relevance_gate(term_overlap(user_input, representative_text))` — a fluent,
+evidence-dense result with nothing to do with what was actually asked no longer
+scores as highly as an on-topic one. Env `ELI_AGENT_BUS_RELEVANCE_GATE` disables it.
 
 ---
 
@@ -128,7 +134,11 @@ calibration`, single-agent-capped, corroboration-bonused.
 - **Algorithm:** the one bus agent that reasons over **other agents' output**
   (`intent["_upstream"]`) rather than the raw query — **deterministic, no LLM**. It pulls the
   representative text each retriever surfaced this turn, measures **pairwise term agreement**,
-  and emits a **corroboration-vs-contradiction** signal. **DAG edges:** depends on
+  and emits a **corroboration-vs-contradiction** signal. Corroboration alone isn't enough
+  (2026-09-30, ported from v2): two sources can agree strongly with EACH OTHER while both being
+  off-topic for what was actually asked, so on the non-contradiction branch, agreement is
+  additionally discounted by how well the sources match the *query* (`relevance_gate` over
+  their average `term_overlap(user_input, text)`), not just each other. **DAG edges:** depends on
   `memory`, `file_code`, `knowledge_graph` and `system`, so it runs in a **downstream topological layer** and
   sees their results — giving the agent DAG a real second tier instead of a flat fan-out.
 

@@ -1,5 +1,7 @@
-> **Updated for 3.0.128.** Gradient orchestrator for all CHAT modes; shared
-> `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`.
+> **Updated 2026-09-30.** Gradient orchestrator for all CHAT modes; shared
+> `memory/retrieval.py`; canonical S01–S12 via `pipeline_trace.py`. RESUME_TASK
+> and MULTI_COMMAND's dependency/crash-survival layer ported from v2; agent-bus
+> confidence and habit learning gained relevance/source integrity checks.
 
 # ELI Capability Catalogue — every action & module, what it actually does
 
@@ -37,6 +39,7 @@ families are grouped below so the real surface is visible.
 | `ANSWER`, `DIRECT_RESPONSE`, `SAY` | Direct/short response surfaces (lighter than CHAT). *(inferred for some)* |
 | `SET_AI_MODE` | Set the reasoning mode (Quick / Normal / Advanced / Research / Expert). Legacy names still accepted as input. |
 | `SEQUENCE` | Multi-step action chaining (run a sequence of actions). |
+| `MULTI_COMMAND` | The real chained-command executor ("close steam and set an alarm"). Router's `command_splitter.py` splits; the executor runs in topological layers by inferred dependency (`command_dependency_graph.py`, `eli/core/dag`), durably records each step's outcome (`command_sequence_log.py`) so a crash mid-sequence isn't a silent loss and a resubmit within an hour skips steps already known to have succeeded. `SEQUENCE` above is a different, simpler mechanism. |
 | `NOOP` | No-op. |
 
 ## 2. OS & application control
@@ -145,6 +148,7 @@ families are grouped below so the real surface is visible.
 | `MORNING_REPORT` | The consolidated morning brief (news digest + activity + attention). |
 | `PROACTIVE_START`, `PROACTIVE_STOP`, `PROACTIVE_STATUS` | Control the proactive daemon. |
 | `EXECUTE_GOAL` | Execute a mission-layer goal (governed). |
+| `RESUME_TASK` | Explicit "continue/resume the X project" — `goal_store.find_task()` bypasses the passive 14-day idle window, states real staleness, says plainly when nothing matches rather than guessing. |
 | `BACKGROUND_JOBS`, `CHECK_JOB` | List background tasks / check a job id. |
 
 ## 13. Self-healing remediation (Linux)
@@ -561,15 +565,18 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | Module | Lines | Role |
 |---|---:|---|
 | `app_aliases.py` | 90 | Speech-damage layer for app names, on top of the cross-platform resolver. |
+| `command_dependency_graph.py` | 60 | MULTI_COMMAND's `infer_dependencies()` — one optional LLM call for dependency edges among an already-split command list, validated via `eli.core.dag` (ported from v2, 2026-09-30). |
+| `command_sequence_log.py` | 102 | MULTI_COMMAND's durable per-step log — crash-survival and skip-already-done on resubmit (ported from v2, 2026-09-30). |
 | `effectors/system_helpers.py` | 175 | Cross-platform system helpers shared by executor and effectors (v3). |
-| `execution_planner.py` | 111 | Builds `RouteDecision` and the typed `ExecutionPlan`/`PlanStep` artifacts the bus consumes. |
+| `execution_planner.py` | 111 | Builds `RouteDecision` and the typed `ExecutionPlan`/`PlanStep` artifacts — `.agent_profile` (agent-name filter) is the only field anything reads; `.steps` is never executed, only rendered as decorative text by `EXECUTE_GOAL`. |
+| `executor_enhanced.py` | 16113 | The flat `if a == "ACTION":` dispatch every routed action runs through. |
 | `media_runtime.py` | 709 | Media runtime control for ELI. |
 | `operator_actions.py` | 105 | Valid states and helpers for operator (proposal) actions: pending, approved, rejected, blocked, pending_confirmation. |
-| `operator_policy.py` | 65 | The valid operator policy modes: `proposal_only`, `operator_supervised`, `goal_driven`, `observe_only`. |
+| `operator_policy.py` | 65 | The valid operator policy modes: `proposal_only`, `operator_supervised`, `goal_driven`, `observe_only`. Only `observe_only` (silences the autonomy loop) and `goal_driven` (elevated + self-upgrade scheduling) have distinct behavior — `proposal_only`/`operator_supervised` are currently identical code paths. |
 | `portable_intent_contract.py` | 643 | Portable intent rules; hard-blocks document, code and analysis prompts from `PLAY_MEDIA`. |
 | `route_authority.py` | 46 | Thread-local record of which layer decided a route, and the internal prompt prefixes that must never be routed as user text. |
 | `route_contracts.py` | 123 | Small predicates that classify a request (for example `wants_memory_internals`) for the router. |
-| `router_enhanced.py` | 6544 | The router: `route(text)` regex-first priority pipeline with LLM-intent fallback (see `architecture.md` §4). |
+| `router_enhanced.py` | 6590 | The router: `route(text)` regex-first priority pipeline with LLM-intent fallback (see `architecture.md` §4). |
 | `shell_gate.py` | 110 | Centralised shell-command safety gate. |
 
 ## `core/`

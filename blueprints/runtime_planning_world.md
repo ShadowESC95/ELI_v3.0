@@ -1,7 +1,9 @@
 # ELI Runtime Surfaces, Planning, World, Tools & Plugins
 
-> **Updated for 3.0.128.** Stage 12 learning via `learning_coordinator.py`; goal
-> autogenesis feeds the proactive stack.
+> **Updated 2026-09-30.** Stage 12 learning via `learning_coordinator.py`; goal
+> autogenesis feeds the proactive stack. Task records gained an explicit resume path
+> and a World bridge (ported from v2); habit learning is now gated against ELI's own
+> automated actions.
 
 The remaining subsystems: the `runtime/` response/introspection surfaces, the
 proactive planning layer, the "world"/autonomy model, and the tools + plugin
@@ -84,7 +86,19 @@ Background cognition + goal/queue machinery:
 - **Task records** (`goal_store.py`): a task is a goal the scheduler does not tick, carrying
   constraints, decisions, finished steps, artifacts and open questions. `capture_task_events` reads
   clear phrasings from the user's messages ("we decided to", "we still need to", "let's work on"),
-  and `task_brief` puts unfinished work into the next session's awareness block.
+  and `task_brief` puts unfinished work into the next session's awareness block — but only within
+  a 14-day idle window. `find_task(query, include_idle=True)` (2026-09-30, ported from v2) bypasses
+  that window on an explicit ask ("continue the RAIMS project" routes to `RESUME_TASK`, a real
+  router/executor action — not a chat-routed guess), and states real staleness ("last touched N
+  days ago") rather than silently implying continuity. `close_task(goal_id)` is the explicit,
+  non-inferred completion path. Opening/closing a task also notifies the World system (below).
+- **Habit-learning integrity** (2026-09-30, ported from v2): `_learn_from_result`'s writes into
+  `habit_events` — the table `detect_habits` mines for recurring routines — are gated on whether
+  the triggering call actually came from the user (`_is_autonomous_source()`, shared by
+  `eli/kernel/engine.py` and `eli/kernel/stages/memory_commit.py`'s `MemoryCommitMixin` via
+  `eli/kernel/stages/_common.py`). `habits_scheduler.py` firing an approved rule calls
+  `engine.process(source="habit")`; without the gate, that automated firing would land back in
+  `habit_events` and let ELI's own automation reinforce itself as fresh evidence of a routine.
 - **World events.** `review_completed` eases repair pressure after any review;
   `repair_completed` fires only for a verified repair.
 - `goal_autogenesis.py` (NEW, 2026-06-08) — **closes the autonomy loop**: the goal
@@ -106,10 +120,21 @@ Background cognition + goal/queue machinery:
 The substrate behind ELI's emergent self-state (autonomy pressure, awareness,
 "anomaly room" — intended behaviour, see memory `eli-emergent-voice`):
 - `agency/autonomy_engine.py` — `EliWorldAutonomyEngine`: ingests world events,
-  maintains awareness/autonomy state.
+  maintains awareness/autonomy state. `_apply_action` handles `CREATE_OBJECT` and
+  (2026-09-30, ported from v2) `RETIRE_OBJECT` — previously declared in the schema
+  with zero handler, the only way a `WorldObject.retired` flag ever gets set.
+  Opening a task creates a per-task workbench object (`_create_task_object_action`,
+  linked via `WorldObject.links` so it's distinct from the shared template+room-keyed
+  object every other `project_workbench` trigger reuses); closing a task retires it.
 - `local_world_bridge.py` — `append_event`, `get_world_state`,
   `get_awareness_driven_suggestions` (**throttled to once/hour to prevent
-  auto-trigger loops**).
+  auto-trigger loops**). Its `priority >= 0.70` consumer in `proactive_daemon.py`
+  (`_handle_high_priority_world_suggestion`, 2026-09-30, ported from v2) defers to
+  an active user turn (via this file's own `_foreground_busy()` wrapper) and reuses
+  `attention_queue.append_attention`'s suppression window (30 min) as its cooldown,
+  rather than acting with no interruption-cost check at all. It also no longer
+  claims `"[AUTO] ... triggered"` — nothing in this path calls the executor, so the
+  surfaced text and stored memory note now say "suggested."
 - `world_event_bus.py` — `fire_confidence_event(...)` etc.; the engine feeds
   bus-dispatch confidence here (non-blocking world-awareness feed).
 - `core/schemas.py` — `WorldEvent`, `AwarenessState`.
