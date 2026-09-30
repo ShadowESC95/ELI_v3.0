@@ -50,7 +50,9 @@ import pytest
 from eli.core import load_probe
 
 LOADER = (pathlib.Path(__file__).resolve().parents[1]
-          / "eli" / "gui" / "eli_pro_audio_gui_v2_0.py")
+          / "eli" / "gui" / "main_window" / "models.py")
+# eli/gui/eli_pro_audio_gui_v2_0.py is DEAD in v3 — the real startup-dialog model loader is
+# eli.gui.main_window.models.LocalModelManager. This test silently checked the dead file before.
 
 
 def _code(src: str) -> str:
