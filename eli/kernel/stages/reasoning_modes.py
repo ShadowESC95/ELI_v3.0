@@ -6,13 +6,17 @@ from typing import Any, Dict, Optional
 
 import time
 
-from eli.kernel.stages._common import _eli_test_mode
+from eli.kernel.stages._common import _clarifier_norm, _eli_test_mode
 from eli.kernel.stages.guards import (
+    _REPEAT_MIN_SENTENCE_CHARS,
     _eli_bad_identity_self_report_output,
     _eli_identity_self_report_request,
     _failed_executor_is_failed,
     _failed_executor_surface,
+    _is_repeat_of_recent,
+    _opens_by_echoing,
     _strip_reasoning_scaffold,
+    _strip_repeated_opening,
 )
 from eli.utils.log import get_logger
 from eli.cognition.output_governor import govern_output
@@ -525,6 +529,43 @@ class ReasoningModesMixin:
         return _strip_reasoning_scaffold(final)
 
     def _run_chat_reasoning_loop(self, user_input: str, memory_context: str, intent: Dict[str, Any], reasoning_mode: Optional[
+                                 str], trace: Optional[Dict[str, Any]] = None, gen_overrides: Optional[Dict[str, Any]] = None,
+                                 situation_brief: str = "") -> Dict[str, Any]:
+        """Private reasoning modes bypass the streaming path, so they need their own
+        anti-repeat/anti-echo pass: inject the contract, run the loop, strip any
+        opening that restates ELI's own prior reply or the user's own message."""
+        brief = self._inject_anti_repeat_contract(user_input, situation_brief, recent_turns=None)
+        result = self._run_chat_reasoning_loop_inner(
+            user_input, memory_context, intent, reasoning_mode,
+            trace=trace, gen_overrides=gen_overrides, situation_brief=brief,
+        )
+        response = str((result or {}).get("response") or "")
+        if not response:
+            return result
+        try:
+            _recent_eli: list = []
+            _recent_user: list = []
+            for _t in (self.memory.get_recent_conversation(limit=16) or []):
+                _role = str((_t or {}).get("role", "")).lower()
+                _c = str((_t or {}).get("content", "") or "").strip()
+                if not _c:
+                    continue
+                if _role == "user":
+                    _recent_user.append(_c)
+                elif _role in ("assistant", "eli"):
+                    _recent_eli.append(_c)
+            echo_sources = [user_input] + _recent_user
+            if (_opens_by_echoing(response, echo_sources)
+                    or (_recent_eli and _is_repeat_of_recent(response, _recent_eli))):
+                novel = _strip_repeated_opening(response, _recent_eli + echo_sources)
+                if len(_clarifier_norm(novel)) >= _REPEAT_MIN_SENTENCE_CHARS:
+                    result = dict(result)
+                    result["response"] = novel
+        except Exception:
+            log.debug("[ANTI-REPEAT] reasoning-loop echo guard skipped", exc_info=True)
+        return result
+
+    def _run_chat_reasoning_loop_inner(self, user_input: str, memory_context: str, intent: Dict[str, Any], reasoning_mode: Optional[
                                  str], trace: Optional[Dict[str, Any]] = None, gen_overrides: Optional[Dict[str, Any]] = None,
                                  situation_brief: str = "") -> Dict[str, Any]:
         try:
