@@ -1113,10 +1113,12 @@ class LocalModelManager:
                         min_batch=_sf_min_batch,
                         model_path=str(path_obj),
                     )
+                    from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu
                     log.debug(
-                        f"[GUI][LOAD] smart-fit (post-init free={_sf_gpu.free_mb}MB "
-                        f"reserve={_sf_reserve}MB kvq={_sf_kvq}): "
-                        f"ctx={_sf_ctx} gpu_layers={_sf_layers} batch={_sf_batch}")
+                        f"[GUI][LOAD] smart-fit preview (post-init free={_sf_gpu.free_mb}MB "
+                        f"reserve={_sf_reserve}MB kvq={_sf_kvq}) — the fallback used only if your "
+                        f"requested settings below cannot be honoured: "
+                        f"ctx={_sf_ctx} gpu_layers={_describe_gpu(_sf_layers)} batch={_sf_batch}")
                     # Say what this IS: a measurement and a queued fallback. It is
                     # NOT a change that has been applied — the operator's own
                     # numbers are attempted first (see the ladder below), so a line
@@ -1357,10 +1359,12 @@ class LocalModelManager:
 
             _applied = None
             _last_error = ""
+            from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_attempt
             for i, _cand in enumerate(_attempts, start=1):
                 log.debug(
                     f"[GUI][LOAD] attempt {i}/{len(_attempts)}: {_cand['label']} "
-                    f"(ctx={_cand['n_ctx']} gpu_layers={_cand['n_gpu_layers']} batch={_cand['n_batch']})",
+                    f"(ctx={_cand['n_ctx']} gpu_layers={_describe_gpu_attempt(_cand['n_gpu_layers'])} "
+                    f"batch={_cand['n_batch']})",
                 )
                 # A candidate marked for verification is proven in a separate
                 # process before it is loaded here. `except Exception` below
@@ -1511,9 +1515,11 @@ class LocalModelManager:
             applied_n_ctx = int(_applied["n_ctx"])
             applied_n_gpu_layers = int(_applied["n_gpu_layers"])
             applied_n_batch = int(_applied["n_batch"])
+            from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_applied
             log.debug(
                 f"[GUI][LOAD] selected={_applied['label']} "
-                f"(ctx={applied_n_ctx} gpu_layers={applied_n_gpu_layers} batch={applied_n_batch})",
+                f"(ctx={applied_n_ctx} gpu_layers={_describe_gpu_applied(applied_n_gpu_layers)} "
+                f"batch={applied_n_batch})",
             )
 
             setattr(self.model, "n_ctx", int(applied_n_ctx))
@@ -10236,9 +10242,10 @@ class EliMainWindow(QMainWindow):
             # [GUI][LOAD] / smart-fit / probe lines the terminal prints (see
             # HardwareTuningLogRelay) — one source of truth, not a second figure
             # computed for the panel.
+            from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_rec
             summary = (
                 f"HW Profile (recommended): ctx={int(rec.n_ctx)} "
-                f"gpu_layers={int(rec.n_gpu_layers)} "
+                f"gpu_layers={_describe_gpu_rec(rec.n_gpu_layers)} "
                 f"threads={int(rec.n_threads)} batch={int(rec.batch_size)} "
                 f"kv={_ck or 'fp16'}"
             )
@@ -10248,7 +10255,7 @@ class EliMainWindow(QMainWindow):
                 _eff = (_live.get("effective") or _live) if isinstance(_live, dict) else {}
                 _lc, _lg = _eff.get("n_ctx"), _eff.get("n_gpu_layers")
                 if _lc and _lg is not None:
-                    summary += (f"  |  loaded: ctx={int(_lc)} gpu_layers={int(_lg)}"
+                    summary += (f"  |  loaded: ctx={int(_lc)} gpu_layers={_describe_gpu_rec(_lg)}"
                                 f" batch={int(_eff.get('n_batch') or 0)}")
             except Exception:
                 log.debug("[GUI] live runtime snapshot unavailable for the tuning panel",

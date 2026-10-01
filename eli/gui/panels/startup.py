@@ -886,6 +886,7 @@ class StartupModelSelectionDialog(QDialog):
             from eli.core.hardware_profile import (
                 auto_ctx_target,
                 cpu_ram_budget_mb,
+                describe_gpu_layers,
                 detect_hardware,
                 effective_use_gpu_layers,
                 _llama_gpu_offload_available,
@@ -941,7 +942,8 @@ class StartupModelSelectionDialog(QDialog):
                         moe_resident_gb=(_moe_preview["resident_gb"] if _moe_preview else None),
                     )
                     _fit_line = (
-                        f"  |  fit ({_fit_mode}): ctx={_fc} gpu={_fl} batch={_fb}"
+                        f"  |  preview fit ({_fit_mode}): ctx={_fc} "
+                        f"gpu={describe_gpu_layers(_fl)} batch={_fb}"
                     )
                     if _moe_preview:
                         _fit_line += (
