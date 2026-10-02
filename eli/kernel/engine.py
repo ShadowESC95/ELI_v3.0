@@ -3748,6 +3748,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if _ovr3.get("loaded"):
                 self._gguf_available = True
                 self._gguf_load_error = None
+        try:
+            if gguf_inference is not None and gguf_inference.is_cancel_requested():
+                return None
+        except Exception:
+            pass
         if self._gguf_available and gguf_inference is not None:
             try:
                 from eli.cognition.gguf_inference import force_no_think as _fnt_corr
