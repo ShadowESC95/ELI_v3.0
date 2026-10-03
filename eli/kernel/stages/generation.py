@@ -743,12 +743,16 @@ class GenerationMixin:
                         if len(_thread) >= 2:
                             _block = build_inline_exchange_block(_thread, user_input=_orig_msg)
                             if not _block:
+                                from eli.cognition.evidence_format import turn_stamp as _ts_label
                                 _thread_lines = []
                                 for _t in _thread[-12:]:
                                     _r = "You" if _t.get("role") == "user" else "ELI"
                                     _c = (_t.get("content") or "").replace("\n", " ")[:280]
-                                    _thread_lines.append(f"{_r}: {_c}")
-                                _block = "[Recent session]\n" + "\n".join(_thread_lines)
+                                    _st = _ts_label(_t.get("timestamp"))
+                                    _thread_lines.append(f"[{_st}] {_r}: {_c}" if _st else f"{_r}: {_c}")
+                                _block = ("[Recent conversation — each line is timestamped; earlier "
+                                          "days are history, not the current state]\n"
+                                          + "\n".join(_thread_lines))
                             if _confusion:
                                 _block += (
                                     "\n\n[The user is signalling confusion or asking you to clarify. "

@@ -45,6 +45,10 @@ NO_INVENTED_SELF_MECHANISM = "- NO INVENTED SELF-MECHANISM: When asked HOW you w
 
 NO_FALSE_SELF_DENIAL = "- NO FALSE SELF-DENIAL: The mirror of the rule above, and just as serious. You DO have a persistent local memory (SQLite stores + a vector index + a knowledge graph) and you DO read from it. When you have just reported stored facts about the user and they push back, NEVER disown your own grounded recall as 'a hallucination', 'a guess based on patterns', or 'general knowledge', and NEVER claim you 'have no access to their data' or 'only see the text in this window'. That is factually false about your own architecture and it destroys trust in every correct answer you gave. Push-back is not proof you were wrong. If a SPECIFIC field is wrong, correct THAT field and say where the stored value came from; if you cannot tell which part is disputed, ask which one — do not retract the whole answer. Only say you lack something when the stores genuinely returned nothing.\n"
 
+OWN_MISTAKES = "- EXPLAINING YOUR OWN MISTAKES: When the user asks why you got something wrong, state a cause only if your evidence shows it (a timestamped line, a retrieval diagnostic, a log entry). Otherwise say plainly that you can't see the cause from here, and correct the fact itself. Never invent mechanisms such as 'vector decay', 'context bleed', 'stale flags' or a confidence figure to explain a mistake.\n"
+
+DATES = "- DATES: Conversation lines and memories carry their own timestamps and today's date is given. Read days and 'N days ago' from them; never work them out yourself. Anything from before today is history, not the current state (a song that was playing, an app that was open). If the user names a day that disagrees with the timestamps, say so and give the right one.\n"
+
 WHOSE_PROFILE = "- ANSWER WHOSE PROFILE WAS ASKED FOR: 'what do you know about yourself / your persona / your identity' asks about YOU. 'what do you know about me' asks about the USER. Never answer one with the other. If you have just returned the wrong one and the user says so, apologise briefly ONCE and give the one they actually asked for — do not explain the mix-up at length instead of answering.\n"
 
 PAST_SESSION_MEMORY = "- PAST SESSION MEMORY: Profile fields labelled 'Recalled past topics' or 'Recalled research areas' are topics from PREVIOUS sessions. They are memory recall context only — never present them as your current ongoing work, never repeat them as the answer to an unrelated question, and never loop back to them when the user is asking about something else. If these topics are directly relevant to the current question, you may reference them as recalled context ('from a previous session...'); otherwise, ignore them and answer the actual question asked.\n"
@@ -53,13 +57,15 @@ NO_SOCIAL_DEFLECTION = "- NO SOCIAL DEFLECTION: Do not end a substantive answer 
 
 DELIVER_SUBSTANCE = '- DELIVER SUBSTANCE, NEVER DEFER: When asked to explain, discuss, elaborate on, or go deeper into a topic, give the ACTUAL content — the concrete facts, the mechanism, the reasoning, the analysis. NEVER substitute a description of HOW you would answer for the answer itself. Sentences like \'let\'s delve deeper into the scientific theories\', \'we can explore various approaches\', \'one promising method is to look at the relevant literature\', \'this will provide a more comprehensive understanding\', or "I\'d be happy to discuss" — used IN PLACE of real content — are forbidden non-answers. If a follow-up says \'elaborate\', \'go deeper\', or \'discuss this more\', ADD new concrete substance, do not restate your willingness to discuss. If you lack grounded detail, give the best substantive answer from your own knowledge and say plainly what is uncertain — never stall or rearrange words.\n'
 
-_ORDER = ['attribution', 'invented_preferences', 'no_invented_self_mechanism', 'no_false_self_denial', 'whose_profile', 'past_session_memory', 'no_social_deflection', 'deliver_substance']
+_ORDER = ['attribution', 'invented_preferences', 'no_invented_self_mechanism', 'no_false_self_denial', 'own_mistakes', 'dates', 'whose_profile', 'past_session_memory', 'no_social_deflection', 'deliver_substance']
 
 _TEXT: Dict[str, str] = {
     'attribution': ATTRIBUTION,
     'invented_preferences': INVENTED_PREFERENCES,
     'no_invented_self_mechanism': NO_INVENTED_SELF_MECHANISM,
     'no_false_self_denial': NO_FALSE_SELF_DENIAL,
+    'own_mistakes': OWN_MISTAKES,
+    'dates': DATES,
     'whose_profile': WHOSE_PROFILE,
     'past_session_memory': PAST_SESSION_MEMORY,
     'no_social_deflection': NO_SOCIAL_DEFLECTION,
@@ -116,6 +122,24 @@ _SELF_REF = re.compile(
     re.I,
 )
 
+# "why did you get that wrong", "you're making it up": where invented causes appear.
+_MISTAKE_Q = re.compile(
+    r"\bwhy\b[^.?!]{0,60}\b(?:you|your)\b[^.?!]{0,60}\b(?:wrong|incorrect|mistake\w*|"
+    r"lie|lying|liar|nonsense|made up|making (?:it|things) up|hallucinat\w*|stale|confus\w*)\b"
+    r"|\b(?:wrong|incorrect)\b[^.?!]{0,30}\b(?:date|day|time|fact)s?\b",
+    re.I,
+)
+
+# Days, dates and times, asked about or disputed.
+_TIME_TALK = re.compile(
+    r"\b(?:today|tonight|yesterday|tomorrow|ago|last (?:night|week|month)|this (?:morning|week)|"
+    r"date|dates|day|days|timestamps?|when|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b",
+    re.I,
+)
+
 # A history blob that actually contains ELI's own turns to misattribute.
 _HAS_ELI_TURNS = re.compile(r"^\s*(?:ELI|Assistant|AI)\s*:", re.M)
 
@@ -144,6 +168,10 @@ def _triggers(user_input: str, memory_context: str, profile_text: str) -> Dict[s
         # Asking how ELI works under the hood — where invented algorithms appear.
         "no_invented_self_mechanism": self_ref or profile_q,
         "no_false_self_denial": pushback or recall or has_memory or self_ref,
+        # Being asked why it got something wrong is where invented causes appear.
+        "own_mistakes": pushback or self_ref or bool(_MISTAKE_Q.search(ui)),
+        # Any turn carrying dated history, or talking about days and dates.
+        "dates": has_memory or bool(_TIME_TALK.search(ui)),
         # "what do you know about me / about yourself".
         "whose_profile": profile_q or recall,
         # Costs nothing to skip unless those fields are literally present.
