@@ -103,7 +103,12 @@ def main() -> int:
     if not inventory.is_file():
         try:
             from eli.runtime.capability_sync import CapabilitySync
-            CapabilitySync(repo_root=ROOT).run()
+            sync = CapabilitySync(repo_root=ROOT)
+            sync.run()
+            # CapabilitySync writes into the runtime state dir, never the repo. This file is
+            # not tracked here, so on a fresh clone the copy at the root has to be made.
+            if not inventory.is_file() and Path(sync.inventory_path).is_file():
+                inventory.write_bytes(Path(sync.inventory_path).read_bytes())
         except Exception as e:
             print(f"[WARN] capability inventory generation skipped: {e}", file=sys.stderr)
     if inventory.is_file():
