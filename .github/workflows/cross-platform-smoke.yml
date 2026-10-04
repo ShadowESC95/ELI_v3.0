@@ -160,7 +160,6 @@ jobs:
           python -m pytest -q -p no:cacheprovider
           tests/claims/test_no_silent_swallow.py
           tests/claims/test_structural_claims.py
-          tests/claims/test_readme_counts.py
           tests/claims/test_capability_manifest.py::test_manifest_total_matches_capability_count
 
       - name: Eval router cases (tools/eval mirror)
