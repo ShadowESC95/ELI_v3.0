@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -52,6 +54,78 @@ class LongTermMemoryRefs:
     rag_ready: bool
 
 
+def _recent_turns_limit(reasoning_mode: object = None) -> int:
+    """This user's recent turns for the orchestrator's short-term memory."""
+    try:
+        from eli.core.cognition_tunables import prompt_count
+        return max(4, prompt_count("cog.mem_recent_turns", reasoning_mode))
+    except Exception:
+        return 8
+
+
+# Only phrases that point back at the answer just given; "again" or "those" alone would hand
+# the last period to an unrelated question.
+_FOLLOWUP_RE = re.compile(
+    r"\b(?:(?:check|look|search|try|go through (?:it|them)) again|check properly|in full|full list|"
+    r"all of them|every (?:one|song|track) (?:of them|played)?|the rest|what else|anything else|"
+    r"any (?:more|others)|what about the (?:rest|others)|you missed|is that all|that'?s not all|"
+    r"should have (?:logs|a record|records))\b", re.I)
+_FOLLOWUP_WINDOW_S = 900.0
+# About the user's or ELI's own doings ("what did i play", "what did you do"), not a polite
+# "can you tell me" wrapped around an outside question.
+_PERSONAL_RE = re.compile(
+    r"\b(?:i|i'm|i've|i'd|my|mine|we|us|our)\b"
+    r"|\b(?:did|have|had|were)\s+you\b|\byou\s+(?:did|ran|played|opened|said|do|done|logged)\b"
+    r"|(?<!tell )(?<!show )(?<!give )(?<!let )(?<!remind )(?<!help )\bme\b", re.I)
+
+
+def _followup_window(engine: Any, user_input: str, window: Any) -> Any:
+    """The period this turn is about. A follow-up with no period of its own ("check again in
+    full", live after "name all the songs i played yesterday") keeps the previous turn's,
+    for 15 minutes. A turn that names a period replaces it."""
+    try:
+        if window:
+            engine._sticky_set("last_query_window", (window, time.time()))
+            return window
+        prev = engine._sticky_get("last_query_window")
+        if (prev and _FOLLOWUP_RE.search(user_input or "")
+                and time.time() - float(prev[1]) <= _FOLLOWUP_WINDOW_S):
+            log.debug("[ORCHESTRATOR] follow-up keeps the previous period")
+            return tuple(prev[0])
+    except Exception:
+        log.debug("follow-up window skipped", exc_info=True)
+    return window
+
+
+def _period_log_chars(reasoning_mode: object = None) -> int:
+    """Room for the period log: a fifth of the loaded context, a little less in quick mode."""
+    try:
+        from eli.cognition import gguf_inference as _gi
+        from eli.cognition.context_budget import chars_per_token
+        n_ctx = int(_gi.current_context_limit() or 8192)
+        share = 0.15 if str(reasoning_mode or "quick").lower() in ("", "quick", "fast") else 0.2
+        return max(2500, min(12000, int(n_ctx * chars_per_token() * share)))
+    except Exception:
+        return 5000
+
+
+def _verified_shown_limit(reasoning_mode: object = None) -> int:
+    try:
+        from eli.core.cognition_tunables import prompt_count
+        return max(1, prompt_count("cog.mem_semantic_shown", reasoning_mode))
+    except Exception:
+        return 12
+
+
+def _gap_rag_limit() -> int:
+    """RAG width for the evidence-gap fallback, when the mode planned none."""
+    try:
+        from eli.core.cognition_tunables import snapshot as _cog_snapshot
+        return max(2, int(_cog_snapshot().get("cog.orch_rag_limit", 24)))
+    except Exception:
+        return 24
+
+
 class PlannerAgent:
     def __init__(self, engine):
         self.engine = engine
@@ -87,7 +161,18 @@ class PlannerAgent:
         except Exception:
             _budget = 1.0
 
-        doc_query = any(k in low for k in ("document", "file", "pdf", "notes", "codebase"))
+        # A question that names a document or a kind of one, or one of the indexed titles.
+        doc_query = False
+        docs_indexed = False
+        try:
+            from eli.memory.document_index import asks_about_documents, attached_paths
+            _index = getattr(self.engine, "document_rag", None)
+            _attached = bool(_index and attached_paths(user_input))
+            docs_indexed = _attached or bool(_index and _index.stats()["passages"])
+            doc_query = _attached or (docs_indexed and (asks_about_documents(low) or _index.mentions(
+                low, str(getattr(self.engine, "user_id", "") or ""))))
+        except Exception:
+            log.debug("document query check skipped", exc_info=True)
         identity  = any(k in low for k in ("who am i", "my name", "remember me"))
         runtime   = any(k in low for k in ("memory function", "memory work", "cognition", "how do you work"))
 
@@ -95,12 +180,13 @@ class PlannerAgent:
             _kw = max(4, int(round(6 * _budget)))
             return {
                 "need_keyword":   True,
-                "need_semantic":  False,      # skip FAISS embedding (saves one LLM call)
-                "need_rag":       False,
+                "need_semantic":  False,      # not kept unless evidence is thin (see sequential_retrieve)
+                "need_rag":       doc_query,  # quick mode reads documents only when asked about one
+                "rag_strict":     False,
                 "need_kg":        identity,
                 "keyword_limit":  _kw,
                 "semantic_limit": 0,
-                "rag_limit":      0,
+                "rag_limit":      max(2, int(round(4 * _budget))) if doc_query else 0,
                 "prefer_identity": identity,
                 "prefer_runtime":  runtime,
                 "skip_hyde":       True,      # signals MemoryAgent to never run HyDE
@@ -112,7 +198,10 @@ class PlannerAgent:
             return {
                 "need_keyword":   True,
                 "need_semantic":  True,
-                "need_rag":       doc_query,
+                # Asked about a document: its best passages. Otherwise only passages that clearly
+                # bear on the question, so an indexed library does not pad every prompt.
+                "need_rag":       docs_indexed,
+                "rag_strict":     not doc_query,
                 "need_kg":        True,
                 "keyword_limit":  _kw,
                 "semantic_limit": _sem,
@@ -127,7 +216,10 @@ class PlannerAgent:
             return {
                 "need_keyword":   True,
                 "need_semantic":  True,
-                "need_rag":       doc_query,
+                # Asked about a document: its best passages. Otherwise only passages that clearly
+                # bear on the question, so an indexed library does not pad every prompt.
+                "need_rag":       docs_indexed,
+                "rag_strict":     not doc_query,
                 "need_kg":        True,
                 "keyword_limit":  max(4, int(round(_cog_get("cog.orch_keyword_limit") * _budget))),
                 "semantic_limit": max(4, int(round(_cog_get("cog.orch_semantic_limit") * _budget))),
@@ -231,7 +323,7 @@ class OrchestratorMemoryAgent:
 
         if retrieval_plan.get("need_rag") and ltm.rag_ready:
             rag_hits = self.document_rag_search(
-                user_input, retrieval_plan.get("rag_limit", 8))
+                user_input, retrieval_plan.get("rag_limit", 8), strict=bool(retrieval_plan.get("rag_strict")))
 
         if retrieval_plan.get("prefer_identity") or retrieval_plan.get("need_kg", True):
             kg_hits = self.kg_search(
@@ -398,10 +490,22 @@ class OrchestratorMemoryAgent:
         return hits
 
     def document_rag_search(
-        self, query: str, limit: int) -> List[Dict[str, Any]]:
+        self, query: str, limit: int, *, strict: bool = False) -> List[Dict[str, Any]]:
         try:
-            if hasattr(self.engine, "document_rag") and self.engine.document_rag:
-                hits = self.engine.document_rag.search(query, limit=limit) or []
+            index = getattr(self.engine, "document_rag", None)
+            if index:
+                uid = str(getattr(self.engine, "user_id", "") or "")
+                # A file handed over with the message is stored now, so this turn can read it, and
+                # the search stays inside it. Its vectors follow in the background.
+                from eli.memory.document_index import attached_paths
+                handed = []
+                for path in attached_paths(query):
+                    added = index.add(path, user_id=uid, source="attachment", embed=False)
+                    if added.get("ok"):
+                        handed.append(added["doc_id"])
+                        index.note(path, user_id=uid, source="attachment")
+                hits = index.search(query, limit=limit, strict=strict and not handed, user_id=uid,
+                                    doc_ids=handed or None) or []
                 out = []
                 for h in hits:
                     text = (h.get("text") or "").strip()
@@ -516,6 +620,15 @@ class AgentOrchestrator:
         """Web/local escalation before LLM — orchestrator path must not skip this."""
         if getattr(self.engine, "_crisis_steering", None):
             return None
+        # A question about the user's own period that the period log answers is not a web
+        # question. Live: "what has been going on the past day or two?" was web-searched because
+        # the agent bus, which ran no agents in quick mode, scored grounding 0.26.
+        _ws = getattr(getattr(getattr(self, "memory_agent", None), "_last_turn_retrieval", None),
+                      "window_stats", None) or {}
+        if (_ws and (_ws.get("in_window") or _ws.get("turns") or _ws.get("actions"))
+                and _PERSONAL_RE.search(user_input or "")):
+            log.debug("[ORCHESTRATOR] personal period question answered from its own log — no escalation")
+            return None
         try:
             from eli.runtime.grounding_escalation import escalate as _escalate
             _esc = _escalate(
@@ -627,7 +740,7 @@ class AgentOrchestrator:
         ltm = LongTermMemoryRefs(
             sqlite_ready=True,
             vector_ready=hasattr(self.engine.memory, "vector_store"),
-            rag_ready=hasattr(self.engine, "document_rag"),
+            rag_ready=bool(getattr(self.engine, "document_rag", None)),
         )
 
         wm.trace["stage_1"] = "intent_routing"
@@ -882,7 +995,8 @@ class AgentOrchestrator:
         wm.trace["stage_4"] = "planner"
         retrieval_plan = self.planner_agent.plan_retrieval(
             user_input, intent, "", stm, reasoning_mode=reasoning_mode)
-        retrieval_plan["window"] = _query_planner.plan_window(user_input)
+        retrieval_plan["window"] = _followup_window(self.engine, user_input,
+                                                    _query_planner.plan_window(user_input))
         log.debug("[ORCHESTRATOR] Stage 4: Planner → mode=%s %s" % (
             reasoning_mode or "balanced", retrieval_plan))
         _eli_pipe_orch("stage_4", mode=(reasoning_mode or "balanced"))
@@ -905,12 +1019,37 @@ class AgentOrchestrator:
         wm.semantic_hits = semantic_hits
         wm.rag_hits = rag_hits
         wm.kg_hits = kg_hits
-        log.debug(f"[ORCHESTRATOR] Stage 5/6/7: Sequential Retrieval → keyword: {len(keyword_hits)} semantic: {len(semantic_hits)} rag: {len(rag_hits)} kg: {len(kg_hits)}")
+        # "rag: 0" on its own read as a search that found nothing; say what there was to search.
+        _rag_note: Any = len(rag_hits)
+        if not ltm.rag_ready:
+            _rag_note = "off"
+        elif not rag_hits:
+            try:
+                _dstats = self.engine.document_rag.stats()
+                _rag_note = (f"0 of {_dstats['passages']} passages in {_dstats['documents']} documents"
+                             if _dstats["passages"] else "0 (no documents indexed yet)")
+            except Exception:
+                log.debug("document stats unavailable", exc_info=True)
+        log.debug(f"[ORCHESTRATOR] Stage 5/6/7: Sequential Retrieval → keyword: {len(keyword_hits)} semantic: {len(semantic_hits)} rag: {_rag_note} kg: {len(kg_hits)}")
         _eli_pipe_orch("stage_5_6_7", keyword=len(keyword_hits), semantic=len(semantic_hits), rag=len(rag_hits), kg=len(kg_hits))
+        try:
+            from eli.kernel.request_context import note_turn_fact as _note
+            _wsn = getattr(getattr(self.memory_agent, "_last_turn_retrieval", None), "window_stats", None) or {}
+            _note("retrieval", f"keyword {len(keyword_hits)}, semantic {len(semantic_hits)}, "
+                               f"documents {len(rag_hits)}, graph {len(kg_hits)}"
+                  + (f"; period {time.strftime('%d %b', time.localtime(_wsn['since']))}-"
+                     f"{time.strftime('%d %b', time.localtime(_wsn['until']))}: {_wsn.get('turns', 0)} turns, "
+                     f"{_wsn.get('actions', 0)} actions" if _wsn else ""))
+        except Exception:
+            log.debug("retrieval note skipped", exc_info=True)
 
         wm.trace["stage_8"] = "hybrid_merge"
+        # The plan's merge_cap (40 by default, scaled by mode); this was a fixed 20 whatever the
+        # mode gathered, so Advanced cut 110 hits to 20 before ranking.
+        # Document passages are shown whole in their own block below, not cut to evidence-row length.
         wm.merged_hits = self.memory_agent.hybrid_merge(
-            keyword_hits, semantic_hits, rag_hits, kg_hits=kg_hits)
+            keyword_hits, semantic_hits, [], kg_hits=kg_hits,
+            limit=max(8, int(retrieval_plan.get("merge_cap") or 20)))
         log.debug(f"[ORCHESTRATOR] Stage 8: Hybrid Merge → {len(wm.merged_hits)} items")
         _eli_pipe_orch("stage_8", merged=len(wm.merged_hits))
 
@@ -971,6 +1110,11 @@ class AgentOrchestrator:
             log.debug("recalled ids not recorded", exc_info=True)
         try:
             _agg = getattr(wm.bus_result, "aggregated_confidence", None)
+            # With no agent run (quick mode) the bus aggregate is a constant, not a measure of
+            # this retrieval: "confidence 0.26 (very low)" sat above the period log that
+            # answered the question.
+            if not list(getattr(wm.bus_result, "agents_used", None) or []):
+                _agg = None
             self.engine._memory_diag = _memory_diag.retrieval_record(
                 len(keyword_hits), len(semantic_hits), len(kg_hits), len(wm.merged_hits),
                 float(_agg) if _agg is not None else None,
@@ -997,6 +1141,40 @@ class AgentOrchestrator:
                 wm.verified_memory_block = _verified
         except Exception as _vmb_err:
             log.debug(f"[ORCHESTRATOR] verified memory block inject skipped: {_vmb_err}")
+        _period = ""
+        try:
+            from eli.memory.unified_retrieval import format_period_log
+            _period = format_period_log(getattr(self.memory_agent, "_last_turn_retrieval", None),
+                                        user_input, max_chars=_period_log_chars(reasoning_mode))
+            if _period:
+                wm.assembled_context = (_period + "\n\n" + str(wm.assembled_context or "").strip()).strip()
+        except Exception as _pl_err:
+            log.debug(f"[ORCHESTRATOR] period log skipped: {_pl_err}")
+        try:
+            if rag_hits:
+                from eli.memory.document_index import format_passages
+                _passages = format_passages(rag_hits, max_chars=_period_log_chars(reasoning_mode))
+                if _passages:
+                    wm.assembled_context = (_passages + "\n\n" + str(wm.assembled_context or "").strip()).strip()
+        except Exception as _dp_err:
+            log.debug(f"[ORCHESTRATOR] document passages skipped: {_dp_err}")
+        # Asked about its own behaviour, ELI gets what the pipeline recorded doing; routing and
+        # escalation never reach the model, so without this any account is invented.
+        try:
+            from eli.cognition import self_claims as _self_claims
+            if _self_claims.asks_about_own_behaviour(user_input):
+                _rows = _self_claims.turn_record_lines(
+                    getattr(self.engine, "memory", None), user_id=str(getattr(self.engine, "user_id", "") or ""))
+                if _rows:
+                    wm.assembled_context = (_self_claims.record_block(_rows) + "\n\n"
+                                            + str(wm.assembled_context or "").strip()).strip()
+                    # What the reply is checked against: the pipeline's rows and the period log,
+                    # never ELI's own earlier prose.
+                    from eli.kernel.request_context import note_turn_fact as _note_record
+                    _note_record("_record_lines", _rows)
+                    _note_record("_record", "\n".join(_rows) + "\n" + str(_period or ""))
+        except Exception as _tr_err:
+            log.debug(f"[ORCHESTRATOR] turn record skipped: {_tr_err}")
         try:
             setattr(
                 self.engine,

@@ -37,7 +37,8 @@ def test_lp_album_request_detected():
 
 
 def test_phatic_skips_orchestrator_again():
-    src = inspect.getsource(CognitiveEngine.process)
+    # process() is the per-turn wrapper; the pipeline this checks is _process_impl.
+    src = inspect.getsource(CognitiveEngine._process_impl)
     assert '_qclass != "PHATIC"' in src
     assert "_is_brief_phatic_prompt(user_input)" in src
 

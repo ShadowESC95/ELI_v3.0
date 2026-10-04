@@ -628,8 +628,56 @@ class _RepeatDetected(Exception):
     """
 
 
+_LEAK_MIN_SENTENCE_CHARS = 30
+
+
+def _instruction_sentences(*texts) -> set:
+    """Normalised sentences of the instruction prose given to the model, evidence lines
+    (bullets, tagged and numbered rows) left out."""
+    out = set()
+    for text in texts:
+        for line in str(text or "").splitlines():
+            line = line.strip()
+            if not line or line[0] in "-•*[" or re.match(r"\d{1,3}\.", line):
+                continue
+            for sentence in _SENTENCE_SPLIT_RE.split(line):
+                norm = _clarifier_norm(sentence)
+                if len(norm) >= _LEAK_MIN_SENTENCE_CHARS:
+                    out.add(norm)
+    return out
+
+
+def _strip_prompt_leak(opening: str, leak: set):
+    """(`opening` without a leading run that recites the instructions, still_inside_it).
+
+    Live on a 35B model: a quick reply began "Friday 02 October 2026, 18:34 IST (evening).
+    Night is 21:00-05:00, morning 05:00-12:00, ... never claim you don't track dates", the
+    clock paragraph of its own prompt, before the answer. Everything up to the last recited
+    sentence goes; regenerating would cost a second full generation."""
+    if not leak:
+        return opening, False
+    parts = _split_sentences_with_gaps(str(opening or ""))
+    last = -1
+    for i, (sentence, _gap) in enumerate(parts[:8]):
+        norm = _clarifier_norm(sentence)
+        if len(norm) >= _LEAK_MIN_SENTENCE_CHARS and norm in leak:
+            last = i
+        elif i > last + 2:
+            break
+    if last < 0:
+        # the stream may have stopped mid-way through the first recited sentence
+        norm = _clarifier_norm(parts[-1][0]) if parts else ""
+        inside = (len(parts) <= 2 and len(norm) >= 20 and any(l.startswith(norm) for l in leak))
+        return opening, inside
+    rest = "".join(sent + gap for sent, gap in parts[last + 1:]).lstrip()
+    tail = _clarifier_norm(parts[-1][0]) if len(parts) > last + 1 else ""
+    inside = (not rest) or (len(parts) == last + 2 and len(tail) >= 12
+                            and any(l.startswith(tail) for l in leak))
+    return rest, inside
+
+
 def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
-                                 salvage: bool = False, echo_sources=None):
+                                 salvage: bool = False, echo_sources=None, leak=None):
     """Yield `stream`, withholding the opening until it is cleared as non-repeating.
 
     Module-level and dependency-free so the guard can be driven directly by tests;
@@ -646,7 +694,7 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
     something novel arrives. A reply that is repeat all the way down still gets
     served whole — an honest duplicate beats an empty turn.
     """
-    head, released, salvaging = [], False, False
+    head, released, salvaging, leaking = [], False, False, False
     for chunk in stream:
         piece = str(chunk or "")
         if not piece:
@@ -658,6 +706,21 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
         if sum(len(h) for h in head) < _REPEAT_HEAD_CHARS:
             continue
         opening = "".join(head)
+        if leak:
+            # An opening that recites the instructions: hold on until it ends, then serve
+            # what follows.
+            _rest, _inside = _strip_prompt_leak(opening, leak)
+            if _rest != opening or _inside:
+                leaking = True
+                if _inside or len(_clarifier_norm(_rest)) < _REPEAT_MIN_SENTENCE_CHARS:
+                    continue
+                released = True
+                yield _rest
+                continue
+            if leaking:
+                released = True
+                yield opening
+                continue
         # The user's own sentence coming back in ELI's voice is caught here too:
         # same buffered-head mechanism, same retry, different corpus.
         if not salvaging and echo_sources and _opens_by_echoing(opening, echo_sources):
@@ -689,6 +752,10 @@ def _stream_holding_back_repeats(stream, recent_replies, *, allow_retry: bool,
     if not released:
         # The stream ended inside the buffer: a short reply, still worth checking.
         opening = "".join(head)
+        if opening and leak:
+            _rest, _ = _strip_prompt_leak(opening, leak)
+            if len(_clarifier_norm(_rest)) >= _REPEAT_MIN_SENTENCE_CHARS:
+                opening = _rest
         if opening:
             # An echoed opening is usually SHORT — "I'm still on loop, season 3
             # now." never fills the 200-char buffer — so this path, not the one

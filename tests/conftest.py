@@ -34,6 +34,17 @@ os.environ["ELI_DB_DIR"]    = str(ROOT / "artifacts" / "_pytest" / "db")
 # change ANY of ELI's stores — the DB must stay a clean slate for a fresh download.
 os.environ["ELI_AGENT_DB"]  = str(ROOT / "artifacts" / "_pytest" / "db" / "agent.sqlite3")
 
+
+# Both resolve through db_dir() -> data_dir(), which ELI_DB_DIR doesn't touch, so every
+# test turn was appending to the REAL audit chain (fixture rows from a dev run sat in it).
+# The HMAC key likewise came from (or was created in) the real config dir.
+os.environ["ELI_ORCHESTRATOR_AUDIT_DB"] = str(ROOT / "artifacts" / "_pytest" / "db" / "orchestrator_audit.sqlite3")
+os.environ["ELI_AUDIT_HMAC_KEY"] = "eli-pytest-audit-key-not-a-real-secret"
+# The document index stores whatever a turn reads and embeds it on a worker thread. Off by
+# default here; the tests for it build their own on a tmp path.
+os.environ["ELI_DOCUMENT_INDEX_DB"] = str(ROOT / "artifacts" / "_pytest" / "db" / "documents.sqlite3")
+os.environ.setdefault("ELI_DOCUMENT_INDEX", "0")
+
 # Hard isolation guard: fail LOUDLY at collection if any canonical store still resolves
 # to the real artifacts/db tree. This makes "no test can change memory" an enforced
 # invariant, not just configuration that a future refactor could silently break.

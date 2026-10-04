@@ -787,7 +787,12 @@ class GenerationMixin:
     f"[COGNITIVE] Stream: clamping {_req_s}→{_safe_max} (est={_pt}, n_ctx={_n_ctx})")
                 # Hard guard: if combined prompt still exceeds n_ctx, truncate
                 # before calling generate() — an oversized prompt causes segfault.
-                _max_stream_chars = max(400, (_n_ctx - _safe_max - 64) * 3)
+                # Keep room for the answer too: a prompt just under the limit left 253 tokens
+                # to reply in, and older history is what goes first.
+                _answer_floor = max(1024, _n_ctx // 8)
+                if _req_s > 0:
+                    _answer_floor = min(_answer_floor, _req_s)
+                _max_stream_chars = max(400, (_n_ctx - max(_safe_max, _answer_floor) - 64) * 3)
                 if len(enhanced_system) + len(prompt) > _max_stream_chars:
                     # Keep persona HEAD + evidence TAIL (same as non-stream path).
                     # Tail-only truncation was dropping voice/constraints and leaving

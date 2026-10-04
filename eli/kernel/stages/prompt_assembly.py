@@ -33,6 +33,16 @@ from eli.kernel.stages._common import _phatic_rapport_style_rule
 log = get_logger(__name__)
 
 
+def _date_facts_line(user_input: Any) -> str:
+    """Weekday and days-from-today for every date the user's own message names."""
+    try:
+        from eli.cognition.evidence_format import date_facts, latest_user_message
+        facts = date_facts(latest_user_message(str(user_input or "")))
+        return f"\n{facts}" if facts else ""
+    except Exception:
+        return ""
+
+
 class PromptAssemblyMixin:
     @staticmethod
     def _cap_text(text: str, budget_chars: int, label: str = "evidence") -> str:
@@ -218,12 +228,26 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+        # Each line of evidence and dialogue once: the memory block, the brief and the history in
+        # front of the user's message all render the same turns and memories.
+        try:
+            from eli.cognition.prompt_dedupe import dedupe_prompt_parts
+            _mc_before, _sb_before = len(memory_context or ""), len(situation_brief or "")
+            memory_context, situation_brief = dedupe_prompt_parts(
+                str(memory_context or ""), str(situation_brief or ""), others=(str(user_input or ""),))
+            _saved = _mc_before + _sb_before - len(memory_context) - len(situation_brief)
+            if _saved > 0:
+                log.debug(f"[COGNITIVE] prompt dedupe: dropped {_saved} chars of repeated lines")
+        except Exception:
+            log.debug("prompt dedupe skipped", exc_info=True)
+
         # Voice cue, expressed tone, affect directive and emotion timeline, folded into one brief by tone_adaptor.
         try:
             from eli.cognition import tone_adaptor as _ta
             _prior_action = str((getattr(self, "_last_request_meta", None) or {}).get("action") or "")
+            # The message itself, not the history in front of it: the tone was read off earlier turns.
             situation_brief = _ta.build_situation_brief(
-                user_input or "",
+                _evidence_format.latest_user_message(user_input or ""),
                 situation_brief,
                 user_id=self._get_user_id(),
                 session_id=getattr(self, "session_id", "") or "",
@@ -516,7 +540,8 @@ Answer:"""
             enhanced_system += (
                 f"\n\nCURRENT TIME: {_now} on {_date}."
                 " You always know today's weekday and date from this — never claim otherwise."
-                "\nWhen the user says 'me' or 'my', they mean themselves (the user), not you (ELI)."
+                + _date_facts_line(user_input)
+                + "\nWhen the user says 'me' or 'my', they mean themselves (the user), not you (ELI)."
                 + ("\nThe user wants depth — provide a full, detailed answer." if _compact_wants_depth
                    else "\nFor technical queries, stay focused. For casual check-ins, engage naturally in ELI\'s persona; no sterile status report.")
                 + "\nWhen reporting time, use the value above exactly."
@@ -594,7 +619,8 @@ Answer:"""
         ))
         enhanced_system += (
             f"\n\nCURRENT TIME (authoritative, do not approximate): {_now} on {_date}."
-            "\n\nRESPONSE DISCIPLINE — obey on every reply:"
+            + _date_facts_line(user_input)
+            + "\n\nRESPONSE DISCIPLINE — obey on every reply:"
             "\n- Answer what the user actually asked. For opinion, banter, callbacks, and cultural references, respond in ELI persona rather than treating the message as a support ticket."
             "\n- NEVER start your response by echoing or paraphrasing what the user just said."
             "\n- NEVER include a 'Memory System' section unless explicitly asked."

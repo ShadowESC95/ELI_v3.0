@@ -15,13 +15,18 @@ from eli.core import config
 from eli.runtime.self_improvement import get_self_improvement
 from eli.memory import get_memory
 
+import contextvars
+import inspect
 import os
 import re
 import json
 import time
 import threading
+import uuid
+import weakref
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
+from eli.kernel import request_context as _request_context
 from eli.core.confidence import confidence_label as _confidence_label
 
 
@@ -108,6 +113,8 @@ from eli.kernel.stages.guards import (  # noqa: F401
     _sentence_seen_before,
     _split_sentences_with_gaps,
     _stream_holding_back_repeats,
+    _instruction_sentences,
+    _strip_prompt_leak,
     _strip_reasoning_scaffold,
     _strip_repeated_opening,
     _user_asked_for_a_repeat,
@@ -2194,6 +2201,24 @@ def _clarifier_is_usable(generated: str, *, user_input: str, context: str) -> bo
     return True
 
 
+MAIN_REPLY_DONE_SENTINEL = "__MAIN_REPLY_DONE__"
+
+
+def _audit_result_outcome(result: Any) -> tuple:
+    """(ok, outcome) for a non-streamed turn's return value."""
+    if isinstance(result, dict):
+        ok = bool(result.get("ok", True))
+        return ok, str(result.get("error") or ("ok" if ok else "failed"))
+    text = str(result or "").strip()
+    return bool(text), ("ok" if text else "empty_reply")
+
+
+def _audit_error_outcome(exc: BaseException) -> str:
+    if isinstance(exc, GeneratorExit):
+        return "cancelled"
+    return f"error: {type(exc).__name__}: {str(exc)[:300]}"
+
+
 class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, ReasoningModesMixin, RetrievalMixin, MemoryCommitMixin):
     def __init__(
         self,
@@ -2728,6 +2753,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "final": {},
         }
         self._last_trace = trace
+        _request_context.note_turn_fact("trace", trace)
         log.debug(
             f"[COGNITIVE][TRACE] request_id={trace['request_id']} mode={trace['reasoning_mode']}")
         return trace
@@ -4288,19 +4314,25 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("[ANTI-REPEAT] recent-reply fetch failed", exc_info=True)
         _echo_sources = [prompt] + _recent_user
+        _leak = _instruction_sentences(situation_brief)
 
         if _user_asked_for_a_repeat(prompt):
             log.debug("[ANTI-REPEAT] user asked for a repeat — guard stood down")
             yield from stream_factory(situation_brief, memory_context, None)
             return
 
+        # Sentences that invent a setting ELI doesn't have, or report a change nothing made, are
+        # held back as they stream (the buffered modes get the same check in govern_output).
+        from eli.cognition.self_claims import gate_stream as _gate
+        _claims_evidence = f"{memory_context or ''}\n{situation_brief or ''}"
         try:
-            yield from _stream_holding_back_repeats(
+            yield from _gate(_stream_holding_back_repeats(
                 stream_factory(situation_brief, memory_context, None),
                 _recent_eli,
                 allow_retry=True,
                 echo_sources=_echo_sources,
-            )
+                leak=_leak,
+            ), _claims_evidence)
             return
         except _RepeatDetected:
             log.debug("[ANTI-REPEAT] opening matched a recent reply — regenerating")
@@ -4321,13 +4353,14 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             len(memory_context or ""), len(_retry_context or ""),
             (_retry_gen or {}).get("temperature", "unchanged"),
         )
-        yield from _stream_holding_back_repeats(
+        yield from _gate(_stream_holding_back_repeats(
             stream_factory(_retry_brief, _retry_context, _retry_gen),
             _recent_eli,
             allow_retry=False,
             salvage=True,
             echo_sources=_echo_sources,
-        )
+            leak=_leak,
+        ), _claims_evidence)
 
 
     def _settle_recall_outcome(self, user_input: str, source: str) -> None:
@@ -4343,6 +4376,215 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug("recall outcome not settled", exc_info=True)
 
     def process(self, user_input: str, source: str = "user", stream: bool = False,
+                reasoning_mode: Optional[str] = None, **kwargs) -> Any:
+        """Run one turn in its own contextvars.Context and write its audit row.
+
+        The turn's facts (what routed it, what ran, what retrieval found, whether it went to
+        the web) live in request_context.turn_facts_var for the length of the turn, a streamed
+        reply included: its body runs after this returns, so every chunk is resumed inside the
+        turn's Context. One row is written when the turn really ends: on return, on an
+        exception, and for a stream when it is drained, closed early or dropped unread.
+        """
+        mode = str(reasoning_mode or "quick").strip().lower() or "quick"
+        parent = _request_context.turn_facts_var.get() or {}
+        facts: Dict[str, Any] = {
+            "request_id": f"req-{uuid.uuid4().hex[:12]}",
+            "parent_request_id": str(parent.get("request_id") or ""),
+            "source": str(source or ""),
+            "t0": time.perf_counter(),
+            "user_input": user_input,
+            # What the previous turn left published, so this turn's row never borrows it.
+            "_meta_before": getattr(self, "_last_request_meta", None),
+            "_bus_before": getattr(self, "_last_bus_result", None),
+        }
+        ctx = contextvars.copy_context()
+
+        def _enter() -> Any:
+            _request_context.reasoning_mode_var.set(mode)
+            _request_context.request_id_var.set(facts["request_id"])
+            _request_context.turn_facts_var.set(facts)
+            return self._process_impl(
+                user_input, source=source, stream=stream,
+                reasoning_mode=reasoning_mode, **kwargs)
+
+        try:
+            result = ctx.run(_enter)
+        except BaseException as e:
+            self._commit_turn_audit(ctx, facts, ok=False, outcome=_audit_error_outcome(e))
+            raise
+        if inspect.isgenerator(result):
+            return self._context_bound_stream(result, ctx, facts)
+        ok, outcome = _audit_result_outcome(result)
+        self._commit_turn_audit(ctx, facts, ok=ok, outcome=outcome, result=result)
+        return result
+
+    def _context_bound_stream(self, gen: Generator, ctx: "contextvars.Context",
+                              facts: Dict[str, Any]) -> Generator:
+        # A stream dropped without ever being started never runs this body, so its row is
+        # written by a finalizer instead.
+        wrapper_state = {"started": False}
+        text: List[str] = []
+        facts["streamed"] = True
+
+        def _drained_unread() -> None:
+            if not wrapper_state["started"]:
+                self._commit_turn_audit(ctx, facts, ok=False, outcome="abandoned")
+
+        def _body() -> Generator:
+            wrapper_state["started"] = True
+            outcome = None
+            try:
+                while True:
+                    try:
+                        piece = ctx.run(next, gen)
+                    except StopIteration:
+                        joined = "".join(text).strip()
+                        outcome = (bool(joined), "ok" if joined else "empty_reply")
+                        return
+                    if isinstance(piece, str) and piece != MAIN_REPLY_DONE_SENTINEL:
+                        text.append(piece)
+                    elif isinstance(piece, dict):
+                        text.append(str(piece.get("token") or piece.get("content") or ""))
+                    yield piece
+            except GeneratorExit:
+                outcome = (False, "cancelled")
+                raise
+            except BaseException as e:
+                outcome = (False, _audit_error_outcome(e))
+                raise
+            finally:
+                try:
+                    ctx.run(gen.close)
+                except Exception:
+                    log.debug("stream close failed", exc_info=True)
+                ok, why = outcome or (False, "cancelled")
+                self._commit_turn_audit(ctx, facts, ok=ok, outcome=why)
+
+        body = _body()
+        weakref.finalize(body, _drained_unread)
+        return body
+
+    def _commit_turn_audit(self, ctx: "contextvars.Context", facts: Dict[str, Any], *,
+                           ok: bool, outcome: str, result: Any = None) -> None:
+        """Queue this turn's one audit row, built from what the turn recorded about itself."""
+        if facts.get("committed"):
+            return
+        facts["committed"] = True
+        # What this turn published while it ran, for the row's action, agents and confidence.
+        _meta_now = getattr(self, "_last_request_meta", None)
+        if isinstance(_meta_now, dict) and _meta_now is not facts.get("_meta_before"):
+            facts.setdefault("meta", dict(_meta_now))
+        _bus_now = getattr(self, "_last_bus_result", None)
+        if _bus_now is not None and _bus_now is not facts.get("_bus_before"):
+            facts.setdefault("bus_result", _bus_now)
+        try:
+            ctx.run(self._record_turn_audit_row, facts, ok, outcome, result)
+        except RuntimeError:
+            # ctx is already entered on this thread, so this is running as the turn anyway.
+            self._record_turn_audit_row(facts, ok, outcome, result)
+
+    @staticmethod
+    def _turn_action(facts: Dict[str, Any], result: Any = None) -> str:
+        """What this turn did, from what it recorded about itself."""
+        meta = facts.get("meta") if isinstance(facts.get("meta"), dict) else {}
+        trace = facts.get("trace") if isinstance(facts.get("trace"), dict) else {}
+        res = result if isinstance(result, dict) else {}
+        action = (res.get("action") or meta.get("action") or meta.get("intent")
+                  or (trace.get("intent") or {}).get("action") or trace.get("action")
+                  or facts.get("route")
+                  or ("CHAT" if facts.get("streamed") else "UNKNOWN"))
+        return str(action).upper()
+
+    def _record_turn_audit_row(self, facts: Dict[str, Any], ok: bool, outcome: str,
+                               result: Any = None) -> None:
+        """Build and queue the row. Only ever called through _commit_turn_audit.
+        Never raises: a failed audit write must not fail the user's turn."""
+        try:
+            meta = facts.get("meta") if isinstance(facts.get("meta"), dict) else {}
+            trace = facts.get("trace") if isinstance(facts.get("trace"), dict) else {}
+            bus = facts.get("bus_result")
+            res = result if isinstance(result, dict) else {}
+            action = self._turn_action(facts, result)
+            # What the pipeline did, so the row can answer "why did you do that" later: the
+            # model is never shown its own routing and otherwise invents the reason.
+            try:
+                from eli.cognition.self_claims import describe_turn
+                _did = describe_turn(facts)
+                if _did:
+                    outcome = f"{outcome or 'ok'}; {_did}"
+            except Exception:
+                log.debug("turn description skipped", exc_info=True)
+            ran = [a for a in dict.fromkeys(facts.get("executed_actions") or []) if a and a != action]
+            if ran:
+                outcome = f"{outcome or 'ok'}; also executed: {','.join(ran)}"
+            agents = (meta.get("agents_used") or trace.get("agents_used")
+                      or getattr(bus, "agents_used", None) or [])
+            # None, not 0.0, when the turn measured nothing — a 0.0 reads as
+            # "measured and found worthless".
+            confidence = None
+            for c in (meta.get("confidence"), meta.get("aggregated_confidence"),
+                      trace.get("agent_confidence"), getattr(bus, "aggregated_confidence", None),
+                      res.get("confidence")):
+                try:
+                    if c is not None:
+                        confidence = round(float(c), 4)
+                        break
+                except (TypeError, ValueError):
+                    continue
+
+            # record_turn_async queues onto ONE writer thread, so rows land in
+            # the order turns end, not whichever write wins the SQLite lock.
+            from eli.runtime import orchestrator_audit_ledger as _oal
+            _oal.record_turn_async(
+                request_id=str(facts.get("request_id") or ""),
+                parent_request_id=str(facts.get("parent_request_id") or ""),
+                session_id=str(getattr(self, "session_id", "") or ""),
+                user_id=str(getattr(self, "user_id", "") or ""),
+                source=str(facts.get("source") or ""),
+                action=action,
+                reasoning_mode=str(_request_context.reasoning_mode_var.get() or ""),
+                agents_used=",".join(str(a) for a in agents),
+                confidence=confidence,
+                elapsed_ms=round((time.perf_counter() - float(facts.get("t0") or 0.0)) * 1000.0, 1),
+                ok=bool(ok),
+                outcome=str(outcome or "")[:500],
+                timestamp=time.time(),
+            )
+        except Exception:
+            log.debug("audit row write failed", exc_info=True)
+
+    # State that outlives the turn that set it (the period a follow-up question keeps), kept in
+    # request_context's session store under this engine instance and session.
+
+    def _sticky_key(self) -> Optional[str]:
+        sid = self.session_id
+        if not sid:
+            return None
+        # Per instance as well as per session: engines built in the same second
+        # share an int(time()) session id, and must not share state any more
+        # than they did when these were plain attributes.
+        ns = self.__dict__.get("_sticky_ns") or self.__dict__.setdefault(
+            "_sticky_ns", uuid.uuid4().hex[:12])
+        return f"{ns}:{sid}"
+
+    def _sticky_get(self, field: str, default: Any = None) -> Any:
+        return _request_context.get_session_sticky(self._sticky_key(), field, default)
+
+    def _sticky_set(self, field: str, value: Any) -> None:
+        _request_context.set_session_sticky(self._sticky_key(), field, value)
+
+    @property
+    def document_rag(self):
+        """The document index the orchestrator's document channel searches; None when switched off."""
+        from eli.memory.document_index import get_document_index
+        index = get_document_index()
+        if index is not None:
+            # ELI's own notes and the documents it has written, and anything edited since it last ran.
+            from eli.core.paths import documents_dir, notes_dir
+            index.refresh_once((documents_dir(), notes_dir()))
+        return index
+
+    def _process_impl(self, user_input: str, source: str = "user", stream: bool = False,
 
                 reasoning_mode: Optional[str] = None, **kwargs) -> Any:
         # Record the live reasoning mode so REASONING_MODE_STATUS isn't a stale snapshot (last_trace.json
@@ -5244,6 +5486,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         _pipe_conf_s1 = float(intent.get("confidence") or 0.0)
         _pipe_matched_s1 = str((intent.get("meta") or {}).get("matched_by") or "unknown")[:50]
         log.debug(f"[PIPELINE] Stage 1: Intent → {_pipe_action_s1} (conf={_pipe_conf_s1:.2f} via={_pipe_matched_s1})")
+        _request_context.note_turn_fact("via", _pipe_matched_s1)
 
         trace = self._next_trace(user_input, intent, reasoning_mode)
 
@@ -5824,6 +6067,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                   f"(grounding={_gconf:.2f} < target, via=llm_intent.resolver)")
                         _meta = dict(intent.get("meta") or {})
                         _meta["downgraded_from"] = action
+                        _request_context.note_turn_fact("downgraded_from", action)
                         intent["meta"] = _meta
                         intent["action"] = "CHAT"
                         intent["args"] = {"message": user_input}

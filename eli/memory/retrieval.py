@@ -26,6 +26,8 @@ class TurnRetrievalResult:
     cache_key: str = ""
     window_stats: Dict[str, Any] = field(default_factory=dict)
     searched: Dict[str, Any] = field(default_factory=dict)
+    # With a time window: every action ELI ran in it, from the evidence ledger.
+    actions: List[Dict[str, Any]] = field(default_factory=list)
 
 # Per-process turn cache: key → (monotonic_ts, result)
 _TURN_CACHE: Dict[str, tuple[float, TurnRetrievalResult]] = {}
@@ -54,6 +56,30 @@ def invalidate_turn_cache(session_id: str = "") -> None:
 
 
 _THIN_EVIDENCE = 3
+# A period question reads every turn and action in the period; the period log picks what fits
+# when it is rendered. 72 user turns covered half of one busy day.
+_WINDOW_ROWS = 400
+
+
+def _is_owner(user_id: str) -> bool:
+    """Executions recorded without a user (everything before they carried one, and the desktop
+    app's own) are the owner's; another API user must not be shown them."""
+    if not user_id:
+        return True
+    try:
+        from eli.kernel.state import get_active_user_id
+        return str(user_id) == str(get_active_user_id())
+    except Exception:
+        return True
+
+
+def _tunable(key: str, fallback: int) -> int:
+    """Tier-scaled tunable (these were a fixed 4)."""
+    try:
+        from eli.core.cognition_tunables import snapshot as _cog_snapshot
+        return max(0, int(_cog_snapshot().get(key, fallback)))
+    except Exception:
+        return fallback
 _EXACT_TOKEN = re.compile(r"[A-Za-z]{2,}-\d{2,}[A-Za-z0-9-]*|\b\d{4,}\b|\"([^\"]{3,60})\"")
 
 
@@ -64,7 +90,8 @@ def _exact_token_hits(mem: Any, query: str, have: List[Dict[str, Any]], verified
     for m in list(_EXACT_TOKEN.finditer(query or ""))[:3]:
         token = m.group(1) or m.group(0)
         try:
-            for h in mem.recall_memory(token, limit=4, verified_only=verified_only) or []:
+            for h in mem.recall_memory(token, limit=_tunable("cog.mem_exact_token_recall", 6),
+                                       verified_only=verified_only) or []:
                 if h.get("id") not in seen and token.lower() in str(h.get("text") or h.get("content") or "").lower():
                     seen.add(h.get("id"))
                     out.append(h)
@@ -78,7 +105,8 @@ def _archive_hits(mem: Any, query: str) -> List[Dict[str, Any]]:
     try:
         return [{"id": f"archive:{r['id']}", "text": r["text"], "content": r["text"], "source": "archive", "kind": "archived",
                  "score": 0.5, "importance": 0.4, "timestamp": r.get("archived_at"), "origin": r.get("origin"),
-                 "verification_status": "verified"} for r in mem.search_archive(query, limit=4)]
+                 "verification_status": "verified"}
+                for r in mem.search_archive(query, limit=_tunable("cog.mem_archive_recall", 8))]
     except Exception:
         log.debug("archive search failed", exc_info=True)
         return []
@@ -147,7 +175,8 @@ def retrieve_for_turn(
         if window:
             # what the user said inside the period asked about, oldest first (all of the owner's turns)
             conv_hits = list(mem.get_recent_conversation(
-                limit=max(int(conv_limit) * 3, 24), since=window[0], until=window[1], role="user") or [])
+                limit=max(int(conv_limit) * 3, _WINDOW_ROWS), since=window[0], until=window[1],
+                role="user") or [])
         else:
             conv_hits = list(mem.search_conversations(q, user_id=user_id, limit=int(conv_limit)) or [])
     except Exception:
@@ -190,6 +219,7 @@ def retrieve_for_turn(
             log.debug("suppressed exception", exc_info=True)
 
     window_stats: Dict[str, Any] = {}
+    actions: List[Dict[str, Any]] = []
     if window:
         from eli.cognition.evidence_format import row_time
         candidates = len(raw_hits)
@@ -202,13 +232,39 @@ def retrieve_for_turn(
             added = len(timed)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+        _before_window = list(raw_hits)
         raw_hits = [h for h in raw_hits if window[0] <= (row_time(h) or 0) < window[1]]
+        outside = 0
+        if not raw_hits and _before_window:
+            # Nothing on the days asked about. Keep the closest matches, dated and marked,
+            # so the answer can be "nothing then; the nearest is Fri 02 Oct" instead of an
+            # empty context the model fills in (live: it invented the dates).
+            raw_hits = [dict(h, outside_window=True) for h in _before_window[:6]]
+            outside = len(raw_hits)
+        if window and not conv_hits:
+            try:
+                conv_hits = [dict(t, outside_window=True) for t in
+                             (mem.search_conversations(q, user_id=user_id, limit=int(conv_limit)) or [])]
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        # What ELI did in the period, as the executor reported it. ELI's own prose replies stay
+        # out of recall (a made-up reply would become history); these are measured results.
+        try:
+            from eli.runtime.evidence_ledger import actions_between
+            actions = actions_between(window[0], window[1], limit=_WINDOW_ROWS, user_id=user_id,
+                                      include_unattributed=_is_owner(user_id),
+                                      db_path=getattr(mem, "db_path", None))
+        except Exception:
+            log.debug("action log unavailable", exc_info=True)
         window_stats = {"since": window[0], "until": window[1], "candidates": candidates,
-                        "added_by_time": added, "in_window": len(raw_hits), "turns": len(conv_hits)}
-        log.debug("[RETRIEVAL] time window %s..%s: %d in window (%d of %d semantic candidates + %d found by time), %d turns",
+                        "added_by_time": added, "in_window": len(raw_hits) - outside,
+                        "outside_window": outside, "turns": len(conv_hits),
+                        "actions": len(actions)}
+        log.debug("[RETRIEVAL] time window %s..%s: %d in window (%d of %d semantic candidates + %d found by time), "
+                  "%d turns, %d actions",
                   time.strftime("%Y-%m-%d %H:%M", time.localtime(window[0])),
                   time.strftime("%Y-%m-%d %H:%M", time.localtime(window[1])),
-                  len(raw_hits), len(raw_hits) - added, candidates, added, len(conv_hits))
+                  len(raw_hits), len(raw_hits) - added, candidates, added, len(conv_hits), len(actions))
 
     claim_hits = _claim_hits(mem, q, window)
     exact_hits = _exact_token_hits(mem, q, raw_hits, verified_only)
@@ -247,6 +303,7 @@ def retrieve_for_turn(
         cache_key=cache_key,
         window_stats=window_stats,
         searched=searched,
+        actions=actions,
     )
     if use_cache and q:
         _TURN_CACHE[cache_key] = (time.monotonic(), result)

@@ -79,10 +79,15 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
     # phrase that resolves to a real tone, so "be comedic" fires but "that joke was comedic gold"
     # doesn't. The verb list used to include more/less/get/go, so "i am not sad eli, i am just
     # trying to get your codebas correct" set the tone to sad. "be more cheerful" still works via `be`.
-    if re.search(r"\b(be|sound|talk|speak|act|use|make it|keep it)\b", low):
+    # The tone has to follow the verb ("be more cheerful", "use a sarcastic tone"), and the verb
+    # has to be an instruction to ELI. Both words anywhere in the message was enough before:
+    # "how fast does a serious incident have to be reported" set the tone to serious.
+    for _tone_m in re.finditer(
+            r"(?:^|[.,;:!?]\s*|\b(?:please|just|you|and|then|now|eli|always|also|you to|can you|could you|will you)\s+)"
+            r"(?:be|sound|talk|speak|act|use|make it|keep it)\s+((?:[\w'-]+[ \t]*){1,5})", low):
         try:
             from eli.cognition.emotion_palette import resolve_tone as _rt
-            _tone = _rt(raw)
+            _tone = _rt(_tone_m.group(1))
             if _tone and _tone != "neutral" and not _tone_is_negated(low, _tone):
                 return _mk("SET_TONE", {"tone": _tone}, 0.9, matched_by="tone.set")
         except Exception:
