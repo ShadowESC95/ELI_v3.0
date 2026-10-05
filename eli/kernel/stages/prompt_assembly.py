@@ -27,6 +27,7 @@ from eli.kernel.stages.persona_text import (
 from eli.utils.log import get_logger
 from eli.kernel.stages._common import ELI_BUDGET_MEMORY_CHARS
 from eli.cognition import evidence_format as _evidence_format
+from eli.kernel import request_context as _request_context
 from eli.kernel.stages._common import _mounted_model_authority_line
 from eli.kernel.stages._common import _phatic_rapport_style_rule
 
@@ -36,11 +37,45 @@ log = get_logger(__name__)
 def _date_facts_line(user_input: Any) -> str:
     """Weekday and days-from-today for every date the user's own message names."""
     try:
-        from eli.cognition.evidence_format import date_facts, latest_user_message
-        facts = date_facts(latest_user_message(str(user_input or "")))
-        return f"\n{facts}" if facts else ""
+        from eli.cognition.evidence_format import date_facts, latest_user_message, time_facts
+        said = latest_user_message(str(user_input or ""))
+        coming = ""
+        try:
+            from eli.kernel import request_context as _rc
+            from eli.runtime.agenda import prompt_line
+            coming = prompt_line(str(_rc.user_id_var.get() or ""))
+        except Exception:
+            coming = ""
+        return "".join(f"\n{facts}" for facts in (date_facts(said), time_facts(said), coming) if facts)
     except Exception:
         return ""
+
+
+def _follow_up_line() -> str:
+    """What this message is a reply to, said outright. A small model shown "yes please" under
+    its own offer went on describing what it could do; shown "B" under its own either/or, it
+    asked again."""
+    try:
+        agreed = _request_context.agreed_task_var.get()
+        facts = _request_context.turn_facts_var.get() or {}
+        if isinstance(agreed, dict) and agreed.get("message") == facts.get("user_input"):
+            said = str(agreed.get("said") or "yes").strip()[:80]
+            line = (f'\nAGREED: You offered this in your last message and the user answered "{said}". Their message '
+                    "below is that task, in their words. Do it now, completely, in this reply. Do not ask whether "
+                    "to do it, do not offer it again, and do not describe what you are about to do. If part of it "
+                    "needs something you cannot do from here, say which part in one line and do the rest.")
+            done = str(agreed.get("done") or "").strip()
+            if done:
+                line += ("\nALREADY DONE THIS TURN (the user has been shown this; do not repeat it or claim "
+                         f"anything beyond it): {done[:600]}")
+            return line
+        asked = str(facts.get("answers_question") or "").strip()
+        if asked:
+            return (f'\nYOUR LAST MESSAGE ENDED BY ASKING THE USER: "{asked[:300]}" Their message below is the '
+                    "answer. Act on that answer in this reply. Do not ask the same question again.")
+    except Exception:
+        log.debug("follow-up line skipped", exc_info=True)
+    return ""
 
 
 class PromptAssemblyMixin:
@@ -541,6 +576,7 @@ Answer:"""
                 f"\n\nCURRENT TIME: {_now} on {_date}."
                 " You always know today's weekday and date from this — never claim otherwise."
                 + _date_facts_line(user_input)
+                + _follow_up_line()
                 + "\nWhen the user says 'me' or 'my', they mean themselves (the user), not you (ELI)."
                 + ("\nThe user wants depth — provide a full, detailed answer." if _compact_wants_depth
                    else "\nFor technical queries, stay focused. For casual check-ins, engage naturally in ELI\'s persona; no sterile status report.")
@@ -620,6 +656,7 @@ Answer:"""
         enhanced_system += (
             f"\n\nCURRENT TIME (authoritative, do not approximate): {_now} on {_date}."
             + _date_facts_line(user_input)
+            + _follow_up_line()
             + "\n\nRESPONSE DISCIPLINE — obey on every reply:"
             "\n- Answer what the user actually asked. For opinion, banter, callbacks, and cultural references, respond in ELI persona rather than treating the message as a support ticket."
             "\n- NEVER start your response by echoing or paraphrasing what the user just said."
@@ -973,7 +1010,7 @@ Answer:"""
             _recent_turns = []
         if not _recent_turns:
             try:
-                _recent_turns = list(
+                _recent_turns = _evidence_format.this_conversation(
                     self.memory.get_recent_conversation(14, user_id=getattr(self, "user_id", None)) or []
                 )
             except Exception:

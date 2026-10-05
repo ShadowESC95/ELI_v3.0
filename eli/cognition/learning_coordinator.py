@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from eli.kernel import request_context as _request_context
 from eli.kernel.pipeline_trace import log_pipeline_stage
 from eli.utils.log import get_logger
 
@@ -72,6 +73,8 @@ def finalize_turn(
         log.debug(f"[LEARNING] learn_from_result failed: {exc}")
 
     # 4. Session digest is triggered inside _learn_from_result (every 20 turns)
+    # process() completes whatever a turn skipped; this turn did Stage 12 itself.
+    _request_context.note_turn_fact("finalized", True)
 
     log_pipeline_stage(
         12,

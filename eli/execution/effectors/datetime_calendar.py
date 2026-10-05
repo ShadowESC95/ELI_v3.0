@@ -1,15 +1,12 @@
-"""Date / time / calendar effector — deterministic date + time-of-day + calendar stubs.
+"""Date / time / calendar effector.
 
-Registry handlers for DATE / GET_DATE and TIME / GET_TIME (real) and LIST_EVENTS /
-ADD_EVENT (stubs until a calendar provider is wired).
+Registry handlers for DATE / GET_DATE, TIME / GET_TIME, and LIST_EVENTS / ADD_EVENT, which
+answer from ELI's own calendar (eli.runtime.agenda).
 """
 from __future__ import annotations
 
 from eli.core.worldclock import describe
 from eli.execution.effectors.registry import register as _register
-
-_CAL_MSG = ("Calendar integration is not configured. Use your calendar app directly or "
-            "wire a provider first.")
 
 
 def _h_date(a, args):
@@ -19,7 +16,11 @@ def _h_date(a, args):
 
 
 def _h_calendar_stub(a, args):
-    return {"ok": True, "action": a, "content": _CAL_MSG, "response": _CAL_MSG}
+    """The built-in executor branch answers these from eli.runtime.agenda; so does this."""
+    from eli.runtime import agenda
+    if str(a).upper() == "LIST_EVENTS":
+        return agenda.do_list_events(args or {})
+    return agenda.do_add_event(args or {})
 
 
 def _h_time(a, args):

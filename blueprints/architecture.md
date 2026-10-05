@@ -12,7 +12,7 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in
 > `ELI_USER_MANUAL.md`). No cloud on the inference path, no hardcoded model.
 > **232,414 lines across 613 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
-> 237 capabilities in `capability_manifest.json`, 192 of them routable and 214 in the
+> 239 capabilities in `capability_manifest.json`, 194 of them routable and 216 in the
 > executor's supported list.
 
 ---
@@ -247,12 +247,16 @@ The known weak seam is internal state leaking into spoken output on the plain CH
 
 ## 10. Execution layer (`eli/execution/executor_enhanced.py`)
 
-- `execute(action, args) -> dict`. The executor's supported list holds **215 actions**; the
-  manifest declares **237 capabilities**, of which **192 are routable** and 215 are in the
+- `execute(action, args) -> dict`. The executor's supported list holds **216 actions**; the
+  manifest declares **239 capabilities**, of which **194 are routable** and 216 are in the
   supported list.
 - **Fast path** (`engine.py`): deterministic OS, media, status and job actions (`VOLUME`,
   `MEDIA_CONTROL`, `NEXT_MEDIA`, `OPEN_APP`, `DATE`, `SHELL_EXEC`, `ANALYZE_IMAGE`,
   `CHECK_JOB`, `BACKGROUND_JOBS`, ...) return the executor result verbatim.
+- **Calendar and reminders** (`runtime/agenda.py`): ELI's own, stored locally. `ADD_EVENT`
+  (also moves an event: "i meant 8pm"), `LIST_EVENTS`, `REMOVE_EVENT`, and `SET_ALARM` for
+  "remind me ...". A notifier thread delivers what is due; the next 36 hours go into every
+  prompt as facts, next to the clock times worked out from the user's message.
 - Action families: media and OS control, files and documents (`SUMMARIZE_FILE`,
   `ANALYZE_PDF[_FOLDER]` including per-file mode and saving into memory, `CREATE_DOCUMENT`),
   web (`WEB_SEARCH`), news, weather, memory (`MEMORY_STORE`, `MEMORY_RECALL`), code

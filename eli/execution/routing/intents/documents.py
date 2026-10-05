@@ -77,12 +77,7 @@ def route_documents(text: str, raw: str, low: str, text_l: str):
             return _mk("GET_WEATHER", {"location": location, "_raw_user_text": raw}, 0.95, matched_by="info.weather", entities={
                        "location": location} if location else None)
 
-    if any(w in low for w in ["calendar", "calender",
-           "calander", "event", "appointment", "meeting"]):
-        if any(w in low for w in ["show", "list",
-               "my", "what", "open", "display"]):
-            return _mk("LIST_EVENTS", {}, 0.95, matched_by="calendar.list")
-        if any(w in low for w in ["add", "create", "schedule"]):
-            return _mk("ADD_EVENT", {"text": raw}, 0.95,
-                       matched_by="calendar.add", entities={"text": raw})
+    # Calendar and reminder requests are routed by router_enhanced._eli_agenda_prepass. The rule
+    # that stood here matched substrings ("my", "what", "schedule" inside "scheduled") in any
+    # sentence that mentioned a meeting or an event.
     return None

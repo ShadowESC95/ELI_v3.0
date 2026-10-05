@@ -68,8 +68,8 @@ another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server
   calculation is shared by the loader and the startup dialog; the fit priority
   (balanced, max GPU, max context) is a setting.
 - **Routing**: `execution/router_enhanced.py` is regex-first with an LLM-intent fallback
-  and an explicit priority pipeline, resolving to one of **237 manifest capabilities**
-  (192 routable, 215 in the executor's supported list, 221 in either). The full reference
+  and an explicit priority pipeline, resolving to one of **239 manifest capabilities**
+  (194 routable, 216 in the executor's supported list, 223 in either). The full reference
   with activation phrases is `capabilities_and_actions.md`.
 - **Orchestration**: `kernel/engine.py` runs the gradient orchestrator for all CHAT modes
   (Quick is light, Expert is deep); `dispatch_specialists()` composes the 15-agent

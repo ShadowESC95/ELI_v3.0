@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict
 
 from eli.cognition.output_governor import govern_output
+from eli.kernel import request_context as _request_context
 from eli.kernel.stages._common import _HAS_GOVERNANCE, should_store_as_memory, _is_autonomous_source  # noqa: F401
 from eli.utils.log import get_logger
 
@@ -20,6 +21,9 @@ class MemoryCommitMixin:
     """Turn-commit stage: store memory / turns, learn from the executed result."""
 
     def _maybe_store_memory(self, text: str, role: str = "user") -> None:
+        if self._in_nested_turn():
+            return
+        _request_context.note_turn_fact(f"memory_{role}", True)
         if role == "user":
             try:
                 from eli.planning.goal_store import capture_task_events
@@ -219,17 +223,29 @@ class MemoryCommitMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+    @staticmethod
+    def _in_nested_turn() -> bool:
+        """A turn run inside another (multi-question split, followthrough re-run).
+        Its parent stores the conversation: the user's real message once, and the
+        reply they actually saw. Children storing their own made a sub-question,
+        or ELI's own "fetch the latest news" clause, look like something the user
+        typed."""
+        facts = _request_context.turn_facts_var.get()
+        return bool(facts and facts.get("parent_request_id"))
+
     def _store_user_turn(self, text: str) -> None:
-        if not text:
+        if not text or self._in_nested_turn():
             return
         try:
             self.memory.add_conversation_turn("user", text, self.session_id, self.user_id)
+            _request_context.note_turn_fact("user_stored", True)
         except Exception as e:
             log.debug(f"[COGNITIVE] User turn store failed: {e}")
 
     def _store_assistant_turn(self, text: str) -> None:
-        if not text:
+        if not text or self._in_nested_turn():
             return
+        _shown = str(text)      # what the user saw; the stored copy below has closers tidied away
         # Govern here so every storage path (canonical + fastpath bypasses) is covered.
         try:
             text = govern_output(str(text), is_grounded=False)
@@ -255,19 +271,25 @@ class MemoryCommitMixin:
         # "yes" re-routes and runs it. Lives at the one store chokepoint every reply path uses. It was
         # gated to WEB_SEARCH only, so conversational offers were never captured and the "yes" was
         # swallowed as chat.
+        # Everything the reply leaves open is kept (eli.runtime.pending_proposal.read_reply): the
+        # steps it offered, numbered, so "yes" or "do 1-3" carries them out whether a step is an
+        # action or something ELI writes, and the question it ended on, so a short reply is read
+        # as its answer. An action that asked for confirmation itself (forgetting memories) or
+        # for a missing detail keeps its own.
         try:
-            from eli.runtime.pending_proposal import (
-                extract_proposal, set_pending_proposal, clear_pending_proposal,
-            )
-            _prop = extract_proposal(text)
-            if _prop:
-                set_pending_proposal(_prop)
-            else:
-                clear_pending_proposal()
+            from eli.runtime.pending_proposal import read_reply, set_pending_proposal, clear_pending_proposal
+            _facts = _request_context.turn_facts_var.get() or {}
+            if not _facts.get("proposal_set_by_action"):
+                _open = read_reply(_shown, offers_only=bool(_facts.get("executed_actions")))
+                if _open["items"] or _open["question"]:
+                    set_pending_proposal("", items=_open["items"], question=_open["question"], from_reply=True)
+                else:
+                    clear_pending_proposal()
         except Exception as _prop_err:
             log.debug(f"[COGNITIVE] offer-capture skipped: {_prop_err}")
         try:
             self.memory.add_conversation_turn("assistant", text, self.session_id, self.user_id)
+            _request_context.note_turn_fact("assistant_stored", True)
         except Exception as e:
             log.debug(f"[COGNITIVE] Assistant turn store failed: {e}")
 

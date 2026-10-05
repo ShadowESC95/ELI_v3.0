@@ -64,10 +64,14 @@ def test_date_actions_deterministic():
         assert r["ok"] is True and r["content"]
 
 
-def test_calendar_stub_actions():
-    for act in ("LIST_EVENTS", "ADD_EVENT"):
-        r = _contract(get(act)(act, {}), act)
-        assert r["ok"] is True
+def test_calendar_actions_answer_from_the_real_calendar(tmp_path, monkeypatch):
+    """These were stubs that said "not configured" and called it a success."""
+    monkeypatch.setenv("ELI_AGENDA_DB", str(tmp_path / "agenda.sqlite3"))
+    monkeypatch.setenv("ELI_CALENDAR_FILE", str(tmp_path / "calendar.ics"))
+    listed = _contract(get("LIST_EVENTS")("LIST_EVENTS", {}), "LIST_EVENTS")
+    assert listed["ok"] is True and "not configured" not in listed["content"]
+    asked = _contract(get("ADD_EVENT")("ADD_EVENT", {}), "ADD_EVENT")
+    assert asked["ok"] is False and asked["content"].startswith("I can add that. When is it?")
 
 
 def test_ocr_image_missing_path_refuses():

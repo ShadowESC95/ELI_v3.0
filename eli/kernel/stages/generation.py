@@ -52,6 +52,8 @@ from eli.kernel.stages.fast_actions import (
     _phase45_action_name,
     _phase45_force_direct_result,
 )
+from eli.cognition.evidence_format import this_conversation as _this_conversation
+from eli.kernel import request_context as _request_context
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -155,6 +157,50 @@ def _eli_is_rapport_prompt(text: str) -> bool:
     ]
 
     return any(re.search(pat, q) for pat in rapport_patterns)
+
+# What ELI may do because its own reply said it would: look something up. Anything that changes
+# the calendar, the screen, files or settings waits for the user (see pending_proposal).
+_FOLLOWTHROUGH_READS = frozenset((
+    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT", "WEB_SEARCH", "GET_WEATHER", "LIST_EVENTS", "NOW_PLAYING",
+    "SEARCH_NOTES", "LIST_NOTES", "MEMORY_RECALL", "CHECK_JOB", "BACKGROUND_JOBS", "SYSTEM_STATS", "CPU_USAGE",
+    "RAM_USAGE", "GPU_STATUS", "LIST_DIR", "READ_FILE",
+    # status reports: surfaced only when the reply promised to report (handled where they return)
+    "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY", "EXPLAIN_MEMORY_RUNTIME",
+    "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS", "META_DIAGNOSTIC", "SELF_ANALYZE", "RUNTIME_AUDIT",
+    "REASONING_MODE_STATUS", "EXPLAIN_ALL_REASONING_MODES", "CAPABILITY", "CAPABILITY_STATUS", "HABIT_STATUS",
+    "ORCHESTRATION_STATUS", "EXAMINE_CODE", "FILE_AUDIT",
+))
+_FOLLOWTHROUGH_REPORTS = frozenset((
+    "MEMORY_STATUS", "PERSONAL_MEMORY_SUMMARY", "USER_IDENTITY_SUMMARY", "EXPLAIN_MEMORY_RUNTIME",
+    "EXPLAIN_COGNITION_RUNTIME", "AWARENESS_STATUS", "META_DIAGNOSTIC", "SELF_ANALYZE", "RUNTIME_AUDIT",
+    "REASONING_MODE_STATUS", "EXPLAIN_ALL_REASONING_MODES", "CAPABILITY", "CAPABILITY_STATUS", "HABIT_STATUS",
+    "ORCHESTRATION_STATUS", "EXAMINE_CODE", "FILE_AUDIT",
+))
+_FT_PROMISED_REPORT = re.compile(
+    r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
+    r"(?:flag|report|tell you|let you know|surface|call out|point out|highlight|come back to you)\b")
+_FT_WORD = re.compile(r"[a-z][a-z0-9']{3,}")
+_FT_COMMON = frozenset("""that this with from have what when where which will would could should there their about your
+you're please just some more very check let's lets going want need like know think make sure okay yeah""".split())
+
+
+def _followthrough_may_run(action: str, user_input: Any, clause: Any) -> bool:
+    """Whether a promise in ELI's reply is carried out without asking."""
+    act = str(action or "").upper()
+    if act in ("", "CHAT", "UNKNOWN", "NOOP"):
+        return False
+    if act in _FOLLOWTHROUGH_READS:
+        return True
+    try:
+        from eli.cognition.llm_intent import _EXPLICIT_ONLY_ACTIONS
+        if act in _EXPLICIT_ONLY_ACTIONS:
+            return False
+    except Exception:
+        return False
+    asked = set(_FT_WORD.findall(str(user_input or "").lower())) - _FT_COMMON
+    said = set(_FT_WORD.findall(str(clause or "").lower())) - _FT_COMMON
+    return bool(asked & said)
+
 
 def _ft_summarise_findings(report_text: str, *, max_lines: int = 6) -> str:
     """The FAILING lines of a status/audit dump, or "" when everything passed.
@@ -719,8 +765,8 @@ class GenerationMixin:
                 if not _is_phatic_stream:
                     try:
                         from eli.runtime.session_continuity import session_has_prior_turns
-                        _recent = self.memory.get_recent_conversation(
-                            limit=14, user_id=getattr(self, "user_id", None)) or []
+                        _recent = _this_conversation(self.memory.get_recent_conversation(
+                            limit=14, user_id=getattr(self, "user_id", None)) or [])
                         _inject_session = session_has_prior_turns(_recent, _orig_msg)
                     except Exception:
                         _inject_session = False
@@ -1703,6 +1749,39 @@ class GenerationMixin:
         )
         return
 
+    def _store_followthrough_reply(self, main_reply: str, extra: str) -> None:
+        """The re-run is a nested turn and stores nothing itself, so its output
+        is stored here, as ELI's. The main reply goes first if nothing stored it
+        yet (orchestrator streams don't), or the backstop would see a stored
+        reply and skip it."""
+        facts = _request_context.turn_facts_var.get() or {}
+        self._ensure_user_turn_stored(facts)
+        if main_reply and not facts.get("assistant_stored"):
+            self._store_assistant_turn(main_reply)
+        self._store_assistant_turn(extra)
+
+    def _agenda_offer(self, user_input: str, reply: str) -> str:
+        """The sentence offering to add an event the user just mentioned, with the offer stored
+        so a plain "yes" adds it. "" when there is nothing to offer."""
+        if os.environ.get("ELI_AGENDA_OFFER", "1").strip().lower() in ("0", "false", "off", "no"):
+            return ""
+        try:
+            from eli.runtime import agenda as _agenda
+            from eli.runtime.pending_proposal import actionable_items, set_pending_proposal
+            found = _agenda.mentioned_event([str(user_input or "")], user_id=str(self.user_id or ""))
+            if not found:
+                return ""
+            offered = self._sticky_get("agenda_offered") or []
+            key = f"{found['title'].lower()}@{int(found['start_ts'])}"
+            if key in offered or any(i.get("action") == "ADD_EVENT" for i in actionable_items(reply)):
+                return ""
+            self._sticky_set("agenda_offered", (offered + [key])[-20:])
+            set_pending_proposal(found["command"], summary="add the event to the calendar")
+            return found["sentence"]
+        except Exception:
+            log.debug("agenda offer skipped", exc_info=True)
+            return ""
+
     def _stream_with_followthrough(self, inner, user_input: str,
                                    reasoning_mode: Optional[str] = None) -> Generator[str, None, None]:
         """Wrap the CHAT token stream so NO action is faked (engine-level, every
@@ -1718,6 +1797,12 @@ class GenerationMixin:
                 log.debug("suppressed exception", exc_info=True)
             yield tok
         full = "".join(parts).strip()
+        # The user mentioned something with a time ("a presentation at 7.30pm") that is not on the
+        # calendar: offer to add it, in words "yes" can act on.
+        _offer = "" if getattr(self, "_in_followthrough", False) else self._agenda_offer(user_input, full)
+        if _offer:
+            yield "\n\n" + _offer
+            self._store_followthrough_reply(full, _offer)
         if not full or getattr(self, "_in_followthrough", False):
             return
         try:
@@ -1747,6 +1832,22 @@ class GenerationMixin:
                     _query = f"fetch the latest news about {_deepen}"
             except Exception:
                 _query = commit["clause"]
+            # ELI's own sentence is not a command from the user. It is routed by the router's rules
+            # alone, and run only if that is a read ("let me check the news") or something the
+            # user's message asked for. A sentence with no action behind it costs no second generation.
+            _ft_action = ""
+            try:
+                _ft_action = str((route_intent(_query) or {}).get("action") or "").upper()
+            except Exception:
+                log.debug("[FOLLOWTHROUGH] route probe failed", exc_info=True)
+            if not _followthrough_may_run(_ft_action, user_input, _query):
+                log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' not run "
+                          f"({_ft_action or 'no action'}: not a read, and not what the user asked for)")
+                return
+            if _ft_action in _FOLLOWTHROUGH_REPORTS and not _FT_PROMISED_REPORT.search(
+                    str(commit.get("clause") or "") + " " + str(full or "")):
+                log.debug(f"[FOLLOWTHROUGH] {_ft_action} not run (a status report nobody was promised)")
+                return
             real = self.process(_query, stream=False, reasoning_mode=reasoning_mode)
             if isinstance(real, dict):
                 real_act = str(real.get("action") or "").upper()
@@ -1767,6 +1868,7 @@ class GenerationMixin:
                     and real_act not in _ft_dump_actions):
                 log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' → executed {real_act}")
                 yield "\n\n" + real_txt
+                self._store_followthrough_reply(full, real_txt)
             elif real_act in _ft_dump_actions:
                 # Suppressing a dump nobody asked for is right. Suppressing one ELI just promised to report
                 # breaks its word (it said "I'll flag any lingering hiccups", found a real defect and dropped
@@ -1782,6 +1884,7 @@ class GenerationMixin:
                 if _ft_findings:
                     log.debug(f"[FOLLOWTHROUGH] {real_act} was promised — surfacing findings only")
                     yield "\n\n" + _ft_findings
+                    self._store_followthrough_reply(full, _ft_findings)
                 else:
                     log.debug(f"[FOLLOWTHROUGH] suppressed status/dump action {real_act} (not a user-requested task)")
         except Exception as _ft_err:

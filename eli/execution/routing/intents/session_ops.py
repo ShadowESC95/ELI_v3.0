@@ -76,8 +76,13 @@ def route_session_ops(text: str, raw: str, low: str, text_l: str):
         return _mk("LISTEN_FOR_COMMAND", {"timeout": _timeout}, 0.90, matched_by="voice.listen_for_command")
 
     # ── Help ─────────────────────────────────────────────────────────────────
-    if re.search(r"^\s*(?:help|commands?|what\s+(?:can\s+i|commands?|actions?)|"
+    # "help" on its own asks what ELI can do. "help me with my essay" and "what can i do about my
+    # landlord" ask for help with something, and got the capability list.
+    if re.search(r"^\s*(?:(?:(?:i\s+)?need\s+|some\s+)?help(?:\s+me)?(?:\s+(?:please|out|here))?\s*[?.!]*$|"
+                 r"commands?\s*[?.!]*$|"
+                 r"what\s+can\s+i\s+(?:say|ask|do)(?:\s+(?:you|here|with\s+(?:you|eli)|to\s+you))?\s*[?.!]*$|"
+                 r"what\s+(?:commands?|actions?)\b|"
                  r"what\s+(?:do\s+you|are\s+your)\s+(?:command|capability|action)|"
-                 r"show\s+(?:me\s+)?(?:help|commands?|capabilities?)|list\s+command)\b", low):
+                 r"show\s+(?:me\s+)?(?:the\s+|your\s+)?(?:help|commands?|capabilities?)\b|list\s+command)", low):
         return _mk("HELP", {}, 0.90, matched_by="system.help")
     return None

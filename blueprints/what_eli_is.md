@@ -138,7 +138,7 @@ and gets out of your way.**
 wrapper:
 
 - **Request pipeline.** A deterministic **router** (**211** executor `SUPPORTED_ACTIONS`,
-  **232** manifest capabilities; **215** doc-routable) backed by a **model-grounded intent resolver** that
+  **239** manifest capabilities; **194** routable) backed by a **model-grounded intent resolver** that
   resolves anything the rules miss against that same catalogue (so near-miss
   phrasings reach real actions instead of a blind chat) → a **gradient orchestrator**
   (all CHAT modes) that composes a **15-agent bus** on a *dependency DAG*
@@ -193,7 +193,7 @@ wrapper:
 - **Extensibility.** A real plugin system (10 built-ins: weather, web, calendar,
   notes, pomodoro, document-reader, web-automation, system-stats,
   media, TTS) with install/enable/disable, plus user-created custom agents that
-  register live. `capability_sync` keeps the 237-capability manifest *measured*
+  register live. `capability_sync` keeps the 239-capability manifest *measured*
   against the actual code, not asserted.
 
 ---

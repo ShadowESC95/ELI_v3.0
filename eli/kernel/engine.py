@@ -16,6 +16,7 @@ from eli.runtime.self_improvement import get_self_improvement
 from eli.memory import get_memory
 
 import contextvars
+import copy
 import inspect
 import os
 import re
@@ -28,12 +29,14 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 from eli.kernel import request_context as _request_context
 from eli.core.confidence import confidence_label as _confidence_label
+from eli.cognition.evidence_format import this_conversation as _this_conversation
 
 
 
 from eli.kernel.stages.lifecycle import LifecycleMixin
 from eli.kernel.stages.generation import GenerationMixin
 from eli.kernel.stages.prompt_assembly import PromptAssemblyMixin
+from eli.kernel.stages.prompt_assembly import _date_facts_line, _follow_up_line  # noqa: F401
 from eli.kernel.stages.reasoning_modes import ReasoningModesMixin
 from eli.kernel.stages.retrieval import RetrievalMixin
 from eli.kernel.stages.memory_commit import MemoryCommitMixin
@@ -46,7 +49,9 @@ from eli.kernel.stages._common import (  # noqa: F401
 )
 from eli.kernel.stages.fast_actions import (  # noqa: F401
     _AUTHORITY_FAILCLOSED_ACTIONS,
+    _ALWAYS_AS_IS,
     _DIRECT_FINAL_ACTIONS,
+    _DIRECT_RESULT_ACTIONS,
     _LIVE_STATE_ACTIONS,
     _LIVE_STATE_ACTION_SUFFIXES,
     _PHASE45_DIRECT_FAST_ACTIONS,
@@ -56,12 +61,14 @@ from eli.kernel.stages.fast_actions import (  # noqa: F401
     _phase45_action_name,
     _phase45_force_direct_result,
     _phase45_result_text,
+    _shown_as_is,
 )
 from eli.kernel.stages.generation import (  # noqa: F401
     _TRACE_TEXT_CHARS,
     _eli_conversation_semantic_guard,
     _eli_is_rapport_prompt,
     _eli_rapport_prompt_instruction,
+    _followthrough_may_run,
     _ft_summarise_findings,
 )
 from eli.kernel.stages.guards import (  # noqa: F401
@@ -796,6 +803,37 @@ def _mw_rs_is_quick(mode) -> bool:
     return str(mode or "").strip().lower() in {"quick", "fast", "direct"}
 
 
+def _asks_the_user(result: Any) -> bool:
+    """The action did not fail: it needs something from the user ("When is it?", "Which one?",
+    "Where?") and its text is that question. Not a failure to log, re-plan or reword. A handler
+    says so outright, or its not-ok reply ends by asking."""
+    if not isinstance(result, dict):
+        return False
+    if result.get("asks_user") or result.get("awaiting") or result.get("choices"):
+        return True
+    if result.get("ok", True):
+        return False
+    text = str(result.get("response") or result.get("content") or "").strip()
+    return text.endswith("?") and len(text) <= 400
+
+
+def _route_once(text: Any) -> Dict[str, Any]:
+    """The router's answer for a message, asked once per turn.
+
+    Routing is not free of effects: a "yes" consumes the offer it confirms. A middleware check
+    that only wanted to know "is this a runtime-status question?" routed the message first and
+    threw the answer away, so the real routing a moment later found no offer left and every
+    "yes please" fell through to chat."""
+    facts = _request_context.turn_facts_var.get()
+    if facts is None:
+        return route_intent(text)
+    routes = facts.setdefault("_routes", {})
+    key = str(text)
+    if key not in routes:
+        routes[key] = route_intent(text)
+    return copy.deepcopy(routes[key])
+
+
 def _mw_rs_is_runtime_status_question(text) -> bool:
     raw = str(text or "").strip()
     low = raw.lower()
@@ -819,7 +857,7 @@ def _mw_rs_is_runtime_status_question(text) -> bool:
         return False
     # Prefer the real router contract where possible.
     try:
-        routed = route_intent(raw)
+        routed = _route_once(raw)
         if isinstance(routed, dict):
             return str(routed.get("action") or "").strip().upper() == "RUNTIME_STATUS"
     except Exception:
@@ -2213,6 +2251,15 @@ def _audit_result_outcome(result: Any) -> tuple:
     return bool(text), ("ok" if text else "empty_reply")
 
 
+def _visible_reply_text(result: Any) -> str:
+    """The reply text a non-streamed turn showed the user."""
+    if isinstance(result, dict):
+        return str(result.get("response") or result.get("content") or result.get("text") or "")
+    if isinstance(result, str):
+        return result
+    return ""
+
+
 def _audit_error_outcome(exc: BaseException) -> str:
     if isinstance(exc, GeneratorExit):
         return "cancelled"
@@ -2329,6 +2376,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 restore_scheduled_tasks()
             except Exception as _rst_err:
                 log.debug(f"[COGNITIVE] scheduled-task restore skipped: {_rst_err}")
+            # Profile rows that are ELI's own troubleshooting, stored as facts about the user by
+            # earlier versions, are taken out before anything is built from them.
+            try:
+                from eli.runtime.profile_extractor import purge_software_talk
+                purge_software_talk()
+            except Exception as _purge_err:
+                log.debug(f"[COGNITIVE] profile purge skipped: {_purge_err}")
+            # Reminders and calendar events: deliver what came due while ELI was shut, re-arm the rest.
+            try:
+                from eli.runtime import agenda as _agenda_boot
+                _agenda_boot.restore()
+            except Exception as _ag_err:
+                log.debug(f"[COGNITIVE] agenda restore skipped: {_ag_err}")
         log.debug("[COGNITIVE] active == canonical ✓")  # Fix 6b: startup path log
         if not self._test_mode:
             self._start_proactive_listener()
@@ -3883,8 +3943,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 build_inline_exchange_block,
                 session_has_prior_turns,
             )
-            _recent = self.memory.get_recent_conversation(
-                limit=14, user_id=getattr(self, "user_id", None)) or []
+            _recent = _this_conversation(self.memory.get_recent_conversation(
+                limit=14, user_id=getattr(self, "user_id", None)) or [])
             if not session_has_prior_turns(_recent, _orig):
                 return _orig
             _block = build_inline_exchange_block(_recent, user_input=_orig)
@@ -4393,6 +4453,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "source": str(source or ""),
             "t0": time.perf_counter(),
             "user_input": user_input,
+            "autonomous": _is_autonomous_source(source),
             # What the previous turn left published, so this turn's row never borrows it.
             "_meta_before": getattr(self, "_last_request_meta", None),
             "_bus_before": getattr(self, "_last_bus_result", None),
@@ -4414,6 +4475,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             raise
         if inspect.isgenerator(result):
             return self._context_bound_stream(result, ctx, facts)
+        ctx.run(self._finalize_turn_backstop, facts, _visible_reply_text(result), result)
         ok, outcome = _audit_result_outcome(result)
         self._commit_turn_audit(ctx, facts, ok=ok, outcome=outcome, result=result)
         return result
@@ -4440,6 +4502,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     except StopIteration:
                         joined = "".join(text).strip()
                         outcome = (bool(joined), "ok" if joined else "empty_reply")
+                        ctx.run(self._finalize_turn_backstop, facts, joined, None)
                         return
                     if isinstance(piece, str) and piece != MAIN_REPLY_DONE_SENTINEL:
                         text.append(piece)
@@ -4494,6 +4557,110 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                   or facts.get("route")
                   or ("CHAT" if facts.get("streamed") else "UNKNOWN"))
         return str(action).upper()
+
+    # Turns that answered from conversation rather than running an action: these
+    # get the chat path's episodic-memory and task-event capture.
+    _CHAT_LIKE_ACTIONS = ("CHAT", "UNKNOWN", "DETERMINISTIC_INTROSPECTION")
+
+    def _finalize_turn_backstop(self, facts: Dict[str, Any], reply: str, result: Any) -> None:
+        """Stage 12 for every exit. _process_impl has ~80 exits and only some
+        stored the turn: the orchestrator path (most CHAT turns) never stored
+        ELI's reply, and middleware answers stored nothing at all. This runs once
+        when a turn ends normally and does only what the turn didn't. Runs as the
+        turn (ctx.run), so the rows carry its own identity. Never raises."""
+        try:
+            if facts.get("parent_request_id") or facts.get("autonomous"):
+                return
+            # What the turn published while it ran is its own meta; an unchanged object is
+            # the previous turn's.
+            _meta_now = getattr(self, "_last_request_meta", None)
+            published = isinstance(_meta_now, dict) and _meta_now is not facts.get("_meta_before")
+            if published:
+                facts.setdefault("meta", dict(_meta_now))
+            action = self._turn_action(facts, result)
+            if action == "NOOP":  # fragment guard: internal, never history
+                return
+            user_text = _eli_sanitize_user_input(str(facts.get("user_input") or "")).strip()
+            reply = str(reply or "").strip()
+            self._ensure_user_turn_stored(facts)
+            if reply and not facts.get("assistant_stored"):
+                self._store_assistant_turn(reply)
+            chat_like = action in self._CHAT_LIKE_ACTIONS or action.startswith("MW_")
+            if chat_like and not facts.get("finalized"):
+                if user_text and not facts.get("memory_user"):
+                    self._maybe_store_memory(user_text, role="user")
+                if reply and not facts.get("memory_assistant"):
+                    self._maybe_store_memory(reply, role="assistant")
+            if reply and not published:
+                # Otherwise the badge and "what was your last message" still
+                # describe the turn before this one.
+                self._publish_last_response_meta(
+                    {"request_id": str(facts.get("request_id") or "")},
+                    action=action, result_action=action, response=reply,
+                    user_input=user_text)
+        except Exception:
+            log.debug("turn finalize backstop failed", exc_info=True)
+
+    def _carry_out_agreed(self, said: str, agreed: Dict[str, Any], *, source: str = "user", stream: bool = False,
+                          reasoning_mode: Optional[str] = None, **kwargs) -> Any:
+        """The user said yes to what ELI offered. Steps with an action run through the executor.
+        Steps ELI does by writing run as a turn of their own whose message is the task, so
+        retrieval, budget and the reply are about the task and not about the words "yes
+        please". Nested: this turn stores what the user typed and the reply they saw."""
+        from eli.runtime import pending_proposal as _pp
+        shown: List[str] = []
+        commands = [c for c in (agreed.get("commands") or []) if str(c or "").strip()]
+        if commands:
+            try:
+                ran = execute_action("MULTI_COMMAND", {"commands": commands, "raw": " and ".join(commands),
+                                                       "results_only": True})
+                text = str((ran or {}).get("response") or (ran or {}).get("content") or "").strip()
+                if text:
+                    shown.append(text)
+            except Exception as e:
+                log.debug("agreed commands failed", exc_info=True)
+                shown.append(f"That did not run: {e}")
+        own_words = _pp.own_words_line([c for c in (agreed.get("explicit") or []) if str(c or "").strip()])
+        if own_words:
+            shown.append(own_words)
+        done = "\n".join(shown)
+        tasks = [t for t in (agreed.get("tasks") or []) if str(t or "").strip()]
+        if not tasks:
+            if not stream:
+                return {"ok": True, "action": "CHAT", "content": done, "response": done}
+
+            def _only() -> Generator[str, None, None]:
+                yield done
+                yield MAIN_REPLY_DONE_SENTINEL
+            return _only()
+
+        message = _pp.task_message(tasks)
+        token = _request_context.agreed_task_var.set(
+            {"said": said, "offer": str(agreed.get("offer") or ""), "message": message, "done": done})
+        try:
+            inner = self.process(message, source=source, stream=stream, reasoning_mode=reasoning_mode, **kwargs)
+        finally:
+            _request_context.agreed_task_var.reset(token)
+        if inspect.isgenerator(inner):
+            def _both() -> Generator[Any, None, None]:
+                if done:
+                    yield done + "\n\n"
+                yield from inner
+            return _both()
+        reply = _visible_reply_text(inner).strip()
+        whole = "\n\n".join(x for x in (done, reply) if x)
+        out = dict(inner) if isinstance(inner, dict) else {"ok": bool(reply), "action": "CHAT"}
+        out["content"] = out["response"] = whole
+        return out
+
+    def _ensure_user_turn_stored(self, facts: Dict[str, Any]) -> None:
+        """The user's message goes in before any reply to it. Most exits store it
+        early; the ones that don't get it here."""
+        if facts.get("user_stored") or facts.get("autonomous"):
+            return
+        text = _eli_sanitize_user_input(str(facts.get("user_input") or "")).strip()
+        if text:
+            self._store_user_turn(text)
 
     def _record_turn_audit_row(self, facts: Dict[str, Any], ok: bool, outcome: str,
                                result: Any = None) -> None:
@@ -4700,6 +4867,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 "you've ", "you have been", "why are you", "why did you",
                 "why do you", "have you actually", "have you really",
                 "i am grand", "i don't need", "i dont need",
+                # Challenges. "Are you just saying that, or did you actually read the
+                # files? or are you just providing made up nonsense again? Do you have
+                # timestamps..." was split three ways; one fragment re-ran a media pause.
+                "did you actually", "did you really", "did you even",
+                "are you actually", "are you really", "are you even", "are you just",
+                "made up", "making it up", "making things up", "nonsense",
             )
             _mqs_conversational = any(m in _mqs_low for m in _CONVERSATIONAL_MARKERS)
             # Split compound questions only when the message is long enough to hold several genuine
@@ -4711,6 +4884,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 _mqs_parts = _mqs_raw.split("?")
                 _mqs_segs = [p.strip() for p in _mqs_parts
                              if len(p.strip().split()) >= 6]
+                # "...? or are you just..." continues the previous question; it
+                # isn't one of its own.
+                if any(re.match(r"(?i)(?:or|and|but|so)\b", seg) for seg in _mqs_segs[1:]):
+                    _mqs_segs = []
                 if len(_mqs_segs) >= 2:
                     _mqs_segs = _mqs_segs[:4]  # cap at 4
                     log.debug(
@@ -5401,7 +5578,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        context = self.memory.get_recent_conversation(14, user_id=getattr(self, "user_id", None))
+        # The conversation going on now, not the last 14 turns whenever they were said.
+        context = _this_conversation(
+            self.memory.get_recent_conversation(14, user_id=getattr(self, "user_id", None)))
 
         # Turn dossier: assemble awareness + memory before routing consumes skips.
         try:
@@ -5488,6 +5667,20 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         log.debug(f"[PIPELINE] Stage 1: Intent → {_pipe_action_s1} (conf={_pipe_conf_s1:.2f} via={_pipe_matched_s1})")
         _request_context.note_turn_fact("via", _pipe_matched_s1)
 
+        _agreed = (intent.get("args") or {}).get("agreed") if _pipe_matched_s1 == "pending_proposal.confirm" else None
+        if _pipe_action_s1 == "CHAT" and isinstance(_agreed, dict):
+            return self._carry_out_agreed(user_input, _agreed, source=source, stream=stream,
+                                          reasoning_mode=reasoning_mode, **kwargs)
+        if _pipe_action_s1 == "CHAT" and _pipe_matched_s1 != "pending_proposal.task":
+            # A short reply straight after ELI asked something is the answer to it.
+            try:
+                from eli.runtime.pending_proposal import get_follow_up, is_short_answer
+                _asked = str((get_follow_up() or {}).get("question") or "")
+                if _asked and is_short_answer(user_input) and not _is_brief_phatic_prompt(user_input):
+                    _request_context.note_turn_fact("answers_question", _asked)
+            except Exception:
+                log.debug("open-question check skipped", exc_info=True)
+
         trace = self._next_trace(user_input, intent, reasoning_mode)
 
         if intent.get("confidence", 0) < 0.5:
@@ -5535,9 +5728,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # recently, re-run that action. The crisis guard below still wins, it runs after and forces CHAT.
         try:
             if str(action).upper() == "CHAT":
-                from eli.runtime.action_commitment import is_redo_directive as _is_redo
+                from eli.runtime.action_commitment import redo_applies as _redo_applies
                 _last_cmd = getattr(self, "_last_command_action", None)
-                if _last_cmd and _is_redo(user_input):
+                if _redo_applies(user_input, _last_cmd):
                     action = str(_last_cmd.get("action") or "CHAT")
                     args = dict(_last_cmd.get("args") or {})
                     intent = dict(intent or {})
@@ -6162,138 +6355,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         # Tool/control results are the evidence, so return the deterministic result directly in every
                         # mode. Synthesis stuffed 5K+ of evidence into 6K+ of persona, truncated, produced garbage and
                         # hit a CUDA OOM assertion.
-                        _deterministic_direct_payload_actions = {
-                            # News/report briefings are already a complete persona-voiced synthesis built in the executor
-                            # (50/50 stories + interest + follow-ups). Running them through GGUF again collapses them to a
-                            # 2-line summary and doubles latency. Return verbatim.
-                            "NEWS_FETCH",
-                            "MORNING_REPORT",
-                            "DAILY_REPORT",
-                            "RUNTIME_AUDIT",
-                            "IMPORT_AUDIT",
-                            "GUI_RUNTIME_AUDIT",
-                            "RESOLVE_RUNTIME_PATHS",
-                            "EXPLAIN_MEMORY_RUNTIME",
-                            "EXPLAIN_COGNITION_RUNTIME",
-                            "RUNTIME_STATUS",
-                            "REASONING_MODE_STATUS",
-                            "MEMORY_STATUS",
-                            "COGNITION_STATUS",
-                            # GET_PROPOSALS is a data action: its content (the live agenda or a
-                            # plain "no active proposals") must surface as-is. Synthesis made the
-                            # model invent suggestions on the empty state.
-                            "GET_PROPOSALS",
-                            "EXPLAIN_LAST_RESPONSE",
-                            "EXPLAIN_ALL_REASONING_MODES",
-                            "EXPLAIN_FAILURE_LOG",
-                            "EXPLAIN_GGUF_DIAGNOSTICS",
-                            "EXPLAIN_LAST_FAILURE",
-                            "SELF_UPDATE",
-                            # Self-maintenance actions (upgrade/improve/patch) produce a complete authoritative step
-                            # report in the executor ("Upgrade complete. 6/6 steps succeeded."). Return it verbatim.
-                            # Synthesis either invented progress ("running now, check back later" after it finished) or
-                            # degenerated to a lone "-Auto".
-                            "SELF_UPGRADE",
-                            "SELF_IMPROVE",
-                            "SELF_PATCH",
-                            "SELF_REPAIR_PLAYBOOK",
-                            "EXPLAIN_FAILURE_LOG",
-                            "EXPLAIN_GGUF_DIAGNOSTICS",
-                            "EXPLAIN_LAST_FAILURE",
-                            # Code examiner: tiered error report + per-step patch
-                            # outcomes are grounded fact — surface verbatim, never
-                            # re-narrated (a weak model would corrupt the findings).
-                            "EXAMINE_CODE",
-                            "CONFIRM_CODE_FIX",
-                            "CANCEL_CODE_FIX",
-                            "CONFIRM_HABIT",
-                            "DECLINE_HABIT",
-                            "DIAGNOSE_WRAPPERS",
-                            "SELF_REPORT",
-                            # Identity/profile actions: the executor evidence is the grounded
-                            # answer; compact synthesis avoids the 7K-token prompt overflow they hit
-                            # on the standard broker path.
-                            "USER_IDENTITY_SUMMARY",
-                            "PERSONAL_MEMORY_SUMMARY",
-                            "PERSONAL_MEMORY_DEEP_EXPLAIN",
-                            # Deterministic OS-command and system-read actions where the executor result is the whole answer
-                            # ("Volume set to 40%", "Tiled 5 windows"). Verbatim in quick, synthesised otherwise. Quick still
-                            # ran broker synthesis on them and corrupted results ("Wrote note" became "Bought note").
-                            # Web/weather/vision aren't here, their result is evidence the model should phrase.
-                            "OPEN_APP", "CLOSE_APP", "OPEN_URL", "OPEN_BROWSER",
-                            "OPEN_FILE_SYSTEM", "OPEN_IN_IDE", "OPEN_IDE",
-                            "OPEN_SYSTEM_SETTINGS", "OPEN_AUDIO_SETTINGS",
-                            "OPEN_POWER_SETTINGS", "OPEN_NETWORK_BROWSER",
-                            "OPEN_COMMUNICATION_HUB", "OPEN_MEDIA_HUB",
-                            "FOCUS_APP", "MINIMIZE_APP", "MINIMISE_APP",
-                            "MINIMISE_ALL", "MINIMIZE_WINDOW", "MINIMISE_WINDOW",
-                            "MAXIMISE_WINDOW", "NEXT_WINDOW", "PREVIOUS_WINDOW",
-                            "RESTORE_WINDOWS", "SWITCH_WORKSPACE", "TILE_WINDOWS",
-                            "MEDIA_CONTROL", "PLAY_MEDIA", "PAUSE_MEDIA",
-                            "STOP_MEDIA", "NEXT_MEDIA", "PREVIOUS_MEDIA",
-                            "NOW_PLAYING",
-                            "SHUFFLE_MEDIA", "REPEAT_MEDIA", "VOLUME",
-                            "KEYBOARD", "MOUSE_CONTROL", "SCREENSHOT",
-                            "SET_CLIPBOARD", "GET_CLIPBOARD",
-                            "TIME", "DATE", "GET_TIME", "GET_DATE",
-                            "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS", "GPU_STATUS",
-                            "CREATE_FILE", "CREATE_FOLDER", "WRITE_NOTE",
-                            "NEW_NOTE", "LIST_NOTES", "SET_TIMER", "SET_ALARM",
-                            "LIST_DIR", "SPEAK",
-                            # Actions whose handlers already return a complete answer string (checked by reading each),
-                            # same as GPU_STATUS/MEMORY_STATUS. Left out, a small model re-narrated them, and READ_FILE
-                            # had the file content rewritten instead of shown as it is on disk.
-                            "READ_FILE", "HARDWARE_PROFILE", "AWARENESS_STATUS",
-                            "FRONTIER_STATUS", "BACKGROUND_JOBS", "CHECK_JOB",
-                            "ORCHESTRATION_STATUS", "LORA_STATUS", "PROACTIVE_STATUS",
-                            "PERSONA_LOCK_STATUS", "POMODORO_STATUS", "HABIT_STATUS",
-                            "GAZE_STATUS", "TIMESTAMP_DIAG", "ELI_IDENTITY_AUDIT",
-                            "FILE_AUDIT", "CODEBASE_GRAPH", "AUTOPILOT_DEBUG",
-                            "LIST_EVENTS", "SEARCH_NOTES", "MCP_STATUS", "MCP_TOOLS",
-                            "MCP_LIST", "STT_DIAGNOSTICS", "NAME_SOURCE_AUDIT",
-                            "ROUTING_FAULT_EXPLAIN",
-                            # SHELL_EXEC delegates to RUN_CMD's handler, which returns the command's
-                            # raw stdout+stderr as content/response. Same danger as READ_FILE: an
-                            # LLM synthesis pass could misreport what a command printed.
-                            "SHELL_EXEC",
-                            # More confirmation/status/report actions whose handler already builds a complete
-                            # content/response string, checked by reading each. MCP_CALL is the same danger class as
-                            # READ_FILE/SHELL_EXEC: it returns a live tool's raw output, which must not be re-narrated.
-                            "ADD_EVENT", "PLUGIN_STATUS", "MEMORY_STORE", "MEMORY_FORGET", "CANCEL_TASK", "COMPUTER_USE", "LIST_TASKS", "RESCHEDULE_TASK", "MEMORY_AUDIT",
-                            "GET_WEATHER", "PERSONA_LOCK_SET", "PERSONA_LOCK_CLEAR",
-                            "SET_TONE", "CLEAR_TONE", "SET_USER_NAME",
-                            "SET_COMMUNICATION_STYLE", "SET_VOICE",
-                            "POMODORO_START", "POMODORO_STOP",
-                            "WAKE_SET", "WAKE_ENROLL", "WAKE_TRAIN", "TRAIN_VOICE",
-                            "GAZE_CALIBRATE", "GAZE_CLICK", "GAZE_ENABLE", "GAZE_DISABLE",
-                            "MCP_ADD", "MCP_REMOVE", "MCP_DOCTOR", "MCP_CALL",
-                            "PLUGIN_LIST", "PLUGIN_SEARCH", "PLUGIN_INSTALL",
-                            "PLUGIN_ENABLE", "PLUGIN_DISABLE", "PLUGIN_UNINSTALL",
-                            "LIST_VOICES", "DOWNLOAD_VOICE",
-                            "SCHEDULE_TASK", "SKIP_YOUTUBE_AD", "SCREEN_LOCATE",
-                            "LORA_TRAIN", "LISTEN_FOR_COMMAND", "AMBIENT_VISION",
-                            "CANCEL_PENDING_REMEDIATION", "CONFIRM_PENDING_REMEDIATION",
-                            "CLEAR_CHAT_HISTORY", "REFRESH_USER_INFO",
-                            "MESSAGE_TIME_QUERY",
-                            # More confirmation/report/raw-content actions. TRANSCRIBE and OCR_IMAGE return raw recognised
-                            # text, same danger as READ_FILE/SHELL_EXEC/MCP_CALL. Deliberately left out: FIX_FILE (content is
-                            # a JSON blob) and RUN_TESTS (meant to be summarised).
-                            "CODE_CHANGES", "TRANSCRIBE", "DICTATE", "SMART_HOME",
-                            "LIST_SPEAKERS", "SPEAKER_ENROLL", "SPEAKER_STATUS", "VOICE_DIAGNOSTICS",
-                            "PERSONA_REFRESH", "PROACTIVE_START", "PROACTIVE_STOP",
-                            "HELP", "LIST_CAPABILITIES", "MEMORY_RECALL",
-                            "TEST_REVIEW", "OCR_IMAGE", "SUMMARIZE_FILE",
-                            "CONVERT_DOCUMENT", "ANALYZE_CSV", "GENERATE_TESTS",
-                            "CREATE_DOCUMENT", "GENERATE_DOCUMENT", "DOC_GENERATE",
-                            "DESIGN_VOICE", "CREATE_VOICE",
-                            # These run their own evidence-constrained model call (or none) and already return the final
-                            # answer, so a second synthesis is redundant and can drop a fact (a page count, an OCR'd line).
-                            # GENERATE_PROJECT embeds real code that mustn't be paraphrased. SEQUENCE and MULTI_COMMAND call
-                            # no model, they just join finished sub-steps.
-                            "ANALYZE_IMAGE", "ANALYZE_PDF", "ANALYZE_PDF_FOLDER",
-                            "SCREEN_READ_ANALYZE", "DATA_FABRICATOR", "GENERATE_PROJECT",
-                            "SEQUENCE", "MULTI_COMMAND",
-                        }
+                        _deterministic_direct_payload_actions = _DIRECT_RESULT_ACTIONS
                         try:
                             from eli.cognition.reasoning_modes import canonical_mode as _eli_direct_canon_mode
                             _direct_mode = _eli_direct_canon_mode(reasoning_mode)
@@ -7117,6 +7179,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         'grounded': True, 'trace': trace,
                     }
 
+            # An action whose handler returned the finished answer, or a question for the user:
+            # that is the reply.
+            if (_shown_as_is(action, reasoning_mode) or _asks_the_user(_action_result)) and isinstance(_action_result, dict):
+                _as_is = str(_action_result.get("response") or _action_result.get("content") or "").strip()
+                if _as_is:
+                    try:
+                        self._store_assistant_turn(_as_is)
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                    return {
+                        'ok': bool(_action_result.get("ok", True)), 'action': action,
+                        'content': _as_is, 'response': _as_is,
+                        'confidence': float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.5),
+                        'grounded': True, 'trace': trace,
+                    }
+
             if evidence and action not in {'CHAT', 'chat'}:
                 try:
                     synthesized = self._synthesize_answer(
@@ -7563,7 +7641,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 self._awareness.refresh()
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
-        if not result.get("ok", False):
+        # An action that asks the user for a detail has not failed. Logged as a failure and
+        # re-planned, "When is it?" was replaced by whatever a second model call came up with.
+        if not result.get("ok", False) and not _asks_the_user(result):
             try:
                 si = get_self_improvement()
                 si.memory.log_failure(
@@ -7631,6 +7711,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if (
             str(action).upper() not in {"CHAT"}
             and str(action).upper() not in _no_synthesis_actions
+            and not _shown_as_is(action, reasoning_mode)
+            and not _asks_the_user(result)
             and raw_response
         ):
             try:
@@ -7707,6 +7789,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         return result
 
     def _parse_intent(self, text: str, context: list) -> Dict[str, Any]:
+        # A task the user agreed to is carried out by writing: its words were ELI's, so they are
+        # not routed or resolved into an action a second time.
+        _agreed_task = _request_context.agreed_task_var.get()
+        if isinstance(_agreed_task, dict) and _agreed_task.get("message") == text:
+            return {"action": "CHAT", "args": {"message": text}, "confidence": 0.95,
+                    "meta": {"matched_by": "pending_proposal.task", "allow_chat_without_evidence": True}}
         # Canonical precedence: memory meta / deep personal explain before phatic
         # or long-question guards can swallow structured identity routes.
         try:
@@ -7732,7 +7820,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug("suppressed exception", exc_info=True)
         router_intent = None
         try:
-            router_intent = route_intent(text)
+            router_intent = _route_once(text)
         except Exception as e:
             log.debug(f"[COGNITIVE] Router failed: {e}")
         # A real deterministic match wins (fast path, no model call), but `fallback.chat` isn't a

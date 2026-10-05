@@ -62,7 +62,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
         │              └────────────────────────────┬─────────────────────────────────────┘
         ▼                                           ▼
 ┌─ EXECUTION ───────────────────────────────────────────────────────────────────────┐
-│  execution/executor_enhanced.py  215 supported actions · 237 capabilities (192 routable)  │
+│  execution/executor_enhanced.py  216 supported actions · 239 capabilities (194 routable)  │
 │  media_runtime · operator_actions · background_tasks                                │
 │  PLUGINS(10): calendar document_reader media notes pomodoro weather                 │
 │              system_stats tts web web_automation        eli/coding :: CodeAgent     │
@@ -143,7 +143,7 @@ eli/  (232,414 LOC, 613 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │   ├── pipeline.py · state.py · world_model.py · self_upgrade.py
 │
 ├── execution/         26.3k ─── route → act
-│   ├── executor_enhanced.py   15.9k   215 supported / 237 manifest
+│   ├── executor_enhanced.py   15.9k   216 supported / 239 manifest
 │   ├── router_enhanced.py      8.3k   priority pipeline
 │   ├── execution_planner.py · route_authority.py · route_contracts.py
 │   ├── operator_actions.py · operator_policy.py
@@ -167,7 +167,8 @@ eli/  (232,414 LOC, 613 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │   ├── response_contracts/packets/policy.py · final_response_assembly/provider.py
 │   ├── user_visible_response_surface.py · personal_memory_*.py · reflection.py
 │   ├── background_tasks.py · self_improvement.py · code_monitor.py
-│   └── capability_sync.py · pending_proposal.py · runtime_policy.py
+│   ├── capability_sync.py · pending_proposal.py · runtime_policy.py
+│   └── agenda.py (calendar + reminders)
 │
 ├── memory/             8.8k ─── remember (11 files)
 │   ├── memory.py       5.7k   Memory · SQLite + FTS5 · storage policy in policy.py

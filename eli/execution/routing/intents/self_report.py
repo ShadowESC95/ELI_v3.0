@@ -40,6 +40,19 @@ _ASKING_RE = re.compile(
 )
 
 
+_OWN_FACULTY_RE = re.compile(
+    r"\b(?:improve|train|boost|sharpen|strengthen|exercise|protect|test|help(?: with)?|fix)\b.{0,24}\bmy memory\b"
+    r"|\bmy memory\s+(?:is|has|was|'s|seems|feels|keeps)\s+(?:been\s+)?(?:so\s+|really\s+|very\s+|getting\s+)?"
+    r"(?:bad|terrible|awful|poor|rubbish|shot|worse|failing|going|slipping|not what)\b"
+    r"|\b(?:losing|lost)\s+my memory\b", re.I)
+
+
+def _pm_own_faculty(low: str) -> bool:
+    """The user means their own memory, the one in their head: "how do i improve my memory",
+    "my memory is terrible lately". Nothing ELI has stored is being asked about."""
+    return bool(_OWN_FACULTY_RE.search(low or ""))
+
+
 def _pm_asks_something(low: str) -> bool:
     """True when the turn is a question or an explicit request, not a remark.
 
@@ -127,6 +140,7 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if (
         not _eli_memory_runtime_route_lock_should_trigger(_pm_text)
         and _pm_asks_something(_pm_text)
+        and not _pm_own_faculty(_pm_text)
         and ("memory" in _pm_text)
         and (
             "personal" in _pm_text

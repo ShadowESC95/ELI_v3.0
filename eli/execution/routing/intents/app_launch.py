@@ -21,6 +21,12 @@ from eli.execution.routing._helpers import (
 
 def route_app_launch(text: str, raw: str, low: str, text_l: str):
     _open_m = re.match(r"^\s*(open|run|launch|start)\s+(.+?)\s*$", raw, re.I)
+    # "start with the outline", "run through it again", "start over": the verb is not opening
+    # anything. An app's name does not begin with a preposition or a pronoun.
+    if _open_m and _open_m.group(1).lower() in ("start", "run") and re.match(
+            r"(?i)(?:with|by|from|on|at|in|to|through|over|again|that|this|it|them|me|us|now|off|out|as|for|into|"
+            r"away|around|ahead)\b", _open_m.group(2).strip()):
+        _open_m = None
     if _open_m:
         target = re.sub(r"\s+app$", "", _open_m.group(2).strip(), flags=re.I)
         # An article is never part of the target. Without this, "open the
