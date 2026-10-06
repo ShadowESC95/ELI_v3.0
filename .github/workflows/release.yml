@@ -144,7 +144,7 @@ jobs:
           # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
           _voice_ok=0
           for _attempt in 1 2 3 4 5; do
-            if gh release download local-assets-v2.1 --repo "$GITHUB_REPOSITORY" --clobber \
+            if gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
                 --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
               _voice_ok=1
               break
@@ -301,7 +301,7 @@ jobs:
           # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
           _voice_ok=0
           for _attempt in 1 2 3 4 5; do
-            if gh release download local-assets-v2.1 --repo "$GITHUB_REPOSITORY" --clobber \
+            if gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
                 --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
               _voice_ok=1
               break
@@ -472,7 +472,7 @@ jobs:
           # on a single .onnx asset). Retry with backoff — same pattern as vc_redist below.
           _voice_ok=0
           for _attempt in 1 2 3 4 5; do
-            if gh release download local-assets-v2.1 --repo "$GITHUB_REPOSITORY" --clobber \
+            if gh release download local-assets-v2.1 --repo "ShadowESC95/ELI_v2.0" --clobber \
                 --pattern "*.onnx" --pattern "*.onnx.json" --dir tts_piper/piper; then
               _voice_ok=1
               break
