@@ -43,13 +43,14 @@ Every release ships the platform assets below plus `SHA256SUMS.txt`.
 | `ELI-Setup-<v>.exe` | ~1.2 GB | Windows | Frozen Inno Setup → `%LOCALAPPDATA%\Programs\ELI` | chat model | Most Windows users |
 | `ELI_v3-<v>-windows-x64.zip` | ~1.3 GB | Windows | `ELI\ELI.exe` (no Setup.bat / install.ps1) | chat model | Unzip-and-run |
 | `ELI_v3-<v>-macos-arm64.dmg` | ~1.4 GB | macOS (Apple Silicon) | App bundle | chat model | Mac users |
-| `ELI_v3-<v>-x86_64.AppImage` | ~1.2 GB | Linux | Double-click app | chat model | Most Linux users |
-| `ELI_v3-<v>-linux-portable.tar.gz` | ~1.2 GB | Linux | Source + `ELI_Setup.sh` (venv) | Python deps + chat model | Editable / CPU laptops |
+| `ELI_v3-<v>-x86_64.AppImage` | ~1.2 GB | Linux, glibc 2.39 or newer | Double-click app | chat model | Most Linux users |
+| `ELI_v3-<v>-linux-portable.tar.gz` | ~1.2 GB | Linux, any glibc | Source + `ELI_Setup.sh` (venv) | Python deps + chat model | Older systems / editable / CPU laptops |
 | `SHA256SUMS.txt` | tiny | — | Checksums | — | verifying your download |
 
 **In plain terms:**
 - Just want it to work → **ELI-Setup-*.exe** (Windows), **.dmg** (macOS), **AppImage** (Linux).
 - Want the source tree → **linux-portable.tar.gz** → `./ELI_Setup.sh` only (never `scripts/install_eli.sh`).
+- **Linux: the AppImage needs glibc 2.39 or newer** (`ldd --version`). That is Ubuntu 24.04+, Debian 13+, Fedora 40+, Linux Mint 22+, Pop!_OS 24.04+, RHEL / AlmaLinux / Rocky 10+, openSUSE Leap 16+ and Tumbleweed, Arch. On Ubuntu 22.04, Debian 12, Mint 21 or RHEL 9 it does not start and says so; use **linux-portable.tar.gz** there, which installs from source against the system's own libraries.
 - Frozen builds bundle **nomic** + **Piper voice weights**; Windows TTS still needs a Piper **CLI** on PATH or under `tts_piper/` (weights alone are not enough).
 - **No download bundles a chat model.** First launch / wizard fetches one.
 - Windows: desktop shortcut is **ELI only** (Server is Start Menu). If two windows open, close one — v3.0.128+ refuses a second GUI instance.
@@ -126,7 +127,10 @@ The default install already uses prebuilt CUDA wheels (no toolkit needed); the o
 only matters when those don't match the user's CUDA or a source build is required.
 
 ## What `bash install.sh` does
-1. Detects Python (3.10+) and OS; creates `.venv`; upgrades pip/setuptools/wheel.
+1. Detects Python (3.10+) and OS; checks for what the install builds with (a compiler,
+   Python's headers, PortAudio's, and on Debian/Ubuntu `python3-venv`), adds what is missing
+   when that takes no password and otherwise prints the one `sudo` command; creates `.venv`;
+   upgrades pip/setuptools/wheel.
 2. Installs **PyTorch** (CUDA 12.1 / CPU / macOS-MPS per flags/OS).
 3. Installs **llama-cpp-python** with GPU acceleration (CUDA wheel index / Metal /
    CPU) — then **verifies `llama_supports_gpu_offload()`** and, if it landed CPU-only,
@@ -140,7 +144,9 @@ only matters when those don't match the user's CUDA or a source build is require
    with **zero personal memories/profile/history** (blank slate). System inventory
    (installed apps, `$PATH` binaries) is scanned once so "open Firefox" works — that
    is machine environment data, not user memories.
-7. Verifies `import eli`, the GUI entry, and the `eli` console script.
+7. Verifies, from outside the source folder, that ELI and every package it cannot run
+   without are installed, that the GUI toolkit really loads, and the `eli` console script.
+   An install that ends with errors exits non-zero.
 8. Fetches **`nomic-embed-text-v1.5.Q4_K_M.gguf`** → `models/embeddings/` (~80 MiB,
    required for memory/RAG) via `python -m eli.core.model_download --aux`.
 9. Fetches **voice weights**: Piper `en_US-amy-medium` + faster-whisper `small.en` via
