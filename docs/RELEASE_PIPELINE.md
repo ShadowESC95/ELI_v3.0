@@ -58,9 +58,6 @@ to show for it.
 - The GPU packs are loaded into the app and use the C++ runtime it ships, so they have to be
   built on the same image. A pack built on a newer one would fail to load in every app already
   installed.
-- GLib is bundled under `_internal/glib-fallback/`, outside the search path. The launcher adds
-  it only when the system lacks one of the five GLib libraries; otherwise the system's is used,
-  so its GIO modules load. The Linux job fails if GLib is found on the search path.
 - The release notes and `docs/CROSS_PLATFORM.md` state the floor.
 
 To move the floor on purpose, change together: the image in the workflow, `LINUX_GLIBC_FLOOR`,
