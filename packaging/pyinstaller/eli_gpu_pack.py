@@ -425,6 +425,9 @@ def _pick_wheel(cuda_idx: str) -> tuple[str, str] | None:
         % (py, py, plat)
     )
     hits = pat.findall(html)
+    want = _wanted_pack_version()
+    if want:
+        hits = [h for h in hits if h[1] == want]
     if not hits:
         return None
 
@@ -705,6 +708,7 @@ def _activate_staged_gpu_pack(
         encoding="utf-8",
     )
     (dest / ".gpu_pack_ok").write_text("verified", encoding="utf-8")
+    record_gpu_choice(dest.parent)
     _say(f"installed and verified at {dest}")
     _say("done — the model loader will now offload layers to the GPU.")
     return 0
@@ -735,6 +739,60 @@ def _relax_offload_verify(dest: Path | None = None) -> bool:
     return _shared_memory_gpu()
 
 
+# ── One llama.cpp build per process ──────────────────────────────────────────
+# A GPU pack replaces the bundled llama_cpp, and the two cannot share a process:
+# their native libraries share sonames, so whichever libggml loads first serves
+# both. While both were 0.3.35 that was harmless. Upstream published 0.3.36 on
+# 2026-10-01, the next release bundled it (pip resolved ">=0.2" to the newest)
+# against the 0.3.35 packs, and on launch the bundled libllama.so died with
+# "undefined symbol: ggml_rope_set_offset" (live, every OS with a pack).
+# Releases now pin the bundled version (packaging/llama_cpp_constraints.txt), and
+# at runtime a pack is only used, installed or picked when it is that version.
+
+def _version_from_init(init_py: Path) -> str | None:
+    try:
+        m = re.search(r"""__version__\s*=\s*["']([^"']+)""",
+                      Path(init_py).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def bundled_runtime_version() -> str | None:
+    """The llama_cpp version this app was built with, read from disk (importing
+    it would load its native libraries). None outside a frozen build."""
+    meipass = getattr(sys, "_MEIPASS", "")
+    if not meipass:
+        return None
+    return _version_from_init(Path(meipass) / "llama_cpp" / "__init__.py")
+
+
+def pack_version(dest: Path) -> str | None:
+    found = _version_from_init(Path(dest) / "llama_cpp" / "__init__.py")
+    if found:
+        return found
+    try:
+        meta = json.loads((Path(dest) / ".gpu_pack.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return str(meta.get("version") or "") or None
+
+
+def pack_matches_runtime(dest: Path) -> bool:
+    """True unless both versions are known and differ."""
+    want = bundled_runtime_version()
+    try:
+        have = pack_version(dest)
+    except Exception:
+        have = None
+    return not want or not have or want == have
+
+
+def _wanted_pack_version() -> str | None:
+    """The only pack version this build may install: its own runtime's."""
+    return bundled_runtime_version()
+
+
 def gpu_pack_operational(dest: Path | None = None) -> bool:
     """True when a verified pack loads and reports GPU offload in THIS environment.
 
@@ -747,10 +805,59 @@ def gpu_pack_operational(dest: Path | None = None) -> bool:
     except RuntimeError:
         return False
     dest = dest or (root / "runtime" / "gpu")
-    if not (dest / ".gpu_pack_ok").is_file() or not (dest / "llama_cpp").is_dir():
+    if not (dest / "llama_cpp").is_dir() or not pack_matches_runtime(dest):
+        return False
+    had_marker = (dest / ".gpu_pack_ok").is_file()
+    # A pack that was verified once (it has its .gpu_pack.json) but lost its marker
+    # is re-verified here rather than downloaded again: an unpinned release deleted the marker of
+    # working packs (see activate_gpu_pack_runtime).
+    if not had_marker and not (dest / ".gpu_pack.json").is_file():
         return False
     ok, _detail = _verify(dest, require_offload=not _relax_offload_verify(dest))
+    if ok and not had_marker:
+        try:
+            (dest / ".gpu_pack_ok").write_text("verified", encoding="utf-8")
+        except OSError:
+            pass
     return bool(ok)
+
+
+def record_gpu_choice(runtime: Path) -> None:
+    """Installing a pack is choosing the GPU. Without this, a "Use CPU only" answer
+    from an earlier launch stayed in runtime/.gpu_choice, switched the new pack off
+    again at every boot, the load screen said "GPU backend: not installed", and the
+    next Install downloaded the same ~1.2 GB again (live: three times in a day)."""
+    try:
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / ".gpu_choice").write_text("gpu-installed", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def pack_switched_off_by_cpu_choice(root: Path | None = None) -> bool:
+    """A verified pack is on disk, but an earlier CPU-only choice keeps it from loading."""
+    try:
+        root = root or _eli_root()
+    except RuntimeError:
+        return False
+    marker = root / "runtime" / ".gpu_choice"
+    try:
+        choice = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return False
+    return choice.startswith("cpu") and gpu_pack_looks_installed(root / "runtime" / "gpu")
+
+
+def enable_installed_pack(root: Path | None = None) -> bool:
+    """Switch an installed pack back on without downloading it. Takes effect next launch."""
+    try:
+        root = root or _eli_root()
+    except RuntimeError:
+        return False
+    if not gpu_pack_looks_installed(root / "runtime" / "gpu"):
+        return False
+    record_gpu_choice(root / "runtime")
+    return True
 
 
 def gpu_pack_looks_installed(dest: Path | None = None) -> bool:
@@ -772,6 +879,8 @@ def gpu_pack_looks_installed(dest: Path | None = None) -> bool:
         return False
     dest = dest or (root / "runtime" / "gpu")
     if not (dest / ".gpu_pack_ok").is_file() or not (dest / "llama_cpp").is_dir():
+        return False
+    if not pack_matches_runtime(dest):
         return False
     meta_path = dest / ".gpu_pack.json"
     if not meta_path.is_file():
@@ -914,12 +1023,15 @@ def _pick_vulkan_wheel(*, prefer_cuda: bool = False) -> tuple[str, str] | None:
         % (prefix, py, py, plat)
     )
 
+    want = _wanted_pack_version()
+
     def _best_from_names(entries: list[tuple[str, str]]) -> tuple[str, str] | None:
-        # entries: (filename, download_url)
+        # entries: (filename, download_url). Newest, unless this build knows its
+        # runtime version: then only that one (a newer pack would mix builds).
         best = None
         for name, url in entries:
             m = pat.fullmatch(name)
-            if not m:
+            if not m or (want and m.group(1) != want):
                 continue
             ver = _ver_tuple(m.group(1))
             rank = (ver, 1 if (prefer_cuda and name.startswith("cuda-")) else 0)
@@ -1478,10 +1590,20 @@ def activate_gpu_pack_runtime(dest: str | Path, *, verify: bool = True) -> bool:
     pack = Path(dest)
     if not (pack / "llama_cpp").is_dir():
         return False
+    # Checked before any of the pack's libraries load: once they are in the
+    # process, falling back to the bundled runtime cannot be undone.
+    if not pack_matches_runtime(pack):
+        _say(f"GPU pack {pack_version(pack)} does not match this build's runtime "
+             f"{bundled_runtime_version()} — staying on the bundled runtime until the "
+             f"matching pack is installed")
+        return False
     if not (pack / ".gpu_pack_ok").is_file() and not gpu_pack_operational(pack):
         return False
 
     pack_s = str(pack.resolve())
+    _mod = sys.modules.get("llama_cpp")
+    if _mod is not None and str(getattr(_mod, "__file__", "") or "").startswith(pack_s):
+        return True  # already active in this process; re-importing gains nothing
     for q in list(sys.path):
         if "runtime/gpu" in str(q).replace("\\", "/") and q != pack_s:
             try:

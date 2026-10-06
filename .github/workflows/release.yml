@@ -44,6 +44,11 @@ env:
   PYTHON_VERSION: "3.11"   # newest version with binary wheels for the FULL stack (piper-phonemize, tflite-runtime cap at 3.11)
   # glibc of the build image. The Linux job fails if the bundle needs newer.
   LINUX_GLIBC_FLOOR: "2.39"
+  # Every pip install in every job is held to the llama-cpp-python the GPU packs are
+  # built at. Unpinned, pip takes the newest upstream and the app crashes on launch
+  # wherever a pack of another version is installed. See the file itself.
+  # Relative on purpose: every pip install runs from the repo root (cd dist comes later).
+  PIP_CONSTRAINT: packaging/llama_cpp_constraints.txt
   PYTHONHASHSEED: "0"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_CACHE_DIR: "1"
