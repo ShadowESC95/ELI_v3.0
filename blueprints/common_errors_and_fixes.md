@@ -36,6 +36,30 @@ The release packages (AppImage, Setup.exe, dmg) bring their own Python and are n
 
 ---
 
+## "ELI's window cannot start: This system has no libGL.so.1"
+
+**Symptom:** on a server, a container or a very minimal install the window does not open.
+Older versions printed `Please install PySide6`, which was not the reason.
+**Cause:** the graphics libraries (`libGL`, `libEGL`) belong to the GPU driver and the display
+server. ELI cannot carry its own copy without breaking hardware acceleration, so it uses the
+system's, which every desktop has.
+**Fix:** run the command in the message, for example `sudo apt-get install -y libgl1 libegl1`.
+`install.sh` adds these itself when it can and the `.deb` depends on them. The server
+(`ELI-Server`) and terminal modes do not need them.
+
+---
+
+## `undefined symbol: g_variant_builder_init_static` / `Failed to load module: ...libgvfsdbus.so`
+
+**Symptom:** two warnings in the terminal at every start of the AppImage on a current
+distribution (Ubuntu 26.04, Fedora, Arch). Harmless, but file dialogs had no network places.
+**Cause:** the AppImage carried its own, older GLib, and GLib loads the system's GIO modules,
+which are built for the system's newer one.
+**Fix (this version):** the AppImage uses the system's GLib when the system has all of it and
+keeps its own for a system that has none. Nothing to do.
+
+---
+
 ## The Linux AppImage does nothing, or: `version 'GLIBC_2.38' not found`
 
 **Symptom:** double-clicking the AppImage does nothing. From a terminal:

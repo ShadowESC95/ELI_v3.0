@@ -86,7 +86,7 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: amd64
-Depends: python3 (>= 3.10), python3-venv, python3-pip, rsync
+Depends: python3 (>= 3.10), python3-venv, python3-pip, rsync, python3-dev, build-essential, portaudio19-dev, libglib2.0-0, libgl1, libegl1, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0
 Recommends: ffmpeg
 Installed-Size: $INSTALLED_KB
 Maintainer: ShadowESC95 <ShadowESC95@users.noreply.github.com>

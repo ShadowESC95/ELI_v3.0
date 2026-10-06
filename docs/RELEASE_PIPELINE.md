@@ -1,12 +1,12 @@
-# ELI v2 — Release Pipeline
+# ELI v3 — Release Pipeline
 
 Tag-triggered, three-OS release automation built on PyInstaller. Pushing a
 version tag builds everything in parallel on GitHub Actions and attaches the
 artifacts to the GitHub Release for that tag.
 
 ```
-git tag v2.1.0
-git push origin v2.1.0
+git tag v3.0.0
+git push origin v3.0.0
 ```
 
 produces on the Release page:
@@ -14,16 +14,16 @@ produces on the Release page:
 | Asset | Contents |
 |---|---|
 | `ELI-Setup-<v>.exe` | Windows installer (Inno Setup, per-user, no admin) |
-| `ELI_v2-<v>-windows-x64.zip` | Windows portable — unzip, run `ELI\ELI.exe` |
-| `ELI_v2-<v>-macos-arm64.dmg` | macOS Apple Silicon — drag ELI.app to Applications |
-| `ELI_v2-<v>-x86_64.AppImage` | Linux — `chmod +x` and run (needs glibc 2.39 or newer; needs libfuse2, or `--appimage-extract-and-run`) |
-| `ELI_v2-<v>-linux-portable.tar.gz` | classic source tarball incl. voices (previous-release format) |
+| `ELI_v3-<v>-windows-x64.zip` | Windows portable — unzip, run `ELI\ELI.exe` |
+| `ELI_v3-<v>-macos-arm64.dmg` | macOS Apple Silicon — drag ELI.app to Applications |
+| `ELI_v3-<v>-x86_64.AppImage` | Linux — `chmod +x` and run (needs glibc 2.39 or newer; needs libfuse2, or `--appimage-extract-and-run`) |
+| `ELI_v3.0-<v>-linux-portable.tar.gz` | classic source tarball incl. voices (previous-release format) |
 | `SHA256SUMS.txt` | checksums for all of the above |
 
 All frozen bundles include the full Piper voice set (pulled at build time from
 the project's `local-assets-v2.1` release) and a second `ELI-Server`
 executable (console) for the phone/web server. GGUF chat/vision/image model
-weights remain first-run downloads into the per-user `ELI_v2` root.
+weights remain first-run downloads into the per-user `ELI_v3` root.
 
 ## Moving parts
 
@@ -31,7 +31,7 @@ weights remain first-run downloads into the per-user `ELI_v2` root.
 |---|---|
 | `ELI.spec` | PyInstaller spec — one-dir build, all platforms. Data files come from `git ls-files` only (personal files/models can never leak). Version read from `pyproject.toml`. |
 | `packaging/pyinstaller/eli_entry.py` | Frozen entry script → `eli.gui.app:main`. Also dispatches `ELI-Server`/`--server` → `api.server:main`, and `--selftest` (real import-stack boot check CI runs on every built bundle). |
-| `packaging/pyinstaller/rthook_eli_frozen_paths.py` | Runtime hook: pins `ELI_PROJECT_ROOT`/data/config/models to the per-user root — `%LOCALAPPDATA%\ELI_v2`, `~/Library/Application Support/ELI_v2`, `~/.local/share/ELI_v2` — the same place previous ELI releases used, so models/settings carry over on upgrade. `ELI_PROJECT_ROOT` env overrides. |
+| `packaging/pyinstaller/rthook_eli_frozen_paths.py` | Runtime hook: pins `ELI_PROJECT_ROOT`/data/config/models to the per-user root — `%LOCALAPPDATA%\ELI_v3`, `~/Library/Application Support/ELI_v3`, `~/.local/share/ELI_v3` — the same place previous ELI releases used, so models/settings carry over on upgrade. `ELI_PROJECT_ROOT` env overrides. |
 | `packaging/pyinstaller/gen_version_info.py` + `packaging/windows/version.rc.in` | Generates `build/version.rc` (Windows version resource) from `pyproject.toml`. |
 | `packaging/windows/installer.iss` | Inno Setup installer for the frozen bundle (the older `ELI_Setup.iss` still serves the source-portable flow). |
 | `packaging/macos/build-dmg.sh` | Ad-hoc signs `dist/ELI.app`, builds the `.dmg`. |
@@ -58,6 +58,9 @@ to show for it.
 - The GPU packs are loaded into the app and use the C++ runtime it ships, so they have to be
   built on the same image. A pack built on a newer one would fail to load in every app already
   installed.
+- GLib is bundled under `_internal/glib-fallback/`, outside the search path. The launcher adds
+  it only when the system lacks one of the five GLib libraries; otherwise the system's is used,
+  so its GIO modules load. The Linux job fails if GLib is found on the search path.
 - The release notes and `docs/CROSS_PLATFORM.md` state the floor.
 
 To move the floor on purpose, change together: the image in the workflow, `LINUX_GLIBC_FLOOR`,
