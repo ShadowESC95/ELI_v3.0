@@ -18,6 +18,8 @@ from typing import Dict
 
 from eli.core import runtime_settings
 from eli.kernel.stages._common import _eli_test_mode
+# the engine's own module-level handle; _init_gguf read a name this module never defined
+from eli.kernel.stages.model_runtime import gguf_inference
 from eli.utils.log import get_logger
 import logging
 
@@ -232,7 +234,7 @@ class LifecycleMixin:
         self._gguf_load_error = None
         # Initialize runtime facts to defaults
         self._model_path = "unknown"
-        self._ctx = runtime_settings.DEFAULT_N_CTX
+        self._ctx = 0
         self._gpu_layers = 0
         try:
             if gguf_inference is None:
@@ -250,19 +252,7 @@ class LifecycleMixin:
                 self._gguf_load_error = None
                 # Store runtime facts
                 self._model_path = str(model_path)
-                # Try to get context size from loaded model or settings
-                try:
-                    # Some gguf_inference modules expose get_n_ctx or
-                    # get_context_size
-                    if hasattr(gguf_inference, 'get_n_ctx'):
-                        self._ctx = int(gguf_inference.get_n_ctx())
-                    elif hasattr(gguf_inference, 'get_context_size'):
-                        self._ctx = int(gguf_inference.get_context_size())
-                    else:
-                        settings = runtime_settings.load_settings()
-                        self._ctx = int((settings or {}).get("n_ctx", runtime_settings.DEFAULT_N_CTX))
-                except Exception:
-                    self._ctx = runtime_settings.DEFAULT_N_CTX
+                self._ctx = self._runtime_n_ctx()
                 # GPU layers from settings
                 try:
                     settings = runtime_settings.load_settings()

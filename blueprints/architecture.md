@@ -37,7 +37,7 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 
 | Package | Lines | Files | Role |
 |---|---:|---:|---|
-| `eli/gui` | 42,480 | 63 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs, startup and first-boot wizard |
+| `eli/gui` | 30,761 | 62 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs, startup and first-boot wizard |
 | `eli/execution` | 41,796 | 79 | Router and executor: intent → action → side effects. `effectors/` and `routing/` hold decomposition modules that the live `executor_enhanced.py` and `router_enhanced.py` do not yet call |
 | `eli/runtime` | 36,358 | 101 | Grounding spine, evidence, response and introspection surfaces, daemons, self-improvement |
 | `eli/cognition` | 21,252 | 48 | Agent bus, 12-stage orchestrator, inference, persona, reasoning modes, tone and emotion |
@@ -60,10 +60,9 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 | `eli/onboarding` | 709 | 2 | Onboarding interview |
 | `eli/editions` | 343 | 29 | Edition packs (base, coding, content, enterprise, healthcare) |
 | `eli/cli`, `eli/scripts`, top level | 405 | 6 | Headless REPL, package entry |
-| **total** | **231,097** | **609** | |
+| **total** | **228,341** | **622** | |
 
-The largest files: `eli/execution/executor_enhanced.py` (15,923 lines), `eli/gui/eli_pro_audio_gui_v2_0.py`
-(12,816, the pre-decomposition monolith), `eli/execution/router_enhanced.py` (8,271),
+The largest files: `eli/execution/executor_enhanced.py` (15,923 lines), `eli/execution/router_enhanced.py` (8,271),
 `eli/kernel/engine.py` (8,014, plus 8,505 lines in the `kernel/stages/` mixins it is composed
 from), `eli/memory/memory.py` (5,677), `api/server.py` (5,282), `eli/cognition/agent_bus.py`
 (3,518), `eli/runtime/deterministic_grounding_gate.py` (3,357), `eli/gui/labs/report_tab.py`
@@ -441,7 +440,7 @@ tts_piper/  Piper voice files shipped with the repo
    stops the silent count rising.
 4. **Latency versus model size.** On an 8 GB GPU a 24B model at Q5 offloads few layers and
    answers in minutes; a 7–9B Q4 is the sweet spot. The startup dialog shows the real fit.
-5. **Two copies of the main window.** `eli/gui/main_window/` is what launches; the 12.8k-line `eli/gui/eli_pro_audio_gui_v2_0.py` monolith is still in the tree and still imported by a few modules.
+5. **One main window.** `eli/gui/main_window/` is the window; the old single-file copy was removed, and `tests/test_gui_names_resolve.py` builds the window offscreen.
 
 ---
 

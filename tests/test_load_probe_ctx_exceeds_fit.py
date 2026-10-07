@@ -8,7 +8,7 @@ from __future__ import annotations
 
 
 def test_needs_proof_when_ctx_exceeds_fit_even_if_layers_match():
-    """Mirror of the gate in eli_pro_audio_gui_v2_0._load_model_with_fallbacks."""
+    """Mirror of the gate in the GUI loader (eli/gui/main_window/models.py)."""
     base_layers, fit_layers = 11, 11
     base_ctx, fit_ctx = 12000, 4096
     base_batch, fit_batch = 512, 128

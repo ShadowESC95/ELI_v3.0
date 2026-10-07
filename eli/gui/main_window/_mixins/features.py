@@ -79,7 +79,7 @@ class FeaturesMixin:
     def refresh_habit_list(self):
         """Refresh the habits table from memory."""
         try:
-            rules = memory_system.get_habit_rules(enabled_only=False)
+            rules = self.memory_system.get_habit_rules(enabled_only=False)
             self.habit_table.setRowCount(len(rules))
             for i, rule in enumerate(rules):
                 # ID
@@ -178,7 +178,7 @@ class FeaturesMixin:
             return
         name, command, hour, minute, days = vals
         try:
-            rule_id = memory_system.add_habit_rule(name, command, hour, minute, days, enabled=True)
+            rule_id = self.memory_system.add_habit_rule(name, command, hour, minute, days, enabled=True)
             if rule_id and rule_id > 0:
                 self.refresh_habit_list()
                 self.status_signal.emit(f"Habit '{name}' added.")
@@ -199,7 +199,7 @@ class FeaturesMixin:
             return
         prefill = {}
         try:
-            for rule in memory_system.get_habit_rules(enabled_only=False):
+            for rule in self.memory_system.get_habit_rules(enabled_only=False):
                 if int(rule.get("id", -1)) == rule_id:
                     prefill = {
                         "name": rule.get("name", ""), "command": rule.get("command", ""),
@@ -214,7 +214,7 @@ class FeaturesMixin:
             return
         name, command, hour, minute, days = vals
         try:
-            ok = memory_system.update_habit_rule(
+            ok = self.memory_system.update_habit_rule(
                 rule_id, name=name, command=command, hour=hour, minute=minute, days=days)
             if ok:
                 self.refresh_habit_list()
@@ -241,7 +241,7 @@ class FeaturesMixin:
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                memory_system.delete_habit_rule(rule_id)
+                self.memory_system.delete_habit_rule(rule_id)
                 self.refresh_habit_list()
                 self.status_signal.emit(f"Habit '{name}' deleted.")
             except Exception as e:
@@ -250,7 +250,7 @@ class FeaturesMixin:
     def toggle_habit_rule(self, rule_id: int, enabled: bool):
         """Toggle a habit rule's enabled state."""
         try:
-            memory_system.toggle_habit_rule(rule_id, enabled)
+            self.memory_system.toggle_habit_rule(rule_id, enabled)
             # Optionally refresh the whole table to reflect changes
             self.refresh_habit_list()
         except Exception as e:
@@ -437,11 +437,12 @@ class FeaturesMixin:
         }
         try:
             import psutil
+            from eli.core.mem_units import bytes_to_gib
             vm = psutil.virtual_memory()
             stats["cpu_percent"] = float(psutil.cpu_percent(interval=None))
-            stats["ram_total_gb"] = vm.total / (1024 ** 3)
-            stats["ram_used_gb"] = vm.used / (1024 ** 3)
-            stats["ram_free_gb"] = vm.available / (1024 ** 3)
+            stats["ram_total_gb"] = bytes_to_gib(vm.total)
+            stats["ram_used_gb"] = bytes_to_gib(vm.used)
+            stats["ram_free_gb"] = bytes_to_gib(vm.available)
             stats["ram_percent"] = float(vm.percent)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
@@ -694,7 +695,7 @@ class FeaturesMixin:
             log.debug("suppressed exception", exc_info=True)
 
     def refresh_memory_stats(self):
-        stats = memory_system.get_stats()
+        stats = self.memory_system.get_stats()
         total = stats.get("total", 0)
         by_kind = stats.get("by_kind", {})
         stats_text = f"Total Memories: {total}\n\n"
@@ -709,7 +710,7 @@ class FeaturesMixin:
             return
         self.memory_results_display.clear()
         self.memory_results_display.append(f"<b>Searching for:</b> {query}<br><br>")
-        results = memory_system.search(query, limit=20)
+        results = self.memory_system.search(query, limit=20)
         if results:
             self.memory_results_display.append(f"<b>Found {len(results)} results:</b><br><br>")
             for i, mem in enumerate(results, 1):
@@ -731,7 +732,7 @@ class FeaturesMixin:
             return
         tags_text = self.memory_tags_input.text().strip()
         tags = [t.strip() for t in tags_text.split(",")] if tags_text else []
-        if memory_system.store(text, tags=tags):
+        if self.memory_system.store(text, tags=tags):
             QMessageBox.information(self, "Success", "Memory stored successfully!")
             self.memory_store_input.clear()
             self.memory_tags_input.clear()
@@ -828,7 +829,7 @@ class FeaturesMixin:
                 ground["recent_conv"] = self._central_memory.get_recent_conversation(limit=20) or []
             except Exception: pass
             try:
-                ground["memory_stats"] = memory_system.get_stats() if memory_system else {}
+                ground["memory_stats"] = self.memory_system.get_stats() if self.memory_system else {}
             except Exception: pass
             try:
                 vs = getattr(self._central_memory, "vector_store", None)

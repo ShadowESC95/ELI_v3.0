@@ -15,6 +15,7 @@ Screening is host-based on purpose. A snippet-keyword blocklist would bury
 legitimate medical and biological results, so the locks below assert that
 those still come through.
 """
+from tests._live_gui import live_gui_files, live_gui_source
 import inspect
 
 import pytest
@@ -113,8 +114,7 @@ def test_cleaning_never_empties_a_query():
 
 # ── the toggle has to exist where a user can reach it ──────────────────────
 def _gui_src() -> str:
-    from pathlib import Path
-    return Path("eli/gui/eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
+    return live_gui_source()
 
 
 def test_safe_search_has_a_gui_toggle():

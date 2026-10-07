@@ -397,8 +397,8 @@ def _clarifier_norm(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", lowered)).strip()
 
 
-# Character budget for the memory block in the assembled prompt.
-ELI_BUDGET_MEMORY_CHARS = 4096
+# Memory block of the evidence prompt: characters per token of the loaded window.
+ELI_BUDGET_MEMORY_CHARS_PER_TOKEN = 0.25
 
 
 def _mounted_model_authority_line() -> str:

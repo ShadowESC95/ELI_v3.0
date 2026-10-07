@@ -152,7 +152,7 @@ from eli.kernel.stages.persona_text import (  # noqa: F401
 )
 from eli.kernel.stages._common import _phatic_generation_budget  # noqa: F401
 from eli.kernel.stages._common import _clarifier_norm  # noqa: F401
-from eli.kernel.stages._common import ELI_BUDGET_MEMORY_CHARS  # noqa: F401
+from eli.kernel.stages._common import ELI_BUDGET_MEMORY_CHARS_PER_TOKEN  # noqa: F401
 from eli.kernel.stages._common import _mounted_model_authority_line  # noqa: F401
 from eli.kernel.stages._common import _phatic_rapport_style_rule  # noqa: F401
 
@@ -2355,7 +2355,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # and other callers never hit AttributeError regardless of whether
         # _init_gguf() is invoked.  _init_gguf() overwrites these when it runs.
         self._model_path = "unknown"
-        self._ctx = runtime_settings.DEFAULT_N_CTX
+        self._ctx = 0           # unknown until a model loads; read through _runtime_n_ctx()
         self._gpu_layers = 0
 
         if bool(auto_init_gguf):
@@ -2481,10 +2481,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             settings = {}
 
-        try:
-            n_ctx = int(settings.get("n_ctx", getattr(self, "_ctx", runtime_settings.DEFAULT_N_CTX)) or getattr(self, "_ctx", runtime_settings.DEFAULT_N_CTX))
-        except Exception:
-            n_ctx = int(getattr(self, "_ctx", runtime_settings.DEFAULT_N_CTX))
+        n_ctx = self._runtime_n_ctx()
 
         try:
             requested = int(settings.get("max_tokens", config.get_num_predict()))
@@ -2557,61 +2554,37 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         return max(self._PERSONA_MIN_CHARS, min(_cap, share))
 
     def _effective_n_ctx(self) -> int:
-        """Best-known context window (tokens). Live runtime params → snapshot →
-        conservative default. Used to budget the persona against evidence."""
-        try:
-            import eli.cognition.gguf_inference as _g
-            _lrp = getattr(_g, "_live_runtime_params", None) or {}
-            _c = int(_lrp.get("n_ctx", 0) or 0)
-            if _c > 0:
-                return _c
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-        try:
-            import json as _j
-            # Read the snapshot from the artifacts dir, where the loader writes it. In a frozen build the
-            # rthook pins ELI_PROJECT_ROOT and ELI_DATA_DIR to the same user root so it's equivalent; it only
-            # differs for a bare pip install, where project_root() is the package and nothing is written.
-            from eli.core.paths import artifacts_dir as _r
-            _p = _r() / "runtime_snapshot.json"
-            if _p.exists():
-                _s = _j.loads(_p.read_text(encoding="utf-8"))
-                _c = int((_s.get("effective") or {}).get("n_ctx") or _s.get("n_ctx") or 0)
-                if _c > 0:
-                    return _c
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-        # Conservative last-resort only (no runtime ctx published yet) — never a
-        # tuned ceiling; the real ctx comes from the live runtime snapshot above.
-        return 4096
+        return self._runtime_n_ctx()
 
     def _runtime_n_ctx(self) -> int:
-        """Authoritative live context window for prompt-fit / budget guards.
-
-        Single source of truth so the guards track whatever the dynamic loader
-        actually selected — NEVER a hard-coded default. Order:
-          1. gguf_inference.current_context_limit() — the loaded model's usable
-             ceiling, min(loaded n_ctx, trained window); 0 when no model is loaded
-             or when the model loaded via the broker (no module-level _llm).
-          2. _effective_n_ctx() — live runtime params → runtime_snapshot.json →
-             conservative pre-load last resort.
-        """
+        """The context window every guard and budget here sizes against: what loaded, else what the
+        loader published, else the operator's setting, else auto for this model on this machine
+        (gguf_inference.context_window). 0 when there is no model to size for, never a constant."""
         try:
-            if gguf_inference is not None and hasattr(gguf_inference, "current_context_limit"):
-                _c = int(gguf_inference.current_context_limit() or 0)
-                if _c > 0:
-                    return _c
+            if gguf_inference is not None:
+                return max(0, int(gguf_inference.context_window()))
         except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-        return int(self._effective_n_ctx())
+            logging.getLogger(__name__).debug("context window unreadable", exc_info=True)
+        return 0
+
+    def _window_chars(self) -> int:
+        """The loaded window in characters (measured characters per token), 0 when unknown."""
+        try:
+            from eli.cognition.context_budget import chars_per_token
+            return int(self._runtime_n_ctx() * float(chars_per_token()))
+        except Exception:
+            return 0
 
     def _compact_persona(self) -> str:
         persona = _load_persona_text().strip()
         # Carry the full persona voice into compact/quick mode. The old 3800-char cap dropped the
-        # personality-ownership / EliWorld / banned-disclaimer sections and flattened the voice. 12000
-        # is only a safety valve: at ~11k nothing is trimmed and the prompt still fits.
-        if len(persona) > 12000:
-            persona = persona[:12000].rstrip() + "\n[persona trimmed]"
+        # personality-ownership / EliWorld / banned-disclaimer sections and flattened the voice.
+        # Trimmed only past its share of the window that loaded (a fixed 12000 characters was a
+        # third of an 8k window and a sliver of a 128k one).
+        window = self._window_chars()
+        limit = max(self._PERSONA_MIN_CHARS, int(window * self._PERSONA_SHARE_OF_CTX)) if window else 0
+        if limit and len(persona) > limit:
+            persona = persona[:limit].rstrip() + "\n[persona trimmed]"
         return persona
 
     def _quick_smalltalk_response(self, user_input: str) -> Optional[str]:
@@ -2653,19 +2626,21 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         words = len((user_input or "").split())
         ctx_len = len(memory_context or "")
 
-        # Also force compact when n_ctx is small enough that the full persona + memory will
-        # overflow. On n_ctx=8192 every non-Quick call truncated the system prompt to 15-18 KB, and
-        # truncation cuts the front of the persona, where the anti-template rules live.
+        # Force compact when the full persona, the memory and room for the reply do not fit the
+        # window that loaded: truncation cuts the front of the persona, where the anti-template
+        # rules live. Measured, not a window size (8192/12288 were fixed thresholds).
         try:
-            ctx_window = int(getattr(self, "_ctx", 0) or 0)
+            from eli.cognition.context_budget import chars_per_token, output_reserve_tokens
+            ctx_window = int(self._runtime_n_ctx())
+            if ctx_window > 0:
+                cpt = max(0.5, float(chars_per_token()))
+                needed = ((len(_load_persona_text() or "") + ctx_len) / cpt
+                          + output_reserve_tokens(int(self._generation_settings().get("max_tokens") or 0),
+                                                  ctx_window))
+                if needed > ctx_window:
+                    return True
         except Exception:
-            ctx_window = 0
-        if 0 < ctx_window <= 8192:
-            return True
-        # Rough cap: when n_ctx <= 12 KB and we already have any meaningful
-        # context, use compact persona so the live evidence has room.
-        if 0 < ctx_window <= 12288 and ctx_len > 800:
-            return True
+            log.debug("compact-system fit check unavailable", exc_info=True)
 
         if mode in {"tree_of_thoughts", "constitutional_ai",
             "self_consistency", "chain_of_thought"}:
@@ -4123,7 +4098,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if not stream or not _result_is_generator:
             # Every non-streamed orchestrated turn exits here — publish its meta so the badge and
             # last_trace.json are not left stale. The GUI always calls process(..., stream=True)
-            # regardless of reasoning mode (eli_pro_audio_gui_v2_0.py's generate_worker), but a
+            # regardless of reasoning mode (generate_worker in the window's send_message), but a
             # chain-of-thought/tree-of-thoughts turn runs its passes as discrete non-streaming GGUF
             # calls and the orchestrator returns a plain dict/string, not a generator, even though
             # stream=True was requested. That combination — stream requested, non-generator result —
@@ -7933,7 +7908,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         return {
             "provider": "gguf",
             "model_loaded": hasattr(self, "_gguf_model") and self._gguf_model is not None,
-            "context_size": getattr(self, "_n_ctx", 16384),
+            "context_size": self._runtime_n_ctx(),
             "agents": ["file_code", "reflection", "habit", "memory", "system"],
         }
 

@@ -1,6 +1,7 @@
 """models — extracted from gui_eli_original.py (v3 modularisation)."""
 from __future__ import annotations
 from eli.gui.main_window._common import *  # noqa: F401,F403
+from eli.gui.main_window._common import _eli_prompt_floor_tokens
 
 
 class LocalModelManager:
@@ -25,6 +26,8 @@ class LocalModelManager:
         requested_n_ctx: Optional[int] = None,
         requested_n_batch: Optional[int] = None,
         gpu_offload_supported: Optional[bool] = None,
+        vram_free_mb_at_load: Optional[int] = None,
+        vram_held_by_others: str = "",
     ):
         try:
             from eli.core.paths import get_paths
@@ -69,6 +72,9 @@ class LocalModelManager:
                     'n_batch': effective_n_batch,
                 },
                 'loaded': bool(getattr(self, 'is_loaded', False)),
+                # what the card looked like at load: why a load came out smaller than asked
+                'vram_free_mb_at_load': vram_free_mb_at_load,
+                'vram_held_by_others': vram_held_by_others,
                 'pid': __import__('os').getpid(),
                 'ts': time.time(),
             }
@@ -143,8 +149,9 @@ class LocalModelManager:
             if not path_obj.exists():
                 self.load_error = f"Model not found: {path_obj}"
                 return False
+            from eli.core.mem_units import file_size_gib
             print(f"🔄 Loading model: {path_obj.name}")
-            print(f"   Size: {path_obj.stat().st_size / (1024**3):.2f} GB")
+            print(f"   Size: {file_size_gib(path_obj):.2f} GB")
             self.fitted_gpu_layers = 0
             try:
                 from eli.core.hardware_profile import detect_hardware as _hw_load
@@ -162,6 +169,8 @@ class LocalModelManager:
             # The hardware profile is read separately and inserted as a fallback candidate
             # so it never overrides deliberate user choices.
             _user_ctx = int(n_ctx)
+            # 0 is auto: sized below for this model on this machine; no request of the operator's to honour
+            _ctx_is_auto = _user_ctx <= 0
             _user_gpu_layers = int(n_gpu_layers)
             _user_batch = int(n_batch)
             _hw_profile_ctx = None
@@ -174,7 +183,7 @@ class LocalModelManager:
                 _eli_profile_path = _EliHwPath(_eli_get_paths().artifacts_dir) / "runtime_hardware_profile.json"
                 if _eli_profile_path.exists():
                     _eli_profile = _eli_hw_json.loads(_eli_profile_path.read_text(encoding="utf-8"))
-                    _hw_profile_ctx = int(_eli_profile.get("n_ctx", _user_ctx))
+                    _hw_profile_ctx = int(_eli_profile.get("n_ctx") or _user_ctx)
                     _hw_profile_gpu_layers = int(_eli_profile.get("n_gpu_layers", _user_gpu_layers))
                     _hw_profile_batch = int(_eli_profile.get("batch_size", _user_batch))
                     log.debug(
@@ -304,6 +313,10 @@ class LocalModelManager:
             _sf_fit_layers = None
             _sf_fit_ctx = None
             _sf_fit_batch = None
+            _sf_user_ctx = 0
+            _sf_free_mb = None
+            _sf_total_mb = None
+            _load_vram_held = ""
 
             # ── Smart loader (fit-to-hardware fallback) ───────────────────
             # Anchor on the user's preferred ctx/batch, then fit into the VRAM
@@ -320,7 +333,8 @@ class LocalModelManager:
                     cpu_ctx_ceiling_from_ram as _sf_ram_ceil,
                 )
                 from eli.core.hardware_profile import unified_fit_config as _sf_fit
-                _sf_model_gb = path_obj.stat().st_size / (1024 ** 3)
+                from eli.core.mem_units import file_size_gib as _sf_file_gib
+                _sf_model_gb = _sf_file_gib(path_obj)
                 _sf_train = int(_sf_train_ctx(str(path_obj)))
                 _sf_igpu = bool(getattr(self, "gpu_integrated", False))
                 _sf_min_batch = int(_sf_os.environ.get("ELI_MIN_BATCH", "128") or "128")
@@ -329,29 +343,37 @@ class LocalModelManager:
                 _sf_user_batch = max(_user_batch, _sf_min_batch)
                 if _sf_igpu:
                     _sf_user_batch = min(_sf_user_batch, 32)
+                _avail_gb = float(_sf_avail_ram())
+                # the fit assumes the KV cache type this load will use
+                _sf_kv_type = str(cache_type_k or "f16")
+                _sf_kvq = _sf_kv_type.lower() not in ("f16", "bf16", "f32")
                 if _user_ctx and 2048 <= int(_user_ctx) <= _sf_train:
                     _sf_user_ctx = int(_user_ctx)
                 else:
-                    _sf_brief_floor = int(_sf_os.environ.get("ELI_CTX_BRIEF_FLOOR", "12288") or "12288")
-                    _sf_gen_reserve = int(_sf_os.environ.get("ELI_CTX_GEN_RESERVE", "4096") or "4096")
-                    _eli_need = _sf_brief_floor + _sf_gen_reserve
-                    _sf_target = int(_sf_os.environ.get("ELI_CTX_TARGET", str(_eli_need)) or str(_eli_need))
-                    _sf_target = max(_sf_target, _eli_need)
-                    _sf_user_ctx = max(2048, (min(_sf_target, _sf_train) // 2048) * 2048)
-                    if _sf_train >= _eli_need:
-                        _sf_user_ctx = max(_sf_user_ctx, (_eli_need // 2048) * 2048)
-                if _sf_train < int(_sf_os.environ.get("ELI_CTX_BRIEF_FLOOR", "12288") or "12288"):
+                    # auto, or a request past the trained context: the target the tuner and the
+                    # headless loader use, from this model and this machine's memory now
+                    from eli.core.hardware_profile import auto_ctx_target as _sf_auto_ctx
+                    _sf_gpu_now = _sf_budget() if gpu_offload_supported is not False else None
+                    _sf_user_ctx = int(_sf_auto_ctx(
+                        str(path_obj), _sf_model_gb,
+                        free_vram_mb=int(getattr(_sf_gpu_now, "free_mb", 0) or 0),
+                        available_ram_gb=_avail_gb,
+                        use_gpu=bool(_sf_gpu_now and int(getattr(_sf_gpu_now, "free_mb", 0) or 0) > 0
+                                     and int(effective_n_gpu_layers) > 0),
+                        kv_quantized=_sf_kvq, kv_cache_type=_sf_kv_type))
+                    if _sf_train:
+                        _sf_user_ctx = min(_sf_user_ctx, _sf_train)
+                _eli_floor = _eli_prompt_floor_tokens()
+                if _sf_train and _eli_floor and _sf_train < _eli_floor:
                     log.warning(
-                        f"[GUI][LOAD] model trained context {_sf_train} < ELI's prompt budget "
-                        f"~{int(_sf_os.environ.get('ELI_CTX_BRIEF_FLOOR', '12288'))}: persona/memory "
-                        f"will be truncated. Choose a model with a larger trained context.")
-
-                _avail_gb = float(_sf_avail_ram())
+                        f"[GUI][LOAD] model trained context {_sf_train} is smaller than ELI's own "
+                        f"prompt (~{_eli_floor} tokens of persona and answer room): persona and "
+                        f"memory will be cut. A model trained on a longer context avoids it.")
                 if gpu_offload_supported is False:
                     # CPU-only: size from AVAILABLE RAM, not iGPU shared-memory VRAM.
                     # VRAM smart-fit on Iris Xe returned ctx=3996 from ~1.5GB budget while
                     # the model + KV actually live in system RAM, not iGPU VRAM budget.
-                    _ram_ceiling = int(_sf_ram_ceil(_sf_model_gb, _sf_train))
+                    _ram_ceiling = int(_sf_ram_ceil(_sf_model_gb, _sf_train, model_path=str(path_obj)))
                     _sf_user_ctx = min(int(_sf_user_ctx), _ram_ceiling) if _ram_ceiling > 0 else int(_sf_user_ctx)
                     from eli.core.hardware_profile import cpu_ram_budget_mb as _cpu_ram_budget
                     _ram_budget_mb = _cpu_ram_budget(_avail_gb)
@@ -362,7 +384,7 @@ class LocalModelManager:
                         user_ctx=_sf_user_ctx,
                         user_batch=_sf_user_batch,
                         reserve_mb=512,
-                        kv_quantized=bool(_avail_gb <= 16.0),
+                        kv_quantized=_sf_kvq, kv_cache_type=_sf_kv_type,
                         min_batch=_sf_min_batch,
                         model_path=str(path_obj),
                         force_cpu=True,
@@ -372,7 +394,7 @@ class LocalModelManager:
                     log.debug(
                         f"[GUI][LOAD] RAM smart-fit (available={_avail_gb:.1f}GB "
                         f"budget={_ram_budget_mb}MB ceiling={_ram_ceiling} "
-                        f"kvq={bool(_avail_gb <= 16.0)}): "
+                        f"kv={_sf_kv_type}): "
                         f"ctx={_sf_ctx} gpu_layers=0 batch={_sf_batch}")
                     _sf_fit_layers = 0
                     _sf_fit_ctx = int(_sf_ctx)
@@ -386,12 +408,11 @@ class LocalModelManager:
                     if _sf_gpu and _sf_gpu.free_mb > 0:
                         from eli.core.hardware_profile import vram_reserve_mb as _vrm
                         _sf_reserve = int(_vrm(gpu_integrated=_sf_igpu))
-                        _sf_kvq = bool(_sf_gpu.total_mb and _sf_gpu.total_mb < 12000)
                         _sf_ctx, _sf_layers, _sf_batch = _sf_fit(
                             _sf_model_gb, _sf_gpu.free_mb, _avail_gb,
                             user_ctx=_sf_user_ctx, user_batch=_sf_user_batch,
                             reserve_mb=_sf_reserve, kv_quantized=_sf_kvq,
-                            min_batch=_sf_min_batch,
+                            kv_cache_type=_sf_kv_type, min_batch=_sf_min_batch,
                             model_path=str(path_obj),
                             gpu_integrated=_sf_igpu,
                             user_gpu_layers=_user_gpu_layers,
@@ -409,10 +430,12 @@ class LocalModelManager:
                                 f"[GUI] MoE fit: {_sf_layers_real}/{_moe_gui['layers']} layers' core "
                                 f"weights fit ({_moe_gui['resident_gb']}GB) — experts "
                                 f"~{_moe_gui['experts_gb']}GB stay in RAM")
+                        from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu
                         log.debug(
-                            f"[GUI][LOAD] smart-fit (post-init free={_sf_gpu.free_mb}MB "
-                            f"reserve={_sf_reserve}MB kvq={_sf_kvq}): "
-                            f"ctx={_sf_ctx} gpu_layers={_sf_layers} batch={_sf_batch}")
+                            f"[GUI][LOAD] smart-fit preview (post-init free={_sf_gpu.free_mb}MB "
+                            f"reserve={_sf_reserve}MB kvq={_sf_kvq}) — the fallback used only if your "
+                            f"requested settings below cannot be honoured: "
+                            f"ctx={_sf_ctx} gpu_layers={_describe_gpu(_sf_layers)} batch={_sf_batch}")
                         if _sf_ctx < _sf_user_ctx:
                             log.debug(
                                 f"[GUI][LOAD] smart-fit measured ctx {_sf_ctx} as the fit for "
@@ -431,6 +454,8 @@ class LocalModelManager:
                         _sf_fit_ctx = int(_sf_ctx)
                         _sf_fit_batch = int(_sf_batch)
                         self.fitted_gpu_layers = int(_sf_layers)
+                        _sf_free_mb = int(_sf_gpu.free_mb)
+                        _sf_total_mb = int(getattr(_sf_gpu, "total_mb", 0) or 0) or None
                         _add_attempt("smart-fit", _sf_ctx, _sf_layers, _sf_batch)
             except Exception as _sf_err:
                 log.debug(f"[GUI][LOAD] smart-fit attempt skipped: {_sf_err}")
@@ -508,6 +533,43 @@ class LocalModelManager:
                 _proof_bits.append(f"ctx {_base_ctx}>{_sf_fit_ctx}")
             if _sf_fit_batch is not None and int(_base_batch) > int(_sf_fit_batch):
                 _proof_bits.append(f"batch {_base_batch}>{_sf_fit_batch}")
+            # Weights alone that need more VRAM than is free cannot load: the probe would spend its
+            # whole budget on a certain failure (109 s live, with another program holding 5 GB).
+            # Nothing is recorded against the settings, so they are used again once the card is free.
+            _cannot_fit = ""
+            if gpu_offload_supported is not False and int(_base_layers) > 0 and _sf_free_mb is not None:
+                try:
+                    from eli.core.hardware_profile import (describe_gpu_layers as _dgl,
+                                                           gpu_weights_beyond_free as _beyond)
+                    _floor_layers = int(_base_layers)
+                    if _moe_gui:
+                        from eli.core import moe_offload as _moe_floor
+                        _floor_layers = _moe_floor.full_offload_layers(_floor_layers, str(path_obj))
+                    _need_mb = _beyond(str(path_obj), _floor_layers, _sf_free_mb, experts_in_ram=bool(_moe_gui))
+                    if _need_mb is not None:
+                        _cannot_fit = (f"{_dgl(_base_layers)} GPU layers need {_need_mb:.0f} MB of VRAM "
+                                       f"for their weights alone and {_sf_free_mb} MB is free")
+                except Exception:
+                    log.debug("[GUI][LOAD] weight floor unavailable", exc_info=True)
+            if _sf_free_mb is not None and (_cannot_fit or _proof_bits):
+                try:
+                    from eli.core.hardware_profile import describe_vram_holders, vram_holders
+                    _held = describe_vram_holders(vram_holders(), total_mb=_sf_total_mb)
+                except Exception:
+                    _held = ""
+                if _held:
+                    _load_vram_held = _held
+                    log.warning(f"[GUI][LOAD] other programs are using this card's memory: {_held}. "
+                                f"Close them or have them release the GPU, then reload the model.")
+            if _cannot_fit:
+                log.warning(f"[GUI][LOAD] your settings cannot load right now: {_cannot_fit}. "
+                            f"Loading the measured fit; your settings are kept and used again "
+                            f"once that memory is free.")
+                _proof_bits = []
+            if _ctx_is_auto:
+                # nothing was asked for: the measured fit leads, ELI's own target is never probed
+                _base_ctx = int(_sf_fit_ctx or 0) or int(_sf_user_ctx or 0) or 2048
+                _proof_bits = [b for b in _proof_bits if not b.startswith("ctx ")]
             _needs_proof = bool(_proof_bits)
             if _needs_proof:
                 log.debug(
@@ -519,7 +581,7 @@ class LocalModelManager:
             if gpu_offload_supported is False:
                 # Honour user settings as a fallback rung, not attempt 1 — RAM fit leads.
                 _add_attempt("requested", _base_ctx, 0, _base_batch, front=False)
-            else:
+            elif not _cannot_fit:
                 _add_attempt("requested", _base_ctx, _base_layers, _base_batch,
                              front=True, verify=_needs_proof)
 
@@ -650,10 +712,12 @@ class LocalModelManager:
 
             _applied = None
             _last_error = ""
+            from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_attempt
             for i, _cand in enumerate(_attempts, start=1):
                 log.debug(
                     f"[GUI][LOAD] attempt {i}/{len(_attempts)}: {_cand['label']} "
-                    f"(ctx={_cand['n_ctx']} gpu_layers={_cand['n_gpu_layers']} batch={_cand['n_batch']})",
+                    f"(ctx={_cand['n_ctx']} gpu_layers={_describe_gpu_attempt(_cand['n_gpu_layers'])} "
+                    f"batch={_cand['n_batch']})",
                 )
                 # A candidate marked for verification is proven in a separate
                 # process before it is loaded here. `except Exception` below
@@ -772,6 +836,8 @@ class LocalModelManager:
                     if not _moe_gui or _cand_gpu_layers <= 0:
                         return Llama(**kw)
                     from eli.core import moe_offload as _moe_offload_gui2
+                    kw = dict(kw, n_gpu_layers=_moe_offload_gui2.full_offload_layers(
+                        kw["n_gpu_layers"], kw.get("model_path")))
                     with _moe_offload_gui2.expert_offload_params():
                         return Llama(**kw)
 
@@ -785,9 +851,16 @@ class LocalModelManager:
                             llama_kwargs.pop("cache_type_v", None)
                             self.model = _build_llama(llama_kwargs)
                     _applied = dict(_cand)
+                    _applied["n_gpu_layers"] = _cand_gpu_layers
                     _applied["moe_expert_offload"] = bool(_moe_gui)
                     _applied["moe_resident_gb"] = (_moe_gui or {}).get("resident_gb") if _moe_gui else None
                     _applied["moe_experts_gb"] = (_moe_gui or {}).get("experts_gb") if _moe_gui else None
+                    try:
+                        # llama.cpp's own KV size for this model replaces the estimate from its header
+                        from eli.core.gguf_sizes import record_load_report
+                        record_load_report(path_obj, _attempt_log)
+                    except Exception:
+                        log.debug("[GUI][LOAD] KV report not recorded", exc_info=True)
                     break
                 except Exception as _attempt_err:
                     self.model = None
@@ -816,15 +889,15 @@ class LocalModelManager:
             applied_n_ctx = int(_applied["n_ctx"])
             applied_n_gpu_layers = int(_applied["n_gpu_layers"])
             applied_n_batch = int(_applied["n_batch"])
+            from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_applied
             log.debug(
                 f"[GUI][LOAD] selected={_applied['label']} "
-                f"(ctx={applied_n_ctx} gpu_layers={applied_n_gpu_layers} batch={applied_n_batch})",
+                f"(ctx={applied_n_ctx} gpu_layers={_describe_gpu_applied(applied_n_gpu_layers)} "
+                f"batch={applied_n_batch})",
             )
 
-            setattr(self.model, "n_ctx", int(applied_n_ctx))
-            setattr(self.model, "n_threads", int(n_threads))
-            setattr(self.model, "n_gpu_layers", int(applied_n_gpu_layers))
-            setattr(self.model, "n_batch", int(applied_n_batch))
+            # the Llama object keeps its own: n_ctx is a method there, and overwriting it with a number
+            # made every llm.n_ctx() reader fall back to the requested ctx instead of the loaded one
             self.n_ctx = int(applied_n_ctx)
             self.n_threads = int(n_threads)
             self.n_gpu_layers = int(applied_n_gpu_layers)
@@ -855,6 +928,9 @@ class LocalModelManager:
                     "requested_n_gpu_layers": int(requested_n_gpu_layers),
                     "gpu_offload_supported": gpu_offload_supported,
                     "load_mode": "GPU" if int(self.n_gpu_layers) > 0 else "CPU",
+                    "moe_expert_offload": bool(_moe_gui),
+                    "moe_resident_gb": (_moe_gui or {}).get("resident_gb") if _moe_gui else None,
+                    "moe_experts_gb": (_moe_gui or {}).get("experts_gb") if _moe_gui else None,
                     "live_inference_memory": record_load_memory(
                         self.model, pre_load_rss_bytes=_pre_load_rss
                     ),
@@ -890,6 +966,8 @@ class LocalModelManager:
                 requested_n_ctx=_user_ctx,
                 requested_n_batch=_user_batch,
                 gpu_offload_supported=gpu_offload_supported,
+                vram_free_mb_at_load=_sf_free_mb,
+                vram_held_by_others=_load_vram_held,
             )
             return True
         except Exception as e:

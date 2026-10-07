@@ -440,7 +440,7 @@ class AdvancedSettingsDialog(QDialog):
     def _populate_models_table(self):
         rows = []
         try:
-            from eli.gui.eli_pro_audio_gui_v2_0 import discover_gguf_models
+            from eli.gui.main_window import discover_gguf_models
             models = discover_gguf_models()
             for m in models:
                 size_str = f"{m.get('size_gb', 0.0):.2f} GB"
@@ -449,7 +449,7 @@ class AdvancedSettingsDialog(QDialog):
             pass
         try:
             from eli.integrations.ollama.client import get_active_host
-            from eli.gui.eli_pro_audio_gui_v2_0 import OllamaModelManager
+            from eli.gui.main_window import OllamaModelManager
             host = get_active_host()
             om = OllamaModelManager()
             ollama_names = om.list_models(host)

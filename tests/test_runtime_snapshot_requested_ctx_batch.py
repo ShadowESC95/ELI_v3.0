@@ -10,7 +10,7 @@ try:
     from PySide6.QtWidgets import QApplication
     if type(QApplication).__name__ == "MagicMock":
         raise RuntimeError("PySide6 mocked")
-    from eli.gui.eli_pro_audio_gui_v2_0 import LocalModelManager
+    from eli.gui.main_window import LocalModelManager
 except Exception as _e:  # pragma: no cover
     pytest.skip(f"needs real PySide6 ({_e}); run with --noconftest", allow_module_level=True)
 

@@ -56,9 +56,8 @@ an embedded dashboard) and **560 test files** under `tests/`.
 | `coding/` | 2.7k | 15 | the coding agent |
 | `setup/`, `utils/`, `licensing/`, `world/`, `system/`, `contracts/`, `onboarding/`, `editions/`, `cli/`, top level | 10.8k | 94 | installer, helpers, licensing, world model, portable control |
 
-**Five files carry about a fifth of the codebase:** `executor_enhanced.py` (15.9k),
-`gui/eli_pro_audio_gui_v2_0.py` (12.8k), `router_enhanced.py` (8.3k), `engine.py` (8.0k, with
-another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server.py` (5.3k),
+**The largest files:** `executor_enhanced.py` (15.9k), `router_enhanced.py` (8.3k), `engine.py`
+(8.0k, with another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server.py` (5.3k),
 `agent_bus.py` (3.5k), `deterministic_grounding_gate.py` (3.4k), `gui/labs/report_tab.py` (3.3k).
 
 ## 3. Architecture, layer by layer
@@ -118,7 +117,7 @@ another 8.5k in its stage mixins) and `memory.py` (5.7k). Next tier: `api/server
    method; the regression surface is high and unit-testing is hard.
 3. **Overlap in `runtime/`.** Many `personal_memory_*`, `*_surface` and `*_response` modules
    do neighbouring grounding work.
-4. **Two copies of the main window.** The decomposed `gui/main_window/` package launches; the 12.8k-line `eli_pro_audio_gui_v2_0.py` monolith is retained and still imported by a few modules.
+4. **One main window.** `gui/main_window/` is the window; the old single-file copy, which had been collecting fixes the launched window never got, was removed, and a test builds the window offscreen.
 5. **Test-suite state.** See `operations.md` for the current pass count; tests that touch
    settings and path caches are isolated from one another by fixtures in `tests/conftest.py`.
 6. **Network containment is Python-level.** There is no eBPF, seccomp, landlock, namespace or

@@ -105,7 +105,7 @@ class ScreenCaptureMixin:
                 except subprocess.TimeoutExpired:
                     text = "(tesseract timed out)"
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
             # ── 2. pytesseract binding (also calls tesseract binary) ────────
             if not text:
@@ -120,7 +120,7 @@ class ScreenCaptureMixin:
                         img = img.resize((int(w * scale), int(h * scale)))
                     text = pytesseract.image_to_string(img, config="--psm 11").strip()
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
             # ── 3. Not installed ────────────────────────────────────────────
             if not text:
@@ -172,7 +172,9 @@ class ScreenCaptureMixin:
                 if _has_shot:
                     from eli.execution.executor_enhanced import execute as _vexec
                     from eli.perception.screen_analysis import build_screen_analysis_prompt
-                    depth = "deep" if deep else "standard"
+                    depth = "deep" if deep else str(
+                        getattr(self, "_sc_depth_combo", None) and self._sc_depth_combo.currentData() or "standard"
+                    )
                     _prompt = build_screen_analysis_prompt("", depth=depth)
                     if _ocr:
                         _prompt += f"\n\nOCR text already extracted (use as ground truth):\n{_ocr[:2500]}"

@@ -202,7 +202,7 @@ eli/  (232,414 LOC, 613 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │   ├── model_download.py
 │
 ├── gui/               27.4k ─── PySide6 desktop
-│   ├── main_window/ · labs/ · app.py · eli_pro_audio_gui_v2_0.py 12.8k (retained monolith)
+│   ├── main_window/ (the window) · labs/ · app.py
 │   └── panels/  (startup.py: model picker + FirstBootWizard, HardwareTuningDock)
 │
 ├── tools/              7.6k ─── image_engine · news · document tools

@@ -24,7 +24,7 @@ import os
 # Re-baselined for v3.0.8: the LAN-HTTPS/cert + Connect feature work added a handful of
 # best-effort guards; ratchet reset to the current honest count. Do not raise casually.
 # v3.0.97: bulk conversion removed 284 handlers (656 → 372).
-CEILING = 372
+CEILING = 217
 
 _ELI_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "eli"))
 

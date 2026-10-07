@@ -14,6 +14,7 @@ line of checking refutes.
 and, invisibly, `[PENDING_PROPOSAL] stored: 'keep a deeper'` — a fragment of
 ELI's own prose armed as a command for the next "yes".
 """
+from tests._live_gui import live_gui_files, live_gui_source
 import pytest
 
 from eli.execution.router_enhanced import _pm_asks_something, route
@@ -181,8 +182,7 @@ def test_mic_dropdown_enumerates_under_the_stderr_guard():
     launch — and it was the only remaining unguarded caller."""
     from pathlib import Path
 
-    src = Path(__file__).resolve().parents[1] / "eli" / "gui" / "eli_pro_audio_gui_v2_0.py"
-    text = src.read_text(encoding="utf-8")
+    text = live_gui_source()
 
     # Match the CALL, not prose about it — the explanatory comment above the fix
     # mentions list_microphone_names() too, and anchoring on the first textual

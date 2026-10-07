@@ -11,7 +11,16 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List, Optional, Tuple
+# The Labs tabs take their names from here with `import *`, so an import that looks unused in
+# this file is used by them (tests/test_gui_names_resolve.py checks).
+import json
+import re
+import shlex
+import subprocess
+import threading
+import time
+from datetime import datetime
 
 
 from eli.utils.log import get_logger

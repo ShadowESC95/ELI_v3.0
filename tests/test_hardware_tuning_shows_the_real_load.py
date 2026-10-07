@@ -9,11 +9,11 @@ So a launch showed "ctx=4096" in the panel while the session ran at 8192.
 Rather than recompute anything for the panel (a second source of truth that can
 drift), the dock subscribes to the lines ELI already writes.
 """
+from tests._live_gui import live_gui_source
 import logging
 import pathlib
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui" / "panels" / "startup.py"
-GUI = pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui" / "eli_pro_audio_gui_v2_0.py"
 
 
 def _relay_namespace():
@@ -97,7 +97,7 @@ def test_a_broken_record_does_not_take_the_app_down():
 def test_the_relay_is_scoped_to_eli_not_the_root_logger():
     """Attaching to root would format every record in the process — including
     third-party libraries — just to substring-match it."""
-    src = GUI.read_text(encoding="utf-8")
+    src = live_gui_source()
     i = src.index("def _install_hardware_log_relay")
     body = src[i:src.index("\n    def ", i + 10)]
     code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
@@ -108,7 +108,7 @@ def test_the_relay_is_scoped_to_eli_not_the_root_logger():
 def test_the_relay_does_not_raise_the_log_level():
     """Forcing DEBUG would add console noise the operator did not ask for; if the
     lines are absent from the terminal they should be absent from the tab too."""
-    src = GUI.read_text(encoding="utf-8")
+    src = live_gui_source()
     i = src.index("def _install_hardware_log_relay")
     body = src[i:src.index("\n    def ", i + 10)]
     code = "\n".join(l for l in body.splitlines() if not l.strip().startswith("#"))
@@ -124,7 +124,7 @@ def test_the_dock_appends_on_the_gui_thread():
 
 
 def test_the_relay_is_installed_once():
-    src = GUI.read_text(encoding="utf-8")
+    src = live_gui_source()
     i = src.index("def _install_hardware_log_relay")
     body = src[i:src.index("\n    def ", i + 10)]
     assert "_hardware_log_relay" in body and "is not None:" in body

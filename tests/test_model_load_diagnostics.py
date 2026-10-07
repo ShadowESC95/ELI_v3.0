@@ -185,7 +185,7 @@ def test_unknown_failures_stay_retryable():
 def test_both_load_ladders_stop_on_unrecoverable_failures():
     for path, marker in [
         ("eli/cognition/gguf_inference.py", 'getattr(e, "retryable", True)'),
-        ("eli/gui/eli_pro_audio_gui_v2_0.py", "_retryable(_attempt_log)"),
+        ("eli/gui/main_window/models.py", "_retryable(_attempt_log)"),
     ]:
         src = Path(path).read_text(encoding="utf-8")
         code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))

@@ -123,7 +123,8 @@ def _selftest() -> int:
         # memory DB).
         from eli.core.init_data import bootstrap_once
         bootstrap_once()
-        import eli.gui.eli_pro_audio_gui_v2_0 as gui  # full GUI import chain (Qt, plugins, memory)
+        # the module eli.gui.app:main opens: the full GUI import chain (Qt, plugins, memory)
+        import eli.gui.gui_eli_original as gui
         import api.server                             # noqa: F401  web/phone server stack
         import segno                                  # noqa: F401  LAN QR codes in GUI
         import cryptography                           # noqa: F401  LAN HTTPS certs

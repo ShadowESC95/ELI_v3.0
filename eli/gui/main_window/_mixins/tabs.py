@@ -27,8 +27,12 @@ class TabsMixin:
         self.create_report_builder_tab()
         # Orchestration + Test & Review are developer/diagnostic tools — they live as
         # sub-tabs under Labs (LabsTab), not as prominent top-level tabs.
-        # Experimental tab removed — gaze control is wired as a toggle in Settings.
+        # The Experimental tab is the read-only workbench over `experimental/`: it
+        # inventories prototype kits and opens folders, never runs them. (An earlier
+        # tab of the same name carried gaze control; that moved to Settings ▸ Gaze.)
+        self.create_experimental_tab()
         self.create_eli_world_tab()
+        self.create_audit_tab()
         # Extensions sits immediately left of Settings because that is where it came
         # from: plugins, MCP servers and the marketplace were sub-tabs of the modal
         # Advanced Settings dialog, three clicks deep in something most people never
@@ -1014,6 +1018,57 @@ class TabsMixin:
 
         self.tabs.addTab(widget, "🖥️ Screen")
 
+    def _sc_load_settings(self):
+        try:
+            from eli.core.runtime_settings import load_settings as _ls
+            s = _ls() or {}
+        except Exception:
+            s = {}
+        depth = str(s.get("screen_analysis_depth", "standard") or "standard")
+        idx = self._sc_depth_combo.findData(depth)
+        if idx >= 0:
+            self._sc_depth_combo.setCurrentIndex(idx)
+        self._sc_use_memory_cb.setChecked(bool(s.get("screen_analysis_use_memory", True)))
+        self._sc_use_research_cb.setChecked(bool(s.get("screen_analysis_use_research", True)))
+        gidx = self._sc_ground_combo.findData(str(s.get("ui_ground_backend", "none") or "none"))
+        if gidx >= 0:
+            self._sc_ground_combo.setCurrentIndex(gidx)
+        aidx = self._sc_agent_combo.findData(str(s.get("computer_use_backend", "none") or "none"))
+        if aidx >= 0:
+            self._sc_agent_combo.setCurrentIndex(aidx)
+        self._sc_ambient_cb.setChecked(bool(s.get("ambient_vision_enabled", False)))
+        try:
+            self._sc_interval_spin.setValue(int(s.get("ambient_vision_interval", 300) or 300))
+        except Exception:
+            log.debug("invalid ambient_vision_interval in settings; using spin default", exc_info=True)
+
+    def _sc_save_settings(self):
+        try:
+            from eli.core.runtime_settings import save_settings as _ss
+            _ss({
+                "screen_analysis_depth": self._sc_depth_combo.currentData() or "standard",
+                "screen_analysis_use_memory": bool(self._sc_use_memory_cb.isChecked()),
+                "screen_analysis_use_research": bool(self._sc_use_research_cb.isChecked()),
+                "ui_ground_backend": self._sc_ground_combo.currentData() or "none",
+                "computer_use_backend": self._sc_agent_combo.currentData() or "none",
+                "ambient_vision_enabled": bool(self._sc_ambient_cb.isChecked()),
+                "ambient_vision_interval": int(self._sc_interval_spin.value()),
+            })
+            try:
+                from eli.perception.ambient_vision import set_ambient_vision
+                set_ambient_vision(bool(self._sc_ambient_cb.isChecked()))
+            except Exception:
+                log.debug("ambient vision sync failed", exc_info=True)
+            if hasattr(self, "ambient_vision_btn"):
+                on = bool(self._sc_ambient_cb.isChecked())
+                self.ambient_vision_btn.blockSignals(True)
+                self.ambient_vision_btn.setChecked(on)
+                self.ambient_vision_btn.setText("👁 Watch: ON" if on else "👁 Watch: OFF")
+                self.ambient_vision_btn.blockSignals(False)
+            QMessageBox.information(self, "Screen settings", "Saved — all local, no network required.")
+        except Exception as e:
+            QMessageBox.warning(self, "Screen settings", f"Could not save: {e}")
+
     def create_ide_tab(self):
         ide_widget = QWidget()
         layout = QVBoxLayout(ide_widget)
@@ -1382,3 +1437,99 @@ class TabsMixin:
             self._consent_bridge = install_consent_ui(self)
         except Exception as _perm_err:
             log.debug(f"[GUI] plugin consent UI unavailable: {_perm_err}")
+
+    def refresh_audit_tab(self):
+        try:
+            from eli.runtime import orchestrator_audit_ledger as _oal
+        except Exception as exc:
+            self.audit_integrity_label.setText(f"⚠️ Audit ledger unavailable: {exc}")
+            return
+        try:
+            v = _oal.verify_chain()
+            if v.get("ok"):
+                self.audit_integrity_label.setText(
+                    f"✅ Chain intact — {v.get('checked', 0)} checked, "
+                    f"{v.get('chained', 0)} chained, keyed={v.get('keyed', False)}"
+                )
+            else:
+                fb = v.get("first_break") or {}
+                self.audit_integrity_label.setText(
+                    f"🛑 Chain broken at row {fb.get('id')}: {fb.get('reason')}"
+                )
+        except Exception as exc:
+            self.audit_integrity_label.setText(f"⚠️ Verify failed: {exc}")
+
+        try:
+            rows = _oal.recent_turns(limit=200)
+        except Exception as exc:
+            log.debug(f"[GUI] audit recent_turns failed: {exc}")
+            rows = []
+        self.audit_table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            try:
+                ts_str = datetime.fromtimestamp(float(row.get("ts") or 0)).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                ts_str = ""
+            conf = row.get("confidence")
+            conf_str = f"{float(conf):.2f}" if conf is not None else ""
+            elapsed = row.get("elapsed_ms")
+            elapsed_str = f"{float(elapsed):.0f}" if elapsed is not None else ""
+            values = [
+                ts_str, str(row.get("request_id") or ""), str(row.get("source") or ""),
+                str(row.get("parent_request_id") or ""), str(row.get("action") or ""),
+                str(row.get("agents_used") or ""),
+                conf_str, elapsed_str, "✅" if row.get("ok") else "❌", str(row.get("outcome") or ""),
+            ]
+            for col, val in enumerate(values):
+                self.audit_table.setItem(i, col, QTableWidgetItem(val))
+
+    def create_audit_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        header = QLabel("🔒 Orchestrator Audit")
+        header.setStyleSheet("font-size: 13px; font-weight: bold; padding: 6px;")
+        layout.addWidget(header)
+
+        hint = QLabel("Tamper-evident, metadata-only record of every turn's real outcome — "
+                      "one row per request, including commands, background tasks and "
+                      "followthrough runs (Parent links a run to the request that caused it). "
+                      "No prompt or response content. HMAC-chained; editing, deleting or "
+                      "reordering a row breaks the chain and Verify Chain reports it.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#88909c;font-size:10px;padding:2px 6px;")
+        layout.addWidget(hint)
+
+        self.audit_integrity_label = QLabel("Not yet checked.")
+        self.audit_integrity_label.setStyleSheet("padding:4px 6px;")
+        layout.addWidget(self.audit_integrity_label)
+
+        toolbar = QHBoxLayout()
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.clicked.connect(self.refresh_audit_tab)
+        toolbar.addWidget(refresh_btn)
+        verify_btn = QPushButton("✅ Verify Chain")
+        verify_btn.clicked.connect(self.refresh_audit_tab)
+        toolbar.addWidget(verify_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.audit_table = QTableWidget()
+        self.audit_table.setColumnCount(10)
+        self.audit_table.setHorizontalHeaderLabels(
+            ["Time", "Request", "Source", "Parent", "Action", "Agents", "Confidence",
+             "Elapsed(ms)", "OK", "Outcome"])
+        self.audit_table.horizontalHeader().setStretchLastSection(True)
+        select_rows = getattr(
+            getattr(QAbstractItemView, "SelectionBehavior", QAbstractItemView), "SelectRows")
+        self.audit_table.setSelectionBehavior(select_rows)
+        self.audit_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.audit_table)
+
+        self.refresh_audit_tab()
+        self._audit_tab_timer = QTimer(self)
+        self._audit_tab_timer.setInterval(15_000)
+        self._audit_tab_timer.timeout.connect(self.refresh_audit_tab)
+        self._audit_tab_timer.start()
+
+        self.tabs.addTab(widget, "🔒 Audit")

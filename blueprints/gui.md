@@ -60,7 +60,6 @@ flowchart TD
 | `main_window/widgets.py`, `_common.py` | 493, 557 | shared widgets and helpers |
 | `labs/` (16 modules) | 6.4k | the Labs sub-tabs; `report_tab.py` is the largest (3327) |
 | `labs_tab.py`, `gui_eli_original.py` | 30, 7 | compatibility shims that re-export the packages above |
-| `eli_pro_audio_gui_v2_0.py` | 12859 | the pre-decomposition monolith, kept for compatibility; `app.py` does not launch it |
 | `panels/startup.py` | 1974 | guided first boot: hardware, model pick or download, tuning |
 | `panels/settings.py` | 825 | settings dialog including the Plugins and Marketplace sub-tabs |
 | `tabs/extensions_tab.py` | 1991 | Extensions tab |
@@ -164,9 +163,11 @@ timeout that **denies** if the GUI never answers.
   live telemetry, local model management, first-boot wizard, scientific workspace.
   v3 decomposition makes the GUI easier to navigate and test than the v2 god-file.
 - **Weak / watch:**
-  1. **Two copies of the window.** The decomposed `main_window/` package is what launches; the
-     12.8k-line `eli_pro_audio_gui_v2_0.py` monolith is still in the tree and is still imported
-     by `panels/settings.py` and other modules, so it can drift from the package.
+  1. **One window, built in a test.** The pre-decomposition single-file copy was removed
+     (2026-10-07): ports kept landing in it instead of `main_window/`, and an import clean-up of
+     `_common.py` had left the launched window unable to start with every test passing.
+     `tests/test_gui_names_resolve.py` now resolves every name the modules use through their
+     `import *`, checks every `self.` method the window calls, and builds the window offscreen.
   2. **Ollama manager** (about 130 lines, plus the 444-line model selector widget) sits oddly against the "100% local GGUF,
      don't-care-about-Ollama" stance — it's an optional/legacy path carrying
      real weight; candidate for removal or clear quarantine.

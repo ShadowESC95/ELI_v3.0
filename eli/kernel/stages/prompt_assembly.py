@@ -25,7 +25,7 @@ from eli.kernel.stages.persona_text import (
     _load_persona_text,
 )
 from eli.utils.log import get_logger
-from eli.kernel.stages._common import ELI_BUDGET_MEMORY_CHARS
+from eli.kernel.stages._common import ELI_BUDGET_MEMORY_CHARS_PER_TOKEN
 from eli.cognition import evidence_format as _evidence_format
 from eli.kernel import request_context as _request_context
 from eli.kernel.stages._common import _mounted_model_authority_line
@@ -98,14 +98,14 @@ class PromptAssemblyMixin:
         return kept + f"\n[…{label} truncated to {budget_chars} chars to fit context window]"
 
     def _build_evidence_prompt(self, user_input: str, bus_result) -> str:
-        # Per-block byte budgets (Phase 6). Total evidence ceiling ≈ 14 KB; with
-        # persona (~2 KB) and instructions (~0.5 KB) the assembled prompt stays
-        # comfortably under 16 KB on a 16384-ctx model.
-        BUDGET_MEMORY = ELI_BUDGET_MEMORY_CHARS
-        BUDGET_SNIPPETS = 2048
-        BUDGET_REFLECTIONS = 1024
-        BUDGET_HABITS = 512
-        BUDGET_EXECUTOR = 4096
+        # Per-block character budgets, in characters per token of the window that loaded, so a
+        # 4k model is not overfilled and a 128k one is not starved (they were fixed sizes).
+        _win = self._runtime_n_ctx()
+        BUDGET_MEMORY = max(1, int(_win * ELI_BUDGET_MEMORY_CHARS_PER_TOKEN))
+        BUDGET_SNIPPETS = max(1, int(_win * 0.125))
+        BUDGET_REFLECTIONS = max(1, int(_win * 0.0625))
+        BUDGET_HABITS = max(1, int(_win * 0.03125))
+        BUDGET_EXECUTOR = max(1, int(_win * 0.25))
 
         parts = []
         try:
@@ -328,20 +328,21 @@ Answer:"""
         # Trim the persona (keep its head: VOICE + HARD CONSTRAINTS) to the room left. Quick/chat turns
         # keep the full persona.
         try:
+            from eli.cognition.context_budget import chars_per_token, output_reserve_tokens
             _nctx = self._effective_n_ctx()
-            # Reserve for the model's reply matching the grounded/broker contract
-            # (observed up to ~6.5k tokens) so a large output never forces the
-            # prompt to be truncated. 3.0 chars/token (conservative).
-            _target_chars = max(6000, int((_nctx - 6600) * 3.0))
-            # Non-persona content already in the system prompt: evidence
-            # (memory_context), brief, user input, reasoning instruction, plus the
-            # base_rules + user-profile block + scaffolding (~12k observed).
+            # The window less the reply's room (the reserve the generator holds back), in measured
+            # characters per token.
+            _reply = output_reserve_tokens(int(self._generation_settings().get("max_tokens") or 0), _nctx)
+            _target_chars = int(max(0, _nctx - _reply) * float(chars_per_token()))
+            # Everything else in the system prompt: evidence, brief, the user's words, the mode
+            # instruction, and the rules/profile/scaffolding as measured on the last prompt built.
             _other_chars = (
                 len(memory_context or "") + len(situation_brief or "")
-                + len(user_input or "") + len(reasoning_instruction or "") + 12000
+                + len(user_input or "") + len(reasoning_instruction or "")
+                + int(getattr(self, "_last_scaffold_chars", 0) or 0)
             )
-            _persona_budget = max(2000, _target_chars - _other_chars)
-            if len(persona) > _persona_budget:
+            _persona_budget = max(self._PERSONA_MIN_CHARS, _target_chars - _other_chars)
+            if _nctx > 0 and len(persona) > _persona_budget:
                 persona = persona[:_persona_budget].rstrip() + "\n[persona trimmed to fit evidence]"
         except Exception:
             log.debug("suppressed exception", exc_info=True)
@@ -603,6 +604,8 @@ Answer:"""
             )
             # Inject runtime facts
             enhanced_system = inject_runtime_facts(enhanced_system)
+            self._note_scaffold(enhanced_system, persona, memory_context, situation_brief,
+                                user_input, reasoning_instruction)
             return enhanced_system
 
         # Non-compact branch
@@ -713,7 +716,17 @@ Answer:"""
         )
         # Inject runtime facts
         enhanced_system = inject_runtime_facts(enhanced_system)
+        self._note_scaffold(enhanced_system, persona, memory_context, situation_brief,
+                            user_input, reasoning_instruction)
         return enhanced_system
+
+    def _note_scaffold(self, system: str, *parts) -> None:
+        """Keep how much of the prompt was rules, profile and scaffolding, so the next turn sizes
+        the persona against a measured figure (it was a fixed 12000 characters)."""
+        try:
+            self._last_scaffold_chars = max(0, len(system or "") - sum(len(str(x or "")) for x in parts))
+        except Exception:
+            log.debug("scaffold size not recorded", exc_info=True)
 
     def _build_grounded_evidence_context(self, user_input: str) -> str:
         low = (user_input or "").strip().lower()

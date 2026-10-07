@@ -29,6 +29,7 @@ Nothing here hardcodes a new number — it removes four. The one real constraint
 prompt + generation <= n_ctx, is computed per call from the ACTUAL prompt in
 gguf_inference._fit_generation_budget, which is the only place that can know it.
 """
+from tests._live_gui import live_gui_files, live_gui_source
 from pathlib import Path
 
 import pytest
@@ -190,7 +191,7 @@ def test_requested_is_queued_once_not_twice():
     """One GPU front-of-ladder site and one CPU-only fallback — not a duplicate
     of the same rung. Two identical front=True inserts would race the ladder.
     """
-    src = (REPO / "eli/gui/eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
+    src = live_gui_source()
     assert src.count('_add_attempt("requested"') == 2
     assert '_add_attempt("requested", _base_ctx, _base_layers, _base_batch,' in src
     assert '_add_attempt("requested", _base_ctx, 0, _base_batch, front=False)' in src

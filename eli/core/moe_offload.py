@@ -69,29 +69,50 @@ def plan(model_path: Optional[str], model_size_gb: float, *, free_vram_mb: int, 
     if m == "auto" and size_mb + int(reserve_mb) <= int(free_vram_mb):
         return None
     experts_gb = float(model_size_gb) * expert_fraction()
+    resident_gb = float(model_size_gb) - experts_gb
+    try:
+        from eli.core import gguf_sizes
+        w = gguf_sizes.weights(model_path)
+        if w is not None and w.experts_total > 0:
+            # the file's own tensor sizes; the fraction is only for a file whose table cannot be read
+            experts_gb = w.experts_total / 1024 ** 3
+            resident_gb = w.resident_total / 1024 ** 3
+    except Exception:
+        log.debug("moe: tensor sizes unreadable", exc_info=True)
     if float(available_ram_gb) < experts_gb * 0.75:
         return None
-    return {"resident_gb": round(float(model_size_gb) - experts_gb, 2), "experts_gb": round(experts_gb, 2),
+    return {"resident_gb": round(resident_gb, 2), "experts_gb": round(experts_gb, 2),
             "layers": int(prof.block_count or 0)}
 
 
 def plan_for_load(model_path: str, gpu_supported: Optional[bool]) -> Optional[Dict[str, Any]]:
     """The plan at load time, from live memory."""
     try:
-        from pathlib import Path
+        from eli.core import mem_units
         if gpu_supported is False:
             return None
         from eli.core.hardware_profile import get_live_gpu_telemetry
         free = int(get_live_gpu_telemetry().get("free_mb") or 0)
         try:
             import psutil
-            ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+            ram_gb = mem_units.bytes_to_gib(psutil.virtual_memory().available)
         except Exception:
             ram_gb = 0.0
-        return plan(model_path, Path(model_path).stat().st_size / (1024 ** 3), free_vram_mb=free, available_ram_gb=ram_gb)
+        return plan(model_path, mem_units.file_size_gib(model_path), free_vram_mb=free, available_ram_gb=ram_gb)
     except Exception:
         log.debug("moe: load plan unavailable", exc_info=True)
         return None
+
+
+def full_offload_layers(n_gpu_layers: Any, model_path: Optional[str]) -> int:
+    """llama.cpp counts one more layer than the model has blocks (the output layer).
+    Asking for 40 on a 40-block model put the output layer and 39 blocks on the GPU and
+    left block 0's attention on the CPU, while ELI reported "40/40" (live load log,
+    2026-10-03). An expert-offload request for every block asks for every layer."""
+    n = int(n_gpu_layers)
+    prof = profile(model_path)
+    blocks = int(getattr(prof, "block_count", 0) or 0)
+    return blocks + 1 if blocks and 0 < blocks <= n < 99 else n
 
 
 def _zero_copy_experts_wanted() -> bool:

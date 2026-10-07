@@ -108,7 +108,10 @@ class CentralMemoryAdapter:
 
 
 class ExecutorBridge:
-    def __init__(self):
+    def __init__(self, memory=None):
+        # The window's memory system: a global of the old single-file GUI, which this module
+        # cannot see since the split.
+        self.memory = memory
         self.executor_module = None
         self.router_module = None
         self.import_notes: List[str] = []
@@ -235,13 +238,13 @@ class ExecutorBridge:
             return datetime.now().strftime("%A, %Y-%m-%d")
         if action == 'MEMORY_STORE':
             text = args.get('text', '')
-            if memory_system.store(text):
+            if self.memory is not None and self.memory.store(text):
                 return '✅ Memory stored'
             return '❌ Failed to store memory'
         if action == 'MEMORY_RECALL':
             query = args.get('query', '')
             limit = args.get('limit', 10)
-            results = memory_system.search(query, limit)
+            results = self.memory.search(query, limit) if self.memory is not None else []
             if results:
                 return f"Found {len(results)} memories:\n" + "\n".join(
                     f"- {r['text']}" for r in results[:5]
@@ -277,7 +280,7 @@ class _GUIEngineAdapter:
         self._lock          = inference_lock  # class-level GUI lock (thread-safe)
         self._ce            = cognitive_engine
         self._in_orchestrator = False
-        self.document_rag   = None            # optional RAG — not wired yet
+        self.document_rag   = getattr(cognitive_engine, "document_rag", None)  # the document index
         self.session_id     = f"gui-{int(time.time())}"
         self.user_id        = self._load_user_id()
 
@@ -399,11 +402,17 @@ class _GUIEngineAdapter:
 
         import time as _t
 
-        # Token budget: leave enough room for response + safety margin
-        _char_budget = max(3000, self._n_ctx * 3 - self._max_tokens * 5)
+        # The window less the reply's room, in measured characters per token
+        try:
+            from eli.cognition.context_budget import chars_per_token, output_reserve_tokens
+            _cpt = max(0.5, float(chars_per_token()))
+            _reply = output_reserve_tokens(int(self._max_tokens or 0), int(self._n_ctx or 0))
+        except Exception:
+            _cpt, _reply = 4.0, max(0, int(self._max_tokens or 0))
+        _char_budget = max(0, int((int(self._n_ctx or 0) - _reply) * _cpt))
 
-        # 1. Persona — compact for small models, full for 7B+
-        _use_compact = self._n_ctx <= 8192
+        # 1. Persona — compact when the full one would not leave room in this window
+        _use_compact = len(ELI_SYSTEM_PROMPT or "") > _char_budget // 2
         persona = self._compact_persona() if _use_compact else (ELI_SYSTEM_PROMPT or "")
 
         # 2. User profile

@@ -19,9 +19,9 @@ else:
         def _init_db(self):
             import sqlite3
             conn = sqlite3.connect(str(self.db_path))
+            from eli.core.sqlite_util import apply_pragmas
+            apply_pragmas(conn, db_path=str(self.db_path), synchronous="NORMAL")
             conn.executescript("""
-                PRAGMA journal_mode=WAL;
-                PRAGMA synchronous=NORMAL;
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -144,7 +144,7 @@ else:
 model_manager = LocalModelManager()
 
 
-executor_bridge = ExecutorBridge()
+executor_bridge = ExecutorBridge(memory_system)
 
 
 from eli.gui.main_window._mixins.chrome_io import ChromeIoMixin
@@ -346,7 +346,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
                 model_manager.n_batch = _pre_int('n_batch', _pre_snap.get('n_batch', 0))
 
                 _ggi._llm = _pre
-                _ggi.set_live_runtime_override({
+                _ggi.publish_live_runtime({
                     "provider": "gguf",
                     "loaded": True,
                     "model_path": str(model_manager.model_path or ""),
@@ -404,15 +404,22 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
                 log.debug(f"[GUI] preloaded runtime snapshot write failed: {_pre_snap_err}")
 
             self.active_backend = model_manager
+            from eli.core.hardware_profile import format_gpu_layers_status as _fmt_gpu_pre
+            _pre_gpu = _fmt_gpu_pre(
+                int(getattr(model_manager, 'n_gpu_layers', 0) or 0),
+                fitted_layers=int(getattr(model_manager, 'fitted_gpu_layers', 0) or 0),
+                gpu_integrated=bool(getattr(model_manager, 'gpu_integrated', False)),
+                gpu_name=str(getattr(model_manager, 'gpu_name', '') or ''),
+                gpu_vendor=str(getattr(model_manager, 'gpu_vendor', '') or ''),
+            )
             self.status_signal.emit(
-                f"🟢 Model ready: {Path(model_manager.model_path).name}"
+                f"🟢 Model ready: {Path(model_manager.model_path).name} "
+                f"(ctx={int(getattr(model_manager, 'n_ctx', 0) or 0)} "
+                f"gpu={_pre_gpu} "
+                f"batch={int(getattr(model_manager, 'n_batch', 0) or 0)})"
             )
         # Runtime handoff from launcher/model picker. Portable: no absolute source paths.
-        # Preload handshake goes through the eli.gui.gui_eli_original module (where app.py
-        # sets it) — read it from there, not window.py's globals, after the split.
-        _PRELOADED_PARAMS = getattr(
-            __import__("eli.gui.gui_eli_original", fromlist=["_PRELOADED_PARAMS"]),
-            "_PRELOADED_PARAMS", {})
+        _PRELOADED_PARAMS = globals().get("_PRELOADED_PARAMS", {})
         if not isinstance(_PRELOADED_PARAMS, dict):
             _PRELOADED_PARAMS = {}
         _pre_params = dict(_PRELOADED_PARAMS)
@@ -521,11 +528,15 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         # ---------- COGNITIVE ENGINE SINGLETON ----------
         self._cognitive_engine = None
         try:
-            from eli.kernel.engine import CognitiveEngine
+            from eli.kernel.engine import CognitiveEngine, set_engine
             self._cognitive_engine = CognitiveEngine(
                 auto_init_gguf=False,
                 enforce_hardware_authority=False,
             )
+            # Register it as THE engine. Without this the first background caller of get_engine()
+            # built a second one, with auto_init_gguf on: the model again, and a duplicate habit
+            # scheduler and self-improvement loop.
+            set_engine(self._cognitive_engine)
             log.debug("[GUI] CognitiveEngine singleton ready (reflection/habit/awareness active)")
         except Exception as _ce_init_err:
             log.debug(f"[GUI] CognitiveEngine init skipped (non-fatal): {_ce_init_err}")
@@ -702,6 +713,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             "QPushButton:hover { background-color:#e53935; }"
         )
         self.send_btn.setStyleSheet(self._send_btn_style)
+        self.send_btn.setToolTip("Send message (Enter). While generating, becomes Stop.")
         self.send_btn.clicked.connect(self._on_send_or_stop)
         btn_layout.addWidget(self.send_btn)
 
@@ -742,9 +754,9 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.auto_speak_btn.toggled.connect(self._on_auto_speak_toggled)
         btn_layout.addWidget(self.auto_speak_btn)
 
-        # Deep-thinking toggle (reasoning models: Qwen3 / DeepSeek-R1). ON = the answer
-        # call thinks (higher quality, slower); OFF = no thinking (faster). Utility calls
-        # never think regardless; no effect on non-reasoning models. Live — no reload.
+        # Deep-thinking toggle (any model whose chat template enables reasoning).
+        # ON = the answer call may think (higher quality, slower); OFF = no thinking.
+        # Utility calls never think regardless; no effect on non-reasoning models.
         try:
             from eli.core.runtime_settings import load_settings as _ls_think
             _think_on = bool(_ls_think().get("model_thinking", True))
@@ -754,7 +766,8 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.thinking_btn.setCheckable(True)
         self.thinking_btn.setChecked(_think_on)
         self.thinking_btn.setToolTip(
-            "Deep thinking on answers (reasoning models only — Qwen3 / DeepSeek-R1).\n"
+            "Deep thinking on answers (only when the loaded model's chat template "
+            "enables a reasoning channel).\n"
             "ON = higher quality, slower.  OFF = faster.\n"
             "Routing / summaries never think. No effect on non-reasoning models.")
         self.thinking_btn.setStyleSheet(
@@ -766,7 +779,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             import os as _os_think
             _os_think.environ["ELI_MODEL_THINK"] = "1" if _think_on else "0"
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self.thinking_btn.toggled.connect(self._on_thinking_toggled)
         btn_layout.addWidget(self.thinking_btn)
 
@@ -775,7 +788,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             from eli.core import config as _cfg
             _net_on = bool(_cfg.get("network_enabled", False))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self.net_btn = QPushButton("🌐 Net: ON" if _net_on else "🌐 Net: OFF")
         self.net_btn.setCheckable(True)
         self.net_btn.setChecked(_net_on)
@@ -802,7 +815,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             from eli.core.full_control import is_full_control as _ifc
             _fc_on = bool(_ifc())
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self.full_control_btn = QPushButton("🔓 Full Control: ON" if _fc_on else "🔒 Full Control: OFF")
         self.full_control_btn.setCheckable(True)
         self.full_control_btn.setChecked(_fc_on)
@@ -830,7 +843,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             from eli.core import config as _cfg
             _watch_on = bool(_cfg.get("ambient_vision_enabled", False))
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self.ambient_vision_btn = QPushButton("👁 Watch: ON" if _watch_on else "👁 Watch: OFF")
         self.ambient_vision_btn.setCheckable(True)
         self.ambient_vision_btn.setChecked(_watch_on)
@@ -859,7 +872,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             from eli.perception.gaze_engine import is_gaze_running as _igr
             _gaze_on = bool(_igr())
         except Exception:
-            pass
+            log.debug("suppressed exception", exc_info=True)
         self.gaze_btn = QPushButton("🎯 Gaze: ON" if _gaze_on else "🎯 Gaze: OFF")
         self.gaze_btn.setCheckable(True)
         self.gaze_btn.setChecked(_gaze_on)
@@ -884,17 +897,24 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.voice_combo = QComboBox()
         self.voice_combo.setMinimumWidth(120)
         self.voice_combo.setMaximumWidth(150)
-        self.voice_combo.setToolTip("Select ELI's voice (Piper)")
+        self.voice_combo.setToolTip(
+            "Piper accent voices + Style presets (ffmpeg effects on bundled Piper). "
+            "Not copyrighted character impersonations — use voice cloning for custom timbres."
+        )
         self.voice_combo.setStyleSheet(_COMBO_BASE)
         try:
             from eli.perception.tts_router import (
-                list_voices as _lv, get_active_voice as _gav,
+                list_voices as _lv, get_active_voice as _gav, voice_display_name,
             )
-            for v in (_lv() or []):
-                self.voice_combo.addItem(v)
-            cur = _gav()
-            if cur and self.voice_combo.findText(cur) >= 0:
-                self.voice_combo.setCurrentText(cur)
+            _voices = _lv() or []
+            _active = _gav()
+            _idx = 0
+            for i, v in enumerate(_voices):
+                self.voice_combo.addItem(voice_display_name(v), v)
+                if v == _active:
+                    _idx = i
+            if _voices:
+                self.voice_combo.setCurrentIndex(_idx)
         except Exception as _ve:
             self.voice_combo.addItem("(no voices)")
             self.voice_combo.setEnabled(False)

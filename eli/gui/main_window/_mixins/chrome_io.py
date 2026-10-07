@@ -61,6 +61,13 @@ class ChromeIoMixin:
                     self.chat_response_signal.emit(offer)
                     self.proactive_suggestions_signal.emit(
                         f"<b>[check-in: {data.get('detected','')}]</b> {offer}")
+                elif kind == "reminder":
+                    # A reminder or calendar event coming due (eli.runtime.agenda): said in the
+                    # chat, where the user is looking, as well as the desktop notification.
+                    note = data.get("suggestion", "")
+                    log.debug(f"[PROACTIVE] {note}")
+                    self.chat_response_signal.emit(f"⏰ {note}")
+                    self.proactive_suggestions_signal.emit(f"<b>[reminder]</b> {note}")
                 elif kind == "morning_report":
                     report_text = data.get("suggestion", "")
                     log.debug(f"[PROACTIVE] morning report ready")
@@ -485,8 +492,31 @@ class ChromeIoMixin:
                 return
             fmt = self._convert_formats[self.convert_format_combo.currentIndex()][1]
             self.convert_status_label.setText(f"Converting {Path(path).name} → {fmt}…")
-            res = self.execute_action("CONVERT_DOCUMENT", {"source": path, "format": fmt})
-            self.convert_status_label.setText(str(res))
+            # Called self.execute_action, which this window has never had (it's
+            # ExecutorBridge's), so the button failed with an AttributeError.
+            from eli.execution.executor_enhanced import execute as _execute
+            _t0 = time.perf_counter()
+            res = _execute("CONVERT_DOCUMENT", {"source": path, "format": fmt})
+            if isinstance(res, dict):
+                _ok = bool(res.get("ok", True))
+                _msg = str(res.get("response") or res.get("content") or res.get("message")
+                           or res.get("error") or "")
+            else:
+                _ok, _msg = bool(res), str(res or "")
+            self.convert_status_label.setText(_msg or ("Converted." if _ok else "Convert failed."))
+            # A button, not a turn through the engine, so it writes its own audit row.
+            try:
+                from eli.runtime import orchestrator_audit_ledger as _oal
+                _ce = getattr(self, "_cognitive_engine", None)
+                _oal.record_direct_action(
+                    action="CONVERT_DOCUMENT", ok=_ok,
+                    outcome="ok" if _ok else (_msg[:300] or "failed"),
+                    source="gui_button",
+                    session_id=str(getattr(_ce, "session_id", "") or ""),
+                    user_id=str(getattr(_ce, "user_id", "") or ""),
+                    elapsed_ms=(time.perf_counter() - _t0) * 1000.0)
+            except Exception:
+                log.debug("convert audit row failed", exc_info=True)
         except Exception as e:
             self.convert_status_label.setText(f"Convert failed: {e}")
 
@@ -711,14 +741,26 @@ class ChromeIoMixin:
             log.debug("suppressed exception", exc_info=True)
 
     def _eli_server_start(self, lan: bool) -> None:
-        # Run the web server IN-PROCESS (a background thread) so it shares this app's
-        # already-loaded model/engine instead of spawning a second process that would
-        # load the model again and run the machine out of memory.
-        import os, threading
+        # Prefer sharing the already-loaded model (in-process uvicorn thread). On
+        # frozen Windows that path often dies on the worker thread AFTER the outer
+        # try succeeded — so we verify the port binds, then fall back to
+        # ELI-Server.exe / ``--server`` (and paint LAN QRs as soon as URLs exist).
+        import os, threading, sys, time, socket
         if getattr(self, "_srv_thread", None) and self._srv_thread.is_alive():
             return  # already running
-        from api.server import effective_api_port
-        port = effective_api_port()  # honours the user's saved api_port setting
+        if getattr(self, "_srv_proc", None) is not None:
+            try:
+                if self._srv_proc.poll() is None:
+                    return
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        from eli.runtime.server_util import effective_api_port
+        # Prefer the spinbox / saved setting over a stale ELI_API_PORT from a prior Start.
+        os.environ.pop("ELI_API_PORT", None)
+        try:
+            port = int(self._srv_port_spin.value())
+        except Exception:
+            port = effective_api_port()
         try:
             from eli.runtime.server_util import probe_eli_server
             probe = probe_eli_server(port)
@@ -728,39 +770,122 @@ class ChromeIoMixin:
                         self._eli_server_refresh_firewall_hint()
                     return
         except Exception:
-            log.debug("pre-start already-running probe failed", exc_info=True)
+            log.debug("suppressed exception", exc_info=True)
         if lan:
             # Stable, persisted token — reused across restarts so an already-paired
             # phone is NOT stranded (a fresh token every start meant its saved URL
             # went 401 on every restart). Rotate explicitly to kick devices off.
-            from api.api_token import get_stable_token
-            token = get_stable_token()
+            try:
+                from api.api_token import get_stable_token
+                token = get_stable_token()
+            except Exception as e:
+                self._eli_server_update_ui("error", f"token: {e}")
+                try:
+                    QMessageBox.warning(self, "Web server", f"Could not create LAN token:\n{e}")
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+                return
             host = "0.0.0.0"
             os.environ["ELI_API_HOST"] = host
             os.environ["ELI_API_TOKEN"] = token
             os.environ.pop("ELI_API_ALLOW_TOKENLESS", None)  # LAN must require the token
-            url = f"http://{self._eli_server_lan_ip()}:{port}/?open=connect#token={token}"
+            lan_ip = self._eli_server_lan_ip()
+            url = f"http://{lan_ip}:{port}/?open=connect#token={token}"
+            http_qr = f"http://{lan_ip}:{port}/#token={token}"
         else:
             host = "127.0.0.1"
+            token = ""
+            lan_ip = "127.0.0.1"
             os.environ["ELI_API_HOST"] = host
             os.environ["ELI_API_ALLOW_TOKENLESS"] = "1"
             os.environ.pop("ELI_API_HTTPS_PORT", None)
             url = f"http://127.0.0.1:{port}/"
+            http_qr = ""
         os.environ["ELI_API_PORT"] = str(port)
         self._srv_err = ""
         https_url = ""
+        if lan:
+            # Paint QRs immediately so a slow/failed bind still shows the pair URL.
+            try:
+                self._srv_url.setText(url)
+                self._eli_server_refresh_qr(http_url=http_qr, https_url="")
+                self._eli_server_refresh_firewall_hint()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+
+        frozen = bool(getattr(sys, "frozen", False))
+        # Frozen Windows: in-process uvicorn routinely fails on the worker thread;
+        # go straight to the console ELI-Server.exe sibling (reliable + logs).
+        if frozen and sys.platform == "win32":
+            if self._eli_server_start_subprocess(
+                lan=lan, port=port, host=host, token=token, url=url, http_qr=http_qr,
+            ):
+                return
+            err = getattr(self, "_srv_err", "") or "subprocess server failed to start"
+            try:
+                QMessageBox.warning(self, "Web server", "Could not start the ELI web server.\n\n" + err[:500])
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            self._eli_server_update_ui("error", err)
+            return
+
         try:
-            import uvicorn
-            from api.server import app as _app
-        except ImportError as _imp_err:
-            from eli.runtime.package_bootstrap import ensure_server_packages
-            if not ensure_server_packages():
-                raise _imp_err from None
-            import uvicorn
-            from api.server import app as _app
-        try:
+            # uvicorn needs websockets>=14 — self-heal an old/unpinned one live.
+            try:
+                from websockets.server import ServerProtocol  # noqa: F401
+            except ImportError:
+                log.warning("[SERVER] websockets package too old for uvicorn's "
+                            "WebSocket support — upgrading in place")
+                _pip_base = [sys.executable, "-m", "pip", "install", "--quiet",
+                             "--upgrade", "websockets>=14.0"]
+                _upgraded = False
+                try:
+                    subprocess.run(_pip_base, timeout=60, check=True,
+                                    capture_output=True, text=True)
+                    _upgraded = True
+                except subprocess.CalledProcessError as _ws_fix_err:
+                    # PEP 668 (bare system python, not our venv) blocks plain pip — retry once.
+                    _stderr = (_ws_fix_err.stderr or "")
+                    if "externally-managed-environment" in _stderr:
+                        try:
+                            subprocess.run(_pip_base + ["--break-system-packages"],
+                                           timeout=60, check=True,
+                                           capture_output=True, text=True)
+                            _upgraded = True
+                        except Exception as _ws_fix_err2:
+                            log.warning("[SERVER] websockets self-upgrade failed even with "
+                                        "--break-system-packages: %s", _ws_fix_err2)
+                    else:
+                        log.warning("[SERVER] websockets self-upgrade failed: %s", _ws_fix_err)
+                except Exception as _ws_fix_err:
+                    log.warning("[SERVER] websockets self-upgrade failed: %s", _ws_fix_err)
+                if _upgraded:
+                    try:
+                        import importlib
+                        import websockets.server as _ws_server
+                        importlib.reload(_ws_server)
+                    except Exception as _ws_fix_err3:
+                        log.warning("[SERVER] websockets reload after upgrade failed: %s",
+                                    _ws_fix_err3)
+                else:
+                    log.warning("[SERVER] could not self-heal websockets — run manually: "
+                                 "%s -m pip install --break-system-packages 'websockets>=14.0'",
+                                 sys.executable)
+
+            try:
+                import uvicorn
+                from api.server import app as _app
+            except ImportError as _imp_err:
+                from eli.runtime.package_bootstrap import ensure_server_packages
+                if not ensure_server_packages():
+                    raise _imp_err from None
+                import uvicorn
+                from api.server import app as _app
             # Signal handlers are auto-skipped off the main thread; safe in a Qt app.
-            self._srv_uv = uvicorn.Server(uvicorn.Config(_app, host=host, port=port, log_level="warning"))
+            # Explicit loop="asyncio" avoids Windows Proactor edge cases in a worker thread.
+            self._srv_uv = uvicorn.Server(uvicorn.Config(
+                _app, host=host, port=port, log_level="warning", loop="asyncio",
+            ))
 
             def _run():
                 try:
@@ -770,33 +895,71 @@ class ChromeIoMixin:
 
             self._srv_thread = threading.Thread(target=_run, daemon=True)
             self._srv_thread.start()
+            # Confirm the port actually accepted a connection — thread start ≠ listening.
+            bound = False
+            for _ in range(20):  # ~2s
+                if getattr(self, "_srv_err", ""):
+                    break
+                th = getattr(self, "_srv_thread", None)
+                if th is None or not th.is_alive():
+                    break
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.15):
+                        bound = True
+                        break
+                except OSError:
+                    time.sleep(0.1)
+            if not bound:
+                err = getattr(self, "_srv_err", "") or "server did not bind (in-process)"
+                log.warning("in-process web server failed to bind: %s", err)
+                try:
+                    if self._srv_uv is not None:
+                        self._srv_uv.should_exit = True
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+                self._srv_uv = None
+                self._srv_thread = None
+                if frozen and self._eli_server_start_subprocess(
+                    lan=lan, port=port, host=host, token=token, url=url, http_qr=http_qr,
+                ):
+                    return
+                raise RuntimeError(err)
+
             if lan:
                 from eli.runtime.server_util import start_https_sidecar
                 hport, https_uv = start_https_sidecar(host=host)
                 self._srv_https_uv = https_uv
                 if hport:
-                    https_url = f"https://{self._eli_server_lan_ip()}:{hport}/#token={token}"
+                    https_url = f"https://{lan_ip}:{hport}/#token={token}"
                     self._srv_https_url.setText(https_url)
+                    os.environ["ELI_API_HTTPS_PORT"] = str(hport)
                 else:
-                    self._srv_https_url.setText("(HTTPS unavailable — pip install cryptography segno)")
+                    self._srv_https_url.setText(
+                        "(HTTPS unavailable — need cryptography for the phone mic cert)"
+                    )
             else:
                 self._srv_https_url.clear()
                 self._eli_server_stop_https()
             self._srv_url.setText(url)
-            self._eli_server_refresh_qr(
-                http_url=f"http://{self._eli_server_lan_ip()}:{port}/#token={token}" if lan else "",
-                https_url=https_url,
-            )
+            self._eli_server_refresh_qr(http_url=http_qr, https_url=https_url)
             self._eli_server_update_ui("starting")
             if lan:
                 self._eli_server_refresh_firewall_hint()
                 try:
                     QDesktopServices.openUrl(QUrl(url))
                 except Exception:
-                    log.debug("auto-open browser on LAN start failed", exc_info=True)
+                    log.debug("suppressed exception", exc_info=True)
         except Exception as e:
             err = str(e)
-            if "98" in err or "already in use" in err.lower() or "address already in use" in err.lower():
+            _busy = (
+                "98" in err
+                or "10048" in err
+                or "wsaeaddrinuse" in err.lower()
+                or "already in use" in err.lower()
+                or "address already in use" in err.lower()
+                or "only one usage of each socket address" in err.lower()
+            )
+            if _busy:
                 try:
                     from eli.runtime.server_util import probe_eli_server
                     probe = probe_eli_server(port)
@@ -805,8 +968,138 @@ class ChromeIoMixin:
                             self._eli_server_refresh_firewall_hint()
                         return
                 except Exception:
-                    log.debug("post-error already-running probe failed", exc_info=True)
+                    log.debug("suppressed exception", exc_info=True)
+            if frozen and self._eli_server_start_subprocess(
+                lan=lan, port=port, host=host, token=token, url=url, http_qr=http_qr,
+            ):
+                return
+            log.exception("ELI web server failed to start")
+            try:
+                QMessageBox.warning(
+                    self,
+                    "Web server",
+                    "Could not start the ELI web server.\n\n" + err[:500],
+                )
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
             self._eli_server_update_ui("error", err)
+
+    def _eli_server_start_subprocess(
+        self,
+        *,
+        lan: bool,
+        port: int,
+        host: str,
+        token: str,
+        url: str,
+        http_qr: str = "",
+    ) -> bool:
+        """Spawn ELI-Server.exe / ``ELI.exe --server`` (or ``python -m api.server``)."""
+        import os
+        import sys
+        import subprocess
+        from pathlib import Path
+
+        exe = Path(sys.executable)
+        args: list[str]
+        use_console_sibling = False
+        if getattr(sys, "frozen", False):
+            # Prefer the console sibling so bind errors are visible / loggable.
+            sibling = exe.with_name("ELI-Server.exe" if sys.platform == "win32" else "ELI-Server")
+            if sibling.is_file():
+                args = [str(sibling)]
+                use_console_sibling = True
+            else:
+                args = [str(exe), "--server"]
+        else:
+            args = [str(exe), "-m", "api.server"]
+        if lan:
+            args.append("--lan")
+            args.append("--https")
+        args.extend(["--port", str(port)])
+        if token:
+            args.extend(["--token", token])
+        env = os.environ.copy()
+        env["ELI_API_HOST"] = host
+        env["ELI_API_PORT"] = str(port)
+        if token:
+            env["ELI_API_TOKEN"] = token
+        if lan:
+            env.pop("ELI_API_ALLOW_TOKENLESS", None)
+            env.setdefault("ELI_API_HTTPS_PORT", "8443")
+        else:
+            env["ELI_API_ALLOW_TOKENLESS"] = "1"
+        log_dir = None
+        try:
+            from eli.core.paths import project_root
+            log_dir = Path(project_root()) / "artifacts" / "startup" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        err_fh = None
+        out_fh = None
+        popen_kw: dict = {"env": env}
+        if log_dir is not None:
+            try:
+                err_path = log_dir / "eli_gui_server.stderr.log"
+                out_path = log_dir / "eli_gui_server.stdout.log"
+                err_fh = open(err_path, "ab", buffering=0)
+                out_fh = open(out_path, "ab", buffering=0)
+                popen_kw["stdout"] = out_fh
+                popen_kw["stderr"] = err_fh
+            except Exception:
+                popen_kw["stdout"] = subprocess.DEVNULL
+                popen_kw["stderr"] = subprocess.DEVNULL
+        else:
+            popen_kw["stdout"] = subprocess.DEVNULL
+            popen_kw["stderr"] = subprocess.DEVNULL
+        # Hide a second console flash when we are NOT using the console sibling.
+        if sys.platform == "win32" and not use_console_sibling:
+            try:
+                popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        try:
+            self._srv_proc = subprocess.Popen(args, **popen_kw)
+        except Exception as e:
+            self._srv_err = str(e)
+            for fh in (err_fh, out_fh):
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+            return False
+        # Keep file handles alive for the child lifetime.
+        self._srv_proc_log_fhs = (out_fh, err_fh)
+        self._srv_thread = None
+        self._srv_uv = None
+        self._srv_url.setText(url)
+        https_url = ""
+        if lan:
+            hport = env.get("ELI_API_HTTPS_PORT") or "8443"
+            lan_ip = self._eli_server_lan_ip()
+            https_url = f"https://{lan_ip}:{hport}/#token={token}"
+            try:
+                self._srv_https_url.setText(https_url)
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            self._eli_server_refresh_firewall_hint()
+            if not http_qr:
+                http_qr = f"http://{lan_ip}:{port}/#token={token}"
+        else:
+            try:
+                self._srv_https_url.clear()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        self._eli_server_refresh_qr(http_url=http_qr, https_url=https_url)
+        self._eli_server_update_ui("starting")
+        if lan:
+            try:
+                QDesktopServices.openUrl(QUrl(url))
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+        return True
 
     def _eli_server_apply_port(self) -> None:
         """Persist the chosen API port and clear stale env so the next Start uses it."""
@@ -1078,7 +1371,7 @@ class ChromeIoMixin:
         return None
 
     def get_active_backend(self):
-        return self.ollama_manager if self.current_provider() == 'ollama' else model_manager
+        return self.ollama_manager if self.current_provider() == 'ollama' else self.model_manager
 
     def _resolve_dropped_attachments(self, raw_text: str, dropped_paths: list) -> str:
         """Expand [Image:], [File:], [PDF:] tags into inline content for LLM context."""
@@ -1133,7 +1426,7 @@ class ChromeIoMixin:
     def show_recent_memories(self):
         self.memory_results_display.clear()
         self.memory_results_display.append("<b>Recent Memories:</b><br><br>")
-        results = memory_system.get_recent(limit=20)
+        results = self.memory_system.get_recent(limit=20)
         if results:
             for i, mem in enumerate(results, 1):
                 ts = mem.get('timestamp') or mem.get('ts','')

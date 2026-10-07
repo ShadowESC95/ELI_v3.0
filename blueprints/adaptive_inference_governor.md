@@ -174,7 +174,7 @@ because llama-cpp-python does not expose it).
 
 ## 9. The startup dialog's own model loader
 
-`eli/gui/eli_pro_audio_gui_v2_0.py` builds `Llama(...)` itself for the "Load selected model now"
+`eli/gui/main_window/models.py` (`LocalModelManager.load_model`) builds `Llama(...)` itself for the "Load selected model now"
 path — it does not go through `gguf_inference.load_model()`. The MoE expert-offload hook (section 8)
 is wired into that loader too now; before this it was saved by the toggle but never reached the
 actual load, so the setting did nothing when a model was loaded from the startup dialog.

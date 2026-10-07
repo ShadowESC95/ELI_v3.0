@@ -311,30 +311,6 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _record_tool_execution(action: str, args: Any, result: Any) -> None:
-    """Log this action in the evidence ledger: what ran, whether it worked, and the
-    argument names only (values can be private)."""
-    if (os.environ.get("ELI_LEDGER_TOOL_EVENTS", "1") or "1").strip().lower() in ("0", "false", "no", "off"):
-        return
-    if not action or action.upper() == "CHAT":
-        return
-    from eli.runtime.evidence_ledger import record_event
-    ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
-    text = ""
-    if isinstance(result, dict):
-        text = str(result.get("response") or result.get("content") or result.get("message") or "")
-    record_event(
-        "tool_execution",
-        source="executor",
-        action=action,
-        subject=",".join(sorted(str(k) for k in (args or {}))) if isinstance(args, dict) else "",
-        content=text[:200],
-        payload={"ok": ok},
-        outcome="ok" if ok else "failed",
-        severity="info" if ok else "warning",
-    )
-
-
 def _full_control() -> bool:
     """ELI Full Control state — the GUI toggle / `full_control` setting (single source
     of truth; no environment variable). Never raises."""
@@ -426,7 +402,7 @@ def _canonical_runtime_file_map() -> Dict[str, Path]:
         'memory_init':      ['memory/__init__.py'],
         'router':           ['execution/router_enhanced.py'],
         'executor':         ['execution/executor_enhanced.py'],
-        'gui':              ['gui/eli_pro_audio_gui_v2_0.py'],
+        'gui':              ['gui/main_window/window.py'],
         'runtime_settings': ['core/runtime_settings.py'],
         'paths':            ['core/paths.py'],
         'proactive_daemon': ['planning/proactive_daemon.py'],
@@ -615,7 +591,8 @@ def _runtime_audit_report() -> Dict[str, Any]:
     files = _canonical_runtime_file_map()
     entries = []
     for key in ['cognitive_engine', 'gguf_inference', 'memory', 'memory_init', 'router', 'executor', 'gui', 'runtime_settings', 'paths', 'proactive_daemon']:
-        entries.append(_audit_python_file(files[key]))
+        for path in (_gui_source_files(files[key]) if key == 'gui' else [files[key]]):
+            entries.append(_audit_python_file(path))
     probes = _runtime_health_probes()
     return {'ok': True, 'entries': entries, 'health_probes': probes}
 
@@ -884,7 +861,7 @@ def _import_audit_report() -> Dict[str, Any]:
         'eli.memory',
         'eli.execution.router_enhanced',
         'eli.execution.executor_enhanced',
-        'eli.gui.eli_pro_audio_gui_v2_0',
+        'eli.gui.gui_eli_original',
         'eli.core.runtime_settings',
         'eli.core.paths',
         'eli.planning.proactive_daemon',
@@ -1141,6 +1118,14 @@ def _grounded_file_audit_report(path: Path) -> Dict[str, Any]:
     return {'ok': True, 'entry': entry}
 
 
+def _gui_source_files(gui_path: Path) -> List[Path]:
+    """The window module and, when it is part of a package, every module of that package."""
+    pkg = gui_path.parent
+    if (pkg / '__init__.py').is_file():
+        return sorted(pkg.rglob('*.py'))
+    return [gui_path]
+
+
 def _gui_runtime_audit_report(question: Optional[str] = None) -> Dict[str, Any]:
     canon = _canonical_runtime_file_map()
     gui_path = canon['gui']
@@ -1172,8 +1157,12 @@ def _gui_runtime_audit_report(question: Optional[str] = None) -> Dict[str, Any]:
     if not gui_path.exists():
         entry['status'] = 'FAIL'; entry['issues'].append({'type': 'missing_file', 'line': 0, 'message': 'file not found'})
         return {'ok': True, 'entry': entry}
-    text = gui_path.read_text(encoding='utf-8', errors='replace')
-    lines = text.splitlines()
+    # The window is a package: every module of it, each line labelled with its file.
+    lines, where = [], []
+    for path in _gui_source_files(gui_path):
+        for n, line in enumerate(path.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+            lines.append(line)
+            where.append(f"{path.name}:{n}")
     patterns = {
         'router': 'router_enhanced',
         'executor': 'executor_enhanced',
@@ -1182,18 +1171,20 @@ def _gui_runtime_audit_report(question: Optional[str] = None) -> Dict[str, Any]:
         'send_worker': 'threading.Thread(target=generate_worker',
     }
     for key, needle in patterns.items():
-        hits = [i for i, line in enumerate(lines, 1) if needle in line]
-        entry['evidence'][key] = hits
+        hits = [i for i, line in enumerate(lines) if needle in line]
+        entry['evidence'][key] = [where[i] for i in hits]
         # Store actual code at the first 3 matching lines so the model reports
         # what is really there rather than fabricating plausible-looking code.
-        entry['snippets'][key] = [
-            f"  line {lineno}: {lines[lineno-1].strip()}"
-            for lineno in hits[:3]
-        ]
+        entry['snippets'][key] = [f"  {where[i]}: {lines[i].strip()}" for i in hits[:3]]
         if not hits:
             entry['status'] = 'FAIL'
             entry['issues'].append({'type': 'missing_hook', 'line': 0, 'message': f'{key} hook not found: {needle}'})
-    entry['issues'].extend(_scan_user_specific_paths(lines))
+    for issue in _scan_user_specific_paths(lines):
+        n = int(issue.get('line') or 0)
+        if 0 < n <= len(where):
+            file_name, file_line = where[n - 1].rsplit(':', 1)
+            issue = dict(issue, line=int(file_line), message=f"{file_name}: {issue.get('message', '')}")
+        entry['issues'].append(issue)
     if entry['issues']:
         entry['status'] = 'FAIL'
     return {'ok': True, 'entry': entry}
@@ -1258,11 +1249,11 @@ def _summarize_long_text(content: str, instruction: str = "", *, _depth: int = 0
     # Usable context (tokens) → input char budget (~3.5 chars/token), leaving
     # headroom for the system prompt, instruction, and the generated summary.
     try:
-        ctx_tokens = int(_gi.current_context_limit() or 0)
+        ctx_tokens = int(_gi.context_window() or 0)
     except Exception:
         ctx_tokens = 0
     if ctx_tokens <= 0:
-        ctx_tokens = 4096
+        return None
     in_token_budget = max(512, int(ctx_tokens * 0.55))
     chunk_chars = max(2000, int(in_token_budget * 3.5))
 
@@ -2252,8 +2243,8 @@ def _record_tool_execution(action: str, args: Any, result: Any) -> None:
 
 
 def _maybe_background_code_work(action, args):
-    """Route FIX_FILE / EXAMINE_CODE to the in-process background job queue when
-    they would monopolize the shared model lock (CodeAgent, tier-3 review, sweeps).
+    """Route FIX_FILE / EXAMINE_CODE / SELF_IMPROVE propose to the in-process background job
+    queue when they would monopolize the shared model lock (CodeAgent, tier-3 review, sweeps).
     Returns None to run inline. The worker carries `_no_background` so it doesn't
     re-queue."""
     try:
@@ -2261,9 +2252,12 @@ def _maybe_background_code_work(action, args):
         if args.get("_no_background"):
             return None
         a = str(action or "").upper()
-        if a not in ("FIX_FILE", "EXAMINE_CODE"):
+        if a not in ("FIX_FILE", "EXAMINE_CODE", "SELF_IMPROVE"):
             return None
-        _env_key = "ELI_FIX_FILE_BACKGROUND" if a == "FIX_FILE" else "ELI_EXAMINE_CODE_BACKGROUND"
+        if a == "SELF_IMPROVE" and str(args.get("mode") or "").strip().lower() != "propose":
+            return None
+        _env_key = {"FIX_FILE": "ELI_FIX_FILE_BACKGROUND", "EXAMINE_CODE": "ELI_EXAMINE_CODE_BACKGROUND",
+                    "SELF_IMPROVE": "ELI_SELF_IMPROVE_BACKGROUND"}[a]
         if os.environ.get(_env_key, "1").strip().lower() in ("0", "false", "no", "off"):
             return None
 
@@ -2277,6 +2271,12 @@ def _maybe_background_code_work(action, args):
             if explicit_foreground(desc):
                 return None
             bg, reason = True, "verified file repair pipeline"
+        elif a == "SELF_IMPROVE":
+            # The coding agent over recent failures: tens of sequential model calls with the
+            # model lock held and nothing shown until it returns (a chat turn sat on it for hours).
+            if explicit_foreground(str(args.get("_raw_user_text") or "")):
+                return None
+            bg, reason = True, "coding-agent fix proposals for recent failures"
         else:
             request = (args.get("request") or args.get("query") or "").strip()
             from eli.runtime import code_examiner as _ce
@@ -2316,6 +2316,7 @@ def _maybe_background_code_work(action, args):
         _label = (
             str(_bg_args.get("path") or "")[:60]
             if a == "FIX_FILE"
+            else "fix proposals" if a == "SELF_IMPROVE"
             else (str(_bg_args.get("request") or _bg_args.get("query") or "")[:60])
         )
         jid = bt.submit(
@@ -2329,7 +2330,7 @@ def _maybe_background_code_work(action, args):
             f"background as job #{jid} — say \"check job {jid}\" for the result, or "
             f"\"background jobs\" to list them."
         )
-        return {
+        out = {
             "ok": True,
             "action": a,
             "background": True,
@@ -2337,6 +2338,9 @@ def _maybe_background_code_work(action, args):
             "content": msg,
             "response": msg,
         }
+        if a == "SELF_IMPROVE":
+            out["evidence_source"] = "coding_agent"
+        return out
     except Exception as _bg_e:
         log.debug(f"[CODE_BG] background decision failed: {_bg_e}")
         return None
@@ -3894,12 +3898,14 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
 
         # ── Track / generic search (tracks tab, not playlists) ──
         _track_q = search_q
+        _launch_attempted = False
         # Drive Spotify's own search box directly and play the top suggestion —
         # open.spotify.com's search page is a JS shell with no server-rendered
         # track data on an unauthenticated fetch (confirmed against the real
         # site), so URI-scraping below can never resolve a real track here.
         try:
             from eli.integrations.media.cross_platform import spotify_search_type_and_play as _sp_type_play
+            _launch_attempted = True  # its first step is spotify_launch_if_needed()
             if _sp_type_play(_track_q):
                 _set_now_playing("spotify", _track_q)
                 msg = f"Playing “{_track_q}” on Spotify."
@@ -3917,7 +3923,11 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
         )
         if _hit:
             return _hit
-        if not _spotify_running():
+        # Type-and-play above already launched and waited 8s. If Spotify still
+        # isn't up, a second launch + 8s wait just delays the "couldn't reach it"
+        # answer — it was only here because the type-and-play path was put in
+        # front of this older fallback without telling it a launch had happened.
+        if not _spotify_running() and not _launch_attempted:
             _ensure_spotify_running()
             _spotify_wait_running(timeout=8.0)
         _opened = _spotify_search(_track_q, prefer="tracks")
@@ -8897,6 +8907,10 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             mode = "propose"
         if mode == "analyze" and any(k in _raw_si for k in ("self fix", "apply patch", "patch cycle")):
             mode = "patch"
+        if mode == "propose":
+            _bg = _maybe_background_code_work(a, dict(args or {}, mode="propose"))
+            if _bg is not None:
+                return _bg
         try:
             from eli.runtime.self_maintenance import (
                 fire_maintenance_world_event,
@@ -9300,10 +9314,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                     system=_directive
                 )
                 # Each chunk: leave room for output generation (roughly n_ctx/2 for input)
-                try:
-                    _n_ctx = _pgi.load_model().n_ctx()
-                except Exception:
-                    _n_ctx = 16384
+                _n_ctx = int(_pgi.context_window() or 0)
                 # chars per chunk = roughly half the context minus directive, times 4 chars/token
                 _chars_per_chunk = max(3000, (_n_ctx // 2 - 600) * 4)
 
@@ -9471,13 +9482,19 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                     _doc_summary = ""
                     if _body and _model_ok:
                         try:
+                            _ask = (f"Summarise this single research document titled “{_name}”. "
+                                    f"Cover: (1) the central topic/claim, (2) the methods/formalism used, "
+                                    f"(3) key findings or conclusions, and (4) any notable equations or "
+                                    f"results named in the text. Be specific and grounded ONLY in the text "
+                                    f"below — do not invent results or citations.\n\n")
+                            _sys = "You are a precise technical analyst summarising one research PDF."
+                            # the body gets the window left after the instruction and the reply
+                            from eli.cognition.context_budget import chars_per_token as _cpt_pdf
+                            _room = int(max(0, int(_gi.context_window() or 0) - 520) * float(_cpt_pdf())
+                                        ) - len(_ask) - len(_sys)
                             _doc_summary = (_gi.chat_completion(
-                                f"Summarise this single research document titled “{_name}”. "
-                                f"Cover: (1) the central topic/claim, (2) the methods/formalism used, "
-                                f"(3) key findings or conclusions, and (4) any notable equations or "
-                                f"results named in the text. Be specific and grounded ONLY in the text "
-                                f"below — do not invent results or citations.\n\n{_body[:12000]}",
-                                system="You are a precise technical analyst summarising one research PDF.",
+                                _ask + _body[:max(0, _room)],
+                                system=_sys,
                                 max_tokens=520, temperature=0.3) or "").strip()
                         except Exception as _pf_err:
                             log.debug(f"[ANALYZE_PDF_FOLDER] per-file summary failed for {_name}: {_pf_err}")

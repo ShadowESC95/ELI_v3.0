@@ -44,7 +44,8 @@ def test_get_engine_is_locked():
 
 def test_the_gui_publishes_its_engine():
     import pathlib
-    gui = pathlib.Path(eng.__file__).resolve().parents[1] / "gui" / "eli_pro_audio_gui_v2_0.py"
+    # the window the launcher opens (eli/gui/main_window); the old single-file GUI is not run
+    gui = pathlib.Path(eng.__file__).resolve().parents[1] / "gui" / "main_window" / "window.py"
     src = gui.read_text(encoding="utf-8")
     i = src.index("self._cognitive_engine = CognitiveEngine(")
     j = src.index("CognitiveEngine singleton ready", i)
@@ -58,7 +59,8 @@ def test_the_gui_engine_does_not_autoload_the_model():
     """The startup dialog loads it later with the operator's parameters; a
     second engine defaulting to auto_init_gguf=True is what loaded it twice."""
     import pathlib
-    gui = pathlib.Path(eng.__file__).resolve().parents[1] / "gui" / "eli_pro_audio_gui_v2_0.py"
+    # the window the launcher opens (eli/gui/main_window); the old single-file GUI is not run
+    gui = pathlib.Path(eng.__file__).resolve().parents[1] / "gui" / "main_window" / "window.py"
     src = gui.read_text(encoding="utf-8")
     i = src.index("self._cognitive_engine = CognitiveEngine(")
     assert "auto_init_gguf=False" in src[i:i + 200]

@@ -582,17 +582,20 @@ class Broken(importlib.abc.MetaPathFinder):
         if top in ("PyQt6", "PyQt5"):
             raise ModuleNotFoundError("No module named " + repr(top), name=top)
 sys.meta_path.insert(0, Broken())
-import eli.gui.eli_pro_audio_gui_v2_0
+import %s
 """
+# the window the launcher opens
+_GUI_MODULES = ("eli.gui.main_window",)
 
 
+@pytest.mark.parametrize("module", _GUI_MODULES)
 @pytest.mark.parametrize("failure,says,never", [
     ('ImportError("libGL.so.1: cannot open shared object file: No such file or directory")', "libGL.so.1", "not installed"),
     ('ModuleNotFoundError("No module named \'PySide6\'", name="PySide6")', "is not installed", "libGL"),
     ('ImportError("something else went wrong inside Qt")', "installed but did not load: something else went wrong", "not installed."),
 ])
-def test_the_window_says_why_its_toolkit_did_not_load(failure, says, never):
-    got = subprocess.run([sys.executable, "-c", _BROKEN_QT % failure], capture_output=True, text=True, cwd=str(ROOT),
+def test_the_window_says_why_its_toolkit_did_not_load(failure, says, never, module):
+    got = subprocess.run([sys.executable, "-c", _BROKEN_QT % (failure, module)], capture_output=True, text=True, cwd=str(ROOT),
                          env=dict(os.environ, ELI_OFFLINE="1", QT_QPA_PLATFORM="offscreen"))
     assert got.returncode == 1
     last = [line for line in got.stdout.splitlines() if line.strip()][-1]
@@ -600,10 +603,11 @@ def test_the_window_says_why_its_toolkit_did_not_load(failure, says, never):
     assert "Please install PySide6" not in got.stdout
 
 
-def test_the_reason_reaches_a_console_that_cannot_print_the_symbol():
+@pytest.mark.parametrize("module", _GUI_MODULES)
+def test_the_reason_reaches_a_console_that_cannot_print_the_symbol(module):
     """On Windows (cp1252) the cross symbol raised UnicodeEncodeError and the reason was lost."""
     failure = 'ModuleNotFoundError("No module named \'PySide6\'", name="PySide6")'
-    got = subprocess.run([sys.executable, "-c", _BROKEN_QT % failure], capture_output=True, cwd=str(ROOT),
+    got = subprocess.run([sys.executable, "-c", _BROKEN_QT % (failure, module)], capture_output=True, cwd=str(ROOT),
                          env=dict(os.environ, ELI_OFFLINE="1", QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="cp1252"))
     assert got.returncode == 1
     assert b"window cannot start" in got.stdout and b"is not installed" in got.stdout

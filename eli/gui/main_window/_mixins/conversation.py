@@ -1,6 +1,7 @@
 """ConversationMixin — 25 EliMainWindow methods (v3 GUI mixin split)."""
 from __future__ import annotations
 from eli.gui.main_window._common import *  # noqa: F401,F403
+from eli.gui.main_window._common import _backend_context
 from eli.gui.main_window.adapters import _GUIEngineAdapter
 
 
@@ -130,7 +131,7 @@ class ConversationMixin:
                 _route = _eli_voice_router.route(_voice_text)
                 _action = str((_route or {}).get("action") or "").upper()
                 _args = (_route or {}).get("args") or {}
-        
+
             _direct_actions = {
                 "NOOP",
                 "TIME", "DATE",
@@ -150,7 +151,7 @@ class ConversationMixin:
                 # News: pre-formatted headlines; LLM path causes CUDA OOM (10k+ token prompt)
                 "NEWS_FETCH",
             }
-        
+
             if _action in _direct_actions:
                 _user_voice_text = str(_voice_text or text or "").strip()
                 _session_id = "gui-direct"
@@ -182,15 +183,30 @@ class ConversationMixin:
                     log.debug(f"[GUI_DIRECT_EXEC][USER_APPEND_FAIL] {_user_ui_e}")
 
                 log.debug(f"[GUI_DIRECT_EXEC] route={_route}")
+                _direct_t0 = time.perf_counter()
                 _res = _eli_voice_executor.execute_action(_action, _args)
                 _ok = bool((_res or {}).get("ok", True)) if isinstance(_res, dict) else True
-        
+
                 if isinstance(_res, dict):
                     _reply = str(_res.get("response") or _res.get("content") or _res.get("message") or _res)
                 else:
                     _reply = str(_res)
-        
+
                 log.debug(f"[GUI_DIRECT_EXEC] {_reply}")
+                # This path skips CognitiveEngine.process(), so it writes its own
+                # audit row. NOOP is the fragment guard, not an action.
+                if _action != "NOOP":
+                    try:
+                        from eli.runtime import orchestrator_audit_ledger as _oal
+                        _why = "ok"
+                        if not _ok:
+                            _why = str((_res.get("error") if isinstance(_res, dict) else "") or "failed")
+                        _oal.record_direct_action(
+                            action=_action, ok=_ok, outcome=_why,
+                            source="voice_direct", session_id=_session_id, user_id=_user_id,
+                            elapsed_ms=(time.perf_counter() - _direct_t0) * 1000.0)
+                    except Exception:
+                        log.debug("[GUI_DIRECT_EXEC] audit row failed", exc_info=True)
                 # NOOP (fragment guard) responses must not enter conversation
                 # history, be spoken, or be displayed — they are internal
                 # routing events.  Storing the fragment-guard JSON as an
@@ -320,7 +336,7 @@ class ConversationMixin:
                         log.debug(f"[GUI_DIRECT_EXEC][TTS_FAIL] {_tts_e}")
                 elif _speak_text:
                     log.debug(f"[GUI_DIRECT_EXEC][TTS_SKIPPED] auto-speak off")
-        
+
                 return
         except Exception as _direct_e:
             log.debug(f"[GUI_DIRECT_EXEC][FALLBACK] {type(_direct_e).__name__}: {_direct_e}")
@@ -668,7 +684,7 @@ class ConversationMixin:
                         live_pause = f"{getattr(rec, 'pause_threshold', '?')}"
                         live_dynamic = str(getattr(rec, 'dynamic_energy_threshold', '?'))
             except Exception:
-                pass
+                log.debug("suppressed exception", exc_info=True)
 
             text = (
                 f"Voice profile file: {vp_path}\n"
@@ -778,6 +794,10 @@ class ConversationMixin:
         """Abort the in-flight model response so a new message can be sent."""
         if not getattr(self, "is_generating", False):
             return
+        self._request_generation_cancel()
+        self.status_signal.emit("Stopping generation…")
+
+    def _request_generation_cancel(self):
         self._cancel_stream_requested = True
         try:
             from eli.cognition import gguf_inference as _ggi
@@ -790,7 +810,6 @@ class ConversationMixin:
                 _ce.cancel_generation()
         except Exception:
             log.debug("[GUI] cognitive engine cancel failed", exc_info=True)
-        self.status_signal.emit("Stopping generation…")
 
     def send_message(self):
         user_message = self.chat_input.toPlainText().strip()
@@ -837,6 +856,12 @@ class ConversationMixin:
         if backend is None:
             return
 
+        # A prior worker's followthrough tail may still be running — stop it first.
+        _prior_thread = getattr(self, "_generate_thread", None)
+        if _prior_thread is not None and _prior_thread.is_alive():
+            self._request_generation_cancel()
+            _prior_thread.join(timeout=2.0)
+
         self.is_generating = True
         self._cancel_stream_requested = False
         try:
@@ -857,7 +882,7 @@ class ConversationMixin:
                 max_tokens  = self.max_tokens_input.value()
                 temperature = self.temperature_input.value()
                 reasoning_mode = getattr(self, '_reasoning_mode', 'quick')
-                n_ctx = getattr(backend, 'n_ctx', 4096)
+                n_ctx = _backend_context(backend)
 
                 # ── CognitiveEngine-first runtime path ──
                 adapter = _GUIEngineAdapter(
@@ -895,6 +920,10 @@ class ConversationMixin:
                 _response_streamed = False
                 _storage_handled = False  # CognitiveEngine stores turns internally
                 _was_cancelled = False
+                try:
+                    from eli.kernel.engine import MAIN_REPLY_DONE_SENTINEL as _MAIN_REPLY_DONE
+                except Exception:
+                    _MAIN_REPLY_DONE = "__MAIN_REPLY_DONE__"
 
                 def _generation_cancelled() -> bool:
                     if getattr(self, "_cancel_stream_requested", False):
@@ -917,6 +946,12 @@ class ConversationMixin:
                                 break
                             token = str(token or "")
                             if not token:
+                                continue
+                            if token == _MAIN_REPLY_DONE:
+                                # Visible reply done — don't make the user wait on followthrough.
+                                self.is_generating = False
+                                self.status_signal.emit('Send enabled')
+                                self.status_signal.emit('🟢 Ready')
                                 continue
                             full_tokens.append(token)
                             if first_token:
@@ -1074,7 +1109,8 @@ class ConversationMixin:
                 self.status_signal.emit('Send enabled')
                 self.status_signal.emit('🟢 Ready')
 
-        threading.Thread(target=generate_worker, daemon=True).start()
+        self._generate_thread = threading.Thread(target=generate_worker, daemon=True)
+        self._generate_thread.start()
 
     def clear_chat(self):
         reply = QMessageBox.question(

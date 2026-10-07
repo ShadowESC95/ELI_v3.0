@@ -19,6 +19,7 @@ LIST_VOICES and the onboarding blurb in ``panels/startup.py``).
 These tests read the GUI source rather than trusting prose, so a page rename breaks the
 build instead of quietly sending users somewhere that does not exist.
 """
+from tests._live_gui import live_gui_source
 import re
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def _without_comments(src: str) -> str:
     return "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
 
 
-GUI = _read("eli", "gui", "eli_pro_audio_gui_v2_0.py")
+GUI = live_gui_source()      # the window the launcher opens (eli/gui/main_window)
 EXECUTOR = _without_comments(_read("eli", "execution", "executor_enhanced.py"))
 STARTUP = _without_comments(_read("eli", "gui", "panels", "startup.py"))
 

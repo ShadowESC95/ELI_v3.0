@@ -765,7 +765,6 @@ The `eli/` package contains **452 Python modules** across **26 subpackages** (ex
 - `gui/docks/__init__.py` — ELI v3.0 package marker.
 - `gui/docks/operator_console_dock.py` — Governed operator console for proposals, goals, autonomy policy, event feed, scheduler attention, and ranked operator priority.
 - `gui/docks/proactive_dock.py` — Proactive Dock GUI
-- `gui/eli_pro_audio_gui_v2_0.py` — ELI v3.0 — desktop GUI.
 - `gui/labs_tab.py` — ELI v3.0 — Labs Tab
 - `gui/panels/__init__.py` — ELI v3.0 GUI panel components.
 - `gui/panels/_qt.py` — Shared Qt import shim for eli.gui.panels modules.

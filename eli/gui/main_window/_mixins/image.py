@@ -1,6 +1,7 @@
 """ImageMixin — 20 EliMainWindow methods (v3 GUI mixin split)."""
 from __future__ import annotations
 from eli.gui.main_window._common import *  # noqa: F401,F403
+from eli.gui.main_window._common import _backend_context
 from eli.gui.main_window.adapters import _GUIEngineAdapter
 
 
@@ -292,7 +293,7 @@ class ImageMixin:
                         memory=self._central_memory,
                         max_tokens=-1,
                         temperature=self.temperature_input.value(),
-                        n_ctx=getattr(backend, "n_ctx", 4096),
+                        n_ctx=_backend_context(backend),
                         inference_lock=self.__class__._inference_lock,
                         cognitive_engine=None,
                     )
@@ -455,8 +456,8 @@ class ImageMixin:
         self._focus_generated_image_result(result)
 
         try:
-            if memory_system:
-                memory_system.store(
+            if self.memory_system:
+                self.memory_system.store(
                     f"Generated {len(result.saved_paths)} images from prompt: {result.applied_prompt[:240]}",
                     tags=["image_generation", self.image_style_combo.currentText().strip(), self.image_scene_combo.currentText().strip()],
                     kind="creative",

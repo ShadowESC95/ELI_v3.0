@@ -31,6 +31,7 @@ hardware_profile.allocate() documents the intended order (GPU layers -> batch ->
 shed layers -> ctx LAST, "context is preserved as long as possible"). With a
 correct reserve it does exactly that here: ctx=10384 kept, layers reduced to 29.
 """
+from tests._live_gui import live_gui_files, live_gui_source
 import os
 
 import pytest
@@ -77,7 +78,7 @@ def test_no_module_hardcodes_its_own_default_any_more():
     for rel in ("eli/gui/panels/startup.py",
                 "eli/core/startup_hardware_optimizer.py",
                 "eli/cognition/gguf_inference.py",
-                "eli/gui/eli_pro_audio_gui_v2_0.py"):
+                *(str(p.relative_to(repo)) for p in live_gui_files())):
         text = (repo / rel).read_text(encoding="utf-8")
         if pattern.search(text):
             offenders.append(rel)
@@ -134,8 +135,7 @@ def test_the_static_profile_is_tried_after_the_context_preserving_rungs():
     allocate() reduces layers and batch BEFORE ctx; the ladder must agree."""
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] /
-           "eli" / "gui" / "eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
+    src = live_gui_source()
     hw = src.index("_add_attempt(*_hw_profile_attempt)")
     for earlier in ('_add_attempt("live-tuner-gpu"', '_add_attempt("lower-batch-half"',
                     '_add_attempt("lower-batch-qtr"'):
@@ -149,7 +149,6 @@ def test_the_deferred_profile_is_never_dropped():
     the GPU rungs where it is now queued."""
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] /
-           "eli" / "gui" / "eli_pro_audio_gui_v2_0.py").read_text(encoding="utf-8")
+    src = live_gui_source()
     assert src.count("_add_attempt(*_hw_profile_attempt)") >= 2, \
         "no flush for the branch that skips the GPU ladder"

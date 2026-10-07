@@ -33,7 +33,20 @@ import sys
 from pathlib import Path
 
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+# The window's other modules take their names from here with `import *`, so an import that
+# looks unused in this file is used by them (tests/test_gui_names_resolve.py checks).
+import gc
+import json
+import re
+import shutil
+import subprocess
+import threading
+import time
+import traceback
+import urllib.request
+from collections import deque
+from queue import Empty
 
 
 
@@ -88,7 +101,8 @@ try:
     pyqtSlot = Slot
     QT_VERSION = 6
     QT_API = "PySide6"
-except ImportError:
+except ImportError as _pyside_error:
+    _qt_load_error = _pyside_error
     try:
         from PyQt6.QtWidgets import *
         from PyQt6.QtCore import *
@@ -103,7 +117,13 @@ except ImportError:
             QT_VERSION = 5
             QT_API = "PyQt5"
         except ImportError:
-            print("❌ Please install PySide6 (recommended), PyQt6, or PyQt5")
+            # installed but failing to load is not absent: without libGL this said "Please install PySide6"
+            from eli.utils.platform_compat import window_cannot_start
+            _why = "ELI's window cannot start. " + window_cannot_start(_qt_load_error)
+            try:
+                print("❌ " + _why)
+            except UnicodeEncodeError:      # a console that cannot print the symbol still gets the reason
+                print(_why.encode("ascii", "replace").decode("ascii"))
             sys.exit(1)
 
 
@@ -322,7 +342,8 @@ def recommend_model_setup(models, sysinfo, ollama_models=None):
                     size_bytes = int(m.get("size_bytes") or p.stat().st_size)
                 except Exception:
                     size_bytes = int(p.stat().st_size)
-                size_gb = float(m.get("size_gb") or (size_bytes / 1e9))
+                from eli.core.mem_units import bytes_to_gib
+                size_gb = float(m.get("size_gb") or bytes_to_gib(size_bytes))
                 normalized.append({
                     "name": str(m.get("name") or p.name),
                     "path": str(p.resolve()),
@@ -389,10 +410,8 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                 if key in seen:
                     continue
                 seen.add(key)
-                try:
-                    size_gb = path.stat().st_size / (1024 ** 3)
-                except Exception:
-                    size_gb = 0.0
+                from eli.core.mem_units import file_size_gib
+                size_gb = file_size_gib(path)
                 family = 'unknown'
                 name_low = path.name.lower()
                 draft_only = False
@@ -452,9 +471,10 @@ def detect_system_capabilities() -> Dict[str, Any]:
     }
     try:
         import psutil
+        from eli.core.mem_units import bytes_to_gib
         vm = psutil.virtual_memory()
-        info['total_ram_gb'] = vm.total / (1024 ** 3)
-        info['available_ram_gb'] = vm.available / (1024 ** 3)
+        info['total_ram_gb'] = bytes_to_gib(vm.total)
+        info['available_ram_gb'] = bytes_to_gib(vm.available)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     try:
@@ -474,6 +494,35 @@ def detect_system_capabilities() -> Dict[str, Any]:
     return info
 
 
+def _eli_prompt_floor_tokens() -> int:
+    """Tokens ELI's own prompt takes before any memory: the persona, plus room for the answer
+    (the max_tokens setting when it is set). Measured from the persona in use, not assumed."""
+    try:
+        from eli.kernel.engine import _load_persona_text
+        from eli.cognition.context_budget import chars_per_token
+        persona = int(len(_load_persona_text() or "") / max(0.5, float(chars_per_token())))
+    except Exception:
+        return 0
+    try:
+        from eli.core.runtime_settings import load_settings
+        answer = max(0, int((load_settings() or {}).get("max_tokens") or 0))
+    except Exception:
+        answer = 0
+    return persona + answer
+
+
+def _backend_context(backend) -> int:
+    """The context the active backend runs at: its own figure, else what loaded."""
+    try:
+        n = int(getattr(backend, "n_ctx", 0) or 0)
+        if n > 0:
+            return n
+        from eli.cognition.gguf_inference import context_window
+        return int(context_window() or 0)
+    except Exception:
+        return 0
+
+
 def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     """Auto-detect sensible defaults from the current machine's hardware.
 
@@ -484,18 +533,11 @@ def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     cpu_count = int(sysinfo.get('cpu_count', 4) or 4)
     has_gpu   = bool(sysinfo.get('has_gpu', False))
 
-    # n_ctx: proportional to available RAM (1 GB ≈ 1024 tokens), 2048-grain.
-    _raw_ctx = max(4096, min(131072, int(ram_gb * 1024)))
-    n_ctx = max(4096, (_raw_ctx // 2048) * 2048)
-
-    # GPU layers: 9999 sentinel for "all layers" when VRAM is large;
-    # proportional estimate otherwise (≈ 1 layer per 150 MB free VRAM).
-    if not has_gpu or vram_mb <= 0:
-        n_gpu_layers = 0
-    elif vram_mb >= 8000:
-        n_gpu_layers = 9999
-    else:
-        n_gpu_layers = min(99, max(4, vram_mb // 150))
+    # No model is selected, so nothing can be sized for one: the context is auto and the layers
+    # "all", both settled by the measured fit when a model loads. (This used RAM and VRAM rules
+    # that ignored the model: 1024 tokens per GB, every layer from 8000 MB.)
+    n_ctx = 0
+    n_gpu_layers = 99 if (has_gpu and vram_mb > 0) else 0
 
     try:
         from eli.core.hardware_profile import recommend_cpu_threads as _rct
@@ -503,15 +545,9 @@ def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         n_threads = max(1, cpu_count - (1 if (not has_gpu or vram_mb <= 0) else 2))
 
-    # Batch: proportional to free VRAM (≈ 1 unit per 10 MB), aligned to 64.
-    if has_gpu and vram_mb > 0:
-        _raw_batch = max(128, int(vram_mb / 10))
-        batch_size = max(128, (_raw_batch // 64) * 64)
-    else:
-        batch_size = 128
-
-    # max_tokens: half of ctx, clamped to [1024, 8192].
-    max_tokens = max(1024, min(8192, n_ctx // 2))
+    # the loader's own minimum; the fit raises it where the card has room
+    batch_size = int(os.environ.get("ELI_MIN_BATCH", "128") or "128")
+    max_tokens = None           # a ceiling of the user's; the window sizes each reply
 
     return {
         'n_ctx':        n_ctx,
@@ -550,8 +586,10 @@ def _policy_identity_memory_response(user_text: str, model_text: str) -> str:
 
 
 
-if __name__ == "__main__":
-    main()
+from eli.gui.panels.startup import FirstBootWizard, HardwareTuningDock, StartupModelSelectionDialog  # noqa: E402
+from eli.gui.panels.agent_wizard import AgentCreateDialog, AgentEditDialog  # noqa: E402
+from eli.gui.panels.settings import AdvancedSettingsDialog  # noqa: E402
+
 
 
 __all__ = [_n for _n in dir() if not _n.startswith('__')]

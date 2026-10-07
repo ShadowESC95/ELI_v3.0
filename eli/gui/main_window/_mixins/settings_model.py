@@ -229,29 +229,39 @@ class SettingsModelMixin:
         vbox.addStretch()
         return page
 
-    def _reload_voice_selector(self) -> None:
-        """Repopulate the voice dropdown after the library dialog installs one.
-
-        Without this the newly downloaded voice exists on disk but the open
-        Settings page still shows the old list, so it looks like the download
-        did nothing.
-        """
+    def _reload_voice_selectors(self):
+        """Repopulate every voice dropdown after the library installs a new voice,
+        preserving the current selection so the user never loses their choice."""
         try:
-            sel = getattr(self, "_voice_selector", None)
-            if sel is None:
-                return
-            from eli.perception.tts_router import list_voices, get_active_voice
-            current = get_active_voice()
-            sel.blockSignals(True)
-            sel.clear()
-            voices = list_voices()
-            for v in voices:
-                sel.addItem(v)
-            if current in voices:
-                sel.setCurrentText(current)
-            sel.blockSignals(False)
-        except Exception:
-            log.debug("[TTS] voice selector reload failed", exc_info=True)
+            from eli.perception.tts_router import (
+                list_voices, get_active_voice, voice_display_name,
+            )
+            voices = list(list_voices() or [])
+            active = get_active_voice()
+        except Exception as ex:
+            log.debug(f"[GUI] voice reload failed: {ex}", exc_info=True)
+            return
+        for combo in (getattr(self, "voice_combo", None),
+                      getattr(self, "_voice_selector", None)):
+            if combo is None:
+                continue
+            try:
+                keep_id = combo.currentData()
+                if not keep_id:
+                    keep_id = combo.currentText()
+                combo.blockSignals(True)
+                combo.clear()
+                active_idx = 0
+                for i, v in enumerate(voices):
+                    combo.addItem(voice_display_name(v), v)
+                    if v == (keep_id if keep_id in voices else active):
+                        active_idx = i
+                if combo.count():
+                    combo.setCurrentIndex(active_idx)
+                combo.setEnabled(bool(voices))
+                combo.blockSignals(False)
+            except Exception as ex:
+                log.debug(f"[GUI] voice combo repopulate failed: {ex}", exc_info=True)
 
     def _build_settings_runtime_page(self) -> QWidget:
         page, vbox = self._settings_page(
@@ -261,10 +271,14 @@ class SettingsModelMixin:
         form = self._section_card(vbox, "INFERENCE ENGINE")
 
         self.n_ctx_input = QSpinBox()
-        self.n_ctx_input.setRange(512, 32768)
-        self.n_ctx_input.setValue(16384)
-        self.n_ctx_input.setSingleStep(512)
-        self.n_ctx_input.setToolTip("Token context window — larger = more memory")
+        # 0 is auto; the upper end is llama.cpp's own limit, the model's trained length caps it at load
+        self.n_ctx_input.setRange(0, 2_147_483_647)
+        self.n_ctx_input.setSpecialValueText("auto")
+        self.n_ctx_input.setValue(0)
+        self.n_ctx_input.setSingleStep(2048)
+        self.n_ctx_input.setToolTip(
+            "Token context window. auto sizes it for the model and this machine's free memory; "
+            "a number is kept for the model it was set for.")
         form.addRow(self._field_label("Context size"), self.n_ctx_input)
 
         self.n_threads_input = QSpinBox()
@@ -279,7 +293,7 @@ class SettingsModelMixin:
         form.addRow(self._field_label("GPU-layer parameter"), self.n_gpu_layers_input)
 
         self.batch_size_input = QSpinBox()
-        self.batch_size_input.setRange(1, 2048)
+        self.batch_size_input.setRange(1, 2_147_483_647)   # llama.cpp limits it to the context
         self.batch_size_input.setValue(512)
         self.batch_size_input.setSingleStep(64)
         self.batch_size_input.setToolTip("Prompt processing batch size — larger is faster but uses more VRAM")
@@ -322,6 +336,8 @@ class SettingsModelMixin:
                 list_voices as _list_voices,
                 get_active_voice as _get_active_voice,
                 set_active_voice as _set_active_voice,
+                voice_display_name as _voice_display_name,
+                resolve_voice_id as _resolve_voice_id,
             )
             _be = _tts_backends()
             _status_lines = [
@@ -343,16 +359,33 @@ class SettingsModelMixin:
             )
             _voices = _list_voices()
             _active = _get_active_voice()
-            for _v in _voices:
-                self._voice_selector.addItem(_v)
-            if _active in _voices:
-                self._voice_selector.setCurrentText(_active)
+            _active_idx = 0
+            for i, _v in enumerate(_voices):
+                self._voice_selector.addItem(_voice_display_name(_v), _v)
+                if _v == _active:
+                    _active_idx = i
+            if _voices:
+                self._voice_selector.setCurrentIndex(_active_idx)
+
+            _styles_note = QLabel(
+                "Style presets (calm, robotic, …) = bundled Piper + ffmpeg effects — "
+                "not movie/TV character clones. Clone your own timbre: drop a short "
+                "reference clip below (needs the optional Chatterbox voice engine)."
+            )
+            _styles_note.setWordWrap(True)
+            _styles_note.setStyleSheet("color:#8eaac8; font-size:11px;")
+            tts_form.addRow(_styles_note)
 
             def _on_voice_changed(_name: str):
                 try:
-                    _set_active_voice(_name)
+                    _vid = _resolve_voice_id(_name)
+                    if getattr(self, "_voice_selector", None) is not None:
+                        _data = self._voice_selector.currentData()
+                        if _data:
+                            _vid = str(_data)
+                    _set_active_voice(_vid)
                 except Exception:
-                    pass
+                    log.debug("suppressed exception", exc_info=True)
 
             self._voice_selector.currentTextChanged.connect(_on_voice_changed)
 
@@ -364,28 +397,6 @@ class SettingsModelMixin:
             _voice_lbl.setStyleSheet("color:#8eaac8; min-width:50px;")
             _voice_row_layout.addWidget(_voice_lbl)
             _voice_row_layout.addWidget(self._voice_selector, 1)
-
-            # Voice library — ELI ships a small pack; upstream hosts ~166 across 45
-            # languages and voice_assets could already fetch any of them, but until
-            # now nothing exposed that to the user. This button is that path.
-            _get_btn = QPushButton("Get more…")
-            _get_btn.setToolTip(
-                "Browse and download additional Piper voices — more English accents, "
-                "other languages, and the ideal base voices for the character presets.")
-
-            def _open_voice_library():
-                try:
-                    from eli.gui.widgets.voice_downloader import VoiceDownloadDialog
-                    dlg = VoiceDownloadDialog(self)
-                    dlg.voices_changed.connect(self._reload_voice_selector)
-                    dlg.exec()
-                except Exception as _e:
-                    log.debug(f"[TTS] voice library dialog failed: {_e}", exc_info=True)
-                    QMessageBox.warning(self, "Voice library",
-                                        f"Could not open the voice library:\n{_e}")
-
-            _get_btn.clicked.connect(_open_voice_library)
-            _voice_row_layout.addWidget(_get_btn)
             tts_form.addRow(_voice_row_widget)
 
             # Test voice button
@@ -398,11 +409,234 @@ class SettingsModelMixin:
             def _test_voice():
                 try:
                     from eli.perception.tts_router import speak
-                    speak("ELI voice test. Systems operational.", voice_name=self._voice_selector.currentText())
+                    _vid = self._voice_selector.currentData() or self._voice_selector.currentText()
+                    speak("ELI voice test. Systems operational.", voice_name=str(_vid))
                 except Exception as e:
                     log.debug(f"[TTS] Test error: {e}")
             _test_btn.clicked.connect(_test_voice)
             tts_form.addRow(_test_btn)
+
+            # Voice library — the only user-facing path to the ~166 upstream voices
+            # (accents/qualities/languages). Repopulates every voice combo on close
+            # so a freshly downloaded voice is immediately selectable.
+            _get_btn = QPushButton("＋ Get more voices / accents…")
+            _get_btn.setStyleSheet(
+                "QPushButton { background:#1e2a3a; color:#7aa7d0; border:1px solid #2a4a6a;"
+                " border-radius:4px; padding:4px 10px; }"
+                "QPushButton:hover { background:#25384a; }"
+            )
+            _get_btn.setToolTip(
+                "Browse and download additional Piper voices — more English accents, "
+                "other languages, and the ideal base voices for the character presets.")
+
+            def _open_voice_library():
+                try:
+                    from eli.gui.widgets.voice_downloader import VoiceDownloadDialog
+                    dlg = VoiceDownloadDialog(self)
+                    dlg.voices_changed.connect(self._reload_voice_selectors)
+                    dlg.exec()
+                except Exception as e:
+                    log.debug(f"[TTS] voice library dialog failed: {e}", exc_info=True)
+                    QMessageBox.warning(self, "Voice library",
+                                        f"Could not open the voice library:\n{e}")
+
+            _get_btn.clicked.connect(_open_voice_library)
+            tts_form.addRow(_get_btn)
+
+            # Create-your-own-voice — drop in a recording (wav/mp3/mp4) and ELI builds
+            # a voice from it (Chatterbox, XTTS if that is what is installed). Without
+            # either the voice is registered and ELI keeps its Piper voice.
+            _VOICE_CLIP_EXTS = (".wav", ".mp3", ".mp4", ".m4a", ".ogg", ".flac", ".aac", ".webm")
+
+            def _create_voice_from_path(path: str):
+                try:
+                    import os as _os
+                    if _os.path.splitext(path)[1].lower() not in _VOICE_CLIP_EXTS:
+                        QMessageBox.warning(self, "Create voice",
+                                             f"Not a recognised audio/video clip: {path}")
+                        return
+                    from eli.gui.qt_compat import QInputDialog
+                    default_name = _os.path.splitext(_os.path.basename(path))[0]
+                    name, ok = QInputDialog.getText(self, "Name this voice",
+                                                    "Voice name:", text=default_name)
+                    if not ok or not name.strip():
+                        return
+                    from eli.perception import tts_xtts
+                    res = tts_xtts.add_clone(name.strip(), path)
+                    if res.get("ok"):
+                        try:
+                            from eli.perception.tts_router import set_active_voice
+                            set_active_voice(res.get("id") or ("clone:" + name.strip()))
+                        except Exception:
+                            log.debug("[TTS] set created voice active failed", exc_info=True)
+                        self._reload_voice_selectors()
+                        # The remediation has to match the runtime: a packaged build has no
+                        # project root and no writable site-packages, so a pip line is no fix there.
+                        extra = ""
+                        if not res.get("synth_ready"):
+                            try:
+                                from eli.core.paths import is_frozen as _is_frozen
+                                _packaged = bool(_is_frozen())
+                            except Exception:
+                                _packaged = False
+                            if _packaged:
+                                extra = (
+                                    "\n\nNOTE: this build cannot synthesise cloned voices — the "
+                                    "voice-cloning engine (Chatterbox) is not included, so "
+                                    f"'{name.strip()}' is saved but ELI will keep speaking in its "
+                                    "Piper voice.\nTo use it, run ELI from the source install "
+                                    "(README ▸ Install) with the chatterbox extra."
+                                )
+                            else:
+                                extra = (
+                                    "\n\nInstall the voice-cloning engine to make it sound like the "
+                                    "recording:\n  pip install -e \".[chatterbox]\"  "
+                                    "(from the ELI project root)"
+                                )
+                        QMessageBox.information(self, "Voice created",
+                                               f"Created and selected the voice '{name.strip()}'.{extra}")
+                    else:
+                        QMessageBox.warning(self, "Couldn't create voice",
+                                            str(res.get("error") or "unknown error"))
+                except Exception as e:
+                    log.debug(f"[TTS] create-voice failed: {e}", exc_info=True)
+                    QMessageBox.warning(self, "Create voice", f"Could not create the voice:\n{e}")
+
+            def _browse_voice_file():
+                path, _ = QFileDialog.getOpenFileName(
+                    self, "Choose a voice recording", "",
+                    "Audio/Video (*.wav *.mp3 *.mp4 *.m4a *.ogg *.flac *.aac *.webm);;All files (*)")
+                if path:
+                    _create_voice_from_path(path)
+
+            class VoiceDropZone(QFrame):
+                """Dashed drop target for a voice recording — drag a clip in, or
+                click to browse. Single point of entry into add_clone()."""
+                _IDLE = ("QFrame { background:#241a33; border:2px dashed #4a2a6a;"
+                          " border-radius:6px; }"
+                          "QLabel { background:transparent; color:#b78ad0; }")
+                _HOVER = ("QFrame { background:#2e2140; border:2px dashed #b78ad0;"
+                          " border-radius:6px; }"
+                          "QLabel { background:transparent; color:#d8b8f0; }")
+
+                def __init__(self, on_path, on_browse, parent=None):
+                    super().__init__(parent)
+                    self._on_path = on_path
+                    self._on_browse = on_browse
+                    self.setAcceptDrops(True)
+                    self.setFixedHeight(56)
+                    self.setStyleSheet(self._IDLE)
+                    self.setCursor(Qt.CursorShape.PointingHandCursor)
+                    lay = QVBoxLayout(self)
+                    lay.setContentsMargins(10, 4, 10, 4)
+                    lbl = QLabel("🎙  Drop an audio/video clip here, or click to browse…")
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    lay.addWidget(lbl)
+                    self.setToolTip(
+                        "Build a custom ELI voice from a short, clean recording (~6–20s) of "
+                        "the voice you want — .wav, .mp3, .mp4, .m4a, .ogg, .flac, .aac, .webm. "
+                        "Needs the Chatterbox voice engine to actually reproduce it "
+                        "(pip install -e \".[chatterbox]\" from the ELI project root).")
+
+                def _first_local_clip(self, event) -> str:
+                    if not event.mimeData().hasUrls():
+                        return ""
+                    for url in event.mimeData().urls():
+                        p = url.toLocalFile()
+                        if p and p.lower().endswith(_VOICE_CLIP_EXTS):
+                            return p
+                    return ""
+
+                def dragEnterEvent(self, event):
+                    if self._first_local_clip(event):
+                        self.setStyleSheet(self._HOVER)
+                        event.acceptProposedAction()
+                    else:
+                        event.ignore()
+
+                def dragLeaveEvent(self, event):
+                    self.setStyleSheet(self._IDLE)
+
+                def dropEvent(self, event):
+                    self.setStyleSheet(self._IDLE)
+                    path = self._first_local_clip(event)
+                    if path:
+                        event.acceptProposedAction()
+                        self._on_path(path)
+
+                def mousePressEvent(self, event):
+                    self._on_browse()
+
+            _drop_zone = VoiceDropZone(_create_voice_from_path, _browse_voice_file)
+            tts_form.addRow(_drop_zone)
+
+            # Record-now: capture a fresh reference from the mic — no pre-existing file.
+            def _record_voice_now():
+                secs = 12
+                try:
+                    import sounddevice as _sd, soundfile as _sf
+                except Exception:
+                    QMessageBox.warning(self, "Recording unavailable",
+                                        "Microphone capture needs the audio extras "
+                                        "(sounddevice + soundfile).")
+                    return
+                import tempfile as _tf
+                prog = QProgressDialog(
+                    f"Recording {secs}s — speak naturally now (read a couple of sentences)…",
+                    "Cancel", 0, secs, self)
+                prog.setWindowTitle("Recording your voice")
+                prog.setWindowModality(Qt.WindowModality.WindowModal)
+                prog.setMinimumDuration(0)
+                holder = {"data": None, "err": None}
+
+                def _cap():
+                    try:
+                        holder["data"] = _sd.rec(int(secs * 22050), samplerate=22050,
+                                                 channels=1, dtype="float32")
+                        _sd.wait()
+                    except Exception as e:
+                        holder["err"] = str(e)
+
+                th = threading.Thread(target=_cap, daemon=True); th.start()
+                import time as _time
+                t0 = _time.time()
+                while th.is_alive():
+                    el = int(_time.time() - t0)
+                    prog.setValue(min(secs, el))
+                    QApplication.processEvents()
+                    if prog.wasCanceled():
+                        try:
+                            import sounddevice as _sd2; _sd2.stop()
+                        except Exception:
+                            log.debug("[TTS] record stop failed", exc_info=True)
+                        break
+                    _time.sleep(0.1)
+                th.join(timeout=1.0)
+                prog.setValue(secs)
+                if prog.wasCanceled():
+                    return
+                if holder["err"] or holder["data"] is None:
+                    QMessageBox.warning(self, "Recording failed",
+                                        str(holder["err"] or "no audio captured"))
+                    return
+                try:
+                    fd, wav_path = _tf.mkstemp(suffix=".wav"); os.close(fd)
+                    _sf.write(wav_path, holder["data"], 22050)
+                    _create_voice_from_path(wav_path)
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except Exception:
+                        log.debug("[TTS] temp record cleanup failed", exc_info=True)
+
+            _rec_btn = QPushButton("🔴  Record a voice now (12s from your mic)")
+            _rec_btn.setStyleSheet(
+                "QPushButton { background:#2a1e2a; color:#d08a9a; border:1px solid #6a2a3a;"
+                " border-radius:4px; padding:5px 10px; }"
+                "QPushButton:hover { background:#382530; }")
+            _rec_btn.setToolTip("Speak for ~12 seconds and ELI builds a voice from your recording.")
+            _rec_btn.clicked.connect(_record_voice_now)
+            tts_form.addRow(_rec_btn)
 
         except Exception as _tts_err:
             tts_form.addRow(QLabel(f"TTS status unavailable: {_tts_err}"))
@@ -418,7 +652,7 @@ class SettingsModelMixin:
         form = self._section_card(vbox, "SAMPLING")
 
         self.max_tokens_input = QSpinBox()
-        self.max_tokens_input.setRange(128, 4096)
+        self.max_tokens_input.setRange(128, 2_147_483_647)  # a ceiling: each reply is sized to the window
         self.max_tokens_input.setValue(4096)
         self.max_tokens_input.setSingleStep(128)
         form.addRow(self._field_label("Max tokens"), self.max_tokens_input)
@@ -1075,12 +1309,12 @@ class SettingsModelMixin:
         card_layout.setSpacing(10)
 
         wizard_label = QLabel(
-            "The <b>Agent Wizard</b> switches to your Chat tab and asks three questions:\n"
-            "  1. Name &amp; purpose of the new agent\n"
-            "  2. Trigger keywords and data sources\n"
-            "  3. Persona and output style\n\n"
-            "Specs are saved under your ELI data directory, registered live on the agent bus, "
-            "and reloaded on startup. Enable/disable in <b>Settings → Agents</b>."
+            "The <b>Agent Wizard</b> authors a full agent <b>specification</b> — "
+            "objective, instruction, triggers, and success criteria — the same "
+            "format used by ELI's built-in specialist agents on the bus.<br><br>"
+            "Specs are saved under your ELI data directory, registered live on the "
+            "agent bus, and reloaded automatically on startup. Enable/disable in "
+            "<b>Settings → Agents</b>."
         )
         wizard_label.setWordWrap(True)
         wizard_label.setStyleSheet(
@@ -1363,12 +1597,13 @@ class SettingsModelMixin:
         self.n_ctx_input.setValue(optimal['n_ctx'])
         self.n_gpu_layers_input.setValue(optimal['n_gpu_layers'])
         self.n_threads_input.setValue(optimal['n_threads'])
-        self.batch_size_input.setValue(optimal.get('batch_size', 128))
+        self.batch_size_input.setValue(optimal['batch_size'])
         self.temperature_input.setValue(optimal['temperature'])
-        self.max_tokens_input.setValue(optimal['max_tokens'])
+        if optimal.get('max_tokens'):
+            self.max_tokens_input.setValue(optimal['max_tokens'])
         self.status_signal.emit(
-            f"Auto-detected: ctx={optimal['n_ctx']}  gpu={optimal['n_gpu_layers']}  "
-            f"threads={optimal['n_threads']}  batch={optimal.get('batch_size', 128)}"
+            f"Auto-detected: ctx={optimal['n_ctx'] or 'auto'}  gpu={optimal['n_gpu_layers']}  "
+            f"threads={optimal['n_threads']}  batch={optimal['batch_size']}"
         )
         try:
             self.save_settings(silent=True)
@@ -1425,7 +1660,7 @@ class SettingsModelMixin:
             size_bytes = int(model_file.stat().st_size)
             hw = _hp_detect()
             # The user's EXPLICITLY chosen ctx must anchor the recommendation, not be
-            # overwritten by the DEFAULT_N_CTX target. Source of truth (highest first):
+            # overwritten by the auto target. Source of truth (highest first):
             # the startup dialog's "Direct context window" field (ELI_FORCE_CTX), else
             # the live ctx spinbox (persisted from settings.json n_ctx). recommend()
             # honours it and only trims it on a real VRAM constraint (logged).
@@ -1435,9 +1670,20 @@ class SettingsModelMixin:
                 _spin_ctx = int(self.n_ctx_input.value())
             except Exception:
                 _spin_ctx = 0
+            # The box counts as the operator's only when it was changed this session or was saved
+            # for this model (startup dialog rule): a number left over from another model, or the
+            # tuner's own figure from an older build, is not a choice.
+            try:
+                from eli.core.runtime_settings import load_settings as _rs_saved_ctx
+                _saved = _rs_saved_ctx() or {}
+            except Exception:
+                _saved = {}
+            _ctx_is_theirs = (
+                _spin_ctx != int(_saved.get("n_ctx") or 0)
+                or Path(str(_saved.get("n_ctx_model") or "")).name == Path(str(model_path)).name)
             if _forced_ctx.isdigit() and int(_forced_ctx) >= 2048:
                 _user_pinned_ctx = int(_forced_ctx)
-            elif _spin_ctx >= 2048:
+            elif _spin_ctx >= 2048 and _ctx_is_theirs:
                 _user_pinned_ctx = _spin_ctx
             else:
                 _user_pinned_ctx = None
@@ -1455,11 +1701,12 @@ class SettingsModelMixin:
                 _user_pinned_batch = int(self.batch_size_input.value())
             except Exception:
                 _user_pinned_batch = 0
+            from eli.core.mem_units import bytes_to_gib
             rec = _hp_recommend(hw, [{
                 "name": model_file.name,
                 "path": str(model_file),
                 "size_bytes": size_bytes,
-                "size_gb": size_bytes / 1e9,
+                "size_gb": bytes_to_gib(size_bytes),
             }], user_ctx=_user_pinned_ctx)
 
             # Runtime CUDA/backend may be unavailable even if VRAM probe reports
@@ -1519,9 +1766,20 @@ class SettingsModelMixin:
             # [GUI][LOAD] / smart-fit / probe lines the terminal prints (see
             # HardwareTuningLogRelay) — one source of truth, not a second figure
             # computed for the panel.
+            from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_rec
+            try:
+                from eli.core import moe_offload as _moe_status_rec
+                _moe_plan_rec = _moe_status_rec.plan_for_load(model_path, True)
+            except Exception:
+                _moe_plan_rec = None
+            _moe_note_rec = (
+                f" ({_moe_plan_rec['resident_gb']:.1f}GB on GPU, "
+                f"{_moe_plan_rec['experts_gb']:.1f}GB of experts always in RAM)"
+                if _moe_plan_rec else ""
+            )
             summary = (
                 f"HW Profile (recommended): ctx={int(rec.n_ctx)} "
-                f"gpu_layers={int(rec.n_gpu_layers)} "
+                f"gpu_layers={_describe_gpu_rec(rec.n_gpu_layers)}{_moe_note_rec} "
                 f"threads={int(rec.n_threads)} batch={int(rec.batch_size)} "
                 f"kv={_ck or 'fp16'}"
             )
@@ -1531,7 +1789,7 @@ class SettingsModelMixin:
                 _eff = (_live.get("effective") or _live) if isinstance(_live, dict) else {}
                 _lc, _lg = _eff.get("n_ctx"), _eff.get("n_gpu_layers")
                 if _lc and _lg is not None:
-                    summary += (f"  |  loaded: ctx={int(_lc)} gpu_layers={int(_lg)}"
+                    summary += (f"  |  loaded: ctx={int(_lc)} gpu_layers={_describe_gpu_rec(_lg)}"
                                 f" batch={int(_eff.get('n_batch') or 0)}")
             except Exception:
                 log.debug("[GUI] live runtime snapshot unavailable for the tuning panel",
@@ -1583,6 +1841,11 @@ class SettingsModelMixin:
                 _applies = _pin_for_model(model_path, _live, current_ctx=_canonical_ctx)
             except Exception:
                 _pin_model, _pin_ctx, _applies = "", 0, (_user_pinned_layers or None)
+            if (_user_pinned_layers and _applies is None
+                    and int(_user_pinned_layers) == int(rec.n_gpu_layers or 0)):
+                # Same number either way: nothing to replace or announce. It printed
+                # "gpu_layers=40 no longer applies - using the tuner's 40".
+                _applies = int(_user_pinned_layers)
             if _user_pinned_layers and _applies is None:
                 if _pin_model and _pin_model != _this_model:
                     _why = f"was pinned for {_pin_model}, not {_this_model}"
@@ -1592,7 +1855,7 @@ class SettingsModelMixin:
                     _why = "no longer applies"
                 self._hardware_tuning_log(
                     f"gpu_layers={_user_pinned_layers} {_why} - using "
-                    f"the tuner's {int(rec.n_gpu_layers)}, measured for this model at "
+                    f"the tuner's {_describe_gpu_rec(rec.n_gpu_layers)}, measured for this model at "
                     f"this ctx. Reload with the same ctx to keep a pin across loads."
                 )
                 _user_pinned_layers = 0
@@ -1605,7 +1868,7 @@ class SettingsModelMixin:
             _canonical_batch = (max(int(_user_pinned_batch), _min_batch)
                                 if _user_pinned_batch else _apply_batch)
             try:
-                self.n_ctx_input.setValue(_canonical_ctx)
+                self.n_ctx_input.setValue(int(_user_pinned_ctx or 0))
                 self.n_gpu_layers_input.setValue(_canonical_layers)
                 self.batch_size_input.setValue(_canonical_batch)
                 if int(rec.n_threads) > 0:
@@ -1619,7 +1882,8 @@ class SettingsModelMixin:
             try:
                 from eli.core.runtime_settings import load_settings as _rs_load, save_settings as _rs_save
                 _s = dict(_rs_load() or {})
-                _s["n_ctx"] = _canonical_ctx        # user's chosen ctx, preserved
+                # the operator's own ctx, or auto; the tuner's figure goes in hw_profile_n_ctx only
+                _s["n_ctx"] = int(_user_pinned_ctx or 0)
                 _s["n_gpu_layers"] = _canonical_layers
                 # Only a value the operator pinned counts as theirs; the tuner's own number must not
                 # come back next launch as a pin.
@@ -1649,7 +1913,8 @@ class SettingsModelMixin:
                     _not_applied.append(f"n_ctx (yours: {_canonical_ctx}, tuner: {int(rec.n_ctx)})")
                 if int(rec.n_gpu_layers) != int(_canonical_layers):
                     _not_applied.append(
-                        f"n_gpu_layers (yours: {_canonical_layers}, tuner: {int(rec.n_gpu_layers)})")
+                        f"n_gpu_layers (yours: {_describe_gpu_rec(_canonical_layers)}, "
+                        f"tuner: {_describe_gpu_rec(rec.n_gpu_layers)})")
                 if int(_apply_batch) != int(_canonical_batch):
                     _not_applied.append(
                         f"batch_size (yours: {_canonical_batch}, tuner: {int(_apply_batch)})")
@@ -1827,7 +2092,7 @@ class SettingsModelMixin:
                     model_name_display = model_name
                 else:
                     model_path = self.resolve_selected_model_path()
-                    success = model_manager.load_model(
+                    success = self.model_manager.load_model(
                         model_path=model_path,
                         n_ctx=n_ctx,
                         n_threads=n_threads,
@@ -1838,28 +2103,41 @@ class SettingsModelMixin:
                         use_mmap=use_mmap,
                         use_mlock=use_mlock,
                     )
-                    backend = model_manager
-                    model_name_display = Path(getattr(model_manager, 'model_path', model_path or 'model')).name
+                    backend = self.model_manager
+                    model_name_display = Path(getattr(self.model_manager, 'model_path', model_path or 'model')).name
 
                 if success:
                     self.active_backend = backend
-                    memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
+                    self.memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
                     if provider != "ollama":
                         from eli.core.hardware_profile import format_gpu_layers_status as _fmt_gpu
-                        _active_gpu = int(getattr(model_manager, 'n_gpu_layers', 0) or 0)
-                        _fitted_gpu = int(getattr(model_manager, 'fitted_gpu_layers', 0) or 0)
+                        _active_gpu = int(getattr(self.model_manager, 'n_gpu_layers', 0) or 0)
+                        _fitted_gpu = int(getattr(self.model_manager, 'fitted_gpu_layers', 0) or 0)
                         _gpu_disp = _fmt_gpu(
                             _active_gpu,
                             fitted_layers=_fitted_gpu,
-                            gpu_integrated=bool(getattr(model_manager, 'gpu_integrated', False)),
-                            gpu_name=str(getattr(model_manager, 'gpu_name', '') or ''),
-                            gpu_vendor=str(getattr(model_manager, 'gpu_vendor', '') or ''),
+                            gpu_integrated=bool(getattr(self.model_manager, 'gpu_integrated', False)),
+                            gpu_name=str(getattr(self.model_manager, 'gpu_name', '') or ''),
+                            gpu_vendor=str(getattr(self.model_manager, 'gpu_vendor', '') or ''),
                         )
+                        # "gpu=40" alone misreads as 40/40 fully resident — for MoE, only
+                        # the small core tensors offload; experts stay in RAM. Show both.
+                        try:
+                            from eli.core import moe_offload as _moe_status
+                            _moe_plan = _moe_status.plan_for_load(model_path, True)
+                        except Exception:
+                            _moe_plan = None
+                        _moe_note = ""
+                        if _moe_plan:
+                            _moe_note = (
+                                f", {_moe_plan['resident_gb']:.1f}GB actually on GPU — "
+                                f"{_moe_plan['experts_gb']:.1f}GB of experts always stay in RAM"
+                            )
                         self.status_signal.emit(
                             f"🟢 Model ready: {model_name_display} "
-                            f"(ctx={int(getattr(model_manager, 'n_ctx', 0) or 0)} "
-                            f"gpu={_gpu_disp} "
-                            f"batch={int(getattr(model_manager, 'n_batch', 0) or 0)})"
+                            f"(ctx={int(getattr(self.model_manager, 'n_ctx', 0) or 0)} "
+                            f"gpu={_gpu_disp}{_moe_note} "
+                            f"batch={int(getattr(self.model_manager, 'n_batch', 0) or 0)})"
                         )
                     else:
                         self.status_signal.emit(f"🟢 Model ready: {model_name_display}")
@@ -1872,30 +2150,30 @@ class SettingsModelMixin:
                             _ce._gguf_available = True
                             _ce._gguf_load_error = None
                             _loaded_path = str(
-                                getattr(model_manager, "model_path", model_path) or model_path
+                                getattr(self.model_manager, "model_path", model_path) or model_path
                             )
                             _ce._model_path = _loaded_path
-                            _ce._ctx = int(getattr(model_manager, "n_ctx", 0) or 0)
-                            _ce._gpu_layers = int(getattr(model_manager, "n_gpu_layers", 0) or 0)
+                            _ce._ctx = int(getattr(self.model_manager, "n_ctx", 0) or 0)
+                            _ce._gpu_layers = int(getattr(self.model_manager, "n_gpu_layers", 0) or 0)
                         except Exception:
                             log.debug("suppressed exception", exc_info=True)
                     try:
                         if provider != "ollama":
-                            _requested_gpu = int(getattr(model_manager, "requested_n_gpu_layers", 0) or 0)
-                            _effective_gpu = int(getattr(model_manager, "n_gpu_layers", 0) or 0)
-                            _gpu_supported = getattr(model_manager, "gpu_offload_supported", None)
+                            _requested_gpu = int(getattr(self.model_manager, "requested_n_gpu_layers", 0) or 0)
+                            _effective_gpu = int(getattr(self.model_manager, "n_gpu_layers", 0) or 0)
+                            _gpu_supported = getattr(self.model_manager, "gpu_offload_supported", None)
                             if _requested_gpu > 0 and (_gpu_supported is False or _effective_gpu <= 0):
                                 from eli.core.hardware_profile import (
                                     gpu_offload_unavailable_message as _gpu_msg,
                                 )
                                 self.status_signal.emit(
                                     _gpu_msg(
-                                        gpu_vendor=str(getattr(model_manager, "gpu_vendor", "") or ""),
+                                        gpu_vendor=str(getattr(self.model_manager, "gpu_vendor", "") or ""),
                                         gpu_integrated=bool(
-                                            getattr(model_manager, "gpu_integrated", False)
+                                            getattr(self.model_manager, "gpu_integrated", False)
                                         ),
                                         vulkan_available=bool(
-                                            getattr(model_manager, "vulkan_available", False)
+                                            getattr(self.model_manager, "vulkan_available", False)
                                         ),
                                     )
                                 )
@@ -1957,7 +2235,8 @@ class SettingsModelMixin:
 
         # Numeric / generation params
         try:
-            self.n_ctx_input.setValue(int(s.get("n_ctx", 16384)))
+            # 0 is auto; whether a saved number is still yours is decided per model when tuning
+            self.n_ctx_input.setValue(int(s.get("n_ctx") or 0))
             self.n_threads_input.setValue(int(s.get("n_threads", 8)))
             self.n_gpu_layers_input.setValue(int(s.get("n_gpu_layers", 99)))
             self.max_tokens_input.setValue(int(s.get("max_tokens", 4096)))
@@ -2083,6 +2362,13 @@ class SettingsModelMixin:
         # Identity + image studio defaults
         try:
             _gui_user_name = str(s.get("user_name", "") or "").strip()
+            try:
+                # A stored value that isn't a name ("listed", written by a since-fixed
+                # misroute) is not shown as one.
+                from eli.kernel.state import _clean_name as _cn_gui
+                _gui_user_name = _cn_gui(_gui_user_name)
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
             if not _gui_user_name:
                 try:
                     from eli.kernel.state import get_user_name as _gun
@@ -2171,6 +2457,8 @@ class SettingsModelMixin:
                 self.ollama_host_input.text().strip()),
             "ollama_model": self.ollama_model_combo.currentText().strip(),
             "n_ctx": int(self.n_ctx_input.value()),
+            "n_ctx_model": (Path(str(self.resolve_selected_model_path() or "")).name
+                            if int(self.n_ctx_input.value()) > 0 else ""),
             "n_threads": int(self.n_threads_input.value()),
             "n_gpu_layers": int(self.n_gpu_layers_input.value()),
             "n_gpu_layers_source": (

@@ -120,7 +120,18 @@ def add_clone(name: str, audio_path: str, language: str = "en",
     reg[key] = {"ref_wav": str(ref), "language": language or "en", "desc": desc or f"Cloned voice: {key}"}
     _save_registry(reg)
     return {"ok": True, "name": key, "id": CLONE_PREFIX + key, "ref_wav": str(ref),
-            "synth_ready": xtts_available()}
+            "synth_ready": _clone_synth_available()}
+
+
+def _clone_synth_available() -> bool:
+    # Clones are spoken by Chatterbox when it is installed, XTTS otherwise (tts_router).
+    try:
+        from eli.perception.tts_chatterbox import chatterbox_available
+        if chatterbox_available():
+            return True
+    except Exception:
+        log.debug("tts_xtts: chatterbox check failed", exc_info=True)
+    return bool(xtts_available())
 
 
 def delete_clone(name: str) -> Dict[str, Any]:
