@@ -220,3 +220,5 @@ config/voices/
 models/_download.log
 /clearbuild/
 eli_ci_*.log
+# made from LICENSE by scripts/make_installer_license.py
+packaging/windows/LICENSE.txt

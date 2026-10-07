@@ -1,4 +1,4 @@
-; ELI v2 - Windows installer for the PyInstaller (frozen) build.
+; ELI v3 - Windows installer for the PyInstaller (frozen) build.
 ;
 ; Wraps the one-dir bundle produced by `pyinstaller ELI.spec` (dist\ELI\).
 ; The legacy packaging\windows\ELI_Setup.iss wraps the source-portable zip
@@ -28,6 +28,12 @@
   #pragma error "dist\ELI\ELI.exe not found - run `pyinstaller --noconfirm ELI.spec` first"
 #endif
 
+; the licence is shown before anything is installed. LICENSE.txt is made from LICENSE by
+; scripts\make_installer_license.py (Inno reads a file without a BOM as ANSI)
+#if !FileExists("LICENSE.txt")
+  #pragma error "packaging\windows\LICENSE.txt not found - run `python scripts\make_installer_license.py` first"
+#endif
+
 [Setup]
 AppId={{3B8F2A61-9C4D-4E7A-B5F0-8D1E6C2A9F73}
 AppName={#MyAppName}
@@ -36,6 +42,8 @@ AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
+AppCopyright=Copyright (C) 2026 Jason Fitzgibbon Bridgeman. All rights reserved.
+LicenseFile=LICENSE.txt
 DefaultDirName={localappdata}\Programs\ELI_v3
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
