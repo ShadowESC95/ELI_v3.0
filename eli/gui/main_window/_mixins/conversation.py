@@ -1061,6 +1061,7 @@ class ConversationMixin:
                 )
                 self.conversation_history.append({'role': 'assistant', 'content': _hist})
                 self._last_eli_response = _hist
+                self.save_conversation(quiet=True)
 
                 # ── Persist to conversation_turns table (skip if CognitiveEngine stored) ──
                 if not _storage_handled:
@@ -1132,6 +1133,7 @@ class ConversationMixin:
         if reply == QMessageBox.StandardButton.Yes:
             self.chat_display.clear()
             self.conversation_history = []
+            self._conversation_file = None
             self.status_signal.emit("Chat cleared")
 
     def _load_into_labs_file_chat(self, path: Path) -> bool:

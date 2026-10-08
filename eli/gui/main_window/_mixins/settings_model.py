@@ -1246,6 +1246,9 @@ class SettingsModelMixin:
 
         self.auto_save_checkbox = QCheckBox("Auto-save conversations")
         self.auto_save_checkbox.setChecked(True)
+        # Read by the reply worker, which must not touch the widget.
+        self._autosave_enabled = True
+        self.auto_save_checkbox.toggled.connect(lambda on: setattr(self, "_autosave_enabled", bool(on)))
         self.auto_save_checkbox.setStyleSheet("color:#c8d0e0;")
         form.addRow("", self.auto_save_checkbox)
 

@@ -1408,20 +1408,30 @@ class ChromeIoMixin:
             self.save_conversation()
         self.clear_chat()
 
-    def save_conversation(self):
-        if not self.conversation_history:
+    def save_conversation(self, quiet: bool = False):
+        """One file per conversation, rewritten as it grows: quietly after each reply when auto-save is
+        on. It was written only on close, and a crash lost the whole evening's conversation."""
+        if not self.conversation_history or (quiet and not getattr(self, "_autosave_enabled", True)):
             return
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = CONVERSATIONS_DIR / f"conversation_{timestamp}.json"
+        filename = getattr(self, "_conversation_file", None)
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = self._conversation_file = CONVERSATIONS_DIR / f"conversation_{timestamp}.json"
         try:
-            with open(filename, 'w', encoding='utf-8') as f:
+            part = filename.with_suffix(".json.part")
+            with open(part, 'w', encoding='utf-8') as f:
                 json.dump({
                     "timestamp": now_timestamp(),
-                    "messages": self.conversation_history
+                    "messages": list(self.conversation_history)
                 }, f, indent=2, ensure_ascii=False)
-            self.status_signal.emit(f"Conversation saved: {filename.name}")
+            part.replace(filename)
+            if not quiet:
+                self.status_signal.emit(f"Conversation saved: {filename.name}")
         except Exception as e:
-            QMessageBox.warning(self, "Save Error", f"Failed to save: {str(e)}")
+            if quiet:
+                log.debug("conversation autosave failed", exc_info=True)
+            else:
+                QMessageBox.warning(self, "Save Error", f"Failed to save: {str(e)}")
 
     def show_recent_memories(self):
         self.memory_results_display.clear()
