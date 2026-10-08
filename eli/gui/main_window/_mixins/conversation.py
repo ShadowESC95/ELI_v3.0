@@ -352,6 +352,7 @@ class ConversationMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         self.chat_input.setPlainText(text)
+        self._spoken_send = True
         self.send_message()
 
     def _populate_mic_device_combo(self, restore: bool = False):
@@ -877,7 +878,16 @@ class ConversationMixin:
         self.status_signal.emit('Generating')
         self.status_signal.emit('🔄 Generating response...')
 
+        _typed = not getattr(self, "_spoken_send", False)
+        self._spoken_send = False
+
         def generate_worker():
+            if _typed:
+                try:
+                    from eli.kernel.request_context import input_channel_var
+                    input_channel_var.set("typed")
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
             try:
                 max_tokens  = self.max_tokens_input.value()
                 temperature = self.temperature_input.value()
