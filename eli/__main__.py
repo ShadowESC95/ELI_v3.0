@@ -20,6 +20,11 @@ Flags:
                    Print the PolyForm Internal Use terms ELI ships under, then
                    exit. Distinct from --license-status, which reports this
                    install's ACTIVATION state; this prints the TERMS.
+  --bundles        List the bundles installed (separate ELI applications such as
+                   ELI Legal that run on ELI v3's core).
+  --bundle <id>    Open that bundle in its own window instead of ELI v3's.
+  --choose         Ask at start-up whether to open ELI v3 or a bundle, even if a
+                   choice was remembered. --no-bundles skips the question.
 """
 from __future__ import annotations
 import sys
@@ -106,6 +111,27 @@ def main() -> int:
     except Exception:
         import logging
         logging.getLogger("eli.boot").debug("boot bootstrap skipped", exc_info=True)
+
+    # ── Bundles: a separate ELI application in place of ELI v3's window ──────
+    # `eli --bundles` lists them; `eli --bundle legal` opens ELI Legal on ELI v3's core.
+    if "--bundles" in args:
+        from eli.bundles import discover, entitled
+
+        bundles = discover()
+        if not bundles:
+            print("No bundles are installed.")
+        for b in bundles.values():
+            ok, why = entitled(b)
+            print(f"{b.id:12} {b.title} {b.version}  [{b.kind}; {'allowed' if ok else 'not licensed'}]  {b.origin}")
+        return 0
+    if "--bundle" in args:
+        idx = args.index("--bundle")
+        if idx + 1 >= len(args):
+            print("Error: --bundle needs a bundle id (see --bundles)", file=sys.stderr)
+            return 1
+        from eli.bundles import launch as _launch_bundle
+
+        return _launch_bundle(args[idx + 1], args[idx + 2:])
 
     # ── Headless REPL ────────────────────────────────────────────────────────
     if "--headless" in args or "-H" in args:

@@ -372,6 +372,23 @@ def main():
             log.debug("could not show data-folder blocker dialog", exc_info=True)
         return 1
 
+    # ── A bundle in place of ELI v3's window ─────────────────────────────────
+    # When separate ELI applications (ELI Legal, …) are installed, ask which to open, unless a
+    # choice was remembered. A bundle runs on ELI v3's core in its own window.
+    try:
+        from eli.bundles.chooser import target_at_startup
+
+        _bundle = target_at_startup(sys.argv[1:])
+    except SystemExit:
+        raise
+    except Exception:
+        log.warning("bundle chooser unavailable; opening ELI v3", exc_info=True)
+        _bundle = None
+    if _bundle:
+        from eli.bundles import launch as _launch_bundle
+
+        return _launch_bundle(_bundle, [])
+
     # ── Load config first — determines whether setup UI is needed ────────────
     cfg         = _load_config()
     saved_model = cfg.get("model_path") or cfg.get("bundled_model_path") or ""

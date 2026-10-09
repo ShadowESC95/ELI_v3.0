@@ -129,10 +129,51 @@ class TabsMixin:
         toggle_op.triggered.connect(self._toggle_operator_console_dock)
         self._toggle_operator_console_action = toggle_op
         view_menu.addAction(toggle_op)
+        self._add_bundles_menu(menubar)
         help_menu = menubar.addMenu("&Help")
         about_action = QAction("About", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    def _add_bundles_menu(self, menubar):
+        """Separate ELI applications (ELI Legal, …) installed beside ELI v3, each opened in a
+        window of its own."""
+        try:
+            from eli.bundles import discover
+
+            bundles = discover()
+        except Exception:
+            log.debug("bundle discovery failed", exc_info=True)
+            bundles = {}
+        if not bundles:
+            return
+        menu = menubar.addMenu("&Bundles")
+        for bundle in bundles.values():
+            action = QAction(f"Open {bundle.title} in its own window", self)
+            action.setToolTip(bundle.summary)
+            action.triggered.connect(lambda _checked=False, b=bundle.id: self._open_bundle(b))
+            menu.addAction(action)
+        menu.addSeparator()
+        ask = QAction("Ask at start-up which to open", self)
+        ask.triggered.connect(self._ask_bundle_at_startup)
+        menu.addAction(ask)
+
+    def _open_bundle(self, bundle_id):
+        try:
+            from eli.bundles import spawn
+
+            spawn(bundle_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "Bundle", f"Could not open {bundle_id}: {exc}")
+
+    def _ask_bundle_at_startup(self):
+        try:
+            from eli.core.runtime_settings import save_settings
+
+            save_settings({"startup_target": "ask"})
+            QMessageBox.information(self, "Bundles", "ELI will ask which to open the next time it starts.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Bundles", str(exc))
 
     def create_top_toolbar(self):
         toolbar = QToolBar("View")
