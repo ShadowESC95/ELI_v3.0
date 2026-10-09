@@ -31,6 +31,14 @@ def test_before_312_none_gets_a_reserve():
     assert out.stdout.split() == ["True", "False"], out.stderr   # applied once, not twice
 
 
+def test_the_frozen_app_is_built_on_a_python_where_none_cannot_be_freed():
+    """The bundle was on 3.11, where it can."""
+    import re
+    m = re.search(r'^\s*PYTHON_VERSION:\s*"(\d+)\.(\d+)"',
+                  (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"), re.M)
+    assert (int(m.group(1)), int(m.group(2))) >= (3, 12)
+
+
 def test_the_frozen_app_reserves_first_and_its_selftest_measures_qt():
     entry = (ROOT / "packaging/pyinstaller/eli_entry.py").read_text(encoding="utf-8")
     assert entry.index("_pin_singletons()") < entry.index("_install_host_env()")
