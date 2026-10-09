@@ -314,6 +314,8 @@ bash install.sh                 # interactive: report → plan → install → p
 ```
 Flags: `--yes` (no prompts) · `--install-cuda` (auto-install CUDA toolkit) · `--cpu-only` ·
 `--model=qwen2.5-7b` / `--no-model`.
+With several Pythons installed, the installer uses the one the most of ELI's packages come
+ready-made for on your machine, and the newest PyTorch build your GPU and driver can run.
 
 **Windows** (double-click `install.bat`, or PowerShell):
 ```powershell
