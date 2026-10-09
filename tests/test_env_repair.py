@@ -819,7 +819,7 @@ def test_elis_own_piper_is_looked_for_beside_the_python_that_is_running():
 
 
 def test_a_place_piper_could_be_is_not_run_or_reported(tmp_path, monkeypatch, caplog):
-    """The frozen app logged "piper at ~/.local/share/ELI_v2/.venv/bin/piper does not start (No such
+    """The frozen app logged "piper at ~/.local/share/ELI_v3/.venv/bin/piper does not start (No such
     file)": only a source install has that environment."""
     import logging
     from eli.perception import tts_router
