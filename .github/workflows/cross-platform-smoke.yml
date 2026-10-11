@@ -120,7 +120,7 @@ jobs:
         # --noconftest because the repo conftest mocks pydantic/PySide6 for the fast unit
         # suite, which makes the server un-importable. This is where the home-mesh config
         # merge fix and the orchestration/mesh contracts are actually enforced.
-        run: python -m pytest -q -p no:cacheprovider --noconftest tests/test_api_server.py
+        run: python -m pytest -q -p no:cacheprovider --noconftest tests/test_api_server.py tests/test_world_spatial_feed.py
 
       - name: First-run DB autobuild (cross-platform paths)
         run: python -m eli.core.init_data
