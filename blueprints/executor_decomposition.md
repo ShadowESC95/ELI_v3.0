@@ -7,7 +7,7 @@
 **Progress (measured 2026-10-11):** the handler registry (§3) is built and load-bearing —
 `execution/effectors/registry.py`, consulted before the if-chain, and no registered action
 keeps an inline branch (`tests/test_effector_dispatch_order.py`). **189 actions**
-(of 217 total `SUPPORTED_ACTIONS`) across **40 effector modules** are
+(of 217 total `SUPPORTED_ACTIONS`) across **37 effector modules** are
 registry-owned — window control, introspection, coding, media, status reports,
 plugins, system-open, gaze, self-improve, input control, voice input,
 datetime/calendar, persona-lock, wake-word, web/info, apps/windows, content
