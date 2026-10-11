@@ -5031,6 +5031,23 @@ def voice_tts(req: TTSRequest):
     return Response(content=wav, media_type="audio/wav")
 
 # ----------------------------------------------------------------------
+# World feed for spatial clients (ELI VR)
+# ----------------------------------------------------------------------
+def _ws_authorised(ws) -> bool:
+    """The read gate, for a WebSocket handshake. A browser cannot set a header on
+    a WebSocket, so the token may also come as ?token=."""
+    authorization = ws.headers.get("authorization", "")
+    if not authorization and ws.query_params.get("token"):
+        authorization = "Bearer " + ws.query_params["token"]
+    return _resolve_principal(authorization, _is_loopback_client(ws)) is not None
+
+try:
+    from eli.world.spatial_feed import build_router as _build_world_router
+    app.include_router(_build_world_router(_require_token, require_member, _ws_authorised))
+except Exception as _world_err:  # the world is never on the server's critical path
+    print(f"[ELI] world feed unavailable: {_world_err}")
+
+# ----------------------------------------------------------------------
 # Run the server
 # ----------------------------------------------------------------------
 def _lan_ip() -> str:
