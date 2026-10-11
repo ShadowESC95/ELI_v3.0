@@ -41,6 +41,7 @@ def _h_open_audio_settings(a, args):
 
 
 def _h_open_browser(a, args):
+    import re as _re2
     _site_map = {
         "wikipedia": "https://www.wikipedia.org",
         "google": "https://www.google.com",
@@ -55,10 +56,10 @@ def _h_open_browser(a, args):
     }
     raw_q = (args.get("query") or args.get("url") or args.get("link") or "").lower()
 
+    # YouTube with a search query → open YouTube search/watch URL in browser
     _yt_query = (args.get("query") or "").strip()
     if "youtube" in raw_q and _yt_query and "youtube.com" not in raw_q:
         try:
-            from eli.execution.effectors._base import _open_in_browser
             from eli.integrations.media.youtube_playback import yt_browser_play_url
             yt_url = yt_browser_play_url(_yt_query)
             if _open_in_browser(yt_url):
@@ -75,6 +76,9 @@ def _h_open_browser(a, args):
         q = (args.get("query") or "").strip()
         if q:
             import urllib.parse as _up
+            # Safe search applies here too. The API path is filtered in
+            # eli/plugins/web/plugin.py, but this opens a real search page the filter never
+            # sees; kp=1 is DuckDuckGo's strict setting.
             try:
                 from eli.plugins.web.plugin import _safe_search_enabled as _sse
                 _kp = "&kp=1" if _sse() else ""
@@ -193,6 +197,9 @@ def _h_open_file_system(a, args):
                 msg = f"Could not open folder: {raw_target}"
                 return {"ok": False, "action": a, "error": "path_not_found", "content": msg, "response": msg}
 
+        # Cross-platform folder open: xdg-open (Linux) / open (macOS) /
+        # os.startfile (Windows) via platform_compat — raw xdg-open was
+        # Linux-only and silently failed elsewhere.
         from eli.utils.platform_compat import open_file as _open_file
         if _open_file(resolved):
             msg = f"Opened folder: {resolved}"
@@ -201,7 +208,7 @@ def _h_open_file_system(a, args):
         return {
             "ok": False,
             "action": a,
-            "error": "open_file_failed",
+            "error": probe.get("stderr") or probe.get("error") or "xdg_open_failed",
             "content": f"Could not open folder: {resolved}",
             "response": f"Could not open folder: {resolved}",
         }
@@ -255,3 +262,7 @@ for _action, _fn in {
     "OPEN_MEDIA_HUB": _h_open_media_hub,
 }.items():
     _register(_action, _fn)
+
+def _open_in_browser(*a, **k):
+    from eli.execution.executor_enhanced import _open_in_browser as _f
+    return _f(*a, **k)

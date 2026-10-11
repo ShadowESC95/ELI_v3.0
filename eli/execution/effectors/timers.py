@@ -18,6 +18,17 @@ def play_sound(*a, **k):
 
 
 def _h_set_alarm(a, args):
+    if a == "SET_ALARM" and str(args.get("text") or "").strip():
+        # "remind me at 4pm to prepare for the presentation": a labelled reminder that survives a restart
+        try:
+            from eli.execution.effectors.datetime_calendar import agenda_turn_context
+            from eli.runtime import agenda as _agenda
+            _who, _earlier = agenda_turn_context(args)
+            return _agenda.do_remind(args, user_id=_who, earlier=_earlier)
+        except Exception as e:
+            log.debug("reminder failed", exc_info=True)
+            msg = f"The reminder could not be saved: {e}"
+            return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
     try:
         duration = args.get("duration") or args.get("seconds")
         alarm_time = args.get("time") or args.get("alarm_time")
@@ -77,18 +88,12 @@ def _h_set_alarm(a, args):
                     target = target + _td(days=1)   # timedelta (safe across month/year ends)
                 alarm_time = f"{target_h:02d}:{target_m:02d}"
                 secs = int((target - now).total_seconds())
-                def _alarm_fire():
-                    time.sleep(secs)
-                    try:
-                        notify("ELI Alarm", f"Alarm! It's {alarm_time} - {label}")
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                    try:
-                        play_sound()
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                t = threading.Thread(target=_alarm_fire, daemon=True)
-                t.start()
+                # Kept in the agenda, not in a sleeping thread: an alarm set for 7am has to
+                # survive ELI being closed and reopened before then.
+                from eli.execution.effectors.datetime_calendar import agenda_turn_context
+                from eli.runtime import agenda as _agenda
+                _agenda.add_reminder(args.get("label") or f"Alarm ({alarm_time})", target.timestamp(),
+                                     user_id=agenda_turn_context(args)[0], source="SET_ALARM")
                 msg = f"Alarm set for {alarm_time} ({secs}s from now)."
                 return {"ok": True, "action": a, "content": msg, "response": msg}
             except Exception as e:

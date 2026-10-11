@@ -24,12 +24,13 @@ def self_test(*a, **k):
 def _h_self_analyze(a, args):
     try:
         from eli.runtime.self_improvement import get_self_improvement
+        from eli.runtime.self_maintenance_config import DEFAULT_ANALYSIS_DAYS
         engine = get_self_improvement()
-        _window_days = int((args or {}).get("days") or 7)
-        failures = engine.analyze_failures(limit=10, days=_window_days, min_cluster_size=1)
-        # State the window. Without it "0 recent issues" reads as "nothing is wrong",
-        # while SELF_IMPROVE — using a different lookback — reports failures in the
-        # same breath. Live at 2.3.10 the two contradicted each other seconds apart.
+        _window_days = int((args or {}).get("days") or DEFAULT_ANALYSIS_DAYS)
+        failures = engine.analyze_failures(limit=10, days=_window_days,
+                                           min_cluster_size=1)
+        # State the lookback window. Without it "0 recent issues" reads as "nothing is wrong"
+        # while SELF_IMPROVE, with a different window, reports failures in the same breath.
         lines = [f"Self-Analysis Report ({len(failures)} open issue(s) "
                  f"in the last {_window_days} day(s)):"]
 
@@ -42,6 +43,12 @@ def _h_self_analyze(a, args):
         def _llm_root_cause(ui, err):
             # Infer a real cause for failures the hardcoded signatures don't cover —
             # reuses the inference broker (which auto-yields on background threads).
+            low = f"{ui}\n{err}".lower()
+            if any(x in low for x in (
+                "missing app name", "missing topic", "give the voice a name",
+                "couldn't tell which voice", "specify app",
+            )):
+                return None
             if _rc_llm_budget[0] <= 0:
                 return None
             try:
@@ -75,6 +82,23 @@ def _h_self_analyze(a, args):
             ui = str(failure.get("user_input") or "")
             err = str(failure.get("error") or "")
             low = f"{ui}\n{err}".lower()
+            if "missing topic for document generation" in low:
+                return (
+                    "CREATE_DOCUMENT was called without topic/name/target — "
+                    "fixed in current builds via alias fallbacks."
+                )
+            if "missing app name" in low:
+                return (
+                    "CLOSE_APP ran with empty args; the app name must be supplied "
+                    "by the user or router."
+                )
+            if "give the voice a name" in low or "couldn't tell which voice" in low:
+                return _descriptive_cause(err)
+            if "no such file or directory" in low and re.search(r"['\"]engine['\"]", low):
+                return (
+                    "SHELL_EXEC tried to run a command not on PATH — likely a user "
+                    "typo, not an ELI code defect."
+                )
             if "path not found" in low and "artifacts/scripts" in low:
                 return (
                     "Path resolution selected a project-root/basename target before the "
@@ -118,24 +142,30 @@ def _h_self_analyze(a, args):
                 f"  occurrences: {int(f.get('occurrence_count') or 1)}\n"
                 f"  actual_root_cause: {_root_cause_for(f)}"
             )
+        _older = {}
+        try:
+            _older = engine.failures_outside_window(days=_window_days) or {}
+        except Exception as _ow_err:
+            log.debug(f"[SELF_ANALYZE] older-failure count unavailable: {_ow_err}")
+        _older_n = int(_older.get("count") or 0)
+
         if not failures:
-            _older = {}
-            try:
-                _older = engine.failures_outside_window(days=_window_days) or {}
-            except Exception:
-                log.debug("[SELF_ANALYZE] older-failure count unavailable", exc_info=True)
-            _older_n = int(_older.get("count") or 0)
             if _older_n:
                 lines.append(
-                    f"  Nothing in the last {_window_days} day(s) — but {_older_n} "
-                    f"open failure(s) are older than that (oldest "
-                    f"{_older.get('oldest_days')} days). Ask for a longer window, "
-                    f"e.g. \"analyse my failures over 30 days\"."
+                    f"  Nothing in the last {_window_days} day(s) — but "
+                    f"{_older_n} open failure(s) are older than that "
+                    f"(oldest {_older.get('oldest_days')} days). "
+                    f"Ask for a longer window to see them, e.g. "
+                    f"\"analyse my failures over 30 days\"."
                 )
             else:
                 lines.append(
                     f"  No open failures in the last {_window_days} day(s), "
                     f"and none older either.")
+        elif _older_n:
+            lines.append(
+                f"  ({_older_n} further open failure(s) predate this window, "
+                f"oldest {_older.get('oldest_days')} days.)")
         if (args or {}).get("suggest"):
             result = engine.analyze_and_improve()
             imps = result.get("improvements", [])
@@ -143,19 +173,17 @@ def _h_self_analyze(a, args):
                 lines.append(f"\nSuggested improvements ({len(imps)}):")
                 for imp in imps[:5]:
                     lines.append(f"  - {imp.get('description', '')}")
-        # NOTE (2026-06-09): the live self-model block (awareness.context_block())
-        # is PRIVATE prompt context — it was leaking into this user-facing report as a
-        # raw "[Live self-model: …]" data dump (user called it out). Do not append it
-        # here; the report stays a clean human-readable list.
+        # The live self-model block (awareness.context_block()) is private prompt context; it
+        # leaked into this report as a raw "[Live self-model: ...]" dump. Don't append it here;
+        # the report stays a clean readable list.
 
         msg = "\n".join(lines)
-        # Fire repair_completed so the world engine decreases repair_pressure.
-        # Without this, repair_pressure accumulates permanently and triggers
-        # an infinite proactive SELF_ANALYZE loop.
+        # A review is not a repair, but without easing repair_pressure it accumulates and
+        # triggers an endless proactive SELF_ANALYZE loop.
         try:
             from eli.world.world_event_bus import fire_world_event as _fwe_sa
             _fwe_sa(
-                "repair_completed",
+                "review_completed",
                 "self_analyze",
                 f"SELF_ANALYZE completed: reviewed {len(failures)} failure(s).",
                 {"failures_reviewed": len(failures)},
@@ -175,101 +203,39 @@ def _h_self_improve(a, args):
     if mode == "analyze" and any(k in _raw_si for k in (
             "propose", "verified fix", "fix the fail", "coding agent", "fix the failing")):
         mode = "propose"
+    if mode == "analyze" and any(k in _raw_si for k in ("self fix", "apply patch", "patch cycle")):
+        mode = "patch"
+    if mode == "propose":
+        # The coding agent is tens of sequential model calls; inline it froze the GUI for hours.
+        from eli.execution.effectors.coding import _maybe_background_code_work
+        _bg = _maybe_background_code_work(a, dict(args or {}, mode="propose"))
+        if _bg is not None:
+            return _bg
     try:
-        from eli.runtime.self_improvement import get_self_improvement
-        engine = get_self_improvement()
+        from eli.runtime.self_maintenance import (
+            fire_maintenance_world_event,
+            run_maintenance_cycle,
+        )
+        from eli.runtime.self_maintenance_config import DEFAULT_ANALYSIS_DAYS
+        cycle_kwargs = dict(
+            mode=str(mode),
+            days=int((args or {}).get("days")) if (args or {}).get("days") else DEFAULT_ANALYSIS_DAYS,
+            max_patches=int((args or {}).get("max_patches", 3) or 3),
+            max_proposals=int((args or {}).get("max_items", 3) or 3),
+            dry_run=bool(dry_run),
+        )
+        cycle = run_maintenance_cycle(**cycle_kwargs)
+        msg = str(cycle.get("content") or cycle.get("summary") or "Improvement cycle complete.")
+        fire_maintenance_world_event(cycle)
+        _si_result = {
+            "ok": True,
+            "action": a,
+            "content": msg,
+            "response": msg,
+            "result": cycle,
+        }
         if mode == "propose":
-            # Route through the coding agent (decompose→solve→verify), propose-only.
-            # This fans out to tens of sequential model calls (30-500s each on a
-            # local GGUF), so it runs as a BACKGROUND job and chat answers at once.
-            # Running it inline is what froze the GUI for 2+ hours.
-            max_items = int((args or {}).get("max_items", 3) or 3)
-            try:
-                from eli.runtime.background_tasks import get_background_tasks
-                from eli.runtime.scheduled_tasks import _surface
-                label = "self-repair proposals"
-                jid = get_background_tasks().submit(
-                    f"self_improve:propose",
-                    engine.propose_via_agent,
-                    max_items=max_items,
-                    kind="self_improve",
-                    on_done=_surface(label, "self_improve", label="Self-improvement"),
-                )
-                msg = (
-                    f"Started coding-agent self-repair as background job #{jid}.\n"
-                    f"- scope: up to {max_items} recent failure(s), propose-only (nothing applied)\n"
-                    f"- it yields to you: send any message and it pauses for your turn\n"
-                    f"- result lands in the Proactive panel; or say \"check job {jid}\""
-                )
-                return {"ok": True, "action": a, "content": msg, "response": msg,
-                        "evidence_source": "coding_agent", "job_id": jid, "backgrounded": True}
-            except Exception as _bg_exc:
-                log.debug("[SELF_IMPROVE] background submit failed, running inline: %s", _bg_exc)
-            res = engine.propose_via_agent(max_items=max_items)
-            props = res.get("proposals", [])
-            msg_lines = [f"Coding-agent fix proposals (verified, not applied): {len(props)}"]
-            for p in props:
-                msg_lines.append(
-                    f"  - {p.get('failure')}: "
-                    f"{'VERIFIED' if p.get('verified') else 'best-effort'} "
-                    f"(score {p.get('score')}) — {p.get('approach') or p.get('message')}")
-            if not props:
-                msg_lines.append(f"  ({res.get('reason') or res.get('error') or 'nothing to propose'})")
-            msg_lines.append("Say \"apply self-improvement patch\" to apply fixes (gated).")
-            msg = "\n".join(msg_lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "evidence_source": "coding_agent", "result": res}
-        if mode == "patch":
-            result = engine.run_patch_cycle(max_patches=3, dry_run=bool(dry_run))
-            details = result.get("details", [])
-            changed = [
-                d for d in details
-                if str(d.get("status", "")).lower() in {"applied", "patched", "changed"}
-            ]
-            msg_lines = [
-                "Patch improvement cycle complete.",
-                f"- code_changes_made: {len(changed)}",
-                f"- failures_analyzed: {result.get('failures_analyzed', 0)}",
-                f"- dry_run: {bool(dry_run)}",
-                f"- summary: {result.get('summary', 'Patch cycle complete.')}",
-            ]
-            if details:
-                msg_lines.append("- patch_details:")
-                for d in details[:5]:
-                    msg_lines.append(
-                        f"  [{d.get('status','?')}] "
-                        f"{str(d.get('failure',''))[:90]}"
-                    )
-            msg = "\n".join(msg_lines)
-        else:
-            failures = engine.analyze_failures(limit=10, days=14, min_cluster_size=1)
-            result = engine.analyze_and_improve()
-            imps = result.get("improvements", [])
-            msg_lines = [
-                "Improvement cycle complete.",
-                f"- failures_inspected: {len(failures)}",
-                f"- new_improvement_records: {len(imps)}",
-                f"- fix_proposals_generated: {result.get('proposals_made', 0)}",
-                "- code_changes_made: 0 (analysis only — nothing was applied)",
-                "- patch_cycle_run: false",
-            ]
-            if failures:
-                last = failures[0]
-                err = " ".join(str(last.get("error") or "").split())
-                ui = " ".join(str(last.get("user_input") or "").split())
-                msg_lines.append(f"- last_failure_error: {err[:220] or '-'}")
-                msg_lines.append(f"- last_failure_input: {ui[:160] or '-'}")
-            if imps:
-                msg_lines.append("- logged_improvements:")
-                msg_lines.extend(f"  - {i.get('description', '')}" for i in imps[:5])
-            msg_lines.append("To modify code, run/apply self-improvement patches.")
-            msg = "\n".join(msg_lines)
-        _si_result = {"ok": True, "action": a, "content": msg, "response": msg}
-        try:
-            from eli.world.world_event_bus import fire_improvement_event as _wfie
-            _wfie(proposal_count=len(imps), failure_count=len(failures))
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            _si_result["evidence_source"] = "coding_agent"
         return _si_result
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
@@ -280,16 +246,20 @@ def _h_self_patch(a, args):
     dry_run = (args or {}).get("dry_run", False)
     max_patches = int((args or {}).get("max_patches", 3))
     try:
-        from eli.runtime.self_improvement import get_self_improvement
-        result = get_self_improvement().run_patch_cycle(max_patches=max_patches, dry_run=bool(dry_run))
-        msg = result.get("summary", "Patch cycle complete.")
-        details = result.get("details", [])
-        if details:
-            msg += "\n" + "\n".join(
-                f"  [{d.get('status','?')}] {d.get('failure','')[:70]}"
-                for d in details[:5]
-            )
-        return {"ok": True, "action": a, "content": msg, "response": msg}
+        from eli.runtime.self_maintenance import (
+            fire_maintenance_world_event,
+            run_maintenance_cycle,
+        )
+        from eli.runtime.self_maintenance_config import DEFAULT_ANALYSIS_DAYS
+        cycle = run_maintenance_cycle(
+            mode="patch",
+            max_patches=max_patches,
+            dry_run=bool(dry_run),
+            days=int((args or {}).get("days")) if (args or {}).get("days") else DEFAULT_ANALYSIS_DAYS,
+        )
+        msg = str(cycle.get("content") or cycle.get("summary") or "Patch cycle complete.")
+        fire_maintenance_world_event(cycle)
+        return {"ok": True, "action": a, "content": msg, "response": msg, "result": cycle}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
@@ -390,7 +360,13 @@ def _h_self_upgrade(a, args):
     try:
         from eli.kernel.self_upgrade import SelfUpgrader
         inst = SelfUpgrader()
-        result = inst.upgrade(request)
+        _req_low = str(request or "").strip().lower()
+        if _req_low in ("generate_patch", "generate patch") or re.search(
+            r"\b(generate|create)\s+patch\b", _req_low
+        ):
+            result = inst.generate_patch(request)
+        else:
+            result = inst.upgrade(request)
         # If the upgrade request also named files / asked to check/examine/
         # review, run the code examiner and append a tiered report + fix offer.
         try:
@@ -417,7 +393,12 @@ def _h_self_upgrade(a, args):
                                           allow_fix=(_named and bool(_fixable)))
         except Exception as _ex_exc:
             log.debug(f"[SELF_UPGRADE] examine stage skipped: {_ex_exc}")
-        return {'ok': True, 'action': a, 'content': result, 'response': result}
+        # Report the REAL outcome. This used to be an unconditional ok=True,
+        # so an upgrade that installed nothing still came back as a success.
+        _state = getattr(inst, 'upgrade_state', 'failed')
+        return {'ok': _state in ('upgraded', 'current'), 'action': a,
+                'upgrade_state': _state, 'upgraded': bool(getattr(inst, 'upgraded', False)),
+                'content': result, 'response': result}
     except Exception as _exc:
         return {'ok': False, 'action': a, 'error': str(_exc), 'content': str(_exc), 'response': str(_exc)}
 

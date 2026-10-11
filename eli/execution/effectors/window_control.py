@@ -9,17 +9,10 @@ from eli.execution.effectors._base import _run_ok
 
 
 def _h_minimise_all(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    if shutil.which("wmctrl"):
-        ok = _run_ok(["wmctrl", "-k", "on"])
-        msg = "Showed desktop." if ok else "Failed to minimise all windows."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    if shutil.which("xdotool"):
-        ok = _run_ok(["xdotool", "key", "super+d"])
-        msg = "Triggered show-desktop shortcut." if ok else "Failed to minimise all windows."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-            "content": "wmctrl or xdotool required to minimise all windows.",
-            "response": "wmctrl or xdotool required to minimise all windows."}
+    from eli.system.portable_app_control import minimise_all
+    out = minimise_all()
+    out.setdefault("action", a)
+    return out
 
 
 def _h_minimize_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -29,23 +22,13 @@ def _h_minimize_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _h_restore_windows(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    if shutil.which("wmctrl"):
-        ok = _run_ok(["wmctrl", "-k", "off"])
-        msg = "Restored windows." if ok else "Failed to restore windows."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    return {"ok": False, "action": a, "error": "wmctrl not installed",
-            "content": "wmctrl required to restore windows.",
-            "response": "wmctrl required to restore windows."}
+    from eli.system.portable_app_control import restore_windows
+    out = restore_windows()
+    out.setdefault("action", a)
+    return out
 
 
 def _h_maximise_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    # The router extracts the target correctly ("maximise prime video" →
-    # window_name="prime video"); this branch used to discard it and
-    # maximise :ACTIVE: regardless, so it always acted on whatever window
-    # happened to be focused. A named target is now honoured, and when the
-    # named window cannot be found we say so instead of falling back to
-    # the active window — acting on a different window than the one asked
-    # for is the defect, not a graceful degradation.
     _mx_name = str(
         args.get("name") or args.get("target") or args.get("app")
         or args.get("window_name") or args.get("window") or ""
@@ -58,51 +41,33 @@ def _h_maximise_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
         _mx = maximize_app(_mx_name)
         _mx.setdefault("action", a)
         return _mx
-
-    if shutil.which("wmctrl"):
-        ok = _run_ok(["wmctrl", "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"])
-        msg = "Maximised current window." if ok else "Failed to maximise window."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    if shutil.which("xdotool"):
-        ok = _run_ok(["xdotool", "key", "super+Up"])
-        msg = "Triggered maximise shortcut." if ok else "Failed to maximise window."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-            "content": "wmctrl or xdotool required to maximise.",
-            "response": "wmctrl or xdotool required to maximise."}
+    from eli.system.portable_app_control import maximise_active_window
+    out = maximise_active_window()
+    out.setdefault("action", a)
+    return out
 
 
 
 def _h_next_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    if shutil.which("xdotool"):
-        ok = _run_ok(["xdotool", "key", "alt+Tab"])
-        msg = "Switched to next window." if ok else "Failed to switch window."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    return {"ok": False, "action": a, "error": "xdotool not installed",
-            "content": "xdotool required to cycle windows.",
-            "response": "xdotool required to cycle windows."}
+    from eli.system.portable_app_control import next_window
+    out = next_window()
+    out.setdefault("action", a)
+    return out
 
 
 def _h_previous_window(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    if shutil.which("xdotool"):
-        ok = _run_ok(["xdotool", "key", "alt+shift+Tab"])
-        msg = "Switched to previous window." if ok else "Failed to switch window."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    return {"ok": False, "action": a, "error": "xdotool not installed",
-            "content": "xdotool required to cycle windows.",
-            "response": "xdotool required to cycle windows."}
+    from eli.system.portable_app_control import previous_window
+    out = previous_window()
+    out.setdefault("action", a)
+    return out
 
 
 def _h_switch_workspace(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    from eli.system.portable_app_control import switch_workspace
     direction = str(args.get("direction") or "right").lower()
-    if shutil.which("xdotool"):
-        key = "ctrl+alt+Right" if direction == "right" else "ctrl+alt+Left"
-        ok = _run_ok(["xdotool", "key", key])
-        msg = f"Switched workspace {direction}." if ok else "Failed to switch workspace."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    return {"ok": False, "action": a, "error": "xdotool not installed",
-            "content": "xdotool required to switch workspaces.",
-            "response": "xdotool required to switch workspaces."}
+    out = switch_workspace(direction)
+    out.setdefault("action", a)
+    return out
 
 
 def _h_focus_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -110,27 +75,10 @@ def _h_focus_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not name:
         return {"ok": False, "action": a, "error": "missing app name",
                 "content": "Specify app to focus.", "response": "Specify app to focus."}
-    if shutil.which("wmctrl"):
-        ok = _run_ok(["wmctrl", "-a", name])
-        msg = f"Focused {name}." if ok else f"Could not focus {name} — window not found."
-        return {"ok": ok, "action": a, "content": msg, "response": msg}
-    if shutil.which("xdotool"):
-        try:
-            proc = subprocess.run(
-                ["xdotool", "search", "--name", name],
-                capture_output=True, text=True, timeout=4
-            )
-            ids = [w for w in (proc.stdout or "").split() if w.strip()]
-            if ids:
-                ok = _run_ok(["xdotool", "windowactivate", ids[0]])
-                msg = f"Focused {name}." if ok else f"Could not focus {name}."
-                return {"ok": ok, "action": a, "content": msg, "response": msg}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e),
-                    "content": str(e), "response": str(e)}
-    return {"ok": False, "action": a, "error": "wmctrl/xdotool not installed",
-            "content": "wmctrl or xdotool required to focus apps.",
-            "response": "wmctrl or xdotool required to focus apps."}
+    from eli.system.portable_app_control import focus_app
+    out = focus_app(name)
+    out.setdefault("action", a)
+    return out
 
 
 def _h_close_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:

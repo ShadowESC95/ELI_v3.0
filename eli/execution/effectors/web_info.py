@@ -48,17 +48,37 @@ def _h_get_weather(a, args):
     try:
         location = str((args or {}).get("location") or (args or {}).get("city") or "").strip()
 
+        from eli.plugins.weather.plugin import clean_place as _clean_place
+        _raw = str((args or {}).get("_raw_user_text") or (args or {}).get("query") or "").strip()
+        location = _clean_place(location)
         if not location:
-            _raw = str((args or {}).get("_raw_user_text") or (args or {}).get("query") or "").strip()
             for _p in _LOC_PATS:
                 _m = _p.search(_raw)
                 if _m:
-                    location = _m.group(1).strip().rstrip("?.!, ")
-                    break
+                    location = _clean_place(_m.group(1))
+                    if location:
+                        break
 
+        # The day asked about ("tomorrow", "on friday"), so the answer is that day's forecast.
+        _day = None
+        try:
+            from eli.runtime.agenda import parse_when as _when_in
+            _asked_when = _when_in(_raw) if _raw else None
+            if _asked_when is not None and _asked_when.has_date:
+                _day = _asked_when.start.date()
+        except Exception:
+            log.debug("weather: day not read", exc_info=True)
+
+        from eli.kernel import request_context as _rc_weather
+        _sid = _rc_weather.session_id_var.get()
         if not location:
-            _msg = "I need a location. Try: 'What's the weather in Paris?'"
-            return {"ok": False, "action": a, "error": "missing_location", "content": _msg, "response": _msg}
+            # the place last asked about in this session, before asking again
+            location = str(_rc_weather.get_session_sticky(_sid, "weather_place") or "")
+        if not location:
+            _msg = "Where? Give me a town or city."
+            return {"ok": False, "action": a, "error": "missing_location", "content": _msg, "response": _msg,
+                    "asks_user": True,
+                    "awaiting": {"command": f"{_raw or 'weather'} in {{answer}}", "action": a, "needs": "place"}}
 
         # Network gate: weather is a live open-meteo call. Refuse honestly
         # when the Net toggle is off rather than confabulating a reading.
@@ -68,11 +88,13 @@ def _h_get_weather(a, args):
 
         from eli.plugins.weather.plugin import get_weather as _gw
         try:
-            result = _gw(location)
+            result = _gw(location, _day)
         except OfflineError:
             return offline_response(a, "check the weather")
         if isinstance(result, dict):
             result.setdefault("action", a)
+            if result.get("location"):
+                _rc_weather.set_session_sticky(_sid, "weather_place", str(result["location"]).split(",")[0])
             return result
         return {"ok": True, "action": a, "content": str(result), "response": str(result)}
 

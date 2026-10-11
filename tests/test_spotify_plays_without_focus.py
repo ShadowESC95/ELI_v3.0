@@ -82,7 +82,7 @@ def test_typing_is_not_tried_on_a_window_the_x_tools_cannot_see(monkeypatch):
 
 
 def test_the_reply_names_what_is_playing_and_never_asks_the_user_to_press_play(monkeypatch):
-    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import media as ex
     monkeypatch.setattr(cp, "spotify_launch_if_needed", lambda: True)
     monkeypatch.setattr(cp, "spotify_play_top_search_result", lambda q, timeout=10.0, launch=True: False)
     monkeypatch.setattr(cp, "spotify_search_type_and_play", lambda q, launch=True: False)

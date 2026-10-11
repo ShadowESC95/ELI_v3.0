@@ -178,10 +178,11 @@ def _strip_comments(code: str) -> str:
 
 
 def _mouse_branch() -> str:
-    src = Path("eli/execution/executor_enhanced.py").read_text(encoding="utf-8")
-    start = src.index('if a == "MOUSE_CONTROL":')
-    end = src.index("# ---- SET_CLIPBOARD / GET_CLIPBOARD ----", start)
-    return _strip_comments(src[start:end])
+    # MOUSE_CONTROL is handled by its effector since the inline executor branch was retired.
+    import inspect
+
+    from eli.execution.effectors import input_control
+    return _strip_comments(inspect.getsource(input_control._h_mouse_control))
 
 
 def test_mouse_branch_has_no_unconditional_success():

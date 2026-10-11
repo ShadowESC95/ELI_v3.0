@@ -68,6 +68,8 @@ def test_calendar_actions_answer_from_the_real_calendar(tmp_path, monkeypatch):
     """These were stubs that said "not configured" and called it a success."""
     monkeypatch.setenv("ELI_AGENDA_DB", str(tmp_path / "agenda.sqlite3"))
     monkeypatch.setenv("ELI_CALENDAR_FILE", str(tmp_path / "calendar.ics"))
+    # nothing said earlier: "add it" is read against the user's last half hour of messages
+    monkeypatch.setattr("eli.execution.effectors.datetime_calendar.agenda_turn_context", lambda args: ("", []))
     listed = _contract(get("LIST_EVENTS")("LIST_EVENTS", {}), "LIST_EVENTS")
     assert listed["ok"] is True and "not configured" not in listed["content"]
     asked = _contract(get("ADD_EVENT")("ADD_EVENT", {}), "ADD_EVENT")

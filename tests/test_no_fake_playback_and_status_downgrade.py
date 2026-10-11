@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from eli.execution import executor_enhanced as ex
+# play_specific and its helpers live in effectors/media.py (the executor re-exports them); patch there.
+from eli.execution.effectors import media as media_impl
 from eli.kernel.engine import _is_soft_informational_action
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,16 +93,16 @@ class _FakeProc:
 @pytest.fixture
 def _yt_env(monkeypatch):
     """Pin the YouTube branch: tools present, no real network, no real browser."""
-    monkeypatch.setattr(ex.shutil, "which", lambda c: f"/usr/bin/{c}"
+    monkeypatch.setattr(media_impl.shutil, "which", lambda c: f"/usr/bin/{c}"
                         if c in ("mpv", "yt-dlp") else None)
-    monkeypatch.setattr(ex, "_mpv_quit", lambda: None)
-    monkeypatch.setattr(ex, "_set_now_playing", lambda *a, **k: None)
-    monkeypatch.setattr(ex, "_mpv_ipc", lambda *a, **k: None)
+    monkeypatch.setattr(media_impl, "_mpv_quit", lambda: None)
+    monkeypatch.setattr(media_impl, "_set_now_playing", lambda *a, **k: None)
+    monkeypatch.setattr(media_impl, "_mpv_ipc", lambda *a, **k: None)
     opened: list[str] = []
     # _open_in_browser reports whether the browser really opened; the fake always succeeds.
-    monkeypatch.setattr(ex, "_open_in_browser", lambda url: opened.append(url) or True)
-    monkeypatch.setattr(ex, "_yt_resolve_watch_url", lambda q: "https://youtu.be/stub")
-    monkeypatch.setattr(ex, "_yt_mix_url", lambda u: u)
+    monkeypatch.setattr(media_impl, "_open_in_browser", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(media_impl, "_yt_resolve_watch_url", lambda q: "https://youtu.be/stub")
+    monkeypatch.setattr(media_impl, "_yt_mix_url", lambda u: u)
     monkeypatch.setenv("ELI_YT_VERIFY_SECONDS", "0.3")   # keep the test fast
     return opened
 

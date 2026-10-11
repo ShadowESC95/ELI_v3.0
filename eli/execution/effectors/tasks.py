@@ -8,6 +8,7 @@ none while four were armed. These actions answer from the live pool via
 from __future__ import annotations
 
 import re
+import time
 
 from eli.utils.log import get_logger
 
@@ -136,9 +137,33 @@ def _h_reschedule_task(a, args):
     return _reply(a, False, f"Couldn't reschedule task #{jid}: {r.get('error')}", r)
 
 
+def _h_resume_task(a, args):
+    # Real goal_store lookup, not a chat-routed guess — always states staleness.
+    try:
+        topic = str((args or {}).get("topic") or (args or {}).get("query") or "").strip()
+        if not topic:
+            msg = "I don't have a project name to look up — what should I resume?"
+            return {"ok": False, "action": a, "content": msg, "response": msg}
+        from eli.planning.goal_store import find_task, task_brief_for
+        g = find_task(topic, include_idle=True)
+        if g is None:
+            msg = f"I don't have a saved task matching \"{topic}\" — nothing to resume."
+            return {"ok": True, "action": a, "content": msg, "response": msg, "found": False}
+        days = max(0.0, (time.time() - float(getattr(g, "updated_at", 0.0) or 0.0)) / 86400.0)
+        staleness = "touched today" if days < 1.0 else f"last touched {days:.0f} day{'s' if days >= 2 else ''} ago"
+        brief = task_brief_for(g).strip()
+        msg = (f"Resuming \"{g.title}\" — {staleness}.\n{brief}" if brief
+               else f"Resuming \"{g.title}\" — {staleness}. No recorded details yet.")
+        return {"ok": True, "action": a, "content": msg, "response": msg, "found": True,
+                "goal_id": g.goal_id, "days_stale": round(days, 1)}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
+    "RESUME_TASK": _h_resume_task,
     "LIST_TASKS": _h_list_tasks,
     "CANCEL_TASK": _h_cancel_task,
     "RESCHEDULE_TASK": _h_reschedule_task,

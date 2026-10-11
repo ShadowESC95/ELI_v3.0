@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import subprocess
 
-from eli.execution import executor_enhanced as ex
+# The media layer lives in effectors/media.py (the executor re-exports it), so patch it there.
+from eli.execution.effectors import media as ex
 from eli.integrations.media import cross_platform as cp
 
 

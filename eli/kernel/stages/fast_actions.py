@@ -27,7 +27,6 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'COMPUTER_USE',  # deterministic executor result: the receipt or list is the answer
     'LIST_TASKS',  # deterministic executor result: the receipt or list is the answer
     'RESCHEDULE_TASK',  # deterministic executor result: the receipt or list is the answer
-    'MEMORY_AUDIT',  # deterministic executor result: the receipt or list is the answer
     'MEMORY_FORGET',  # the list of what would be deleted, and the deletion receipt, are the executor's word
     'MEMORY_STORE',  # the executor's verified receipt (row, index) is the confirmation; a model paraphrase could deny it
     'CREATE_FILE',  # fs mutation: executor writes + reads back, result is authoritative — never let the heuristic agent profile drop `system` and punt "run touch yourself"
@@ -218,7 +217,7 @@ _DIRECT_RESULT_ACTIONS = frozenset({
     # More confirmation/status/report actions whose handler already builds a complete
     # content/response string, checked by reading each. MCP_CALL is the same danger class as
     # READ_FILE/SHELL_EXEC: it returns a live tool's raw output, which must not be re-narrated.
-    "ADD_EVENT", "PLUGIN_STATUS", "MEMORY_STORE", "MEMORY_FORGET", "CANCEL_TASK", "COMPUTER_USE", "LIST_TASKS", "RESCHEDULE_TASK", "MEMORY_AUDIT",
+    "ADD_EVENT", "PLUGIN_STATUS", "MEMORY_STORE", "MEMORY_FORGET", "CANCEL_TASK", "COMPUTER_USE", "LIST_TASKS", "RESCHEDULE_TASK",
     "GET_WEATHER", "PERSONA_LOCK_SET", "PERSONA_LOCK_CLEAR",
     "SET_TONE", "CLEAR_TONE", "SET_USER_NAME",
     "SET_COMMUNICATION_STYLE", "SET_VOICE",

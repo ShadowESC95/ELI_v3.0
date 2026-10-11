@@ -103,22 +103,10 @@ def _get_memory_path():
     return get_user_db_path()
 
 
-def memory_store(text, tags=None, kind="note", source="chat", confidence=0.7, ts=None):
-    try:
-        from eli.memory import get_memory
-        mem = get_memory(db_path=_get_memory_path())
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        result = mem.store_memory(
-            text=str(text),
-            tags=tags or [],
-            source=str(source),
-            kind=str(kind),
-            confidence=float(confidence),
-        )
-        return {"ok": True, "path": str(_get_memory_path())}
-    except Exception as e:
-        return {"ok": False, "error": repr(e), "path": str(_get_memory_path())}
+def memory_store(*a, **k):
+    # One implementation: this copy dropped the row id, skip reason and index flag.
+    from eli.execution.executor_enhanced import memory_store as _f
+    return _f(*a, **k)
 
 
 def memory_recall(query, limit=20):
@@ -226,7 +214,7 @@ def _recall_memory_builtin(args: dict) -> dict:
         from pathlib import Path
 
         limit = int(args.get("limit", 20))
-        root = Path(__file__).resolve().parent.parent
+        root = Path(__file__).resolve().parents[2]
         memory_log = root / "data" / "memory" / "utterances.jsonl"
 
         if not memory_log.exists():
@@ -293,9 +281,19 @@ def _h_memory_store(a, args):
         result = memory_store(txt, tags=tags)
         if isinstance(result, dict):
             result.setdefault("action", a)
-            result.setdefault("ok", True)
-            result.setdefault("content", result.get("content") or "memory stored")
-            result.setdefault("response", result.get("response") or result["content"])
+            if result.get("ok"):
+                _idx = result.get("vector_indexed")
+                _where = Path(str(result.get("path") or "user.sqlite3")).name
+                _msg = (f'Stored in long-term memory ({_where}'
+                        + (f", row {result['id']}" if result.get("id") else "")
+                        + ("; semantic index: yes" if _idx else "; semantic index: no" if _idx is False else "")
+                        + f'): "{txt}"')
+            elif result.get("skipped"):
+                _msg = f"Not stored: the memory filter rejected it ({result.get('reason') or 'not durable knowledge'})."
+            else:
+                _msg = f"Not stored: {result.get('error') or result.get('reason') or 'the memory write failed'}."
+            result["content"] = _msg
+            result["response"] = _msg
         return result
     except Exception as e:
         # If local fails, try adapter
@@ -471,6 +469,13 @@ def _h_memory_recall(a, args):
     if not q:
         return {"ok": False, "action": a, "error": "empty_query", "content": "empty_query", "response": "empty_query"}
 
+    def _dated(h: Dict[str, Any], text: str) -> str:
+        # Each memory says when it is from: asked "when was that?", ELI made a time up.
+        from eli.cognition.evidence_format import row_time, turn_stamp
+        when = row_time(h)
+        stamp = turn_stamp(when) if when else ""
+        return f"[{stamp}] {text}" if stamp else text
+
     # 1) Canonical Memory class (proven working)
     try:
         from eli.memory.memory import get_memory as _get_mem_recall
@@ -486,7 +491,7 @@ def _h_memory_recall(a, args):
                 t = (h.get("text", "") or "").strip()
                 if not t:
                     continue
-                t = t[:_PER_HIT_CHARS]
+                t = _dated(h, t[:_PER_HIT_CHARS])
                 lines.append(t)
                 total += len(t)
                 if total >= _MAX_TOTAL_CHARS:
@@ -527,6 +532,7 @@ def _h_memory_recall(a, args):
                         t = (h.get("text") or "").strip()
                         if not t:
                             continue
+                        t = _dated(h, t)
                         score = h.get("score", None)
                         tags = h.get("tags", "")
                         if score is not None:
@@ -551,7 +557,7 @@ def _h_memory_recall(a, args):
         from eli.memory.memory import get_memory
         _mem = get_memory()
         hits = _mem.search_memory(q, limit=20) or []
-        content = "\n".join((h.get("text", "") or "") for h in hits) if isinstance(hits, list) else "Memory recall:\n(no matches)"
+        content = "\n".join(_dated(h, h.get("text", "") or "") for h in hits) if isinstance(hits, list) else "Memory recall:\n(no matches)"
         if not content.strip():
             content = "Memory recall:\n(no matches)"
         return {"ok": True, "action": a, "hits": hits, "content": content, "response": content}
@@ -559,8 +565,79 @@ def _h_memory_recall(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
+def _h_memory_forget(a, args):
+    from eli.memory import get_memory as _gm_forget
+    _mem_f = _gm_forget(db_path=_get_memory_path())
+    if args.get("confirm") and args.get("ids"):
+        _rep = _mem_f.forget(args.get("ids"))
+        try:
+            from eli.runtime.pending_proposal import clear_pending_proposal
+            clear_pending_proposal()
+        except Exception:
+            log.debug("pending forget not cleared", exc_info=True)
+        _parts = [f"{v} {k}" for k, v in _rep.items() if v]
+        msg = ("Forgotten: " + ", ".join(_parts) + ".") if _rep.get("memories") else "Nothing matched those ids, so nothing was deleted."
+        return {"ok": bool(_rep.get("memories")), "action": a, "report": _rep, "content": msg, "response": msg}
+    query = str(args.get("query") or "").strip()
+    # Documents ELI has read are stored whole in the document index: forgetting one takes it
+    # and every passage and vector made from it out. The file on disk is left alone.
+    _dindex, _duid, _docs = None, "", []
+    try:
+        from eli.kernel import request_context as _rc_forget
+        from eli.memory.document_index import get_document_index
+        _dindex, _duid = get_document_index(), str(_rc_forget.user_id_var.get() or "")
+    except Exception:
+        log.debug("document index unavailable for forget", exc_info=True)
+    if args.get("confirm") and args.get("document_ids"):
+        _gone = _dindex.remove(args.get("document_ids"), user_id=_duid) if _dindex else []
+        try:
+            from eli.runtime.pending_proposal import clear_pending_proposal
+            clear_pending_proposal()
+        except Exception:
+            log.debug("pending forget not cleared", exc_info=True)
+        msg = ("Removed from the document index: " + ", ".join(f"{d['title']} ({d['passages']} passages)" for d in _gone)
+               + ". The files themselves are untouched.") if _gone else "No indexed document has those ids, so nothing was removed."
+        return {"ok": bool(_gone), "action": a, "documents": _gone, "content": msg, "response": msg}
+    if _dindex and query:
+        try:
+            _docs = _dindex.matching(query, _duid)
+        except Exception:
+            log.debug("document match failed", exc_info=True)
+    _doc_note = ""
+    if _docs:
+        _doc_note = ("\nIndexed documents that match:\n" + "\n".join(
+            f"- document #{d['id']}: {d['title']} ({d['passages']} passages)" for d in _docs)
+            + "\nSay confirm forget documents " + " ".join(str(d["id"]) for d in _docs)
+            + " to remove them from the index (the files stay on disk).")
+    found = _mem_f.forget_candidates(query) if query else []
+    if not found and _docs:
+        try:
+            from eli.runtime.pending_proposal import set_pending_proposal
+            set_pending_proposal("confirm forget documents " + " ".join(str(d["id"]) for d in _docs),
+                                 summary="forget documents")
+        except Exception:
+            log.debug("pending forget not set", exc_info=True)
+        msg = f"No stored memory matches '{query}'." + _doc_note
+        return {"ok": True, "action": a, "matches": [], "documents": _docs, "content": msg, "response": msg}
+    if not found:
+        msg = f"I found nothing stored that matches '{query}', so there is nothing to forget."
+        return {"ok": True, "action": a, "matches": [], "content": msg, "response": msg}
+    ids = [f["id"] for f in found]
+    try:
+        from eli.runtime.pending_proposal import set_pending_proposal
+        set_pending_proposal("confirm forget memories " + " ".join(str(i) for i in ids), summary="forget memories")
+    except Exception:
+        log.debug("pending forget not set", exc_info=True)
+    lines = "\n".join(f"- #{f['id']}: {f['text']}" for f in found)
+    msg = (f"These stored memories match '{query}':\n{lines}\nSay yes to delete them and everything derived from them "
+           f"(summaries, profile items, index entries, claims), or say confirm forget memories with the ids you want gone."
+           + _doc_note)
+    return {"ok": True, "action": a, "matches": found, "documents": _docs, "content": msg, "response": msg}
+
+
 from eli.execution.effectors.registry import register as _register
 
+_register("MEMORY_FORGET", _h_memory_forget)
 _register("MEMORY_STORE", _h_memory_store)
 _register("SET_USER_NAME", _h_set_user_name)
 _register("CLEAR_CHAT_HISTORY", _h_clear_chat_history)

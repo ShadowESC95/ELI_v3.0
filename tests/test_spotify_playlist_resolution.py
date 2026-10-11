@@ -1,5 +1,6 @@
 """Spotify playlist URI resolution and playback polling helpers."""
-from eli.execution import executor_enhanced as ex
+# The media layer lives in effectors/media.py (the executor re-exports it), so patch it there.
+from eli.execution.effectors import media as ex
 
 
 def test_resolve_playlist_uri_from_search_html(monkeypatch):

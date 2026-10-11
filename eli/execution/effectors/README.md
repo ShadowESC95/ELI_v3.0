@@ -45,7 +45,13 @@ and make sure the executor imports the module so registration runs at load.
 
 ## Migration status
 
-Actions are moving off the if-chain family by family (media is done — 8 actions). The
-executor keeps a re-export shim for each moved name so existing imports and the frozen
-build are unaffected; those shims retire once callers point at the effectors directly.
-See `blueprints/v3_monolith_decomposition.md` for the full grouping and sequence.
+Every registered action is served by its effector: `_execute_impl` looks the action up in the
+registry right after alias normalisation and the generative-evidence pre-step, and no inline branch
+remains for a registered action. `tests/test_effector_dispatch_order.py` fails if a port copies an
+inline branch back, or if the lookup moves below the inline chain again (both happened once, and
+left 158 effector handlers unreachable).
+
+About 20 actions still live only in the executor's if-chain (OPEN_APP, HELP, the voice family,
+SEQUENCE, …); moving one is: add a handler here, delete its branch. Helpers the handlers share are
+partly still defined in the executor and reached through lazy shims; the media layer is the
+exception: it lives here and the executor re-exports it, so there is one `_MEDIA_STATE`.

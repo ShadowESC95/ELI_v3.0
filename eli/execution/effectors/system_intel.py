@@ -17,126 +17,16 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 
-def _canonical_runtime_file_map() -> Dict[str, Path]:
-    root = get_paths().project_root.resolve()
-    # Files live under eli/ subdir
-    _eli = root / 'eli'
-    root = _eli if _eli.exists() else root
-    # Canonical runtime file paths under the live `eli/` layout.
-    # phaseBW5 fix: replaced legacy `brain/cognition/...` and
-    # `tools/automation/...` candidates that no longer correspond
-    # to anything on disk and were producing hallucinated "FAIL"
-    # entries in RUNTIME_AUDIT output.
-    rels = {
-        'cognitive_engine': ['kernel/engine.py'],
-        'gguf_inference':   ['cognition/gguf_inference.py'],
-        'memory':           ['memory/memory.py'],
-        'memory_init':      ['memory/__init__.py'],
-        'router':           ['execution/router_enhanced.py'],
-        'executor':         ['execution/executor_enhanced.py'],
-        'gui':              ['gui/gui_eli_original.py'],
-        'runtime_settings': ['core/runtime_settings.py'],
-        'paths':            ['core/paths.py'],
-        'proactive_daemon': ['planning/proactive_daemon.py'],
-        'agent_bus':        ['cognition/agent_bus.py'],
-        'orchestrator':     ['cognition/orchestrator.py'],
-        'inference_broker': ['cognition/inference_broker.py'],
-        'output_governor':  ['cognition/output_governor.py'],
-        'vector_store':     ['memory/vector_store.py'],
-        # Web server + home/RBAC/audit runtime (api/server.py lives at the project root,
-        # one level above eli/, hence the `../`).
-        'web_server':       ['../api/server.py'],
-        'device_server':    ['runtime/device_server.py'],
-        'home_intel':       ['runtime/home_intel.py'],
-        'api_users':        ['runtime/api_users.py'],
-        'evidence_ledger':  ['runtime/evidence_ledger.py'],
-    }
-    out: Dict[str, Path] = {}
-    for key, candidates in rels.items():
-        chosen = None
-        for rel in candidates:
-            cand = (root / rel).resolve()
-            if cand.exists():
-                chosen = cand
-                break
-        out[key] = chosen or (root / candidates[0]).resolve()
-    return out
+def _canonical_runtime_file_map(*a, **k):
+    # The executor's copy is the maintained one; this one had fallen behind it.
+    from eli.execution.executor_enhanced import _canonical_runtime_file_map as _f
+    return _f(*a, **k)
 
 
-def _runtime_health_probes() -> List[Dict[str, Any]]:
-    """LIVE health checks a static source audit cannot catch: actually EXERCISE
-    key subsystems and check DATA INTEGRITY, so real runtime faults surface in an
-    audit (a method-level NameError, malformed data, recurring logged failures)
-    instead of only appearing once at use time. Each probe: {name, ok, detail}."""
-    probes: List[Dict[str, Any]] = []
-
-    def _probe(name, fn):
-        try:
-            ok, detail = fn()
-            probes.append({"name": name, "ok": bool(ok), "detail": str(detail)})
-        except Exception as e:
-            probes.append({"name": name, "ok": False, "detail": f"{type(e).__name__}: {e}"})
-
-    def _db_path():
-        from eli.memory import get_memory
-        return getattr(get_memory(), "db_path", None)
-
-    # Plugin manager — instantiate + list (catches the method-level NameError class
-    # that import/syntax audits miss: the module imports fine, the fault is at call).
-    def _plugins():
-        from eli.plugins.manager import get_manager
-        return True, f"OK — {len(get_manager().list_installed())} plugin(s) installed"
-    _probe("plugin_manager", _plugins)
-
-    # Memory — singleton resolves + db file present.
-    def _mem():
-        from pathlib import Path as _P
-        dbp = _db_path()
-        return (bool(dbp and _P(dbp).exists()),
-                f"db={_P(dbp).name}" if dbp else "no db path")
-    _probe("memory", _mem)
-
-    # Agent bus — registry imports + has agents.
-    def _bus():
-        from eli.cognition.agent_bus import _ALL_AGENTS
-        return bool(_ALL_AGENTS), f"{len(_ALL_AGENTS)} agents registered"
-    _probe("agent_bus", _bus)
-
-    # Habit-rule integrity — flag the un-schedulable corruption class.
-    def _habits():
-        import sqlite3 as _s
-        dbp = _db_path()
-        if not dbp:
-            return True, "no db"
-        c = _s.connect(str(dbp))
-        try:
-            bad = c.execute(
-                "SELECT COUNT(*) FROM habit_rules WHERE enabled=1 AND (hour IS NULL "
-                "OR minute IS NULL OR TRIM(LOWER(command))=TRIM(LOWER(name)))").fetchone()[0]
-            tot = c.execute("SELECT COUNT(*) FROM habit_rules WHERE enabled=1").fetchone()[0]
-        finally:
-            c.close()
-        if bad:
-            return False, f"{bad} of {tot} enabled habit rule(s) un-schedulable (NULL time / bare-token command)"
-        return True, f"{tot} enabled habit rule(s), all schedulable"
-    _probe("habit_integrity", _habits)
-
-    # Recent LIVE failures — surface what the failure log recorded so the audit
-    # reflects live problems, not just static source state. Reads the same
-    # canonical store the Self-Improve panel uses; resolved entries are filtered
-    # out by get_recent_failures, so the audit and the panel agree.
-    def _failures():
-        from eli.runtime.self_improvement import get_self_improvement
-        rows = get_self_improvement().memory.get_recent_failures(limit=5)
-        if not rows:
-            return True, "no live failures logged"
-        summary = "; ".join(
-            f"{(r.get('error') or r.get('user_input') or '')[:70]} (×{r.get('occurrence_count', 1)})"
-            for r in rows)
-        return False, f"{len(rows)} recent live failure(s): {summary}"
-    _probe("recent_failures", _failures)
-
-    return probes
+def _runtime_health_probes(*a, **k):
+    # The executor's copy is the maintained one; this one had fallen behind it.
+    from eli.execution.executor_enhanced import _runtime_health_probes as _f
+    return _f(*a, **k)
 
 
 def _format_runtime_audit(report: Dict[str, Any]) -> str:
@@ -157,178 +47,10 @@ def _format_runtime_audit(report: Dict[str, Any]) -> str:
     return '\n'.join(lines) if lines else 'No runtime files audited.'
 
 
-def _gpu_status_report() -> Dict[str, Any]:
-    query = [
-        "nvidia-smi",
-        "--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit,driver_version",
-        "--format=csv,noheader,nounits",
-    ]
-    runtime_snapshot: Dict[str, Any] = {}
-    try:
-        snap_path = get_paths().artifacts_dir / "runtime_snapshot.json"
-        if snap_path.exists():
-            runtime_snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
-    except Exception:
-        runtime_snapshot = {}
-
-    try:
-        proc = subprocess.run(
-            query,
-            timeout=6,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except Exception as exc:
-        msg = f"GPU status unavailable: nvidia-smi could not run ({exc})."
-        return {"ok": False, "error": str(exc), "content": msg, "response": msg}
-
-    if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "nvidia-smi returned no output").strip()
-        msg = f"GPU status unavailable: {msg}"
-        return {"ok": False, "returncode": proc.returncode, "content": msg, "response": msg}
-
-    import csv
-    rows = list(csv.reader((proc.stdout or "").splitlines()))
-    if not rows:
-        msg = "GPU status unavailable: nvidia-smi returned no GPU rows."
-        return {"ok": False, "content": msg, "response": msg}
-
-    fields = [
-        "name", "memory_total_mib", "memory_used_mib", "memory_free_mib",
-        "utilization_percent", "temperature_c", "power_draw_w", "power_limit_w",
-        "driver_version",
-    ]
-    parsed = []
-    for row in rows:
-        values = [cell.strip() for cell in row]
-        item = {field: (values[i] if i < len(values) else "") for i, field in enumerate(fields)}
-        parsed.append(item)
-
-    first = parsed[0]
-    def _num(value: Any) -> Optional[float]:
-        try:
-            cleaned = re.sub(r"[^0-9.]+", "", str(value or ""))
-            return float(cleaned) if cleaned else None
-        except Exception:
-            return None
-
-    total = _num(first.get("memory_total_mib"))
-    used = _num(first.get("memory_used_mib"))
-    free = _num(first.get("memory_free_mib"))
-    util = _num(first.get("utilization_percent"))
-    used_pct = (used / total * 100.0) if total and used is not None else None
-
-    lines = [
-        "GPU status:",
-        f"- name: {first.get('name') or 'unknown'}",
-        f"- driver: {first.get('driver_version') or 'unknown'}",
-    ]
-    if total is not None and used is not None and free is not None:
-        lines.append(
-            f"- VRAM: {used:.0f} MiB used / {total:.0f} MiB total "
-            f"({free:.0f} MiB free, {used_pct:.1f}% used)"
-        )
-    else:
-        lines.append("- VRAM: unavailable")
-    lines.extend([
-        f"- GPU utilization: {util:.0f}%" if util is not None else "- GPU utilization: unavailable",
-        f"- temperature: {first.get('temperature_c') or 'unknown'} C",
-        f"- power: {first.get('power_draw_w') or 'unknown'} W / {first.get('power_limit_w') or 'unknown'} W limit",
-    ])
-
-    if runtime_snapshot:
-        lines.extend([
-            "",
-            "ELI selected llama.cpp load parameters:",
-            f"- context: {runtime_snapshot.get('n_ctx', 'unknown')}",
-            f"- GPU-layer parameter: {runtime_snapshot.get('n_gpu_layers', 'unknown')}",
-            f"- batch: {runtime_snapshot.get('n_batch', 'unknown')}",
-            f"- CPU threads: {runtime_snapshot.get('n_threads', 'unknown')}",
-        ])
-
-    # Performance reading, derived from THIS load — not boilerplate. The previous
-    # three lines were fixed strings printed regardless of what was measured, and
-    # the middle one hedged about a fallback that had provably not happened while
-    # the proof (requested vs effective) sat in the same payload.
-    _reading = []
-    try:
-        from eli.cognition.context_synthesiser import runtime_load_gap as _gap_fn
-        _gap = _gap_fn(runtime_snapshot or None)
-    except Exception:
-        _gap = {"ok": False}
-
-    if _gap.get("ok"):
-        _reduced = _gap.get("reduced") or {}
-        if _reduced:
-            _detail = "; ".join(
-                f"{k} {v['requested']} → {v['effective']}" for k, v in sorted(_reduced.items())
-            )
-            _reading.append(f"- Loaded BELOW request ({_detail}) — reduced to fit "
-                            f"available VRAM, not a settings error.")
-        else:
-            _eff = _gap.get("effective") or {}
-            _reading.append(
-                "- Loaded exactly as requested (ctx="
-                f"{_eff.get('n_ctx', 'unknown')}, gpu_layers={_eff.get('n_gpu_layers', 'unknown')}, "
-                f"batch={_eff.get('n_batch', 'unknown')}) — no fallback occurred."
-            )
-        if not _gap.get("on_gpu"):
-            _reading.append("- Running CPU-only: per-turn latency is significantly "
-                            "higher than GPU mode.")
-
-    if free is not None and total:
-        _free_pct = (float(free) / float(total)) * 100.0
-        # "Free" from nvidia-smi is NOT spare. llama.cpp allocates its compute/graph
-        # buffer LAZILY, at the first decode — so the reserve the loader deliberately
-        # kept back still reads as free until a generation touches it. Reporting it as
-        # headroom told the operator to raise settings into memory that is already
-        # committed, which is precisely the over-commit that aborted the process
-        # mid-generation at 2.2.7 and 2.2.9 (ggml-cuda.cu:98: CUDA error).
-        #
-        # Live at 2.3.6: 1493 MiB read as free while the compute buffer (736 MB at
-        # ctx=12288 batch=128), CUDA overhead (350 MB) and the kept reserve (700 MB)
-        # already accounted for more than that. Subtract what generation will take
-        # and report what is genuinely spare.
-        _committed = 0.0
-        try:
-            from eli.core.hardware_profile import (_compute_graph_reserve_mb,
-                                                   _CUDA_OVERHEAD_MB, vram_reserve_mb)
-            _eff_r = (runtime_snapshot or {}).get("effective") or runtime_snapshot or {}
-            _c = int(_eff_r.get("n_ctx") or 0)
-            _b = int(_eff_r.get("n_batch") or 0)
-            if _c > 0 and _b > 0:
-                _committed = (float(_compute_graph_reserve_mb(_c, _b))
-                              + float(_CUDA_OVERHEAD_MB) + float(vram_reserve_mb()))
-        except Exception:
-            _committed = 0.0
-        _spare = float(free) - _committed
-        if _committed > 0:
-            _reading.append(
-                f"- {free:.0f} MiB of {total:.0f} MiB VRAM reads free ({_free_pct:.1f}%), but "
-                f"{_committed:.0f} MiB is already committed to generation (compute buffer, "
-                f"CUDA overhead and the kept reserve) — llama.cpp allocates it lazily at the "
-                f"first decode.")
-            if _spare >= 512:
-                _reading.append(
-                    f"- Genuinely spare: {_spare:.0f} MiB — room to raise context or batch.")
-            else:
-                _reading.append(
-                    "- Genuinely spare: none to speak of. Raising context, batch or GPU "
-                    "layers from here is what aborts mid-generation.")
-        elif _free_pct < 10:
-            _reading.append(
-                f"- {free:.0f} MiB of {total:.0f} MiB VRAM free ({_free_pct:.1f}%): no headroom "
-                "to raise context or batch without lowering GPU layers.")
-        else:
-            _reading.append(
-                f"- {free:.0f} MiB of {total:.0f} MiB VRAM free ({_free_pct:.1f}%): headroom "
-                "available for a larger context or batch.")
-
-    if _reading:
-        lines.extend(["", "Performance reading:"] + _reading)
-    msg = "\n".join(lines)
-    return {"ok": True, "gpus": parsed, "runtime_snapshot": runtime_snapshot, "content": msg, "response": msg}
+def _gpu_status_report(*a, **k):
+    # The executor's copy is the maintained one; this one had fallen behind it.
+    from eli.execution.executor_enhanced import _gpu_status_report as _f
+    return _f(*a, **k)
 
 
 def _diagnose_executor_wrappers() -> Dict[str, Any]:
@@ -445,153 +167,10 @@ def _format_gui_runtime_audit(report: Dict[str, Any]) -> str:
     return '\n'.join(out)
 
 
-def _format_memory_runtime(report: Dict[str, Any]) -> str:
-    if not report.get("ok"):
-        return f"Memory runtime inspection failed: {report.get('error', 'unknown error')}"
-
-    paths = report.get("paths", {}) or {}
-    status = report.get("status", {}) or {}
-    name_guess = str(report.get("name_guess") or "").strip()
-    identity_hits = report.get("identity_hits") or []
-    recent_turn_count = int(report.get("recent_turn_count") or 0)
-
-    def _clean_hit(value: Any) -> str:
-        return " ".join(str(value or "").split())
-
-    lines: List[str] = []
-
-    if name_guess:
-        lines.append(
-            f"Yes — I do have grounded memory evidence for you. "
-            f"The strongest current name signal in runtime memory is: {name_guess}."
-        )
-        lines.append("")
-    else:
-        lines.append(
-            "I do have grounded runtime memory state, but I do not currently have a strong "
-            "enough name signal to identify you by name with confidence."
-        )
-        lines.append("")
-
-    lines.append("Memory runtime:")
-    lines.append(f"- active_db: {paths.get('active_db', 'unknown')}")
-    lines.append(f"- user_db: {paths.get('user_db', 'unknown')}")
-    lines.append(f"- agent_db: {paths.get('agent_db', 'unknown')}")
-    lines.append(f"- memory_db: {paths.get('memory_db', 'unknown')}")
-    # Physical DB files on disk (the logical roles above can alias the same
-    # file; this is the true count and is what "how many databases" should use).
-    db_files = report.get("db_files") or []
-    if db_files:
-        lines.append(
-            f"- physical_db_files: {len(db_files)} "
-            f"(active/user/memory roles may alias the same file)"
-        )
-        for _f in db_files:
-            lines.append(
-                f"  - {_f.get('name')} "
-                f"({_f.get('size_mb')} MB, {_f.get('tables')} tables)"
-            )
-    lines.append(f"- memory_entries: {int(status.get('memory_entries', 0) or 0)}")
-    lines.append(f"- conversation_turns: {int(status.get('conversation_turns', 0) or 0)}")
-    lines.append(f"- distinct_sessions: {int(status.get('distinct_sessions', 0) or 0)}")
-    lines.append(f"- db_path: {status.get('db_path', 'unknown')}")
-    lines.append(f"- recent_turn_count: {recent_turn_count}")
-
-    schema = report.get("schema") or {}
-    if schema:
-        lines.append("")
-        lines.append("SQLite tables observed live:")
-        for db_name, tables in schema.items():
-            if not tables:
-                lines.append(f"- {db_name}: no tables found or DB missing")
-                continue
-            rendered = ", ".join(f"{name}({count})" for name, count in sorted(tables.items()))
-            lines.append(f"- {db_name}: {rendered}")
-
-    vector_status = report.get("vector_status") or {}
-    _faiss = 'available' if vector_status.get('faiss_available') else 'not available'
-    _nvec = vector_status.get('ntotal', 'unknown')
-    db_files = report.get("db_files") or []
-    fts_tables = report.get("fts_tables") or []
-    kg = report.get("kg") or {}
-    mechanisms = report.get("mechanisms") or {}
-
-    def _present(key: str) -> str:
-        m = mechanisms.get(key) or {}
-        return f"detected at {m.get('path')}" if m.get("present") else f"NOT FOUND ({m.get('path')})"
-
-    # Stores — derived live from the physical *.sqlite3 files on disk, with the
-    # actual tables each one currently holds. No hardcoded per-DB description:
-    # ELI can add/remove DBs and tables, so this is re-read every call.
-    lines.append("")
-    lines.append(f"Stores — {len(db_files)} physical SQLite file(s) on disk (live):")
-    for _f in db_files:
-        _names = _f.get("table_names") or []
-        _shown = ", ".join(_names[:14]) + (" …" if len(_names) > 14 else "")
-        lines.append(f"- {_f.get('name')} ({_f.get('size_mb')} MB, {_f.get('tables')} tables)")
-        if _shown:
-            lines.append(f"    tables: {_shown}")
-
-    lines.append("")
-    lines.append("STORAGE path (write — input → durable + indexed), live-annotated:")
-    lines.append("1. A turn/fact enters via Memory.store_memory()/log_* (a persistence gate decides what to keep).")
-    lines.append(f"2. Row written to SQLite and mirrored into FTS5 for keyword search "
-                 f"— live FTS5 mirrors: {', '.join(fts_tables) if fts_tables else 'none detected'}.")
-    lines.append(f"3. Text embedded with the local nomic embedder; vector added to FAISS "
-                 f"— live: FAISS {_faiss}, {_nvec} vectors; embedder module {_present('vector_store_faiss')}.")
-    lines.append(f"4. Entities/relations extracted into the knowledge graph "
-                 f"— live: kg_entities={kg.get('entities', 'n/a')}, kg_relations={kg.get('relations', 'n/a')}; "
-                 f"module {_present('knowledge_graph')}.")
-    lines.append(f"   Live totals now: memories={int(status.get('memory_entries', 0) or 0)}, FAISS vectors={_nvec}.")
-
-    lines.append("")
-    lines.append("RECALL path (read — query → ranked context → answer), live-annotated:")
-    lines.append(f"1. HyDE optionally expands a vague query before search — module {_present('hyde')}.")
-    lines.append("2. Parallel retrieval: keyword (SQLite LIKE) + FTS5 full-text + FAISS vectors + knowledge-graph lookup.")
-    lines.append(f"3. RAG hybrid merge + rerank by relevance/recency — orchestrator module {_present('orchestrator')}; "
-                 f"parallel agent dispatch {_present('agent_bus')}.")
-    lines.append("4. Context assembly → persona handoff → LLM synthesis (recency/session-biased; recall-narration filtered).")
-    lines.append(f"- DAG: agents/retrieval run on a dependency DAG; the coding agent decomposes tasks via a subtask DAG "
-                 f"— module {_present('plan_graph_dag')}.")
-
-    lines.append("")
-    lines.append("Index/runtime detail (live):")
-    lines.append(f"- FTS5 mirror tables detected: {', '.join(fts_tables) if fts_tables else 'none'}.")
-    lines.append(f"- FAISS: {_faiss}; index={vector_status.get('index_path', 'unknown')}; vectors={_nvec}.")
-    lines.append(f"- Embedder: {vector_status.get('embedding_model', 'unknown')}")
-    lines.append(f"- Knowledge graph: {kg.get('entities', 'n/a')} entities, {kg.get('relations', 'n/a')} relations "
-                 f"({'present' if kg.get('present') else 'not present'}).")
-    lines.append("- Short-term memory: in-process working memory + recent conversation_turns (no separate short-term DB).")
-    lines.append("- Mechanism modules re-probed on the filesystem this call (no hardcoded claims): "
-                 + "; ".join(
-                       f"{k}={'present' if (mechanisms.get(k) or {}).get('present') else 'missing'}"
-                       for k in ("hyde", "orchestrator", "agent_bus", "vector_store_faiss", "knowledge_graph", "plan_graph_dag")
-                   ) + ".")
-
-    if identity_hits:
-        lines.append("- identity_evidence:")
-        # Phase 9 fix (2026-05-11): identity hits often repeat verbatim
-        # ("Capability inventory updated: ...") because the proactive daemon
-        # writes the same line at every tick. De-dupe so the user sees
-        # distinct evidence rather than the same line N times.
-        _seen: set = set()
-        _printed = 0
-        for hit in identity_hits:
-            if _printed >= 3:
-                break
-            cleaned = _clean_hit(hit)
-            if not cleaned:
-                continue
-            key = cleaned[:220].strip().lower()
-            if key in _seen:
-                continue
-            _seen.add(key)
-            lines.append(f"  - {cleaned[:220]}")
-            _printed += 1
-
-    lines.append("- Main functions/classes: eli.memory.memory.Memory, get_memory(), recall_memory(), store_memory(), get_recent_conversation(), eli.memory.vector_store.VectorStore.search().")
-
-    return "\n".join(lines)
+def _format_memory_runtime(*a, **k):
+    # The executor's copy is the maintained one; this one had fallen behind it.
+    from eli.execution.executor_enhanced import _format_memory_runtime as _f
+    return _f(*a, **k)
 
 
 def _explain_all_reasoning_modes_report() -> Dict[str, Any]:
@@ -659,84 +238,16 @@ def _format_all_reasoning_modes(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _explain_cognition_runtime_report() -> Dict[str, Any]:
-    files = _canonical_runtime_file_map()
-    cog_path = files['cognitive_engine']
-    mem_path = files['memory']
-    router_path = files['router']
-    executor_path = files['executor']
-    if not cog_path.exists():
-        return {'ok': False, 'error': 'cognitive_engine.py not found'}
-    text = cog_path.read_text(encoding='utf-8', errors='replace')
-    checks = {
-        'process': 'def process(',
-        'memory_retrieval': 'def _retrieve_relevant_memories(',
-        'routing': 'route_intent(',
-        'executor_evidence': '_gather_executor_evidence',
-        'gguf': 'gguf_inference',
-        'streaming': 'def _stream_chat(',
-        'reasoning_loop': '_run_chat_reasoning_loop',
-        'confidence': '_score_response_confidence',
-    }
-    out = {}
-    for key, needle in checks.items():
-        out[key] = [i for i, line in enumerate(text.splitlines(), 1) if needle in line]
-    return {'ok': True, 'path': str(cog_path), 'memory_path': str(mem_path), 'router_path': str(router_path), 'executor_path': str(executor_path), 'checks': out}
+def _explain_cognition_runtime_report(*a, **k):
+    # The executor's copy is the maintained one; this one had fallen behind it.
+    from eli.execution.executor_enhanced import _explain_cognition_runtime_report as _f
+    return _f(*a, **k)
 
 
-def _format_runtime_status(report: Dict[str, Any]) -> str:
-    settings = report.get('settings') or {}
-    runtime = report.get('runtime') or {}
-
-    def _pick(runtime_key, *setting_keys, fallback='unknown'):
-        value = runtime.get(runtime_key, None)
-        if value not in (None, '', 0):
-            return value
-        for key in setting_keys:
-            value = settings.get(key, None)
-            if value not in (None, '', 0):
-                return value
-        return fallback
-
-    provider = runtime.get('provider') or settings.get('provider') or 'unknown'
-    model_path = str(
-        runtime.get('model_path')
-        or report.get('model_path')
-        or settings.get('model_path')
-        or settings.get('custom_model_path')
-        or settings.get('bundled_model_path')
-        or 'unknown'
-    ).strip()
-    model_name = runtime.get('model_name') or (Path(model_path).name if model_path not in ('', 'unknown') else 'unknown')
-    loaded = bool(runtime.get('loaded', False))
-
-    lines = [
-        "Runtime status evidence:",
-        f"- provider: {provider}",
-        f"- model_name: {model_name}",
-        f"- model_path: {model_path}",
-        f"- context_size: {_pick('n_ctx', 'n_ctx', 'context_size')}",
-        f"- gpu_layers: {_pick('n_gpu_layers', 'n_gpu_layers', 'gpu_layers')}",
-        f"- batch_size: {_pick('n_batch', 'n_batch', 'batch_size', 'batch')}",
-        f"- cpu_threads: {_pick('n_threads', 'n_threads', 'cpu_threads', 'threads')}",
-        f"- gguf_loaded_in_this_process: {loaded}",
-    ]
-
-    if settings.get('max_tokens') not in (None, ''):
-        lines.append(f"- max_tokens: {settings.get('max_tokens')}")
-    if settings.get('temperature') not in (None, ''):
-        lines.append(f"- temperature: {settings.get('temperature')}")
-    if settings.get('use_mmap') not in (None, ''):
-        lines.append(f"- use_mmap: {settings.get('use_mmap')}")
-    if settings.get('use_mlock') not in (None, ''):
-        lines.append(f"- use_mlock: {settings.get('use_mlock')}")
-    if str(provider).lower() == 'ollama':
-        if settings.get('ollama_host') not in (None, ''):
-            lines.append(f"- ollama_host: {settings.get('ollama_host')}")
-        if settings.get('ollama_model') not in (None, ''):
-            lines.append(f"- ollama_model: {settings.get('ollama_model')}")
-
-    return '\n'.join(lines)
+def _format_runtime_status(*a, **k):
+    # The executor's copy is the maintained one; this one had fallen behind it.
+    from eli.execution.executor_enhanced import _format_runtime_status as _f
+    return _f(*a, **k)
 
 
 def _format_memory_status(report: Dict[str, Any]) -> str:
@@ -858,7 +369,7 @@ def _live_memory_audit() -> dict:
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
 
-    root = Path(__file__).resolve().parents[2]  # project root (contains artifacts/, src/)
+    root = Path(__file__).resolve().parents[3]  # project root (contains artifacts/, src/)
     candidates = {
         "root_artifacts_db": root / "artifacts" / "user.sqlite3",
         "src_artifacts_db": root / "src" / "eli" / "artifacts" / "user.sqlite3",

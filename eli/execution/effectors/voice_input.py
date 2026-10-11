@@ -41,24 +41,32 @@ def _h_listen_for_command(a, args):
 
 
 def _h_stt_diagnostics(a, args):
-        try:
-            from eli.perception.audio_stt import stt_diagnostics
-            from eli.perception.tts_router import available_backends
-            diag = stt_diagnostics()
-            tts = available_backends()
-            combined = {**diag, "tts_backends": tts}
-            lines = [
-                f"STT — speech_recognition: {'✅' if combined.get('speech_recognition_imported') else '❌'}",
-                f"STT — wake word disabled: {combined.get('wake_word_disabled')}",
-                f"STT — direct chat: {combined.get('allow_direct_chat_without_wake')}",
-                f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('piper_model') else '❌'}",
-                f"TTS — espeak-ng: {'✅' if tts.get('espeak_ng') else '❌'}",
-                f"TTS — espeak: {'✅' if tts.get('espeak') else '❌'}",
-            ]
-            msg = "\n".join(lines)
-            return {"ok": True, "action": a, "content": msg, "response": msg, "diagnostics": combined}
-        except Exception as e:
-            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+    try:
+        from eli.perception.audio_stt import stt_diagnostics
+        from eli.perception.tts_router import available_backends
+        diag = stt_diagnostics()
+        tts = available_backends()
+        combined = {**diag, "tts_backends": tts}
+        wh = combined.get("whisper") or {}
+        lines = [
+            f"STT — speech_recognition: {'✅' if combined.get('speech_recognition_imported') else '❌'}",
+            f"STT — wake word disabled: {combined.get('wake_word_disabled')}",
+            f"STT — direct chat: {combined.get('allow_direct_chat_without_wake')}",
+            f"STT — wake model trained: {'✅' if combined.get('wake_model_trained') else '❌'} "
+            f"(phrase: {combined.get('wake_phrase', '?')})",
+            f"STT — whisper cache: {'✅' if wh.get('cache_ready') else '❌'} "
+            f"loaded: {'✅' if wh.get('loaded') else '❌'} "
+            f"model: {wh.get('model', '?')} device: {wh.get('device_configured', '?')}",
+            f"STT — output duck: {'✅' if combined.get('wake_duck_enabled') else 'off'} "
+            f"media pause duck: {'✅' if combined.get('media_duck_enabled') else 'off'}",
+            f"TTS — piper: {'✅' if tts.get('piper_bin') else '❌'} model: {'✅' if tts.get('piper_model') else '❌'}",
+            f"TTS — espeak-ng: {'✅' if tts.get('espeak_ng') else '❌'}",
+            f"TTS — espeak: {'✅' if tts.get('espeak') else '❌'}",
+        ]
+        msg = "\n".join(lines)
+        return {"ok": True, "action": a, "content": msg, "response": msg, "diagnostics": combined}
+    except Exception as e:
+        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
     # ---- GAZE ENGINE ----
 
