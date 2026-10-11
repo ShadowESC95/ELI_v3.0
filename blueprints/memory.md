@@ -32,11 +32,11 @@ internals), with live counts for each layer.
 | `memory.py` | 6,024 | the `Memory` class (69 public methods), schema, `DBPaths`, upkeep, module facade |
 | `policy.py` | 118 | pure storage-policy functions (origin, dedupe key, strength, archive, merge) |
 | `retrieval.py` | 310 | shared turn retrieval (`retrieve_for_turn`), turn cache, time window (turns and executed actions) |
-| `claims.py` | 266 | dated claims about the user: valid-from and valid-to, learned-at, supersession |
+| `claims.py` | 367 | dated claims about the user: valid-from and valid-to, learned-at, supersession |
 | `unified_retrieval.py` | 359 | the orchestrator stages consume `retrieve_for_turn` through it; formats the verified-memory block and the period log |
 | `document_index.py` | 706 | every document ELI has read, stored whole and searched by passage |
-| `vector_store.py` | 654 | FAISS index, embedder, tombstones |
-| `knowledge_graph.py` | 685 | entity and relation graph |
+| `vector_store.py` | 665 | FAISS index, embedder, tombstones |
+| `knowledge_graph.py` | 694 | entity and relation graph |
 | `habits_memory_db.py` | 467 | habit and legacy memory helpers |
 | `system_index.py` | 278 | indexed apps, executables, files |
 | `memory_truth.py` | 188 | read-only inspection used by status surfaces |

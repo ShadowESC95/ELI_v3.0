@@ -4,19 +4,20 @@
 
 *Status: **IN PROGRESS** on `v3-modularisation`. Design dated 2026-06-26; build ongoing.*
 
-**Progress (measured):** the handler registry (§3) is built and load-bearing —
-`execution/effectors/registry.py`, consulted before the if-chain. **169 actions**
-(of 185 total `SUPPORTED_ACTIONS`) across **34 effector modules** are
+**Progress (measured 2026-10-11):** the handler registry (§3) is built and load-bearing —
+`execution/effectors/registry.py`, consulted before the if-chain, and no registered action
+keeps an inline branch (`tests/test_effector_dispatch_order.py`). **189 actions**
+(of 217 total `SUPPORTED_ACTIONS`) across **40 effector modules** are
 registry-owned — window control, introspection, coding, media, status reports,
 plugins, system-open, gaze, self-improve, input control, voice input,
 datetime/calendar, persona-lock, wake-word, web/info, apps/windows, content
 analysis, pomodoro, self-maintenance, document analysis/creation, jobs, timers
-(the full as-built map is in §5). `executor_enhanced.py` is down from
-**14,592 → 6,442 LOC (−56%)**. Shared primitives (`_run`, `_run_ok`,
+(the full as-built map is in §5). `executor_enhanced.py` is **9,697 lines** (16,324 before the
+inline copies went), and `_execute_impl` is 977. Shared primitives (`_run`, `_run_ok`,
 `_save_artifact`, `_artifacts_dir`, the security gate) live in
-`effectors/_base.py`. Remaining in the façade: CHAT, the orchestration verbs
-(MULTI_COMMAND, SEQUENCE, SCHEDULE_TASK, GET_PROPOSALS), and a handful of
-entangled handlers (memory ops, screen/vision, file ops, self-upgrade) — being
+`effectors/_base.py`. Remaining in the façade (19 actions): CHAT, the orchestration verbs
+(MULTI_COMMAND, SEQUENCE, SCHEDULE_TASK, GET_PROPOSALS), OPEN_APP and OPEN_IDE, the voice
+and tone settings, HELP, LIST_CAPABILITIES, TIMESTAMP_DIAG and SELF_REPAIR_PLAYBOOK — being
 extracted until the executor is a thin façade. Zero behavioural change verified
 per family (route + pyflakes + relevant/contract test sweep).
 

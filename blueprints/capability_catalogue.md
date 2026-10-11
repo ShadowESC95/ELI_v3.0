@@ -216,28 +216,28 @@ layer that wraps the probabilistic model. Grouped by function:
 ## Grounding & anti-confabulation
 | Module | LOC | Role |
 |---|---|---|
-| `deterministic_grounding_gate.py` | 3375 | Renders control/status answers directly from live runtime (bypasses the model). One ordered `render_action` pipeline of layers composed by `_stack`; an unhandled action returns a `missing_deterministic_renderer` surface. |
-| `grounding_escalation.py` | 698 | When a **checkable factual** question is poorly grounded by the bus, escalates through agent tiers instead of letting the model confabulate (the "Eminem's real name" failure class). |
+| `deterministic_grounding_gate.py` | 3383 | Renders control/status answers directly from live runtime (bypasses the model). One ordered `render_action` pipeline of layers composed by `_stack`; an unhandled action returns a `missing_deterministic_renderer` surface. |
+| `grounding_escalation.py` | 744 | When a **checkable factual** question is poorly grounded by the bus, escalates through agent tiers instead of letting the model confabulate (the "Eminem's real name" failure class). |
 | `diagnostic_patterns.py` | 112 | Regexes that catch vague/dynamic status confabulation ("currently processing updates…") and image-status fabrication. |
 | `control_contracts.py` | 1342 | Control-action evidence contract: build evidence → validate the model's output doesn't violate it → finalise. |
-| `persistence_gate.py` | 204 | Gates what gets stored — refuses to persist internal dumps / error-pattern noise as memory. |
+| `persistence_gate.py` | 208 | Gates what gets stored — refuses to persist internal dumps / error-pattern noise as memory. |
 
 ## Self-honesty / introspection / self-reporting
 | Module | LOC | Role |
 |---|---|---|
 | `live_introspection.py` | 736 | Live runtime snapshot, last trace, stored user name, mines user-fact candidates, agents-for-action, build_report. |
-| `deterministic_introspection.py` | 591 | The engine's live diagnostic dispatcher (`handle_diagnostic_action`) — deterministic answers for RUNTIME_STATUS / EXPLAIN_* / IMPORT_AUDIT. |
-| `truth_report.py` | 436 | Runtime truth report (git, nvidia, GGUF runtime, import health). |
+| `deterministic_introspection.py` | 603 | The engine's live diagnostic dispatcher (`handle_diagnostic_action`) — deterministic answers for RUNTIME_STATUS / EXPLAIN_* / IMPORT_AUDIT. |
+| `truth_report.py` | 448 | Runtime truth report (git, nvidia, GGUF runtime, import health). |
 | `frontier_status.py` | 433 | Full cross-system status matrix (runtime/memory/awareness/proactive/image/world/chatflow). |
-| `eli_identity_audit.py` | 416 | Identity-classification audit (source inventory, contract counts, capability matrix). |
+| `eli_identity_audit.py` | 424 | Identity-classification audit (source inventory, contract counts, capability matrix). |
 | `reasoning_status.py` | 199 | Current reasoning-mode reporting. |
 | `experimental_inventory.py` | 146 | Inventory of experimental projects. |
 
 ## Self-improvement & code-awareness
 | Module | LOC | Role |
 |---|---|---|
-| `self_improvement.py` | 1816 | Failure logging/clustering, patch generate→verify→apply→**auto-revert**, full patch cycle, plugin-stub gen. |
-| `code_examiner.py` | 910 | Tiered file error scan (syntax/import → lint → gated LLM) → offer → verified fix. |
+| `self_improvement.py` | 1824 | Failure logging/clustering, patch generate→verify→apply→**auto-revert**, full patch cycle, plugin-stub gen. |
+| `code_examiner.py` | 925 | Tiered file error scan (syntax/import → lint → gated LLM) → offer → verified fix. |
 | `code_monitor.py` | 261 | Detects source changes via git diff, classifies by subsystem, summarises for memory/context (ELI is aware of its own code changes). |
 | `capability_sync.py` | 454 | **AST-discovers** the live capability surface, diffs, writes `capability_manifest.json` — this is why the count is *measured*, not asserted. |
 | `generated_script_guard.py` | 1084 | Validates LLM-generated scripts, **quarantines invalid ones**, and ships vetted canned scripts for known patterns (GPU-watch, redshift, etc.). |
@@ -251,21 +251,21 @@ layer that wraps the probabilistic model. Grouped by function:
 ## Awareness & boot
 | Module | LOC | Role |
 |---|---|---|
-| `awareness_boot.py` | 367 | Boots all awareness subsystems at startup, returns an `AwarenessState` the engine queries. |
-| `action_commitment.py` | 182 | Detects when ELI's reply commits to an action. The engine then runs it only if it is a read (news, weather, calendar listing) or something the user's own message asked for; anything that changes state waits for a "yes". |
+| `awareness_boot.py` | 383 | Boots all awareness subsystems at startup, returns an `AwarenessState` the engine queries. |
+| `action_commitment.py` | 245 | Detects when ELI's reply commits to an action. The engine then runs it only if it is a read (news, weather, calendar listing) or something the user's own message asked for; anything that changes state waits for a "yes". |
 
 ## Autonomy / operator (governed)
 | Module | LOC | Role |
 |---|---|---|
 | `operator_state.py`, `operator_feed.py` | ~177 | Operator console state: proposals, goals, self-model status, event feed. |
-| `pending_proposal.py` | 577 | What ELI's last reply left open, for 30 minutes: the steps it offered (`read_reply`: actions, tasks ELI does by writing, explicit-only), the question it ended on, a detail an action asked for. Reads the user's reply against it: `is_consent`, `chosen_items`, `selection`, `is_the_detail`. |
-| `agenda.py` | 1051 | ELI's calendar and reminders: SQLite store, plain-language dates and times (`parse_when`), a notifier thread that delivers what is due (and what was missed while shut), `calendar.ics` mirror, the next 36 hours as a prompt line. |
+| `pending_proposal.py` | 612 | What ELI's last reply left open, for 30 minutes: the steps it offered (`read_reply`: actions, tasks ELI does by writing, explicit-only), the question it ended on, a detail an action asked for. Reads the user's reply against it: `is_consent`, `chosen_items`, `selection`, `is_the_detail`. |
+| `agenda.py` | 1074 | ELI's calendar and reminders: SQLite store, plain-language dates and times (`parse_when`), a notifier thread that delivers what is due (and what was missed while shut), `calendar.ics` mirror, the next 36 hours as a prompt line. |
 | `approval_engine.py` | 103 | Who may propose / evaluate a proposal record (governance). |
 
 ## Response surfaces & governance
 | Module | LOC | Role |
 |---|---|---|
-| `user_visible_response_surface.py` | 369 | Installs the engine's user-visible response surface (runtime/identity/name-source formatting + streaming coercion). |
+| `user_visible_response_surface.py` | 372 | Installs the engine's user-visible response surface (runtime/identity/name-source formatting + streaming coercion). |
 | `visible_output.py`, `visible_text.py` | ~150 | Central visible-output contract; stringify/sanitise streamed output. |
 | `response_policy.py`, `response_contracts.py` | ~160 | Classify response mode; per-action contracts. |
 | `final_response_provider.py` | ~85 | Assemble the final prompt; per-action generation decoration; fastpath context. |
@@ -275,18 +275,18 @@ layer that wraps the probabilistic model. Grouped by function:
 |---|---|---|
 | `personal_memory_surface.py` | 451 | "Is this a personal-memory query" + surface builder. |
 | `personal_memory_clean_response.py` | 388 | Clean "what do you know about me" report (reset-aware, poison-filtered, dynamic-fact aging). |
-| `personal_memory_deep_response.py` | 450 | Deep memory-internals explain (schema/tables/functions) + routing-fault explain. |
-| `profile_extractor.py` | 1626 | Extracts user facts from turns (role/interests/field/"remember that I…"), writes user_patterns + LLM session summaries; recency refresh. |
-| `identity_validation.py` | 195 | Validate identity candidates. |
+| `personal_memory_deep_response.py` | 474 | Deep memory-internals explain (schema/tables/functions) + routing-fault explain. |
+| `profile_extractor.py` | 1627 | Extracts user facts from turns (role/interests/field/"remember that I…"), writes user_patterns + LLM session summaries; recency refresh. |
+| `identity_validation.py` | 230 | Validate identity candidates. |
 
 ## Typed pipeline plumbing (evidence/packets)
 | Module | LOC | Role |
 |---|---|---|
-| `evidence_ledger.py` | 680 | Records artifacts/events with signatures; recent generated artifacts; status evidence. |
+| `evidence_ledger.py` | 711 | Records artifacts/events with signatures; recent generated artifacts; status evidence. |
 | `evidence_arbitration.py` | 212 | Scores competing evidence (stage packets + tool results + goals), dedup-by-fingerprint, keep-max. |
 | `stage_packet_store.py`, `stage_packets.py`, `pipeline_models.py` | ~177 | The typed packet substrate: route/plan/evidence/generation/output packets flow between stages; this is the plumbing behind "no fake actions". |
 | `background_tasks.py` | 270 | In-process multi-threaded task manager (heavy work → job id → `CHECK_JOB`). |
-| `runtime_policy.py` | 89 | Per-turn budgets/timeouts/context size from runtime snapshot. |
+| `runtime_policy.py` | 124 | Per-turn budgets/timeouts/context size from runtime snapshot. |
 
 ## Security
 | Module | LOC | Role |
@@ -302,18 +302,18 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## Orchestration & agents
 | Module | LOC | Role |
 |---|---|---|
-| `agent_bus.py` | 3580 | 15 specialist agents on a dependency DAG (topological layers) + calibrated weight-free confidence aggregation + per-action agent selection. |
-| `orchestrator.py` | 1123 | Gradient 12-stage pipeline (all CHAT modes): planner → `retrieve_for_turn()` → `dispatch_specialists()` → heuristic rerank → context assembly. Composes the specialist bus; no longer Quick-only bypass. |
-| `learning_coordinator.py` | 82 | Stage 12 `finalize_turn()` — store assistant turn, publish meta, `_learn_from_result()`. |
+| `agent_bus.py` | 3607 | 15 specialist agents on a dependency DAG (topological layers) + calibrated weight-free confidence aggregation + per-action agent selection. |
+| `orchestrator.py` | 1325 | Gradient 12-stage pipeline (all CHAT modes): planner → `retrieve_for_turn()` → `dispatch_specialists()` → heuristic rerank → context assembly. Composes the specialist bus; no longer Quick-only bypass. |
+| `learning_coordinator.py` | 86 | Stage 12 `finalize_turn()` — store assistant turn, publish meta, `_learn_from_result()`. |
 | `hyde.py` | 69 | Hypothetical-document-embedding query expansion. |
-| `reranker.py` | 178 | Candidate reranking (token overlap + source priority). |
+| `reranker.py` | 176 | Candidate reranking (token overlap + source priority). |
 | `introspection_agent.py` | 164 | Wraps introspection for the bus (pipeline/memory/runtime/audit). |
-| `llm_intent.py` | 308 | LLM intent parsing fallback (GGUF, cached). |
+| `llm_intent.py` | 343 | LLM intent parsing fallback (GGUF, cached). |
 
 ## Inference
 | Module | LOC | Role |
 |---|---|---|
-| `gguf_inference.py` | 3266 | Model-agnostic GGUF inference: model resolution (no baked model), family-aware chat templating, graceful GPU-layer fallback, streaming, output cleaning, token budgeting. |
+| `gguf_inference.py` | 3377 | Model-agnostic GGUF inference: model resolution (no baked model), family-aware chat templating, graceful GPU-layer fallback, streaming, output cleaning, token budgeting. |
 | `inference_broker.py` | 222 | Thin GGUF broker (`infer`) used by agents/coding/patching. |
 
 ## Reasoning & engagement
@@ -321,12 +321,12 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 |---|---|---|
 | `reasoning_modes.py` | 671 | The 5 modes — canonicalisation, per-mode private system instruction, execution contract (samples/branches/stages + dynamic token budget), reasoning-leak stripping. |
 | `engagement_tracker.py` | 249 | Session depth tracking → **auto-escalates reasoning mode** (Quick→Normal→Advanced→Research) as a conversation deepens; session narrative. |
-| `working_memory.py` | 387 | Turn-scoped pinned facts (pin/absorb/evict/persist/restore). |
+| `working_memory.py` | 430 | Turn-scoped pinned facts (pin/absorb/evict/persist/restore). |
 
 ## Context & grounding
 | Module | LOC | Role |
 |---|---|---|
-| `context_synthesiser.py` | 776 | Builds the precise prompt context: persona handoff, turns block, vector block, live-runtime brief, budgeting. |
+| `context_synthesiser.py` | 807 | Builds the precise prompt context: persona handoff, turns block, vector block, live-runtime brief, budgeting. |
 | `grounded_status.py` | 648 | Identity + memory-inventory rendered directly from profile/DBs (direct grounded answers). |
 
 ## Persona (the living voice)
@@ -340,7 +340,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## Output governance (consolidated this session)
 | Module | LOC | Role |
 |---|---|---|
-| `output_governor.py` | 1694 | **Canonical** governance: sanitize, role-prefix/identity-drift repair, self↔user confusion repair, style cleanup, confabulation detection, quality scoring, memory-worthiness, GGUF-artifact cleaning (`clean_gguf_artifacts`), evidence validation. |
+| `output_governor.py` | 1704 | **Canonical** governance: sanitize, role-prefix/identity-drift repair, self↔user confusion repair, style cleanup, confabulation detection, quality scoring, memory-worthiness, GGUF-artifact cleaning (`clean_gguf_artifacts`), evidence validation. |
 | `response_governance.py`, `response_sanitizer.py` | 28+14 | **Re-export shims** → output_governor (kept for back-compat). |
 | `tone_analyzer.py` | 371 | Analyses recent user turns → tone preferences ELI adapts to over time. |
 
@@ -367,17 +367,17 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `core/` (paths, settings, hardware, safety) — 11.2k lines
 | Module | LOC | Role |
 |---|---|---|
-| `runtime_settings.py` | 1290 | Canonical settings.json load/save, legacy-key migration, portable-path healing/sanitising. |
-| `hardware_profile.py` | 2818 | Auto-detect GPU/VRAM/RAM → fit ctx/gpu_layers/batch (KV-cache + compute-buffer reserve); model discovery; hardware authority enforcement. |
+| `runtime_settings.py` | 1296 | Canonical settings.json load/save, legacy-key migration, portable-path healing/sanitising. |
+| `hardware_profile.py` | 3138 | Auto-detect GPU/VRAM/RAM → fit ctx/gpu_layers/batch (KV-cache + compute-buffer reserve); model discovery; hardware authority enforcement. |
 | `paths.py` | 768 | Single-source-of-truth path resolution (data/config/cache/db/models/voices…). |
-| `startup_hardware_optimizer.py` | 885 | Boot-time hardware optimiser (GPU select, layer/ctx allocation, mode presets). |
+| `startup_hardware_optimizer.py` | 888 | Boot-time hardware optimiser (GPU select, layer/ctx allocation, mode presets). |
 | `config.py` | 357 | Thin config shim over runtime_settings (canonical key mapping). |
 | `model_download.py` | 673 | Curated GGUF catalogue + VRAM-based recommend + download. |
-| `dag.py` | 470 | **Generic DAG engine** (Kahn topo-order, parallel layers, critical path) — shared by the agent bus + coding engine. |
+| `dag.py` | 475 | **Generic DAG engine** (Kahn topo-order, parallel layers, critical path) — shared by the agent bus + coding engine. |
 | `dynamic_runtime_budget.py` | 271 | Per-boot runtime budget derivation. |
 | `netguard.py` | 586 | **Offline-by-default** socket-level network gate (fail-closed) + `guarded_urlopen`/`http_get_json`. |
 | `memory_reset.py` | 333 | Factory-reset of memory/identity (scrub names, clear DBs, backup). |
-| `cognition_tunables.py` | 273 | User-tunable knowledge-gathering limits + synthesis cap registry (GUI-surfaced). |
+| `cognition_tunables.py` | 292 | User-tunable knowledge-gathering limits + synthesis cap registry (GUI-surfaced). |
 | `grounding.py` | 145 | `is_grounded_query` classifier. |
 | `crisis_guard.py` | 113 | STT-robust self-harm detector + persona steering directive. |
 | `portable_paths.py`, `db_paths.py`, `legacy_paths.py`, `architecture_contracts.py` | small | path helpers, ownership map. |
@@ -386,13 +386,13 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | Module | LOC | Role |
 |---|---|---|
 | `memory.py` | 5677 | The `Memory` class (69 public methods): semantic store/recall, conversations, habits, failures/improvements, storage policy, upkeep, weight decay, KG bridge, `mark_failure_resolved`, `disable_invalid_habit_rules`. |
-| `knowledge_graph.py` | 643 | Entity/relation graph + multi-hop BFS (`related`) + `context_for_prompt` + extract-from-memory. |
+| `knowledge_graph.py` | 694 | Entity/relation graph + multi-hop BFS (`related`) + `context_for_prompt` + extract-from-memory. |
 | `habits_memory_db.py` | 467 | Habit rules/events store + cheap embed/recall. |
 | `retrieval.py` | 186 | Shared turn retrieval (`retrieve_for_turn`) with an 8 s cache, time window and `memory_diag` stats. |
 | `policy.py` | 118 | Storage policy: origin, dedupe key, forgetting curve, archive rule. |
-| `claims.py` | 266 | Bitemporal claims about the user: valid interval, learned-at, supersession, disputes, extraction. |
-| `unified_retrieval.py` | 168 | Orchestrator stages consume `retrieve_for_turn` through it. |
-| `vector_store.py` | 637 | FAISS index (L2, 1/(1+dist) sim) + nomic embedder + keyword fallback + auto-rebuild. |
+| `claims.py` | 367 | Bitemporal claims about the user: valid interval, learned-at, supersession, disputes, extraction. |
+| `unified_retrieval.py` | 359 | Orchestrator stages consume `retrieve_for_turn` through it. |
+| `vector_store.py` | 665 | FAISS index (L2, 1/(1+dist) sim) + nomic embedder + keyword fallback + auto-rebuild. |
 | `system_index.py` | 278 | OS app/exe/dir index (the launcher backing — your machine's executables, thousands, indexed live per machine). |
 | `memory_truth.py`, `memory_adapter.py` | small | inspection/compat/session helpers. |
 
@@ -401,7 +401,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 |---|---|---|
 | `audio_stt.py` | 2663 | faster-whisper STT + VoiceGate (wake-word, debounce, incomplete-command wait), self-echo suppression, output ducking, per-user voice profile bias. |
 | `vision.py` | 698 | Local GGUF VL (Moondream fast / primary), hot-swap with text model, CPU-pinned CLIP, OCR. |
-| `tts_router.py` | 1244 | Piper/espeak TTS, voice selection, unspeakable-fragment guard. |
+| `tts_router.py` | 1312 | Piper/espeak TTS, voice selection, unspeakable-fragment guard. |
 | `os_controller.py` | 572 | Screenshot/volume/keys/mouse/clipboard + `gaze_click`. |
 | `screen_locator.py` | 497 | OCR (tesseract) → locate a named UI element on screen. |
 | `gaze_engine.py` | 358 | MediaPipe face-gaze + calibration mapper + One-Euro smoothing → `latest_gaze.json` @10Hz. |
@@ -410,7 +410,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 ## `planning/` (autonomy, habits, proactive) — 4.0k lines
 | Module | LOC | Role |
 |---|---|---|
-| `proactive_daemon.py` | 1538 | Background 10-min loop: pattern/code analysis, habit detect+offer, morning report, error tracking. |
+| `proactive_daemon.py` | 1564 | Background 10-min loop: pattern/code analysis, habit detect+offer, morning report, error tracking. |
 | `autonomy_scheduler.py` | 367 | Policy-gated (observe/proposal/goal-driven) goal scheduler w/ cooldown + attention queue. |
 | `habits.py` | 339 | Habit detection (timestamp→HH:MM clustering), offer/pending state, disabled-by-default. |
 | `routine_stats.py` | 125 | Circular clustering, routine shift and lapse detection. |
@@ -463,7 +463,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 |---|---|---|
 | `main_window/` | package | Main window: 15 top-level tabs + adapters (CentralMemory/LocalModel/Ollama/Executor bridges, the `_GUIEngineAdapter`), chat, drag-drop, reasoning-mode auto-select, all toggles. |
 | `labs_tab.py` | 30 | Labs workspace: Notebook, Memory browser, Jupyter launcher, Calculator(+constants), Physics tables, **Report Builder** (evidence-grounded docs), File-Chat, Workspaces, Sim-IDE. |
-| `app.py` | 840 | Launcher / first-boot auto-tune / `main()`. |
+| `app.py` | 829 | Launcher / first-boot auto-tune / `main()`. |
 | `panels/startup.py` | 1974 | StartupModelSelectionDialog, FirstBootWizard, HardwareTuningDock. |
 | `panels/settings.py` | 825 | Advanced Settings (Agents/Models/**Cognition**/Plugins/Self-Upgrade). |
 | `docks/operator_console_dock.py` | 303 | Governed operator console (proposals/goals/policy/attention). |
@@ -489,7 +489,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `api_users.py` | 145 | API users + roles (admin / member RBAC) for the web server. |
 | `auth.py` | 4 | Tombstone comment: the unfinished multi-user AuthManager was removed; authority lives in `authority_gate.py`, `security.py` and the engine's persona lock. |
 | `authority_gate.py` | 49 | authority_gate — intentional stub. |
-| `autopilot_debugger.py` | 437 | Autopilot debugger — one loop that turns a failure into a plan. |
+| `autopilot_debugger.py` | 473 | Autopilot debugger — one loop that turns a failure into a plan. |
 | `ble_light.py` | 247 | BLE light control — the GATT writes ELI never had. |
 | `bt_platform.py` | 1335 | Cross-platform Bluetooth radio detection, recovery, and classic discovery. |
 | `codebase_graph.py` | 313 | Codebase self-graph — ELI's live, grounded model of how its OWN code connects. |
@@ -528,12 +528,12 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `self_model_refresh.py` | 61 | `refresh_all_overlays_nonfatal`: refreshes the persona and user-profile overlays without raising. |
 | `self_status.py` | 264 | Real, measured self-status for ELI. |
 | `server_util.py` | 240 | Helpers for detecting an existing ELI web server and firewall guidance. |
-| `session_continuity.py` | 100 | Session continuity — live thread memory injected into every CHAT turn. |
+| `session_continuity.py` | 121 | Session continuity — live thread memory injected into every CHAT turn. |
 | `shell_followup.py` | 68 | Resolve deictic shell follow-ups ("run that command") from prior assistant output. |
 | `state_providers.py` | 80 | State providers — the hook that lets components expose save/restore state to a |
 | `test_generator.py` | 283 | ELI-assisted behavioural test generation (Phase 4). |
 | `test_review.py` | 234 | Full test/project run → review workflow. |
-| `user_model.py` | 372 | Continuous User Model — ELI's living, semantic, auto-updating model of the user. |
+| `user_model.py` | 371 | Continuous User Model — ELI's living, semantic, auto-updating model of the user. |
 | `voice_assets.py` | 574 | Ensure the local voice models (STT + TTS weights) are present. |
 
 ## `cognition/`
@@ -543,22 +543,22 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `agent_trust.py` | 262 | Trust for custom agent code — provenance, not just a hash in a dict. |
 | `belief.py` | 239 | Belief revision — what ELI holds, how strongly, and what it takes to change it. |
 | `chat_grounding_gate.py` | 157 | Fail-closed CHAT gate — skip LLM when user-fact grounding is required but absent. |
-| `context_budget.py` | 128 | Sizing and trimming the memory block that goes into a prompt. |
-| `correction_patterns.py` | 224 | Shared patterns for user correction / dispute turns. |
+| `context_budget.py` | 130 | Sizing and trimming the memory block that goes into a prompt. |
+| `correction_patterns.py` | 248 | Shared patterns for user correction / dispute turns. |
 | `emotion_palette.py` | 254 | Emotion / tone palette — the shared taxonomy ELI expresses through. |
 | `emotion_timeline.py` | 452 | Emotion timeline — the durable record of how the USER has been feeling. |
 | `evidence_format.py` | 196 | Dates on evidence lines, from each row's own timestamp; `time_facts` (clock times in the user's message worked out against now); `this_conversation` (the dialogue block holds this conversation, not turns from days ago). |
 | `expression_state.py` | 63 | Live avatar/expression state — the thin bridge that lets ELI's face react in |
-| `memory_diag.py` | 73 | What memory retrieval actually did this turn, from telemetry, so ELI never has to guess why. |
+| `memory_diag.py` | 80 | What memory retrieval actually did this turn, from telemetry, so ELI never has to guess why. |
 | `model_identity.py` | 237 | Model-agnostic identity: chat family + thinking from GGUF metadata. |
 | `model_load_diagnostics.py` | 633 | Say why a GGUF would not load — for ANY model, not a known list of them. |
 | `model_output_tokens.py` | 301 | Canonical special tokens, stop sequences, and persona drift patterns for all GGUF families. |
 | `personal_context_gate.py` | 118 | Gate when past-session plans/projects may enter the persona handoff. |
-| `query_planner.py` | 161 | Deterministic query planning: the time window a question asks about. |
-| `scoring.py` | 116 | Canonical scoring + confidence primitives for ELI. |
+| `query_planner.py` | 237 | Deterministic query planning: the time window a question asks about. |
+| `scoring.py` | 140 | Canonical scoring + confidence primitives for ELI. |
 | `stance_capture.py` | 151 | Notice when ELI has taken a position, so it survives the conversation. |
 | `stance_store.py` | 288 | Persistence for beliefs — ELI's own positions, and the record of revisions. |
-| `tone_adaptor.py` | 445 | Tone adaptor — decides the emotion ELI *expresses* and feeds every output channel. |
+| `tone_adaptor.py` | 455 | Tone adaptor — decides the emotion ELI *expresses* and feeds every output channel. |
 | `turn_dossier.py` | 404 | Turn dossier — single assembly point for awareness, memory, and cognition context. |
 | `user_claim_validator.py` | 258 | Post-generation validation of user-attribution claims in CHAT output. |
 
@@ -570,14 +570,14 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `command_sequence_log.py` | 102 | MULTI_COMMAND's durable per-step log — crash-survival and skip-already-done on resubmit (ported from v2, 2026-09-30). |
 | `effectors/system_helpers.py` | 175 | Cross-platform system helpers shared by executor and effectors (v3). |
 | `execution_planner.py` | 111 | Builds `RouteDecision` and the typed `ExecutionPlan`/`PlanStep` artifacts — `.agent_profile` (agent-name filter) is the only field anything reads; `.steps` is never executed, only rendered as decorative text by `EXECUTE_GOAL`. |
-| `executor_enhanced.py` | 16113 | The flat `if a == "ACTION":` dispatch every routed action runs through. |
-| `media_runtime.py` | 709 | Media runtime control for ELI. |
+| `executor_enhanced.py` | 9697 | The flat `if a == "ACTION":` dispatch every routed action runs through. |
+| `media_runtime.py` | 661 | Media runtime control for ELI. |
 | `operator_actions.py` | 105 | Valid states and helpers for operator (proposal) actions: pending, approved, rejected, blocked, pending_confirmation. |
 | `operator_policy.py` | 65 | The valid operator policy modes: `proposal_only`, `operator_supervised`, `goal_driven`, `observe_only`. Only `observe_only` (silences the autonomy loop) and `goal_driven` (elevated + self-upgrade scheduling) have distinct behavior — `proposal_only`/`operator_supervised` are currently identical code paths. |
-| `portable_intent_contract.py` | 643 | Portable intent rules; hard-blocks document, code and analysis prompts from `PLAY_MEDIA`. |
+| `portable_intent_contract.py` | 653 | Portable intent rules; hard-blocks document, code and analysis prompts from `PLAY_MEDIA`. |
 | `route_authority.py` | 46 | Thread-local record of which layer decided a route, and the internal prompt prefixes that must never be routed as user text. |
 | `route_contracts.py` | 123 | Small predicates that classify a request (for example `wants_memory_internals`) for the router. |
-| `router_enhanced.py` | 6590 | The router: `route(text)` regex-first priority pipeline with LLM-intent fallback (see `architecture.md` §4). |
+| `router_enhanced.py` | 6919 | The router: `route(text)` regex-first priority pipeline with LLM-intent fallback (see `architecture.md` §4). |
 | `shell_gate.py` | 110 | Centralised shell-command safety gate. |
 
 ## `core/`
@@ -588,18 +588,18 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `gpu_pack_runtime.py` | 83 | Activate the optional GPU pack before llama_cpp is imported (AppImage/portable). |
 | `init_data.py` | 283 | First-run data initialiser — build ELI's FULL database architecture up front. |
 | `llama_cpu_compat.py` | 240 | CPU compatibility for llama-cpp-python — parity with GPU probe/fallback policy. |
-| `load_probe.py` | 479 | Verify a set of load parameters actually works, without dying if it doesn't. |
+| `load_probe.py` | 556 | Verify a set of load parameters actually works, without dying if it doesn't. |
 | `model_tier.py` | 141 | Model-capability tier — the single signal that lets ELI's cognition budgets |
 | `secure_io.py` | 94 | Race-free writing of files that must never be world-readable. |
 | `self_provenance.py` | 207 | Is this row ELI's own bookkeeping, or evidence about the user? |
-| `sqlite_util.py` | 99 | Shared SQLite pragmas — WAL with a portable-safe fallback. |
+| `sqlite_util.py` | 127 | Shared SQLite pragmas — WAL with a portable-safe fallback. |
 | `toml_util.py` | 19 | Load TOML on Python 3.10+ (tomli backport) and 3.11+ (stdlib tomllib). |
 | `worldclock.py` | 348 | Place-aware wall-clock answers. |
 
 ## `memory/`
 | Module | Lines | Role |
 |---|---:|---|
-| `unified_retrieval.py` | 168 | Unified memory retrieval for orchestrator and agent bus. |
+| `unified_retrieval.py` | 359 | Unified memory retrieval for orchestrator and agent bus. |
 
 ## `perception/`
 | Module | Lines | Role |
@@ -607,9 +607,9 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `desktop_capabilities.py` | 186 | Cross-OS desktop control capability probe — one place for per-platform truth. |
 | `mic_resolver.py` | 613 | ELI microphone resolver — pick a capture device that actually delivers audio, |
 | `screen_analysis.py` | 194 | Local screen analysis — depth modes, memory recall, research context. |
-| `tts_xtts.py` | 378 | Voice cloning backend (Coqui XTTS-v2). |
+| `tts_xtts.py` | 389 | Voice cloning backend (Coqui XTTS-v2). |
 | `ui_ground.py` | 322 | Optional UI grounding backends — 100% local by default. |
-| `ui_tree.py` | 353 | Accessibility-tree UI targeting (Linux / AT-SPI). |
+| `ui_tree.py` | 354 | Accessibility-tree UI targeting (Linux / AT-SPI). |
 | `voice_fx.py` | 252 | Character-voice effects layer. |
 | `voice_profile.py` | 460 | Voice profile + prosody — the foundation for tone/emotion detection. |
 | `voice_worker_streaming.py` | 61 | Stream-aware voice worker for ELI. |

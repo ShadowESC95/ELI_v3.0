@@ -48,7 +48,7 @@ inspected.
 - **[capability_catalogue.md](capability_catalogue.md)** — exhaustive, ground-truth
   catalogue of all actions (232) + every package's modules (5 parts).
 - **[project_overview.md](project_overview.md)** — start here for the engineering
-  view. What ELI is, scale (~231k LOC / 613 files + web app), architecture by layer, the
+  view. What ELI is, scale (~223k LOC / 626 files + web app), architecture by layer, the
   honest verdict on "frontier", and the highest-leverage work.
 - **[orchestration_and_agents.md](orchestration_and_agents.md)** — the real
   topology: gradient `AgentOrchestrator` (all CHAT modes) composing the 15-agent `AgentBus` after shared retrieval; see `orchestration_and_agents.md`.

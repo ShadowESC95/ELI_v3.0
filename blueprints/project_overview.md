@@ -35,7 +35,7 @@ in-process from the desktop GUI.
 
 ## 2. Scale and shape
 
-**232,414 lines across 613 Python files** in `eli/`, plus `api/server.py` (5,282 lines with
+**223,219 lines across 626 Python files** in `eli/`, plus `api/server.py` (5,282 lines with
 an embedded dashboard) and **560 test files** under `tests/`.
 
 | Subsystem | Lines | Files | Role |

@@ -48,7 +48,7 @@ flowchart TD
 
 | File | LOC | Role |
 |---|---:|---|
-| `app.py` | 840 | launcher, first-boot auto-tune, entry `main()` |
+| `app.py` | 829 | launcher, first-boot auto-tune, entry `main()` |
 | `main_window/window.py` | 1301 | `EliMainWindow` and `main()`, composed from the mixins below |
 | `main_window/_mixins/settings_model.py` | 2489 | settings pages and model loading |
 | `main_window/_mixins/chrome_io.py` | 1842 | window chrome, input/output plumbing |

@@ -11,7 +11,7 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 > ELI is a **local-first, offline-by-default, model-agnostic** cognitive runtime and
 > assistant GUI, and also a self-hosted web app (`api/server.py`, described in
 > `ELI_USER_MANUAL.md`). No cloud on the inference path, no hardcoded model.
-> **232,414 lines across 613 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
+> **223,219 lines across 626 Python files in `eli/`**, plus `api/server.py` (5,282 lines).
 > 239 capabilities in `capability_manifest.json`, 194 of them routable and 216 in the
 > executor's supported list.
 
@@ -33,40 +33,42 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 
 ## 1. Repository map
 
-*Files and lines per package under `eli/`, measured 2026-09-25.*
+*Files and lines per package under `eli/`, measured 2026-10-11.*
 
 | Package | Lines | Files | Role |
 |---|---:|---:|---|
-| `eli/gui` | 30,761 | 62 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs, startup and first-boot wizard |
-| `eli/execution` | 41,796 | 79 | Router and executor: intent → action → side effects. `effectors/` and `routing/` hold decomposition modules that the live `executor_enhanced.py` and `router_enhanced.py` do not yet call |
-| `eli/runtime` | 36,358 | 101 | Grounding spine, evidence, response and introspection surfaces, daemons, self-improvement |
-| `eli/cognition` | 21,252 | 48 | Agent bus, 12-stage orchestrator, inference, persona, reasoning modes, tone and emotion |
-| `eli/kernel` | 18,288 | 22 | `CognitiveEngine` composed from `kernel/stages/` mixins, pipeline tracing, scheduler, self-upgrade, world model |
-| `eli/core` | 11,642 | 33 | netguard, paths, settings, hardware profile, model download, full control |
-| `eli/perception` | 11,090 | 26 | Vision, STT, TTS, wake word, voice tone, OS control, gaze |
-| `eli/memory` | 8,927 | 12 | SQLite, FTS5, FAISS, knowledge graph, storage policy |
-| `eli/tools` | 7,574 | 29 | Image engine, news, capability registry, document tools |
-| `eli/plugins` | 5,932 | 34 | Plugin manager, marketplace client, bundled plugins |
-| `eli/planning` | 4,593 | 21 | Proactive daemon, habit scheduler, job, proposal and attention queues |
+| `eli/runtime` | 39,471 | 104 | Grounding spine, evidence, response and introspection surfaces, daemons, self-improvement |
+| `eli/execution` | 34,496 | 81 | Router and executor: intent → action → side effects. `effectors/` holds the handlers the executor dispatches registered actions to (189 of 217); `routing/` the intent stages `route()` delegates to |
+| `eli/gui` | 30,882 | 62 | PySide6 desktop app: `main_window/` mixins, `labs/`, panels, tabs, startup and first-boot wizard |
+| `eli/cognition` | 23,002 | 50 | Agent bus, 12-stage orchestrator, inference, persona, reasoning modes, tone and emotion |
+| `eli/kernel` | 19,438 | 23 | `CognitiveEngine` composed from `kernel/stages/` mixins, pipeline tracing, scheduler, self-upgrade, world model |
+| `eli/core` | 12,995 | 38 | netguard, paths, settings, hardware profile, model download, full control |
+| `eli/perception` | 11,341 | 26 | Vision, STT, TTS, wake word, voice tone, OS control, gaze |
+| `eli/memory` | 10,835 | 14 | SQLite, FTS5, FAISS, knowledge graph, storage policy |
+| `eli/tools` | 7,605 | 29 | Image engine, news, capability registry, document tools |
+| `eli/plugins` | 5,947 | 34 | Plugin manager, marketplace client, bundled plugins |
+| `eli/planning` | 4,944 | 22 | Proactive daemon, habit scheduler, job, proposal and attention queues |
 | `eli/learning` | 4,251 | 14 | LoRA self-training pipeline |
-| `eli/integrations` | 3,376 | 18 | Ollama client, MCP client and server, cross-platform media, MPRIS |
+| `eli/integrations` | 3,662 | 18 | Ollama client, MCP client and server, cross-platform media, MPRIS |
 | `eli/coding` | 2,689 | 15 | `CodeAgent`: plan → search → verify → repair |
-| `eli/world` | 1,951 | 26 | World event bus, local world bridge, avatar and ontology |
+| `eli/world` | 2,019 | 26 | World event bus, local world bridge, avatar and ontology |
+| `eli/utils` | 1,979 | 5 | Logging, platform compatibility |
 | `eli/setup` | 1,932 | 9 | Installer, hardware policy, first-run wizard |
-| `eli/utils` | 1,838 | 5 | Logging, platform compatibility |
 | `eli/licensing` | 1,694 | 11 | Licence activation, machine id, trial and tier gating |
-| `eli/system` | 1,190 | 3 | Portable app control, process guard |
-| `eli/contracts` | 787 | 3 | Typed runtime-status contracts |
+| `eli/system` | 1,400 | 3 | Portable app control, process guard |
+| `eli/contracts` | 788 | 3 | Typed runtime-status contracts |
 | `eli/onboarding` | 709 | 2 | Onboarding interview |
+| `eli/bundles` | 367 | 2 | Bundles: separate ELI applications (ELI Legal first) found and opened on ELI v3's core |
 | `eli/editions` | 343 | 29 | Edition packs (base, coding, content, enterprise, healthcare) |
-| `eli/cli`, `eli/scripts`, top level | 405 | 6 | Headless REPL, package entry |
-| **total** | **228,341** | **622** | |
+| `eli/cli`, `eli/scripts`, top level | 431 | 6 | Headless REPL, package entry |
+| **total** | **223,220** | **626** | |
 
-The largest files: `eli/execution/executor_enhanced.py` (15,923 lines), `eli/execution/router_enhanced.py` (8,271),
-`eli/kernel/engine.py` (8,014, plus 8,505 lines in the `kernel/stages/` mixins it is composed
-from), `eli/memory/memory.py` (5,677), `api/server.py` (5,282), `eli/cognition/agent_bus.py`
-(3,518), `eli/runtime/deterministic_grounding_gate.py` (3,357), `eli/gui/labs/report_tab.py`
-(3,327) and `eli/cognition/gguf_inference.py` (3,234).
+The largest files: `eli/execution/executor_enhanced.py` (9,697 lines, down from 16,324 now that
+registered actions run in their effector modules), `eli/kernel/engine.py` (8,448, plus 9,093
+lines in the `kernel/stages/` mixins it is composed from), `eli/execution/router_enhanced.py`
+(6,919), `eli/memory/memory.py` (6,091), `api/server.py` (5,286), `eli/cognition/agent_bus.py`
+(3,607), `eli/runtime/deterministic_grounding_gate.py` (3,383), `eli/cognition/gguf_inference.py`
+(3,377) and `eli/gui/labs/report_tab.py` (3,321).
 
 ---
 
