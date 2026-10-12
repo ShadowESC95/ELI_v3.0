@@ -142,6 +142,12 @@ class SettingsModelMixin:
 
         return page, vbox
 
+    @staticmethod
+    def _shown_cache_type(stored) -> str:
+        """The settings entry for a stored KV cache type (gguf_sizes.cache_setting)."""
+        from eli.core.gguf_sizes import cache_setting
+        return cache_setting(stored)
+
     def _field_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setStyleSheet("color:#8b9ab0;font-size:10px;font-weight:600;letter-spacing:0.3px;")
@@ -299,19 +305,19 @@ class SettingsModelMixin:
         self.batch_size_input.setToolTip("Prompt processing batch size — larger is faster but uses more VRAM")
         form.addRow(self._field_label("Batch size"), self.batch_size_input)
 
-        # KV-cache quantization. q4_0 cuts KV memory ~75% with negligible
-        # quality loss for chat workloads — the unlock for ctx ≥ 16k on
-        # small VRAM cards. Empty value = no quantization (fp16).
+        # KV-cache quantization. q8_0 halves the cache and answers the same as fp16; q4_0 gives
+        # wrong answers with this llama.cpp (measured), so it is not offered and a stored one
+        # loads as q8_0. Empty value = no quantization (fp16).
         self.cache_type_k_combo = QComboBox()
-        self.cache_type_k_combo.addItems(["", "q4_0", "q8_0", "f16"])
+        self.cache_type_k_combo.addItems(["", "q8_0", "f16"])
         self.cache_type_k_combo.setToolTip(
-            "KV cache quantization for keys. q4_0 = 4× more ctx for the same "
-            "VRAM. Empty = fp16 (no quantization)."
+            "KV cache quantization for keys. q8_0 = nearly twice the context for the same "
+            "VRAM, with the same answers. Empty = fp16 (no quantization)."
         )
         form.addRow(self._field_label("KV cache K"), self.cache_type_k_combo)
 
         self.cache_type_v_combo = QComboBox()
-        self.cache_type_v_combo.addItems(["", "q4_0", "q8_0", "f16"])
+        self.cache_type_v_combo.addItems(["", "q8_0", "f16"])
         self.cache_type_v_combo.setToolTip(
             "KV cache quantization for values. Match this to the K setting."
         )
@@ -1736,20 +1742,10 @@ class SettingsModelMixin:
 
             # KV-cache quantization: hardware fact — safe to update in the combo
             # (affects how VRAM is used, not a user performance preference).
-            _ck = str(getattr(rec, "cache_type_k", "") or "")
-            _cv = str(getattr(rec, "cache_type_v", "") or "")
-            _ki = self.cache_type_k_combo.findText(_ck)
-            if _ki < 0 and _ck:
-                self.cache_type_k_combo.addItem(_ck)
-                _ki = self.cache_type_k_combo.findText(_ck)
-            if _ki >= 0:
-                self.cache_type_k_combo.setCurrentIndex(_ki)
-            _vi = self.cache_type_v_combo.findText(_cv)
-            if _vi < 0 and _cv:
-                self.cache_type_v_combo.addItem(_cv)
-                _vi = self.cache_type_v_combo.findText(_cv)
-            if _vi >= 0:
-                self.cache_type_v_combo.setCurrentIndex(_vi)
+            _ck = self._shown_cache_type(getattr(rec, "cache_type_k", ""))
+            _cv = self._shown_cache_type(getattr(rec, "cache_type_v", ""))
+            self.cache_type_k_combo.setCurrentIndex(max(0, self.cache_type_k_combo.findText(_ck)))
+            self.cache_type_v_combo.setCurrentIndex(max(0, self.cache_type_v_combo.findText(_cv)))
 
             for line in list(getattr(rec, "reasoning", []) or []):
                 self._hardware_tuning_log(str(line))
@@ -2249,8 +2245,8 @@ class SettingsModelMixin:
                 self.batch_size_input.setValue(int(_batch))
             # KV cache quantization combos
             try:
-                _k = str(s.get("cache_type_k", "") or "")
-                _v = str(s.get("cache_type_v", "") or "")
+                _k = self._shown_cache_type(s.get("cache_type_k", ""))
+                _v = self._shown_cache_type(s.get("cache_type_v", ""))
                 _kidx = self.cache_type_k_combo.findText(_k)
                 if _kidx >= 0:
                     self.cache_type_k_combo.setCurrentIndex(_kidx)

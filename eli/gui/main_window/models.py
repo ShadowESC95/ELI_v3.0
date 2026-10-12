@@ -260,6 +260,9 @@ class LocalModelManager:
                     f"this runtime is CPU-only; 0 active)",
                 )
             print(f"   Batch size: {effective_n_batch}")
+            # the cache type that loads for what is stored: the fits below and llama.cpp get this
+            from eli.core.gguf_sizes import cache_setting as _cache_setting
+            cache_type_k, cache_type_v = _cache_setting(cache_type_k), _cache_setting(cache_type_v)
             if cache_type_k or cache_type_v:
                 print(f"   KV cache: K={cache_type_k or 'default'} V={cache_type_v or 'default'}")
             self.n_ctx = int(n_ctx)
@@ -753,6 +756,8 @@ class LocalModelManager:
                         _verdict, _why = _lp.probe_verdict(
                             str(path_obj), int(_cand["n_ctx"]),
                             int(_cand["n_gpu_layers"]), int(_cand["n_batch"]),
+                            cache_type_k=str(cache_type_k or ""),
+                            cache_type_v=str(cache_type_v or ""),
                         )
                     except Exception as _probe_err:
                         # The check itself is unavailable. That is not evidence
@@ -817,10 +822,9 @@ class LocalModelManager:
                     chat_format="chatml",
                     verbose=False,
                 )
-                if cache_type_k:
-                    llama_kwargs["cache_type_k"] = str(cache_type_k)
-                if cache_type_v:
-                    llama_kwargs["cache_type_v"] = str(cache_type_v)
+                from eli.core.gguf_sizes import llama_cache_args as _cache_args
+                _kv_args = _cache_args(cache_type_k, cache_type_v)
+                llama_kwargs.update(_kv_args)
                 # Capture llama.cpp's own log for this attempt: verbose=False
                 # silences it, and without it the only thing the user sees is
                 # the destructor's phantom "no attribute 'sampler'".
@@ -829,26 +833,40 @@ class LocalModelManager:
                     capture_llama_log as _cap_log,
                     explain_load_failure as _explain,
                     is_retryable_load_failure as _retryable,
+                    kv_cache_refused as _kv_refused,
+                    llama_accepts as _accepts,
                 )
                 _harden()
 
                 def _build_llama(kw):
                     if not _moe_gui or _cand_gpu_layers <= 0:
-                        return Llama(**kw)
+                        return Llama(**_accepts(Llama, kw))
                     from eli.core import moe_offload as _moe_offload_gui2
                     kw = dict(kw, n_gpu_layers=_moe_offload_gui2.full_offload_layers(
                         kw["n_gpu_layers"], kw.get("model_path")))
                     with _moe_offload_gui2.expert_offload_params():
-                        return Llama(**kw)
+                        return Llama(**_accepts(Llama, kw))
 
                 _attempt_log: list = []
                 try:
-                    with _cap_log() as _attempt_log:
-                        try:
+                    try:
+                        with _cap_log() as _attempt_log:
                             self.model = _build_llama(llama_kwargs)
-                        except TypeError:
-                            llama_kwargs.pop("cache_type_k", None)
-                            llama_kwargs.pop("cache_type_v", None)
+                    except Exception:
+                        # llama.cpp refused the quantized KV cache (it needs flash attention,
+                        # which this backend or build lacks): the same candidate with the
+                        # default cache, and no later candidate asks for it again.
+                        if not (_kv_args and _kv_refused(_attempt_log)):
+                            raise
+                        log.warning("[GUI][LOAD] llama.cpp refused a %s KV cache here (it needs "
+                                    "flash attention); loading with the default cache instead",
+                                    cache_type_k or cache_type_v)
+                        for _kv_name in _kv_args:
+                            llama_kwargs.pop(_kv_name, None)
+                        cache_type_k = cache_type_v = ""
+                        self.model = None
+                        gc.collect()
+                        with _cap_log() as _attempt_log:
                             self.model = _build_llama(llama_kwargs)
                     _applied = dict(_cand)
                     _applied["n_gpu_layers"] = _cand_gpu_layers
@@ -857,8 +875,11 @@ class LocalModelManager:
                     _applied["moe_experts_gb"] = (_moe_gui or {}).get("experts_gb") if _moe_gui else None
                     try:
                         # llama.cpp's own KV size for this model replaces the estimate from its header
-                        from eli.core.gguf_sizes import record_load_report
+                        from eli.core.gguf_sizes import record_load_report, loaded_cache_types
                         record_load_report(path_obj, _attempt_log)
+                        _kv_loaded = loaded_cache_types(_attempt_log)
+                        if _kv_loaded:
+                            _applied["cache_type_k"], _applied["cache_type_v"] = _kv_loaded
                     except Exception:
                         log.debug("[GUI][LOAD] KV report not recorded", exc_info=True)
                     break
@@ -926,6 +947,9 @@ class LocalModelManager:
                     "n_threads": int(self.n_threads),
                     "n_batch": int(self.n_batch),
                     "requested_n_gpu_layers": int(requested_n_gpu_layers),
+                    # the cache llama.cpp says it made; what was asked for when it did not say
+                    "cache_type_k": _applied.get("cache_type_k") or str(cache_type_k or "f16"),
+                    "cache_type_v": _applied.get("cache_type_v") or str(cache_type_v or cache_type_k or "f16"),
                     "gpu_offload_supported": gpu_offload_supported,
                     "load_mode": "GPU" if int(self.n_gpu_layers) > 0 else "CPU",
                     "moe_expert_offload": bool(_moe_gui),
