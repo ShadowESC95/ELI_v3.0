@@ -61,6 +61,17 @@ def test_a_new_install_takes_the_python_most_packages_come_ready_made_for_and_ne
     assert eli_env.prefer(on_offer, gaps) == chosen
 
 
+def test_an_unfinished_python_is_taken_only_when_there_is_no_finished_one():
+    """With PyPI unreachable nothing is measured and the newest wins: an alpha of the next
+    Python, installed beside a finished one, was the newest."""
+    preview = {(3, 15)}
+    assert eli_env.prefer([(3, 14), (3, 15)], None, preview) == (3, 14)
+    assert eli_env.prefer([(3, 14), (3, 15)], {(3, 14): ["numpy"], (3, 15): []}, preview) == (3, 14)
+    assert eli_env.prefer([(3, 15)], None, preview) == (3, 15)             # the only one there is
+    assert eli_env._is_final(sys.executable) == (sys.version_info.releaselevel == "final")
+    assert eli_env._is_final("/no/such/python") is False
+
+
 def test_the_floor_is_the_one_pyproject_declares():
     assert eli_env.declared_minimum(str(ROOT)) == eli_env.MINIMUM
 
@@ -550,6 +561,21 @@ def test_an_environment_with_eli_and_what_it_needs_passes(project):
     _dist(project, "eli-test.0", ["the-one-it-needs>=1", 'only-for-a-feature>=1; extra == "full"'])
     _dist(project, "the-one-it-needs", [])
     assert eli_env.verify(str(project))["ok"]
+
+
+def test_packages_built_for_one_another_at_other_versions_are_named(project):
+    """Every fresh install had this: the newest Qt was installed with its add-on packages, then
+    the locked Qt replaced it and the add-ons stayed, built for a Qt no longer there."""
+    _dist(project, "eli-test.0", [])
+    _dist(project, "toolkit", [])                                        # 1.0 is installed
+    _dist(project, "toolkit-addon", ["toolkit==2.0"])                    # left behind by a 2.0
+    _dist(project, "toolkit-other", ["toolkit (==1.0.0)", 'toolkit==9; sys_platform == "no-such-system"'])
+    got = eli_env.verify(str(project))
+    assert got["ok"], "ELI runs; this is said, not fatal"
+    assert got["mismatched"] == ["toolkit-addon 1.0 is built for toolkit 2.0; 1.0 is installed"]
+    assert "toolkit-addon" in got["say"] and ".venv" in got["say"]
+    assert eli_env.main(["eli_env.py", "verify", str(project)]) == 0
+    assert eli_env.main(["eli_env.py", "verify", str(project), "--strict"]) == 8
 
 
 def test_verify_reports_by_exit_status(project):

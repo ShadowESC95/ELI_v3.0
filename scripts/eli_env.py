@@ -15,7 +15,10 @@ installer can find.
     eli_env.py create [ROOT]        make ROOT/.venv on the Python running this, or say what is missing
     eli_env.py install-each ROOT FILE [pip options]
                                     install FILE's requirements one at a time; name the ones that fail
-    eli_env.py verify [ROOT]        exit 0 when ELI and everything it cannot run without are installed
+    eli_env.py verify [ROOT] [--strict]
+                                    exit 0 when ELI and everything it cannot run without are installed;
+                                    with --strict, exit 8 when packages there were built for one another
+                                    at other versions
 
 Why this exists: a virtual environment is tied to the interpreter it was made with. When an
 operating-system upgrade replaces that interpreter (Ubuntu 24.04 -> 26.04 swaps 3.12 for
@@ -80,6 +83,17 @@ def _version_of(python: str) -> Optional[Tuple[int, int]]:
     if out.returncode != 0 or len(parts) != 2 or not all(p.isdigit() for p in parts):
         return None
     return int(parts[0]), int(parts[1])
+
+
+def _is_final(python: str) -> bool:
+    """Whether an interpreter is a finished release, by asking it. An alpha, beta or release
+    candidate of the next Python has few ready-made packages and can still change under them."""
+    try:
+        out = subprocess.run([python, "-c", "import sys; print(sys.version_info[3])"],
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and (out.stdout or "").strip() == "final"
 
 
 def _real_executable(python: str) -> Optional[str]:
@@ -159,13 +173,16 @@ def _candidates(minor: Optional[Tuple[int, int]] = None) -> List[str]:
 
 
 def prefer(versions: Iterable[Tuple[int, int]],
-           gaps: Optional[Dict[Tuple[int, int], List[str]]] = None) -> Optional[Tuple[int, int]]:
+           gaps: Optional[Dict[Tuple[int, int], List[str]]] = None,
+           unfinished: Iterable[Tuple[int, int]] = ()) -> Optional[Tuple[int, int]]:
     """Of the versions on offer, the one with the fewest `gaps` (wheel_gaps), newest first on a tie.
-    None when none will do."""
+    A version only installed as an `unfinished` release (alpha, beta, candidate) is taken when
+    there is no finished one. None when none will do."""
     on_offer = {v for v in versions if v and v >= MINIMUM}
     if not on_offer:
         return None
-    return min(on_offer, key=lambda v: (len((gaps or {}).get(v, [])), -v[0], -v[1]))
+    not_yet = set(unfinished)
+    return min(on_offer, key=lambda v: (v in not_yet, len((gaps or {}).get(v, [])), -v[0], -v[1]))
 
 
 # ── which Pythons the locked packages come ready-made for ─────────────────────
@@ -325,13 +342,18 @@ def wheel_gaps(versions: Iterable[Tuple[int, int]], root: str = ROOT) -> Optiona
 def pick_python(root: str = ROOT) -> Optional[str]:
     """The installed interpreter the most locked packages come ready-made for, newest on a tie."""
     by_version: Dict[Tuple[int, int], str] = {}
+    unfinished = set()
     for path in _candidates():
         version = _version_of(path)
-        if version and version not in by_version:
+        if not version or (version in by_version and version not in unfinished):
+            continue
+        final = _is_final(path)
+        if version not in by_version or final:      # a finished install of a version replaces a preview of it
             by_version[version] = path
+            (unfinished.discard if final else unfinished.add)(version)
     usable = sorted(v for v in by_version if v >= MINIMUM)
     gaps = wheel_gaps(usable, root) if len(usable) > 1 else None
-    best = prefer(by_version, gaps)
+    best = prefer(by_version, gaps, unfinished)
     if gaps and best:
         for v in sorted(gaps, reverse=True):
             missing = gaps[v]
@@ -698,6 +720,37 @@ for text in declared:
         metadata.version(dist)
     except metadata.PackageNotFoundError:
         out["missing"].append(dist)
+
+# A package that names one exact version of another was built for it. When the two disagree the
+# environment holds parts of two builds: installing the newest of everything and then the locked
+# versions left Qt add-ons of the newer release beside the older Qt.
+def release(version):
+    parts = re.findall(r"\d+|[a-z]+", version.split("+")[0].lower())
+    while len(parts) > 1 and parts[-1] == "0":
+        parts.pop()
+    return parts
+PIN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*\(?\s*==\s*([A-Za-z0-9][A-Za-z0-9.+!_-]*)\s*\)?\s*$")
+out["mismatched"] = []
+for dist in metadata.distributions():
+    for text in dist.requires or []:
+        need, _, marker = text.partition(";")
+        if marker.strip():
+            try:
+                if not Requirement(text).marker.evaluate({"extra": ""}):
+                    continue
+            except Exception:
+                continue                           # cannot tell whether it applies here
+        pin = PIN.match(need)
+        if not pin:
+            continue
+        try:
+            have = metadata.version(pin.group(1))
+        except Exception:
+            continue
+        if release(have) != release(pin.group(2)):
+            out["mismatched"].append("%s %s is built for %s %s; %s is installed" % (
+                dist.metadata["Name"], dist.version, pin.group(1), pin.group(2), have))
+out["mismatched"] = sorted(set(out["mismatched"]))
 print(json.dumps(out))
 """
 
@@ -729,12 +782,19 @@ def verify(root: str) -> Dict[str, object]:
     if seen["missing"]:
         return {"ok": False, "missing": seen["missing"],
                 "say": "ELI is installed without packages it cannot run without: %s." % ", ".join(seen["missing"])}
-    return {"ok": True, "say": "ELI and everything it needs to run are installed."}
+    say = "ELI and everything it needs to run are installed."
+    mismatched = seen.get("mismatched") or []
+    if mismatched:
+        say += ("\nPackages here were built for one another at other versions (%s). The environment "
+                "holds parts of two builds; making it again gives one: remove %s and run the installer."
+                % ("; ".join(mismatched), venv_dir(root)))
+    return {"ok": True, "say": say, "mismatched": mismatched}
 
 
 def main(argv: List[str]) -> int:
     command = argv[1] if len(argv) > 1 else "status"
-    root = argv[2] if len(argv) > 2 and command != "torch-index" else ROOT
+    named = [a for a in argv[2:3] if not a.startswith("--")]
+    root = named[0] if named and command != "torch-index" else ROOT
     if command == "pick":
         python = pick_python(root)
         if not python:
@@ -786,7 +846,9 @@ def main(argv: List[str]) -> int:
     if command == "verify":
         got = verify(root)
         print(got["say"])
-        return 0 if got["ok"] else 7
+        if not got["ok"]:
+            return 7
+        return 8 if got.get("mismatched") and "--strict" in argv else 0
     print(__doc__)
     return 2
 

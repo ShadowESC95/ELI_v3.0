@@ -40,7 +40,7 @@ pdf() { # pdf <out.pdf> <title> <src.md...>
   for f in "$@"; do [ -f "$f" ] || { echo "missing source: $f" >&2; exit 1; }; done
   pandoc "$@" -o "$out" \
     --pdf-engine=xelatex \
-    "${TITLE_ARGS[@]}" \
+    ${TITLE_ARGS[@]+"${TITLE_ARGS[@]}"} \
     -V geometry:margin=0.9in -V fontsize=10pt -V documentclass=article \
     -V colorlinks=true -V linkcolor=blue -V urlcolor=blue \
     --toc --toc-depth=2 \
@@ -69,8 +69,8 @@ FULL_SOURCES=(
   capabilities_and_actions.md
 )
 FULL_PATHS=()
-for f in "${FULL_SOURCES[@]}"; do
+for f in ${FULL_SOURCES[@]+"${FULL_SOURCES[@]}"}; do
   if [ -f "$BP/$f" ]; then FULL_PATHS+=("$BP/$f"); else echo "[WARN] FULL manual source missing: $f" >&2; fi
 done
 [ "${#FULL_PATHS[@]}" -ge 10 ] || { echo "too few FULL-manual sources present (${#FULL_PATHS[@]})" >&2; exit 1; }
-pdf "$BP/ELI_USER_MANUAL_FULL.pdf" "ELI — Complete Technical Manual" "${FULL_PATHS[@]}"
+pdf "$BP/ELI_USER_MANUAL_FULL.pdf" "ELI — Complete Technical Manual" ${FULL_PATHS[@]+"${FULL_PATHS[@]}"}

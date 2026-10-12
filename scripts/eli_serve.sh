@@ -105,4 +105,4 @@ if [ "$_need_voice" -eq 1 ]; then
   fi
 fi
 
-exec "$PY" -m api.server "${SERVER_ARGS[@]}"
+exec "$PY" -m api.server ${SERVER_ARGS[@]+"${SERVER_ARGS[@]}"}

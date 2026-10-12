@@ -31,7 +31,7 @@ echo "[fix-shell] checkout: $ROOT"
 
 # 1) Install ~/.local/bin/eli → this checkout's eli.sh (clears stale env inside).
 INSTALL_ARGS=(--force --name eli)
-bash "$ROOT/scripts/install_eli_command.sh" "${INSTALL_ARGS[@]}"
+bash "$ROOT/scripts/install_eli_command.sh" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 
 # 2) Optional second name so v2 and v3 can coexist.
 bash "$ROOT/scripts/install_eli_command.sh" --force --name eli3

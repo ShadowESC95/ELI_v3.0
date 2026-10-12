@@ -55,7 +55,7 @@ case "${1:-}" in
         fi
         # Drop the symlinks before deletion so nothing can walk into the shared
         # .venv / models / tts_piper and delete the originals.
-        for d in "${SHARED[@]}"; do [ -L "$target/$d" ] && rm -f "$target/$d"; done
+        for d in ${SHARED[@]+"${SHARED[@]}"}; do [ -L "$target/$d" ] && rm -f "$target/$d"; done
         git -C "$ROOT" worktree remove ${force:+$force} "$target" \
             || die "git refused to remove $target"
         echo "[worktree] removed $target"
@@ -81,7 +81,7 @@ git -C "$ROOT" show-ref --verify --quiet "refs/heads/$BRANCH" \
 echo "[worktree] creating $TARGET on branch $BRANCH (from $BASE)"
 git -C "$ROOT" worktree add -b "$BRANCH" "$TARGET" "$BASE" >/dev/null
 
-for d in "${SHARED[@]}"; do
+for d in ${SHARED[@]+"${SHARED[@]}"}; do
     if [ -e "$ROOT/$d" ]; then
         ln -s "$ROOT/$d" "$TARGET/$d"
         echo "[worktree]   linked  $d -> $ROOT/$d"
@@ -90,7 +90,7 @@ for d in "${SHARED[@]}"; do
     fi
 done
 
-for d in "${PRIVATE[@]}"; do
+for d in ${PRIVATE[@]+"${PRIVATE[@]}"}; do
     mkdir -p "$TARGET/$d"
     echo "[worktree]   private $d (own copy — databases must not be shared)"
 done
@@ -114,8 +114,8 @@ cat <<EOF
     .venv/bin/python -m pytest tests/ -q
 
   Branch  : $BRANCH
-  Shares  : ${SHARED[*]}  (symlinked, gitignored — never committed)
-  Own copy: ${PRIVATE[*]}
+  Shares  : ${SHARED[*]-}  (symlinked, gitignored — never committed)
+  Own copy: ${PRIVATE[*]-}
   Remove  : scripts/new_worktree.sh --remove $NAME
 
   Point one session at this directory and the other at $ROOT; neither can
