@@ -21,7 +21,7 @@ Flags:
                    exit. Distinct from --license-status, which reports this
                    install's ACTIVATION state; this prints the TERMS.
   --bundles        List the bundles installed (separate ELI applications such as
-                   ELI Legal that run on ELI v3's core).
+                   ELI Legal and ELI VR that run on ELI v3's core).
   --bundle <id>    Open that bundle in its own window instead of ELI v3's.
   --choose         Ask at start-up whether to open ELI v3 or a bundle, even if a
                    choice was remembered. --no-bundles skips the question.
@@ -113,7 +113,8 @@ def main() -> int:
         logging.getLogger("eli.boot").debug("boot bootstrap skipped", exc_info=True)
 
     # ── Bundles: a separate ELI application in place of ELI v3's window ──────
-    # `eli --bundles` lists them; `eli --bundle legal` opens ELI Legal on ELI v3's core.
+    # `eli --bundles` lists them; `eli --bundle legal` opens ELI Legal on ELI v3's core,
+    # `eli --bundle vr` ELI VR.
     if "--bundles" in args:
         from eli.bundles import discover, entitled
 

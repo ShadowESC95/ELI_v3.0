@@ -1,8 +1,8 @@
 """Bundles: separate ELI applications that run on ELI v3's core in their own window.
 
-A bundle is a specialised product (ELI Legal now; ELI VR, Healthcare, Finance and others to come)
-that has its own window and its own rules, and uses parts of ELI v3: its local model runtime in
-particular. ELI v3 can start one *instead of* its full window, at start-up or with
+A bundle is a specialised product (ELI Legal and ELI VR now; Healthcare, Finance and others to
+come) that has its own window and its own rules, and uses parts of ELI v3: its local model runtime
+in particular. ELI v3 can start one *instead of* its full window, at start-up or with
 ``eli --bundle <id>``, or alongside it from the Bundles menu.
 
 Two ways a bundle makes itself known, and nothing else is ever loaded:
@@ -18,6 +18,10 @@ Two ways a bundle makes itself known, and nothing else is ever loaded:
 ``ELI_EXTRA_BUNDLES`` (``module:attr`` entries, separated by commas) adds in-process bundles from
 a source checkout that is on the path but not installed, for development.
 
+A bundle that is not a Python program reaches the core over ELI's local server. It asks for it
+with ``"needs": ["server"]`` and ELI has the server answering before the bundle starts (see
+``eli.bundles.core_server``).
+
 Licensing: a bundle names the edition it belongs to. Whether a licence entitles it is decided by
 ``entitled``, the same seam as ``eli.editions.active_editions``; until licences carry editions it
 allows every bundle, and says so.
@@ -25,13 +29,14 @@ allows every bundle, and says so.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import logging
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -219,6 +224,23 @@ def _host() -> dict[str, Any]:
     }
 
 
+def _needs_server(bundle: Bundle) -> bool:
+    return "server" in (bundle.extra.get("needs") or ())
+
+
+@contextlib.contextmanager
+def _core(bundle: Bundle) -> Iterator[int | None]:
+    """What the bundle asked of ELI's core, for as long as it runs: the port of ELI's local
+    server, or None when it asked for nothing or the server could not be had."""
+    if not _needs_server(bundle):
+        yield None
+        return
+    from eli.bundles import core_server
+
+    with core_server.serving() as port:
+        yield port
+
+
 def launch(bundle_id: str, argv: list[str] | None = None) -> int:
     """Start a bundle in this process, in place of ELI v3's own window. An external bundle is
     started as its own program and this process waits for it."""
@@ -233,11 +255,20 @@ def launch(bundle_id: str, argv: list[str] | None = None) -> int:
         print(f"{bundle.title} is not included in this licence: {why}", file=sys.stderr)
         return 3
     log.info("starting bundle %s (%s) from %s", bundle.id, bundle.kind, bundle.origin)
-    if bundle.kind == "external":
-        return subprocess.call([*bundle.command, *(argv or [])])
-    module, _, attr = bundle.launch.partition(":")
-    run: Callable[..., Any] = getattr(importlib.import_module(module), attr)
-    return int(run(list(argv or []), host=_host()) or 0)
+    with _core(bundle) as port:
+        if bundle.kind == "external":
+            command = [*bundle.command, *(argv or [])]
+            if port is None:
+                return subprocess.call(command)
+            return subprocess.call(
+                command, env={**os.environ, "ELI_API_PORT": str(port)}
+            )
+        module, _, attr = bundle.launch.partition(":")
+        run: Callable[..., Any] = getattr(importlib.import_module(module), attr)
+        host = _host()
+        if port is not None:
+            host["api_port"] = port
+        return int(run(list(argv or []), host=host) or 0)
 
 
 def spawn(bundle_id: str) -> subprocess.Popen:
@@ -247,9 +278,9 @@ def spawn(bundle_id: str) -> subprocess.Popen:
     ok, why = entitled(bundle)
     if not ok:
         raise PermissionError(why)
-    if bundle.kind == "external":
+    if bundle.kind == "external" and not _needs_server(bundle):
         command = list(bundle.command)
-    elif getattr(sys, "frozen", False):
+    elif getattr(sys, "frozen", False):  # through launch(), which brings what it needs
         command = [sys.executable, "--bundle", bundle.id]
     else:
         command = [sys.executable, "-m", "eli", "--bundle", bundle.id]

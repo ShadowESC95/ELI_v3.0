@@ -1,7 +1,7 @@
 """ELI editions — the productization layer (shared core + composable edition packs).
 
 ELI ships as one maintained core plus small, domain-specialised *edition packs*
-(general, research, healthcare, legal, coding, content, enterprise). This is the
+(general, research, healthcare, legal, coding, content, vr, enterprise). This is the
 "shared core + edition packs" model: core bugfixes happen once; editions diverge
 only in the capabilities / personas / templates / policy they add on top.
 

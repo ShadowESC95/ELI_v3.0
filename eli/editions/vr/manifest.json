@@ -1,0 +1,20 @@
+{
+  "edition": "vr",
+  "label": "ELI VR",
+  "status": "scaffold",
+  "summary": "ELI's rooms as places to stand in, in a headset or on a monitor, with ELI present and spoken to there.",
+  "default_persona": "spatial_companion",
+  "adds_capability_categories": [
+    "spatial-presence",
+    "world-objects",
+    "room-building"
+  ],
+  "report_templates": [],
+  "policy_module": "eli.editions.vr.policy",
+  "requires_core": ">=3.0.131",
+  "suggested_tiers": [
+    "personal",
+    "pro",
+    "enterprise"
+  ]
+}

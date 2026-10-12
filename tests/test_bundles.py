@@ -7,7 +7,7 @@ import textwrap
 import pytest
 
 from eli import bundles
-from eli.bundles import Bundle, chooser
+from eli.bundles import Bundle, chooser, core_server
 
 
 @pytest.fixture
@@ -142,3 +142,146 @@ def test_the_start_up_choice_follows_what_was_remembered(monkeypatch):
         lambda b: pytest.fail("no question when nothing is installed"),
     )
     assert chooser.target_at_startup([]) is None
+
+
+def _served_on(monkeypatch, port):
+    """ELI's local server, as far as bundles can tell: answering on this port, or absent."""
+    import contextlib
+
+    asked = []
+
+    @contextlib.contextmanager
+    def serving():
+        asked.append(1)
+        yield port
+
+    monkeypatch.setattr(core_server, "serving", serving)
+    return asked
+
+
+def test_a_program_that_needs_the_server_is_started_with_it_and_told_the_port(
+    isolated, monkeypatch
+):
+    program = isolated / "eli-rooms"
+    program.write_text("#!/bin/sh\nexit 0\n")
+    registry = isolated / "registry"
+    registry.mkdir()
+    (registry / "rooms.json").write_text(
+        json.dumps({"id": "rooms", "command": [str(program)], "needs": ["server"]})
+    )
+    (registry / "plain.json").write_text(
+        json.dumps({"id": "plain", "command": [str(program)]})
+    )
+    asked = _served_on(monkeypatch, 18999)
+    ran = []
+    monkeypatch.setattr(
+        bundles.subprocess,
+        "call",
+        lambda cmd, env=None: ran.append((cmd, (env or {}).get("ELI_API_PORT"))) or 0,
+    )
+    assert bundles.launch("rooms", ["--flat"]) == 0
+    assert ran == [([str(program), "--flat"], "18999")] and asked == [1]
+    assert bundles.launch("plain") == 0
+    assert ran[-1] == ([str(program)], None) and asked == [1], (
+        "a bundle that did not ask never starts the server"
+    )
+
+
+def test_an_installed_bundle_that_needs_the_server_is_handed_the_port(
+    isolated, monkeypatch
+):
+    _fake_package(
+        isolated,
+        monkeypatch,
+        """
+        SEEN = []
+        def describe():
+            return {"id": "rooms", "launch": "fakebundle:launch", "needs": ["server"]}
+        def launch(argv, *, host):
+            SEEN.append(host.get("api_port"))
+            return 0
+    """,
+    )
+    _served_on(monkeypatch, 18999)
+    assert bundles.launch("rooms") == 0
+    import fakebundle
+
+    assert fakebundle.SEEN == [18999]
+    _served_on(monkeypatch, None)
+    assert bundles.launch("rooms") == 0 and fakebundle.SEEN == [18999, None], (
+        "with no server to be had the bundle still opens"
+    )
+
+
+def test_beside_a_running_eli_such_a_bundle_goes_through_launch(isolated, monkeypatch):
+    program = isolated / "eli-rooms"
+    program.write_text("")
+    registry = isolated / "registry"
+    registry.mkdir()
+    for name, extra in (("rooms", {"needs": ["server"]}), ("plain", {})):
+        (registry / f"{name}.json").write_text(
+            json.dumps({"id": name, "command": [str(program)], **extra})
+        )
+    started = []
+    monkeypatch.setattr(
+        bundles.subprocess, "Popen", lambda cmd, **kw: started.append(cmd)
+    )
+    bundles.spawn("plain")
+    bundles.spawn("rooms")
+    assert started[0] == [str(program)]
+    assert started[1][-2:] == ["--bundle", "rooms"]
+
+
+def test_the_server_already_running_is_used_and_left_alone(monkeypatch):
+    from eli.runtime import server_util
+
+    monkeypatch.setattr(server_util, "effective_api_port", lambda: 18999)
+    monkeypatch.setattr(core_server, "running", lambda port: True)
+    monkeypatch.setattr(
+        core_server, "_start", lambda port: pytest.fail("one is already answering")
+    )
+    with core_server.serving() as port:
+        assert port == 18999
+
+
+def test_a_server_started_for_a_bundle_is_stopped_when_it_closes(monkeypatch):
+    from eli.runtime import server_util
+
+    class Server:
+        should_exit = False
+
+    server = Server()
+    up = []
+    monkeypatch.setattr(server_util, "effective_api_port", lambda: 18999)
+    monkeypatch.setattr(server_util, "port_in_use", lambda port: False)
+    monkeypatch.setattr(core_server, "running", lambda port: bool(up))
+    monkeypatch.setattr(core_server, "_start", lambda port: up.append(port) or server)
+    with core_server.serving() as port:
+        assert port == 18999 and up == [18999] and not server.should_exit
+    assert server.should_exit
+
+
+def test_a_port_held_by_another_program_is_not_taken_for_eli(monkeypatch):
+    from eli.runtime import server_util
+
+    monkeypatch.setattr(server_util, "effective_api_port", lambda: 18999)
+    monkeypatch.setattr(server_util, "port_in_use", lambda port: True)
+    monkeypatch.setattr(core_server, "running", lambda port: False)
+    monkeypatch.setattr(
+        core_server, "_start", lambda port: pytest.fail("the port is not free")
+    )
+    with core_server.serving() as port:
+        assert port is None
+
+
+def test_eli_vr_has_an_edition_pack_like_the_others():
+    from eli.editions import discover_editions
+
+    packs = discover_editions()
+    assert {"legal", "vr"} <= set(packs)
+    vr = packs["vr"]
+    assert vr.label == "ELI VR" and vr.policy_module == "eli.editions.vr.policy"
+    import importlib
+
+    policy = importlib.import_module(vr.policy_module)
+    assert policy.blocked_actions() == set() and policy.output_disclaimer() is None

@@ -1,6 +1,6 @@
 # ELI Editions — shared core + composable edition packs
 
-ELI is sold as a **family of domain editions on one maintained core**, not seven
+ELI is sold as a **family of domain editions on one maintained core**, not eight
 forked codebases. This directory is the productization layer.
 
 ```
@@ -15,6 +15,7 @@ eli/
     legal/                    # contract/clause drafting (NOT legal advice)
     coding/                   # repo-scale coding agent, test-gen, IDE
     content/                  # copywriting, social, brand voice, image-gen
+    vr/                       # ELI's rooms in a headset; ELI VR is the application
     enterprise/               # all editions + RBAC / audit / fleet admin
 ```
 
@@ -23,7 +24,7 @@ eli/
 | Axis | Values | Lives in | Governs |
 |---|---|---|---|
 | **Licence tier** | trial · personal · pro · enterprise | `eli/licensing` | seats, commercial rights, support, updates |
-| **Edition** | general · research · healthcare · legal · coding · content · enterprise | `eli/editions` | which domain capability pack(s) light up |
+| **Edition** | general · research · healthcare · legal · coding · content · vr · enterprise | `eli/editions` | which domain capability pack(s) light up |
 
 A signed licence carries a **tier** and entitles **one or more editions**. e.g.
 "ELI Research, Pro" = research edition + 3-seat commercial licence.
@@ -45,7 +46,7 @@ Every pack is the same shape (copy `base/` to start a new one):
 
 The core knows **nothing** domain-specific. It calls `policy.py` hooks and reads
 `manifest.json`; the pack supplies the divergence. That is why one core can serve
-seven products without seven maintenance burdens.
+eight products without eight maintenance burdens.
 
 ## How activation will work
 

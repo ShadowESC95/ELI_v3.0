@@ -58,8 +58,8 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 | `eli/system` | 1,400 | 3 | Portable app control, process guard |
 | `eli/contracts` | 788 | 3 | Typed runtime-status contracts |
 | `eli/onboarding` | 709 | 2 | Onboarding interview |
-| `eli/bundles` | 367 | 2 | Bundles: separate ELI applications (ELI Legal first) found and opened on ELI v3's core |
-| `eli/editions` | 343 | 29 | Edition packs (base, coding, content, enterprise, healthcare) |
+| `eli/bundles` | 473 | 3 | Bundles: separate ELI applications (ELI Legal, ELI VR) found and opened on ELI v3's core, with its local server for the ones that need it |
+| `eli/editions` | 380 | 33 | Edition packs (base, coding, content, enterprise, healthcare, legal, research, vr) |
 | `eli/cli`, `eli/scripts`, top level | 431 | 6 | Headless REPL, package entry |
 | **total** | **223,220** | **626** | |
 
