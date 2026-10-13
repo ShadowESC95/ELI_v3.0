@@ -91,6 +91,12 @@ TUNABLES: List[Tunable] = [
             "Characters of knowledge-graph facts placed into the prompt.",
             2200, 0, 8000, 100, "Knowledge graph"),
 
+    # ── Files and folders named in a message ───────────────────────────────
+    Tunable("cog.named_paths_chars", "Named folders · listing (characters)",
+            "Characters of folder listing placed into the prompt when a message names "
+            "a file or folder by its path. 0 leaves the listing out.",
+            1800, 0, 12000, 100, "Knowledge gathering"),
+
     # ── Retrieval pipeline (full 12-stage, standard mode) ───────────────────
     Tunable("cog.orch_keyword_limit", "Pipeline · keyword search limit",
             "FTS5 keyword hits retrieved in the full pipeline (standard mode).",
@@ -204,7 +210,7 @@ _GATHER_COUNT_KEYS = (
     "cog.mem_conv_recall", "cog.mem_conv_shown",
     "cog.mem_recent_turns", "cog.mem_summaries_recall",
     "cog.mem_summaries_shown", "cog.mem_hop2_recall", "cog.mem_merge_cap",
-    "cog.kg_max_chars", "cog.orch_keyword_limit", "cog.orch_semantic_limit",
+    "cog.kg_max_chars", "cog.named_paths_chars", "cog.orch_keyword_limit", "cog.orch_semantic_limit",
     "cog.orch_rag_limit", "cog.rerank_top_k", "cog.personal_facts_max",
 )
 
