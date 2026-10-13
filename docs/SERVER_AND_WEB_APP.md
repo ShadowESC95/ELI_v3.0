@@ -18,9 +18,7 @@ your own LAN.
 ## 1. What you get
 - A **chat UI** at `/` — open the host in any browser and talk to ELI.
 - A **REST API**: `POST /v1/chat`, `POST /v1/execute`, `GET /v1/status/{user_id}`, `GET /health`.
-- A **world feed** for spatial clients such as ELI VR: `GET /v1/world/state`, `WS /v1/world/ws`
-  (the same message again whenever it changes) and `POST /v1/world/event`. It carries ELI's room,
-  avatar state, awareness and world objects, and nothing from the logs. Code: `eli/world/spatial_feed.py`.
+- The **world protocol** for clients that give ELI a body, such as ELI VR: his room, avatar, awareness and objects (`GET /v1/world/state`, `WS /v1/world/ws`), with versions agreed on connecting; and in version 2 the scene the user is in, sentences from inside the world, and ELI building in his rooms (`/v1/world/scene`, `/say`, `/edit`, `/compose`, `/undo`). See [EMBODIMENT.md](EMBODIMENT.md).
 - **Auto API docs** at `/docs` (OpenAPI/Swagger).
 - **Inference on the host** — the phone is just a thin client; your GPU/CPU does the work.
 

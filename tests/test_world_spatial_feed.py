@@ -95,19 +95,110 @@ def test_a_long_summary_is_cut_to_a_status_line(monkeypatch):
     assert len(fired[0][2]) == 200
 
 
+# ── versions ─────────────────────────────────────────────────────────────────
+
+def test_a_client_is_welcomed_at_the_newest_version_both_speak():
+    answer = spatial_feed.negotiate({"type": "hello", "protocol_versions": [1, 2, 7],
+                                     "capabilities": ["say", "building", "telepathy"]})
+    assert answer["type"] == "welcome" and answer["version"] == 2
+    assert "building" in answer["capabilities"] and answer["missing"] == ["telepathy"]
+    old = spatial_feed.negotiate({"protocol_versions": [1]})
+    assert old["version"] == 1 and "building" not in old["capabilities"]
+
+
+def test_a_client_from_another_age_is_refused_with_the_reason():
+    for offered, said in (([7, 8], "7, 8"), ([], "none"), ("two", "none")):
+        answer = spatial_feed.negotiate({"protocol_versions": offered})
+        assert answer["type"] == "incompatible"
+        assert answer["reason"] == f"This ELI speaks world protocol 1, 2; the client offered {said}."
+        assert answer["server_versions"] == [1, 2]
+
+
+def test_what_this_eli_speaks_can_be_asked():
+    said = spatial_feed.protocol()
+    assert said["versions"] == [1, 2] and "building" in said["capabilities"]["2"]
+    assert said["server"].startswith("ELI v3")
+
+
+def test_version_one_is_exactly_what_it_always_was():
+    msg = spatial_feed.spatial_state(WORLD)
+    assert set(msg) == {"type", "version", "room", "avatar", "awareness", "objects", "widgets", "timestamp"}
+    assert set(msg["objects"][0]) == {"id", "name", "kind", "room", "x", "y", "importance", "meaning"}
+
+
+def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
+    from eli.world import shown
+    # the clean lane installs only what the server needs; his memory may not import there
+    memory_module = pytest.importorskip("eli.memory.memory")
+    goal_store = pytest.importorskip("eli.planning.goal_store")
+
+    class Memory:
+        def get_recent_semantic_memories(self, limit=16):
+            return [{"id": 7, "text": "The user keeps their invoices by year, newest first."}, {"id": 8, "text": " "}]
+
+    reads = []
+    monkeypatch.setattr(memory_module, "get_memory", lambda: reads.append(1) or Memory())
+    monkeypatch.setattr(goal_store, "summarize_goals", lambda: {"titles": ["Learn the filing system"]})
+    shown.forget()
+    msg = spatial_feed.spatial_state(WORLD, version=2)
+    by_kind = {o["kind"]: o for o in msg["objects"]}
+    memory, goal = by_kind["memory"], by_kind["goal"]
+    assert memory["room"] == "memory_archive" and memory["name"] == "The user keeps their invoices"
+    assert memory["meaning"] == "The user keeps their invoices by year, newest first." and memory["form"]["shape"] == "orb"
+    assert goal["room"] == "upgrade_bay" and goal["name"] == "Learn the filing system" and goal["form"]["shape"] == "beacon"
+    assert memory["form"]["pos"] == shown.items()[0]["form"]["pos"], "a record keeps its place"
+    spatial_feed.spatial_state(WORLD, version=2)
+    assert reads == [1], "his records are not read again for every poll"
+    assert "memory" not in {o["kind"] for o in spatial_feed.spatial_state(WORLD)["objects"]}, "version 1 is as it was"
+    shown.forget()
+    monkeypatch.setattr(memory_module, "get_memory", lambda: (_ for _ in ()).throw(RuntimeError("no memory")))
+    assert {o["kind"] for o in shown.items()} == {"goal"}, "a source that cannot be read shows nothing of its own"
+    shown.forget()
+
+
+def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypatch):
+    from eli.world import shown
+    monkeypatch.setattr(shown, "items", lambda now=None: [])
+    world = {**WORLD,
+             "objects": {**WORLD["objects"], "lantern": {
+                 "object_id": "lantern", "name": "Lantern", "object_type": "built", "room": "own_room",
+                 "created_by": "eli", "symbolic_meaning": "a light left on",
+                 "metadata": {"form": {"shape": "lamp", "colour": "#f5b942", "size": 1.2, "glow": 0.8,
+                                       "pos": [1.0, 0.0, 3.0]}}}},
+             "spaces": {"own_room": {"name": "ELI's Room", "mood": {"sky": "dawn", "ground": "moss"}}},
+             "actions": [{"action_type": "avatar_move", "actor": "eli", "room": "own_room"},
+                         {"action_type": "create_object", "actor": "eli", "room": "own_room",
+                          "reason": "ELI chose to.", "permission_class": "world_safe"},
+                         {"action_type": "avatar_move", "actor": "eli", "room": "own_room"}]}
+    msg = spatial_feed.spatial_state(world, version=2)
+    assert msg["version"] == 2 and msg["own_room"] == "own_room"
+    by_id = {o["id"]: o for o in msg["objects"]}
+    assert by_id["lantern"]["form"] == {"shape": "lamp", "colour": "#f5b942", "size": 1.2, "glow": 0.8,
+                                        "pos": [1.0, 0.0, 3.0]}
+    assert by_id["lantern"]["made_by"] == "eli"
+    bench = by_id["bench"]["form"]                # made by the world, with no form of its own
+    assert bench["shape"] == "table" and len(bench["pos"]) == 3 and bench["size"] > 1.0
+    mood = msg["spaces"]["own_room"]["mood"]
+    assert (mood["sky"], mood["ground"], mood["light"]) == ("dawn", "moss", "#9fd8ff")
+    assert msg["recent"] == [{"what": "create_object", "who": "eli", "room": "own_room",
+                              "why": "ELI chose to.", "allowed": True}], "his walking about is left out"
+
+
 # ── the routes (clean lane only) ─────────────────────────────────────────────
 
-def _client(monkeypatch, *, ws_allowed=True, world=None):
+def _client(monkeypatch, *, ws_allowed=True, world=None, chat=None):
     try:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         app = FastAPI()
-        app.include_router(spatial_feed.build_router(lambda: None, lambda: None,
-                                                     lambda ws: ws_allowed))
+        app.include_router(spatial_feed.build_router(lambda: None, lambda: "the owner",
+                                                     lambda ws: ws_allowed, chat=chat))
         client = TestClient(app)
     except Exception as e:  # mocked pydantic under the suite conftest
         pytest.skip(f"fastapi not usable in-process ({type(e).__name__}); run with --noconftest")
     box = {"world": world or WORLD}
+    from eli.world import shown
+    monkeypatch.setattr(shown, "items", lambda now=None: [])     # the routes are tested on the world alone
     monkeypatch.setattr(spatial_feed, "_load_world", lambda: box["world"])
     monkeypatch.setattr(spatial_feed, "POLL_SECONDS", 0.05)
     return client, box
@@ -163,3 +254,129 @@ def test_socket_is_refused_when_the_gate_says_no(monkeypatch):
         with client.websocket_connect("/v1/world/ws"):
             pass
     assert closed.value.code == 4401
+
+
+
+def test_the_protocol_and_a_chosen_version_can_be_asked_over_http(monkeypatch):
+    client, _ = _client(monkeypatch)
+    assert client.get("/v1/world/protocol").json()["versions"] == [1, 2]
+    assert client.get("/v1/world/state").json()["version"] == 1
+    two = client.get("/v1/world/state", params={"version": 2}).json()
+    assert two["version"] == 2 and "form" in two["objects"][0] and "spaces" in two
+    refused = client.get("/v1/world/state", params={"version": 9})
+    assert refused.status_code == 400 and refused.json()["detail"]["kind"] == "incompatible"
+    assert "the client offered 9" in refused.json()["detail"]["detail"]
+
+
+def test_a_hello_is_answered_and_the_state_follows_in_the_version_agreed(monkeypatch):
+    client, _ = _client(monkeypatch)
+    with client.websocket_connect("/v1/world/ws") as ws:
+        assert ws.receive_json()["version"] == 1, "before any hello, a client is a version 1 client"
+        ws.send_json({"type": "hello", "protocol_versions": [1, 2], "capabilities": ["building"]})
+        welcome = ws.receive_json()
+        assert welcome["type"] == "welcome" and welcome["version"] == 2 and welcome["missing"] == []
+        state = ws.receive_json()
+        assert state["type"] == "eli_world_state" and state["version"] == 2 and "spaces" in state
+
+
+def test_a_client_that_cannot_be_spoken_to_is_told_and_the_socket_closes(monkeypatch):
+    client, _ = _client(monkeypatch)
+    from starlette.websockets import WebSocketDisconnect
+    with client.websocket_connect("/v1/world/ws") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "hello", "protocol_versions": [9]})
+        refusal = ws.receive_json()
+        assert refusal["type"] == "incompatible" and "the client offered 9" in refusal["reason"]
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+    assert closed.value.code == 4406
+
+
+def test_the_scene_is_taken_and_a_bad_one_refused_by_kind(monkeypatch):
+    client, _ = _client(monkeypatch)
+    from eli.world import embodiment
+    embodiment.forget()
+    ok = client.post("/v1/world/scene", json={"scene": {"surface": "eli_vr", "room": "workshop"}})
+    assert ok.status_code == 200 and embodiment.live()["room"] == "workshop"
+    bad = client.post("/v1/world/scene", json={"scene": {"seen_as": "x" * 5000}})
+    assert bad.status_code == 400 and bad.json()["detail"]["kind"] == "bad_request"
+    # leaving empties it
+    import eli.world.world_event_bus as bus
+    monkeypatch.setattr(bus, "fire_world_event", lambda *a: None)
+    client.post("/v1/world/event", json={"event_type": "vr_session_ended"})
+    assert embodiment.live() is None
+
+
+def test_a_sentence_is_a_turn_of_conversation_or_a_piece_of_building(monkeypatch):
+    turns = []
+
+    def chat(text, principal, session):
+        turns.append((text, principal, session))
+        return "  We are in orbit.  "
+
+    client, _ = _client(monkeypatch, chat=chat)
+    from eli.world import composer
+    built = []
+    monkeypatch.setattr(composer, "compose", lambda text, scene: built.append(text) or {
+        "kind": "build", "text": "There.", "results": [{"ok": True}], "refused": []})
+
+    talk = client.post("/v1/world/say", json={"text": "where are we?", "session_id": "s1"}).json()
+    assert talk == {"kind": "chat", "text": "We are in orbit.", "results": [], "refused": []}
+    assert turns == [("where are we?", "the owner", "s1")], "attributed to the owner, not to the client"
+
+    made = client.post("/v1/world/say", json={"text": "build a lamp over there"}).json()
+    assert made["kind"] == "build" and built == ["build a lamp over there"] and len(turns) == 1
+
+    assert client.post("/v1/world/say", json={"text": "   "}).json()["detail"]["kind"] == "bad_request"
+
+
+def test_failures_leave_by_kind_so_a_client_need_not_guess(monkeypatch):
+    client, _ = _client(monkeypatch, chat=lambda *a: (_ for _ in ()).throw(RuntimeError("engine down")))
+    from eli.world import composer
+
+    def no_model(*a):
+        raise composer.ComposeError("model_unavailable", "GGUF model not available")
+
+    monkeypatch.setattr(composer, "compose", no_model)
+    gone = client.post("/v1/world/say", json={"text": "build a lamp"})
+    assert gone.status_code == 503 and gone.json()["detail"] == {
+        "kind": "model_unavailable", "detail": "GGUF model not available"}
+    assert client.post("/v1/world/compose").status_code == 503
+    down = client.post("/v1/world/say", json={"text": "hello there"})
+    assert down.status_code == 500 and down.json()["detail"] == {"kind": "failed", "detail": "engine down"}
+
+
+def test_the_users_own_hands_and_undo_go_through_the_building(monkeypatch):
+    client, _ = _client(monkeypatch)
+    from eli.world import building
+    calls = []
+    monkeypatch.setattr(building, "apply", lambda edits, **kw: calls.append((edits, kw)) or {"ok": True})
+    assert client.post("/v1/world/edit", json={
+        "edits": [{"op": "move", "id": "lantern", "at": [1, 2]}], "room": "workshop"}).json() == {"ok": True}
+    assert client.post("/v1/world/undo").json() == {"ok": True}
+    (moved, how), (undone, by) = calls
+    assert moved == [{"op": "move", "id": "lantern", "at": [1, 2]}]
+    assert how["actor"] == "user" and how["default_room"] == "workshop"
+    assert undone == [{"op": "undo"}] and by["actor"] == "user"
+
+
+def test_his_mind_can_be_seen_and_chosen_and_a_wrong_name_is_refused(monkeypatch):
+    client, _ = _client(monkeypatch)
+    from eli.world import mind
+    monkeypatch.setattr(mind, "status", lambda: {"type": "eli_mind", "loaded": False, "model": "",
+                                                 "chosen": False, "models": [{"name": "A.gguf", "size_gb": 4.7}]})
+    assert client.get("/v1/world/mind").json()["models"] == [{"name": "A.gguf", "size_gb": 4.7}]
+    chosen = []
+
+    def choose(name):
+        if name != "A.gguf":
+            raise mind.MindError("unknown_model", f"there is no model called {name!r} here")
+        chosen.append(name)
+        return {"type": "eli_mind", "loaded": True, "model": name, "chosen": True, "models": []}
+
+    monkeypatch.setattr(mind, "choose", choose)
+    assert client.post("/v1/world/mind", json={"model": "A.gguf"}).json()["loaded"] is True
+    wrong = client.post("/v1/world/mind", json={"model": "B.gguf"})
+    assert wrong.status_code == 400 and wrong.json()["detail"]["kind"] == "unknown_model"
+    assert chosen == ["A.gguf"] and "mind" in spatial_feed.protocol()["capabilities"]["2"]
+

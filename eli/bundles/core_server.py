@@ -44,32 +44,37 @@ def _start(port: int) -> Any:
     return server
 
 
-@contextlib.contextmanager
-def serving() -> Iterator[int | None]:
-    """ELI's local server for as long as the block runs. Gives its port, or None when it
-    could not be had: the bundle still opens, and says ELI is not there."""
+def start() -> tuple[int | None, Any]:
+    """Have ELI's local server answering in this process. Gives its port and, when it had to
+    be started here, the server, for the caller to stop (`server.should_exit = True`). The port
+    is None when it could not be had: the bundle still opens, and says ELI is not there."""
     from eli.runtime.server_util import effective_api_port, port_in_use
 
     port = effective_api_port()
     if running(port):
-        yield port
-        return
+        return port, None
     if port_in_use(port):
         log.warning(
             "port %s is held by another program; the bundle starts without ELI", port
         )
-        yield None
-        return
+        return None, None
     try:
         server = _start(port)
     except Exception:
         log.warning("ELI's local server could not be started", exc_info=True)
-        yield None
-        return
+        return None, None
+    deadline = time.monotonic() + START_SECONDS
+    while time.monotonic() < deadline and not running(port):
+        time.sleep(0.25)
+    return (port if running(port) else None), server
+
+
+@contextlib.contextmanager
+def serving() -> Iterator[int | None]:
+    """ELI's local server for as long as the block runs."""
+    port, server = start()
     try:
-        deadline = time.monotonic() + START_SECONDS
-        while time.monotonic() < deadline and not running(port):
-            time.sleep(0.25)
-        yield port if running(port) else None
+        yield port
     finally:
-        server.should_exit = True
+        if server is not None:
+            server.should_exit = True

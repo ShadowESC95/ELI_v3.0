@@ -19,6 +19,7 @@ class WorldActionType(str, Enum):
     CREATE_OBJECT = "create_object"
     MOVE_OBJECT = "move_object"
     ALTER_ROOM = "alter_room"
+    ALTER_OBJECT = "alter_object"
     LINK_OBJECT = "link_object"
     RETIRE_OBJECT = "retire_object"
     AVATAR_MOVE = "avatar_move"
@@ -108,6 +109,9 @@ class EliWorldState:
     awareness: AwarenessState = field(default_factory=AwarenessState)
     avatar: AvatarState = field(default_factory=AvatarState)
     rooms: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Places beyond the nine rooms of the house: ELI's own room, which he shapes himself
+    # (eli/world/building.py). Kept apart so the house stays the nine cognitive rooms.
+    spaces: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     objects: Dict[str, WorldObject] = field(default_factory=dict)
     events: List[WorldEvent] = field(default_factory=list)
     actions: List[WorldAction] = field(default_factory=list)

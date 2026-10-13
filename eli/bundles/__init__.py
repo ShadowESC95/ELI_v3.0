@@ -278,13 +278,33 @@ def spawn(bundle_id: str) -> subprocess.Popen:
     ok, why = entitled(bundle)
     if not ok:
         raise PermissionError(why)
-    if bundle.kind == "external" and not _needs_server(bundle):
+    env = dict(os.environ)
+    server = None
+    if _needs_server(bundle):
+        # Beside a running ELI the bundle is served by this ELI, in this process: the model
+        # already loaded in his window is the one that answers, and nothing is loaded twice.
+        from eli.bundles import core_server
+
+        port, server = core_server.start()
+        if port is not None:
+            env["ELI_API_PORT"] = str(port)
+    if bundle.kind == "external":
         command = list(bundle.command)
-    elif getattr(sys, "frozen", False):  # through launch(), which brings what it needs
+    elif getattr(sys, "frozen", False):
         command = [sys.executable, "--bundle", bundle.id]
     else:
         command = [sys.executable, "-m", "eli", "--bundle", bundle.id]
-    return subprocess.Popen(command, env=dict(os.environ), start_new_session=True)
+    process = subprocess.Popen(command, env=env, start_new_session=True)
+    if server is not None:
+        # a server started for this bundle goes when the bundle does
+        def _stop_when_closed() -> None:
+            process.wait()
+            server.should_exit = True
+
+        import threading
+
+        threading.Thread(target=_stop_when_closed, name="eli-bundle-watch", daemon=True).start()
+    return process
 
 
 __all__ = [

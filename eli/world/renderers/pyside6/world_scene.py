@@ -286,6 +286,8 @@ class EliWorldScene(QGraphicsScene):
             if obj.get("retired"):
                 continue
             room = str(obj.get("room") or "core_room")
+            if room not in ROOM_COORDS:
+                continue  # a thing in ELI's own room: this view is the house
             idx = room_counts.get(room, 0)
             room_counts[room] = idx + 1
             rx, ry = ROOM_COORDS.get(room, (0.0, 0.0))

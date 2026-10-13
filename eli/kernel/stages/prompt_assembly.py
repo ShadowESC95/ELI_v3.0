@@ -1352,6 +1352,16 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+        # Embodiment: while the user is in a room with ELI (ELI VR reports the scene every few
+        # seconds), say where they both are and what is there. Empty unless a session is live.
+        try:
+            from eli.world.embodiment import context_block as _embodiment_block
+            _emb_block = _embodiment_block()
+            if _emb_block:
+                _extra_blocks.append(_emb_block)
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         # World awareness state injection: give synthesis ELI's live AwarenessState (confidence,
         # uncertainty, focus). Only when world state diverges from defaults, to avoid boilerplate on
         # clean-slate turns.

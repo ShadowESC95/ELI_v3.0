@@ -213,7 +213,8 @@ def test_an_installed_bundle_that_needs_the_server_is_handed_the_port(
     )
 
 
-def test_beside_a_running_eli_such_a_bundle_goes_through_launch(isolated, monkeypatch):
+def test_beside_a_running_eli_a_bundle_is_served_by_that_eli(isolated, monkeypatch):
+    """Opened from ELI's window: his own process serves it, so the model loaded there answers."""
     program = isolated / "eli-rooms"
     program.write_text("")
     registry = isolated / "registry"
@@ -222,14 +223,35 @@ def test_beside_a_running_eli_such_a_bundle_goes_through_launch(isolated, monkey
         (registry / f"{name}.json").write_text(
             json.dumps({"id": name, "command": [str(program)], **extra})
         )
+
+    class Server:
+        should_exit = False
+
+    class Process:
+        def wait(self):
+            return 0
+
+    server = Server()
+    asked = []
+    monkeypatch.setattr(core_server, "start", lambda: asked.append(1) or (18999, server))
     started = []
     monkeypatch.setattr(
-        bundles.subprocess, "Popen", lambda cmd, **kw: started.append(cmd)
+        bundles.subprocess,
+        "Popen",
+        lambda cmd, env=None, **kw: started.append((cmd, (env or {}).get("ELI_API_PORT"))) or Process(),
     )
+    monkeypatch.delenv("ELI_API_PORT", raising=False)
     bundles.spawn("plain")
+    assert started[-1] == ([str(program)], None) and asked == [], "no server for one that did not ask"
     bundles.spawn("rooms")
-    assert started[0] == [str(program)]
-    assert started[1][-2:] == ["--bundle", "rooms"]
+    assert started[-1] == ([str(program)], "18999") and asked == [1]
+    import time
+
+    for _ in range(50):
+        if server.should_exit:
+            break
+        time.sleep(0.02)
+    assert server.should_exit, "a server started for the bundle goes when the bundle closes"
 
 
 def test_the_server_already_running_is_used_and_left_alone(monkeypatch):

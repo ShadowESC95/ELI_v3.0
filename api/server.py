@@ -5041,9 +5041,20 @@ def _ws_authorised(ws) -> bool:
         authorization = "Bearer " + ws.query_params["token"]
     return _resolve_principal(authorization, _is_loopback_client(ws)) is not None
 
+def _world_chat(text: str, principal, session_id: str = "") -> str:
+    """A turn of conversation from inside ELI's world (ELI VR). The same engine and the
+    same person as /v1/chat: a body is another surface of the owner, not another user, so
+    the turn is never attributed to the client's own name."""
+    who = _effective_user(principal, "default")
+    result = get_engine().process(text, source=f"api:{who}", stream=False)
+    _audit("api_chat", user_id=who, action="CHAT", subject="world", session_id=session_id or "")
+    return _extract_response_text(result)
+
+
 try:
     from eli.world.spatial_feed import build_router as _build_world_router
-    app.include_router(_build_world_router(_require_token, require_member, _ws_authorised))
+    app.include_router(_build_world_router(_require_token, require_member, _ws_authorised,
+                                           chat=_world_chat, require_admin=require_admin))
 except Exception as _world_err:  # the world is never on the server's critical path
     print(f"[ELI] world feed unavailable: {_world_err}")
 

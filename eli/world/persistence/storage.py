@@ -164,6 +164,8 @@ def _state_from_dict(data: Dict[str, Any]) -> EliWorldState:
     state.awareness = _fit(AwarenessState, data.get("awareness", {})) or AwarenessState()
     state.avatar = _fit(AvatarState, data.get("avatar", {})) or AvatarState()
     state.rooms = data.get("rooms") or get_default_rooms()
+    spaces = data.get("spaces")
+    state.spaces = {str(k): dict(v) for k, v in spaces.items() if isinstance(v, dict)} if isinstance(spaces, dict) else {}
     objects = {k: _fit(WorldObject, v) for k, v in (data.get("objects") or {}).items()}
     state.objects = {k: v for k, v in objects.items() if v is not None}
     state.events = _fit_all(WorldEvent, data.get("events", [])[-300:])

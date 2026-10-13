@@ -1922,6 +1922,9 @@ def _generate_json_legacy_1(
 ) -> dict:
     if system is None:
         system = _canonical_eli_persona() + " Output ONLY valid JSON."
+    # A caller may bring a grammar for the exact shape it needs (a LlamaGrammar). A small model
+    # held to that shape cannot leave a field out or invent one; without it, any JSON goes.
+    grammar = kwargs.pop("grammar", None) or _json_grammar
 
     llm = load_model()
     if llm is None:
@@ -1962,11 +1965,12 @@ def _generate_json_legacy_1(
                 top_p=top_p,
                 top_k=top_k,
                 repeat_penalty=repeat_penalty,
-                grammar=_json_grammar,
+                grammar=grammar,
                 **kwargs,
             )
         content = response["choices"][0]["text"]
-        return json.loads(content)
+        # strict=False: a model may put a real newline inside a string, which the grammar allows
+        return json.loads(content, strict=False)
     except Exception as e:
         log.debug(f"[GGUF] JSON generation failed: {e}")
         raise RuntimeError(f"Failed to generate JSON: {e}") from e

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 from hashlib import sha1
 from time import time
 from typing import List, Optional
@@ -49,6 +50,12 @@ from eli.world.persistence.provenance import make_provenance_id, record_provenan
 from eli.world.persistence.snapshots import create_snapshot
 from eli.world.persistence.storage import EliWorldStorage
 
+# One event at a time. ingest_event reads the state, changes it and writes it back; the event
+# bus, the goal store and the building all call it from their own threads, and two at once
+# meant the second write silently dropped what the first had done.
+INGEST_LOCK = threading.RLock()
+
+
 class EliWorldAutonomyEngine:
     def __init__(self, storage: Optional[EliWorldStorage] = None) -> None:
         self.storage = storage or EliWorldStorage()
@@ -75,6 +82,10 @@ class EliWorldAutonomyEngine:
         self.storage.save(state)
 
     def ingest_event(self, event: WorldEvent, persona_text: str = "") -> EliWorldState:
+        with INGEST_LOCK:
+            return self._ingest_event(event, persona_text)
+
+    def _ingest_event(self, event: WorldEvent, persona_text: str = "") -> EliWorldState:
         state = self.storage.load()
         state.habits = ensure_default_habits(state.habits)
         state.events.append(event)
@@ -101,7 +112,12 @@ class EliWorldAutonomyEngine:
                 autonomous=True,
             )
             if self.policy.allowed(action):
-                self._apply_action(state, action)
+                if action.payload.get("built"):
+                    # ELI's building: the edit itself is in the event (eli/world/building.py)
+                    from eli.world import building
+                    building.apply_action(state, action, event)
+                else:
+                    self._apply_action(state, action)
 
         state.actions = state.actions[-300:]
         state.goals = decay_goals(state.goals)
@@ -134,6 +150,25 @@ class EliWorldAutonomyEngine:
             _obj = self._find_task_object(state, _goal_id) if _goal_id else None
             if _obj is not None:
                 actions.append(self._retire_object_action(_obj.object_id, _obj.room, f"Task '{_obj.name}' was closed."))
+
+        # A moment of his own that has words (an insight, a goal, an ambition) is kept as an urge:
+        # something he may later make into a thing in his own room (eli/world/urges.py).
+        try:
+            from eli.world import urges
+            urges.consider(state, event)
+        except Exception:
+            log.debug("world urge skipped", exc_info=True)
+
+        # ELI's building (eli/world/building.py): he goes to the room he is working in, and each
+        # edit becomes a world action like any other, judged by the policy and kept in the ledger.
+        if event.event_type == "world_edit":
+            from eli.world import building
+            built = building.actions_for(state, event)
+            if built and event.payload.get("actor") == "eli":
+                state.avatar.room = built[0].room
+                state.avatar.activity = "building"
+                state.avatar.attention_target = None
+            actions.extend(built)
 
         # Reasoning-stage routing: move the avatar to the semantically right room and materialise
         # the matching symbolic object so the World tab shows live activity during the multi-pass

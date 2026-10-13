@@ -1054,6 +1054,16 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
                     except Exception:
                         _SWLOG.debug("suppressed exception", exc_info=True)
 
+                    # A moment of ELI's own (an insight, a goal, an ambition) may become something
+                    # in his own room. Only with a model already in memory, never while the user is
+                    # mid-request, and not when their mood asks him to hold back (eli/world/urges.py).
+                    try:
+                        if not _foreground_busy():
+                            from eli.world.urges import act_when_free
+                            act_when_free()
+                    except Exception:
+                        _SWLOG.debug("suppressed exception", exc_info=True)
+
                     for pattern in patterns:
                         if self._should_emit("pattern", pattern.get("suggestion", "")):
                             self.suggestion_queue.put(("pattern", pattern))

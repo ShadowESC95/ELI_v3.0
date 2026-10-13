@@ -13,7 +13,8 @@ class EliWorldPolicy:
             return PermissionClass.APPROVAL_REQUIRED.value
         if action.action_type in {
             WorldActionType.CREATE_OBJECT.value, WorldActionType.MOVE_OBJECT.value,
-            WorldActionType.ALTER_ROOM.value, WorldActionType.LINK_OBJECT.value,
+            WorldActionType.ALTER_ROOM.value, WorldActionType.ALTER_OBJECT.value,
+            WorldActionType.LINK_OBJECT.value,
             WorldActionType.RETIRE_OBJECT.value, WorldActionType.AVATAR_MOVE.value,
             WorldActionType.AVATAR_EMOTE.value, WorldActionType.JOURNAL_ENTRY.value,
             WorldActionType.SNAPSHOT.value,
