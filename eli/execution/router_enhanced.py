@@ -738,7 +738,26 @@ def _is_time_recall_query(raw: str, low: str) -> bool:
         r"\b(?:an?\s+hour\s+ago|earlier today|this morning|yesterday)\b",
         r"\bwhat did i (?:say|ask|tell you)\b",
     ]
-    return any(re.search(p, low) for p in patterns)
+    if any(re.search(p, low) for p in patterns):
+        return True
+    # Any request to recall what was said between the user and ELI over a period it names
+    # ("timestamp and summary of our conversations over the past 5 days", "what have we discussed
+    # this week"). The period is the query planner's to read; it was matched here by four phrasings
+    # only, and the rest went to the model's guess at an action (a status report, live).
+    if _OUR_TALK_RE.search(low):
+        try:
+            from eli.cognition.query_planner import plan_window
+            return plan_window(raw) is not None
+        except Exception:
+            log.debug("period not read for a recall request", exc_info=True)
+    return False
+
+
+_OUR_TALK_RE = re.compile(
+    r"\b(?:we|our|us|you and (?:i|me)|me and you)\b.{0,60}?\b(?:conversations?|chats?|sessions?|discussions?|talk(?:s|ed|ing)?|"
+    r"discuss(?:ed|ing)?|spoke|spoken|said|covered|went (?:over|through)|been (?:doing|working on))\b"
+    r"|\b(?:conversations?|chats?|sessions?|discussions?)\b.{0,40}?\b(?:we|our|us)\b"
+    r"|\b(?:conversation|chat|session)s?\s+(?:history|logs?|records?)\b", re.I)
 
 
 def _looks_like_conversation_summary(low: str) -> bool:
@@ -2437,14 +2456,18 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     # nothing, fell through to CHAT, and the model asserted there were no scheduled
     # tasks while four were armed. These claim the "task" phrasings authoritatively.
     _TASK_WORD = r"(?:task|tasks|scheduled\s+task|background\s+task|scheduled\s+job)"
+    # What may stand between the verb and the task it acts on: the words that name the task
+    # ("the 2am research", "background", "#12"), not another clause. Any forty characters used to
+    # do, and "you need to stop lying to me and giving false task updates" cancelled a task.
+    _ITS_TASK = r"(?:\s+(?!(?:to|me|you|u|i|we|and|or|but|is|are|was|were|it|that)\b)[\w#:'.-]+){0,5}?\s+"
 
-    if re.search(r"\b(?:cancel|delete|remove|kill|drop|clear|stop)\b[^.?!]{0,40}\b" + _TASK_WORD + r"\b", low):
+    if re.search(r"\b(?:cancel|delete|remove|kill|drop|clear|stop)\b" + _ITS_TASK + _TASK_WORD + r"\b", low):
         _m_id = re.search(r"\b(?:task|job)\s*#?\s*(\d{1,6})\b", low)
         return _mk("CANCEL_TASK",
                    {"job_id": _m_id.group(1) if _m_id else None, "text": raw},
                    0.95, matched_by="tasks.cancel")
 
-    if re.search(r"\b(?:reschedule|re-schedule|move|push|shift|change)\b[^.?!]{0,40}\b" + _TASK_WORD + r"\b", low):
+    if re.search(r"\b(?:reschedule|re-schedule|move|push|shift|change)\b" + _ITS_TASK + _TASK_WORD + r"\b", low):
         _m_id = re.search(r"\b(?:task|job)\s*#?\s*(\d{1,6})\b", low)
         # The new time is whatever follows to/for/until/at.
         _m_when = re.search(r"\b(?:to|for|until|till|at)\s+(.{2,40})$", low)
@@ -2647,7 +2670,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
          r"\bminimi[sz]e\s+this\b|\bminimi[sz]e\s+the\s+window\b",
          "MINIMIZE_APP"),
         (r"\bmaximi[sz]e\s+(?:current|this|the\s+window|window)\b|"
-         r"\bfullscreen\s+(?:current|this|the\s+window|window)?\b|"
+         r"\bfullscreen(?:\s+(?:current|this|the\s+window|window))?\s*$|"
          r"\bmake\s+(?:this|current|window)\s+fullscreen\b",
          "MAXIMISE_WINDOW"),
         (r"\brestore\s+(?:windows?|all|everything)\b|\bunminimi[sz]e\s+all\b|"
@@ -2677,10 +2700,14 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         r"^(?:focus|switch\s+to|bring\s+up|jump\s+to|raise|activate)\s+(.+?)\s*$",
         low,
     )
+    # "go to the futurama tab" is the same request ("go to" alone belongs to addresses, below).
+    m = m or re.match(r"^(?:go|change|move)\s+to\s+(.+?\s+tab(?:\s+(?:in|on|of)\s+.+?)?)\s*$", low)
     if m:
-        app_name = m.group(1).strip().rstrip("?.!,;:")
+        from eli.execution.portable_intent_contract import window_target
+        _to = window_target(m.group(1).strip().rstrip("?.!,;:"))
+        app_name = _to["name"]
         if app_name and len(app_name.split()) <= 3:
-            return _mk("FOCUS_APP", {"name": app_name}, 0.9,
+            return _mk("FOCUS_APP", _to, 0.9,
                        matched_by="window.focus_app",
                        entities={"name": app_name})
 
@@ -3176,20 +3203,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                    matched_by="web.browser_internet_alias")
 
     # Named site + optional search: "open youtube and search for cats"
-    _BROWSER_SITES = {
-        "youtube": "https://www.youtube.com",
-        "netflix": "https://www.netflix.com",
-        "gmail": "https://mail.google.com",
-        "google": "https://www.google.com",
-        "wikipedia": "https://www.wikipedia.org",
-        "reddit": "https://www.reddit.com",
-        "github": "https://www.github.com",
-        "twitter": "https://www.twitter.com",
-        "twitch": "https://www.twitch.tv",
-        "prime": "https://www.primevideo.com",
-        "disney": "https://www.disneyplus.com",
-        "hulu": "https://www.hulu.com",
-    }
+    _BROWSER_SITES = WEBSITE_ALIASES  # the one table (eli/execution/app_aliases.py)
     _site_m = re.match(
         r"^(?:open|launch|go\s+to|navigate\s+to)\s+(\w+)(?:\s+and\s+search\s+(?:for\s+)?(.+))?$",
         raw, re.I)
@@ -3235,12 +3249,19 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         raw,
         re.I)
     if m_browse:
-        target = m_browse.group(1).strip()
-        if target:
-            url = target if re.match(
-                r"https?://", target) else "https://" + target.lstrip("/")
-            return _mk("OPEN_URL", {"url": url}, 0.97,
-                       matched_by="web.browse_to", entities={"url": url})
+        # The address is what was given, a site in the table, or one found when the command
+        # runs. It used to be "https://" in front of whatever followed: "go to the youtube tab"
+        # opened https://the youtube tab.
+        target = m_browse.group(1).strip().rstrip("?.!,;:")
+        from eli.execution.portable_intent_contract import web_open_target
+        _web = web_open_target(target)
+        if _web is None and target.lower() in WEBSITE_ALIASES:
+            _web = ("OPEN_URL", {"url": WEBSITE_ALIASES[target.lower()]})
+        _site = re.sub(r"^(?:the|my|a|an)\s+", "", target, flags=re.I)
+        if _web is None and not raw.lower().startswith("go ") and 0 < len(_site.split()) <= 4:
+            _web = ("OPEN_URL", {"site": _site})
+        if _web is not None:
+            return _mk(_web[0], _web[1], 0.97, matched_by="web.browse_to", entities=dict(_web[1]))
 
     # Guard: "search your memory/memories ..." must never fall through to web search.
     m = re.match(r"^(?:search\s+(?:for\s+)?)(.+)$", raw, re.I)
@@ -4047,6 +4068,7 @@ def _eli_lrf_pre_route(text):
 # ELI_PERSONAL_MEMORY_MODE_AWARE_ROUTER_FIX_20260505
 # High-priority route wrapper: personal memory questions need synthesis, not raw truth reports/search.
 import re as _eli_pm_re
+from eli.cognition.self_claims import WHAT_JUST_HAPPENED as _WHAT_JUST_HAPPENED
 
 
 def _eli_pm_mk(action, args=None, confidence=0.99, matched_by="eli.personal_memory_mode_aware"):
@@ -4125,6 +4147,7 @@ def _eli_pm_pre_route(text):
         or _eli_pm_re.search(
             r"\bwhat\s+(?:exactly\s+)?did\s+you\s+(?:just\s+|actually\s+)?do\s*"
             r"(?:\?|$|there\b|to\s+(?:answer|get)\b|just\s+now\b|for\s+that\b|with\s+that\b)", low)
+        or _eli_pm_re.search(_WHAT_JUST_HAPPENED, low)
     ):
         try:
             from eli.cognition.query_planner import parse_window as _pw_last
@@ -6845,7 +6868,64 @@ try:
 
             return out
 
-        def _eli_priority_route(raw="", *args, **kwargs):
+        # The stages whose rules match on words anywhere in the text. What they return is carried
+        # out only when the sentence is telling ELI to do it. The stages before them read a reply
+        # to something ELI asked, or a statement that is itself the request ("my name is ...").
+        _ELI_WORD_RULE_STAGES = frozenset((
+            "schedule_prepass", "shell_prepass", "portable_route", "voice_contract", "web_lookup", "core_router"))
+
+        def _eli_fits(text, candidate):
+            try:
+                from eli.execution.route_contracts import fits
+                return fits(text, candidate)
+            except Exception:
+                _SWLOG.debug("fits check failed", exc_info=True)
+                return True
+
+        def _eli_instructions_and_talk(text, whole, *args, **kwargs):
+            """A message of several sentences that is not one command: the sentences that tell
+            ELI to do something are carried out, and the rest is talk to be answered.
+
+            "see, you can do it! open spotify" was answered by the model alone, which wrote that
+            it had opened Spotify. A complaint ending in "open nasa website" stopped the film and
+            never opened anything."""
+            try:
+                from eli.execution.route_contracts import is_command
+                from eli.runtime.command_splitter import read_message
+                if is_command(whole):
+                    return None
+                parts = read_message(text)
+                if not (2 <= len(parts) <= 12):
+                    return None
+                steps, talk = [], []
+                for part in parts:
+                    tells = part["tells"]
+                    told = _eli_route_with_courtesy(tells, *args, **kwargs) if tells else None
+                    if tells and is_command(told):
+                        steps.append(tells.rstrip(" .!"))
+                    else:
+                        talk.append(part["said"])
+                if not steps or len(steps) > 5:
+                    return None
+                rest = " ".join(talk).strip()
+                if len(re.findall(r"[A-Za-z0-9']+", _without_courtesy(rest) if rest else "")) < 3:
+                    rest = ""                      # "well done." before a command is not a second subject
+                if not rest:
+                    if len(steps) == 1:
+                        out = _eli_route_with_courtesy(steps[0], *args, **kwargs)
+                        out.setdefault("meta", {})["read_as"] = "message.instructions"
+                        return out
+                    return _mk("MULTI_COMMAND", {"commands": steps, "raw": text}, 0.92,
+                               matched_by="message.instructions")
+                return _mk("CHAT", {"message": text,
+                                    "agreed": {"commands": steps, "tasks": [rest], "offer": "",
+                                               "rest_of_message": True}},
+                           0.95, matched_by="message.instructions_and_talk")
+            except Exception:
+                _SWLOG.debug("sentence reading failed", exc_info=True)
+                return None
+
+        def _eli_route_with_courtesy(raw="", *args, **kwargs):
             # Courtesy after a command ended up in its target: "open spotify please" looked for an
             # app called "spotify please" and offered to install it. A command is routed without
             # it; anything that is not a command keeps the user's words as they were.
@@ -6856,6 +6936,10 @@ try:
                 if isinstance(out, dict) and str(out.get("action") or "").upper() not in ("", "CHAT"):
                     return out
             return _eli_priority_route_core(text, *args, **kwargs)
+
+        def _eli_priority_route(raw="", *args, **kwargs):
+            whole = _eli_route_with_courtesy(raw, *args, **kwargs)
+            return _eli_instructions_and_talk(str(raw or ""), whole, *args, **kwargs) or whole
 
         def _eli_priority_route_core(raw="", *args, **kwargs):
             text = str(raw or "")
@@ -6871,6 +6955,7 @@ try:
                     _preview = _preview[:157] + "..."
                 log.debug(f"[PIPELINE][ROUTER] begin text={_preview!r}")
 
+            not_told = None
             for stage_name, stage_fn in _ELI_ROUTE_PRIORITY_STAGES:
                 _stage_t0 = _perf() if _trace else 0.0
                 try:
@@ -6882,6 +6967,13 @@ try:
                     log.debug(
                         f"[PIPELINE][ROUTER] stage={stage_name} hit={candidate is not None} dt_ms={_dt:.2f}",
                     )
+                if candidate is not None and stage_name in _ELI_WORD_RULE_STAGES and not _eli_fits(text, candidate):
+                    # A rule matched a word in a sentence that is not telling ELI to do that
+                    # (route_contracts.fits). The later stages still get the message.
+                    not_told = not_told or {
+                        "action": str(candidate.get("action") or ""), "stage": stage_name,
+                        "matched_by": str((candidate.get("meta") or {}).get("matched_by") or "")}
+                    continue
                 if candidate is not None:
                     result = candidate
                     matched_by = stage_name
@@ -6894,6 +6986,17 @@ try:
                     "confidence": 0.25,
                     "meta": {"matched_by": "eli.priority_pipeline.fallback_chat"},
                 }
+            if not_told and str(result.get("action") or "").upper() in ("", "CHAT", "NOOP"):
+                # Talk that mentions a command is talk: it goes to chat as it is, and is not
+                # handed to the intent model to be turned into the same command again.
+                result = {
+                    "action": "CHAT",
+                    "args": {"message": text},
+                    "confidence": 0.6,
+                    "meta": {"matched_by": "router.not_an_instruction", "not_told": not_told,
+                             "allow_chat_without_evidence": True},
+                }
+                matched_by = "not_an_instruction"
 
             result = _eli_route_apply_post_contracts(text, result)
             if isinstance(result, dict):

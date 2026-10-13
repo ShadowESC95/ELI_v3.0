@@ -109,6 +109,31 @@ def _open_app_builtin(app_name: str) -> dict:
         return {"ok": False, "error": str(e), "app": app, "cmd": argv}
 
 
+def _eli_open_named_site(args):
+    """OPEN_URL for a site known by name ("nasa website") or pointed at ("that website"): the
+    address comes from the conversation or a web search, and the reply says which."""
+    from eli.runtime import site_address
+
+    def _say(msg):
+        return {"ok": False, "action": "OPEN_URL", "error": msg, "content": msg, "response": msg}
+
+    if args.get("refers_to"):
+        url = site_address.referred_to(int(args.get("which") or 1))
+        if not url:
+            return _say(f"No web address has come up in this conversation for “{args['refers_to']}” to point at. "
+                        "Give me the address, or the name of the site.")
+        return _eli_open_url_action(url)
+    name = str(args.get("site") or "").strip()
+    found = site_address.named(name)
+    if not found.get("url"):
+        return _say(f"I have no address for the {name} website: {found.get('why')}. Give me the address, "
+                    f"or say “search for {name}” and I will open a search for it.")
+    opened = _eli_open_url_action(found["url"])
+    if opened.get("ok"):
+        opened["content"] = opened["response"] = f"{opened['content']} (the {name} site, from {found['from']})"
+    return opened
+
+
 def _eli_open_url_action(raw_url=None, *, query=None):
     """
     Safe URL opener for OPEN_URL.
@@ -421,6 +446,8 @@ def _h_open_url(a, args):
     except Exception:
         url = None
         query = None
+    if not url and isinstance(args, dict) and (args.get("site") or args.get("refers_to")):
+        return _eli_open_named_site(args)
     return _eli_open_url_action(url, query=query)
 
 

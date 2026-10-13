@@ -34,30 +34,8 @@ except Exception:
 # Bare site names an "open X" command may use instead of a URL. Lives here rather
 # than in the router so the intent stages can resolve a site without importing
 # router_enhanced back.
-WEBSITE_ALIASES = {
-    "youtube": "https://youtube.com",
-    "google": "https://google.com",
-    "facebook": "https://facebook.com",
-    "twitter": "https://twitter.com",
-    "x": "https://x.com",
-    "instagram": "https://instagram.com",
-    "linkedin": "https://linkedin.com",
-    "reddit": "https://reddit.com",
-    "github": "https://github.com",
-    "stackoverflow": "https://stackoverflow.com",
-    "wikipedia": "https://wikipedia.org",
-    "amazon": "https://amazon.com",
-    "ebay": "https://ebay.com",
-    "netflix": "https://netflix.com",
-    "hulu": "https://hulu.com",
-    "twitch": "https://twitch.tv",
-    "gmail": "https://mail.google.com",
-    "outlook": "https://outlook.live.com",
-    "yahoo": "https://mail.yahoo.com",
-    "maps": "https://maps.google.com",
-    "news": "https://news.google.com",
-    "weather": "https://weather.com",
-}
+# One table: eli/execution/app_aliases.py (the portable contract and the executor each had their own).
+from eli.execution.app_aliases import WEBSITE_ALIASES  # noqa: E402,F401
 
 
 def _known_dir_path(s: str) -> str:

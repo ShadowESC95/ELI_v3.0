@@ -78,6 +78,11 @@ def _h_focus_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
     from eli.system.portable_app_control import focus_app
     out = focus_app(name)
     out.setdefault("action", a)
+    if args.get("tab") and not out.get("ok"):
+        # A window is found by its title, which is the tab in front. The others are the browser's own.
+        _why = (f"No window is showing a tab called {name}. A tab that is not in front in its window "
+                "cannot be reached from outside the browser; “next tab” and “previous tab” step through them.")
+        out["content"] = out["response"] = out["error"] = _why
     return out
 
 

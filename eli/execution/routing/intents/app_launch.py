@@ -101,6 +101,13 @@ def route_app_launch(text: str, raw: str, low: str, text_l: str):
             return _mk("OPEN_BROWSER", ({"query": _bq} if _bq else {}), 0.98,
                        matched_by="open.browser.literal_preempt")
 
+        # A web address, a site known by name ("nasa website") or a page pointed at ("that
+        # website") is not an app: "open nasa website" was offered for install.
+        from eli.execution.portable_intent_contract import web_open_target
+        _web = web_open_target(target)
+        if _web is not None:
+            return _mk(_web[0], _web[1], 0.98, matched_by="open.web.literal_preempt")
+
         canonical = app_aliases.get(target_low, target)
         return _mk("OPEN_APP", {"name": canonical, "target": canonical}, 0.99,
                    matched_by="open.app.literal_preempt")

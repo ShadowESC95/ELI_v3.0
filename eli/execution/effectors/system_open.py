@@ -42,18 +42,6 @@ def _h_open_audio_settings(a, args):
 
 def _h_open_browser(a, args):
     import re as _re2
-    _site_map = {
-        "wikipedia": "https://www.wikipedia.org",
-        "google": "https://www.google.com",
-        "youtube": "https://www.youtube.com",
-        "github": "https://www.github.com",
-        "reddit": "https://www.reddit.com",
-        "netflix": "https://www.netflix.com",
-        "gmail": "https://mail.google.com",
-        "stackoverflow": "https://stackoverflow.com",
-        "twitter": "https://www.twitter.com",
-        "x.com": "https://www.x.com",
-    }
     raw_q = (args.get("query") or args.get("url") or args.get("link") or "").lower()
 
     # YouTube with a search query → open YouTube search/watch URL in browser
@@ -68,8 +56,11 @@ def _h_open_browser(a, args):
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    found_urls = [v for k, v in _site_map.items() if k in raw_q]
-    if len(found_urls) > 1:
+    # Several sites asked for by name ("youtube and github"): each is opened.
+    from eli.execution.app_aliases import WEBSITE_ALIASES as _sites
+    _asked = [w.strip() for w in _re2.split(r"\s*(?:,|&|\band\b)\s*", raw_q) if w.strip()]
+    found_urls = [_sites[w] for w in _asked if w in _sites] if len(_asked) > 1 else []
+    if len(found_urls) > 1 and len(found_urls) == len(_asked):
         return open_browser(found_urls[0], urls=found_urls)
     url = str(args.get("url") or args.get("link") or "")
     if not url or not url.startswith("http"):

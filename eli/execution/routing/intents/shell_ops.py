@@ -172,8 +172,11 @@ def route_shell_ops(text: str, raw: str, low: str, text_l: str):
     # greeting. Needs an imperative frame (verb leads, optionally after please/can-you, or takes
     # the machine as its object) and never fires on a how-to or state question.
     _power_cmd = (
+        # the verb alone, or with a word of time or courtesy: "restart", "reboot now please".
+        # With an object it is that object's command ('restart "Order & Chaos"' is a song).
         re.match(r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+|pls\s+)?"
-                 r"(?:shut\s*down|power\s*off|poweroff|restart|reboot)\b", low)
+                 r"(?:shut\s*down|power\s*off|poweroff|restart|reboot)"
+                 r"(?:\s+(?:now|please|pls|it|immediately|right\s+now))*\s*[.!]?\s*$", low)
         or re.search(r"\b(?:shut\s*down|power\s*off|poweroff|restart|reboot)\s+"
                      r"(?:the\s+|my\s+|this\s+)?"
                      r"(?:computer|system|pc|machine|laptop|device|server|box)\b", low)

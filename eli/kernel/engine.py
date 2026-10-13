@@ -4613,10 +4613,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         from eli.runtime import pending_proposal as _pp
         shown: List[str] = []
         commands = [c for c in (agreed.get("commands") or []) if str(c or "").strip()]
+        # The commands in a message of commands and talk were typed by the user: each is shown
+        # with its result when there are several. One command, or steps ELI offered, show the result.
+        _typed = bool(agreed.get("rest_of_message"))
         if commands:
             try:
                 ran = execute_action("MULTI_COMMAND", {"commands": commands, "raw": " and ".join(commands),
-                                                       "results_only": True})
+                                                       "results_only": not (_typed and len(commands) > 1)})
                 text = str((ran or {}).get("response") or (ran or {}).get("content") or "").strip()
                 if text:
                     shown.append(text)
@@ -4639,7 +4642,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
         message = _pp.task_message(tasks)
         token = _request_context.agreed_task_var.set(
-            {"said": said, "offer": str(agreed.get("offer") or ""), "message": message, "done": done})
+            {"said": said, "offer": str(agreed.get("offer") or ""), "message": message, "done": done,
+             "rest_of_message": _typed})
         try:
             inner = self.process(message, source=source, stream=stream, reasoning_mode=reasoning_mode, **kwargs)
         finally:
@@ -5671,7 +5675,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         log.debug(f"[PIPELINE] Stage 1: Intent → {_pipe_action_s1} (conf={_pipe_conf_s1:.2f} via={_pipe_matched_s1})")
         _request_context.note_turn_fact("via", _pipe_matched_s1)
 
-        _agreed = (intent.get("args") or {}).get("agreed") if _pipe_matched_s1 == "pending_proposal.confirm" else None
+        _agreed = ((intent.get("args") or {}).get("agreed")
+                   if _pipe_matched_s1 in ("pending_proposal.confirm", "message.instructions_and_talk") else None)
         if _pipe_action_s1 == "CHAT" and isinstance(_agreed, dict):
             return self._carry_out_agreed(user_input, _agreed, source=source, stream=stream,
                                           reasoning_mode=reasoning_mode, **kwargs)
@@ -7923,6 +7928,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     }
             except Exception:
                 log.debug("[COGNITIVE] persona self-knowledge veto skipped", exc_info=True)
+            # What the model resolves is held to the same test as what a rule matches: an action
+            # that changes something is carried out only when the sentence tells ELI to do it.
+            try:
+                from eli.execution.route_contracts import fits as _fits
+                if li and not _fits(text, li):
+                    log.debug(f"[COGNITIVE] {li.get('action')} not carried out: the message does not tell ELI to do it")
+                    li = {"action": "CHAT", "args": {"message": text}, "confidence": 0.6}
+            except Exception:
+                log.debug("[COGNITIVE] fit check on the resolved intent skipped", exc_info=True)
             if (li and li.get("action") and li.get("action") != "CHAT"
                     and li.get("confidence", 0) >= 0.6):
                 log.debug(f"[COGNITIVE] LLM intent resolved: {li.get('action')} "

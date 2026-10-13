@@ -6304,10 +6304,14 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
             _rec_ctx = int(settings_req.get('hw_profile_n_ctx') or 0)
             _rec_layers = int(settings_req.get('hw_profile_n_gpu_layers') or 0)
             _concerns = []
-            if _rec_ctx and _eff_ctx > _rec_ctx:
+            # A larger context costs GPU layers only when fewer are on the card than the profile
+            # found room for. It was stated whenever the context was larger, layers lost or not:
+            # live, with 41 layers offloaded against 40 recommended, ELI reported that its
+            # "oversized KV cache crowds GPU layers out of VRAM".
+            if _rec_ctx and _eff_ctx > _rec_ctx and _rec_layers and _eff_layers < _rec_layers:
                 _concerns.append(
-                    f"context {_eff_ctx} exceeds the hardware-recommended {_rec_ctx}; "
-                    f"the oversized KV cache crowds GPU layers out of VRAM"
+                    f"context {_eff_ctx} is above the hardware profile's {_rec_ctx} and {_eff_layers} of the "
+                    f"{_rec_layers} layers it found room for are on the GPU"
                 )
             if _eff_layers <= 1:
                 _concerns.append(

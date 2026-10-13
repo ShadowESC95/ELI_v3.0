@@ -58,6 +58,12 @@ def _follow_up_line() -> str:
     try:
         agreed = _request_context.agreed_task_var.get()
         facts = _request_context.turn_facts_var.get() or {}
+        if isinstance(agreed, dict) and agreed.get("message") == facts.get("user_input") and agreed.get("rest_of_message"):
+            done = str(agreed.get("done") or "").strip()
+            return ("\nTHE USER'S MESSAGE ALSO HELD COMMANDS. THEY HAVE BEEN CARRIED OUT, AND THE USER HAS BEEN SHOWN "
+                    f"THIS RESULT: {done[:600] or '(nothing came back)'}\nWhat is below is the rest of what they "
+                    "said. Reply to that. Do not repeat the result. Nothing else was carried out this turn: do not "
+                    "say you did, are doing or will do anything else.")
         if isinstance(agreed, dict) and agreed.get("message") == facts.get("user_input"):
             said = str(agreed.get("said") or "yes").strip()[:80]
             line = (f'\nAGREED: You offered this in your last message and the user answered "{said}". Their message '

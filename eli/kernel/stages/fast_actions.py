@@ -66,6 +66,25 @@ _PHASE45_DIRECT_FAST_ACTIONS = {
     'VOLUME'
 }
 
+# Every control of the desktop, an input device or a media player is one of these, whether or
+# not it was written into the list above: the catalogue's own grouping says which they are. The
+# list had MINIMISE_APP and not MAXIMISE_WINDOW, FOCUS_APP or SWITCH_WORKSPACE, so those went
+# through the agent bus and a model pass, and a "maximise browser" that had already run was then
+# reclassed as chat for low grounding and answered with nothing.
+_CONTROL_CATEGORIES = ("App & window control", "Input control", "Media")
+
+
+def _catalogue_controls() -> set:
+    try:
+        from eli.tools.registry.capabilities_doc import _C
+        return {str(name).upper() for name, entry in _C.items() if entry[0] in _CONTROL_CATEGORIES}
+    except Exception:
+        logging.getLogger(__name__).debug("catalogue controls not read", exc_info=True)
+        return set()
+
+
+_PHASE45_DIRECT_FAST_ACTIONS |= _catalogue_controls()
+
 # NOOP = fragment rejected or truly empty input; return silence, store nothing
 _PHASE45_SILENT_FAST_ACTIONS = {'NOOP'}
 
