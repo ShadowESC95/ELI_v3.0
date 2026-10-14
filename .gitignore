@@ -218,6 +218,9 @@ config/voices/
 /runtime/
 /test_reports/
 models/_download.log
+
+# written by the release build (packaging/lock_constraints.py)
+/.build-constraints/
 /clearbuild/
 eli_ci_*.log
 # made from LICENSE by scripts/make_installer_license.py
