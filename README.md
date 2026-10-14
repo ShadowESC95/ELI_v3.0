@@ -27,6 +27,8 @@ no cloud, no account, nobody else in the loop. It's offline by default and it *e
 the network socket — not on the honour system. Point it at whatever local model you like and it tunes
 itself to the hardware you've got, from a laptop to a multi-GPU tower.
 
+> **v3.0.137 — voice input works in the packaged app again, and the first reply no longer reloads the model.** The release build had taken the newest PyAV, which refuses an argument faster-whisper passes, so every transcription failed; ELI now reads a recording itself and hands faster-whisper the samples, and the build keeps to the lock. A model picked at start-up that differs from the one in the settings is no longer "repaired" by loading it a second time. ELI's voice plays on sound devices that take only their own sample rate.
+>
 > **v3.0.136 — ELI is "it" throughout.** The last places in ELI's code and guides that called it "he" now say "it".
 >
 > **v3.0.135 — Normal mode's second pass and the intent resolver no longer read their whole prompt again.** On a hybrid model such as Qwen3.6-35B-A3B, llama.cpp cannot reuse the start two prompts share, so each call read everything (about 65 s for 7.5k tokens on an RTX 2060 SUPER). The model's state at the end of the system prompt is now kept and given back, and every pass of a turn shares one system prompt: Normal mode's second pass took 3.2 s instead of 63.8 s with the same answer, and the intent resolver 2.5 s instead of 26.6 s after its first call. ELI's own instructions to itself are no longer read as your words by the tone and emotion reads.
