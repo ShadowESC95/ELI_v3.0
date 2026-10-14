@@ -1,7 +1,7 @@
 """
 eli/world/spatial_feed.py
 ─────────────────────────
-ELI's world as a body for him needs it: the embodiment protocol.
+ELI's world as a body for ELI needs it: the embodiment protocol.
 
 The world state on disk carries everything: every event, action, goal and habit.
 A client that gives ELI a body (ELI VR now; a desktop avatar, glasses or a robot
@@ -15,12 +15,12 @@ contract, served on the local API server:
     POST /v1/world/scene      what the user and ELI can see now       (version 2)
     POST /v1/world/say        a sentence to ELI from inside the world  (version 2)
     POST /v1/world/edit       the user moving or changing a thing      (version 2)
-    POST /v1/world/compose    ELI making something of his own accord   (version 2)
+    POST /v1/world/compose    ELI making something of its own accord   (version 2)
     POST /v1/world/undo       taking back the last change              (version 2)
-    GET  /v1/world/mind       which model is his mind, and which could be (version 2)
+    GET  /v1/world/mind       which model is ELI's mind, and which could be (version 2)
     POST /v1/world/mind       choosing one                              (version 2)
 
-A body consumes ELI's state; it is never his thinking. The same ELI can have
+A body consumes ELI's state; it is never ELI's thinking. The same ELI can have
 several bodies without a second mind.
 
 Versions are agreed, not assumed. A client says which it speaks; the answer is
@@ -188,7 +188,7 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
         }}
         message["recent"] = _recent(state)
         try:
-            # his real memories and goals, standing in the rooms named for them
+            # ELI's real memories and goals, standing in the rooms named for them
             from eli.world import shown
             message["objects"] = objects + shown.items()
         except Exception:
@@ -197,8 +197,8 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
 
 
 def _recent(state: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:
-    """The last few things ELI did to his world and why, newest last. His
-    walking from room to room is left out: the avatar already says where he is."""
+    """The last few things ELI did to its world and why, newest last. ELI's
+    walking from room to room is left out: the avatar already says where ELI is."""
     out = []
     for action in reversed(state.get("actions") or []):
         if not isinstance(action, dict) or action.get("action_type") == "avatar_move":
@@ -239,8 +239,8 @@ def record_client_event(event_type: str, summary: str = "",
 
 def say(text: str, chat: Optional[Callable[[str], str]] = None) -> Dict[str, Any]:
     """One sentence to ELI from inside the world. If it asks for the place to
-    be changed, he changes it and says so; otherwise it is an ordinary turn of
-    conversation, with where he is in mind (see eli/world/embodiment.py)."""
+    be changed, ELI changes it and says so; otherwise it is an ordinary turn of
+    conversation, with where ELI is in mind (see eli/world/embodiment.py)."""
     from eli.world import composer, embodiment
     text = str(text or "").strip()[:_SAY_MAX]
     if not text:
@@ -333,7 +333,7 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
 
     @router.post("/v1/world/say")
     def world_say(body: Said, principal: Any = Depends(require_act)):
-        """A sentence to ELI from inside the world: he answers, or builds."""
+        """A sentence to ELI from inside the world: ELI answers, or builds."""
         try:
             return say(body.text, (lambda text: chat(text, principal, body.session_id)) if chat else None)
         except Exception as e:  # noqa: BLE001 - every failure leaves as a typed problem
@@ -349,10 +349,10 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
 
     @router.post("/v1/world/compose", dependencies=[Depends(require_act)])
     def world_compose():
-        """ELI making or changing one thing in his own room, unasked."""
+        """ELI making or changing one thing in its own room, unasked."""
         from eli.world import composer, embodiment, urges
         try:
-            # a moment of his own that is waiting comes first; with none, what is on his mind
+            # a moment of ELI's own that is waiting comes first; with none, what is on ELI's mind
             return urges.act(embodiment.live()) or composer.compose(None, embodiment.live())
         except Exception as e:  # noqa: BLE001
             raise _problem(e)
@@ -366,7 +366,7 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
 
     @router.get("/v1/world/mind", dependencies=[Depends(require_read)])
     def world_mind():
-        """Which model is ELI's mind now, and which ones he could use. Names, never paths."""
+        """Which model is ELI's mind now, and which ones ELI could use. Names, never paths."""
         from eli.world import mind
         return mind.status()
 

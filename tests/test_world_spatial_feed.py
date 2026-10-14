@@ -128,7 +128,7 @@ def test_version_one_is_exactly_what_it_always_was():
 
 def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
     from eli.world import shown
-    # the clean lane installs only what the server needs; his memory may not import there
+    # the clean lane installs only what the server needs; ELI's memory may not import there
     memory_module = pytest.importorskip("eli.memory.memory")
     goal_store = pytest.importorskip("eli.planning.goal_store")
 
@@ -148,7 +148,7 @@ def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
     assert goal["room"] == "upgrade_bay" and goal["name"] == "Learn the filing system" and goal["form"]["shape"] == "beacon"
     assert memory["form"]["pos"] == shown.items()[0]["form"]["pos"], "a record keeps its place"
     spatial_feed.spatial_state(WORLD, version=2)
-    assert reads == [1], "his records are not read again for every poll"
+    assert reads == [1], "ELI's records are not read again for every poll"
     assert "memory" not in {o["kind"] for o in spatial_feed.spatial_state(WORLD)["objects"]}, "version 1 is as it was"
     shown.forget()
     monkeypatch.setattr(memory_module, "get_memory", lambda: (_ for _ in ()).throw(RuntimeError("no memory")))
@@ -181,7 +181,7 @@ def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypat
     mood = msg["spaces"]["own_room"]["mood"]
     assert (mood["sky"], mood["ground"], mood["light"]) == ("dawn", "moss", "#9fd8ff")
     assert msg["recent"] == [{"what": "create_object", "who": "eli", "room": "own_room",
-                              "why": "ELI chose to.", "allowed": True}], "his walking about is left out"
+                              "why": "ELI chose to.", "allowed": True}], "ELI's walking about is left out"
 
 
 # ── the routes (clean lane only) ─────────────────────────────────────────────

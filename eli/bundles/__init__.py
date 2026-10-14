@@ -282,7 +282,7 @@ def spawn(bundle_id: str) -> subprocess.Popen:
     server = None
     if _needs_server(bundle):
         # Beside a running ELI the bundle is served by this ELI, in this process: the model
-        # already loaded in his window is the one that answers, and nothing is loaded twice.
+        # already loaded in ELI's window is the one that answers, and nothing is loaded twice.
         from eli.bundles import core_server
 
         port, server = core_server.start()

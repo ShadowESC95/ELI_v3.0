@@ -1,10 +1,10 @@
 """
 eli/world/composer.py
 ─────────────────────
-From words to changes in the world: what ELI makes when he is asked to, and
-what he makes when nobody asked.
+From words to changes in the world: what ELI makes when it is asked to, and
+what it makes when nobody asked.
 
-One call to the local model gives what he says and the edits he means. The
+One call to the local model gives what ELI says and the edits ELI means. The
 model is held to exactly that shape by a grammar (llama.cpp's, so it is the same
 for every GGUF): it cannot leave a field out, invent an op, name a shape that
 does not exist or change a thing that is not there, however small it is. The
@@ -20,23 +20,23 @@ A small model still mishears, so the plain cases are not left to it:
     the user asked to have taken away is taken away.
 
 What comes back is put right and applied by eli/world/building.py. Whatever
-could not be done is said, and if nothing changed he says that, whatever the
+could not be done is said, and if nothing changed ELI says that, whatever the
 model claimed.
 
-Unasked, nothing is chosen for him. He is given what is truly on his mind,
-gathered from his own records (who he is, his last insight, his goals, his
-recent memories, how he is), and the moment that prompted it if there was one,
-and what he makes of it is his: a thing, a change, a new sky, or nothing.
+Unasked, nothing is chosen for ELI. ELI is given what is truly on its mind,
+gathered from its own records (who it is, its last insight, its goals, its
+recent memories, how it is), and the moment that prompted this if there was one,
+and what ELI makes of that is up to ELI: a thing, a change, a new sky, or nothing.
 
 A mind large enough is also offered everything: things made part by part and a
-sky painted his own way, not only the named shapes. A small one keeps to the
+sky painted its own way, not only the named shapes. A small one keeps to the
 named shapes, which it can manage.
 
     wants_building(text)     does this sound like a request to change the place
     grammar_text(...)        the shape the model's answer is held to
-    mindset(state)           what is on his mind, from his records
+    mindset(state)           what is on its mind, from its records
     compose(text, scene)     ask the model, apply the edits, say what happened
-    compose(None, scene)     of his own accord, from what is on his mind
+    compose(None, scene)     of its own accord, from what is on its mind
 """
 from __future__ import annotations
 
@@ -143,8 +143,8 @@ def missing(text: str, things: List[Dict[str, Any]]) -> str:
 
 
 def capable() -> bool:
-    """Whether the mind he has now can be offered everything: things made part by
-    part, a sky painted his own way. Judged by its size (three billion parameters
+    """Whether the mind ELI has now can be offered everything: things made part by
+    part, a sky painted ELI's own way. Judged by the model's size (three billion parameters
     and up); ELI_WORLD_FREEFORM=1 or 0 says so outright."""
     said = os.environ.get("ELI_WORLD_FREEFORM", "").strip()
     if said in ("0", "1"):
@@ -161,7 +161,7 @@ def capable() -> bool:
 
 
 def mindset(state: Dict[str, Any]) -> List[str]:
-    """What is on ELI's mind, in his own records' words. Each line is there only
+    """What is on ELI's mind, in its own records' words. Each line is there only
     if the record is; nothing is made up to fill a gap."""
     lines: List[str] = []
     try:
@@ -213,7 +213,7 @@ def mindset(state: Dict[str, Any]) -> List[str]:
 # ── what may be asked of the model this time ─────────────────────────────────
 def plan(text: Optional[str], things: List[Dict[str, Any]], own: bool) -> Tuple[str, ...]:
     """The ops the answer may use. Asked: the ones that make sense for the
-    sentence. Unasked: all of them. Which he uses, if any, is his."""
+    sentence. Unasked: all of them. Which ELI uses, if any, is up to ELI."""
     if not text:
         ops = [op for op in ALL_OPS if op != "undo" and (own or op != "room")]
         return tuple(op for op in ops if things or op in ("create", "room"))
@@ -338,7 +338,7 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
         else:
             parts.append("If there is something you want to make or change here, do. If not, leave the edits empty.")
     parts += ["", 'Answer as JSON: "say" (one or two short sentences, spoken to the user), then "edits" (a list).']
-    # the order the shapes are named in is not his choice and should not look like one
+    # the order the shapes are named in is not ELI's choice and should not look like one
     shapes = list(building.SHAPES)
     random.Random(str((about or {}).get("ref") or text or state.get("timestamp"))).shuffle(shapes)
     if "create" in ops:
@@ -487,7 +487,7 @@ def _said_outright(text: str, edits: List[Any], own: bool, things: List[Dict[str
         if spot is not None:
             placed[0]["at"] = spot
 
-    # a sky or a ground asked for in his own room, and none given
+    # a sky or a ground asked for in its own room, and none given
     if own and not any(op(e) == "room" for e in edits):
         room: Dict[str, Any] = {}
         for key, noun, allowed, words in (("sky", "sky", building.SKIES, building._SKY_WORDS),
@@ -506,9 +506,9 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
             generate: Optional[Callable[[str], Any]] = None,
             state: Optional[Dict[str, Any]] = None,
             about: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Ask ELI what he does about `text` (or, with no text, what he makes of his
-    own accord), do it, and give back what he says and what happened. `about` is
-    the moment of his own that prompted it, if one did (see eli/world/urges.py)."""
+    """Ask ELI what it does about `text` (or, with no text, what ELI makes of its
+    own accord), do it, and give back what ELI says and what happened. `about` is
+    the moment of ELI's own that prompted this, if one did (see eli/world/urges.py)."""
     asked = bool(text and text.strip())
     room = ((scene or {}).get("room") if asked else "") or building.OWN_ROOM
     world = state if state is not None else _load_world()
@@ -535,7 +535,7 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
     free = capable()
     prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free)
     # one edit when the sentence is about one thing: a new one ("a lamp"), or one that is here.
-    # Asked for something, or moved by a moment of his own: at least one. Otherwise as he likes.
+    # Asked for something, or moved by a moment of its own: at least one. Otherwise as it likes.
     one = asked and ((len(ops) == 1 and ops[0] != "create") or (
         ops == ("create",) and bool(re.search(r"\b(a|an|another|one)\b", text, re.I))
         and not re.search(r"\b(two|three|four|five|few|several|some|more)\b|\band an?\b", text, re.I)))
@@ -572,7 +572,7 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
     if asked:
         edits = _said_outright(text, edits, own, things, scene)
     elif about:
-        # what he makes of a moment is tied to it, and says so if he gave no reason of his own
+        # what ELI makes of a moment is tied to that moment, and says so if ELI gave no reason of its own
         links = [{"type": str(about.get("kind", "")), "ref": about.get("ref"), "text": str(about.get("text", ""))[:200]}]
         for edit in edits:
             if str(edit.get("op", "")).lower() in ("create", "change") and len(str(edit.get("meaning") or "")) < 8:
@@ -583,14 +583,14 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
         outcome = building.apply(
             edits, actor="eli", asked=asked, default_room=room,
             summary=(text.strip() if asked else
-                     (f"Because: {about['text']}"[:200] if about else "ELI built of his own accord")),
+                     (f"Because: {about['text']}"[:200] if about else "ELI built of its own accord")),
             near=embodiment.near_user(scene), source="composer", links=links,
             avoid=(scene["user"]["pos"][0], scene["user"]["pos"][2]) if scene else None,
         )
     failed = [r for r in outcome["results"] if not r.get("ok")] + list(outcome["refused"])
     done = [r for r in outcome["results"] if r.get("ok")]
     if failed and not done:
-        # He said he would, and it did not happen: the user hears the truth.
+        # ELI said it would, and it did not happen: the user hears the truth.
         say = f"I could not do that: {failed[0].get('reason', 'it was not allowed')}."
     elif failed:
         say = (say + " " if say else "") + f"One part did not happen: {failed[0].get('reason', 'it was not allowed')}."

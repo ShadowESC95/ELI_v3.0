@@ -214,7 +214,7 @@ def test_an_installed_bundle_that_needs_the_server_is_handed_the_port(
 
 
 def test_beside_a_running_eli_a_bundle_is_served_by_that_eli(isolated, monkeypatch):
-    """Opened from ELI's window: his own process serves it, so the model loaded there answers."""
+    """Opened from ELI's window: that window's own process serves it, so the model loaded there answers."""
     program = isolated / "eli-rooms"
     program.write_text("")
     registry = isolated / "registry"

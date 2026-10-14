@@ -151,15 +151,15 @@ class EliWorldAutonomyEngine:
             if _obj is not None:
                 actions.append(self._retire_object_action(_obj.object_id, _obj.room, f"Task '{_obj.name}' was closed."))
 
-        # A moment of his own that has words (an insight, a goal, an ambition) is kept as an urge:
-        # something he may later make into a thing in his own room (eli/world/urges.py).
+        # A moment of ELI's own that has words (an insight, a goal, an ambition) is kept as an urge:
+        # something ELI may later make into a thing in its own room (eli/world/urges.py).
         try:
             from eli.world import urges
             urges.consider(state, event)
         except Exception:
             log.debug("world urge skipped", exc_info=True)
 
-        # ELI's building (eli/world/building.py): he goes to the room he is working in, and each
+        # ELI's building (eli/world/building.py): ELI goes to the room it is working in, and each
         # edit becomes a world action like any other, judged by the policy and kept in the ledger.
         if event.event_type == "world_edit":
             from eli.world import building

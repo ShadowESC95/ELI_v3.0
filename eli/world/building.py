@@ -1,9 +1,9 @@
 """
 eli/world/building.py
 ─────────────────────
-ELI's hand on his own world: placing things in the rooms, moving and changing
+ELI's hand on its own world: placing things in the rooms, moving and changing
 them, taking them away again, and setting the sky, light and ground of the one
-room that is his.
+room that is ELI's own.
 
 Nothing here draws. An edit is a small dict; this module checks it, turns it
 into the world's own actions, and those go the way every world action goes:
@@ -20,8 +20,8 @@ enough for the smallest model. A list of *parts* is anything at all: boxes,
 balls, cones, rings, a profile turned on a lathe, an outline pulled up into a
 solid, a tube along a path, a line of text, each with its own place, turn,
 size, colour, metal, glow, clearness and motion. Nothing ELI makes has to come
-from a list. The same holds for his room: a sky by name, or painted from two
-colours, stars and a sun wherever he puts it; ground by name, or any colour,
+from a list. The same holds for its room: a sky by name, or painted from two
+colours, stars and a sun wherever ELI puts it; ground by name, or any colour,
 flat or rising into hills.
 
 Anything a model gets slightly wrong is put right here rather than refused.
@@ -45,12 +45,12 @@ EVENT_TYPE = "world_edit"
 BUILT = "built"                      # object_type of a thing made this way
 
 # The one room that is ELI's to shape. The nine rooms of the house are what
-# they are; he may put things in them, but their sky and ground are not his to
-# change. His own room is kept in the world's `spaces`, beside the house.
+# they are; ELI may put things in them, but their sky and ground are not its to
+# change. ELI's own room is kept in the world's `spaces`, beside the house.
 OWN_ROOM = "own_room"
 OWN_ROOM_INFO: Dict[str, Any] = {
     "name": "ELI's Room",
-    "purpose": "ELI's own space. Nothing is here but what he has made.",
+    "purpose": "ELI's own space. Nothing is here but what ELI has made.",
     "theme": "open ground under an open sky",
     "unlocked": True,
 }
@@ -345,7 +345,7 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
                 edit["light"] = light
             if raw.get("mist") is not None:
                 edit["mist"] = round(_clamp(_number(raw.get("mist"), 0.0), 0.0, 1.0), 2)
-            # a sky and a ground of his own, not from the list
+            # a sky and a ground of its own, not from the list
             for key in ("sky_top", "sky_horizon", "ground_colour", "mist_colour"):
                 tint = colour(raw.get(key))
                 if tint:
@@ -682,7 +682,7 @@ def apply(edits: Any, *, actor: str = "eli", summary: str = "", asked: bool = Fa
         if avoid is not None:
             payload["avoid"] = [round(float(avoid[0]), 2), round(float(avoid[1]), 2)]
         if links:
-            payload["links"] = links        # what in his records each new thing is about
+            payload["links"] = links        # what in its records each new thing is about
         state = append_event(EVENT_TYPE, source, str(summary)[:200], payload)
     event = (state.get("events") or [{}])[-1]
     results = list((event.get("payload") or {}).get("results") or [])

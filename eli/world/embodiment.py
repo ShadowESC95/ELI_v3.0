@@ -1,13 +1,13 @@
 """
 eli/world/embodiment.py
 ───────────────────────
-What ELI can tell of where he is embodied, while he is.
+What ELI can tell of where it is embodied, while it is embodied.
 
 A spatial client (ELI VR) reports the scene every few seconds: which room the
 user is standing in and what that place is, where they are and what they are
-looking at, whether ELI is there with them and how far away, what of his is
+looking at, whether ELI is there with them and how far away, which of ELI's things are
 near. That is kept here, in memory only, for as long as it is fresh. While it
-is, ELI's prompt carries a few plain lines saying so, and he can answer "where
+is, ELI's prompt carries a few plain lines saying so, and ELI can answer "where
 are we" or "what am I looking at" from what is actually the case.
 
     report(scene)       a client saying what is so now
@@ -139,7 +139,7 @@ def the(room_name: str) -> str:
 
 
 def context_block(max_age: float = FRESH_SECONDS) -> str:
-    """The lines ELI's prompt carries while someone is in a room with him."""
+    """The lines ELI's prompt carries while someone is in a room with ELI."""
     scene = live(max_age)
     if scene is None:
         return ""

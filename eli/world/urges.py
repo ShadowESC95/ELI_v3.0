@@ -3,22 +3,22 @@ eli/world/urges.py
 ──────────────────
 What in ELI's own life asks to be made into something.
 
-Nothing here runs on a clock of its own and nothing here decides what he
-makes. When something happens in him (an insight is formed, a goal is taken
+Nothing here runs on a clock of its own and nothing here decides what ELI
+makes. When something happens in ELI (an insight is formed, a goal is taken
 on or finished, an ambition to improve is raised) the event already passes
-through his world. The ones that carry words are kept as *urges*: the moment,
+through ELI's world. The ones that carry words are kept as *urges*: the moment,
 in its own words, with where it came from.
 
-Later, when he is free (a model already in memory, nobody waiting on him, and
-the user's mood not asking him to hold back), he may make something of one in
-his own room. What he makes is his to choose, and a small model may choose to
-make nothing. Whatever he makes is linked to the record it came from, so "why
+Later, when ELI is free (a model already in memory, nobody waiting, and
+the user's mood not asking for restraint), ELI may make something of one in
+its own room. What ELI makes is up to ELI, and a small model may choose to
+make nothing. Whatever ELI makes is linked to the record the moment came from, so "why
 is this here" has a true answer.
 
     consider(state, event)   in the engine: keep a moment that has words
     waiting()                the urges not yet acted on
-    act(scene)               make something of the oldest, if he will
-    act_when_free()          the same, only when he is free: for his own background loop
+    act(scene)               make something of the oldest, if ELI will
+    act_when_free()          the same, only when ELI is free: for ELI's own background loop
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from eli.world.core.schemas import EliWorldState, WorldEvent
 KEPT = 12
 TEXT_MAX = 300
 
-# Which events are moments of his own. This says what kind of moment each is;
+# Which events are moments of ELI's own. This says what kind of moment each is;
 # it says nothing about what, if anything, becomes of it.
 MOMENTS = {
     "reflection": "insight",
@@ -44,7 +44,7 @@ _NOT_HIS = ("spatial_client", "composer", "world_building")     # the room itsel
 
 
 def consider(state: EliWorldState, event: WorldEvent) -> None:
-    """Keep this event as an urge if it is a moment of his own and has words."""
+    """Keep this event as an urge if it is a moment of ELI's own and has words."""
     kind = MOMENTS.get(event.event_type)
     text = " ".join(str(event.summary or "").split())[:TEXT_MAX]
     if kind is None or len(text) < 12 or event.source in _NOT_HIS:
@@ -106,8 +106,8 @@ def act(scene: Optional[Dict[str, Any]] = None, *,
 
 def act_when_free() -> Optional[Dict[str, Any]]:
     """For ELI's own background loop. Acts only with a model already in memory
-    (one is never loaded for this) and when the user's mood does not ask him to
-    hold back. The loop itself has already checked that nobody is waiting on him."""
+    (one is never loaded for this) and when the user's mood does not ask ELI to
+    hold back. The loop itself has already checked that nobody is waiting on ELI."""
     try:
         from eli.cognition.gguf_inference import is_loaded
         if not is_loaded():

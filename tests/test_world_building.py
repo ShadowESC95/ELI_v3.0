@@ -1,5 +1,5 @@
-"""ELI's building (eli/world/building.py), what he makes from words
-(eli/world/composer.py) and what he knows of where he is (eli/world/embodiment.py).
+"""ELI's building (eli/world/building.py), what ELI makes from words
+(eli/world/composer.py) and what ELI knows of where it is (eli/world/embodiment.py).
 
 Everything runs on a world in a temporary folder with the journal and the ledger
 turned aside, and the model is a stand-in: no real world state is read or
@@ -81,14 +81,14 @@ def test_eli_makes_a_thing_and_the_world_keeps_how_it_looks_and_why(world):
     assert lantern.symbolic_meaning == "a light left on" and lantern.reason == "build me a lantern"
     form = building.form_of(lantern.__dict__)
     assert (form["shape"], form["colour"], form["pos"], form["glow"]) == ("lamp", "#f5b942", [1.0, 0.0, 3.0], 0.8)
-    assert state.avatar.room == building.OWN_ROOM and state.avatar.activity == "building", "he went there to do it"
+    assert state.avatar.room == building.OWN_ROOM and state.avatar.activity == "building", "ELI went there to do it"
     assert building.OWN_ROOM not in state.rooms, "the house stays the nine rooms"
     assert state.spaces[building.OWN_ROOM]["name"] == "ELI's Room"
 
 
 def test_every_edit_is_a_world_action_judged_by_the_policy_and_kept(world):
     building.apply([{"op": "create", "name": "Stone", "shape": "block"}, {"op": "note", "text": "first stone"}],
-                   actor="eli", asked=False, summary="ELI built of his own accord")
+                   actor="eli", asked=False, summary="ELI built of its own accord")
     built = [a for a in world().actions if a.payload.get("built")]
     assert [a.action_type for a in built] == ["create_object", "journal_entry"]
     assert all(a.permission_class == "world_safe" and a.provenance_id for a in built)
@@ -169,7 +169,7 @@ def test_a_room_fills_up(world, monkeypatch):
     assert "the room is full" in out["results"][3]["reason"]
 
 
-# ── his own room ─────────────────────────────────────────────────────────────
+# ── ELI's own room ───────────────────────────────────────────────────────────
 def test_his_own_room_takes_a_sky_a_ground_a_light_and_mist(world):
     assert building.mood_of(world().spaces) == building.DEFAULT_MOOD
     out = building.apply([{"op": "room", "sky": "morning", "ground": "grass", "light": "gold", "mist": 3}],
@@ -206,7 +206,7 @@ def test_a_thing_taken_away_comes_back_when_that_is_undone(world):
     assert building.form_of(_standing(world())["Lantern"].__dict__)["pos"] == [2.0, 0.0, 2.0]
 
 
-# ── where he is ──────────────────────────────────────────────────────────────
+# ── where ELI is ─────────────────────────────────────────────────────────────
 SCENE = {
     "surface": "eli_vr", "session": "s1", "room": "Core Room", "room_name": "Core Room",
     "seen_as": "An open deck on a station in orbit, Earth below.", "headset": True, "screen": True,
@@ -316,15 +316,15 @@ def test_of_his_own_accord_nothing_is_chosen_for_him(world):
     assert "If not, leave the edits empty." in prompt and "This time" not in prompt
     assert out["room"] == building.OWN_ROOM and not out["asked"] and out["text"] == ""
     pool = _standing(world())["Still Water"]
-    assert pool.symbolic_meaning == "nothing pressing" and pool.reason == "ELI built of his own accord"
-    assert building.form_of(pool.__dict__)["pos"] == [3.0, 0.0, 4.0], "where he put it, not where a rule would"
+    assert pool.symbolic_meaning == "nothing pressing" and pool.reason == "ELI built of its own accord"
+    assert building.form_of(pool.__dict__)["pos"] == [3.0, 0.0, 4.0], "where ELI put it, not where a rule would"
     assert [a.reason for a in world().actions if a.payload.get("built")] == ["ELI chose to."]
-    # and he may make nothing at all
+    # and ELI may make nothing at all
     out = composer.compose(None, None, generate=lambda p: {"say": "", "edits": []})
     assert out["results"] == [] and out["text"] == "" and set(_standing(world())) == {"Still Water"}
     assert composer.plan(None, [], True) == ("create", "room")
     assert composer.plan(None, [{"name": "Still Water", "form": {"shape": "pool"}}], True) == (
-        "create", "move", "change", "remove", "room"), "unasked, every kind of change is open to him"
+        "create", "move", "change", "remove", "room"), "unasked, every kind of change is open to ELI"
 
 
 def test_if_it_did_not_happen_he_does_not_say_it_did(world):
@@ -400,7 +400,7 @@ def test_what_the_user_named_outright_is_what_the_thing_gets(world):
     orb = building.form_of(_standing(state)["orb"].__dict__)
     assert (orb["shape"], orb["colour"]) == ("orb", "#4c7df0")
     assert building.mood_of(state.spaces)["sky"] == "dawn", "asked for and left out: added"
-    assert out["text"] == "Done.", "he says something when he did something"
+    assert out["text"] == "Done.", "ELI says something when it did something"
     # two colours, or two things: nothing is guessed
     both = {"say": "ok", "edits": [{"op": "create", "name": "a", "shape": "cone", "colour": "pink"},
                                    {"op": "create", "name": "b", "shape": "cone", "colour": "pink"}]}
@@ -506,7 +506,7 @@ def test_nothing_is_put_on_top_of_the_person_standing_there(world):
 
 
 
-# ── his mind ─────────────────────────────────────────────────────────────────
+# ── ELI's mind ───────────────────────────────────────────────────────────────
 @pytest.fixture
 def minds(tmp_path, monkeypatch):
     """Three models on a disk, none loaded, none chosen. Gives the state to change."""
@@ -556,7 +556,7 @@ def test_the_one_used_last_is_shown_as_that_and_not_as_a_choice(minds):
     minds["resolved"] = elsewhere
     said = mind.status()
     assert said["model"] == "Old.gguf" and said["loaded"] is False and said["chosen"] is False
-    assert "Old.gguf" in [m["name"] for m in said["models"]], "one from elsewhere on the disk is still his"
+    assert "Old.gguf" in [m["name"] for m in said["models"]], "one from elsewhere on the disk is still ELI's"
 
 
 def test_choosing_loads_it_the_way_his_own_settings_do(minds):
@@ -566,7 +566,7 @@ def test_choosing_loads_it_the_way_his_own_settings_do(minds):
     assert minds["applied"] == [{"model_path": path, "gguf_model_path": path, "custom_model_path": path}]
     assert said["loaded"] and said["chosen"] and said["model"] == "Small.gguf (b)"
     mind.choose("Small.gguf (b)")
-    assert len(minds["applied"]) == 1, "already his mind: nothing is loaded again"
+    assert len(minds["applied"]) == 1, "already ELI's mind: nothing is loaded again"
 
 
 def test_a_model_that_is_not_there_or_does_not_load_is_told_apart(minds):
@@ -663,7 +663,7 @@ def test_how_large_his_mind_is_can_be_said_outright(monkeypatch):
     assert composer.capable() is False
 
 
-# ── of his own accord ────────────────────────────────────────────────────────
+# ── of ELI's own accord ──────────────────────────────────────────────────────
 def test_a_moment_of_his_own_with_words_is_kept_and_the_rest_is_not(world):
     from eli.world import urges
     from eli.world.core.schemas import WorldEvent
@@ -673,8 +673,8 @@ def test_a_moment_of_his_own_with_words_is_kept_and_the_rest_is_not(world):
         WorldEvent("reflection", "insight_synthesis", "You answer faster when the question is about your own code."),
         WorldEvent("reflection", "proactive_daemon", "Proactive tick: 3 patterns, 1 improvements analysed."),
         WorldEvent("task_opened", "goal_store", "Task opened: learn the user's filing system", {"goal_id": "g1"}),
-        WorldEvent("tool_activity", "executor", "ran a command that says nothing about him"),
-        WorldEvent("reflection", "spatial_client", "the room itself talking is not a thought of his"),
+        WorldEvent("tool_activity", "executor", "ran a command that says nothing about ELI"),
+        WorldEvent("reflection", "spatial_client", "the room itself talking is not a thought of ELI's"),
         WorldEvent("reflection", "x", "too short"),
     ):
         engine.ingest_event(event)
@@ -701,7 +701,7 @@ def test_what_he_makes_of_a_moment_is_tied_to_it(world, monkeypatch):
     assert "What has just happened in you (insight): Quiet work goes further than loud work." in asked[0]
     assert out["about"] == {"kind": "insight", "text": "Quiet work goes further than loud work."}
     hush = _standing(world())["Hush"]
-    assert hush.symbolic_meaning == "Quiet work goes further than loud work.", "no reason of his own: the moment is the reason"
+    assert hush.symbolic_meaning == "Quiet work goes further than loud work.", "no reason of ELI's own: the moment is the reason"
     assert hush.links[0]["type"] == "insight" and hush.links[0]["text"].startswith("Quiet work")
     assert hush.reason == "Because: Quiet work goes further than loud work."
     assert written and "Made of my own accord: Hush" in written[-1]["title"] and "Because: Quiet work" in written[-1]["body"]
@@ -737,7 +737,7 @@ def test_in_the_background_he_acts_only_when_free(world, monkeypatch):
     monkeypatch.setattr(inference, "is_loaded", lambda: True)
     import eli.cognition.affect_policy as affect
     monkeypatch.setattr(affect, "should_defer_proactive", lambda user_id="": (True, "the user is low"))
-    assert urges.act_when_free() is None and acted == [], "their mood asks him to hold back"
+    assert urges.act_when_free() is None and acted == [], "their mood asks ELI to hold back"
     monkeypatch.setattr(affect, "should_defer_proactive", lambda user_id="": (False, ""))
     assert urges.act_when_free() == {"results": []} and acted == [1]
 

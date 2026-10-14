@@ -1055,8 +1055,8 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
                         _SWLOG.debug("suppressed exception", exc_info=True)
 
                     # A moment of ELI's own (an insight, a goal, an ambition) may become something
-                    # in his own room. Only with a model already in memory, never while the user is
-                    # mid-request, and not when their mood asks him to hold back (eli/world/urges.py).
+                    # in its own room. Only with a model already in memory, never while the user is
+                    # mid-request, and not when their mood asks ELI to hold back (eli/world/urges.py).
                     try:
                         if not _foreground_busy():
                             from eli.world.urges import act_when_free

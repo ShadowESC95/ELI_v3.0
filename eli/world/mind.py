@@ -1,8 +1,8 @@
 """
 eli/world/mind.py
 ─────────────────
-Which model is ELI's mind right now, which ones he could use, and choosing one,
-for a client that gives him a body.
+Which model is ELI's mind right now, which ones ELI could use, and choosing one,
+for a client that gives ELI a body.
 
 No model is assumed anywhere. A body shows what this says and lets the user
 choose; ELI VR does that from a panel in the room, or before it starts. Opened
@@ -37,7 +37,7 @@ def _found() -> Dict[str, Path]:
     with one name are told apart by the folder they are in."""
     from eli.core.hardware_profile import discover_models
 
-    # where ELI keeps models: beside the code, where the user said, and in his data
+    # where ELI keeps models: beside the code, where the user said, and in ELI's data
     folders: List[Optional[Path]] = [None]
     try:
         from eli.core.paths import data_dir, models_dir
@@ -55,7 +55,7 @@ def _found() -> Dict[str, Path]:
             continue
     current = _resolved()
     if current is not None and current not in paths:
-        paths.append(current)           # one chosen from elsewhere on the disk is still his
+        paths.append(current)           # one chosen from elsewhere on the disk is still ELI's
     out: Dict[str, Path] = {}
     for path in sorted(paths, key=lambda p: p.name.lower()):
         name = path.name
@@ -114,13 +114,13 @@ def status() -> Dict[str, Any]:
 
 
 def choose(name: str) -> Dict[str, Any]:
-    """Make this model ELI's mind and load it. The same as choosing it in his settings."""
+    """Make this model ELI's mind and load it. The same as choosing it in ELI's settings."""
     found = _found()
     path = found.get(str(name or "").strip())
     if path is None:
         raise MindError("unknown_model", f"there is no model called {name!r} here")
     if _loaded() and _resolved() == path:
-        return status()                 # already his mind: nothing to load
+        return status()                 # already ELI's mind: nothing to load
     try:
         from eli.core.runtime_settings import apply_runtime_settings
         result = apply_runtime_settings(

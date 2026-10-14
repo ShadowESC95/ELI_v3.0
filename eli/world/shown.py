@@ -1,16 +1,16 @@
 """
 eli/world/shown.py
 ──────────────────
-What of ELI's own records stands in the rooms of his house.
+What of ELI's own records stands in the rooms of its house.
 
-The rooms are named for what he does: remembering, working, improving. This
-puts the real thing in each: in the Memory Archive, the memories he has formed
+The rooms are named for what ELI does: remembering, working, improving. This
+puts the real thing in each: in the Memory Archive, the memories ELI has formed
 lately, each a light that carries its own words; in the Upgrade Bay, the goals
-he holds now. They are read from his memory and his goal store, never made up,
-and they are not things he built: a body draws them, and may let the user pick
-one up, but moving one changes nothing in him.
+ELI holds now. They are read from ELI's memory and goal store, never made up,
+and they are not things ELI built: a body draws them, and may let the user pick
+one up, but moving one changes nothing in ELI.
 
-Reading his records for every poll of the world would be wasteful, so what is
+Reading ELI's records for every poll of the world would be wasteful, so what is
 shown is refreshed at most every half minute.
 
     items()     the things to show, as the world feed carries things
