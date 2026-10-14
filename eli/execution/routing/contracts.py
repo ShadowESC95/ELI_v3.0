@@ -479,7 +479,7 @@ def _eli_phase38_identity_contract(raw):
     # room + 9-room topology is used. These previously fell to the llm_intent fallback,
     # which guessed GAZE_STATUS — a path with no world context — so the model defaulted
     # to "Core Room" instead of reading the real room (anomaly_room/workshop/…) from the
-    # world state. Route them here so ELI answers his actual room.
+    # world state. Route them here so ELI answers its actual room.
     if _re.search(
         r"\b(?:what|which)\s+room\s+(?:are\s+you|you'?re|is\s+eli)\b"
         r"|\bwhere\s+are\s+you\s+(?:right\s+now|currently|at|in\s+your\s+world)\b"

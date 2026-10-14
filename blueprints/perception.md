@@ -191,7 +191,7 @@ Decides the emotion ELI **expresses** and drives three output channels at once.
   applied on the Piper, natural-neural and clone paths), and face
   (`world/avatar/persona_mapper` + the animated `gui/widgets/eli_face.py` take the expression).
 - **Core personality is never overwritten** — the directive explicitly shades *how* ELI
-  delivers, not *who* he is (emergent-voice principle). `ELI_TONE_ADAPT=0` disables.
+  delivers, not *who* it is (emergent-voice principle). `ELI_TONE_ADAPT=0` disables.
 
 ## Animated face liveness (`gui/widgets/eli_face.py` + `cognition/expression_state.py`)
 

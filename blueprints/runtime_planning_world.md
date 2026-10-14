@@ -107,13 +107,13 @@ Background cognition + goal/queue machinery:
   the scheduler ticked nothing and ELI only reacted. `propose_goals_from_signals`
   turns the signals ELI already computes each proactive tick — world-model awareness
   suggestions (≥0.6), recurring failures (≥5×), and code-health improvements
-  (oversized fns / duplicate blocks in his own god-files) — into governed goals.
+  (oversized fns / duplicate blocks in its own god-files) — into governed goals.
   Each is `autonomy_mode="proposal_only"` (surfaces for approval; never silent
   execution), deduped by a stable signal-derived `goal_id` (idempotent every tick),
   capped at `MAX_AUTO_GOALS=6`, logged as a `self_goal` observation. Wired into
   `proactive_daemon` where the world-suggestions + patterns + improvements are in
-  scope. His agenda now spans failure-repair, world-driven, AND self-improvement —
-  i.e. he sets his own intentions, governed.
+  scope. Its agenda now spans failure-repair, world-driven, AND self-improvement —
+  i.e. it sets its own intentions, governed.
 
 ## World / autonomy model (`eli/world/`, 1.8k LOC)
 

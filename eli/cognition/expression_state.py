@@ -1,5 +1,5 @@
 """Live avatar/expression state — the thin bridge that lets ELI's face react in
-real time to what he's *doing*, not just what he's feeling.
+real time to what it's *doing*, not just what it's feeling.
 
 Three cheap process-local flags the face widget polls each frame:
   • speaking  — set while TTS audio is playing (drives lip-sync mouth movement),

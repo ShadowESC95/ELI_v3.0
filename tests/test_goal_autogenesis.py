@@ -1,4 +1,4 @@
-"""Goal autogenesis: ELI turns his own signals into governed goals.
+"""Goal autogenesis: ELI turns its own signals into governed goals.
 
 Closes the autonomy gap where the goal store was always empty (create_goal was
 operator-only) so the scheduler/goal-tick ticked nothing. Goals are proposal_only,

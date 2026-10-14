@@ -68,8 +68,8 @@ class AwarenessState:
         Compact LIVE self-model injected into the system prompt each turn. Every fact is
         read FRESH from the running system (agents, capabilities, model, world-state) so
         ELI's self-knowledge tracks the code automatically and can never go stale — add an
-        agent or a capability and he simply knows. Private context: gives him accurate
-        self-facts to draw on; he narrates them only when asked.
+        agent or a capability and it simply knows. Private context: gives it accurate
+        self-facts to draw on; it narrates them only when asked.
         """
         parts = [self._live_self_model()]
         if self.capability_delta_has_changes:

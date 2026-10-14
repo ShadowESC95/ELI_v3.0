@@ -208,8 +208,8 @@ _CORE_GUARD = ("Keep your core personality exactly as it is — this shades HOW 
 
 def text_directive() -> str:
     """Situational tone directive folded into the system prompt. It makes ELI AWARE
-    of when a different approach is more effective and shades his delivery that way —
-    it does NOT overwrite his core personality (that stays fixed). Empty for neutral."""
+    of when a different approach is more effective and shades its delivery that way —
+    it does NOT overwrite its core personality (that stays fixed). Empty for neutral."""
     cur = current_tone()
     if cur["tone"] == "neutral":
         return ""

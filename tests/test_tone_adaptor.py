@@ -1,6 +1,6 @@
 """Tone/emotion adaptor: two-system detection, empathetic autonomous policy,
 override control, and the three output channels (text/voice/face) — all shading
-ELI's delivery WITHOUT replacing his core personality.
+ELI's delivery WITHOUT replacing its core personality.
 """
 from __future__ import annotations
 
