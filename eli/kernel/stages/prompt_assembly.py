@@ -51,6 +51,21 @@ def _date_facts_line(user_input: Any) -> str:
         return ""
 
 
+def _users_own_words(text: str) -> str:
+    """What the user said this turn. A reasoning pass is given ELI's own instructions to itself
+    ("Think through the following request step by step...", then its scratchpad); read as the
+    user's words they set the tone of the reply and were logged on the emotion timeline as what
+    the user had said, once per pass."""
+    try:
+        said = str((_request_context.turn_facts_var.get() or {}).get("user_input") or "").strip()
+        if said:
+            return said
+        from eli.cognition.evidence_format import latest_user_message
+        return latest_user_message(text or "")
+    except Exception:
+        return str(text or "")
+
+
 def _follow_up_line() -> str:
     """What this message is a reply to, said outright. A small model shown "yes please" under
     its own offer went on describing what it could do; shown "B" under its own either/or, it
@@ -288,7 +303,7 @@ Answer:"""
             _prior_action = str((getattr(self, "_last_request_meta", None) or {}).get("action") or "")
             # The message itself, not the history in front of it: the tone was read off earlier turns.
             situation_brief = _ta.build_situation_brief(
-                _evidence_format.latest_user_message(user_input or ""),
+                _users_own_words(user_input),
                 situation_brief,
                 user_id=self._get_user_id(),
                 session_id=getattr(self, "session_id", "") or "",

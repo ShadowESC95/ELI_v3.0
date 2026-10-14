@@ -432,6 +432,23 @@ class GenerationMixin:
                 if gguf_inference is None:
                     raise RuntimeError("GGUF module not available")
 
+                # One system prompt for every pass of a turn. The passes of a reasoning mode (Normal's
+                # scratchpad and answer, a tree's branches) carry the same evidence and differ only in
+                # their own message; built per call, the system prompt came out different each time
+                # (the persona was cut to fit each pass's message), so the model read all of it again:
+                # 62 s per pass for 7k tokens on a 35B model. Shared, its state is kept between the
+                # passes (gguf_inference) and each later pass reads only its own message.
+                _turn_key = (str(reasoning_mode or ""), hash(memory_context or ""), hash(situation_brief or ""))
+                _turn_facts_sys = _request_context.turn_facts_var.get()
+                _turn_systems = (_turn_facts_sys.setdefault("_systems", {})
+                                 if isinstance(_turn_facts_sys, dict) else None)
+                _reused_system = bool(_turn_systems) and _turn_key in _turn_systems
+                try:
+                    from eli.cognition.reasoning_modes import canonical_mode as _cm_pass
+                    _multi_pass = _cm_pass(reasoning_mode) != "quick"
+                except Exception:
+                    _multi_pass = False
+
                 # Context size guard. For short queries on small windows, trim memory to prevent prompt bloat
                 # and multi-minute first-token latency: persona (~2k chars) + user_input + max_tokens must fit in
                 # n_ctx with room to spare, and memory gets what's left.
@@ -444,7 +461,7 @@ class GenerationMixin:
                     _n_ctx_guard, _persona_chars + _query_chars, _max_tok_guard,
                     wanted_chars=len(_trimmed_mem),
                     protect_memory=_ctx_budget.is_recall_question(prompt))
-                if len(_trimmed_mem) > _mem_char_budget:
+                if not _reused_system and len(_trimmed_mem) > _mem_char_budget:
                     log.debug(
                         f"[COGNITIVE] Trimming memory context "
                         f"{len(_trimmed_mem)}→{_mem_char_budget} chars "
@@ -455,14 +472,17 @@ class GenerationMixin:
                     self._note_memory_trim(_before, len(_trimmed_mem))
                 # ─────────────────────────────────────────────────────────────
 
-                enhanced_system = self._build_enhanced_system(
-                    _trimmed_mem,
-                    compact=self._use_compact_system(
-                        prompt, _trimmed_mem, reasoning_mode=reasoning_mode),
-                    user_input=prompt,
-                    reasoning_mode=reasoning_mode,
-                    situation_brief=situation_brief,
-                )
+                if _reused_system:
+                    enhanced_system = _turn_systems[_turn_key]
+                else:
+                    enhanced_system = self._build_enhanced_system(
+                        _trimmed_mem,
+                        compact=self._use_compact_system(
+                            prompt, _trimmed_mem, reasoning_mode=reasoning_mode),
+                        user_input=prompt,
+                        reasoning_mode=reasoning_mode,
+                        situation_brief=situation_brief,
+                    )
                 log.debug("[COGNITIVE] Generating response with GGUF...")
                 broker = _get_inference_broker() if _get_inference_broker else None
                 if broker and broker.gguf_ready:
@@ -535,7 +555,17 @@ class GenerationMixin:
                         _qcap = 20000
                     if _qcap > 0:
                         _max_prompt_chars = min(_max_prompt_chars, _qcap)
-                    if len(enhanced_system) + len(prompt) > _max_prompt_chars:
+                    # A mode of several passes keeps a quarter for each pass's message from the start, so
+                    # a later, longer message (the scratchpad) never makes the system prompt shrink again.
+                    if not _reused_system and _multi_pass:
+                        _sys_room = _max_prompt_chars - _max_prompt_chars // 4
+                        if len(enhanced_system) > _sys_room:
+                            enhanced_system = _truncate_system_prompt_preserving_evidence(
+                                enhanced_system, _sys_room)
+                    if _reused_system and len(enhanced_system) + len(prompt) > _max_prompt_chars:
+                        prompt = prompt[-max(200, _max_prompt_chars - len(enhanced_system)):]
+                        log.debug(f"[COGNITIVE] Prompt capped to {_max_prompt_chars}chars (the turn's system prompt kept)")
+                    elif len(enhanced_system) + len(prompt) > _max_prompt_chars:
                         # Give the user prompt at least 25% of the budget so the
                         # actual question is never fully clipped.
                         _prompt_budget = max(200, min(len(prompt), _max_prompt_chars // 4))
@@ -550,6 +580,8 @@ class GenerationMixin:
                         log.debug(
     f"[COGNITIVE] Prompt capped to {_max_prompt_chars}chars "
     f"(evidence-preserving; n_ctx={_n_ctx_pf1}, qcap={_qcap})")
+                    if _turn_systems is not None and not _reused_system:
+                        _turn_systems[_turn_key] = enhanced_system
 
                     # Re-fit the answer budget to the prompt actually being sent. The earlier estimate floored at
                     # 128 and ran before truncation, so a big prompt got cut and the answer stayed capped at 128.
