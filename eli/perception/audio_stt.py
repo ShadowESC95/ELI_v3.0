@@ -2034,6 +2034,8 @@ class ELIAudioSTT:
                             if age > _speaking_lock_max_age:
                                 p.unlink(missing_ok=True)
                                 return False
+                        except FileNotFoundError:
+                            return False  # the voice finished between the two looks
                         except Exception:
                             log.debug("suppressed exception", exc_info=True)
                         return True

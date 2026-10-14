@@ -81,14 +81,15 @@ def _h_transcribe(a, args):
                 return {"ok": False, "action": a, "error": f"File not found: {src_path}",
                         "content": f"File not found: {src_path}", "response": f"File not found: {src_path}"}
             from faster_whisper import WhisperModel
+            from eli.perception.local_whisper_stt import _audio_for_whisper
             model = WhisperModel("small", device="cpu", compute_type="int8")
-            segments, _ = model.transcribe(str(src_path), vad_filter=True)
+            segments, _ = model.transcribe(_audio_for_whisper(src_path), vad_filter=True)
             text = " ".join(seg.text.strip() for seg in segments).strip()
             msg = f"Transcription of {src_path.name}:\n\n{text}" if text else "No speech detected."
             return {"ok": True, "action": a, "content": msg, "response": msg, "text": text}
         else:
             # Live microphone transcription — single utterance
-            import numpy as np, sounddevice as sd, soundfile as sf, tempfile
+            import numpy as np, sounddevice as sd
             from faster_whisper import WhisperModel
             sr = 16000
             chunk = 0.05
@@ -116,12 +117,10 @@ def _h_transcribe(a, args):
             if not frames:
                 return {"ok": False, "action": a, "error": "No audio captured",
                         "content": "No audio captured.", "response": "No audio captured."}
-            audio = np.concatenate(frames)
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                sf.write(f.name, audio, sr)
-                tmp_path = f.name
+            audio = np.concatenate(frames).astype("float32")
             model = WhisperModel("small", device="cpu", compute_type="int8")
-            segments, _ = model.transcribe(tmp_path, vad_filter=True)
+            # the samples themselves, recorded at 16 kHz: no file for PyAV to open
+            segments, _ = model.transcribe(audio, vad_filter=True)
             text = " ".join(seg.text.strip() for seg in segments).strip()
             msg = f"Transcribed: {text}" if text else "No speech detected."
             return {"ok": True, "action": a, "content": msg, "response": msg, "text": text}
