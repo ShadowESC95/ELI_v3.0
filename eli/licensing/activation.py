@@ -3,13 +3,20 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Optional
 
 from eli.licensing.machine_id import (
     legacy_machine_fingerprints,
     machine_fingerprint,
     machine_label,
 )
-from eli.licensing.signature import key_fingerprint, normalize_license_key, parse_license_key
+from eli.licensing.products import PLATFORM, PLATFORM_MAJOR, major_line, product_label
+from eli.licensing.signature import (
+    key_fingerprint,
+    normalize_license_key,
+    parse_license_key,
+    require_product,
+)
 from eli.licensing.storage import (
     clear_activation_state,
     load_activation_state,
@@ -99,15 +106,35 @@ def _bind_machine(state: ActivationState, fp: str, label: str) -> None:
     state.machines.append(MachineBinding(id_hash=fp, label=label, bound_at=_utc_now()))
 
 
+def _platform_major_problem(major_version: int) -> str:
+    """Why an ELI v3 key does not open this build, or "" when it does.
+
+    A key for a later major version opens this one: nobody who bought v4 should be
+    refused v3. A key for an earlier one does not; that upgrade is a new purchase.
+    """
+    if major_version < PLATFORM_MAJOR:
+        return (
+            f"this key is for ELI v{major_version}; this is ELI v{PLATFORM_MAJOR}, "
+            "which needs its own key"
+        )
+    return ""
+
+
 def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationState:
+    """Activate a key on this machine, for whichever ELI Product it names."""
     normalized = normalize_license_key(key)
     payload = parse_license_key(normalized)
     if _payload_expired(payload.expires_at):
         raise ValueError("license key has expired")
+    product = payload.product
+    if product == PLATFORM:
+        problem = _platform_major_problem(payload.major_version)
+        if problem:
+            raise ValueError(problem)
 
     fp = machine_fingerprint()
     label = machine_label()
-    existing = load_activation_state()
+    existing = load_activation_state(product)
 
     if force_rebind:
         # Discard all prior bindings, including for the *same* license id. This
@@ -125,11 +152,11 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
             existing = None
         else:
             raise ValueError(
-                "another license is already activated; run deactivate first "
-                "or pass force_rebind=True"
+                f"another license is already activated for {product_label(product)}; "
+                "run deactivate first or pass force_rebind=True"
             )
 
-    state = existing or ActivationState()
+    state = existing or ActivationState(product=product)
     state.version = 1
     state.activated_at = _utc_now()
     state.license_id = payload.license_id
@@ -140,6 +167,9 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
     state.key_fingerprint = key_fingerprint(normalized)
     state.last_validated_at = _utc_now()
     state.source = "offline"
+    state.product = product
+    state.major_version = payload.major_version
+    state.license_key = normalized
 
     if not _machine_is_bound(state, fp):
         # Reuse a pre-stabilisation binding for this same host rather than
@@ -155,8 +185,8 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
     return state
 
 
-def deactivate_license(*, machine_only: bool = False) -> bool:
-    state = load_activation_state()
+def deactivate_license(*, machine_only: bool = False, product: str = PLATFORM) -> bool:
+    state = load_activation_state(product)
     if state is None:
         return False
     if machine_only:
@@ -165,7 +195,71 @@ def deactivate_license(*, machine_only: bool = False) -> bool:
         if state.machines:
             save_activation_state(state)
             return True
-    return clear_activation_state()
+    return clear_activation_state(product)
+
+
+def _verify_stored_key(state: ActivationState) -> str:
+    """Re-check the signed key kept in an activation; "" when it holds, else why not.
+
+    On success the state's grant (tier, seats, expiry, major version) is replaced with
+    what the key itself says, so editing the activation file changes nothing.
+    """
+    try:
+        payload = require_product(parse_license_key(state.license_key), state.product)
+    except Exception as exc:
+        return f"the stored license key no longer verifies ({exc})"
+    if payload.license_id != state.license_id:
+        return "the stored license key does not belong to this activation"
+    state.tier = payload.tier
+    state.seats = payload.seats
+    state.expires_at = payload.expires_at
+    state.customer_ref = payload.customer_ref
+    state.major_version = payload.major_version
+    return ""
+
+
+def _inactive(
+    required: bool,
+    message: str,
+    state: ActivationState | None = None,
+    *,
+    trial: str | None = None,
+) -> ActivationStatus:
+    return ActivationStatus(
+        active=False,
+        required=required,
+        tier=state.tier if state else None,
+        seats=state.seats if state else 0,
+        machines_bound=len(state.machines) if state else 0,
+        expires_at=state.expires_at if state else None,
+        message=message,
+        state=state,
+        trial=trial,
+    )
+
+
+def _ensure_bound_here(state: ActivationState) -> bool:
+    """Whether this machine is bound to the activation, migrating a pre-v2 binding."""
+    fp = machine_fingerprint()
+    if _machine_is_bound(state, fp):
+        return True
+    # Before rejecting, check whether this is the same host under its old
+    # pre-stabilisation hash; if so, migrate the binding and carry on.
+    if not _migrate_legacy_binding(state, fp):
+        return False
+    state.last_validated_at = _utc_now()
+    try:
+        save_activation_state(state)
+    except OSError:
+        # Read-only dir: still honour the license for this session.
+        log.debug("could not persist migrated binding", exc_info=True)
+    return True
+
+
+_NOT_BOUND = (
+    "this machine is not activated for the current license "
+    "(re-bind it with: eli --activate-key YOUR-KEY --force)"
+)
 
 
 def validate_activation() -> ActivationStatus:
@@ -173,7 +267,10 @@ def validate_activation() -> ActivationStatus:
     env_key = os.environ.get("ELI_LICENSE_KEY", "").strip()
     if env_key:
         try:
-            payload = parse_license_key(env_key)
+            payload = require_product(parse_license_key(env_key), PLATFORM)
+            problem = _platform_major_problem(payload.major_version)
+            if problem:
+                raise ValueError(problem)
             if _payload_expired(payload.expires_at):
                 return ActivationStatus(
                     active=False,
@@ -252,6 +349,13 @@ def validate_activation() -> ActivationStatus:
                 trial=ts,
             )
 
+    if state.source != TRIAL_SOURCE and state.license_key:
+        problem = _verify_stored_key(state) or _platform_major_problem(state.major_version)
+        if problem:
+            return _inactive(required, problem, state, trial=trial_state())
+    # An activation without a stored key predates keys being kept. It is honoured
+    # as it always was, so nobody who activated earlier is locked out by an update.
+
     if _payload_expired(state.expires_at):
         is_trial = state.source == TRIAL_SOURCE
         return ActivationStatus(
@@ -266,32 +370,8 @@ def validate_activation() -> ActivationStatus:
             trial="expired" if is_trial else trial_state(),
         )
 
-    fp = machine_fingerprint()
-    if not _machine_is_bound(state, fp):
-        # Before rejecting, check whether this is the same host under its old
-        # pre-stabilisation hash; if so, migrate the binding and carry on.
-        if _migrate_legacy_binding(state, fp):
-            state.last_validated_at = _utc_now()
-            try:
-                save_activation_state(state)
-            except OSError:
-                # Read-only dir: still honour the license for this session.
-                log.debug("could not persist migrated binding", exc_info=True)
-        else:
-            return ActivationStatus(
-                active=False,
-                required=required,
-                tier=state.tier,
-                seats=state.seats,
-                machines_bound=len(state.machines),
-                expires_at=state.expires_at,
-                message=(
-                    "this machine is not activated for the current license "
-                    "(re-bind it with: eli --activate-key YOUR-KEY --force)"
-                ),
-                state=state,
-                trial=trial_state(),
-            )
+    if not _ensure_bound_here(state):
+        return _inactive(required, _NOT_BOUND, state, trial=trial_state())
 
     if state.source == TRIAL_SOURCE:
         from eli.licensing.trial import trial_days_remaining
@@ -311,6 +391,112 @@ def validate_activation() -> ActivationStatus:
         message=message,
         state=state,
         trial="active" if state.source == TRIAL_SOURCE else None,
+    )
+
+
+def _included_with_platform(product: str, version: str) -> Optional[ActivationStatus]:
+    """The bundle as part of the active ELI v3 licence (a bundled sale), or None when that
+    licence does not include it. Read from the signed key, never from the activation file."""
+    platform = validate_activation()
+    if not platform.active:
+        return None
+    key = (platform.state.license_key if platform.state is not None else "") \
+        or os.environ.get("ELI_LICENSE_KEY", "").strip()
+    if not key:
+        return None   # a trial, or an activation from before keys were kept: nothing to read
+    try:
+        payload = require_product(parse_license_key(key), PLATFORM)
+    except Exception:
+        return None
+    line = int((payload.includes or {}).get(product) or 0)
+    if line < 1:
+        return None
+    label = product_label(product)
+    needed = major_line(version)
+    if needed is not None and line < needed:
+        return _inactive(
+            platform.required,
+            f"your ELI v3 license includes {label} {line}.x; version {version} needs an upgrade",
+        )
+    return ActivationStatus(
+        active=True,
+        required=platform.required,
+        tier=payload.tier,
+        seats=payload.seats,
+        machines_bound=platform.machines_bound,
+        expires_at=payload.expires_at,
+        message=f"{label} is included in your ELI v3 license",
+    )
+
+
+def product_status(product: str, *, version: str = "") -> ActivationStatus:
+    """Whether this machine is licensed for an ELI Product.
+
+    For ``eli`` this is ``validate_activation()``. For a bundle product it reads that
+    product's own activation, re-verifies its signed key, and, when ``version`` (the
+    installed release) is given, checks that the key covers its major version line. A bundle
+    the active ELI v3 key includes is licensed the same way, without a key of its own.
+    """
+    if product == PLATFORM:
+        return validate_activation()
+    own = _own_product_status(product, version=version)
+    if own.active or not own.required:
+        return own
+    included = _included_with_platform(product, version)
+    if included is not None and (included.active or own.state is None):
+        return included
+    return own
+
+
+def _own_product_status(product: str, *, version: str = "") -> ActivationStatus:
+    """A bundle licensed by its own key (see product_status)."""
+    label = product_label(product)
+    required = activation_required()
+    if not required:
+        return ActivationStatus(
+            active=True,
+            required=False,
+            tier=None,
+            seats=0,
+            machines_bound=0,
+            expires_at=None,
+            message="license not required for this build",
+        )
+    state = load_activation_state(product)
+    if state is None:
+        return _inactive(
+            required,
+            f"{label} is a separate product and no {label} license is activated on this "
+            "machine (activate its key with: eli --activate-key YOUR-KEY)",
+        )
+    problem = (
+        _verify_stored_key(state)
+        if state.license_key
+        else f"the {label} activation has no license key; activate the key again"
+    )
+    if problem:
+        return _inactive(required, problem, state)
+    if _payload_expired(state.expires_at):
+        return _inactive(required, f"the {label} license has expired", state)
+    line = major_line(version)
+    if line is not None and state.major_version < line:
+        return _inactive(
+            required,
+            f"your {label} license covers {label} {state.major_version}.x; "
+            f"version {version} needs an upgrade",
+            state,
+        )
+    if not _ensure_bound_here(state):
+        return _inactive(required, _NOT_BOUND, state)
+    return ActivationStatus(
+        active=True,
+        required=required,
+        tier=state.tier,
+        seats=state.seats,
+        machines_bound=len(state.machines),
+        expires_at=state.expires_at,
+        message=f"{label} license active",
+        state=state,
     )
 
 

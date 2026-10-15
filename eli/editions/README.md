@@ -26,8 +26,9 @@ eli/
 | **Licence tier** | trial · personal · pro · enterprise | `eli/licensing` | seats, commercial rights, support, updates |
 | **Edition** | general · research · healthcare · legal · coding · content · vr · enterprise | `eli/editions` | which domain capability pack(s) light up |
 
-A signed licence carries a **tier** and entitles **one or more editions**. e.g.
-"ELI Research, Pro" = research edition + 3-seat commercial licence.
+A signed licence key names **one product** and carries a **tier**. ELI v3 is one product; each
+official bundle (ELI Legal, ELI VR, …) is another, bought separately with its own key (see
+`eli/licensing/products.py` and `docs/BUNDLES.md`).
 
 ## Anatomy of an edition pack
 
@@ -52,8 +53,8 @@ eight products without eight maintenance burdens.
 
 `editions.active_editions(entitled)` returns the packs a licence may use. Today it
 defaults to `general` only (unchanged default experience). The `entitled` set will
-come from a new `editions` field on the signed `LicensePayload` (see the `TODO` in
-`__init__.py`). Enterprise tier ⇒ all editions.
+be the bundle products this machine holds a key for, from
+`eli.licensing.product_status` (see the `TODO` in `__init__.py`).
 
 ## Status
 

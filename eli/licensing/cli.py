@@ -5,6 +5,7 @@ import json
 import sys
 
 from eli.licensing.activation import activate_license_key, deactivate_license
+from eli.licensing.products import product_ids
 from eli.licensing.storage import activation_state_path, ensure_license_dir
 
 
@@ -55,16 +56,19 @@ def _cmd_activate(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"Activation failed: {exc}", file=sys.stderr)
         return 1
-    print("License activated.")
+    from eli.licensing.products import product_label
+
+    print(f"{product_label(state.product)} license activated.")
+    print(f"  product:    {state.product} (covers {state.major_version}.x)")
     print(f"  tier:       {state.tier}")
     print(f"  seats:      {state.seats}")
     print(f"  license_id: {state.license_id}")
-    print(f"  stored at:  {activation_state_path()}")
+    print(f"  stored at:  {activation_state_path(state.product)}")
     return 0
 
 
 def _cmd_deactivate(args: argparse.Namespace) -> int:
-    ok = deactivate_license(machine_only=args.machine_only)
+    ok = deactivate_license(machine_only=args.machine_only, product=args.product)
     if not ok:
         print("No activation state to remove.")
         return 1
@@ -86,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=_cmd_status)
 
     p_act = sub.add_parser("activate", help="activate a license key")
-    p_act.add_argument("key", help="ELIV3-… license key")
+    p_act.add_argument("key", help="ELIV3-… license key, for ELI v3 or an official bundle")
     p_act.add_argument(
         "--force",
         action="store_true",
@@ -99,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--machine-only",
         action="store_true",
         help="unbind only this machine (keep license for other seats)",
+    )
+    p_deact.add_argument(
+        "--product",
+        default="eli",
+        choices=product_ids(),
+        help="which product's license to remove (default: eli, ELI v3 itself)",
     )
     p_deact.set_defaults(func=_cmd_deactivate)
 

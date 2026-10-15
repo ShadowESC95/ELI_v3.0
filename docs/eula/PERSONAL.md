@@ -1,6 +1,6 @@
 # ELI v3 — Personal tier (supplement to COMMERCIAL_EULA.md)
 
-**Tier:** Personal · **Seats:** 1 machine · **Updates:** 12 months from purchase · **Support:** email
+**Tier:** Personal · **Seats:** 1 machine · **Updates:** every 3.x release · **Support:** email
 
 ## Grant
 

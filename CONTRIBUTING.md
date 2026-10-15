@@ -1,7 +1,7 @@
 # Contributing to ELI v3
 
-Thanks for your interest! One thing to know up front: **ELI is source-available,
-not open-source** (see [LICENSE](LICENSE)), and that shapes how contributions
+Thanks for your interest! One thing to know up front: **ELI is proprietary
+commercial software** (see [LICENSE](LICENSE)), and that shapes how contributions
 work.
 
 ## How you can help
@@ -9,14 +9,18 @@ work.
 - **Report bugs** or suggest improvements via email:
   [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com).
 - **Submit fixes or features** via pull request.
-- You may **use and modify** ELI for your own purposes under the license, but you
-  may **not redistribute** it. Contributing improvements back here — rather than
-  publishing your own copy — is the supported path.
+- Licensed users may **modify** ELI for their own machines under the
+  [EULA](COMMERCIAL_EULA.md), but may **not redistribute** it. Contributing
+  improvements back here — rather than publishing your own copy — is the
+  supported path.
+- **Building a plugin, MCP server or bundle** is not a contribution to ELI: it is
+  your own work, under your own licence and price. See
+  [docs/MARKETPLACE.md](docs/MARKETPLACE.md).
 
 ## Contributor terms (please read before opening a PR)
 
-Because the project is source-available and the author retains the right to
-maintain and commercialise it, contributions require a simple inbound grant.
+Because ELI is a commercial product and the author retains the right to
+maintain and sell it, contributions require a simple inbound grant.
 
 **By submitting a contribution (a pull request, patch, or code suggestion you
 author), you agree that:**

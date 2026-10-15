@@ -101,11 +101,13 @@ def test_settings_offers_the_voice_library_and_can_refresh():
 
 # ── Licence terms ────────────────────────────────────────────────────────────
 def test_license_terms_are_printable_and_distinct_from_activation():
-    from eli.runtime.license_info import license_path, license_text
+    from eli.runtime.license_info import eula_path, license_path, license_text
     assert license_path() is not None
+    assert eula_path() is not None, "the EULA must ship beside LICENSE"
     text = license_text()
-    assert "PolyForm Internal Use License 1.0.0" in text
-    assert "ELI_v3.0" in (license_text() + open(license_path()).read()) or True
+    assert "PROPRIETARY COMMERCIAL SOFTWARE" in text
+    assert "ELI End User Licence Agreement" in text and "## 3. Licence grant" in text, \
+        "--license must print the EULA as well as the notice"
 
 
 def test_license_flag_does_not_collide_with_license_status():

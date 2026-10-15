@@ -28,8 +28,9 @@
   #pragma error "dist\ELI\ELI.exe not found - run `pyinstaller --noconfirm ELI.spec` first"
 #endif
 
-; the licence is shown before anything is installed. LICENSE.txt is made from LICENSE by
-; scripts\make_installer_license.py (Inno reads a file without a BOM as ANSI)
+; the licence is shown before anything is installed. LICENSE.txt is made from LICENSE and
+; COMMERCIAL_EULA.md by scripts\make_installer_license.py (Inno reads a file without a
+; BOM as ANSI)
 #if !FileExists("LICENSE.txt")
   #pragma error "packaging\windows\LICENSE.txt not found - run `python scripts\make_installer_license.py` first"
 #endif

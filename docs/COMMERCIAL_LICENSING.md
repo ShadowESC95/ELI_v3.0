@@ -1,8 +1,8 @@
 # Commercial licensing — ELI v3 (paid product)
 
-ELI v3 is **not open source**. The repo `LICENSE` (PolyForm Internal Use 1.0.0) governs
-**GitHub source evaluation**. **Paid customers** accept the [Commercial EULA](../COMMERCIAL_EULA.md)
-and a tier supplement under [docs/eula/](eula/).
+ELI v3 is **proprietary commercial software**. [`LICENSE`](../LICENSE) is a short notice; the terms
+themselves are the [ELI End User Licence Agreement](../COMMERCIAL_EULA.md), which every build ships
+and prints with `eli --license`. Nothing else, including having the source, grants a licence.
 
 ## Quick map
 
@@ -12,22 +12,42 @@ and a tier supplement under [docs/eula/](eula/).
 | **Activate** | `eli --activate-key 'ELIV3-…'` · [config/licensing/README.md](../config/licensing/README.md) |
 | **You (issue keys)** | [scripts/licensing/README.md](../scripts/licensing/README.md) |
 | **Tier limits** | [config/licensing/tier_policy.json](../config/licensing/tier_policy.json) |
+| **Products** | [eli/licensing/products.py](../eli/licensing/products.py) |
 
-## Should you change the license for a paid product?
+## What a purchase is made of
 
-**No — not the public repo license.** Keep PolyForm Internal on GitHub:
+1. **The EULA** (master terms): perpetual, one-time purchase; every 3.x release included; no
+   licence server; no remote kill switch; your data is yours.
+2. **A tier supplement** (Personal / Pro / Enterprise / Trial, [docs/eula/](eula/)): seats,
+   commercial use, support.
+3. **For an official bundle, its Product Schedule** ([docs/eula/bundles/](eula/bundles/)): its own
+   price and the terms its field needs (ELI Legal's professional-use terms, ELI VR's safety terms).
+   `TEMPLATE.md` is the starting point for the next one.
+4. **A signed licence key** for that product.
 
-- Evaluators can clone and hack locally
-- Nobody else can redistribute or resell
-- **You** retain all commercial rights (already stated in LICENSE)
+## Products and keys
 
-**Paid sales use a separate grant:**
+Every key names **one product**: `eli` (ELI v3 itself) or an official bundle (`legal`, `vr`,
+`healthcare`, `finance`). Bundles are separate purchases with separate keys. An ELI v3 key does not
+open ELI Legal, and an ELI Legal key does not open ELI v3. Bundles from other publishers are not
+ELI Products and need no key of ours.
 
-1. **Commercial EULA** at purchase (master terms)
-2. **Tier supplement** (Personal / Pro / Enterprise / Trial) — seats, commercial use, support
-3. **Signed license key** — enforced by `eli/licensing/` at runtime on retail builds
+| Field | Meaning |
+|---|---|
+| `product` | `eli` or a bundle id. Keys issued before products existed read as `eli` |
+| `major_version` | The version line the key covers. An ELI v3 key needs 3 or later. A bundle key covers its line, and a bundle's releases before 1.0 count as 1.x |
+| `includes` | ELI v3 keys only: official bundles the licence includes, each with its version line (`{"legal": 1}`), for a bundled sale. A bundle bought on its own has its own key |
+| `tier`, `seats`, `expires_at` | As before. Paid keys do not expire |
+| `version` | Key format: 1 for ELI v3 keys, which every v3 build reads; 2 for bundle keys, which builds from before products refuse rather than misread as an ELI v3 licence |
 
-Do **not** switch to MIT/Apache/GPL for v3 if it stays proprietary.
+**Offline, and the key decides.** Activation keeps the signed key in the activation file
+(`activation.json` for ELI v3, `activation-<product>.json` for a bundle) and re-verifies it on every
+check, against the public key built into ELI. Editing the file cannot change what it grants, and
+nothing contacts a server. An activation made before keys were kept has no stored key; it is still
+honoured, so nobody who activated earlier is locked out by an update.
+
+**Seats are contractual.** Each machine keeps its own activation file, so the seat count is not
+enforced across machines. The EULA says so (§3.5).
 
 ## Author workflow (manual store today)
 
@@ -36,9 +56,13 @@ Do **not** switch to MIT/Apache/GPL for v3 if it stays proprietary.
 python3 scripts/licensing/generate_signing_keypair.py --out-dir ~/eli-license-signing
 cp ~/eli-license-signing/product_signing.pub eli/licensing/keys/product_signing.pub
 
-# Per order
+# Per order: ELI v3, or a bundle with --product
 export ELI_LICENSE_SIGNING_KEY=~/eli-license-signing/product_signing.pem
 python3 scripts/licensing/fulfill_order.py --tier pro --customer-ref ORDER-123 --email-to buyer@example.com
+python3 scripts/licensing/fulfill_order.py --product legal --tier pro --customer-ref ORDER-124 --email-to buyer@example.com
+
+# A bundled sale: an ELI v3 key that includes ELI Legal (and ELI VR's 2.x line)
+python3 scripts/licensing/fulfill_order.py --tier enterprise --include legal --include vr:2 --customer-ref ORDER-125
 ```
 
 ## Retail builds

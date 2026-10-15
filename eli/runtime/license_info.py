@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Locate and print ELI's licence, wherever ELI happens to be running from.
 
-ELI is source-available under PolyForm Internal Use 1.0.0, so every artifact has
-to be able to put the terms in front of the user — not just the Windows
-installer, which is the only wrapper with a licence pane of its own. This module
-is the one place that knows where `LICENSE` lives in each shape ELI ships in:
+ELI is proprietary software licensed under the ELI End User Licence Agreement,
+so every artifact has to be able to put the terms in front of the user — not
+just the Windows installer, which is the only wrapper with a licence pane of its
+own. The terms are two files kept side by side: `LICENSE` (the short proprietary
+notice) and `COMMERCIAL_EULA.md` (the agreement itself). This module is the one
+place that knows where they live in each shape ELI ships in:
 
-  * frozen bundle (exe / zip / dmg / AppImage) — `sys._MEIPASS/LICENSE`, put
-    there by ELI.spec's data manifest
-  * source tree / portable tarball          — `<repo root>/LICENSE`
+  * frozen bundle (exe / zip / dmg / AppImage) — `sys._MEIPASS/`, put there by
+    ELI.spec's data manifest
+  * source tree / portable tarball          — the repo root
 
 Both entry points expose it as `--license`, so the command is identical on every
 platform and in every download.
@@ -19,15 +21,23 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+EULA_NAME = "COMMERCIAL_EULA.md"
+
 # Companion files worth naming when someone asks about terms.
 _COMPANIONS = ("NOTICE", "THIRD_PARTY_NOTICES.md", "models/MODEL_LICENSES.md")
 
 SUMMARY = (
-    "ELI v3 — source-available under the PolyForm Internal Use License 1.0.0.\n"
+    "ELI v3 — proprietary commercial software, licensed under the\n"
+    "ELI End User Licence Agreement (COMMERCIAL_EULA.md).\n"
     "Copyright (c) 2026 Jason Fitzgibbon Bridgeman. All rights reserved.\n"
     "\n"
-    "You may run and modify ELI for your own personal or internal use.\n"
+    "Use requires a purchased licence or a trial under that agreement.\n"
     "You may NOT redistribute, publish, host for others, sublicense or sell it.\n"
+)
+
+_MISSING = (
+    "\nThe {name} file was not found next to this build.\n"
+    "Ask for a copy at jaybridgeman0095@gmail.com.\n"
 )
 
 
@@ -63,19 +73,35 @@ def license_path() -> Optional[Path]:
     return None
 
 
-def license_text() -> str:
-    """The full licence text, or the summary if the file didn't ship."""
+def eula_path() -> Optional[Path]:
+    """The EULA shipped beside LICENSE, or None."""
     path = license_path()
     if path is None:
-        return (
-            SUMMARY
-            + "\nThe full LICENSE file was not found next to this build.\n"
-              "Read it at https://github.com/ShadowESC95/ELI_v3.0/blob/main/LICENSE\n"
-        )
+        return None
+    candidate = path.parent / EULA_NAME
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        return candidate if candidate.is_file() else None
+    except OSError:
+        return None
+
+
+def license_text() -> str:
+    """LICENSE followed by the EULA, or the summary for whichever didn't ship."""
+    path = license_path()
+    if path is None:
+        return SUMMARY + _MISSING.format(name="LICENSE")
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return SUMMARY
+    eula = eula_path()
+    if eula is None:
+        return text.rstrip() + "\n" + _MISSING.format(name=EULA_NAME)
+    try:
+        return text.rstrip() + "\n\n" + "=" * 79 + "\n\n" + eula.read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return text.rstrip() + "\n" + _MISSING.format(name=EULA_NAME)
 
 
 def print_license() -> int:

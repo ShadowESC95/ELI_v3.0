@@ -11,6 +11,10 @@ Runtime activation state is stored per machine under your ELI config directory:
 
 Override with `ELI_LICENSE_DIR` or `ELI_CONFIG_DIR`.
 
+Each official bundle (ELI Legal, ELI VR, …) is a separate product with its own key, activated the
+same way and kept beside ELI v3's as `activation-<product>.json` (for example
+`activation-legal.json`). The signed key is stored in the file and re-verified on every check.
+
 ## Activate (paid build)
 
 ```bash
@@ -28,6 +32,7 @@ eli --license-status
 eli --deactivate-license
 python3 -m eli.licensing.cli status
 python3 -m eli.licensing.cli deactivate --machine-only
+python3 -m eli.licensing.cli deactivate --product legal   # a bundle's licence
 ```
 
 ## Environment flags

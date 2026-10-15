@@ -1,7 +1,11 @@
 # ELI v3 — Store & fulfillment
 
 How paid licenses are sold and delivered. **Legal terms:** [COMMERCIAL_EULA.md](../COMMERCIAL_EULA.md) +
-tier supplements in [docs/eula/](eula/).
+tier supplements in [docs/eula/](eula/) + a Product Schedule for each official bundle in
+[docs/eula/bundles/](eula/bundles/).
+
+ELI v3 and each official bundle (ELI Legal, ELI VR, …) are **separate products with separate keys**:
+fulfil a bundle order with `--product <id>`.
 
 ## Stack (already in repo)
 

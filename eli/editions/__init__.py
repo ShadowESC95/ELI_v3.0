@@ -94,9 +94,9 @@ def active_editions(entitled: set[str] | None = None) -> dict[str, Edition]:
     (not yet wired to licence entitlements) we fall back to the always-available
     'general' pack only, so the default experience is unchanged.
 
-    TODO(v3.1): source `entitled` from the signed licence payload — extend
-    eli.licensing.types.LicensePayload with an `editions: list[str]` field and
-    resolve it here. Enterprise tier ⇒ all editions.
+    TODO(v3.1): source `entitled` from the bundle products this machine holds a
+    key for — each official bundle has its own key, checked with
+    eli.licensing.product_status(product). See eli/licensing/products.py.
     """
     found = discover_editions()
     if entitled is None:

@@ -46,7 +46,35 @@ def status_payload() -> dict[str, object]:
         payload["license_id"] = status.state.license_id
         payload["source"] = status.state.source
         payload["machines"] = [m.to_dict() for m in status.state.machines]
+    products = bundle_licences()
+    if products:
+        payload["products"] = products
     return payload
+
+
+def bundle_licences() -> dict[str, dict[str, object]]:
+    """The official bundles this machine holds a licence for, keyed by product id: by a key
+    of their own, or included in the ELI v3 key."""
+    from eli.licensing.activation import product_status
+    from eli.licensing.products import OFFICIAL_BUNDLES
+    from eli.licensing.storage import activation_state_path
+
+    out: dict[str, dict[str, object]] = {}
+    for product, label in OFFICIAL_BUNDLES.items():
+        own_file = activation_state_path(product).is_file()
+        status = product_status(product)
+        if not own_file and not (status.active and status.required):
+            continue
+        out[product] = {
+            "label": label,
+            "active": status.active,
+            "tier": status.tier,
+            "seats": status.seats,
+            "major_version": status.state.major_version if status.state else None,
+            "message": status.message,
+            "activation_file": str(activation_state_path(product)) if own_file else None,
+        }
+    return out
 
 
 def handle_license_flags(args: list[str]) -> int | None:
@@ -64,7 +92,12 @@ def handle_license_flags(args: list[str]) -> int | None:
         except Exception as exc:
             print(f"Activation failed: {exc}", file=sys.stderr)
             return 1
-        print(f"License activated ({state.tier}, {state.seats} seat(s)).")
+        from eli.licensing.products import product_label
+
+        print(
+            f"{product_label(state.product)} license activated "
+            f"({state.tier}, {state.seats} seat(s))."
+        )
         if state.expires_at:
             print(f"  expires_at: {state.expires_at}")
         return 0

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import re
 from pathlib import Path
 
-from eli.licensing.types import LICENSE_VERSION, VALID_TIERS, LicensePayload
+from eli.licensing.products import OFFICIAL_BUNDLES, PLATFORM, is_product, product_label
+from eli.licensing.types import (
+    SUPPORTED_LICENSE_VERSIONS,
+    VALID_TIERS,
+    LicensePayload,
+    key_format_version,
+)
 
 _KEY_DIR = Path(__file__).resolve().parent / "keys"
 _PUBLIC_KEY_FILE = _KEY_DIR / "product_signing.pub"
@@ -77,10 +84,19 @@ def normalize_license_key(raw: str) -> str:
 
 
 def issue_license_key(payload: LicensePayload, *, private_pem: bytes | None = None) -> str:
+    """Sign a key. Its format version is set from its product, whatever the caller passed."""
     if payload.tier not in VALID_TIERS:
         raise ValueError(f"invalid tier: {payload.tier}")
     if payload.seats < 1:
         raise ValueError("seats must be >= 1")
+    if not is_product(payload.product):
+        raise ValueError(
+            f"unknown product: {payload.product!r} (add it to eli/licensing/products.py first)"
+        )
+    if payload.major_version < 1:
+        raise ValueError("major_version must be >= 1")
+    _check_includes(payload)
+    payload = dataclasses.replace(payload, version=key_format_version(payload.product))
     private = private_pem or load_private_key_pem()
     if not private:
         raise RuntimeError(
@@ -109,10 +125,42 @@ def parse_license_key(key: str) -> LicensePayload:
         raise ValueError("license key signature is invalid")
     raw = json.loads(body.decode("utf-8"))
     payload = LicensePayload.from_dict(raw)
-    if payload.version != LICENSE_VERSION:
+    if payload.version not in SUPPORTED_LICENSE_VERSIONS:
         raise ValueError(f"unsupported license version: {payload.version}")
     if payload.tier not in VALID_TIERS:
         raise ValueError(f"invalid tier in license: {payload.tier}")
+    if not is_product(payload.product):
+        raise ValueError(
+            f"this key is for {payload.product!r}, a product this version of ELI does not "
+            "know — update ELI and try again"
+        )
+    if payload.version != key_format_version(payload.product):
+        # Only a hand-built key gets here: a version-1 key naming a bundle is exactly
+        # what older builds would misread as an ELI v3 licence.
+        raise ValueError("license key format does not match its product")
+    _check_includes(payload)
+    return payload
+
+
+def _check_includes(payload: LicensePayload) -> None:
+    """Only an ELI v3 key includes bundles, and only official ones, each for a real version line."""
+    if not payload.includes:
+        return
+    if payload.product != PLATFORM:
+        raise ValueError("only an ELI v3 key can include bundles")
+    for product, line in payload.includes.items():
+        if product not in OFFICIAL_BUNDLES:
+            raise ValueError(f"included product {product!r} is not an official bundle")
+        if int(line) < 1:
+            raise ValueError(f"included {product!r} needs a version line of 1 or more")
+
+
+def require_product(payload: LicensePayload, product: str = PLATFORM) -> LicensePayload:
+    """Refuse a key for a different product, saying which product it is for."""
+    if payload.product != product:
+        raise ValueError(
+            f"this key is for {product_label(payload.product)}, not {product_label(product)}"
+        )
     return payload
 
 

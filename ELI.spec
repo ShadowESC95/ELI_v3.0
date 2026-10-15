@@ -96,6 +96,7 @@ DATA_PREFIXES = [
     "packaging/desktop",  # app icons (eli/gui/branding.py)
     "pyproject.toml",     # runtime version detection (_eli_app_version)
     "LICENSE",
+    "COMMERCIAL_EULA.md",  # the agreement LICENSE points to; printed by --license
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "README.md",

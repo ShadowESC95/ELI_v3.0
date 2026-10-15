@@ -1,12 +1,10 @@
-ELI v2.0
+ELI v3
 Copyright © 2026 Jason Fitzgibbon Bridgeman. All rights reserved.
 
-This software is SOURCE-AVAILABLE, NOT open-source. It is licensed under the
-PolyForm Internal Use License 1.0.0 (see the LICENSE file).
+Proprietary commercial software, licensed under the ELI End User Licence
+Agreement (COMMERCIAL_EULA.md). See LICENSE.
 
-You MAY download, run, and modify this software for your own internal and
-personal use. You MAY NOT redistribute, share, publish, host as a service for
-others, sublicense, or sell this software or any modified version of it. All
-commercial and distribution rights are reserved by the copyright holder.
+This product includes third-party components distributed under their own
+licences. See THIRD_PARTY_NOTICES.md and models/MODEL_LICENSES.md.
 
-For licensing beyond these terms: jaybridgeman0095@gmail.com
+Licensing: jaybridgeman0095@gmail.com

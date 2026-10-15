@@ -22,9 +22,11 @@ A bundle that is not a Python program reaches the core over ELI's local server. 
 with ``"needs": ["server"]`` and ELI has the server answering before the bundle starts (see
 ``eli.bundles.core_server``).
 
-Licensing: a bundle names the edition it belongs to. Whether a licence entitles it is decided by
-``entitled``, the same seam as ``eli.editions.active_editions``; until licences carry editions it
-allows every bundle, and says so.
+Licensing: a bundle names the edition it belongs to. An official bundle (ELI Legal, ELI VR, ...) is
+a separate ELI Product with a licence key of its own, and ``entitled`` will not start one this
+machine holds no key for (see ``eli.licensing.products``). A bundle from another publisher is
+licensed by that publisher, so ELI starts it without a key of ours. This decides only what ELI v3
+will start: an official bundle that also runs on its own has to check its own key there.
 """
 
 from __future__ import annotations
@@ -202,12 +204,15 @@ def discover() -> dict[str, Bundle]:
 
 
 def entitled(bundle: Bundle) -> tuple[bool, str]:
-    """Whether this installation's licence lets it start the bundle.
+    """Whether this machine is licensed to start the bundle, and why or why not."""
+    from eli.licensing.activation import product_status
+    from eli.licensing.products import bundle_product
 
-    The same seam as ``eli.editions.active_editions``: licences do not yet carry editions, so
-    every bundle is allowed. When they do, look up ``bundle.edition`` in the licence here.
-    """
-    return True, "licences do not yet carry editions; every bundle is allowed"
+    product = bundle_product(bundle.id, bundle.edition)
+    if product is None:
+        return True, "not an ELI product; its publisher licenses it"
+    status = product_status(product, version=bundle.version)
+    return status.active, status.message
 
 
 def _host() -> dict[str, Any]:
@@ -252,7 +257,7 @@ def launch(bundle_id: str, argv: list[str] | None = None) -> int:
         return 2
     ok, why = entitled(bundle)
     if not ok:
-        print(f"{bundle.title} is not included in this licence: {why}", file=sys.stderr)
+        print(f"{bundle.title} cannot start: {why}", file=sys.stderr)
         return 3
     log.info("starting bundle %s (%s) from %s", bundle.id, bundle.kind, bundle.origin)
     with _core(bundle) as port:

@@ -95,6 +95,7 @@ _SEED_FILES = (
     "capability_manifest.json",
     "capability_inventory.generated.json",
     "LICENSE",
+    "COMMERCIAL_EULA.md",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "README.md",

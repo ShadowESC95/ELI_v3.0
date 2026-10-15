@@ -174,5 +174,5 @@ port, wrong `/chat` route, no token auth).
 
 ## License
 
-Same as ELI (PolyForm Internal Use). Distributing this companion APK is separate from
-redistributing the ELI server codebase — see project `LICENSE`.
+Part of ELI v3, under the same terms: the [ELI End User Licence Agreement](../../COMMERCIAL_EULA.md).
+See the project `LICENSE`.

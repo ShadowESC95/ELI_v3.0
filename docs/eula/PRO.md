@@ -1,6 +1,6 @@
 # ELI v3 — Pro tier (supplement to COMMERCIAL_EULA.md)
 
-**Tier:** Pro · **Seats:** up to 3 machines · **Updates:** 12 months · **Support:** priority email
+**Tier:** Pro · **Seats:** up to 3 machines · **Updates:** every 3.x release · **Support:** priority email
 
 ## Grant
 

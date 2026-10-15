@@ -10,7 +10,7 @@
 - **Repo:** https://github.com/ShadowESC95/ELI_v3.0
 - **Release v3.0.112:** https://github.com/ShadowESC95/ELI_v3.0/releases/tag/v3.0.112
 - **Mobile companion (optional):** [`clients/mobile/README.md`](../clients/mobile/README.md)
-- **License:** PolyForm Internal Use (source-available, personal use — not OSI open source)
+- **License:** proprietary — the [ELI End User Licence Agreement](../COMMERCIAL_EULA.md) (paid, one-time purchase)
 
 ## Easiest install — Linux
 

@@ -162,9 +162,28 @@ class TabsMixin:
         try:
             from eli.bundles import spawn
 
-            spawn(bundle_id)
+            try:
+                spawn(bundle_id)
+            except PermissionError as refused:
+                # An official bundle is a separate product: offer to take its key here,
+                # since a customer on Windows or macOS has no terminal for --activate-key.
+                if self._activate_bundle_key(bundle_id, str(refused)):
+                    spawn(bundle_id)
         except Exception as exc:
             QMessageBox.warning(self, "Bundle", f"Could not open {bundle_id}: {exc}")
+
+    def _activate_bundle_key(self, bundle_id, reason):
+        from eli.bundles import discover
+        from eli.gui.license_dialog import prompt_for_product_key
+        from eli.licensing.activation import activate_license_key
+
+        bundle = discover().get(bundle_id)
+        label = bundle.title if bundle is not None else bundle_id
+        key = prompt_for_product_key(label=label, reason=reason)
+        if not key:
+            return False
+        activate_license_key(key)
+        return True
 
     def _ask_bundle_at_startup(self):
         try:

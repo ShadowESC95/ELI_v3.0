@@ -79,6 +79,20 @@ A bundle keeps its data in its own folder, never in ELI v3's.
 
 ## Licensing
 
-`eli.bundles.entitled` decides whether the licence allows a bundle. Licences do not yet carry
-editions (see `eli.editions.active_editions`), so for now it allows every bundle. When they do, it
-should look up the bundle's `edition` there.
+Each official bundle is a **separate product**, bought separately, with its own licence key and its
+own schedule of terms (`docs/eula/bundles/`). An ELI v3 key does not open a bundle, and a bundle key
+does not open ELI v3.
+
+`eli.bundles.entitled` decides whether ELI v3 will start a bundle:
+
+| Bundle | What it needs |
+|---|---|
+| Official (its `edition` or id is in `OFFICIAL_BUNDLES`, `eli/licensing/products.py`) | An activated key for that product, or an ELI v3 key that includes it (a bundled sale), covering the bundle's major version. Releases before 1.0 count as 1.x |
+| From another publisher | Nothing from us: its publisher licenses it |
+
+A bundle key is activated like ELI v3's: `eli --activate-key 'ELIV3-…'`. Opening a bundle from the
+Bundles menu without one offers to take the key there and then. Keys are only checked where ELI v3's
+own key is (retail builds, or `ELI_REQUIRE_LICENSE=1`).
+
+This decides only what ELI v3 starts. A bundle that also runs on its own (ELI Legal and ELI VR both
+do) has to check its own key there.

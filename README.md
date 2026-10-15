@@ -8,7 +8,7 @@ Website: https://geteli.tech (public v2 line) · this repo is **private developm
 Everything runs on your own machine — the model, your data, and all processing. Nothing is ever
 sent to a server. No cloud, no accounts, no telemetry. Offline by default, enforced at the network socket.
 
-![License](https://img.shields.io/badge/license-PolyForm%20Internal%20Use-blue)
+![License](https://img.shields.io/badge/license-proprietary-red)
 ![Platform](https://img.shields.io/badge/platform-Linux%20·%20macOS%20·%20Windows-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Offline](https://img.shields.io/badge/network-offline%20by%20default-informational)
@@ -620,101 +620,53 @@ releases — but bug reports and ideas are genuinely welcome, and I'll keep it m
 useful to people. So far, it very much is.
 
 - **Found a bug or have an idea?** Email [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com).
-- **Want to contribute code?** Pull requests are welcome — please read
-  **[CONTRIBUTING.md](CONTRIBUTING.md)** first. Because ELI is source-available, contributions
-  include a short **inbound license grant** so the whole project stays under one consistent license.
+- **Want to contribute code?** Please read **[CONTRIBUTING.md](CONTRIBUTING.md)** first. ELI is
+  proprietary, so contributions include a short **inbound license grant**.
 - **Security issue?** See **[SECURITY.md](SECURITY.md)** — report it privately, not in a public issue.
-- **Want to support development?** Source evaluation is free under PolyForm Internal Use; paid licenses
-  fund ongoing work. Optional tip jar:
-  **[ko-fi.com/shadowesc95](https://ko-fi.com/shadowesc95)**.
-
-Forks for **redistribution** are not permitted by the [license](LICENSE) — contribute improvements
-back here instead of publishing your own copy.
+- **Want to build on ELI?** Plugins, MCP servers and bundles for the marketplace are yours to license
+  and price — see **[docs/MARKETPLACE.md](docs/MARKETPLACE.md)** and the developer terms.
 
 ## Licensing & purchasing
 
-ELI v3 is a **paid, proprietary product**. The GitHub repo is **source-available** so you can
-evaluate and modify it for yourself — not so anyone can redistribute or resell it.
-
-### Free / trial (this repository)
-
-| | |
-|---|---|
-| **License** | [PolyForm Internal Use 1.0.0](LICENSE) |
-| **You may** | Download, run from source, and **modify for your own machine** |
-| **You may not** | Redistribute, publish forks, host for others, or sell ELI (or a derivative) |
-| **License key** | Not required for source evaluation |
-| **Best for** | Developers evaluating ELI, personal tinkering, contributing back via PR |
-
-This is **not** a retail product build. It does not include commercial-use rights beyond PolyForm
-Internal Use, paid support, or guaranteed update channels.
-
-### Paid (Commercial EULA)
-
-When you **purchase** ELI v3, you accept the **[Commercial EULA](COMMERCIAL_EULA.md)** (final
-wording shown at checkout). Paid customers receive:
+ELI v3 is **paid, proprietary software**: you buy it once and keep it. The full terms are the
+**[ELI End User Licence Agreement](COMMERCIAL_EULA.md)** (final wording shown at checkout), plus the
+supplement for your tier in [docs/eula/](docs/eula/).
 
 | | |
 |---|---|
-| **Grant** | Licensed installer/build for your tier (Personal / Pro / Enterprise) |
-| **Use** | Full product use on the machines or seats in your order |
-| **Modify** | Yes — for **your own** licensed deployment; still **no redistribution** |
-| **Updates & support** | Per tier (e.g. 12 months updates + email support on Pro) |
-| **License key** | **Required** — activates your build (see below) |
+| **Payment** | One-time. No subscription |
+| **Updates** | Every 3.x release is included. ELI v4 will be a separate, paid upgrade |
+| **Tiers** | Personal (1 machine) · Pro (up to 3 machines, commercial use) · Enterprise (per order) — a 7-day trial runs first |
+| **Internet** | Not needed to keep using it — the key is checked on your machine, and nothing phones home |
+| **Reinstall / new machine** | Allowed — re-activate with your key |
+| **Your data** | Yours. ELI never sends your conversations, memories or files anywhere |
+| **Modify** | For your own licensed machines; **no redistribution** |
+| **Bundles** | ELI Legal, ELI VR and the other official bundles are separate products, bought separately ([schedules](docs/eula/bundles/)) |
 
 **Buying a license:** see **[docs/STORE.md](docs/STORE.md)** (Ko-fi / email until automated checkout).
-Pro, Enterprise, or bulk: **[jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)**.
+Pro, Enterprise, hosting rights, or bulk: **[jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com)**.
 
 ### License key & activation
 
-Paid builds use **optional-but-standard activation** so licenses stay tied to paying customers:
+1. Purchase → receive a **license key** (receipt / email).
+2. First run → **enter the key** (or `eli --activate-key …` from the CLI). A bundle's key is
+   entered the same way; each product has its own key.
+3. The key is verified **on your machine** against a signature built into ELI — no licence server,
+   no account, and activation does not upload your chats, memories, or documents.
 
-1. Purchase → receive a **license key** (receipt / email / account).
-2. First run or installer → **enter the key** (or `eli --activate-key …` from the CLI).
-3. Key binds to your **licensed machine(s)** per tier; ELI stays **local-first** — activation does
-   not upload your chats, memories, or documents.
-4. **Trial** builds may run time- or feature-limited without a key; **source** builds from this repo
-   do not include a commercial key.
-
-Details: **[COMMERCIAL_EULA.md](COMMERCIAL_EULA.md)** §4.
-
-**Implementation:** runtime code in [`eli/licensing/`](eli/licensing/), config template in
-[`config/licensing/`](config/licensing/), author/customer scripts in
-[`scripts/licensing/`](scripts/licensing/).
-
-### Quick comparison
-
-| | Free (GitHub source) | Paid (Commercial EULA) |
-|---|---|---|
-| Install from source | ✅ | ✅ (plus supported installer) |
-| Modify privately | ✅ | ✅ |
-| Redistribute / resell | ❌ | ❌ |
-| Commercial business use | PolyForm limits — contact for paid | ✅ per tier |
-| License key | — | ✅ |
-| Supported updates | community / git pull | ✅ per purchase |
+Details: **[COMMERCIAL_EULA.md](COMMERCIAL_EULA.md)** §5 · how it works:
+**[docs/COMMERCIAL_LICENSING.md](docs/COMMERCIAL_LICENSING.md)**.
 
 ## License
 
-ELI v3 is **source-available, not open-source**, under the
-**[PolyForm Internal Use License 1.0.0](LICENSE)** — © 2026 Jason Fitzgibbon Bridgeman.
+ELI v3 is **proprietary commercial software** — © 2026 Jason Fitzgibbon Bridgeman. All rights
+reserved. It is licensed only under the **[ELI End User Licence Agreement](COMMERCIAL_EULA.md)**
+(see [LICENSE](LICENSE)); having a copy of the software or its source does not by itself grant a
+licence. Third-party components keep their own licences — see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-| You **may** | You **may not** |
-|---|---|
-| Download, read, run, and **modify** the source | **Redistribute**, share, publish, or sublicense it |
-| Use it for your own internal / personal purposes | **Host it as a service** for others |
-| Keep your own private modifications | **Sell** it or any modified version |
-
-All commercial and distribution rights are reserved by the copyright holder. **Paid use** is governed
-by the **[Commercial EULA](COMMERCIAL_EULA.md)**. For redistribution, hosting, or enterprise
-licensing beyond these terms — please get in touch. Provided "as is", without warranty.
-
-**Seeing ELI redistributed, hosted, or sold somewhere?** That is not permitted under the license.
-Please report it — with a link — to [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com);
-it helps the author act on violations.
-
-> **Why source-available?** Because I want a genuinely capable, fully-local AI assistant in people's
-> hands to *use and learn from* — while keeping the right to steer the project myself, rather than
-> watch someone take it closed and resell it.
+**Seeing ELI redistributed, hosted, or sold somewhere?** That is not permitted.
+Please report it — with a link — to [jaybridgeman0095@gmail.com](mailto:jaybridgeman0095@gmail.com).
 
 ## Contact
 

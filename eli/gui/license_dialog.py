@@ -82,7 +82,9 @@ def _open_purchase_page() -> None:
         log.debug("could not open the purchase page in a browser", exc_info=True)
 
 
-def _key_dialog(*, title: str, heading: str, body: str, buy_label: str) -> Optional[str]:
+def _key_dialog(
+    *, title: str, heading: str, body: str, buy_label: str, cancel_label: str = "Quit"
+) -> Optional[str]:
     qt = _qt()
     if qt is None:
         return None
@@ -113,7 +115,7 @@ def _key_dialog(*, title: str, heading: str, body: str, buy_label: str) -> Optio
 
     row = qt["QHBoxLayout"]()
     buy = qt["QPushButton"](buy_label)
-    quit_btn = qt["QPushButton"]("Quit")
+    quit_btn = qt["QPushButton"](cancel_label)
     activate = qt["QPushButton"]("Activate")
     activate.setDefault(True)
     row.addWidget(buy)
@@ -149,6 +151,24 @@ def prompt_for_license_key(*, reason: str = "") -> Optional[str]:
             f'Support: <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
         ),
         buy_label="Buy a license",
+    )
+
+
+def prompt_for_product_key(*, label: str, reason: str = "") -> Optional[str]:
+    """Ask, mid-session, for the key of a separately sold product such as ELI Legal."""
+    detail = f"<p>{reason}</p>" if reason else ""
+    return _key_dialog(
+        title=f"{label} — License required",
+        heading=f"{label} is a separate product with its own license key.",
+        body=(
+            f"{detail}"
+            f"<p>Paste the key from your {label} purchase email (it starts with "
+            "<b>ELIV3-</b>). Your ELI v3 key does not open it.</p>"
+            f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
+            f'Support: <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
+        ),
+        buy_label="Buy a license",
+        cancel_label="Cancel",
     )
 
 

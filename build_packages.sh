@@ -201,7 +201,7 @@ WOA_EOF
 
     # Remove Linux/macOS entry points from the WINDOWS package — a customer double-clicking
     # install.sh or an .desktop file on Windows is pure user-error bait. The Python source
-    # stays (source-available); only the POSIX launchers/installers are pruned.
+    # stays (introspection reads it); only the POSIX launchers/installers are pruned.
     rm -f "$STAGING/install.sh" "$STAGING/eli.sh" "$STAGING/ELI_Setup.sh" \
           "$STAGING/build_packages.sh" "$STAGING"/*.desktop 2>/dev/null || true
     rm -rf "$STAGING/bin" 2>/dev/null || true

@@ -114,9 +114,15 @@ def test_an_unknown_bundle_is_refused_plainly(isolated, capsys):
     assert "No bundle 'nothing' is installed" in capsys.readouterr().err
 
 
-def test_every_bundle_is_allowed_until_licences_carry_editions():
+def test_a_build_that_needs_no_licence_starts_every_bundle(monkeypatch):
+    """Product keys are checked where ELI v3's own key is (retail builds); a source
+    checkout starts official bundles without one. tests/test_licensing_products.py
+    covers the retail side."""
+    for name in ("ELI_REQUIRE_LICENSE", "ELI_RETAIL_BUILD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ELI_LICENSE_BYPASS", "1")
     ok, why = bundles.entitled(Bundle(id="legal", title="ELI Legal", launch="a:b"))
-    assert ok and "do not yet carry editions" in why
+    assert ok and "not required" in why
 
 
 def test_the_start_up_choice_follows_what_was_remembered(monkeypatch):

@@ -17,9 +17,9 @@ Flags:
   --mcp-config [--allow-control]
                    Print the mcpServers entry to paste into another app's config.
   --license, --licence
-                   Print the PolyForm Internal Use terms ELI ships under, then
-                   exit. Distinct from --license-status, which reports this
-                   install's ACTIVATION state; this prints the TERMS.
+                   Print the licence notice and the EULA ELI ships under,
+                   then exit. Distinct from --license-status, which reports
+                   this install's ACTIVATION state; this prints the TERMS.
   --bundles        List the bundles installed (separate ELI applications such as
                    ELI Legal and ELI VR that run on ELI v3's core).
   --bundle <id>    Open that bundle in its own window instead of ELI v3's.
