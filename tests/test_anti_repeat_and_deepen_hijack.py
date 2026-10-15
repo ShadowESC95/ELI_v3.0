@@ -1,7 +1,8 @@
 """Locks on defects from live v2 sessions (13:51, 15:13, 17:47), ported to v3.
 
 In v3 the repeat guard lives in eli/kernel/stages/guards.py and the generation
-stage in eli/kernel/stages/generation.py; the deepen guard stays in engine.py.
+stage in eli/kernel/stages/generation.py. Following up on a briefing is read by the
+router against what the briefing listed (eli.runtime.pending_proposal).
 
 The transcript is the specification here, so the fixtures are its actual text.
 
@@ -21,6 +22,8 @@ is ``news topic-deepen: MORNING_REPORT→CHAT``. Three things combined:
   * ``_last_command_action`` had no timestamp and CHAT never overwrites it, so "right
     after a briefing" was never checked; one report armed the rule indefinitely.
   * An explicit 0.95 router match was treated as an ambiguous follow-up.
+That rule is gone. A follow-up is now read against what the briefing listed, and only a
+message that picks or names a listed story (or asks to go deeper into one) is one.
 """
 import time
 
@@ -34,11 +37,6 @@ from eli.kernel.stages.guards import (
     _repeat_ratio,
     _stream_holding_back_repeats,
     _user_asked_for_a_repeat,
-)
-from eli.kernel.engine import (
-    _DEEPEN_ARMING_ACTIONS,
-    _DEEPEN_WINDOW_SECONDS,
-    _is_explicit_command_match,
 )
 
 # The paragraph ELI actually repeated, verbatim from the transcript.
@@ -293,69 +291,39 @@ def test_contract_and_stripper_stay_in_sync():
     )
 
 
-# ── 4. the deepen window is bounded ─────────────────────────────────────────
-def test_deepen_window_is_finite_and_sane():
-    """The bug was an unbounded window: one report armed the hijack for the whole
-    process because CHAT never clears _last_command_action."""
-    assert 0 < _DEEPEN_WINDOW_SECONDS <= 3600
+# ── 4. a briefing's follow-ups are read against what it listed ─────────────
+@pytest.fixture()
+def briefing_open(tmp_path, monkeypatch):
+    """A news briefing just shown, with its stories open for a follow-up."""
+    from eli.runtime import pending_proposal as pp
+    monkeypatch.setattr(pp, "_path", lambda: tmp_path / "pending_proposal.json")
+    pp.set_pending_proposal("", listed={
+        "action": "NEWS_FETCH",
+        "items": [{"title": "Hubble images a newborn star system"},
+                  {"title": "Sleep study links late nights to memory loss"}],
+        "follow_up": {"action": "NEWS_FETCH", "arg": "topic",
+                      "args": {"mode": "fetch_and_show", "sources": ["all"]}},
+    }, from_reply=True)
+    return pp
 
 
-def test_a_stale_briefing_no_longer_counts_as_right_after():
-    stale = time.time() - (_DEEPEN_WINDOW_SECONDS + 60)
-    assert (time.time() - stale) > _DEEPEN_WINDOW_SECONDS
+def test_a_report_asked_for_after_a_briefing_is_a_report(briefing_open):
+    """The transcript case: "Good.. morning report?" right after a report was rewritten into
+    CHAT. A question naming no listed story is not a follow-up on one."""
+    from eli.execution.router_enhanced import route
+    r = route("Good.. morning report?")
+    assert r["action"] == "MORNING_REPORT", r
+    assert (r.get("meta") or {}).get("matched_by") != "pending_proposal.follow_up"
 
 
-def test_a_fresh_briefing_still_counts():
-    fresh = time.time() - 5
-    assert (time.time() - fresh) <= _DEEPEN_WINDOW_SECONDS
-
-
-# ── 5. the hijack guard's own logic ─────────────────────────────────────────
-@pytest.mark.parametrize("via,conf,explicit", [
-    ("self.morning_report", 0.95, True),    # the exact transcript case
-    ("chat.greeting", 0.90, True),
-    ("fallback.chat", 0.60, False),         # what the rule was built for
-    ("llm_intent.resolver", 0.95, True),
-    ("", 0.95, False),
-    ("self.morning_report", 0.60, False),   # named but unsure -> still a guess
-])
-def test_explicit_match_detection(via, conf, explicit):
-    """Calls the shipped predicate. Re-deriving the rule in the test would only
-    prove the test agrees with itself."""
-    intent = {"action": "MORNING_REPORT", "confidence": conf, "meta": {"matched_by": via}}
-    assert _is_explicit_command_match(intent) is explicit, f"{via}@{conf}"
-
-
-@pytest.mark.parametrize("bad", [None, "MORNING_REPORT", 42, {}, {"meta": None}])
-def test_explicit_match_never_raises_on_malformed_intent(bad):
-    assert _is_explicit_command_match(bad) is False
-
-
-def test_the_transcript_intent_survives_the_deepen_rule():
-    """The exact intent dict the router produced at 13:56:27, which was rewritten to
-    CHAT. It must now be recognised as an explicit command."""
-    intent = {
-        "action": "MORNING_REPORT", "args": {}, "confidence": 0.95,
-        "meta": {"matched_by": "self.morning_report",
-                 "priority_pipeline_stage": "core_router"},
-    }
-    assert _is_explicit_command_match(intent)
-
-
-def test_report_actions_cannot_suppress_themselves():
-    """MORNING_REPORT armed the rule AND was eligible to be rewritten by it. The
-    arming set is now also the exemption set, read from the shipped constant."""
-    assert "MORNING_REPORT" in _DEEPEN_ARMING_ACTIONS
-    assert "DAILY_REPORT" in _DEEPEN_ARMING_ACTIONS
-    assert "NEWS_FETCH" in _DEEPEN_ARMING_ACTIONS
-
-
-def test_deepen_rule_still_fires_for_the_case_it_was_built_for():
-    """Guarding must not disable the rule: a bare follow-up after a briefing has no
-    named match and low confidence, so it stays eligible."""
-    vague = {"action": "BACKGROUND_JOBS", "confidence": 0.60,
-             "meta": {"matched_by": "fallback.chat"}}
-    assert not _is_explicit_command_match(vague)
+def test_a_bare_pick_after_a_briefing_follows_that_story_up(briefing_open):
+    """What the old rule was built for still works, from what was listed rather than from
+    any short message."""
+    from eli.execution.router_enhanced import route
+    r = route("the first one")
+    assert r["action"] == "NEWS_FETCH"
+    assert r["args"]["topic"] == "Hubble images a newborn star system"
+    assert r["meta"]["matched_by"] == "pending_proposal.follow_up"
 
 
 def test_engine_still_exposes_process():

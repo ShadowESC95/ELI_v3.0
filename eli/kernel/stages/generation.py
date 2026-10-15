@@ -1851,24 +1851,17 @@ class GenerationMixin:
             return
         self._in_followthrough = True
         try:
-            # Topic-deepen guard: if the previous real action was a news briefing and the user asks
-            # to go deeper on a specific topic ("look closer into Hubble"), re-fetch that topic, not
-            # ELI's lossy paraphrase, which drops the topic and dumps the whole briefing again.
+            # When the user's own message goes further into something ELI's last result listed
+            # ("look closer into Hubble"), that is what runs, through the follow-up the listing
+            # declared (runtime.pending_proposal), not ELI's lossy paraphrase of it, which drops the
+            # subject and repeats the whole result.
             _query = commit["clause"]
             try:
-                import re as _ft_re
-                from eli.runtime.action_commitment import extract_deepen_topic as _edt
-                _deepen = _edt(user_input)
-                _lca = getattr(self, "_last_command_action", None) or {}
-                _was_news = str(_lca.get("action") or "").upper() in (
-                    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
-                _clause_newsish = bool(_ft_re.search(
-                    r"\bnews|headline|stor(?:y|ies)|latest|update\b",
-                    commit["clause"], _ft_re.I))
-                if _deepen and (_was_news or _clause_newsish):
-                    _query = f"fetch the latest news about {_deepen}"
+                from eli.runtime.pending_proposal import follow_up_on, get_follow_up
+                if follow_up_on(get_follow_up(), user_input):
+                    _query = user_input
             except Exception:
-                _query = commit["clause"]
+                log.debug("[FOLLOWTHROUGH] follow-up probe failed", exc_info=True)
             # ELI's own sentence is not a command from the user. It is routed by the router's rules
             # alone, and run only if that is a read ("let me check the news") or something the
             # user's message asked for. A sentence with no action behind it costs no second generation.
@@ -1910,7 +1903,7 @@ class GenerationMixin:
                 # Suppressing a dump nobody asked for is right. Suppressing one ELI just promised to report
                 # breaks its word (it said "I'll flag any lingering hiccups", found a real defect and dropped
                 # it). If the reply promised to report, surface the findings only, never the full PASS listing.
-                _ft_promised = bool(_ft_re.search(
+                _ft_promised = bool(re.search(
                     r"(?i)\bi(?:'ll| will| am going to| can)\s+(?:\w+\s+){0,3}?"
                     r"(?:flag|report|tell you|let you know|surface|call out|point out|"
                     r"highlight|come back to you)\b",

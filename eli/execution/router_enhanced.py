@@ -6756,6 +6756,16 @@ try:
                             whole["meta"]["matched_by"] = "pending_proposal.answer"
                             return whole
                         return None
+                    # Going further into something the last result listed ("the second one",
+                    # "tell me more about the tennis story"): the action and arguments the
+                    # listing declared, for the item named. Not a "yes" and not an answer to a
+                    # question, both of which were read above.
+                    follow = _pp.follow_up_on(prop, text)
+                    if follow:
+                        return _mk(follow["action"], follow["args"], 0.9,
+                                   matched_by="pending_proposal.follow_up",
+                                   meta_extra={"follow_up_of": follow["listed_by"],
+                                               "follow_up_item": (follow.get("item") or {}).get("n")})
                     if offered and is_affirmation(low):
                         # "yes please dig into the timestamps" is a new request, not consent to
                         # what was offered.

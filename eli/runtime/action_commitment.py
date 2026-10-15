@@ -62,6 +62,8 @@ _REDO_RE = re.compile(
     # It didn't happen: "you did not open spotify", "spotify didn't open", "nothing happened".
     # Live: "You did not open spotify again!!!" got a made-up account of checking the logs.
     r"you\s+(?:did\s*n[o']?t|didn'?t|never|have\s*n[o']?t|haven'?t)\s+(?:actually\s+|even\s+|really\s+)?\w+|"
+    # The same, asked: "why did you not fetch the real story", "why didn't you open it".
+    r"(?:did\s+you\s+not|didn'?t\s+you|have\s*n'?t\s+you)\s+(?:actually\s+|even\s+|really\s+)?\w+|"
     r"\b(?!(?:i|we)\b)\w+\s+(?:did\s*n[o']?t|didn'?t|never|has\s*n[o']?t|hasn'?t|won'?t)\s+"
     r"(?:open|opened|play|played|start|started|launch|launched|load|loaded|work|worked|happen|happened)|"
     r"nothing\s+(?:happened|opened|played|started|is\s+playing)"
@@ -129,7 +131,18 @@ def redo_applies(text: str, last_cmd: Optional[Dict[str, Any]],
     said = re.findall(r"[a-z0-9']+", m.group(0).lower()) + re.findall(r"[a-z0-9']+", s[m.end():].lower())[:4]
     named = [w for w in said if w != verb and w not in _NOT_AN_OBJECT and w not in _GENERIC_REDO_VERBS]
     if named:
-        last_words = " ".join([str(last_cmd.get("input") or ""), str(last_cmd.get("action") or "").replace("_", " ")]
+        # What the last command was about: what was said, its arguments, and what the catalogue
+        # says that action does ("you didn't fetch the story" is about a news fetch because stories
+        # are what the catalogue says it fetches). Not the catalogue's example phrases: they name
+        # particular things, and "launch firefox" there made "you did not open firefox" a redo of
+        # "open spotify".
+        try:
+            from eli.tools.registry.capabilities_doc import action_words
+            about = action_words(str(last_cmd.get("action") or ""), with_phrases=False)
+        except Exception:
+            about = ""
+        last_words = " ".join([str(last_cmd.get("input") or ""), str(last_cmd.get("action") or "").replace("_", " "),
+                               about]
                               + [str(v) for v in (last_cmd.get("args") or {}).values()]).lower()
         if not any(w in last_words for w in named):
             return False
@@ -198,21 +211,6 @@ def extract_deepen_topic(text: str) -> str:
     if not topic or len(toks) > 12:
         return ""
     return topic
-
-
-def recover_recent_deepen_topic(memory) -> str:
-    """Best-effort topic from a recent 'go deeper into …' user turn."""
-    try:
-        turns = memory.get_recent_conversation(limit=12) or []
-    except Exception:
-        return ""
-    for _t in reversed(turns):
-        if str((_t or {}).get("role") or "").lower() != "user":
-            continue
-        topic = extract_deepen_topic(str((_t or {}).get("content") or ""))
-        if topic:
-            return topic
-    return ""
 
 
 def detect_action_commitment(text: str) -> Optional[Dict[str, str]]:

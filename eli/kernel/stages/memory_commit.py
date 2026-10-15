@@ -275,16 +275,27 @@ class MemoryCommitMixin:
         # steps it offered, numbered, so "yes" or "do 1-3" carries them out whether a step is an
         # action or something ELI writes, and the question it ended on, so a short reply is read
         # as its answer. An action that asked for confirmation itself (forgetting memories) or
-        # for a missing detail keeps its own.
+        # for a missing detail keeps its own. What an action's result listed this turn replaces
+        # the open listing; a reply that lists nothing leaves the open one as it is.
         try:
-            from eli.runtime.pending_proposal import read_reply, set_pending_proposal, clear_pending_proposal
+            from eli.runtime.pending_proposal import (
+                clear_pending_proposal, get_follow_up, listing, read_reply, set_pending_proposal,
+            )
             _facts = _request_context.turn_facts_var.get() or {}
+            _listed = listing(_facts.get("listed"))
             if not _facts.get("proposal_set_by_action"):
                 _open = read_reply(_shown, offers_only=bool(_facts.get("executed_actions")))
-                if _open["items"] or _open["question"]:
-                    set_pending_proposal("", items=_open["items"], question=_open["question"], from_reply=True)
+                if _open["items"] or _open["question"] or _listed:
+                    set_pending_proposal("", items=_open["items"], question=_open["question"],
+                                         listed=_listed, from_reply=True)
                 else:
                     clear_pending_proposal()
+            elif _listed:
+                # The action left its own offer open; add what it listed beside it.
+                _kept = get_follow_up() or {}
+                set_pending_proposal(str(_kept.get("command") or ""), str(_kept.get("summary") or ""),
+                                     items=_kept.get("items"), question=str(_kept.get("question") or ""),
+                                     awaiting=_kept.get("awaiting"), listed=_listed, from_reply=True)
         except Exception as _prop_err:
             log.debug(f"[COGNITIVE] offer-capture skipped: {_prop_err}")
         try:

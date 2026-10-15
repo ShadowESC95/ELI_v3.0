@@ -478,36 +478,6 @@ Answer:"""
             from eli.kernel import prompt_rules as _pr_all
             base_rules += _pr_all.all_rules()
 
-        # News-deepen steering: when the user asks to go deeper right after a news read, anchor on the
-        # stories just shown, not a generic overview (a "dive deeper into these AI models" turn gave a
-        # listicle). Keyed on a deepen cue plus the article markers ELI's briefings carry, since the GUI
-        # news path bypasses _last_command_action.
-        try:
-            _ui_low = str(user_input or "").lower()
-            _deepen_cue = any(p in _ui_low for p in (
-                "dive deeper", "go deeper", "deeper into", "look deeper", "tell me more",
-                "more about", "expand on", "elaborate", "look closer", "dig into",
-                "more detail", "delve"))
-            if _deepen_cue:
-                _lca = getattr(self, "_last_command_action", None) or {}
-                _was_news = str(_lca.get("action") or "").upper() in (
-                    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
-                _ctx_blob = str(memory_context or "")
-                _news_markers = bool(re.search(
-                    r"\(fetched\s+\d{1,2}:\d{2}\)|\[[A-Za-z][^\]]{1,24}\s+[—-]\s*\d{1,2}\s*[:A-Za-z]",
-                    _ctx_blob))
-                if _was_news or _news_markers:
-                    base_rules += (
-                        "- NEWS DEEPEN (this turn): The user is asking you to go deeper on the news "
-                        "you just read them. Expand on the SPECIFIC stories/papers from your previous "
-                        "news turn shown in the conversation above — name each item you are expanding "
-                        "and add concrete, real detail about THAT item (what it found, why it matters, "
-                        "the mechanism/implication). Do NOT produce a generic textbook overview of the "
-                        "broad subject; anchor every point to an actual article you already cited.\n"
-                    )
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
         # Runtime facts come from the situation brief (context_synthesiser _get_runtime_state),
         # mid-prompt where attention is strongest. The old tail-append is gone so it doesn't compete
         # with the persona's "12 specialist agents" references.

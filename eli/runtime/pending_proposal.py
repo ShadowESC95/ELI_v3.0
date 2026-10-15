@@ -3,18 +3,23 @@ eli/runtime/pending_proposal.py
 ================================
 What ELI's last reply left open, so the user's next message can be read against it.
 
-Three things can be open:
+Four things can be open:
 
 - steps ELI offered ("Want me to set a reminder?", a numbered list followed by "shall I go
   ahead with these?"). Each is either an action the router has a rule for, or a task ELI does
   by writing (explain, draft, compare, plan). "yes", "do 1-3", "the second one" run them.
 - a question ELI asked. A short reply is its answer; the engine tells the model so.
 - a detail an action asked for ("When is it?"). The reply completes the original request.
+- what an action's result listed (headlines, search results, notes, files), with how to go
+  further into one of them. "the second one", "the tennis one", "tell me more about X" run that
+  follow-up (follow_up_on). A listing is kept apart from offered steps, so "yes" agrees to an
+  offer and never opens every headline, and it outlives replies that list nothing new: a word
+  in between does not lose it. The next listing replaces it.
 
 Distinct from runtime.grounded_remediation (which handles "install X?" repair offers).
 
-State is a single JSON file, replaced by every reply, with a time limit so a "yes" long
-afterwards cannot trigger an old offer.
+State is a single JSON file, replaced by every reply except for its listing, with a time limit
+so a "yes" long afterwards cannot trigger an old offer.
 """
 
 from __future__ import annotations
@@ -45,11 +50,14 @@ def _path() -> Path:
 
 def set_pending_proposal(command: str, summary: str = "", *, items: Optional[List[Dict[str, Any]]] = None,
                          from_reply: bool = False, question: str = "",
-                         awaiting: Optional[Dict[str, Any]] = None) -> None:
+                         awaiting: Optional[Dict[str, Any]] = None,
+                         listed: Optional[Dict[str, Any]] = None) -> None:
     """Record what ELI's reply left open. `command` is the phrase to re-route if the user
     affirms (e.g. "set a reminder for the rick and morty premiere"); `items` is every step it
     offered, each with the number it was listed under; `question` is the question the reply
-    ended on; `awaiting` is {"command", "action"} when an action asked for a missing detail.
+    ended on; `awaiting` is {"command", "action"} when an action asked for a missing detail;
+    `listed` is what an action's result listed (see listing()). Without `listed`, the listing
+    already open is kept.
 
     An action that asks for confirmation (forgetting memories) sets its own proposal; that one
     is marked on the turn so the capture of the reply text does not wipe it."""
@@ -60,12 +68,14 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
         command = str(first["command"]).strip() if first else ""
     question = " ".join(str(question or "").split())[:400]
     awaiting = dict(awaiting) if isinstance(awaiting, dict) and awaiting.get("command") else None
-    if not (command or items or question or awaiting):
+    listed = listing(listed) if listed is not None else _current_listing()
+    if not (command or items or question or awaiting or listed):
         return
     try:
         _path().write_text(
             json.dumps({"command": command, "summary": summary or command, "ts": time.time(),
-                        "items": items, "question": question, "awaiting": awaiting}),
+                        "items": items, "question": question, "awaiting": awaiting,
+                        "listed": listed}),
             encoding="utf-8",
         )
         log.debug("[PENDING_PROPOSAL] stored: %r%s%s", (command or question)[:120],
@@ -77,8 +87,7 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
         log.debug("[PENDING_PROPOSAL] store failed: %s", e)
 
 
-def get_follow_up() -> Optional[Dict[str, Any]]:
-    """Everything the last reply left open (steps, a question, a detail asked for), or None."""
+def _stored() -> Optional[Dict[str, Any]]:
     p = _path()
     if not p.exists():
         return None
@@ -86,12 +95,37 @@ def get_follow_up() -> Optional[Dict[str, Any]]:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
-    if not isinstance(data, dict):
+    return data if isinstance(data, dict) else None
+
+
+def _lapsed(ts: Any) -> bool:
+    return time.time() - float(ts or 0) > _TTL_SECONDS
+
+
+def _current_listing() -> Optional[Dict[str, Any]]:
+    """The listing still open, or None. It keeps the time it was listed, not the last reply's."""
+    listed = (_stored() or {}).get("listed")
+    if not isinstance(listed, dict) or _lapsed(listed.get("ts")):
         return None
-    if time.time() - float(data.get("ts", 0) or 0) > _TTL_SECONDS:
-        clear_pending_proposal()
+    return listed
+
+
+def get_follow_up() -> Optional[Dict[str, Any]]:
+    """Everything still open (steps, a question, a detail asked for, a listing), or None."""
+    data = _stored()
+    if data is None:
         return None
-    if not (data.get("command") or data.get("items") or data.get("question") or data.get("awaiting")):
+    listed = _current_listing()
+    if _lapsed(data.get("ts")):
+        # What the last reply offered or asked has lapsed; a listing keeps its own time.
+        if not listed:
+            clear_pending_proposal()
+            return None
+        data = {"command": "", "summary": "", "ts": data.get("ts"), "items": [],
+                "question": "", "awaiting": None}
+    data["listed"] = listed
+    if not (data.get("command") or data.get("items") or data.get("question") or data.get("awaiting")
+            or listed):
         return None
     return data
 
@@ -103,12 +137,59 @@ def get_pending_proposal() -> Optional[Dict[str, Any]]:
 
 
 def clear_pending_proposal() -> None:
+    """Close what the last reply offered or asked. A listing stays until the next replaces it."""
     try:
+        listed = _current_listing()
         p = _path()
-        if p.exists():
+        if listed:
+            p.write_text(json.dumps({"command": "", "summary": "", "ts": time.time(), "items": [],
+                                     "question": "", "awaiting": None, "listed": listed}),
+                         encoding="utf-8")
+        elif p.exists():
             p.unlink()
     except Exception:
         log.debug("suppressed exception", exc_info=True)
+
+
+# ── what a result listed ─────────────────────────────────────────────────────
+# An action that presents several things says so by returning `listed` (each item a "title",
+# and optionally "ref", "summary", "source") and `follow_up`: the action that goes further into
+# one of them, the argument the item fills, the item field it is filled from ("title" unless
+# said), and any fixed arguments. Declared as an action and its arguments, never a phrase for the
+# router to re-read: a phrase is only as good as the rule that parses it.
+
+_MAX_LISTED = 20
+
+
+def listing(raw: Any) -> Optional[Dict[str, Any]]:
+    """A result's listing in the stored shape: {"action", "items", "follow_up", "ts"}, or None
+    when it lists nothing usable or does not say how to follow one up."""
+    if not isinstance(raw, dict):
+        return None
+    follow = raw.get("follow_up")
+    if not (isinstance(follow, dict) and follow.get("action") and follow.get("arg")):
+        return None
+    items: List[Dict[str, Any]] = []
+    for item in raw.get("items") or []:
+        if not isinstance(item, dict) or not str(item.get("title") or "").strip():
+            continue
+        entry: Dict[str, Any] = {"n": len(items) + 1, "title": " ".join(str(item["title"]).split())[:300]}
+        for key in ("ref", "summary", "source"):
+            if str(item.get(key) or "").strip():
+                entry[key] = " ".join(str(item[key]).split())[:600]
+        items.append(entry)
+        if len(items) >= _MAX_LISTED:
+            break
+    if not items:
+        return None
+    return {
+        "action": str(raw.get("action") or "").upper(),
+        "items": items,
+        "follow_up": {"action": str(follow["action"]).upper(), "arg": str(follow["arg"]),
+                      "field": str(follow.get("field") or "title"),
+                      "args": dict(follow.get("args") or {})},
+        "ts": float(raw.get("ts") or time.time()),
+    }
 
 
 # Offer / proposal extraction from an ELI response. Returns the proposed
@@ -534,19 +615,23 @@ def chosen_items(prop: Dict[str, Any], reply: str) -> List[Dict[str, Any]]:
     return _by_name(items, reply) or items
 
 
-def selection(prop: Dict[str, Any], reply: str) -> List[Dict[str, Any]]:
-    """A short reply that picks from what was offered without saying yes: "the second one",
-    "2 and 3", "the abstract one". Empty when it is anything else."""
+def _pick(items: List[Dict[str, Any]], reply: str, *, least: int = 2) -> List[Dict[str, Any]]:
+    """The items a short reply picks without saying yes: "the second one", "2 and 3", "the
+    abstract one". Empty when the reply is anything else, a question included."""
     low = _re.sub(r"\s+", " ", str(reply or "").strip().lower())
     if not low or "?" in low or len(low.split()) > 8 or _ASKING.match(low):
         return []
-    items = _offered(prop)
-    if len(items) < 2:
+    if len(items) < least:
         return []
     picked = chosen_numbers(low)
     if picked and not _re.sub(r"[\d\-–,.!&/+]+", " ", _PICK_FILLER.sub(" ", low)).strip():
         return _by_number(items, picked)
     return _by_name(items, low)
+
+
+def selection(prop: Dict[str, Any], reply: str) -> List[Dict[str, Any]]:
+    """A short reply that picks from what was offered without saying yes (see _pick)."""
+    return _pick(_offered(prop), reply)
 
 
 def commands_for(prop: Dict[str, Any], reply: str) -> List[str]:
@@ -610,3 +695,63 @@ def is_the_detail(reply: str, needs: str) -> bool:
         return not is_consent(low) and not _re.search(
             r"\b(?:no|nope|nah|never ?mind|cancel|stop|skip|leave it|forget it|nowhere|dunno|idk|what|why|how)\b", low)
     return False
+
+
+# ── going further into something a result listed ────────────────────────────
+
+def follow_up_on(prop: Optional[Dict[str, Any]], reply: str) -> Optional[Dict[str, Any]]:
+    """The follow-up a reply asks for on something the last result listed, as
+    {"action", "args", "item", "listed_by"}, or None.
+
+    By the item's number ("the second one"), by its own words ("the tennis one"), or by a "go
+    deeper into X" / "tell me more about X", where X names one listed item or else is the subject
+    itself (a briefing's subject need not be one of its headlines). Anything else is not a
+    follow-up: an answer to ELI's question, an opinion, a complaint."""
+    listed = (prop or {}).get("listed")
+    if not isinstance(listed, dict) or not listed.get("items"):
+        return None
+    follow = listed.get("follow_up") or {}
+    if not (follow.get("action") and follow.get("arg")):
+        return None
+    items = [dict(i, command=i.get("title", ""), said=i.get("summary", "")) for i in listed["items"]]
+    try:
+        from eli.runtime.action_commitment import extract_deepen_topic
+        topic = extract_deepen_topic(reply)
+    except Exception:
+        log.debug("[PENDING_PROPOSAL] deepen probe failed", exc_info=True)
+        topic = ""
+    if topic:
+        hits = _by_name(items, topic)
+        item = hits[0] if hits else None
+    else:
+        picked = _pick(items, reply, least=1)
+        if len(picked) != 1:
+            return None
+        item = picked[0]
+    field = str(follow.get("field") or "title")
+    value = str((item or {}).get(field) or (item or {}).get("title") or topic).strip()
+    if not value:
+        return None
+    args = dict(follow.get("args") or {})
+    args[str(follow["arg"])] = value
+    if item is not None:
+        item = {k: v for k, v in item.items() if k not in ("command", "said")}
+    return {"action": str(follow["action"]).upper(), "args": args, "item": item,
+            "listed_by": str(listed.get("action") or "")}
+
+
+def describe_open(prop: Optional[Dict[str, Any]]) -> str:
+    """What is open, in a few lines a model can read the user's next message against."""
+    if not prop:
+        return ""
+    lines: List[str] = []
+    listed = prop.get("listed")
+    if isinstance(listed, dict) and listed.get("items"):
+        lines.append(f"ELI's last result ({listed.get('action') or 'an action'}) listed:")
+        lines += [f"  {i.get('n')}. {str(i.get('title') or '')[:110]}" for i in listed["items"][:8]]
+    offered = [str(i.get("command") or "") for i in _offered(prop)]
+    if any(offered):
+        lines.append("ELI offered: " + "; ".join(o[:80] for o in offered[:5] if o))
+    if prop.get("question"):
+        lines.append(f'ELI\'s last reply ended by asking: "{str(prop["question"])[:240]}"')
+    return "\n".join(lines)

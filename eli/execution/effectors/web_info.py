@@ -102,6 +102,28 @@ def _h_get_weather(a, args):
         return {"ok": False, "action": a, "error": str(_e), "content": str(_e), "response": str(_e)}
 
 
+# A result that presents several things keeps them open for a follow-up (executor `listed` /
+# `follow_up`, runtime.pending_proposal): "the second one" or "tell me more about the tennis
+# story" re-fetches that story; after a search, a result is searched further.
+_NEWS_FOLLOW_UP = {"action": "NEWS_FETCH", "arg": "topic",
+                   "args": {"mode": "fetch_and_show", "sources": ["all"]}}
+_WEB_FOLLOW_UP = {"action": "WEB_SEARCH", "arg": "query"}
+
+
+def _listed_articles(articles) -> list:
+    return [{"title": r.get("title"), "ref": r.get("url"), "summary": r.get("summary"),
+             "source": r.get("source")}
+            for r in (articles or []) if isinstance(r, dict) and r.get("title")]
+
+
+def _keeping_open(result: dict, articles, follow_up: dict) -> dict:
+    listed = _listed_articles(articles)
+    if listed:
+        result["listed"] = listed
+        result["follow_up"] = dict(follow_up)
+    return result
+
+
 def _h_news_fetch(a, args):
     topic   = (args or {}).get('topic', '')
     sources = (args or {}).get('sources', ['all'])
@@ -148,7 +170,8 @@ def _h_news_fetch(a, args):
                 msg = f"No stored news found for '{query}'. Try: 'fetch latest news' first."
             else:
                 msg = _format_articles(results, f"News results for '{query}':", with_summaries=True)
-            return {'ok': True, 'action': a, 'content': msg, 'response': msg}
+            return _keeping_open({'ok': True, 'action': a, 'content': msg, 'response': msg},
+                                 results, _NEWS_FOLLOW_UP)
 
         elif mode == 'recent':
             # Auto-refresh if last fetch was more than 6 hours ago
@@ -174,7 +197,8 @@ def _h_news_fetch(a, args):
                     msg = f"Fetched {res['fetched']} articles but none stored. Check network."
                     return {'ok': True, 'action': a, 'content': msg, 'response': msg}
             msg = _format_articles(results, f"Recent headlines ({len(results)}):")
-            return {'ok': True, 'action': a, 'content': msg, 'response': msg}
+            return _keeping_open({'ok': True, 'action': a, 'content': msg, 'response': msg},
+                                 results, _NEWS_FOLLOW_UP)
 
         elif mode == 'stats':
             st = fetcher.stats()
@@ -199,16 +223,23 @@ def _h_news_fetch(a, args):
             # rather than dumping raw headlines. General ask = 50/50 top
             # stories + interest matches; a topic ask = that topic's stories.
             # Falls back to the raw list if synthesis is empty (offline/none).
+            # The brief is built here and handed to the synthesis so its articles stay open
+            # for a follow-up on the stories the briefing was written from.
+            _brief: dict = {}
             try:
-                from eli.tools.news.news_synthesis import synthesise_news_briefing
-                _read = synthesise_news_briefing(topic=topic, refresh=False)
+                from eli.tools.news.news_synthesis import build_news_briefing, synthesise_news_briefing
+                _brief = build_news_briefing(topic=topic, refresh=False) or {}
+                _read = synthesise_news_briefing(topic=topic, refresh=False, brief=_brief)
             except Exception:
                 _read = ""
             if _read:
-                return {'ok': True, 'action': a, 'content': _read,
-                        'response': _read,
-                        'meta': {'response_mode': 'news_briefing'}}
+                return _keeping_open({'ok': True, 'action': a, 'content': _read,
+                                      'response': _read,
+                                      'meta': {'response_mode': 'news_briefing'}},
+                                     list(_brief.get('top') or []) + list(_brief.get('interest') or []),
+                                     _NEWS_FOLLOW_UP)
             recent = fetcher.get_recent(limit=10, category=topic)
+            shown = recent
             msg = _format_articles(recent, header)
             if not msg and _fetched > 0:
                 try:
@@ -220,12 +251,14 @@ def _h_news_fetch(a, args):
                 if not msg:
                     recent2 = fetcher.get_recent(limit=20)
                     msg = _format_articles(recent2, header)
+                    shown = recent2
                 msg = msg or f"Fetched {_fetched} articles — ask 'morning report' for a full digest."
             elif not msg:
                 msg = f"Fetched {_fetched} articles."
             if errs:
                 msg += f"\n\n⚠ Some sources failed: {'; '.join(errs[:2])[:200]}"
-            return {'ok': True, 'action': a, 'content': msg, 'response': msg}
+            return _keeping_open({'ok': True, 'action': a, 'content': msg, 'response': msg},
+                                 shown, _NEWS_FOLLOW_UP)
 
     except Exception as _exc:
         return {'ok': False, 'action': a, 'error': str(_exc), 'content': str(_exc), 'response': str(_exc)}
@@ -288,7 +321,12 @@ def _h_web_search(a, args):
             lines.append(entry)
         msg = "\n".join(lines)
         return {"ok": True, "action": a, "query": query, "results": results,
-                "content": msg, "response": msg, "web_grounded": True}
+                "content": msg, "response": msg, "web_grounded": True,
+                "listed": [{"title": (r.get("title") or r.get("name") or "").strip(),
+                            "ref": (r.get("href") or r.get("url") or "").strip(),
+                            "summary": (r.get("body") or r.get("snippet") or "").strip()}
+                           for r in results if isinstance(r, dict)],
+                "follow_up": dict(_WEB_FOLLOW_UP)}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

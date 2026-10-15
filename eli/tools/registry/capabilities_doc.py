@@ -40,6 +40,19 @@ def _add(cat: str, action: str, desc: str, *phrases: str) -> None:
     _C[action] = (cat, desc, list(phrases))
 
 
+def action_words(action: str, *, with_phrases: bool = True) -> str:
+    """What the catalogue says one action is about, as text: its name, what it does and, with
+    `with_phrases`, how it is asked for. The example phrases name particular things ("launch
+    firefox"); leave them out to keep only what the action is about in general. "" for an action
+    the catalogue does not describe."""
+    entry = _C.get(str(action or "").upper())
+    if not entry:
+        return ""
+    _cat, desc, phrases = entry
+    said = list(phrases or []) if with_phrases else []
+    return " ".join([str(action).upper().replace("_", " "), desc or "", *said]).lower()
+
+
 def catalogue() -> List[dict]:
     """Structured command catalogue grouped by category — for the web UI / API.
 
@@ -183,7 +196,7 @@ _add("System status & info", "GET_TIME", "Current time (alt)", "“tell me the t
 _add("System status & info", "DATE", "Current date", "“what's the date”")
 _add("System status & info", "GET_DATE", "Current date (alt)", "“what day is it”")
 _add("System status & info", "GET_WEATHER", "Weather for a place", "“weather in Paris”")
-_add("System status & info", "NEWS_FETCH", "Synthesised news digest; topic-scoped re-fetch after a briefing when you go deeper", "“what's the news”", "“catch me up”", "“go deeper into Hubble”", "“more on the transformer story”")
+_add("System status & info", "NEWS_FETCH", "Synthesised news digest of the latest stories and headlines; topic-scoped re-fetch of a story after a briefing when you go deeper", "“what's the news”", "“catch me up”", "“go deeper into Hubble”", "“more on the transformer story”")
 _add("System status & info", "WEB_SEARCH", "Web search (Net-gated)", "“search the web for X”")
 _add("System status & info", "MESSAGE_TIME_QUERY", "Time-of-a-message query", "“when did I say that”")
 _add("System status & info", "CHECK_CHRONAL_ALIGNMENT", "Playful date/time sanity check", "“check chronal alignment”")

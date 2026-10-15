@@ -2089,129 +2089,6 @@ def _eli_phase13c_bus_action_result(bus_result, action):
 
 
 
-# How long after a briefing a bare follow-up ("the first one") still reads as a
-# deepen request. Beyond this the user has moved on, and rewriting their command
-# into CHAT is a misroute rather than a rescue.
-_DEEPEN_WINDOW_SECONDS = float(os.environ.get("ELI_DEEPEN_WINDOW_SECONDS", "300"))
-
-
-
-# Actions that ARM the news topic-deepen rule. They must never also be its victims:
-# MORNING_REPORT armed the rule and was eligible to be rewritten by it, so asking for
-# a report right after a report could not return a report.
-_DEEPEN_ARMING_ACTIONS = ("NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT")
-
-
-def _is_explicit_command_match(intent) -> bool:
-    """True when the router named this action outright, rather than guessing.
-
-    The deepen heuristic exists to rescue inputs with no clear intent ("the first
-    one"), which arrive from the LLM resolver as low-confidence fallbacks. A named
-    match at high confidence is a command and must survive: "Good.. morning report?"
-    matched ``self.morning_report`` at 0.95 and was still rewritten into CHAT.
-    """
-    if not isinstance(intent, dict):
-        return False
-    try:
-        meta = intent.get("meta") or {}
-        via = str(meta.get("matched_by") or "")
-        conf = float(intent.get("confidence") or 0.0)
-    except Exception:
-        return False
-    return bool(via) and not via.startswith("fallback.") and conf >= 0.9
-
-
-def _news_deepen_news_fetch_args(topic: str, user_input: str) -> dict:
-    return {
-        "topic": str(topic or "").strip(),
-        "mode": "fetch_and_show",
-        "sources": ["all"],
-        "_raw_user_text": str(user_input or ""),
-    }
-
-
-def _try_news_topic_deepen_reroute(
-    user_input: str,
-    action: str,
-    args: dict,
-    intent: dict,
-    last_command_action: dict | None,
-) -> tuple[str, dict, dict]:
-    """After a news briefing, 'go deeper into X' must re-fetch — not CHAT guesswork."""
-    try:
-        from eli.runtime.action_commitment import extract_deepen_topic as _edt
-    except Exception:
-        return action, args, intent
-
-    _act_up = str(action or "").upper()
-    if _act_up in _DEEPEN_ARMING_ACTIONS:
-        return action, args, intent
-
-    _lca = dict(last_command_action or {})
-    _was_news = str(_lca.get("action") or "").upper() in _DEEPEN_ARMING_ACTIONS
-    if _was_news:
-        _lca_ts = float(_lca.get("ts") or 0.0)
-        if _lca_ts and (time.time() - _lca_ts) > _DEEPEN_WINDOW_SECONDS:
-            _was_news = False
-
-    _deepen_topic = _edt(user_input)
-    if (not _deepen_topic) and _was_news:
-        _hard = {
-            "OPEN_APP", "CLOSE_APP", "FOCUS_APP", "SWITCH_WINDOW", "PLAY_MEDIA",
-            "PLAY_SPECIFIC", "MEDIA_CONTROL", "VOLUME_CONTROL", "MUTE", "CREATE_FILE",
-            "CREATE_FOLDER", "DELETE_FILE", "SCREENSHOT", "TYPE_TEXT", "MOUSE_CONTROL",
-            "KEY_PRESS", "SET_ALARM", "SET_TIMER", "SHELL_EXEC", "OPEN_URL",
-            "GAZE_CLICK", "START_POMODORO", "ADD_EVENT", "SEARCH_NOTES",
-        }
-        _wc = len(str(user_input or "").split())
-        if _act_up not in _hard and 1 <= _wc <= 7:
-            _deepen_topic = str(user_input or "").strip().rstrip("?.!,;: ").strip()
-
-    if _is_explicit_command_match(intent) or _act_up in _DEEPEN_ARMING_ACTIONS:
-        _deepen_topic = ""
-
-    if not (_deepen_topic and _was_news):
-        return action, args, intent
-
-    log.debug(f"[COGNITIVE] news topic-deepen: →NEWS_FETCH (topic='{_deepen_topic}')")
-    _out_intent = dict(intent or {})
-    _out_intent["action"] = "NEWS_FETCH"
-    _out_intent["args"] = _news_deepen_news_fetch_args(_deepen_topic, user_input)
-    _out_intent["_deepen_topic"] = _deepen_topic
-    _meta = dict(_out_intent.get("meta") or {})
-    _meta["matched_by"] = "news.topic_deepen"
-    _out_intent["meta"] = _meta
-    return "NEWS_FETCH", dict(_out_intent["args"]), _out_intent
-
-
-def _try_news_fetch_complaint_redo(
-    user_input: str,
-    action: str,
-    args: dict,
-    intent: dict,
-    memory,
-) -> tuple[str, dict, dict]:
-    """User called out a guessed news deepen — re-fetch the topic they asked for."""
-    try:
-        from eli.cognition.correction_patterns import is_news_fetch_complaint
-        from eli.runtime.action_commitment import recover_recent_deepen_topic
-    except Exception:
-        return action, args, intent
-    if not is_news_fetch_complaint(user_input):
-        return action, args, intent
-    _topic = recover_recent_deepen_topic(memory)
-    if not _topic:
-        return action, args, intent
-    log.debug(f"[COGNITIVE] news fetch complaint → NEWS_FETCH redo (topic='{_topic}')")
-    _out_intent = dict(intent or {})
-    _out_intent["action"] = "NEWS_FETCH"
-    _out_intent["args"] = _news_deepen_news_fetch_args(_topic, user_input)
-    _meta = dict(_out_intent.get("meta") or {})
-    _meta["matched_by"] = "news.fetch_complaint_redo"
-    _out_intent["meta"] = _meta
-    return "NEWS_FETCH", dict(_out_intent["args"]), _out_intent
-
-
 def _clarifier_is_usable(generated: str, *, user_input: str, context: str) -> bool:
     """Reject a 'clarifying question' that is not one.
 
@@ -4761,6 +4638,17 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
     def _sticky_set(self, field: str, value: Any) -> None:
         _request_context.set_session_sticky(self._sticky_key(), field, value)
 
+    # The last real action this session ran ({"action", "args", "input", "ts"}): what "do it
+    # again" re-runs. Per session, not per engine: the engine is a process-wide singleton, and a
+    # plain attribute let one API session re-run another's command.
+    @property
+    def _last_command_action(self) -> Optional[Dict[str, Any]]:
+        return self._sticky_get("last_command_action")
+
+    @_last_command_action.setter
+    def _last_command_action(self, value: Optional[Dict[str, Any]]) -> None:
+        self._sticky_set("last_command_action", value)
+
     @property
     def document_rag(self):
         """The document index the orchestrator's document channel searches; None when switched off."""
@@ -5800,9 +5688,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if str(action).upper() not in ("CHAT", "NOOP", "UNKNOWN", ""):
                 self._last_command_action = {
                     "action": action, "args": dict(args or {}), "input": user_input,
-                    # Stamped so consumers meaning "right after X" can check it. The news topic-deepen rule read
-                    # this dict as proof a briefing had just happened, but CHAT never overwrites it, so one report
-                    # left the flag set for the whole process and later short inputs could be rewritten into CHAT.
+                    # Stamped so "do it again" only re-runs something recent: CHAT never overwrites this.
                     "ts": time.time(),
                 }
         except Exception:
@@ -5947,19 +5833,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug(f"[COGNITIVE] Authority gate check failed on non-privileged action "
                       f"{action!r} — degrading open (non-fatal): {_gate_err}")
 
-
-        # News topic-deepen: after a briefing, "go deeper into X" must re-fetch that
-        # story — not route to CHAT and let the model guess from weights.
-        try:
-            action, args, intent = _try_news_topic_deepen_reroute(
-                user_input, action, args, intent,
-                getattr(self, "_last_command_action", None),
-            )
-            action, args, intent = _try_news_fetch_complaint_redo(
-                user_input, action, args, intent, self.memory,
-            )
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
 
         # Route deterministic controls straight to executor. No AgentBus, no memory,
         # no GGUF, no persona synthesis. This is what OS-layer commands need.
@@ -7872,7 +7745,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             log.debug("statement check failed", exc_info=True)
         try:
             from eli.cognition.llm_intent import parse_cached
-            li = parse_cached(text)
+            from eli.runtime.pending_proposal import describe_open, get_follow_up
+            li = parse_cached(text, describe_open(get_follow_up()))
             # Banter guard: the resolver sometimes maps playful input ("use your imagination!") to a
             # generative action like GENERATE_SCRIPT, which dead-ends on "no description supplied".
             # If the text has no create-intent, it's conversation: route to CHAT.

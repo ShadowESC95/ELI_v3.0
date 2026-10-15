@@ -54,6 +54,7 @@ or subprocess calls to system binaries (playerctl, paplay, etc.).
 """
 
 from __future__ import annotations
+import contextvars
 import os
 import re
 
@@ -2369,8 +2370,12 @@ class AgentBus:
                 return max(base, 180.0 * _tier_mult)
             return base
 
+        # Each agent runs in a copy of this turn's context (one copy each: a context cannot be
+        # entered by two threads at once). A pool thread does not inherit it, so what an agent's
+        # action recorded for the turn (what ran, what it listed) never reached the turn: the
+        # audit row and the reply's follow-ups read request_context.turn_facts_var.
         futures = {
-            self._pool.submit(a.run, user_input, intent, session_id, user_id): a
+            self._pool.submit(contextvars.copy_context().run, a.run, user_input, intent, session_id, user_id): a
             for a in layer_agents
         }
         max_timeout = max((_eff_to(a) for a in layer_agents), default=5.0)

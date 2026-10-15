@@ -5949,11 +5949,18 @@ def _action_post_dispatch(
             log.debug("suppressed exception", exc_info=True)
     # The turn's audit row names what really ran: the agent bus can execute an action
     # and the turn still end as CHAT (live: PERSONA_LOCK_CLEAR ran, the row said CHAT).
+    # A result that presented several things (headlines, search results, notes, files) also
+    # says so with `listed` and `follow_up`; the reply that shows it keeps the listing open, so
+    # "the second one" or "tell me more about X" goes further into it (runtime.pending_proposal).
     try:
         from eli.kernel import request_context as _rc_exec
         _turn = _rc_exec.turn_facts_var.get()
         if _turn is not None:
             _turn.setdefault("executed_actions", []).append(str(action or "").upper())
+            if isinstance(result, dict) and result.get("listed") and result.get("follow_up"):
+                _turn["listed"] = {"action": str(action or "").upper(),
+                                   "items": list(result["listed"]),
+                                   "follow_up": dict(result["follow_up"])}
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 

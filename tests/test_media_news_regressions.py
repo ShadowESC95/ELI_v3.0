@@ -79,40 +79,67 @@ def test_deepen_query_routes_to_topic_news():
     assert r["args"].get("topic") == "hubble"
 
 
-def test_news_topic_deepen_reroutes_chat_to_news_fetch():
+# A briefing keeps its stories open (executor `listed` / `follow_up`, runtime.pending_proposal),
+# and the router reads the next message against them. These are the session of 2026-10-14.
+TENNIS = "Saudi tennis 'slam' with Alcaraz, Djokovic postponed amid Houthi attacks"
+POPE = "The Pope was diagnosed with lung cancer and is recovering after surgery"
+TRANSFORMER = "Transformer trained in 1.5 hours beats larger models"
+
+
+@pytest.fixture()
+def briefing_open(tmp_path, monkeypatch):
+    from eli.runtime import pending_proposal as pp
+    monkeypatch.setattr(pp, "_path", lambda: tmp_path / "pending_proposal.json")
+    pp.set_pending_proposal(
+        "", question="How might the delay of the Saudi tennis tournament impact global sports scheduling?",
+        listed={"action": "NEWS_FETCH",
+                "items": [{"title": TENNIS, "ref": "https://example.org/tennis"},
+                          {"title": POPE, "ref": "https://example.org/pope"},
+                          {"title": TRANSFORMER, "ref": "https://example.org/ai"}],
+                "follow_up": {"action": "NEWS_FETCH", "arg": "topic",
+                              "args": {"mode": "fetch_and_show", "sources": ["all"]}}},
+        from_reply=True)
+    return pp
+
+
+@pytest.mark.parametrize("said", [
+    "I don't know, how?",              # answering ELI's own question
+    "That christianity is dieing",     # an opinion on a story
+    "You just keep refetching the fucking news and not actually responding to me",
+])
+def test_a_reply_to_a_briefing_is_not_a_new_news_fetch(briefing_open, said):
+    r = route(said)
+    assert (r.get("meta") or {}).get("matched_by") != "pending_proposal.follow_up", r
+    assert r["action"] != "NEWS_FETCH", f"{said!r} re-fetched the news: {r}"
+
+
+@pytest.mark.parametrize("said,topic", [
+    ("go deeper into the transformer trained in 1.5 hours please", TRANSFORMER),
+    ("tell me more about the tennis story", TENNIS),
+    ("the second one", POPE),
+    ("the tennis one", TENNIS),
+    ("go deeper into Hubble", "Hubble"),   # a subject the briefing did not list
+])
+def test_going_further_into_a_briefing_fetches_that_story(briefing_open, said, topic):
+    r = route(said)
+    assert r["action"] == "NEWS_FETCH", r
+    assert r["args"]["topic"] == topic
+    assert r["meta"]["matched_by"] == "pending_proposal.follow_up"
+
+
+def test_a_complaint_that_the_story_was_not_fetched_reruns_the_fetch():
+    """The generic redo covers what a news-only rule used to: the complaint names the story,
+    and a story is what the catalogue says a news fetch is about."""
     import time
-    from eli.kernel.engine import _try_news_topic_deepen_reroute
+    from eli.runtime.action_commitment import redo_applies
 
-    user = "go deeper into the transformer trained in 1.5 hours please"
-    action, args, intent = _try_news_topic_deepen_reroute(
-        user,
-        "CHAT",
-        {"message": user},
-        {"action": "CHAT", "confidence": 0.6, "meta": {"matched_by": "fallback.chat"}},
-        {"action": "NEWS_FETCH", "ts": time.time()},
-    )
-    assert action == "NEWS_FETCH"
-    assert "transformer trained in 1.5 hours" in (args.get("topic") or "")
-    assert intent.get("meta", {}).get("matched_by") == "news.topic_deepen"
-
-
-def test_news_fetch_complaint_redo_recovers_topic():
-    from eli.kernel.engine import _try_news_fetch_complaint_redo
-
-    class _Mem:
-        def get_recent_conversation(self, limit=12):
-            return [
-                {"role": "assistant", "content": "briefing…"},
-                {"role": "user", "content": "go deeper into Hubble please"},
-            ]
-
-    user = "you are guessing, why did you not fetch the actual real news story?"
-    action, args, intent = _try_news_fetch_complaint_redo(
-        user, "CHAT", {}, {"action": "CHAT"}, _Mem(),
-    )
-    assert action == "NEWS_FETCH"
-    assert args.get("topic") == "Hubble"
-    assert intent.get("meta", {}).get("matched_by") == "news.fetch_complaint_redo"
+    fetched = {"action": "NEWS_FETCH", "args": {"topic": "Hubble"},
+               "input": "go deeper into Hubble please", "ts": time.time()}
+    played = {"action": "PLAY_MEDIA", "args": {"query": "lofi"}, "input": "play lofi", "ts": time.time()}
+    for said in ("you are guessing, why did you not fetch the actual real news story?",
+                 "you didn't fetch the story"):
+        assert redo_applies(said, fetched), said
+        assert not redo_applies(said, played), f"{said!r} would re-run the music"
 
 
 def test_news_fetch_complaint_pattern():
@@ -123,19 +150,7 @@ def test_news_fetch_complaint_pattern():
     assert is_correction_query(msg)
 
 
-def test_recover_recent_deepen_topic():
-    from eli.runtime.action_commitment import recover_recent_deepen_topic
-
-    class _Mem:
-        def get_recent_conversation(self, limit=12):
-            return [
-                {"role": "user", "content": "what is the latest news?"},
-                {"role": "assistant", "content": "headlines…"},
-                {"role": "user", "content": "go deeper into magnetic fields please"},
-            ]
-
-    assert recover_recent_deepen_topic(_Mem()) == "magnetic fields"
-
+def test_whats_going_on_aimed_at_eli_is_not_news():
     # Regression: "what's going on" aimed at ELI/the user must NOT detonate a
     # news fetch mid-conversation. (Live bug: "are you blaming that on me or
     # what's going on" → 55s NEWS_FETCH dump.)

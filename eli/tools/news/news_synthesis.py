@@ -24,7 +24,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from eli.utils.log import get_logger
 
@@ -877,17 +877,21 @@ def build_news_briefing(user_id=None, topic: str = "", top_n: int = 5,
 
 
 def synthesise_news_briefing(user_id=None, topic: str = "", top_n: int = 5,
-                             interest_n: int = 3, refresh: bool = True) -> str:
+                             interest_n: int = 3, refresh: bool = True,
+                             brief: Optional[Dict[str, Any]] = None) -> str:
     """ELI's spoken read of the news: bounded selection → LLM synthesis.
 
     General ask = 50/50 top + interests; topic ask = that topic's stories.
     Returns the synthesised text, or '' when there's nothing to read (offline /
-    no articles) so the caller can fall back. Never raw-dumps.
+    no articles) so the caller can fall back. Never raw-dumps. A caller that needs
+    the articles as well (to keep them open for a follow-up) builds the brief with
+    build_news_briefing and passes it in, so the selection is made once.
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
-    brief = build_news_briefing(user_id, topic=topic, top_n=top_n,
-                                interest_n=interest_n, refresh=refresh)
+    if brief is None:
+        brief = build_news_briefing(user_id, topic=topic, top_n=top_n,
+                                    interest_n=interest_n, refresh=refresh)
     if not brief.get("ok") or brief.get("article_count", 0) == 0:
         _logger.warning(
             "[NEWS_BRIEFING] no briefing built (ok=%s articles=%s) — caller falls back to raw",

@@ -320,7 +320,7 @@ def test_what_the_model_resolves_is_held_to_what_the_sentence_tells_eli_to_do(mo
     monkeypatch.setattr(E, "route_intent", lambda text: {"action": "CHAT", "args": {"message": text}, "confidence": 0.3,
                                                          "meta": {"matched_by": "fallback.chat"}})
     monkeypatch.setattr("eli.cognition.llm_intent.parse_cached",
-                        lambda text: {"action": "STOP_MEDIA", "args": {}, "confidence": 0.95,
+                        lambda text, context="": {"action": "STOP_MEDIA", "args": {}, "confidence": 0.95,
                                       "meta": {"matched_by": "llm_intent.resolver"}})
     me = SimpleNamespace(memory=SimpleNamespace(get_recent_conversation=lambda **k: []))
     talk = E.CognitiveEngine._parse_intent(me, "why does it stop whenever i open the other one?", [])

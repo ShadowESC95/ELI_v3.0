@@ -35,8 +35,11 @@ def _h_list_notes(a, args):
             for n in notes[:30]:
                 lines.append(f"  {n.name}")
             msg = "\n".join(lines)
+            # Kept open, so "the second one" or "read the shopping one" opens that note.
             return {"ok": True, "action": a, "notes": [n.name for n in notes],
-                    "content": msg, "response": msg}
+                    "content": msg, "response": msg,
+                    "listed": [{"title": n.stem.replace("_", " "), "ref": str(n)} for n in notes[:30]],
+                    "follow_up": {"action": "READ_FILE", "arg": "path", "field": "ref"}}
 
         if a == "SEARCH_NOTES":
             query = (args.get("query") or args.get("text") or "").strip().lower()

@@ -136,45 +136,6 @@ _FEW_SHOT = (
 )
 
 
-# backend without grammar support (Ollama, remote), so this stays model-agnostic.
-_GRAMMAR_CACHE: Dict[str, Any] = {}
-
-
-def _action_grammar(catalogue: List[str]):
-    """A GBNF grammar admitting only {"action": <one of catalogue>, "args": {...},
-    "confidence": <number>}. Cached per catalogue signature; None if unavailable."""
-    if not catalogue:
-        return None
-    # Admit exactly what the resolver below accepts — the catalogue plus CHAT. Omitting
-    # CHAT would make ordinary small talk unrepresentable and force every greeting to be
-    # answered as a command.
-    names = sorted(set(catalogue) | {"CHAT"})
-    key = hashlib.sha1("|".join(names).encode()).hexdigest()
-    if key in _GRAMMAR_CACHE:
-        return _GRAMMAR_CACHE[key]
-    grammar = None
-    try:
-        from llama_cpp import LlamaGrammar
-        alts = " | ".join('"\\"%s\\""' % a for a in names)
-        gbnf = (
-            'root    ::= "{" ws "\\"action\\":" ws action ws "," ws "\\"args\\":" ws object'
-            ' ws "," ws "\\"confidence\\":" ws number ws "}"\n'
-            'action  ::= ' + alts + '\n'
-            'object  ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}"\n'
-            'value   ::= object | array | string | number | "true" | "false" | "null"\n'
-            'array   ::= "[" ws ( value ("," ws value)* )? "]"\n'
-            'string  ::= "\\"" ([^"\\\\] | "\\\\" ["\\\\/bfnrt])* "\\""\n'
-            'number  ::= "-"? [0-9]+ ("." [0-9]+)?\n'
-            'ws      ::= [ \\t\\n]*\n'
-        )
-        grammar = LlamaGrammar.from_string(gbnf, verbose=False)
-    except Exception:
-        log.debug("llm_intent: grammar unavailable — using free-text JSON", exc_info=True)
-        grammar = None
-    _GRAMMAR_CACHE[key] = grammar
-    return grammar
-
-
 # Canonical arg key -> names a model plausibly invents for it. The grammar constrains the action
 # name, not `args`, so the model gave OPEN_APP {"app_name": ...} where the executor reads
 # "name"/"app". Additive only: fill the canonical key if absent, never rename or drop.
@@ -215,12 +176,12 @@ def _catalogue_words() -> frozenset:
     """Every word in what ELI can do: the action names, what each does, how it is asked for."""
     try:
         from eli.execution.route_contracts import _GRAMMAR
-        from eli.tools.registry.capabilities_doc import _C
+        from eli.tools.registry.capabilities_doc import _C, action_words
     except Exception:
         return frozenset()
     words = set()
-    for name, (_cat, desc, phrases) in _C.items():
-        words.update(re.findall(r"[a-z]{3,}", " ".join([name.replace("_", " "), desc or "", *(phrases or [])]).lower()))
+    for name in _C:
+        words.update(re.findall(r"[a-z]{3,}", action_words(name)))
     return frozenset(words - _GRAMMAR - _SAID_OF_ANYTHING)
 
 
@@ -264,8 +225,14 @@ def is_plain_statement(text: str) -> bool:
     return len(t.split()) >= 6 or not shares_with_catalogue(t)
 
 
-def parse_with_llm(text: str) -> Dict[str, Any]:
+def parse_with_llm(text: str, context: str = "") -> Dict[str, Any]:
     """Resolve a free-text request to one of ELI's real actions, or CHAT.
+
+    `context` is what ELI's last reply left open (runtime.pending_proposal.describe_open): the
+    question it asked, what it offered, what its last result listed. A message is read against
+    it, so an answer to ELI's question or a reaction to what ELI said is conversation, and a
+    request to go further into something listed is that request, not a guess from the words
+    alone.
 
     Returns ``{"action", "args", "confidence"}``. The action is guaranteed to be
     a member of the live catalogue or ``CHAT`` (anything else is coerced to
@@ -286,7 +253,10 @@ def parse_with_llm(text: str) -> Dict[str, Any]:
             "arguments. If the message is conversation, an opinion, a feeling, a "
             "complaint, small talk, a greeting or salutation (e.g. 'morning', "
             "'good morning', 'hey'), or does not clearly map to an action, answer "
-            "CHAT. Use ONLY action names from the list. Output ONE JSON object: "
+            "CHAT. When the conversation so far is given, read the message against it: an "
+            "answer to a question ELI asked, or a reaction to what ELI said, is CHAT; a request "
+            "to go further into something ELI's last result listed is the action that does "
+            "that. Use ONLY action names from the list. Output ONE JSON object: "
             '{"action": <NAME or CHAT>, "args": {...}, "confidence": <0..1>}.'
             # The list and the examples are the same on every call, so they belong to the part of
             # the prompt whose model state is kept between calls (gguf_inference); only the
@@ -296,7 +266,11 @@ def parse_with_llm(text: str) -> Dict[str, Any]:
             + ", ".join(catalogue)
             + "\n\nEXAMPLES (format only):\n" + _FEW_SHOT
         )
-        prompt = f'USER: "{text}"\nJSON:'
+        # The open record goes in the user turn, not the system prompt: the system prompt's model
+        # state is kept between calls, and the record changes every turn.
+        _open = str(context or "").strip()
+        prompt = (f"CONVERSATION SO FAR (to read the message against, not to answer):\n{_open}\n\n"
+                  if _open else "") + f'USER: "{text}"\nJSON:'
         # Constrain the decoder to the live catalogue when the backend supports it, so the model
         # can't invent a capability or emit unparseable JSON. Without grammar support, fall through
         # to the free-text path below.
@@ -370,13 +344,15 @@ def parse_with_llm(text: str) -> Dict[str, Any]:
         return {"action": "CHAT", "args": {"message": text}, "confidence": 0.5}
 
 
-def parse_cached(text: str) -> Dict[str, Any]:
-    """Cached resolver (avoids re-inferring identical phrasings)."""
-    key = str(text or "").strip().lower()
+def parse_cached(text: str, context: str = "") -> Dict[str, Any]:
+    """Cached resolver (avoids re-inferring identical phrasings in the same situation). The
+    same words can mean different things after different replies, so the key is both."""
+    key = str(text or "").strip().lower() + "\x00" + hashlib.sha1(
+        str(context or "").encode("utf-8")).hexdigest()
     with _cache_lock:
         if key in _cache:
             return _cache[key]
-    result = parse_with_llm(text)
+    result = parse_with_llm(text, context)
     with _cache_lock:
         if len(_cache) >= _CACHE_MAX:
             for k in list(_cache.keys())[: _CACHE_MAX // 2]:

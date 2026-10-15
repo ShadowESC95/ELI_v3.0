@@ -133,7 +133,11 @@ def _h_list_dir(a, args):
         ])
 
         content = f"Contents of {p} ({len(items)} items):\n" + "\n".join(items[:500])
-        return {"ok": True, "action": a, "path": str(p), "content": content, "response": content}
+        # Kept open, so "the third one" lists that folder or reads that file (LIST_DIR hands a
+        # file to READ_FILE above).
+        return {"ok": True, "action": a, "path": str(p), "content": content, "response": content,
+                "listed": [{"title": name, "ref": str(p / name.rstrip("/"))} for name in items[:50]],
+                "follow_up": {"action": "LIST_DIR", "arg": "path", "field": "ref"}}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
