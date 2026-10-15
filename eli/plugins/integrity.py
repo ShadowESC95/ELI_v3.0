@@ -11,10 +11,18 @@ narrower promises, both verifiable on the operator's own machine:
     file under an unchanged listing.
 
   * **It came from a publisher you already chose to trust.** Optional ed25519
-    signatures verified against keys the OPERATOR added. Not a key the ELI author
-    holds — there is no central authority here by design. An unsigned plugin, or
-    one from an unknown key, is not blocked; it is reported as unverified, loudly,
-    and the operator decides.
+    signatures verified against keys the OPERATOR added, plus the key of ELI's own
+    curated marketplace, which ships with ELI. On a community registry an unsigned
+    plugin, or one from an unknown key, is not blocked; it is reported as
+    unverified, loudly, and the operator decides. On the curated registry it is
+    refused (see eli.plugins.marketplace).
+
+  * **The release is the one that was signed.** A signature over the file proves
+    the bytes and nothing else, so a release signature covers a statement of
+    everything that decides what runs and what it may do — id, version, checksum,
+    permissions, dependencies, MCP launch command. And one id and version is one
+    release: a listing that changes under a version this machine has already seen
+    is refused.
 
 Hash checking is mandatory and dependency-free. Signature checking needs
 `cryptography`; where it is absent the plugin is reported as unverifiable rather
@@ -252,23 +260,190 @@ def assess(data: bytes, listing: Dict[str, Any]) -> Dict[str, Any]:
     """
     h = verify_hash(data, listing.get("sha256"))
     s = verify_signature(data, listing.get("signature"), listing.get("publisher_id"))
+    r = verify_release(listing)
 
     warnings = []
     if not h["ok"]:
-        return {"ok": False, "status": FAILED, "hash": h, "signature": s,
+        return {"ok": False, "status": FAILED, "hash": h, "signature": s, "release": r,
                 "warnings": [h["reason"]]}
-    if s["status"] == FAILED:
-        return {"ok": False, "status": FAILED, "hash": h, "signature": s,
-                "warnings": [s["reason"]]}
+    for check in (s, r):
+        if check["status"] == FAILED:
+            return {"ok": False, "status": FAILED, "hash": h, "signature": s, "release": r,
+                    "warnings": [check["reason"]]}
 
     if not h.get("pinned"):
         warnings.append(h["reason"])
-    if s["status"] == UNVERIFIED:
-        warnings.append(s["reason"])
+    # A release signature vouches for the file only through the checksum it signs.
+    release_covers_file = bool(r["ok"] and h.get("pinned"))
+    signed = s["ok"] or release_covers_file
+    if not signed:
+        warnings.append(r["reason"] if r.get("present") else s["reason"])
 
-    status = VERIFIED_SIGNED if s["ok"] else (
+    status = VERIFIED_SIGNED if signed else (
         VERIFIED_HASH_ONLY if h.get("pinned") else UNVERIFIED)
-    return {"ok": True, "status": status, "hash": h, "signature": s, "warnings": warnings}
+    return {"ok": True, "status": status, "hash": h, "signature": s, "release": r,
+            "warnings": warnings}
+
+
+# ── release statements ─────────────────────────────────────────────────────────
+# A signature over the file proves the bytes, and nothing else: the permissions a
+# listing asks for, the PyPI packages it installs and the command an MCP server is
+# started with all sit in the listing beside it, where anyone who can rewrite the
+# index could change them under a still-valid signature. A release statement is
+# the signed record of all of it at once, for one id and version. Display text
+# (name, description, price, links) is left out on purpose, so a publisher can fix
+# a typo or change a price without a new review.
+
+RELEASE_STATEMENT_VERSION = 1
+
+
+def listing_kind(listing: Dict[str, Any]) -> str:
+    return str(listing.get("kind") or ("mcp" if listing.get("mcp") else "plugin"))
+
+
+def release_statement(listing: Dict[str, Any]) -> bytes:
+    """The canonical bytes a release signature covers."""
+    mcp = listing.get("mcp")
+    body = {
+        "statement": RELEASE_STATEMENT_VERSION,
+        "id": str(listing.get("id") or ""),
+        "version": str(listing.get("version") or ""),
+        "kind": listing_kind(listing),
+        "sha256": str(listing.get("sha256") or "").lower() or None,
+        "permissions": sorted({str(p) for p in (listing.get("permissions") or [])}),
+        "pip": sorted(str(p) for p in (listing.get("pip") or [])),
+        "mcp": mcp if isinstance(mcp, dict) and mcp else None,
+        "official": bool(listing.get("official")),
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def release_digest(listing: Dict[str, Any]) -> str:
+    return hashlib.sha256(release_statement(listing)).hexdigest()
+
+
+def verify_release(listing: Dict[str, Any]) -> Dict[str, Any]:
+    """Check a listing's release signature against the publishers this machine trusts.
+
+    Same shape as ``verify_signature``, plus ``present``. FAILED means the statement
+    was signed and then changed, which is evidence of tampering.
+    """
+    signature = listing.get("release_signature")
+    if not signature:
+        return {"ok": False, "status": UNVERIFIED, "present": False,
+                "reason": ("The listing has no release signature, so nothing vouches "
+                           "for its permissions or dependencies.")}
+    result = verify_signature(release_statement(listing), signature,
+                              listing.get("publisher_id"))
+    result["present"] = True
+    if result["status"] == FAILED:
+        result["reason"] = (
+            f"The release signature does not match publisher "
+            f"'{listing.get('publisher_id')}': the listing's id, version, checksum, "
+            f"permissions or dependencies changed after it was signed. Refused.")
+    return result
+
+
+def is_official(listing: Dict[str, Any], release: Optional[Dict[str, Any]] = None) -> bool:
+    """Published by ELI itself: only the marketplace key can say so, inside a signed
+    statement. A publisher's own key claiming ``official`` proves nothing."""
+    release = release if release is not None else verify_release(listing)
+    return bool(release.get("ok")
+                and str(listing.get("publisher_id") or "") == OFFICIAL_PUBLISHER_ID
+                and listing.get("official"))
+
+
+# ── trust states, as the operator sees them ─────────────────────────────────────
+
+TRUST_OFFICIAL = "official"
+TRUST_REVIEWED = "reviewed"
+TRUST_SIGNED = "signed"
+TRUST_CHECKSUM = "checksum"
+TRUST_UNVERIFIED = "unverified"
+
+TRUST_LABELS = {
+    TRUST_OFFICIAL: "Official ELI: published and supported by ELI",
+    TRUST_REVIEWED: ("Reviewed: a person read this exact version before the "
+                     "marketplace signed it"),
+    TRUST_SIGNED: "Signed by a publisher you trust",
+    TRUST_CHECKSUM: "Checksum only: the file matches the listing, nothing proves who wrote it",
+    TRUST_UNVERIFIED: "Unverified: nothing proves who wrote it or that it is unchanged",
+}
+
+
+def trust_state(listing: Dict[str, Any], *, curated: bool,
+                release: Optional[Dict[str, Any]] = None) -> str:
+    """What the listing itself proves, before anything is downloaded.
+
+    Never more than was checked: "reviewed" needs the curated registry AND the
+    marketplace key's signature on the release; "official" needs that and the
+    signed statement saying so.
+    """
+    release = release if release is not None else verify_release(listing)
+    if release.get("ok"):
+        if curated and str(listing.get("publisher_id") or "") == OFFICIAL_PUBLISHER_ID:
+            return TRUST_OFFICIAL if is_official(listing, release) else TRUST_REVIEWED
+        if not curated:
+            return TRUST_SIGNED
+    if listing.get("sha256"):
+        return TRUST_CHECKSUM
+    return TRUST_UNVERIFIED
+
+
+# ── one id and version, one release ─────────────────────────────────────────────
+
+def _releases_path() -> Path:
+    from eli.core.paths import config_dir
+    return Path(config_dir()) / "plugin_releases.json"
+
+
+def _release_key(registry: str, listing: Dict[str, Any]) -> str:
+    return f"{registry}|{listing.get('id')}|{listing.get('version')}"
+
+
+def _load_releases() -> Dict[str, str]:
+    p = _releases_path()
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return dict(data.get("releases") or {})
+    except Exception:
+        log.debug("[INTEGRITY] release ledger unreadable — starting afresh", exc_info=True)
+        return {}
+
+
+def check_release_unchanged(registry: str, listing: Dict[str, Any]) -> Dict[str, Any]:
+    """Refuse a listing whose release changed under an id and version seen before.
+
+    A version that was reviewed is that exact release. Different bytes, permissions or
+    dependencies under the same number mean either a publisher re-using a version or
+    someone swapping the release behind the review, and both need a new version.
+    """
+    seen = _load_releases().get(_release_key(registry, listing))
+    if seen and seen != release_digest(listing):
+        return {"ok": False, "reason": (
+            f"'{listing.get('id')}' version {listing.get('version')} has changed since "
+            f"this machine last saw it: its checksum, permissions, dependencies or launch "
+            f"command differ under the same version number. An approved version never "
+            f"changes, so this is refused. The publisher must release a new version.")}
+    return {"ok": True}
+
+
+def remember_release(registry: str, listing: Dict[str, Any]) -> None:
+    with _lock:
+        releases = _load_releases()
+        releases[_release_key(registry, listing)] = release_digest(listing)
+        p = _releases_path()
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"version": 1, "releases": releases}, indent=2),
+                           encoding="utf-8")
+            tmp.replace(p)
+        except OSError:
+            log.debug("[INTEGRITY] could not record release", exc_info=True)
 
 
 def status_summary(status: str) -> str:
@@ -288,4 +463,6 @@ __all__ = [
     "trust_publisher", "untrust_publisher", "trusted_publishers", "signing_available",
     "OFFICIAL_PUBLISHER_ID", "OFFICIAL_PUBLISHER_KEY",
     "VERIFIED_SIGNED", "VERIFIED_HASH_ONLY", "UNVERIFIED", "FAILED",
+    "listing_kind", "release_statement", "release_digest", "verify_release", "is_official",
+    "trust_state", "TRUST_LABELS", "check_release_unchanged", "remember_release",
 ]

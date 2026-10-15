@@ -128,3 +128,82 @@ def test_the_registry_template_is_valid_json():
     data = json.loads(template.read_text(encoding="utf-8"))
     assert [p["id"] for p in data["plugins"]] == ["unit_converter", "filesystem_mcp"]
     assert data["plugins"][1]["kind"] == "mcp"
+
+
+# ── release statements ───────────────────────────────────────────────────────
+
+def _keypair(tmp_path):
+    pytest.importorskip("cryptography")
+    key = tmp_path / "ed25519.key"
+    gen = _run("--new-key", str(key))
+    pub = [l for l in gen.stdout.splitlines() if "public_key:" in l][0].split(":", 1)[1].strip()
+    return key, pub
+
+
+def _verifies(pub, signature, data) -> bool:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    try:
+        Ed25519PublicKey.from_public_bytes(base64.b64decode(pub)).verify(
+            base64.b64decode(signature), data)
+        return True
+    except Exception:
+        return False
+
+
+def test_signing_also_signs_the_release_statement(tmp_path, plugin):
+    from eli.plugins.integrity import release_statement
+    key, pub = _keypair(tmp_path)
+    r = _run(str(plugin), "--source-url", "https://a.test/p.py",
+             "--sign-key", str(key), "--publisher", "acme")
+    listing = json.loads(r.stdout)
+    assert _verifies(pub, listing["release_signature"], release_statement(listing))
+    widened = dict(listing, permissions=["process_exec"])
+    assert not _verifies(pub, listing["release_signature"], release_statement(widened))
+
+
+def test_purchase_and_policy_fields_reach_the_listing(tmp_path):
+    manifest = dict(MANIFEST, purchase={"model": "perpetual", "price": 12, "currency": "EUR",
+                                        "purchase_url": "https://acme.example/buy"},
+                    entitlement={"method": "publisher_api"},
+                    support_url="https://acme.example/help",
+                    privacy_url="https://acme.example/privacy", eli_min_version="3.0.0")
+    (tmp_path / "eli_plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "plugin.py").write_text(CLEAN, encoding="utf-8")
+    listing = json.loads(_run(str(tmp_path / "plugin.py"),
+                              "--source-url", "https://a.test/p.py").stdout)
+    for field in ("purchase", "entitlement", "support_url", "privacy_url", "eli_min_version"):
+        assert listing[field] == manifest[field]
+
+
+def test_only_the_marketplace_key_may_mark_a_release_official(tmp_path, plugin):
+    key, _ = _keypair(tmp_path)
+    r = _run(str(plugin), "--sign-key", str(key), "--publisher", "acme", "--official")
+    assert r.returncode == 1 and "--official needs" in r.stderr
+    ok = _run(str(plugin), "--source-url", "https://a.test/p.py", "--sign-key", str(key),
+              "--publisher", "eli-marketplace", "--official")
+    assert ok.returncode == 0 and json.loads(ok.stdout)["official"] is True
+
+
+def test_a_version_cannot_be_reused_for_a_different_release(tmp_path, plugin):
+    first = json.loads(_run(str(plugin), "--source-url", "https://a.test/p.py").stdout)
+    index = tmp_path / "index.json"
+    index.write_text(json.dumps({"version": "1", "plugins": [first]}), encoding="utf-8")
+    plugin.write_text(CLEAN + "\n# changed\n", encoding="utf-8")
+    r = _run(str(plugin), "--source-url", "https://a.test/p.py", "--index", str(index))
+    assert r.returncode == 1 and "Bump the version" in r.stderr
+
+
+def test_an_mcp_server_is_published_from_its_manifest(tmp_path):
+    from eli.plugins.integrity import release_statement
+    key, pub = _keypair(tmp_path)
+    manifest = {"id": "files_mcp", "name": "Files", "version": "1.0.0", "kind": "mcp",
+                "description": "Files over MCP.", "author": "acme", "license": "MIT",
+                "permissions": ["filesystem_read"],
+                "mcp": {"transport": "stdio", "command": "npx", "args": ["-y", "srv"]}}
+    path = tmp_path / "mcp.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    r = _run("--manifest", str(path), "--sign-key", str(key), "--publisher", "acme")
+    assert r.returncode == 0, r.stderr
+    listing = json.loads(r.stdout)
+    assert listing["kind"] == "mcp" and "sha256" not in listing
+    assert _verifies(pub, listing["release_signature"], release_statement(listing))

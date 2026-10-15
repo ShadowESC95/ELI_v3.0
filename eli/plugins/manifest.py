@@ -36,6 +36,17 @@ _VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?([-+][0-9A-Za-z.-]+)?$")
 
 REQUIRED_FIELDS = ("id", "name", "version", "description", "author", "license")
 
+# What a package is. A publisher's choice of how to sell it, and how a buyer's right
+# to it is checked, are both theirs (see the marketplace developer terms); these are
+# the values ELI understands. `marketplace` entitlements are reserved for an
+# integrated checkout that does not exist yet.
+PACKAGE_KINDS = ("plugin", "mcp", "bundle", "integration")
+PURCHASE_MODELS = ("free", "perpetual", "subscription", "trial", "external")
+ENTITLEMENT_METHODS = ("none", "local_key", "publisher_api", "marketplace")
+
+_URL_FIELDS = ("source", "homepage", "publisher_url", "purchase_url", "support_url",
+               "privacy_url", "terms_url", "license_url")
+
 # Module/attribute use → the capability that must be declared for it. Matched
 # against import names and attribute chains, so `import os` + `os.system(...)`
 # is caught even though the import alone is innocuous.
@@ -232,13 +243,53 @@ def validate_manifest(data: Any) -> Dict[str, Any]:
         except Exception:
             problems.append("price must be a number (use 0 for free).")
 
-    for field in ("source", "homepage", "publisher_url", "purchase_url"):
+    kind = m.get("kind")
+    if kind is not None and str(kind) not in PACKAGE_KINDS:
+        problems.append(f"kind must be one of: {', '.join(PACKAGE_KINDS)}.")
+
+    purchase = m.get("purchase")
+    if purchase is not None:
+        if not isinstance(purchase, dict):
+            problems.append("purchase must be an object.")
+        else:
+            model = purchase.get("model")
+            if model is not None and str(model) not in PURCHASE_MODELS:
+                problems.append(f"purchase.model must be one of: {', '.join(PURCHASE_MODELS)}.")
+            if purchase.get("price") is not None:
+                try:
+                    if float(purchase["price"]) < 0:
+                        problems.append("purchase.price cannot be negative.")
+                except Exception:
+                    problems.append("purchase.price must be a number (use 0 for free).")
+            url = str(purchase.get("purchase_url") or "")
+            if url and not url.startswith("https://"):
+                problems.append("purchase.purchase_url must be an https URL.")
+
+    entitlement = m.get("entitlement")
+    if entitlement is not None:
+        if not isinstance(entitlement, dict):
+            problems.append("entitlement must be an object.")
+        elif (entitlement.get("method") is not None
+              and str(entitlement["method"]) not in ENTITLEMENT_METHODS):
+            problems.append("entitlement.method must be one of: "
+                            f"{', '.join(ENTITLEMENT_METHODS)}.")
+
+    for field in ("eli_min_version", "eli_max_version"):
+        value = m.get(field)
+        if value is not None and not _VERSION_RE.match(str(value)):
+            problems.append(f"{field} {value!r} is not a valid version (expected e.g. 3.0.0).")
+
+    for field in _URL_FIELDS:
         url = str(m.get(field) or "")
         if url and not url.startswith(("https://", "http://")):
             problems.append(f"{field} must be an http(s) URL.")
         if url.startswith("http://"):
             warnings.append(f"{field} uses plain http — the download can be tampered with "
                             f"in transit. https is strongly preferred.")
+
+    if "network" in perms and not m.get("privacy_url"):
+        warnings.append("Uses the network but links no privacy notice (privacy_url) "
+                        "saying what it sends and where.")
 
     if m.get("sha256") and not re.fullmatch(r"[0-9a-fA-F]{64}", str(m["sha256"])):
         problems.append("sha256 must be 64 hex characters.")

@@ -22,8 +22,13 @@ the only door, and cannot quietly delist a competitor. The official registry is
 enabled by default and can be disabled; community registries are opt-in.
 
   * **Selling is still the seller's problem.** Review is not escrow: a listing may
-    carry a price and a purchase URL, and ELI neither takes payment nor can confirm
-    one happened.
+    carry a price, a purchase model and a purchase URL, and ELI neither takes
+    payment nor can confirm one happened. Where a package needs a key, ELI carries
+    the buyer's key to the publisher; checking it is the publisher's job.
+
+  * **One id and version is one release.** A release signature covers everything
+    that decides what runs and what it may do, and a listing that changes under a
+    version this machine has seen before is refused (see eli.plugins.integrity).
 
 Everything that touches the network goes through `eli.core.netguard`, so an
 offline-by-default install stays offline and every fetch is audited.
@@ -317,6 +322,82 @@ def _fetch_one(registry: Dict[str, Any], timeout: float = 10) -> Dict[str, Any]:
     return {"ok": True, "plugins": plugins, "offline": False}
 
 
+def commerce(listing: Dict[str, Any]) -> Dict[str, Any]:
+    """How a listing is sold, and whether installing it needs a key.
+
+    Reads the `purchase` and `entitlement` objects, falling back to the flat
+    `price` / `currency` / `purchase_url` fields older listings use. A paid listing
+    that does not say how it is checked keeps the old behaviour: the key is passed
+    to the publisher's download server.
+    """
+    purchase = listing.get("purchase") if isinstance(listing.get("purchase"), dict) else {}
+    entitlement = (listing.get("entitlement")
+                   if isinstance(listing.get("entitlement"), dict) else {})
+    try:
+        price = float(purchase.get("price", listing.get("price")) or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    currency = str(purchase.get("currency") or listing.get("currency") or "EUR")
+    model = str(purchase.get("model") or ("free" if price <= 0 else "paid"))
+    method = str(entitlement.get("method")
+                 or ("publisher_api" if price > 0 else "none"))
+    display = str(purchase.get("price_display")
+                  or ("Free" if price <= 0 else f"{price:g} {currency}"))
+    return {
+        "model": model,
+        "price": price,
+        "currency": currency,
+        "price_display": display,
+        "purchase_url": str(purchase.get("purchase_url") or listing.get("purchase_url")
+                            or listing.get("homepage") or ""),
+        "entitlement": method,
+        "needs_key": method in ("local_key", "publisher_api"),
+    }
+
+
+def _version_tuple(value: str) -> Optional[tuple]:
+    parts = []
+    for piece in str(value or "").split("-")[0].split("+")[0].split("."):
+        if not piece.isdigit():
+            return None if not parts else tuple(parts)
+        parts.append(int(piece))
+    return tuple(parts) if parts else None
+
+
+def _eli_version() -> str:
+    try:
+        from eli.core.paths import project_root
+        from eli.core.toml_util import load_toml
+        return str(load_toml(str(project_root() / "pyproject.toml"))["project"]["version"])
+    except Exception:
+        try:
+            from importlib.metadata import version
+            return version("eli-v3")
+        except Exception:
+            return ""
+
+
+def compatibility(listing: Dict[str, Any], eli_version: Optional[str] = None) -> Dict[str, Any]:
+    """Whether this ELI is inside the range of versions the listing declares."""
+    current = _version_tuple(eli_version if eli_version is not None else _eli_version())
+    if current is None:
+        return {"ok": True, "reason": ""}
+    low = _version_tuple(listing.get("eli_min_version") or "")
+    high = _version_tuple(listing.get("eli_max_version") or "")
+    width = max(len(current), len(low or ()), len(high or ()))
+    pad = lambda t: tuple(t) + (0,) * (width - len(t))  # noqa: E731
+    if low is not None and pad(current) < pad(low):
+        return {"ok": False, "reason": (
+            f"needs ELI {listing.get('eli_min_version')} or later; this is "
+            f"{'.'.join(map(str, current))}. Update ELI to install it.")}
+    if high is not None and pad(current) > pad(high):
+        return {"ok": False, "reason": (
+            f"supports ELI up to {listing.get('eli_max_version')}; this is "
+            f"{'.'.join(map(str, current))}. The publisher has not released a "
+            f"version for it yet.")}
+    return {"ok": True, "reason": ""}
+
+
 def browse(*, refresh: bool = True, timeout: float = 10) -> Dict[str, Any]:
     """Every listing from every enabled registry, annotated with what was verifiable.
 
@@ -324,6 +405,7 @@ def browse(*, refresh: bool = True, timeout: float = 10) -> Dict[str, Any]:
     data and never interpreted as instructions, and the fields shown to the operator
     are validated before display.
     """
+    from eli.plugins import integrity
     from eli.plugins.manifest import validate_manifest
     from eli.plugins.permissions import risk_of
 
@@ -350,14 +432,26 @@ def browse(*, refresh: bool = True, timeout: float = 10) -> Dict[str, Any]:
             m["listing_warnings"] = check["warnings"]
             m["permissions"] = m.get("permissions") or []
             m["risk"] = risk_of(m["permissions"])
-            m["signed"] = bool(raw.get("signature") and raw.get("publisher_id"))
+            m["signed"] = bool((raw.get("signature") or raw.get("release_signature"))
+                               and raw.get("publisher_id"))
             m["pinned"] = bool(raw.get("sha256"))
-            m["price"] = raw.get("price") or 0
-            m["currency"] = str(raw.get("currency") or "EUR")
+            sale = commerce(raw)
+            m["purchase"] = sale
+            m["price"] = sale["price"]
+            m["currency"] = sale["currency"]
+            # What the listing itself proves, before any download: the release
+            # signature covers its checksum, permissions and dependencies, so this
+            # is checkable now. The file is checked against it at install.
+            release = integrity.verify_release(raw)
+            m["trust"] = integrity.trust_state(raw, curated=bool(reg.get("curated")),
+                                               release=release)
+            m["trust_label"] = integrity.TRUST_LABELS[m["trust"]]
+            m["official"] = m["trust"] == integrity.TRUST_OFFICIAL
+            m["compatible"] = compatibility(raw)
             # A registry may list MCP servers alongside Python plugins. They install
             # very differently — an MCP server is a separate process ELI configures,
             # not code loaded into it — so the kind travels with the listing.
-            m["kind"] = str(raw.get("kind") or ("mcp" if raw.get("mcp") else "plugin"))
+            m["kind"] = integrity.listing_kind(raw)
             if m["kind"] == "mcp":
                 m["mcp"] = raw.get("mcp") or {}
             listings.append(m)
@@ -450,18 +544,44 @@ def preview_install(listing: Dict[str, Any], *, timeout: float = 30) -> Dict[str
         return {"ok": False, "stage": "listing", "problems": check["problems"],
                 "warnings": check["warnings"]}
     m = check["manifest"]
+    registry = str(listing.get("registry") or "")
 
-    price = float(listing.get("price") or 0)
+    # Only a plugin installs here. An MCP server is configured (install_mcp), and a
+    # bundle or integration is an application of its own with its own installer.
+    kind = integrity.listing_kind(listing)
+    if kind != "plugin":
+        where = commerce(listing)["purchase_url"] or str(listing.get("homepage") or "")
+        how = ("Add it as an MCP server instead." if kind == "mcp" else
+               "It installs as its own application" + (f": get it from {where}" if where
+                                                       else " from its publisher") + ".")
+        return {"ok": False, "stage": "kind", "warnings": [],
+                "problems": [f"'{m['name']}' is a {kind}, not a plugin. {how}"]}
+
+    unchanged = integrity.check_release_unchanged(registry, listing)
+    if not unchanged["ok"]:
+        return {"ok": False, "stage": "release", "problems": [unchanged["reason"]],
+                "warnings": []}
+
+    fits = compatibility(listing)
+    if not fits["ok"]:
+        return {"ok": False, "stage": "compatibility",
+                "problems": [f"'{m['name']}' {fits['reason']}"], "warnings": []}
+
+    sale = commerce(listing)
+    price = sale["price"]
     lic = licence_key(m["id"])
-    if price > 0 and not lic:
+    if sale["entitlement"] == "marketplace":
+        return {"ok": False, "stage": "payment", "problems": [
+            f"'{m['name']}' is sold through the marketplace's own checkout, which this "
+            f"version of ELI does not support yet."], "warnings": []}
+    if sale["needs_key"] and not lic:
         return {"ok": False, "stage": "payment", "needs_licence": True,
-                "price": price, "currency": listing.get("currency") or "EUR",
-                "purchase_url": listing.get("purchase_url") or listing.get("homepage") or "",
+                "price": price, "currency": sale["currency"],
+                "purchase_url": sale["purchase_url"],
                 "problems": [
-                    f"'{m['name']}' is a paid plugin ({price} "
-                    f"{listing.get('currency') or 'EUR'}). Buy it from the publisher, "
-                    f"then enter the licence key. ELI does not process the payment and "
-                    f"cannot confirm one happened."],
+                    f"'{m['name']}' is a paid plugin ({sale['price_display']}). Buy it from "
+                    f"the publisher, then enter the licence key. ELI does not process the "
+                    f"payment and cannot confirm one happened."],
                 "warnings": []}
 
     source_url = listing.get("source")
@@ -496,25 +616,23 @@ def preview_install(listing: Dict[str, Any], *, timeout: float = 30) -> Dict[str
     # index without being signed at approval time. Treating it as a warning there
     # would let an attacker who can rewrite the index — or sit in the middle of the
     # download — strip the signature and be waved through with a yellow badge.
-    if is_curated(str(listing.get("registry") or "")):
-        sig = verdict.get("signature") or {}
-        expected = integrity.OFFICIAL_PUBLISHER_ID
-        if verdict.get("status") != integrity.VERIFIED_SIGNED:
-            return {
-                "ok": False, "stage": "curation", "integrity": verdict, "warnings": [],
-                "problems": [
-                    f"'{m['name']}' is listed on a curated registry but its signature "
-                    f"did not verify. Every plugin on {listing.get('registry_label') or 'that store'} "
-                    f"is signed when it is approved, so an unsigned or unverifiable one "
-                    f"means the listing or the file was altered after approval. Refused.",
-                    sig.get("reason") or "No valid signature was present."]}
-        if str(listing.get("publisher_id") or "") != expected:
-            return {
-                "ok": False, "stage": "curation", "integrity": verdict, "warnings": [],
-                "problems": [
-                    f"'{m['name']}' is signed by '{listing.get('publisher_id')}', not by "
-                    f"the curated registry's own key ('{expected}'). A valid signature "
-                    f"from the wrong signer is still the wrong signer. Refused."]}
+    #
+    # The signature that counts there is the RELEASE signature: it covers the
+    # checksum, so the file, and also the permissions and dependencies, which a
+    # signature over the file alone leaves open to anyone who can edit the index.
+    curated = is_curated(registry)
+    if curated:
+        refused = _curation_refusal(m["name"], listing, verdict.get("release") or {})
+        if refused is None and verdict.get("status") != integrity.VERIFIED_SIGNED:
+            refused = [f"'{m['name']}' carries a valid release signature but no checksum "
+                       f"for the file, so the download is not covered by it. Refused."]
+        if refused:
+            return {"ok": False, "stage": "curation", "integrity": verdict,
+                    "warnings": [], "problems": refused}
+
+    # Bytes verified against the listing (and, on the curated registry, the listing
+    # against its signature): this is the release for this id and version from now on.
+    integrity.remember_release(registry, listing)
 
     try:
         source = raw.decode("utf-8")
@@ -537,7 +655,7 @@ def preview_install(listing: Dict[str, Any], *, timeout: float = 30) -> Dict[str
             + ", ".join(code["over_declared"])
             + ". That is not proof of bad intent, but a plugin should ask for the least "
               "it needs.")
-    if float(price) > 0:
+    if price > 0:
         warnings.append("Paid plugin. ELI has no way to verify that a purchase took "
                         "place or that a refund is possible.")
 
@@ -564,6 +682,8 @@ def preview_install(listing: Dict[str, Any], *, timeout: float = 30) -> Dict[str
         "source_bytes": raw,
         "integrity": verdict,
         "integrity_summary": integrity.status_summary(verdict["status"]),
+        "trust": _trust_after_download(listing, verdict, curated),
+        "purchase": sale,
         "code_check": code,
         "permissions": [describe(p) for p in declared],
         "risk": risk_of(declared),
@@ -571,6 +691,41 @@ def preview_install(listing: Dict[str, Any], *, timeout: float = 30) -> Dict[str
         "problems": code["problems"],
         "warnings": warnings,
     }
+
+
+def _curation_refusal(name: str, listing: Dict[str, Any],
+                      release: Dict[str, Any]) -> Optional[List[str]]:
+    """Why a curated listing must be refused, or None when its release signature holds."""
+    from eli.plugins import integrity
+
+    expected = integrity.OFFICIAL_PUBLISHER_ID
+    if not release.get("ok"):
+        return [
+            f"'{name}' is listed on a curated registry but its release signature did "
+            f"not verify. Every package on {listing.get('registry_label') or 'that store'} "
+            f"is signed when it is approved, so an unsigned or unverifiable one means the "
+            f"listing or the file was altered after approval. Refused.",
+            release.get("reason") or "No valid release signature was present."]
+    if str(listing.get("publisher_id") or "") != expected:
+        return [
+            f"'{name}' is signed by '{listing.get('publisher_id')}', not by the curated "
+            f"registry's own key ('{expected}'). A valid signature from the wrong signer "
+            f"is still the wrong signer. Refused."]
+    return None
+
+
+def _trust_after_download(listing: Dict[str, Any], verdict: Dict[str, Any],
+                          curated: bool) -> str:
+    """The trust state once the file has been checked, which can add a signature over
+    the file itself (older listings sign only that)."""
+    from eli.plugins import integrity
+
+    state = integrity.trust_state(listing, curated=curated,
+                                  release=verdict.get("release") or {})
+    if (state in (integrity.TRUST_CHECKSUM, integrity.TRUST_UNVERIFIED)
+            and not curated and verdict.get("status") == integrity.VERIFIED_SIGNED):
+        return integrity.TRUST_SIGNED
+    return state
 
 
 def install(listing: Dict[str, Any], *,
@@ -770,11 +925,27 @@ def install_mcp(listing: Dict[str, Any], *, verify: bool = True,
     and that the server answers a real MCP handshake, and that is what install_server
     does before writing anything.
     """
-    from eli.plugins import mcp
+    from eli.plugins import integrity, mcp
 
     spec = dict(listing.get("mcp") or {})
     if not spec:
         return {"ok": False, "problems": ["This listing has no MCP server definition."]}
+
+    # There is no file to hash, so on the curated registry the release signature is
+    # the only thing proving that this launch command is the one that was reviewed.
+    registry = str(listing.get("registry") or "")
+    name = str(listing.get("name") or listing.get("id") or "this server")
+    unchanged = integrity.check_release_unchanged(registry, listing)
+    if not unchanged["ok"]:
+        return {"ok": False, "stage": "release", "problems": [unchanged["reason"]]}
+    release = integrity.verify_release(listing)
+    if is_curated(registry):
+        refused = _curation_refusal(name, listing, release)
+        if refused:
+            return {"ok": False, "stage": "curation", "problems": refused}
+    elif release["status"] == integrity.FAILED:
+        return {"ok": False, "stage": "integrity", "problems": [release["reason"]]}
+    integrity.remember_release(registry, listing)
     spec.setdefault("id", listing.get("id"))
     spec.setdefault("permissions", listing.get("permissions") or [])
 
@@ -789,5 +960,5 @@ __all__ = [
     "marketplace_home", "set_marketplace_home",
     "quick_install", "needs_review", "review_notes", "install_mcp",
     "is_curated", "official_registry_url", "OFFICIAL_REGISTRY_ID",
-    "set_licence_key", "licence_key",
+    "set_licence_key", "licence_key", "commerce", "compatibility",
 ]

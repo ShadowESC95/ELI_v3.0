@@ -156,6 +156,59 @@ def test_paid_plugin_needs_a_licence_key_first(env, served):
     assert M.preview_install(listing)["ok"] is True
 
 
+def test_how_a_package_is_sold_follows_its_listing():
+    old_style = M.commerce({"price": 5, "currency": "USD", "purchase_url": "https://x.example"})
+    assert old_style["needs_key"] is True and old_style["entitlement"] == "publisher_api"
+    assert old_style["price_display"] == "5 USD"
+    honour = M.commerce({"purchase": {"model": "perpetual", "price": 5},
+                         "entitlement": {"method": "none"}})
+    assert honour["needs_key"] is False and honour["model"] == "perpetual"
+    client = M.commerce({"purchase": {"model": "external"}})
+    assert client["model"] == "external" and client["needs_key"] is False
+
+
+def test_a_paid_package_that_checks_no_key_installs_without_one(env, served):
+    served(BENIGN_SOURCE)
+    listing = _listing(BENIGN_SOURCE, purchase={"model": "perpetual", "price": 4},
+                       entitlement={"method": "none"})
+    assert M.preview_install(listing)["ok"] is True
+
+
+def test_marketplace_checkout_is_refused_until_it_exists(env, served):
+    served(BENIGN_SOURCE)
+    listing = _listing(BENIGN_SOURCE, purchase={"model": "perpetual", "price": 4},
+                       entitlement={"method": "marketplace"})
+    res = M.preview_install(listing)
+    assert res["ok"] is False and res["stage"] == "payment"
+
+
+@pytest.mark.parametrize("bounds,ok", [
+    ({}, True),
+    ({"eli_min_version": "3.0.0"}, True),
+    ({"eli_min_version": "3.1.0"}, False),
+    ({"eli_max_version": "3.0.200"}, True),
+    ({"eli_max_version": "2.9"}, False),
+])
+def test_the_eli_version_range_is_honoured(bounds, ok):
+    assert M.compatibility(bounds, eli_version="3.0.137")["ok"] is ok
+
+
+def test_a_package_for_a_later_eli_is_not_installed(env, served, monkeypatch):
+    served(BENIGN_SOURCE)
+    monkeypatch.setattr(M, "_eli_version", lambda: "3.0.137")
+    res = M.preview_install(_listing(BENIGN_SOURCE, eli_min_version="4.0.0"))
+    assert res["ok"] is False and res["stage"] == "compatibility"
+
+
+def test_a_listing_cannot_change_under_a_version_already_seen(env, served):
+    served(BENIGN_SOURCE)
+    assert M.preview_install(_listing(BENIGN_SOURCE))["ok"] is True
+    res = M.preview_install(_listing(BENIGN_SOURCE, permissions=["network"]))
+    assert res["ok"] is False and res["stage"] == "release"
+    assert M.preview_install(_listing(BENIGN_SOURCE, version="1.0.1",
+                                      permissions=["network"]))["stage"] != "release"
+
+
 def test_pip_dependencies_need_separate_approval(env, served):
     served(BENIGN_SOURCE)
     listing = _listing(BENIGN_SOURCE, pip=["some-package"])
@@ -307,3 +360,13 @@ def test_unsigned_does_not_block_but_is_reported(env, served):
     res = M.quick_install(_clean_listing(BENIGN_SOURCE))
     assert res["review_needed"] is False
     assert any("Unsigned" in n for n in res["notes"])
+
+
+def test_a_bundle_listing_is_not_installed_as_a_plugin(env, served):
+    served(BENIGN_SOURCE)
+    listing = _listing(BENIGN_SOURCE, kind="bundle",
+                       purchase={"model": "perpetual", "price": 199,
+                                 "purchase_url": "https://geteli.tech/legal"})
+    res = M.preview_install(listing)
+    assert res["ok"] is False and res["stage"] == "kind"
+    assert "https://geteli.tech/legal" in res["problems"][0]

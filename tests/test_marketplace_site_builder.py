@@ -169,3 +169,23 @@ def test_no_cname_when_no_domain_is_configured(tmp_path):
     out = tmp_path / "site"
     build_site.build(str(idx), str(out), "ELI Marketplace", "", "", "https://geteli.tech")
     assert not (out / "CNAME").exists()
+
+
+def test_only_the_marketplace_key_earns_the_official_badge():
+    ours = {"id": "legal", "name": "ELI Legal", "official": True,
+            "publisher_id": "eli-marketplace", "release_signature": "x"}
+    claimed = dict(ours, publisher_id="acme")
+    assert "Official ELI" in build_site._card(ours)
+    assert "Official ELI" not in build_site._card(claimed)
+    assert "reviewed &amp; signed" in build_site._card(claimed)
+
+
+@pytest.mark.parametrize("listing,shown", [
+    ({"price": 0}, "Free"),
+    ({"price": 5, "currency": "USD"}, "5 USD"),
+    ({"purchase": {"model": "perpetual", "price": 49, "currency": "EUR"}}, "49 EUR · one-time"),
+    ({"purchase": {"model": "subscription", "price_display": "€4/month"}}, "€4/month"),
+    ({"purchase": {"model": "external"}}, "Free (free client)"),
+])
+def test_the_price_is_shown_as_the_listing_states_it(listing, shown):
+    assert build_site._price(listing) == shown

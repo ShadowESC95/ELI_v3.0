@@ -8,6 +8,11 @@ is actually protecting against.
 The client half ships complete. What follows is the half that lives outside the
 application.
 
+Publishers keep their packages: they choose the licence and the price, and sell
+however they like. What they agree to by submitting is in the
+[developer terms](../tools/marketplace/registry_template/DEVELOPER_TERMS.md), which
+ship in the registry template and so sit at the root of the marketplace repo.
+
 ---
 
 ## 1. The shape of it
@@ -25,7 +30,7 @@ application.
                            reaches a human
 ```
 
-Four properties hold this together, and each is enforced in code rather than by
+Five properties hold this together, and each is enforced in code rather than by
 convention:
 
 1. **A pull request is the quarantine.** A submission is proposed, not published.
@@ -35,10 +40,14 @@ convention:
    has no third outcome. If a scanner could approve, the review would attest to
    nothing but the scanner's opinion.
 3. **The signature is the approval.** Signing happens at publish time with a key
-   only the maintainer holds. A listing on the official registry that is not
-   validly signed by that key is **refused by the client**, not warned about — see
-   §5.
-4. **Curation is not the only door.** Operators can still add community
+   only the maintainer holds, over a *release statement*: id, version, checksum,
+   permissions, dependencies, MCP launch command and the official flag. A listing on
+   the official registry whose statement is not validly signed by that key is
+   **refused by the client**, not warned about — see §5.
+4. **A version never changes.** One id and version is one release. Changing anything
+   the statement covers needs a new version and a new review; the client refuses a
+   release that changes under a version it has seen, and CI refuses one in the index.
+5. **Curation is not the only door.** Operators can still add community
    registries. That keeps the curated store honest: the maintainer cannot become
    the only way to get a plugin, and cannot quietly delist a competitor.
 
@@ -107,13 +116,16 @@ early volume.
    ```python
    OFFICIAL_REGISTRY_URL = "https://<your-domain>/index.json"
    ```
-   Both are empty in a stock build, and while they are empty **no official
+   Both are set in the shipped build. When the URL is empty, **no official
    registry appears at all** — ELI does not invent a store it has not been
    pointed at. Both can be overridden with `ELI_MARKETPLACE_PUBLISHER_KEY` and
    `ELI_MARKETPLACE_URL`, which is how you test before shipping, and how anyone
    else can run their own curated registry from an ELI build.
 4. **Configure CI**: set the repo variable `ELI_REPO` to the ELI repository the
-   workflow should pull `review.py` from.
+   workflow should pull `review.py` and `build_site.py` from. If that repository is
+   private, the marketplace workflows also need a read-only token to check it out
+   (`actions/checkout` with a `token:` from a repository secret); without one, every
+   run fails at that step.
 5. **Publish the shopfront** on your domain, pointing at the same `index.json`.
 
 ---
@@ -146,14 +158,36 @@ Then approve by signing:
 python tools/marketplace/publish.py plugins/<the-submission>/plugin.py \
     --source-url https://<your-domain>/plugins/<id>.py \
     --sign-key ~/.eli-marketplace-key \
-    --publisher eli-marketplace
+    --publisher eli-marketplace \
+    --index index.json
 ```
 
-That emits the listing JSON — including `sha256` and `signature` — to paste into
-`index.json`. Merge, and it is live.
+That emits the listing JSON — `sha256`, `release_signature`, and `signature` (over
+the file alone, for ELI builds from before release statements) — to paste into
+`index.json`. Merge, and it is live. `--index` refuses to re-use a version that is
+already listed as a different release.
 
-**Re-sign on every change.** The signature covers the file. A new version is a new
-signature, and a stale `sha256` is a hard refusal on every machine that tries.
+- **Your own bundles** (ELI Legal, ELI VR, …): add `--official`. Only the marketplace
+  key can make that claim; the client shows **Official ELI** for it and ignores the
+  flag from any other key.
+- **An MCP server** has no file: pass `--manifest server.json` and no plugin path.
+  The release signature over its launch command is the only thing that proves it.
+- **Display text** (name, description, price, links) is outside the signature, so it
+  can be corrected without a new review. Anything the statement covers cannot.
+
+**A new version for every change** to the file, permissions, dependencies or launch
+command. A stale `sha256` is a hard refusal on every machine that tries.
+
+### What a listing can say about selling
+
+| Field | Values | Effect in ELI |
+|---|---|---|
+| `purchase.model` | `free` · `perpetual` · `subscription` · `trial` · `external` | Shown with the price; `external` is a free client for a paid service of the publisher's |
+| `purchase.price`, `currency`, `price_display`, `purchase_url` | | Shown; the flat `price` / `currency` / `purchase_url` of older listings still work |
+| `entitlement.method` | `none` · `local_key` · `publisher_api` · `marketplace` | `none` installs without a key; `local_key` and `publisher_api` ask for the buyer's key and pass it to the publisher; `marketplace` is refused until an integrated checkout exists. A paid listing that says nothing is treated as `publisher_api` |
+| `eli_min_version`, `eli_max_version` | versions | Outside the range, the install is refused with the reason |
+| `support_url`, `privacy_url`, `terms_url`, `license_url` | https URLs | Shown in the listing. A package using the network without a `privacy_url` gets a warning |
+| `kind` | `plugin` · `mcp` · `bundle` · `integration` | Only a plugin installs from the store; a bundle or integration points to where to get it |
 
 ---
 
@@ -163,12 +197,19 @@ Worth knowing precisely, because the curated and community paths differ on purpo
 
 | | Community registry | Official (curated) registry |
 |---|---|---|
-| Unsigned listing | Warning — operator decides | **Refused** |
+| No release signature | Warning — operator decides | **Refused** |
 | Signed by an unknown key | Warning | **Refused** |
-| Signature does not verify | Refused | Refused |
+| Signature does not verify (file or release) | Refused | Refused |
+| Permissions, dependencies or MCP command changed after signing | Refused | Refused |
+| Release changed under a version this machine has seen | Refused | Refused |
 | `sha256` mismatch | Refused | Refused |
 | Malware scan finds indicators | Refused | Refused |
 | Undeclared capability at runtime | Blocked by the audit hook | Blocked by the audit hook |
+
+What the operator is shown says no more than was checked: **Official ELI**
+(the marketplace key signed a release saying so), **reviewed** (the marketplace key
+signed this exact release), **signed** (a publisher the operator trusts signed it),
+**checksum only**, or **unverified**.
 
 The asymmetry in the first two rows is the whole point. On a community registry an
 unsigned plugin is ordinary. On the curated one it is evidence of tampering,

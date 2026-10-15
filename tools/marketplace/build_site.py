@@ -63,14 +63,36 @@ def _risk_of(perms):
     return "low"
 
 
+_KINDS = {"plugin": "Plugin", "mcp": "MCP server", "bundle": "Bundle",
+          "integration": "Integration"}
+_MODELS = {"perpetual": "one-time", "subscription": "subscription", "trial": "trial",
+           "external": "free client"}
+
+
+def _price(p: dict) -> str:
+    """The price as the listing states it: its `purchase` object, or the flat fields
+    older listings use."""
+    purchase = p.get("purchase") if isinstance(p.get("purchase"), dict) else {}
+    if purchase.get("price_display"):
+        return str(purchase["price_display"])
+    try:
+        price = float(purchase.get("price", p.get("price")) or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    currency = str(purchase.get("currency") or p.get("currency") or "EUR")
+    model = _MODELS.get(str(purchase.get("model") or ""))
+    if price <= 0:
+        return "Free" + (f" ({model})" if model and model != "one-time" else "")
+    return f"{price:g} {currency}" + (f" · {model}" if model else "")
+
+
 def _card(p: dict) -> str:
     e = html.escape
     pid = str(p.get("id", ""))
     perms = [str(x) for x in (p.get("permissions") or [])]
     risk = _risk_of(perms)
-    kind = "MCP server" if (p.get("kind") == "mcp" or p.get("mcp")) else "Plugin"
-    price = p.get("price") or 0
-    price_s = "Free" if not price else f"{price} {e(str(p.get('currency') or 'EUR'))}"
+    kind = _KINDS.get(str(p.get("kind") or ("mcp" if p.get("mcp") else "plugin")), "Plugin")
+    price_s = e(_price(p))
 
     if perms:
         chips = "".join(
@@ -80,8 +102,15 @@ def _card(p: dict) -> str:
     else:
         perm_block = '<p class="perms-none">Asks for no permissions.</p>'
 
-    signed = ('<span class="badge badge-ok">signed</span>' if p.get("signature")
-              else '<span class="badge badge-warn">unsigned</span>')
+    # The page cannot verify signatures (ELI does that on the user's machine), so it
+    # says only what the listing carries. "Official" is the marketplace's own signed
+    # claim; the client ignores it from any other key.
+    if p.get("official") and p.get("publisher_id") == "eli-marketplace":
+        signed = '<span class="badge badge-ok">Official ELI</span>'
+    elif p.get("release_signature") or p.get("signature"):
+        signed = '<span class="badge badge-ok">reviewed &amp; signed</span>'
+    else:
+        signed = '<span class="badge badge-warn">unsigned</span>'
 
     return f'''<article class="card" data-risk="{risk}" data-name="{e(pid.lower())} {e(str(p.get("name","")).lower())} {e(str(p.get("description","")).lower())}">
   <header>

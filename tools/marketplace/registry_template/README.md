@@ -1,5 +1,9 @@
 # Hosting an ELI registry on GitHub Pages
 
+Publishing here means accepting the [developer terms](DEVELOPER_TERMS.md): you keep your
+package and choose its licence and price; the registry gets only what it needs to host,
+review, sign and list it.
+
 A registry is one static file: `index.json` over HTTPS. GitHub Pages serves that for
 free, which is why it is the recommended starting point — there is no server to run,
 no database, and nothing for ELI's author to own.
@@ -53,13 +57,27 @@ plugins".
 python tools/marketplace/publish.py --new-key ed25519.key      # once
 python tools/marketplace/publish.py plugins/thing.py \
     --sign-key ed25519.key --publisher your-id \
-    --source-url https://.../thing.py
+    --source-url https://.../thing.py --index index.json
 ```
 
 Publish the printed public key in your README. An operator adds it once under trusted
 publishers, and everything you sign afterwards verifies for them. Unsigned plugins are
 not blocked — they are shown as unverified, which is the honest default for a
 community marketplace.
+
+The signature that counts is `release_signature`: it covers the id, version, checksum,
+permissions, dependencies and MCP launch command together. **A version never changes**:
+to change any of those, publish a new version. ELI refuses a release that changes under a
+version it has already seen, and `--index` catches it before you publish.
+
+## Selling
+
+Set a `purchase` object in the manifest (`model`: `free`, `perpetual`, `subscription`,
+`trial` or `external`; `price`; `currency`; `purchase_url`) and say how a buyer's right
+is checked with `entitlement.method` (`none`, `local_key` or `publisher_api`). ELI shows
+the price, asks the buyer for a key when the method needs one, and passes it to you.
+Payment, refunds and tax are yours. Add `support_url`, `privacy_url` and `terms_url`; a
+package that uses the network should always link a privacy notice.
 
 ## Review
 
