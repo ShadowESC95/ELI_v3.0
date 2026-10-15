@@ -187,7 +187,7 @@ python3 scripts/restore_github_asset_files.py --from-dir /path/to/downloaded/ass
 | One-click run (portable) | `./RUN_ELI.sh` | Daily launch of a portable install |
 | Classic portable install | `./INSTALL_ELI.sh` then `./RUN_ELI.sh` | Portable package, manual two-step |
 | Safe Linux install | `bash scripts/safe_install_linux.sh` | Conservative install with extra checks |
-| Add the `eli` terminal command | `bash scripts/install_eli_command.sh` | Get `eli` on your `$PATH` (`~/.local/bin/eli`) |
+| Add the `eli-v3` terminal command | `bash scripts/install_eli_command.sh` | Get `eli-v3` on your `$PATH` (`~/.local/bin/eli-v3`; `--name` picks another name) |
 | Install app-menu icons only | `bash scripts/install_desktop_apps.sh` | Re-add ELI / ELI Server / ELI Setup launchers |
 | Repo venv runner | `bash scripts/run_eli_repo_venv.sh` | Run against the repo's own `.venv` |
 | Purge a legacy install | `bash scripts/purge_legacy_eli.sh` | Clean up an older ELI before reinstalling |

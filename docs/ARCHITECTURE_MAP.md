@@ -19,7 +19,7 @@
 | Doc-routable (`routable` ∨ `in_supported_list`) | **215** |
 | Executor `SUPPORTED_ACTIONS` | **211** |
 | Router-routable (`routable` flag) | **189** |
-| User data dir (installed) | `~/.local/share/eli` (Linux) · `%LOCALAPPDATA%/eli` · `~/Library/Application Support/eli` |
+| User data dir (installed or packaged) | `~/.local/share/ELI_v3` (Linux) · `%LOCALAPPDATA%/ELI_v3` · `~/Library/Application Support/ELI_v3` |
 
 v2 and v3 share cognition **policy** but not layout: v2 keeps larger monolith
 files (`engine.py` ~15k, GUI god-file ~12k); v3 decomposes those into packages.

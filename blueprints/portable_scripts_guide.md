@@ -146,12 +146,13 @@ environment isn't there yet, it tells you to run the installer first. `RUN_ELI.s
 friendlier version of this.
 **To you:** the "engine start" with none of the conveniences.
 
-### `eli` — the terminal command (created during setup)
-**What it is:** a shortcut installed into `~/.local/bin/eli` by the setup scripts.
+### `eli-v3` — the terminal command (created during setup)
+**What it is:** a shortcut installed into `~/.local/bin/eli-v3` by the setup scripts (named for v3:
+other ELI versions have their own commands).
 **When to use:** after installing, from **any** folder.
-**Command:** `eli`
+**Command:** `eli-v3`
 **What it does:** launches ELI without needing to be inside this folder.
-**Tip:** if typing `eli` runs an old version, run `hash -r` once to refresh your shell.
+**Tip:** if typing `eli-v3` runs an old version, run `hash -r` once to refresh your shell.
 
 ### `eli-v3.desktop` — the desktop / menu shortcut
 **What it is:** a Linux application-menu entry (the clickable icon).

@@ -936,3 +936,39 @@ avatar's lip movement.
 
 **Fix (v3.0.137):** when the device refuses the voice's rate, the voice is resampled to the
 device's own rate and played there.
+
+---
+
+## The voice reported usage to Microsoft
+
+**Cause:** Piper, which speaks ELI's replies, runs on onnxruntime 1.30, and onnxruntime sends usage
+telemetry to Microsoft from native code that the network guard cannot see. Every time ELI spoke,
+it queued events in `~/.cache/Microsoft/DeveloperTools/.onnxruntime`.
+
+**Fix (v3.0.138):** the library telemetry switches (`ORT_DISABLE_TELEMETRY` and the others) are set
+when ELI starts, and every program ELI starts inherits them. Hosts that only collect telemetry are
+refused by name in `netguard`, even with the Net switch on.
+
+---
+
+## Starting the AppImage removed other ELI products from the app menu
+
+**Cause:** the AppImage's menu set-up deleted every `eli*.desktop` entry (v2's, ELI Legal's, ELI VR's)
+before writing its own. It wrote those under v2's file names and pointed the generic
+`~/.local/bin/eli` at itself. The uninstaller removed every ELI entry too.
+
+**Fix (v3.0.138):** v3 writes `eli-v3*.desktop`, the `eli-v3` icon and the `~/.local/bin/eli-v3`
+command, and it replaces or removes only its own entries. The generic `eli` command is removed only
+when it is a v3 AppImage's own. The same fix is in v2 2.5.17.
+
+---
+
+## v3 used folders and temp files other ELI versions use
+
+**Cause:** an installed v3 kept its data in `~/.local/share/eli`, `~/.config/eli` and `~/.cache/eli`.
+A few files had generic fallbacks (`~/.eli/`, `~/.eli_user_id`) or relative `artifacts/` paths.
+Locks, sockets and logs in the temp folder had the same names in v2 and v3, so with both running,
+v2 speaking muted v3's microphone.
+
+**Fix (v3.0.138):** everything of v3's is under `ELI_v3`, temp files are named `ELI_v3-...`, and the
+terminal command is `eli-v3`. Older generic folders are left as they are.

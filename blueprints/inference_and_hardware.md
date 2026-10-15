@@ -217,13 +217,31 @@ grounding it would have drawn from was empty.
   rendering settings to the user should check this rather than presenting
   defaults as if they were read from disk.
 
-## Paths (`core/paths.py`, 601 LOC)
+## Paths (`core/paths.py`, 866 LOC)
 
 Dev-vs-packaged path resolution: `is_frozen` / `_is_dev_mode`,
 `_find_project_root`, then `data_dir`/`config_dir`/`cache_dir`/`models_dir`/
-`db_dir`/`artifacts_dir`/`user_db_path`/`agent_db_path`/`memory_db_path`. Source
-checkouts use project-local `artifacts/`+`config/`; packaged installs use
-platformdirs. One import surface (`get_paths`) so nothing hardcodes locations.
+`db_dir`/`artifacts_dir`/`user_db_path`/`agent_db_path`/`memory_db_path`. A source
+checkout uses project-local `artifacts/` + `config/`. The packaged app and an installed one
+both use v3's own root: `~/.local/share/ELI_v3` (`artifacts/`, `config/`, `cache/`),
+`%LOCALAPPDATA%\ELI_v3` on Windows, `~/Library/Application Support/ELI_v3` on macOS. One
+import surface (`get_paths`) so nothing hardcodes locations.
+
+Nothing of v3's goes in a generic place. `~/.local/share/eli`, `~/.config/eli`, `~/.cache/eli`,
+`~/.eli/` and `~/.eli_*` belong to no single ELI version; v2 (`ELI_v2`), the first version
+(`eli-ai`), ELI Legal and ELI VR keep their own folders. Until 3.0.138 an installed v3 used the
+generic `eli` folders, and some files had a generic or relative fallback. A file v3 once kept in a
+generic place (the labs notebook and workspaces in `~/.eli/`, `~/.eli_user_id`) is copied into its
+own folders once by `adopt_legacy_file`. Files in the temp folder carry v3's name too
+(`temp_path`: `ELI_v3-tts_speaking.lock`, `ELI_v3-youtube_mpv.sock`); with shared names, v2 speaking
+muted v3's microphone. `tests/test_frozen_install_redistributability.py` scans the code for generic,
+relative and shared temp paths.
+
+Launchers are v3's too: the AppImage installs `eli-v3.desktop`, `eli-v3-server.desktop`,
+`eli-v3-uninstall.desktop`, the `eli-v3` icon and the `~/.local/bin/eli-v3` command; a source
+install uses `eli-v3-run`. Each replaces or removes only v3's own entries. Until 3.0.138 the
+AppImage deleted every `eli*.desktop` menu entry (other ELI products' too), wrote its entries under
+v2's file names and pointed the generic `~/.local/bin/eli` at itself.
 
 ## STT VRAM awareness
 
