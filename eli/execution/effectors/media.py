@@ -481,7 +481,7 @@ def _prune_mpv_logs(keep: int = 5) -> None:
     """Keep only the newest `keep` mpv failure logs so /tmp cannot grow without bound."""
     import glob as _glob
     try:
-        logs = sorted(_glob.glob(os.path.join(tempfile.gettempdir(), "eli_mpv_*.log")),
+        logs = sorted(_glob.glob(str(__import__("eli.core.paths", fromlist=["temp_path"]).temp_path("mpv_*.log"))),
                       key=os.path.getmtime, reverse=True)
         for stale in logs[keep:]:
             try:

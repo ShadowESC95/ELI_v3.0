@@ -99,7 +99,7 @@ def _persisted_install_id() -> str:
 
         path = ensure_license_dir() / "machine.id"
     except Exception:
-        path = Path.home() / ".eli-machine-id"
+        path = Path.home() / ".eli-v3-machine-id"
 
     existing = _read_first_line(path)
     if existing:

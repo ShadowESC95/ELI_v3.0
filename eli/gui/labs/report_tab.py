@@ -2717,7 +2717,8 @@ class _ReportTab(QWidget):
             return
 
     def _rb_manifest_path(self, title: str) -> Path:
-        root = Path("artifacts/documents")
+        from eli.core.paths import documents_dir
+        root = Path(documents_dir())
         root.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", title.strip() or "eli_report").strip("_") or "eli_report"
         return root / f"{safe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.generation_manifest.json"

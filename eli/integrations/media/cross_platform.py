@@ -683,9 +683,9 @@ def mpv_socket_path() -> str:
     if env:
         return env
     if pc.WINDOWS:
-        return r"\\.\pipe\eli_youtube_mpv"
-    import tempfile
-    return os.path.join(tempfile.gettempdir(), "eli_youtube_mpv.sock")
+        return __import__("eli.core.paths", fromlist=["pipe_path"]).pipe_path("youtube_mpv")
+    from eli.core.paths import temp_path
+    return str(temp_path("youtube_mpv.sock"))
 
 
 def _is_windows_pipe(path: str) -> bool:

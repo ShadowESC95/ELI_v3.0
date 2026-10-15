@@ -2343,11 +2343,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return self._compact_persona()
 
     def _get_user_id(self) -> str:
-        try:
-            user_id_file = get_paths().config_dir / "user_id"
-            user_id_file.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            user_id_file = Path.home() / ".eli_user_id"
+        from eli.core.paths import adopt_legacy_file
+        # v3's own id file; one kept in the generic ~/.eli_user_id by earlier versions is brought over once
+        user_id_file = adopt_legacy_file(get_paths().config_dir / "user_id", "~/.eli_user_id")
+        user_id_file.parent.mkdir(parents=True, exist_ok=True)
         import uuid
         file_id = user_id_file.read_text(encoding="utf-8", errors="ignore").strip() if user_id_file.exists() else ""
         owner = file_id or str(uuid.uuid4())

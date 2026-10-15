@@ -9,7 +9,10 @@ from eli.gui.labs._common import *  # noqa: F401,F403
 
 
 class _WorkspacesTab(QWidget):
-    _DATA_FILE = Path.home() / ".eli" / "labs_workspaces.json"
+    @property
+    def _DATA_FILE(self) -> Path:
+        from eli.core.paths import adopt_legacy_file, data_dir
+        return adopt_legacy_file(data_dir() / "labs" / "labs_workspaces.json", "~/.eli/labs_workspaces.json")
 
     def __init__(self, parent=None):
         super().__init__(parent)

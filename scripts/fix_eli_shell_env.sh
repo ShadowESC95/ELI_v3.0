@@ -43,11 +43,12 @@ _patch_rc() {
   local tmp
   tmp="$(mktemp)"
   # Drop previous managed block and bare alias eli / export ELI_PROJECT_ROOT lines.
-  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v root="$ROOT" '
     $0 == b { skip=1; next }
     $0 == e { skip=0; next }
     skip { next }
-    /^[[:space:]]*alias[[:space:]]+eli=/ { next }
+    # a bare alias eli= line is removed only when it points at this checkout (another ELI version keeps its own)
+    /^[[:space:]]*alias[[:space:]]+eli=/ && index($0, root) { next }
     /^[[:space:]]*export[[:space:]]+ELI_PROJECT_ROOT=/ { next }
     { print }
   ' "$rc" > "$tmp"
@@ -55,9 +56,8 @@ _patch_rc() {
   {
     echo ""
     echo "$MARK_BEGIN"
-    echo "# Prefer this checkout when you type: eli"
-    echo "unalias eli 2>/dev/null || true"
-    echo "alias eli='$ROOT/eli.sh'"
+    echo "# This checkout when you type: eli-v3 or eli3 (other ELI versions keep their own names)"
+    echo "alias eli-v3='$ROOT/eli.sh'"
     echo "alias eli3='$ROOT/eli.sh'"
     echo "# Do not export ELI_PROJECT_ROOT globally — each launcher sets it."
     echo "$MARK_END"
@@ -70,5 +70,5 @@ for rc in "$HOME/.bashrc" "$HOME/.bash_aliases" "$HOME/.profile"; do
 done
 
 echo "[fix-shell] done."
-echo "[fix-shell] Open a new terminal, then run:  type eli && eli --help 2>/dev/null || eli"
-echo "[fix-shell] Expected: alias eli='$ROOT/eli.sh'  OR  $HOME/.local/bin/eli"
+echo "[fix-shell] Open a new terminal, then:  type eli-v3"
+echo "[fix-shell] Expected: alias eli-v3='$ROOT/eli.sh'  OR  $HOME/.local/bin/eli-v3"

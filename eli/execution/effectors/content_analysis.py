@@ -169,7 +169,7 @@ def _h_analyze_csv(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
         path = str(args.get("path") or "").strip()
         if not path:
             return {"ok": False, "action": a, "error": "Missing path", "content": "Missing path", "response": "Missing path"}
-        out_md = _csv_os.path.join(_csv_tf.gettempdir(), "eli_csv_report.md")
+        out_md = str(__import__("eli.core.paths", fromlist=["temp_path"]).temp_path("csv_report.md"))
         result = analyze_csv_file(path, out_md)
         if isinstance(result, dict):
             result.setdefault("action", a)

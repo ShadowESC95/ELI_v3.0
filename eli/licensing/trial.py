@@ -156,7 +156,7 @@ def marker_paths() -> list[Path]:
     except Exception:
         log.debug("data dir unavailable for trial marker", exc_info=True)
     if not paths:
-        paths.append(Path.home() / ".eli-trial-state.json")
+        paths.append(Path.home() / ".eli-v3-trial-state.json")
     return paths
 
 

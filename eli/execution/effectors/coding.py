@@ -265,8 +265,8 @@ def _h_generate_script(a, args):
             from eli.gui.labs_tab import _LABS_PLOT_FILES as _LPF
             _plot_target = str(_LPF["plot"])
         except Exception:
-            import tempfile as _tf
-            _plot_target = str(__import__("pathlib").Path(_tf.gettempdir()) / "eli_labs_plot.png")
+            from eli.core.paths import temp_path as _temp_path
+            _plot_target = str(_temp_path("labs_plot.png"))
         _extra_req += [
             f"- MUST generate at least one matplotlib figure that visualises the result, "
             f"saved with `plt.savefig({_plot_target!r}, dpi=120)` AND shown with `plt.show()`",

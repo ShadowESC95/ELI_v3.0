@@ -3277,11 +3277,8 @@ try:
                 return int(default)
 
         def _eli_eff_snapshot_path():
-            try:
-                from eli.core.paths import get_paths
-                return _eli_eff_Path(get_paths().artifacts_dir) / "runtime_snapshot.json"
-            except Exception:
-                return _eli_eff_Path("artifacts/runtime_snapshot.json")
+            from eli.core.paths import get_paths
+            return _eli_eff_Path(get_paths().artifacts_dir) / "runtime_snapshot.json"
 
         def _eli_eff_read_json(path):
             try:
