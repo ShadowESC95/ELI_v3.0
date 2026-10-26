@@ -3,11 +3,11 @@ from __future__ import annotations
 import inspect
 import json
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from eli.utils.log import get_logger
+from eli.core.hardware_profile import describe_gpus as _describe_gpus
 
 log = get_logger(__name__)
 
@@ -48,35 +48,6 @@ def _settings() -> dict[str, Any]:
         except Exception:
             return {}
     return {}
-
-
-def _gpu_line() -> str:
-    try:
-        out = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,memory.total,memory.used,memory.free,driver_version",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-            timeout=2,
-        ).strip().splitlines()
-        if out:
-            return out[0].strip()
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    # Cross-vendor fallback: this feeds text the user sees and said "unavailable" on every
-    # AMD/Intel/Apple machine (and NVIDIA with a driver hiccup) although hardware_profile's
-    # cross-vendor detection already knows the card.
-    try:
-        from eli.core.hardware_profile import detect_hardware
-        hw = detect_hardware()
-        if hw.has_gpu:
-            note = " (estimated)" if hw.gpu_detection_uncertain else ""
-            return f"{hw.gpu_name}{note}, {hw.total_vram_mb} MiB total (live query unavailable)"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return "unavailable"
 
 
 def _mode_is_quick(mode: Any) -> bool:
@@ -131,7 +102,7 @@ def format_runtime_truth(mode: Any = "") -> str:
                 "n_gpu_layers": effective_gpu,
                 "n_threads": effective_threads,
                 "n_batch": effective_batch,
-                "gpu": _gpu_line(),
+                "gpu": _describe_gpus(),
             },
             "configured": {
                 "n_ctx": settings.get("n_ctx", "unknown"),
@@ -190,13 +161,19 @@ def format_name_source_audit(text: Any = "") -> str:
 
 
 def _consume_generator(gen: Any) -> str:
+    # The engine's end-of-main-reply marker drives the stream consumer; it is never text. It
+    # reached replies glued to a sentence ("...21 October.__MAIN_REPLY_DONE__").
+    try:
+        from eli.kernel.engine import MAIN_REPLY_DONE_SENTINEL as _done
+    except Exception:
+        _done = "__MAIN_REPLY_DONE__"
     parts: list[str] = []
     try:
         for chunk in gen:
-            if chunk is None:
+            if chunk is None or chunk == _done:
                 continue
             if isinstance(chunk, str):
-                parts.append(chunk)
+                parts.append(chunk.replace(_done, ""))
             elif isinstance(chunk, dict):
                 val = (
                     chunk.get("response")

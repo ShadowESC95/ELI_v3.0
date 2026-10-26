@@ -42,7 +42,7 @@ _STOPWORDS = frozenset({
 })
 
 # Family / pet relationship nouns for possessive-fact extraction
-# ("my dog Shadow", "Shadow (my dog)"). Maps surface word -> normalised relation.
+# ("my dog Biscuit", "Biscuit (my dog)"). Maps surface word -> normalised relation.
 _REL_NORMALISE = {
     "puppy": "dog", "pup": "dog", "kitten": "cat", "kitty": "cat",
     "mum": "mother", "mom": "mother", "mummy": "mother", "mommy": "mother",
@@ -144,15 +144,27 @@ _NOT_A_KIND = frozenset("""not just still only well actually your the in all goo
 pretty certain it doing saying so too very really""".split())
 
 
+# Point-in-time activities change constantly; the bitemporal claims store (eli.memory.claims,
+# CHANGES_OFTEN) is their authority and recall surfaces the CURRENT one. A durable KG attribute for
+# them goes stale: "watching the movie Oppenheimer" was still shown, re-dated, while the user was on
+# a different film. These are hidden from the prompt so the claims store speaks for them.
+_VOLATILE_ACTIVITY_VERBS = ("watching", "watched", "playing", "played", "reading", "read",
+                            "listening", "listening_to", "listened")
+
+
 def _junk_name_relation(rel: Dict[str, Any]) -> bool:
-    """A relation an earlier extractor stored that isn't a fact: a has_name/nickname whose value
-    isn't a name ("listed as unknown", "not fucking listed"), or an is_a that is a mood or an
-    activity ("going to bed now", "not happy"). Hidden from the prompt rather than deleted."""
+    """A relation an earlier extractor stored that isn't a durable fact: a has_name/nickname whose
+    value isn't a name ("listed as unknown"), an is_a that is a mood or an activity ("going to bed
+    now"), or a has_attribute that is a volatile activity ("watching the movie X" — the claims store
+    owns those). Hidden from the prompt rather than deleted."""
     predicate = str(rel.get("predicate") or "").lower()
     obj = str(rel.get("object") or "").strip()
     if predicate == "is_a":
         first = (obj.split() or [""])[0].lower()
         return first in _NOT_A_KIND or first.endswith("ing") or len(obj.split()) > 4
+    if predicate == "has_attribute":
+        first = (obj.split() or [""])[0].lower()
+        return first in _VOLATILE_ACTIVITY_VERBS
     if predicate not in ("has_name", "nickname"):
         return False
     try:
@@ -160,6 +172,13 @@ def _junk_name_relation(rel: Dict[str, Any]) -> bool:
         return not normalize_identity_candidate(obj)
     except Exception:
         return False
+
+
+def _as_of_day(rel: Dict[str, Any]) -> str:
+    try:
+        return " (as of " + time.strftime("%d %b %Y", time.localtime(float(rel.get("ts")))) + ")"
+    except (TypeError, ValueError):
+        return ""
 
 
 class KnowledgeGraph:
@@ -320,13 +339,13 @@ class KnowledgeGraph:
             result = dict(ent)
 
             out_rows = conn.execute(
-                """SELECT r.predicate, e.name AS object, r.weight
+                """SELECT r.predicate, e.name AS object, r.weight, r.ts
                    FROM kg_relations r JOIN kg_entities e ON r.object_id=e.id
                    WHERE r.subject_id=? ORDER BY r.weight DESC""",
                 (eid,)
             ).fetchall()
             in_rows = conn.execute(
-                """SELECT e.name AS subject, r.predicate, r.weight
+                """SELECT e.name AS subject, r.predicate, r.weight, r.ts
                    FROM kg_relations r JOIN kg_entities e ON r.subject_id=e.id
                    WHERE r.object_id=? ORDER BY r.weight DESC""",
                 (eid,)
@@ -420,14 +439,32 @@ class KnowledgeGraph:
         re.I,
     )
 
-    def context_for_prompt(self, query: str, max_chars: int = 800) -> str:
+    def context_for_prompt(self, query: str, max_chars: int = 800, *,
+                           max_entities: Optional[int] = None,
+                           max_relations: Optional[int] = None) -> str:
         """
         Return a compact KG context block suitable for LLM injection.
         Searches entities matching `query`, then expands one hop.
         Tries the full query first, then individual tokens (skipping stopwords).
         For identity queries, seeds with user identity context if explicitly stored.
+
+        Entity and relation counts default to cog.kg_entities / cog.kg_relations
+        (tier-scaled). They were a fixed 4-6 entities and 5 relations, so a large
+        max_chars could never be filled.
         """
-        hits = self.search_entities(query, limit=4)
+        if max_entities is None or max_relations is None:
+            try:
+                from eli.core.cognition_tunables import snapshot as _cog_snapshot
+                _tn = _cog_snapshot()
+            except Exception:
+                _tn = {}
+            if max_entities is None:
+                max_entities = int(_tn.get("cog.kg_entities", 8))
+            if max_relations is None:
+                max_relations = int(_tn.get("cog.kg_relations", 8))
+        max_entities = max(1, int(max_entities))
+        max_relations = max(1, int(max_relations))
+        hits = self.search_entities(query, limit=max_entities)
         if not hits:
             # Seed with identity entities for first-person queries
             if self._IDENTITY_RE.search(query):
@@ -448,11 +485,14 @@ class KnowledgeGraph:
                     if h["id"] not in seen_ids:
                         seen_ids.add(h["id"])
                         hits.append(h)
-                if len(hits) >= 6:
+                if len(hits) >= max_entities:
                     break
         if not hits:
             return ""
 
+        # Each relation says when the graph learned it. Undated, "User —[is]→ DRIVING FROM X TO Y" read
+        # as what the user is doing now, weeks after the trip.
+        from eli.cognition.evidence_format import as_of
         lines: List[str] = []
         seen_triples: set = set()
 
@@ -463,7 +503,7 @@ class KnowledgeGraph:
                 continue
             desc = ent_detail.get("description", "").strip()
             aliases = ent_detail.get("aliases", "").strip()
-            header = f"[{name}]"
+            header = f"[{as_of(name, ent_detail.get('ts'))}]"
             if ent_detail.get("type") and ent_detail["type"] != "concept":
                 header += f" ({ent_detail['type']})"
             if desc:
@@ -472,7 +512,7 @@ class KnowledgeGraph:
                 header += f" — also known as: {aliases}"
             # Query-aware ordering: float relations whose predicate/object match a
             # query token to the top, so "what is my dog's name" surfaces
-            # has_dog→Shadow instead of it being crowded out by the [:5] cap.
+            # has_dog→Biscuit instead of it being crowded out by the [:5] cap.
             _q_toks = {
                 t.lower() for t in re.split(r"[^a-zA-Z0-9]+", query)
                 if len(t) > 2 and t.lower() not in _STOPWORDS
@@ -499,16 +539,16 @@ class KnowledgeGraph:
                     and (ent_detail.get("outbound") or ent_detail.get("inbound"))):
                 continue                     # all it had were junk relations
             lines.append(header)
-            for rel in _outbound[:5]:
+            for rel in _outbound[:max_relations]:
                 triple = (name, rel["predicate"], rel["object"])
                 if triple not in seen_triples:
                     seen_triples.add(triple)
-                    lines.append(f"  {name} —[{rel['predicate']}]→ {rel['object']}")
-            for rel in _inbound[:3]:
+                    lines.append(f"  {name} —[{rel['predicate']}]→ {as_of(rel['object'], rel.get('ts'))}{_as_of_day(rel)}")
+            for rel in _inbound[:max(3, max_relations // 2)]:
                 triple = (rel["subject"], rel["predicate"], name)
                 if triple not in seen_triples:
                     seen_triples.add(triple)
-                    lines.append(f"  {rel['subject']} —[{rel['predicate']}]→ {name}")
+                    lines.append(f"  {rel['subject']} —[{rel['predicate']}]→ {as_of(name, rel.get('ts'))}{_as_of_day(rel)}")
 
         text = "\n".join(lines)
         if len(text) > max_chars:
@@ -632,7 +672,7 @@ class KnowledgeGraph:
                         if self.add_relation(subj, predicate, obj, source=source):
                             added += 1
 
-        # Possessive relationships — "my dog Shadow", "Shadow (my dog)". These are
+        # Possessive relationships — "my dog Biscuit", "Biscuit (my dog)". These are
         # identity-grade user facts, so trust user-authored text only (same rule
         # as has_name) to keep hallucinated assistant turns out of the graph.
         if source in _trusted_sources:
@@ -642,10 +682,10 @@ class KnowledgeGraph:
     def _extract_relationships(self, text: str, source: str) -> int:
         """
         Extract "User —[has_<rel>]→ Name" triples from possessive phrases the
-        main pattern table misses: "my dog Shadow", "my dog is/named/called
-        Shadow", "my dog's name is Shadow", "Shadow (my dog)", "Shadow, my dog",
-        "Shadow is my dog". Names must be capitalised; noise is filtered via the
-        stopword set. This is the gap that dropped "Shadow (my dog)" on the floor.
+        main pattern table misses: "my dog Biscuit", "my dog is/named/called
+        Biscuit", "my dog's name is Biscuit", "Biscuit (my dog)", "Biscuit, my dog",
+        "Biscuit is my dog". Names must be capitalised; noise is filtered via the
+        stopword set. This is the gap that dropped "Biscuit (my dog)" on the floor.
         """
         added = 0
         rel_alt = "|".join(sorted(set(_REL_WORDS), key=len, reverse=True))
@@ -692,3 +732,25 @@ def reset_knowledge_graph() -> None:
     global _INSTANCE
     with _LOCK:
         _INSTANCE = None
+
+
+def feeds_graph(origin: str) -> bool:
+    """Only what the user said becomes graph facts about them. The extractor reads text as the
+    user's own words, so a physics book filed from a folder became "User prefers screening"."""
+    from eli.memory import policy
+    return policy.counts_as_evidence_about_user(origin)
+
+
+def rebuild_from_memories(conn) -> int:
+    """Extract the graph again from the stored memories. Returns how many were read."""
+    from eli.memory import policy
+    kg = get_knowledge_graph()
+    n = 0
+    for text, source, kind, tags in conn.execute(
+            "SELECT COALESCE(text, content, ''), COALESCE(source, 'user'), COALESCE(kind, 'memory'), "
+            "COALESCE(tags, '') FROM memories ORDER BY id").fetchall():
+        t = (text or "").strip()
+        if t and feeds_graph(policy.classify_origin(source, kind, tags, t)):
+            kg.extract_from_memory(t, source=source)
+            n += 1
+    return n

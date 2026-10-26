@@ -170,7 +170,7 @@ def _eli_gui_visible_text(result):
     return to_user_visible_text(result)
 
 
-APP_NAME = "ELI v3.0"
+from eli.gui.branding import APP_NAME  # noqa: E402,F401  (one product name)
 
 
 def _eli_app_version() -> str:
@@ -382,17 +382,13 @@ def recommend_model_setup(models, sysinfo, ollama_models=None):
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    if ollama_models:
-        return {
-            "provider": "ollama",
-            "ollama_model": ollama_models[0],
-            "reason": f"No local GGUF detected. Recommended Ollama model: {ollama_models[0]}",
-        }
-
+    # Ollama is never picked for the user: with no GGUF found the default stays GGUF, and the
+    # reason says Ollama can be chosen.
     return {
         "provider": "custom_gguf",
         "path": DEFAULT_MODEL_PATH,
-        "reason": "No automatic recommendation available. Using configured model path.",
+        "reason": ("No local GGUF model found; download one, or choose an Ollama model in the provider list."
+                   if ollama_models else "No automatic recommendation available. Using configured model path."),
     }
 
 
@@ -415,6 +411,7 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                 family = 'unknown'
                 name_low = path.name.lower()
                 draft_only = False
+                not_chat = ""
                 arch = ""
                 try:
                     from eli.cognition.model_identity import read_gguf_identity
@@ -424,6 +421,7 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                     if fam:
                         family = str(fam)
                     draft_only = bool(ident.get("draft_only"))
+                    not_chat = str(ident.get("not_chat") or "")
                 except Exception:
                     try:
                         from eli.cognition.model_load_diagnostics import is_draft_only_gguf
@@ -434,9 +432,10 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                             for m in ("dspark", "dflash", "-draft", "_draft", "eagle", "medusa")
                         )
                 label_name = path.name
-                if draft_only:
-                    label_name = f"{path.name} (draft — not a chat model)"
-                    family = "draft"
+                if draft_only or not_chat:
+                    not_chat = not_chat or "a draft model for speculative decoding"
+                    label_name = f"{path.name} (not a chat model: {not_chat})"
+                    family = "draft" if draft_only else family
                 elif arch and family == "unknown":
                     family = arch
                 results.append({
@@ -447,6 +446,7 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                     'architecture': arch,
                     'source': classify_gguf_source(str(path)),
                     'draft_only': draft_only,
+                    'not_chat': not_chat,
                 })
         except Exception:
             continue
@@ -537,13 +537,13 @@ def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     # "all", both settled by the measured fit when a model loads. (This used RAM and VRAM rules
     # that ignored the model: 1024 tokens per GB, every layer from 8000 MB.)
     n_ctx = 0
-    n_gpu_layers = 99 if (has_gpu and vram_mb > 0) else 0
+    n_gpu_layers = -1 if (has_gpu and vram_mb > 0) else 0      # -1: every layer
 
     try:
         from eli.core.hardware_profile import recommend_cpu_threads as _rct
-        n_threads = _rct(cpu_count, cpu_bound=(not has_gpu or vram_mb <= 0))
+        n_threads = _rct()
     except Exception:
-        n_threads = max(1, cpu_count - (1 if (not has_gpu or vram_mb <= 0) else 2))
+        n_threads = max(1, cpu_count - 1)
 
     # the loader's own minimum; the fit raises it where the card has room
     batch_size = int(os.environ.get("ELI_MIN_BATCH", "128") or "128")
@@ -590,6 +590,50 @@ from eli.gui.panels.startup import FirstBootWizard, HardwareTuningDock, StartupM
 from eli.gui.panels.agent_wizard import AgentCreateDialog, AgentEditDialog  # noqa: E402
 from eli.gui.panels.settings import AdvancedSettingsDialog  # noqa: E402
 
+
+
+def _run_pumping(fn, app, *args, _poll: float = 0.02, **kwargs):
+    """Run blocking, widget-free `fn` off the Qt main thread while pumping `app`'s event loop so
+    the window stays responsive, then return fn's result on the calling thread (exceptions
+    propagate). `app` is the QApplication instance, or None to run inline (headless / tests).
+
+    detect_hardware() shells out to nvidia-smi/lspci with multi-second timeouts and is deliberately
+    uncached (it must read CURRENT free VRAM), so calling it inline on the main thread froze the
+    window ("Not Responding") for a few seconds at the start of every load. The probe runs on a
+    daemon thread here; no widget is ever touched off-thread — the caller applies the result on the
+    main thread once it returns.
+    """
+    if app is None:
+        return fn(*args, **kwargs)
+    box: dict = {}
+
+    def _run():
+        try:
+            box["value"] = fn(*args, **kwargs)
+        except BaseException as exc:            # re-raised on the caller's thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True, name="hw-tuning-probe")
+    worker.start()
+    while worker.is_alive():
+        app.processEvents()
+        time.sleep(_poll)
+    worker.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _eli_pick_any_bundled_model() -> str:
+    try:
+        root = PROJECT_ROOT / "models"
+        if root.exists():
+            for p in sorted(root.rglob("*.gguf")):
+                if p.is_file():
+                    return str(p)
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+    return ""
 
 
 __all__ = [_n for _n in dir() if not _n.startswith('__')]

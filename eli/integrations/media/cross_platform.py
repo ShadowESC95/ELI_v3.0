@@ -422,17 +422,16 @@ def spotify_shuffle(player: str | None = None, mode: str = "Toggle") -> dict[str
         return {"ok": False, "player": p, "error": err or "shuffle failed",
                 "content": f"Couldn't toggle shuffle on {p}.",
                 "response": f"Couldn't toggle shuffle on {p}."}
-    if pc.MACOS:
-        ok, _ = _macos_osascript(
-            'tell application "Spotify"\n'
-            '  if not running then return "off"\n'
-            '  set shuffling to not shuffling\n'
-            '  return shuffling as string\n'
-            'end tell'
-        )
-        if ok:
-            msg = f"🔀 Shuffle toggled — Spotify"
-            return {"ok": True, "player": "spotify", "content": msg, "response": msg}
+    if pc.MACOS or pc.WINDOWS:
+        # the running player the OS knows about: Spotify or Music on macOS, any app in Windows' media session
+        from eli.integrations.media import system_session
+        done = system_session.toggle_shuffle()
+        if done:
+            msg = f"🔀 Shuffle {'on' if done['shuffle'] else 'off'} — {done['player']}"
+            return {"ok": True, "player": done["player"], "content": msg, "response": msg}
+        return {"ok": False, "error": "no player",
+                "content": "Nothing is playing, so there is no shuffle to change.",
+                "response": "Nothing is playing, so there is no shuffle to change."}
     return {"ok": False, "error": "shuffle unavailable",
             "content": "Shuffle control isn't available on this system.",
             "response": "Shuffle control isn't available on this system."}
@@ -441,6 +440,15 @@ def spotify_shuffle(player: str | None = None, mode: str = "Toggle") -> dict[str
 def spotify_set_loop(player: str | None = None, mode: str | None = None) -> dict[str, Any]:
     """Set or cycle repeat/loop mode (None, Track, Playlist)."""
     p = (player or "spotify").strip() or "spotify"
+    if (pc.MACOS or pc.WINDOWS) and mode is None:
+        from eli.integrations.media import system_session
+        done = system_session.cycle_repeat()
+        if done:
+            msg = f"🔁 Repeat {done['repeat']} — {done['player']}"
+            return {"ok": True, "player": done["player"], "content": msg, "response": msg}
+        return {"ok": False, "error": "no player",
+                "content": "Nothing is playing, so there is no repeat to change.",
+                "response": "Nothing is playing, so there is no repeat to change."}
     current = spotify_loop_status()
     if mode is None:
         mode = {"None": "Track", "Track": "Playlist", "Playlist": "None"}.get(current, "Track")
@@ -550,8 +558,8 @@ def spotify_wait_running(timeout: float = 8.0) -> bool:
 
 
 # Words of a request that are not part of a name: articles and joining words, and the words that
-# say what kind of thing is wanted. "songs by diabolic and ill bill" started the right track
-# ("Diabolic — Order & Chaos (feat. Ill Bill)") and it was refused, "songs" and "and" not being in it.
+# say what kind of thing is wanted. "songs by veridian and red tamsin" started the right track
+# ("Veridian — North & South (feat. Red tamsin)") and it was refused, "songs" and "and" not being in it.
 _TRACK_MATCH_STOPWORDS = {
     "the", "a", "an", "by", "of", "feat", "ft", "featuring", "on", "spotify", "and", "with", "from", "some", "any",
     "song", "songs", "track", "tracks", "tune", "tunes", "music", "stuff", "something", "anything",
@@ -584,7 +592,7 @@ def query_matches_track(query: str, artist: str, title: str) -> bool:
     """Most of the words asked for are in the playing track, and some are in its title, unless
     only the artist was asked for.
 
-    One shared word was enough before, so "trouble eminem" accepted any Eminem track that
+    One shared word was enough before, so "trouble orlo" accepted any Orlo track that
     happened to be loaded.
     """
     if not f"{artist}{title}".strip():

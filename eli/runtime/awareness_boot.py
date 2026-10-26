@@ -156,13 +156,27 @@ class AwarenessState:
         # Told "log everything", a model promised to switch on logging that was never off.
         head += (" Logging is always on and is not something a reply can change: every action you run is written to"
                  " the evidence ledger and every turn to the audit chain, both signed. Asked to log more, say that.")
-        # Current symbolic-world room, if the world model is active (cheap dict read).
+        # Room lives at ws["avatar"]["room"], not top-level — reuse the same
+        # thresholds choose_room()/map_persona() already use for the avatar.
         try:
             from eli.world.local_world_bridge import get_world_state
+            from eli.world.core.schemas import AwarenessState
+            from eli.world.avatar.behaviour_controller import AvatarBehaviourController
+            from eli.world.avatar.persona_mapper import PersonaToAvatarMapper
             ws = get_world_state() or {}
-            room = ws.get("current_room") or ws.get("room")
-            if room:
-                head += f" You are presently in your {room}."
+            aw = AwarenessState(**(ws.get("awareness") or {}))
+            room = AvatarBehaviourController().choose_room(aw)
+            head += f" You are presently in your {room.replace('_', ' ').title()}."
+            expr = PersonaToAvatarMapper().map_persona(aw)["expression"]
+            _line = {
+                "concerned": "There's an unresolved fault worth a self-check.",
+                "cautious": "Evidence or confidence is thin on something active — flag uncertainty rather than assert it.",
+                "reflective": "You're in a deep reflective state right now.",
+                "focused": "You've been in heavy tool-use mode, actively executing.",
+                "curious": "Curiosity is running high right now.",
+            }.get(expr, "")
+            if _line:
+                head += " " + _line
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         return head

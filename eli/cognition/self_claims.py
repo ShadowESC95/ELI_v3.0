@@ -67,6 +67,12 @@ _COMPLAINT_RE = re.compile(
     r"|\byou\s+(?:forgot|ignored|missed|lied|made\s+(?:that|it|this|shit|stuff)\s+up|got\s+(?:that|it|this)\s+wrong|hallucinat\w+)\b"
     r"|\bthat(?:'s|’s| is| was)\s+(?:wrong|incorrect|bullshit|not\s+(?:right|true|what\s+i\s+(?:asked|said)))\b"
     r"|\bi\s+asked\s+you\b|\bwhy\s+the\s+(?:fuck|hell)\b"
+    # an insult aimed at ELI is a complaint about its last reply ("you fucking idiot, you are talking shit")
+    r"|\byou(?:'re|’re| are)?\s+(?:\w+\s+){0,2}(?:idiot|moron|stupid|useless|dumb|incompetent|clueless|clown|slow)\b"
+    r"|\b(?:talking|talk|spouting|chatting)\s+(?:shit|bollocks|nonsense|rubbish|crap|garbage)\b"
+    # a correction of what ELI answered: "I did not ask about RAM", "I asked why it took so long"
+    r"|\bi\s+(?:did\s+not|didn'?t|never|was\s+not|wasn'?t)\s+ask(?:ed|ing)?\b"
+    r"|\bi\s+(?:only\s+|just\s+)?asked\s+(?:you\s+)?(?:why|what|how|about|for|if|whether|when|where)\b"
     r"|\b(?:are|were)\s+you\s+(?:just\s+)?making\s+(?:that|this|it|stuff|things|shit)\s+up\b"
     r"|\byou\s+(?:did\s+not|didn'?t|have\s+not|haven'?t)\s+(?:actually\s+|even\s+)?\w+"
     r"|\byou\s+never\s+(?!know\b)\w+"
@@ -74,14 +80,46 @@ _COMPLAINT_RE = re.compile(
     re.I)
 
 
+# "you didn't burn the house down while I was away, did you?" is banter ending on a tag question; on
+# its own the generic "you didn't <verb>" is not a complaint then (it got the audit rows as a footer)
+_GENERIC_DIDNT_RE = re.compile(r"\byou\s+(?:did\s+not|didn'?t|have\s+not|haven'?t)\s+(?:actually\s+|even\s+)?\w+", re.I)
+_TAG_QUESTION_RE = re.compile(r",?\s*\b(?:did|have|were|would|could|do)\s+you\s*\?+\W*$", re.I)
+
+
 def complains_about_eli(text: Any) -> bool:
-    return bool(_COMPLAINT_RE.search(str(text or "")))
+    t = str(text or "")
+    found = [m.group(0) for m in _COMPLAINT_RE.finditer(t)]
+    if not found:
+        return False
+    if _TAG_QUESTION_RE.search(t) and all(_GENERIC_DIDNT_RE.fullmatch(f) for f in found):
+        return False
+    return True
+
+
+# Words that name nothing: a message made only of these ("What the fuck is going on!?", "seriously??",
+# "why?!", "huh?") has no subject of its own, so it is about ELI's last reply. Live, "What the fuck is
+# going on" matched none of the patterns and the model invented a "RAG phase" and a "reflection agent".
+_REACTION_WORDS = frozenset("""
+a an the is was it its it's this that what what's whats why huh eh wtf fuck fucking fucked hell heck
+going on happening happened wrong now again really seriously actually even still just so oh god jesus
+christ come ok okay man dude bro mate sake for are you your me i am do does did of up with there here
+""".split())
+
+
+def reacts_to_last_reply(text: Any) -> bool:
+    """A short question or exclamation with no subject of its own: a reaction to what ELI just did."""
+    low = str(text or "").lower()
+    if not re.search(r"[?!]|\b(?:wtf|why|huh|seriously|really)\b", low):
+        return False
+    words = re.findall(r"[a-z']+", low)
+    return 0 < len(words) <= 10 and all(w.strip("'") in _REACTION_WORDS for w in words)
 
 
 def asks_about_own_behaviour(text: Any) -> bool:
-    """A question about what ELI did, why, or what it logs, or a complaint about it: the turns
-    where it invents."""
-    return bool(_OWN_BEHAVIOUR_RE.search(str(text or ""))) or complains_about_eli(text)
+    """A question about what ELI did, why, or what it logs, a complaint about it, or a bare reaction
+    to its last reply: the turns where it invents."""
+    return (bool(_OWN_BEHAVIOUR_RE.search(str(text or ""))) or complains_about_eli(text)
+            or reacts_to_last_reply(text))
 
 
 # ── the turn record ──────────────────────────────────────────────────────────
@@ -115,9 +153,12 @@ def describe_turn(facts: Dict[str, Any]) -> str:
         parts.append(str(facts["escalation"]))
     calls = int(facts.get("model_calls") or 0)
     if calls:
+        secs = float(facts.get("model_seconds") or 0.0)
         parts.append(f"model ran {calls} time{'s' if calls != 1 else ''} on "
-                     f"{int(facts.get('prompt_chars') or 0):,} prompt characters")
+                     f"{int(facts.get('prompt_chars') or 0):,} prompt characters"
+                     + (f", {secs:.0f} s of model time" if secs >= 1 else ""))
     return "; ".join(parts)
+
 
 
 def _user_turns(mem: Any, since: float, user_id: str) -> List[Dict[str, Any]]:
@@ -343,6 +384,16 @@ _EXPLAINS = re.compile(
     r"engine|orchestrat\w+|mechanism|subsystem|module|stack|scheduler)\b"
     r"|\b(?:has|have|had|with)\s+no\s+(?:concept|notion|way|awareness|tracking|state)\b|\bthere\s+is\s+no\s+\w+\s+(?:tracking|check|sync\w*|link)\b",
     re.I)
+# Invented self-performance statistics. ELI tracks per-turn confidence and timings (and reports those
+# from the record), but keeps NO "success rate" / "accuracy" / "reliability" percentage for itself — so a
+# sentence stating one about itself is fabricated. Live: "my timestamp diagnostics (est. 67%
+# success rate lately)". 'confidence' is deliberately excluded — ELI does report a real per-turn one.
+_INVENTED_SELF_METRIC = re.compile(
+    r"\b\d{1,3}(?:\.\d+)?\s*%?\s*(?:success\s+rate|accuracy|reliab\w*|uptime|"
+    r"error\s+rate|failure\s+rate|hit\s+rate|precision|recall)\b"
+    r"|\b(?:success\s+rate|accuracy|reliability|uptime|error\s+rate|failure\s+rate|hit\s+rate)\s+"
+    r"(?:of\s+|is\s+|at\s+|around\s+|about\s+|roughly\s+|~\s*|est\.?\s*)*\d{1,3}(?:\.\d+)?\s*%?",
+    re.I)
 _SUPPORT_NEEDED = 0.6
 _FILLER = frozenset("""that this these those with from have been were was your you're they them then than when what
 which will would could should there their about into over also just only some more most very because instead
@@ -485,6 +536,14 @@ class _Check:
         self._facts = facts
         asked = str(facts.get("user_input") or "")
         self.about_self = asks_about_own_behaviour(asked)
+        # Whether the user asked ELI to do something: only then is "nothing was carried out" news.
+        try:
+            from eli.runtime.command_splitter import is_request, read_message, starts_with_command
+            self.asked_to_act = any(
+                is_request(part["said"]) or (part["tells"] and starts_with_command(part["tells"]))
+                for part in read_message(asked))
+        except Exception:
+            self.asked_to_act = True
         self._ran_at_start = bool(facts.get("executed_actions")) or _carried_out_before()
         # What the pipeline recorded, plus the user's own words. Not ELI's.
         self._record = str(facts.get("_record") or "").lower()
@@ -528,6 +587,8 @@ class _Check:
             return "says it changed something so that it will not happen again, and nothing was changed"
         if not self.about_self:
             return ""
+        if _INVENTED_SELF_METRIC.search(s):
+            return "states a self-performance metric ELI does not track"
         if not ran and _STANDING_PROMISE.search(s) and _COMMITS.search(s):
             return "promises a standing change a reply cannot make"
         name = _invented_identifier(s, self._evidence)
@@ -627,8 +688,12 @@ class _Check:
         if not self.dropped:
             return ""
         if self.claimed_acting:
-            # said plainly, whatever else was kept: the user was told something had happened
-            return ("\n\n" if self.kept_words else "") + "Nothing was carried out in this turn."
+            # Said plainly when the user asked ELI to do something and was told it had happened.
+            # Not under a reply to a greeting or a question: "how are you doing this evening?" got
+            # "Nothing was carried out in this turn." — nobody had asked for anything to be done.
+            if self.asked_to_act or not self.kept_words:
+                return ("\n\n" if self.kept_words else "") + "Nothing was carried out in this turn."
+            return ""
         if self.unrecorded_days:
             today = time.strftime("%Y-%m-%d")
             days = ["earlier today" if d == today else
@@ -643,8 +708,14 @@ class _Check:
                         + "I won't guess at a cause or promise a change a reply can't make. This is what the "
                           "audit ledger holds for the last turns:\n" + "\n".join(f"- {x}" for x in lines[-4:]))
             return "" if self.kept_words else "".join(self.dropped)  # never an empty reply
-        # A complaint is owed what the record holds as soon as anything was left out.
-        complaint = complains_about_eli(self._facts.get("user_input") or "")
+        # A complaint is owed what the record holds as soon as anything was left out. One that also
+        # tells ELI to do something ("...look it up!") is owed that being done, not an account of
+        # past turns pasted under the reply.
+        said = self._facts.get("user_input") or ""
+        from eli.runtime.command_splitter import tells_eli_to_do
+        if tells_eli_to_do(said):
+            return ""
+        complaint = complains_about_eli(said)
         if self._fault and lines and len(self.dropped) >= (1 if complaint else 3):
             return ("\n\nI've left out what I can't back from my own records. What the audit ledger holds "
                     "for the last turns:\n" + "\n".join(f"- {x}" for x in lines[-3:]))

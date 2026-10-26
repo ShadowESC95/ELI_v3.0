@@ -116,7 +116,8 @@ DEFAULTS: Dict[str, Any] = {
     # Empty means unknown provenance, treated as not pinned for this model.
     "n_gpu_layers_model": "",
     "n_gpu_layers_source": "",
-    "n_threads": max(1, os.cpu_count() or 8),
+    # 0 = auto (recommend_cpu_threads)
+    "n_threads": 0,
     "batch_size": 512,
     # Fraction of available RAM for model weights + KV (startup dialog, 10–75%).
     "ram_budget_percent": 60,
@@ -130,6 +131,8 @@ DEFAULTS: Dict[str, Any] = {
     "tensor_split": "",
     "main_gpu": 0,
     "split_mode": "",
+    # GPUs the model may use, by llama.cpp device index ("0,1"); "" = every GPU (start-up window).
+    "gpu_devices": "",
     "gpu_profiles_file": "",
     # Deep thinking on the answer call for models whose chat template has a reasoning channel
     # (detected from metadata, not names). On is higher quality and slower. Utility calls (routing,
@@ -171,7 +174,7 @@ DEFAULTS: Dict[str, Any] = {
     "vision_mmproj_path": "",
     "vision_chat_handler": "",
     "vision_n_ctx": 4096,
-    "vision_n_gpu_layers": 99,
+    "vision_n_gpu_layers": -1,
     "vision_n_batch": 256,
     # GPU clip segfaults on some CUDA cards (e.g. compute capability 7.5); keep the
     # vision encoder on CPU. The language decoder still uses the GPU.
@@ -188,7 +191,7 @@ DEFAULTS: Dict[str, Any] = {
     "vision_fast_mmproj_path": "",
     "vision_fast_chat_handler": "",
     "vision_fast_n_ctx": 2048,
-    "vision_fast_n_gpu_layers": 99,
+    "vision_fast_n_gpu_layers": -1,
     # Co-resident (no model swap) — big latency win; enable once 8GB VRAM fit
     # is confirmed with both models loaded.
     "vision_fast_no_swap": False,
@@ -224,9 +227,9 @@ DEFAULTS: Dict[str, Any] = {
     "habit_shell_enabled": True,
 }
 
-# The codebase's "offload everything" idiom (see vision_n_gpu_layers = 99 above);
-# llama.cpp itself also accepts -1 for the same thing.
-ALL_GPU_LAYERS_MIN = 99
+# every layer, as llama.cpp counts it; older settings files wrote 99
+ALL_GPU_LAYERS = -1
+_LEGACY_ALL_GPU_LAYERS = 99
 
 
 def pinned_gpu_layers_for_model(model_path, settings=None, current_ctx=None):
@@ -260,7 +263,7 @@ def pinned_gpu_layers_for_model(model_path, settings=None, current_ctx=None):
 
     Returns None when the pin does not apply, meaning "let the tuner measure".
 
-    "All layers" (>= ALL_GPU_LAYERS_MIN, or negative for llama.cpp's -1) is
+    "All layers" (ALL_GPU_LAYERS, llama.cpp's -1) is
     deliberately exempt: it is a POLICY rather than a measurement, it is correct
     on every model and every ctx, and the loader already reduces it to fit.
     Treating it as stale would quietly downgrade "try them all, then fall
@@ -278,8 +281,8 @@ def pinned_gpu_layers_for_model(model_path, settings=None, current_ctx=None):
         return None
     if not pin:
         return None
-    if pin < 0 or pin >= ALL_GPU_LAYERS_MIN:
-        return pin
+    if pin < 0:
+        return ALL_GPU_LAYERS
     # A count the tuner wrote is a measurement, not the operator's choice. Treating it as a pin
     # made one low reading (RAM briefly short) cap every later launch. Older files carry no
     # source, so a pin identical to the tuner's mirror is taken to be the tuner's.
@@ -354,6 +357,7 @@ ENV_TO_KEY = {
     "ELI_GGUF_MAIN_GPU": "main_gpu",
     "ELI_SPLIT_MODE": "split_mode",
     "ELI_GGUF_SPLIT_MODE": "split_mode",
+    "ELI_GPU_DEVICES": "gpu_devices",
     "ELI_RAM_BUDGET_PERCENT": "ram_budget_percent",
     "ELI_FIT_PRIORITY": "fit_priority",
     "ELI_GPU_PROFILES_FILE": "gpu_profiles_file",
@@ -413,6 +417,24 @@ def _coerce_value(key: str, value: Any) -> Any:
     return value
 
 
+def _tuner_threads_to_auto(out: Dict[str, Any]) -> None:
+    """Previously the tuner saved its own thread count (logical threads less one or two); 0 now
+    means the physical cores, and a count the tuner wrote goes back to that. On a 6-core, 12-thread
+    processor the saved 10 measured no faster than 6 and kept every core busy while ELI answered."""
+    logical = os.cpu_count() or 0
+    try:
+        n = int(out.get("n_threads") or 0)
+    except (TypeError, ValueError):
+        return
+    if n and n in (logical - 1, logical - 2):
+        out["n_threads"] = 0
+
+
+# One-time changes to a saved file, in order; the file records how many it has had, so a value the
+# user sets afterwards is left alone.
+_REVISIONS = (_tuner_threads_to_auto,)
+
+
 def _migrate_legacy_keys(data: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:
     """Fold legacy keys into canonical ones. Returns (migrated_data, list_of_migrated_keys)."""
     migrated: list[str] = []
@@ -425,6 +447,21 @@ def _migrate_legacy_keys(data: Dict[str, Any]) -> tuple[Dict[str, Any], list[str
                 out[new_key] = out[old_key]
             del out[old_key]
             migrated.append(old_key)
+    return out, migrated
+
+
+def _bring_up_to_date(data: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:
+    """Legacy keys folded in, then the one-time revisions the file has not had yet."""
+    out, migrated = _migrate_legacy_keys(data)
+    try:
+        done = int(out.get("settings_revision") or 0)
+    except (TypeError, ValueError):
+        done = 0
+    for step in _REVISIONS[done:]:
+        step(out)
+    if done < len(_REVISIONS):
+        out["settings_revision"] = len(_REVISIONS)
+        migrated.append("settings_revision")
     return out, migrated
 
 
@@ -543,7 +580,7 @@ def _load_settings_unsanitized(*, apply_env_overlay: bool = True) -> Dict[str, A
             )
 
     # Migrate legacy keys in-memory AND persist the cleaned file
-    migrated_data, migrated_keys = _migrate_legacy_keys(raw)
+    migrated_data, migrated_keys = _bring_up_to_date(raw)
     if migrated_keys:
         try:
             settings_file.parent.mkdir(parents=True, exist_ok=True)
@@ -578,6 +615,12 @@ def _load_settings_unsanitized(*, apply_env_overlay: bool = True) -> Dict[str, A
     # Canonical coercion (no more dual-key fallbacks)
     settings["n_threads"] = int(settings.get("n_threads", DEFAULTS["n_threads"]))
     settings["n_gpu_layers"] = int(settings.get("n_gpu_layers", DEFAULTS["n_gpu_layers"]))
+    for _key in ("n_gpu_layers", "vision_n_gpu_layers", "vision_fast_n_gpu_layers"):
+        try:
+            if int(settings.get(_key) or 0) == _LEGACY_ALL_GPU_LAYERS:
+                settings[_key] = ALL_GPU_LAYERS
+        except (TypeError, ValueError):
+            log.debug("unreadable %s", _key, exc_info=True)
     settings["gpu_layers"] = settings["n_gpu_layers"]
 
     if not settings.get("model_path"):
@@ -636,7 +679,7 @@ def save_settings(settings: Dict[str, Any]) -> None:
             log.debug("suppressed exception", exc_info=True)
 
     # Migrate anything legacy in existing first
-    existing, _ = _migrate_legacy_keys(existing)
+    existing, _ = _bring_up_to_date(existing)
 
     # Apply caller updates
     for k, v in settings.items():
@@ -797,8 +840,7 @@ def apply_env(settings=None):
 
     n_ctx = int(s.get("n_ctx") or 0)
     n_batch = int(s.get("batch_size", DEFAULTS["batch_size"]) or DEFAULTS["batch_size"])
-    n_threads = int(s.get("n_threads", DEFAULTS["n_threads"]) or DEFAULTS["n_threads"])
-    n_gpu_layers = int(s.get("n_gpu_layers", DEFAULTS["n_gpu_layers"]) or DEFAULTS["n_gpu_layers"])
+    n_threads = int(s.get("n_threads") or 0)
     max_tokens = int(s.get("max_tokens", DEFAULTS["max_tokens"]) or DEFAULTS["max_tokens"])
 
     if n_ctx > 0:
@@ -806,8 +848,12 @@ def apply_env(settings=None):
     else:                                    # auto: nothing pinned
         os.environ.pop("ELI_GGUF_N_CTX", None)
     os.environ["ELI_GGUF_N_BATCH"] = str(n_batch)
-    os.environ["ELI_GGUF_THREADS"] = str(n_threads)
-    os.environ["ELI_GGUF_N_GPU_LAYERS"] = str(n_gpu_layers)
+    for _env in ("ELI_GGUF_THREADS", "ELI_N_THREADS"):
+        if n_threads > 0:
+            os.environ[_env] = str(n_threads)
+        else:                                # auto: nothing pinned
+            os.environ.pop(_env, None)
+    # n_gpu_layers is not exported: the loader reads it per model (pinned_gpu_layers_for_model)
     os.environ["ELI_MAX_TOKENS"] = str(max_tokens)
 
     # legacy mirrors for older callers still reading the non-GGUF names
@@ -816,8 +862,6 @@ def apply_env(settings=None):
     else:
         os.environ.pop("ELI_N_CTX", None)
     os.environ["ELI_BATCH_SIZE"] = str(n_batch)
-    os.environ["ELI_N_THREADS"] = str(n_threads)
-    os.environ["ELI_N_GPU_LAYERS"] = str(n_gpu_layers)
 
     os.environ["ELI_GGUF_USE_MMAP"] = "1" if bool(s.get("use_mmap", True)) else "0"
     os.environ["ELI_GGUF_USE_MLOCK"] = "1" if bool(s.get("use_mlock", False)) else "0"
@@ -963,7 +1007,10 @@ def _eli_runtime_sanitize_path_string(key: str, value: str):
     model_key = "model" in key_l
 
     if model_key:
-        if allow_external_models:
+        # A model the user chose outside ELI's folder (a download, another drive) is theirs to keep:
+        # only a path that no longer exists here is stale. Clearing every outside path wiped a
+        # browsed-to model from the settings at the next load.
+        if allow_external_models or resolved.is_file() or resolved.is_dir():
             return str(resolved)
 
         mapped = _eli_runtime_external_path_to_current_install(resolved, root)
@@ -1057,106 +1104,12 @@ def _eli_runtime_clear_stale_env_paths():
         if _eli_runtime_is_relative_to(resolved, root):
             continue
 
-        if "MODEL" in env_key and allow_external_models:
+        if "MODEL" in env_key and (allow_external_models or resolved.exists()):
             continue
 
         os.environ.pop(env_key, None)
 
 
-
-# ---------------------------------------------------------------------
-# Portability guard: model path validation
-# ---------------------------------------------------------------------
-def _eli_project_root_for_runtime_settings() -> Path:
-    try:
-        # Same frozen exception as _eli_runtime_physical_project_root: the
-        # bundle is read-only; the rthook-pinned per-user root is the anchor.
-        return _eli_runtime_physical_project_root()
-    except Exception:
-        return Path.cwd().resolve()
-
-
-def _eli_is_relative_portable_model_path(value: str) -> bool:
-    if not value:
-        return True
-
-    try:
-        q = Path(str(value))
-    except Exception:
-        return False
-
-    if q.is_absolute():
-        return False
-
-    s = str(q).replace("\\", "/")
-    if s.startswith("../") or "/../" in s or s == "..":
-        return False
-
-    return s.startswith("models/")
-
-
-def _eli_validate_model_path_value(value):
-    """
-    Return a portable/safe model path value.
-
-    Rules:
-    - Empty is allowed.
-    - Relative models/... paths are allowed for portable templates.
-    - Absolute paths are accepted only if they exist and are inside this active
-      project root.
-    - Stale paths from another machine/user/install are rejected.
-    """
-    if value in (None, ""):
-        return ""
-
-    s = str(value).strip()
-    if not s:
-        return ""
-
-    # Portable config/template path.
-    if _eli_is_relative_portable_model_path(s):
-        return s
-
-    try:
-        root = _eli_project_root_for_runtime_settings().resolve()
-        q = Path(s).expanduser()
-        if not q.is_absolute():
-            return ""
-
-        q = q.resolve(strict=False)
-
-        # Reject nonexistent poisoned env paths such as .../BAD.gguf.
-        if not q.exists():
-            return ""
-
-        # Reject stale absolute paths outside this active install.
-        try:
-            q.relative_to(root)
-        except Exception:
-            return ""
-
-        return str(q)
-    except Exception:
-        return ""
-
-
-def _eli_sanitize_model_path_keys(settings: dict) -> dict:
-    if not isinstance(settings, dict):
-        return settings
-
-    model_keys = {
-        "model_path",
-        "custom_model_path",
-        "bundled_model_path",
-        "gguf_model_path",
-        "image_model_path",
-    }
-
-    for key in model_keys:
-        if key in settings:
-            settings[key] = _eli_validate_model_path_value(settings.get(key))
-
-    return settings
 
 def _eli_portability_load_settings(*args, **kwargs):
     _eli_runtime_clear_stale_env_paths()
@@ -1196,39 +1149,17 @@ def _eli_final_project_root() -> Path:
 
 
 def _eli_final_clean_path_value(value):
-    if value in (None, ""):
-        return ""
-
-    s = str(value).strip()
+    """A model path must lead to a model: a relative one stays under models/, a full one must exist,
+    wherever the user chose it. This pass also required it inside the install folder, which wiped
+    every model chosen outside it, and it ignored ELI_ALLOW_EXTERNAL_MODEL_PATHS."""
+    s = str(value or "").strip()
     if not s:
         return ""
-
-    try:
-        p = Path(s).expanduser()
-
-        # Portable relative model paths are allowed.
-        if not p.is_absolute():
-            norm = str(p).replace("\\", "/")
-            if norm.startswith("models/") and ".." not in Path(norm).parts:
-                return norm
-            return ""
-
-        root = _eli_final_project_root().resolve()
-        resolved = p.resolve(strict=False)
-
-        # Absolute model paths must exist.
-        if not resolved.exists():
-            return ""
-
-        # Absolute model paths must belong to this active install.
-        try:
-            resolved.relative_to(root)
-        except Exception:
-            return ""
-
-        return str(resolved)
-    except Exception:
-        return ""
+    p = Path(s).expanduser()
+    if p.is_absolute():
+        return s if p.exists() or _eli_runtime_truthy(os.getenv("ELI_ALLOW_EXTERNAL_MODEL_PATHS")) else ""
+    norm = s.replace("\\", "/")
+    return norm if norm.startswith("models/") and ".." not in Path(norm).parts else ""
 
 
 def _eli_final_sanitize_loaded_settings(settings):
@@ -1239,7 +1170,6 @@ def _eli_final_sanitize_loaded_settings(settings):
         str(os.environ.get("ELI_SETTINGS_FILE") or os.environ.get("ELI_SETTINGS_PATH") or "").strip()
     )
     if not explicit_settings_file:
-        # Remove stale absolute machine-specific paths from production model keys.
         for key in (
             "model_path",
             "custom_model_path",

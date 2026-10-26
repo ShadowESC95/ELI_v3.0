@@ -3,7 +3,7 @@ Tiered grounding escalation.
 
 When a turn is a *checkable factual* question/claim AND the AgentBus grounded it
 poorly (no agent contributed real evidence), don't let the model answer from its
-weights and confabulate (the "Eminem's real name is Bruce Samuelson" failure).
+weights and confabulate (the "Bono's real name is Bruce Samuelson" failure).
 Instead escalate through tiers of agents — stopping at the first that grounds it —
 and if nothing can, HEDGE honestly instead of guessing.
 
@@ -341,6 +341,17 @@ def _turn_excluded_from_factual(raw: str, *, include_local: bool = False) -> boo
     return False
 
 
+def _world_fact_question(low: str) -> bool:
+    """A who/what/when... question about the world. One whose subject is ELI ("who you really are",
+    "what you think", "what your problem is") is about ELI, never a web lookup: "I want to see who
+    you really are... bring the pain" was web-searched and answered "I searched the web but couldn't
+    find anything"."""
+    for m in _FACT_Q_RE.finditer(low):
+        if not re.search(r"\b(?:you|your|yours|yourself|eli)\b", m.group(0)):
+            return True
+    return False
+
+
 def classify_factual(text: str) -> Tuple[bool, str]:
     """Return (is_checkable_fact, domain) where domain ∈ {"external","local","none"}."""
     raw = (text or "").strip()
@@ -352,7 +363,7 @@ def classify_factual(text: str) -> Tuple[bool, str]:
     low_clean = _clean_turn_text(raw)[1]
 
     is_fact = bool(
-        _FACT_Q_RE.search(low_clean) or _FACT_KW_RE.search(low_clean)
+        _world_fact_question(low_clean) or _FACT_KW_RE.search(low_clean)
         or _FACT_CLAIM_RE.search(raw)
     )
     if not is_fact:
@@ -546,6 +557,14 @@ def escalate(
         log.debug("[ESCALATION] session-continuity turn — skip factual hedge ladder")
         return None
 
+    # A greeting is never a lookup, whatever its words: "Hey Eli, what is the story?" read as a
+    # factual question and went to the web while the engine had already classed it as a greeting.
+    try:
+        from eli.cognition.chat_grounding_gate import is_phatic_turn
+        if is_phatic_turn(user_input):
+            return None
+    except Exception:
+        log.debug("phatic check failed", exc_info=True)
     is_fact, domain = classify_factual(user_input)
     web_candidate = classify_web_candidate(user_input)
 

@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+APP_NAME = "ELI v3.0"  # the product name everywhere it is shown
 ICON_NAME = "eli-v3"  # named for v3: other ELI versions install their own icons
 _ICON_REL_CANDIDATES = (
     "packaging/desktop/Eli_Icon.png",

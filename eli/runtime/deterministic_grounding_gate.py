@@ -14,17 +14,13 @@ _SWLOG = _swlog_logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
-def _eli_canonical_root_PROJECT_ROOT() -> Path:
-    # Canonical env-honoring root — __file__ resolves into the read-only
-    # bundle in frozen builds (identical to this path in source installs).
-    try:
-        from eli.core.paths import project_root
-        return Path(project_root())
-    except Exception:
-        return Path(__file__).resolve().parents[2]
+from eli.core.hardware_profile import describe_gpus as _describe_gpus
 
-
-PROJECT_ROOT = _eli_canonical_root_PROJECT_ROOT()
+try:
+    from eli.core.paths import canonical_root
+    PROJECT_ROOT = canonical_root(Path(__file__).resolve().parents[2])
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DETERMINISTIC_ACTIONS = {
     "SELF_REPORT",
@@ -274,22 +270,6 @@ def _eli_settings_v2() -> dict:
     return _eli_json_file_v2(_eli_project_root_v2() / "config" / "settings.json")
 
 
-def _eli_gpu_line_v2() -> str:
-    try:
-        out = _eli_subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,memory.total,memory.used,memory.free,driver_version",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-            timeout=3,
-        ).strip().splitlines()
-        return out[0].strip() if out else "unavailable"
-    except Exception as e:
-        return f"unavailable ({type(e).__name__}: {e})"
-
-
 def _eli_db_paths_v2() -> dict[str, _EliPath]:
     root = _eli_project_root_v2()
     return {
@@ -417,7 +397,7 @@ def _eli_runtime_truth_v2(mode_label: str = "") -> str:
                 "n_threads": snap.get("n_threads", "unknown"),
                 "n_batch": snap.get("n_batch", "unknown"),
             },
-            "gpu": _eli_gpu_line_v2(),
+            "gpu": _describe_gpus(),
             "mode": mode_label or "",
         },
         ensure_ascii=False,
@@ -527,7 +507,17 @@ def _inference_runtime_lines() -> str:
     lines.append(f"- provider: {snap.get('provider', 'unknown')}")
     lines.append(f"- context window (n_ctx): {pick('n_ctx')}")
     if req.get("n_ctx") not in (None, "") and req.get("n_ctx") != eff.get("n_ctx"):
-        lines.append(f"  (requested {req.get('n_ctx')}, reduced to fit VRAM)")
+        try:
+            _r, _e = int(req.get("n_ctx")), int(eff.get("n_ctx"))
+        except (TypeError, ValueError):
+            _r = _e = 0
+        if _e > _r > 0:
+            # llama.cpp sizes the window in whole blocks: 14000 asked becomes 14080
+            lines.append(f"  (requested {_r}, rounded up by llama.cpp to a whole number of its blocks)")
+        elif 0 < _e < _r:
+            lines.append(f"  (requested {_r}, reduced to fit memory)")
+        else:
+            lines.append(f"  (requested {req.get('n_ctx')})")
     lines.append(f"- GPU layers offloaded: {pick('n_gpu_layers')}")
     _moe = bool(snap.get("moe_expert_offload"))
     if _moe:
@@ -562,11 +552,8 @@ def _eli_cognition_pipeline_v2(focus: str = "", question: str = "") -> str:
     except Exception:
         format_inference_footprint_report = None  # type: ignore[assignment,misc]
 
-    if focus_l in ("inference_ram", "latency_timing") and format_inference_footprint_report:
-        return format_inference_footprint_report(
-            include_latency_note=(focus_l == "latency_timing"),
-            question=question,
-        )
+    if focus_l == "inference_ram" and format_inference_footprint_report:
+        return format_inference_footprint_report(include_latency_note=False, question=question)
 
     runtime_block = ""
     try:
@@ -674,7 +661,7 @@ def _eli_runtime_audit_v2() -> str:
         f"- configured gpu layers: {settings.get('n_gpu_layers', settings.get('gpu_layers', 'unknown'))}",
         f"- effective gpu layers: {snap.get('n_gpu_layers', 'unknown')}",
         f"- effective batch: {snap.get('n_batch', 'unknown')}",
-        f"- gpu: {_eli_gpu_line_v2()}",
+        f"- gpu: {_describe_gpus()}",
         "",
         "## File presence",
     ]
@@ -2996,34 +2983,6 @@ def _eli_v14_settings() -> dict:
     return {}
 
 
-def _eli_v14_gpu_line() -> str:
-    try:
-        out = _eli_v14_subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,memory.total,memory.used,memory.free,driver_version",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-            stderr=_eli_v14_subprocess.DEVNULL,
-            timeout=3,
-        ).strip().splitlines()
-        if out:
-            return out[0].strip()
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    # Cross-vendor fallback -- see _gpu_line() above for why.
-    try:
-        from eli.core.hardware_profile import detect_hardware
-        hw = detect_hardware()
-        if hw.has_gpu:
-            note = " (estimated)" if hw.gpu_detection_uncertain else ""
-            return f"{hw.gpu_name}{note}, {hw.total_vram_mb} MiB total (live query unavailable)"
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    return "unavailable"
-
-
 def _eli_v14_get_runtime_value(data: dict, *keys, default="unknown"):
     cur = data
     for key in keys:
@@ -3072,7 +3031,7 @@ def _eli_v14_runtime_data() -> dict:
         "platform": __import__("sys").platform,
         "configured": configured,
         "effective": effective,
-        "gpu": _eli_v14_gpu_line(),
+        "gpu": _describe_gpus(),
     }
 
 

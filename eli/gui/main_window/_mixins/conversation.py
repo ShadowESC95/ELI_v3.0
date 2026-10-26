@@ -1180,11 +1180,13 @@ class ConversationMixin:
             body_fmt.setForeground(QColor(_ELI_BODY_COLOR))
             cursor.setCharFormat(body_fmt)
             self.chat_display.setTextCursor(cursor)
+            self._stream_body_start = cursor.position()
             return
 
         if text == "__STREAM_END__":
             self._streaming = False
             self._stream_buffer = []
+            self._render_rich_reply(getattr(self, "_stream_body_start", None), _ELI_BODY_COLOR)
             cursor = self.chat_display.textCursor()
             cursor.movePosition(cursor.MoveOperation.End)
             cursor.insertBlock()
@@ -1261,7 +1263,31 @@ class ConversationMixin:
         body_fmt.setFontWeight(QFont.Weight.Normal)
         body_fmt.setForeground(QColor(_ELI_BODY_COLOR))
         cursor.setCharFormat(body_fmt)
+        _start = cursor.position()
         cursor.insertText(_r)
+        self._render_rich_reply(_start, _ELI_BODY_COLOR)
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
         cursor.insertBlock()
         self.chat_display.setTextCursor(cursor)
         self.chat_display.ensureCursorVisible()
+
+    def _render_rich_reply(self, start, color: str) -> None:
+        """A finished reply from `start` to the end, with its Markdown and formulas laid out
+        (the reply streams in as plain text: "**bold**" and "$\\phi$" showed as typed)."""
+        if start is None:
+            return
+        try:
+            from eli.runtime.rich_document import has_markup, put_html, to_html
+            cursor = self.chat_display.textCursor()
+            cursor.setPosition(int(start))
+            cursor.movePosition(cursor.MoveOperation.End, cursor.MoveMode.KeepAnchor)
+            text = cursor.selectedText().replace("\u2029", "\n")
+            if not has_markup(text):
+                return
+            body, images = to_html(text, color=color, font=self.chat_display.font(),
+                                   scale=self.chat_display.devicePixelRatioF())
+            cursor.removeSelectedText()
+            put_html(self.chat_display.document(), f'<div style="color:{color}">{body}</div>', images, cursor)
+        except Exception:
+            log.debug("reply left as plain text", exc_info=True)

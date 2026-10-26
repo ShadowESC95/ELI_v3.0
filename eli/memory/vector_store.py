@@ -1,5 +1,6 @@
 from __future__ import annotations
-import os, threading
+import os, sys, threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from eli.core.paths import project_root as _project_root
@@ -8,11 +9,54 @@ from eli.core.paths import project_root as _project_root
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-try:
-    from eli.runtime.native_locks import FAISS_IO_LOCK, LLAMA_CPP_NATIVE_LOCK
-except Exception:
-    FAISS_IO_LOCK = threading.RLock()
-    LLAMA_CPP_NATIVE_LOCK = threading.RLock()
+_EMBEDDER_REL = ('models', 'embeddings', 'nomic-embed-text-v1.5.Q4_K_M.gguf')
+
+
+def resolve_embedder_path() -> str:
+    """Where the vector-store embedder GGUF actually is, honouring overrides and frozen builds.
+
+    Single source of truth for both loading it (_init_embedder) and reserving RAM for it
+    before it loads (embedder_footprint_gib) — two call sites disagreeing on the path would
+    make the reservation silently measure the wrong file.
+    """
+    env_embed = os.getenv('ELI_EMBED_MODEL_PATH', '').strip()
+    if env_embed:
+        return str(Path(env_embed).expanduser().resolve())
+    _models_dir = Path(os.getenv('ELI_MODELS_DIR', str(_project_root() / 'models')))
+    # Search several roots so a frozen build (PyInstaller/AppImage) finds the bundled
+    # embedder when the writable data-dir copy is absent. Without this the packaged app
+    # fell back to keyword-only recall ("Embed model not found").
+    _roots = [_project_root(), _models_dir.parent]
+    _meipass = getattr(sys, '_MEIPASS', '')
+    if _meipass:
+        _roots.append(Path(_meipass))
+    if getattr(sys, 'frozen', False):
+        _roots.append(Path(sys.executable).resolve().parent)
+    for _root in _roots:
+        _cand = _root.joinpath(*_EMBEDDER_REL)
+        if _cand.exists():
+            return str(_cand.resolve())
+    return str((_project_root() / Path(*_EMBEDDER_REL)).resolve())
+
+
+def embedder_footprint_gib() -> float:
+    """On-disk size of the vector-store embedder, as a RAM-reservation proxy.
+
+    Like whisper, this loads once at startup (n_gpu_layers=0, always CPU/RAM) and stays
+    resident all session. Reserved explicitly so a hardware-capacity check that runs
+    before the embedder exists yet (the startup dialog's tuning pass) doesn't overcommit
+    the RAM it's about to take.
+    """
+    try:
+        from eli.core.mem_units import file_size_gib
+        path = resolve_embedder_path()
+        if path and os.path.exists(path):
+            return file_size_gib(path)
+    except Exception:
+        pass
+    return 0.0
+
+from eli.runtime.native_locks import FAISS_IO_LOCK, hold_llama_lock
 
 try:
     import numpy as np
@@ -128,6 +172,7 @@ class VectorStore:
         # callers (e.g. add() -> _embed -> ... ) from self-deadlocking.
         self._embed_lock = threading.RLock()
         self._embedder: Any = None
+        self._closed = False
         self._embedder_error: Optional[str] = None
         self._index: Any = None
         self._meta: List[Dict[str, Any]] = []
@@ -139,46 +184,12 @@ class VectorStore:
         self._load()
         self._load_tombstones()
         self._init_embedder()
-        # Check for divergence between loaded index and SQLite memories count.
-        # If >20% of memories are missing from FAISS, schedule a rebuild so
-        # semantic search is accurate even after unclean shutdowns.
-        if not self._needs_rebuild:
-            try:
-                import sqlite3 as _sq
-                from eli.core.paths import user_db_path as _udb
-                _db = str(_udb())
-                if _db and os.path.exists(_db):
-                    _con = _sq.connect(_db)
-                    try:
-                        _sqlite_count = _con.execute(
-                            "SELECT COUNT(*) FROM memories "
-                            "WHERE length(COALESCE(text, content, '')) > 10" + _embeddable_sql(_con)
-                        ).fetchone()[0]
-                    except Exception:
-                        _sqlite_count = 0
-                    finally:
-                        _con.close()
-                    _vec_count = self._index.ntotal if self._index is not None else 0
-                    if _sqlite_count > 0 and _vec_count < _sqlite_count * 0.8:
-                        log.debug(
-                            f"[VECTOR_STORE] Index divergence detected: "
-                            f"{_vec_count} vectors vs {_sqlite_count} DB memories — scheduling rebuild"
-                        )
-                        self._needs_rebuild = True
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-        if self._needs_rebuild and self._embedder is not None:
+        # Saves are batched (SAVE_EVERY, and at shutdown), so an unclean exit can leave the newest
+        # memories out of the saved index: the catch-up embeds whatever the index is missing.
+        if self._embedder is not None:
             threading.Thread(target=self._auto_rebuild, daemon=True, name="eli-vs-rebuild").start()
 
     def add(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        # === PHASE43_SKIP_VECTOR_EMBED_DURING_SHUTDOWN ===
-        try:
-            if os.environ.get('ELI_SHUTTING_DOWN') == '1':
-                log.debug('[VECTOR_STORE][PHASE43] skipping embedding during shutdown')
-                return False
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        # === END PHASE43_SKIP_VECTOR_EMBED_DURING_SHUTDOWN ===
         vec = self._embed(text)
         if vec is None:
             return False
@@ -291,41 +302,27 @@ class VectorStore:
         return len(self._meta) - len(keep)
 
     def _get_embedder(self):
-        if self._embedder is None:
+        if self._embedder is None and not self._closed:
             self._init_embedder()
         return self._embedder
 
+    def close(self) -> None:
+        """Free the embedding model for good. Engine shutdown used to close the model underneath the
+        store and leave it in place: the next embed (a late memory, a search, the document indexer)
+        read freed native memory and the process died with a segmentation fault. Keyword search
+        still works without it."""
+        with self._embed_lock, hold_llama_lock(foreground=False):
+            embedder, self._embedder, self._closed = self._embedder, None, True
+            close = getattr(getattr(embedder, "_llm", None), "close", None)
+            if callable(close):
+                close()
+
     def _init_embedder(self) -> None:
         try:
-            import os
-            from pathlib import Path
             from llama_cpp import Llama
-            import sys as _sys
-            _models_dir = Path(os.getenv('ELI_MODELS_DIR', str(_project_root() / 'models')))
-            env_embed = os.getenv('ELI_EMBED_MODEL_PATH', '').strip()
-            _EMB_REL = ('models', 'embeddings', 'nomic-embed-text-v1.5.Q4_K_M.gguf')
-            if env_embed:
-                _model_path = str(Path(env_embed).expanduser().resolve())
-            else:
-                # Search several roots so a frozen build (PyInstaller/AppImage) finds the bundled
-                # embedder when the writable data-dir copy is absent. Without this the packaged app
-                # fell back to keyword-only recall ("Embed model not found").
-                _roots = [_project_root(), _models_dir.parent]
-                _meipass = getattr(_sys, '_MEIPASS', '')
-                if _meipass:
-                    _roots.append(Path(_meipass))
-                if getattr(_sys, 'frozen', False):
-                    _roots.append(Path(_sys.executable).resolve().parent)
-                _model_path = ''
-                for _root in _roots:
-                    _cand = _root.joinpath(*_EMB_REL)
-                    if _cand.exists():
-                        _model_path = str(_cand.resolve())
-                        break
-                if not _model_path:
-                    _model_path = str((_project_root() / Path(*_EMB_REL)).resolve())
-            if not os.path.exists(_model_path):
-                raise FileNotFoundError('Embed model not found: ' + _model_path)
+            _model_path = resolve_embedder_path()
+            if not _model_path or not os.path.exists(_model_path):
+                raise FileNotFoundError('Embed model not found: ' + str(_model_path))
             # the embedder's own trained context and the CPU rule the main model uses
             try:
                 from eli.cognition.model_load_diagnostics import gguf_model_profile
@@ -334,7 +331,7 @@ class VectorStore:
                 _embed_ctx = 0
             try:
                 from eli.core.hardware_profile import recommend_cpu_threads
-                _embed_threads = int(recommend_cpu_threads(os.cpu_count() or 1, cpu_bound=False))
+                _embed_threads = int(recommend_cpu_threads())
             except Exception:
                 _embed_threads = max(1, (os.cpu_count() or 1) - 1)
             _llm = Llama(
@@ -365,14 +362,15 @@ class VectorStore:
             self._embedder_error = str(e)
             log.debug('[VECTOR_STORE] Embedder unavailable, keyword fallback: ' + str(e))
 
-    def _auto_rebuild(self) -> None:
-        """Background rebuild triggered on startup when saved index is empty but DB has memories."""
+    def _db_entries(self) -> Optional[List[Dict[str, Any]]]:
+        """The memories the index should hold: the rows the storage policy embeds, with their ids.
+        None when the database cannot be read."""
         import sqlite3 as _sq
         try:
             from eli.core.paths import user_db_path
             db_path = str(user_db_path())
         except Exception:
-            return
+            return None
         try:
             con = _sq.connect(db_path)
             try:
@@ -386,33 +384,73 @@ class VectorStore:
             finally:
                 con.close()
         except Exception as e:
-            log.debug(f"[VECTOR_STORE] Auto-rebuild DB read failed: {e}")
+            log.debug(f"[VECTOR_STORE] memory database read failed: {e}")
+            return None
+        return [{"text": row[0].strip(), "source": row[1], "tags": row[2], "kind": row[3],
+                 "memory_id": row[4], "id": row[4]} for row in raw if row[0].strip()]
+
+    def _auto_rebuild(self) -> None:
+        """At startup: rebuild an empty or unreadable index from the database, or add the memories a
+        saved index is missing."""
+        entries = self._db_entries()
+        if not entries:
             return
-        if not raw:
+        with self._lock:
+            have = {_entry_id(m) for m in self._meta}
+        if not self._needs_rebuild and None not in have:   # entries from before ids were kept: rebuild
+            missing = [e for e in entries if e["memory_id"] not in have]
+            for e in missing:
+                self.add(e["text"], {k: v for k, v in e.items() if k != "text"})
+            self.flush(pending_only=True)
+            if missing:
+                log.debug(f"[VECTOR_STORE] added {len(missing)} memories the saved index was missing")
             return
-        entries = [
-            {"text": row[0].strip(), "source": row[1], "tags": row[2], "kind": row[3],
-             "memory_id": row[4], "id": row[4]}
-            for row in raw if row[0].strip()
-        ]
         log.debug(f"[VECTOR_STORE] Auto-rebuilding index from {len(entries)} memories…")
         self.rebuild_full(entries)
         log.debug(f"[VECTOR_STORE] Auto-rebuild complete: {self.ntotal} vectors")
 
-    def _embed(self, text: str) -> Optional[Any]:
+    def rebuild_from_db(self) -> Dict[str, Any]:
+        """Re-embed every memory the storage policy indexes (the upgrade step and the settings button).
+        A second rebuild in memory.py emptied the live index before embedding, ignored the policy, and
+        wrote the first database rows as the metadata whenever the counts differed, pairing vectors
+        with the wrong texts."""
+        entries = self._db_entries()
+        if entries is None:
+            return {"ok": False, "indexed": 0, "source_count": 0, "error": "the memory database could not be read"}
+        if self._get_embedder() is None:
+            return {"ok": False, "indexed": 0, "source_count": len(entries),
+                    "error": getattr(self, "_embedder_error", "") or "no embedding model"}
+        done = self.rebuild_full(entries)
+        result = {"ok": done, "indexed": self.ntotal if done else 0, "source_count": len(entries),
+                  "faiss_index_path": self._index_path}
+        if not done:
+            result["error"] = "stopped before it finished; the saved index is kept"
+        return result
+
+    def embed_text(self, text: str) -> Optional[List[float]]:
+        """The embedding model's vector for `text`, or None. Every embed goes through here:
+        serialised (llama-cpp embedding models are not thread-safe and concurrent calls corrupt
+        their state) and never after close(). During the user's turn the wait makes a background
+        generation holding the lock yield."""
         if self._embedder is None:
             return None
-        # Serialise embed calls; llama-cpp embedding models are not
-        # thread-safe and concurrent calls can corrupt embedder state.
-        with self._embed_lock, LLAMA_CPP_NATIVE_LOCK:
+        from eli.kernel.request_context import in_user_turn
+        with self._embed_lock, hold_llama_lock(foreground=in_user_turn()):
+            if self._embedder is None:        # closed while this call waited
+                return None
             try:
-                vec = self._embedder.embed(text)
-                arr = np.array(vec, dtype="float32").reshape(1, -1)
-                faiss.normalize_L2(arr)
-                return arr
+                return self._embedder.embed(text)
             except Exception as e:
                 log.debug(f"[VECTOR_STORE] embed failed: {e}")
                 return None
+
+    def _embed(self, text: str) -> Optional[Any]:
+        vec = self.embed_text(text)
+        if vec is None:
+            return None
+        arr = np.array(vec, dtype="float32").reshape(1, -1)
+        faiss.normalize_L2(arr)
+        return arr
 
     def _keyword_fallback(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         terms = query.lower().split()
@@ -503,6 +541,8 @@ class VectorStore:
             new_index.add(vec)
             new_meta.append(entry)
 
+        if self._closed:
+            return              # closed part-way: keep the index, as rebuild_full does
         with self._lock:
             self._index = new_index
             self._meta = new_meta
@@ -515,9 +555,12 @@ class VectorStore:
         else:
             log.debug(f"[VECTOR_STORE] Pruned to {len(new_meta)} entries")
 
-    def flush(self) -> None:
-        """Force-save index and metadata to disk."""
+    def flush(self, *, pending_only: bool = False) -> None:
+        """Save index and metadata to disk; with pending_only, only when there are unsaved adds.
+        Each save rewrites both files whole, so callers batch (add() saves every SAVE_EVERY)."""
         with self._lock, FAISS_IO_LOCK:
+            if pending_only and not self._adds_since_save:
+                return
             try:
                 self._save_generation += 1
                 faiss.write_index(self._index, self._index_path)
@@ -526,22 +569,31 @@ class VectorStore:
             except Exception as e:
                 log.debug(f"[VECTOR_STORE] flush failed: {e}")
 
-    def rebuild_full(self, texts_and_meta: List[Dict[str, Any]]) -> None:
-        """Rebuild the entire FAISS index from a list of {text, ...metadata} dicts."""
+    def rebuild_full(self, texts_and_meta: List[Dict[str, Any]]) -> bool:
+        """Rebuild the entire FAISS index from a list of {text, ...metadata} dicts. The new index is built
+        off to the side and swapped in only when it is finished. A background rebuild cut short by
+        close() at shutdown replaced the index with the few entries it had reached and saved that: the
+        next start loaded 2 vectors. Returns whether the new index was swapped in."""
         new_index = faiss.IndexFlatL2(EMBED_DIM)
         new_meta: List[Dict[str, Any]] = []
         for entry in texts_and_meta:
-            text = entry.get("text", "")
-            vec = self._embed(text)
+            if self._closed:
+                break
+            vec = self._embed(entry.get("text", ""))
             if vec is not None:
                 new_index.add(vec)
                 new_meta.append(entry)
+        if self._closed or self._embedder is None or (texts_and_meta and not new_meta):
+            log.debug("[VECTOR_STORE] rebuild not finished (store closed or no embedding model); "
+                      "the index on disk is kept")
+            return False
         with self._lock:
             self._index = new_index
             self._meta = new_meta
             self._adds_since_save = 0
         self.flush()
         log.debug(f"[VECTOR_STORE] Rebuilt index with {new_index.ntotal} vectors")
+        return True
 
 
 

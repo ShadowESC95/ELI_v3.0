@@ -97,6 +97,26 @@ def named_paths(text: Any) -> List[Path]:
     return found
 
 
+def _not_documents(here: str, name: str) -> bool:
+    """A folder of installed software or tool state, not of documents: hidden, a Python environment
+    (pyvenv.cfg, conda-meta), packages, caches. A physics folder holding three virtualenvs gave
+    matplotlib's toolbar icons as "documents" (back.pdf, home.pdf, three times over)."""
+    if name.startswith(".") or name in ("__pycache__", "node_modules", "site-packages", "dist-packages"):
+        return True
+    at = Path(here) / name
+    return (at / "pyvenv.cfg").is_file() or (at / "conda-meta").is_dir()
+
+
+def document_files(folder: Any, suffixes: Sequence[str] = (".pdf",), recursive: bool = True) -> List[Path]:
+    """Every document with one of these suffixes under a folder, sorted, installed software left out."""
+    want = {s.lower() for s in suffixes}
+    out: List[Path] = []
+    for here, dirs, names in os.walk(str(folder)):
+        dirs[:] = sorted(d for d in dirs if recursive and not _not_documents(here, d))
+        out += [Path(here) / n for n in names if not n.startswith(".") and Path(n).suffix.lower() in want]
+    return sorted(out)
+
+
 @lru_cache(maxsize=16)
 def _folder_entries(folder: str, _stamp: int) -> tuple:
     """(changed, size, path) for the files under a folder, newest first, hidden ones left out.
@@ -104,7 +124,7 @@ def _folder_entries(folder: str, _stamp: int) -> tuple:
     for the same folder several times, and so do the turns that follow it."""
     out: List[tuple] = []
     for here, dirs, names in os.walk(folder):
-        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "node_modules"))
+        dirs[:] = sorted(d for d in dirs if not _not_documents(here, d))
         for name in names:
             if name.startswith("."):
                 continue
@@ -242,10 +262,10 @@ _CONTAINER = (r"(?:pack|deck|brief|sheet|worksheet|draft|proposal|paper|doc|docu
 
 def _named(query: str, titles: Dict[int, str]) -> List[int]:
     """Documents the question names by its title: two of the title's own words, or one when the
-    question is plainly about a document ("the harbour pack", "what does the garden file say").
+    question is plainly about a document ("the garden guide", "what does the survey file say").
 
-    One shared word used to be enough. "I thought I had a presentation for RAIMS" then pulled
-    six passages of a coursework file into a chat prompt because its file name has RAIMS in it,
+    One shared word used to be enough. A remark that named a project in passing then pulled
+    six passages of a project file into a chat prompt because the project is in its file name,
     and a title with "week" or "summary" in it would match nearly anything."""
     low = str(query or "").lower()
     asked = {t[:6] for t in _terms(low) if len(t) >= 4 and t not in _TITLE_FILLER}
@@ -657,7 +677,8 @@ class DocumentIndex:
                 continue
             out.append({"id": pid, "doc_id": r[1], "part": r[2], "parts": r[7], "where": r[3], "text": r[4],
                         "title": r[5], "path": r[6], "ts": r[8], "score": round(fused[pid] * 30, 4),
-                        "cosine": cos, "shared_terms": shared, "source": "document"})
+                        "cosine": cos, "shared_terms": shared, "source": "document",
+                        "eli_written": eli_written(r[6])})
             if len(out) >= limit:
                 break
         return out
@@ -698,12 +719,33 @@ class DocumentIndex:
         where, args = self._scope(user_id)
         con = self._connect()
         try:
-            return [{"id": r[0], "title": r[1], "path": r[2], "passages": r[3], "added_at": r[4], "source": r[5]}
+            return [{"id": r[0], "title": r[1], "path": r[2], "passages": r[3], "added_at": r[4], "source": r[5],
+                     "eli_written": eli_written(r[2])}
                     for r in con.execute(
                         f"SELECT d.id, d.title, d.path, d.passages, d.added_at, d.source FROM documents d "
                         f"WHERE {where} ORDER BY d.added_at DESC", args)]
         finally:
             con.close()
+
+    def outline(self, doc_id: int, max_chars: int) -> Dict[str, Any]:
+        """A stored document's title, pages, size and its opening passages up to max_chars."""
+        con = self._connect()
+        try:
+            row = con.execute("SELECT title, path, chars FROM documents WHERE id=?", (int(doc_id),)).fetchone()
+            if not row:
+                return {}
+            pages = con.execute("SELECT COUNT(DISTINCT place) FROM passages WHERE doc_id=? AND place LIKE 'p. %'",
+                                (int(doc_id),)).fetchone()[0]
+            opening, used = [], 0
+            for (text,) in con.execute("SELECT text FROM passages WHERE doc_id=? ORDER BY n", (int(doc_id),)):
+                if used >= max_chars:
+                    break
+                opening.append(text[:max_chars - used])
+                used += len(opening[-1])
+        finally:
+            con.close()
+        return {"id": int(doc_id), "title": row[0], "path": row[1], "chars": int(row[2] or 0),
+                "pages": int(pages or 0), "opening": "\n".join(opening)}
 
     def matching(self, query: str, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Documents a request to forget something names: by title words or by file name."""
@@ -807,6 +849,17 @@ class DocumentIndex:
             log.debug("document index: ledger write skipped", exc_info=True)
 
 
+def eli_written(path: Any) -> bool:
+    """A document ELI wrote itself (a report, a folder summary): it sits in ELI's documents folder.
+    The index reads that folder so "what did that report say" can be answered, and its passages are
+    labelled so ELI's own summary is never taken for the sources it summarised."""
+    try:
+        from eli.core.paths import documents_dir
+        return Path(str(path)).resolve().is_relative_to(Path(documents_dir()).resolve())
+    except Exception:
+        return False
+
+
 def format_passages(hits: Sequence[Dict[str, Any]], *, max_chars: int = 6000) -> str:
     """The block the model reads: the passages that fit, best first. Best first matters: the
     prompt is trimmed from the tail when it is too long, and in page order that cut took the
@@ -815,13 +868,15 @@ def format_passages(hits: Sequence[Dict[str, Any]], *, max_chars: int = 6000) ->
         return ""
     head = ("Passages from documents you have read (the documents' own words, found for this question, "
             "closest match first). Answer questions about those documents from these and name the document; "
-            "if the passages do not cover it, say the part you have does not, not that the document doesn't.")
+            "if the passages do not cover it, say the part you have does not, not that the document doesn't. "
+            "Passages marked ELI-written are from your own earlier write-ups (summaries, reports), not sources.")
     lines: List[str] = []
     used = len(head)
     for h in hits:
         m = h.get("meta") if isinstance(h.get("meta"), dict) else h
         place = ", ".join(x for x in (str(m.get("where") or ""), f"part {m.get('part')} of {m.get('parts')}") if x)
-        line = f"[{m.get('title') or 'document'} | {place}] " + " ".join(str(m.get("text") or "").split())
+        author = "ELI-written: " if eli_written(m.get("path")) else ""
+        line = f"[{author}{m.get('title') or 'document'} | {place}] " + " ".join(str(m.get("text") or "").split())
         if used + len(line) > max_chars:
             if lines:
                 continue  # a shorter one further down may still fit

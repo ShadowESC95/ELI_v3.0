@@ -185,6 +185,10 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
     ):
         return "MEMORY_AUDIT"
 
+    # How long / why slow the last response was -> the grounded timing, not a guessed duration.
+    if re.search(r"how\s+long\s+(?:did|does|will)\s+(?:that|this|it|your(?:\s+last)?\s+(?:response|reply|answer))\s+take|(?:took|take|taking)\s+(?:you\s+)?(?:about\s+|roughly\s+|like\s+)?(?:\d|a|an|half|couple|few|several|ages|forever|too\s+long|so\s+long)\b[^?.!\n]{0,45}\bfor\s+(?:that|this|your|the)\s+(?:last\s+)?(?:response|reply|answer|one)\b|(?:that|this|your)\s+(?:last\s+)?(?:response|reply|answer)\s+(?:took|was)\s+[^?.!\n]{0,20}\b(?:slow|forever|ages|too\s+long|so\s+long)\b", low):
+        return "EXPLAIN_LAST_RESPONSE"
+
     # Persona/identity-evolution questions ("how has your persona/identity evolved/changed") are
     # grounded self-report: answer from real identity grounding, not change-chat. Must run before
     # the _is_change_query suppression below, which matches "evolved/changed" and would force them
@@ -531,6 +535,40 @@ def _plan_summary(plan: Any) -> str:
     return " ".join(bits)[:300] if bits else "none"
 
 
+def _trace_header_line(trace: Dict[str, Any]) -> str:
+    """One plain-language line before the raw trace below — template-built from
+    fields already in the trace, never LLM-generated (no hallucination risk)."""
+    if not trace:
+        return ""
+    action = str(trace.get("route_action") or trace.get("action") or "").strip()
+    if not action:
+        return ""
+    agg = trace.get("aggregated_confidence")
+    if agg is None:
+        agg = trace.get("confidence")
+    try:
+        agg_val = float(agg) if agg is not None else None
+    except (TypeError, ValueError):
+        agg_val = None
+    label = trace.get("confidence_label") or ""
+    if agg_val is not None and not label:
+        try:
+            from eli.cognition.agent_bus import _confidence_label as _lbl
+            label = _lbl(agg_val)
+        except Exception:
+            pass
+    agents = trace.get("agents_used") or trace.get("agents") or []
+    n_agents = len(agents) if isinstance(agents, (list, tuple)) else 0
+    bits = [f"That was a {action} reply"]
+    if label:
+        bits.append(f"{label} confidence")
+    if n_agents:
+        bits.append(f"{n_agents} agent{'s' if n_agents != 1 else ''}")
+    if trace.get("grounded"):
+        bits.append("grounded")
+    return " — ".join([bits[0], ", ".join(bits[1:])]) + "." if len(bits) > 1 else bits[0] + "."
+
+
 def _trace_text(trace: Dict[str, Any]) -> str:
     if not trace:
         return "Previous-response trace evidence:\n- trace_available: false"
@@ -735,7 +773,10 @@ def build_control_evidence(engine: Any, action: Any, args: Dict[str, Any] | None
 
     if act == "EXPLAIN_LAST_RESPONSE":
         prev = _last_trace(engine)
+        header = _trace_header_line(prev)
         text = _trace_text(prev)
+        if header:
+            text = f"{header}\n\n{text}"
         # Attach real per-cycle telemetry (agent_dispatches timings + runtime_events) so "give me the
         # raw metric breakdowns / agent logs for that cycle" is answered from logged data. Without it
         # the evidence was just the trace summary, so ELI concluded it had "no logs" and made things up.
@@ -1119,6 +1160,10 @@ def output_violates_evidence(text: Any, evidence_text: Any = "") -> bool:
 
     return False
 
+NO_USABLE_EVIDENCE_TEXT = ("I couldn't find usable evidence for that in my logs or runtime, "
+                           "so I won't guess at it.")
+
+
 def compact_evidence_answer(action: str, evidence_result: Dict[str, Any]) -> str:
     act = normalise_action(action)
     report = evidence_result.get("report")
@@ -1191,16 +1236,8 @@ def compact_evidence_answer(action: str, evidence_result: Dict[str, Any]) -> str
     if content:
         return content
 
-    return json.dumps(
-        {
-            "surface": "missing_control_evidence",
-            "action": act,
-            "reason": "no_usable_grounded_evidence",
-        },
-        ensure_ascii=False,
-        default=str,
-        indent=2,
-    )
+    # Plain words, never a JSON envelope: this string can be the reply the user reads.
+    return NO_USABLE_EVIDENCE_TEXT
 
 def finalise_control_result(engine: Any, user_input: Any, action: str, evidence_result: Dict[str, Any], trace: Dict[str, Any] | None = None, bus_result: Any = None, synthesized_text: Any = None) -> Dict[str, Any]:
     act = normalise_action(action)
@@ -1256,6 +1293,11 @@ def finalise_control_result(engine: Any, user_input: Any, action: str, evidence_
     # empty.
     if act in direct_evidence_actions and not final_text:
         final_text = compact
+    # Any other action with nothing synthesized (quick mode passes "" by design) answers
+    # from its own evidence too. META_DIAGNOSTIC wasn't in the set above, so every
+    # quick-mode one showed the user a JSON envelope (live, 2026-10-03).
+    if not final_text and compact and compact != NO_USABLE_EVIDENCE_TEXT:
+        final_text = compact
 
     # For control actions, do not let the output governor re-expand with generic chat.
     ok = bool(evidence_result.get("ok", False))
@@ -1308,16 +1350,7 @@ def finalise_control_result(engine: Any, user_input: Any, action: str, evidence_
     # but make `content`/`response` always plain text so a caller that str()s the result still emits
     # the user-facing answer and not the whole envelope.
     if not final_text:
-        final_text = json.dumps(
-            {
-                "surface": "control_result_without_visible_synthesis",
-                "action": action,
-                "reason": "empty_final_text",
-            },
-            ensure_ascii=False,
-            default=str,
-            indent=2,
-        )
+        final_text = NO_USABLE_EVIDENCE_TEXT
 
     return {
         "ok": ok,

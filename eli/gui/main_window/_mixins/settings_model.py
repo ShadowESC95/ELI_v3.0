@@ -1667,7 +1667,9 @@ class SettingsModelMixin:
             if not model_file.exists():
                 raise FileNotFoundError(f"Model not found: {model_file}")
             size_bytes = int(model_file.stat().st_size)
-            hw = _hp_detect()
+            # Off the main thread + pump the event loop: detect_hardware()'s uncached nvidia-smi/
+            # lspci probes otherwise froze the window for a few seconds at the start of every load.
+            hw = _run_pumping(_hp_detect, QApplication.instance())
             # The user's EXPLICITLY chosen ctx must anchor the recommendation, not be
             # overwritten by the auto target. Source of truth (highest first):
             # the startup dialog's "Direct context window" field (ELI_FORCE_CTX), else
@@ -1690,9 +1692,9 @@ class SettingsModelMixin:
             _ctx_is_theirs = (
                 _spin_ctx != int(_saved.get("n_ctx") or 0)
                 or Path(str(_saved.get("n_ctx_model") or "")).name == Path(str(model_path)).name)
-            if _forced_ctx.isdigit() and int(_forced_ctx) >= 2048:
+            if _forced_ctx.isdigit() and int(_forced_ctx) > 0:
                 _user_pinned_ctx = int(_forced_ctx)
-            elif _spin_ctx >= 2048 and _ctx_is_theirs:
+            elif _spin_ctx > 0 and _ctx_is_theirs:
                 _user_pinned_ctx = _spin_ctx
             else:
                 _user_pinned_ctx = None
@@ -1762,23 +1764,13 @@ class SettingsModelMixin:
             #
             # Show the recommendation AS a recommendation. What actually loads is
             # reported in the dock's log below it, which subscribes to the same
-            # [GUI][LOAD] / smart-fit / probe lines the terminal prints (see
+            # [GUI][LOAD] / [LOAD_PLAN] lines the terminal prints (see
             # HardwareTuningLogRelay) — one source of truth, not a second figure
             # computed for the panel.
             from eli.core.hardware_profile import describe_gpu_layers as _describe_gpu_rec
-            try:
-                from eli.core import moe_offload as _moe_status_rec
-                _moe_plan_rec = _moe_status_rec.plan_for_load(model_path, True)
-            except Exception:
-                _moe_plan_rec = None
-            _moe_note_rec = (
-                f" ({_moe_plan_rec['resident_gb']:.1f}GB on GPU, "
-                f"{_moe_plan_rec['experts_gb']:.1f}GB of experts always in RAM)"
-                if _moe_plan_rec else ""
-            )
             summary = (
                 f"HW Profile (recommended): ctx={int(rec.n_ctx)} "
-                f"gpu_layers={_describe_gpu_rec(rec.n_gpu_layers)}{_moe_note_rec} "
+                f"gpu_layers={_describe_gpu_rec(rec.n_gpu_layers)} "
                 f"threads={int(rec.n_threads)} batch={int(rec.batch_size)} "
                 f"kv={_ck or 'fp16'}"
             )
@@ -1787,7 +1779,12 @@ class SettingsModelMixin:
                 _live = _ggi_live.get_runtime_snapshot() or {}
                 _eff = (_live.get("effective") or _live) if isinstance(_live, dict) else {}
                 _lc, _lg = _eff.get("n_ctx"), _eff.get("n_gpu_layers")
-                if _lc and _lg is not None:
+                _loaded_plan = str(((_live.get("load_plan") or {}) if isinstance(_live, dict) else {}).get("text") or "")
+                if not _live.get("loaded"):
+                    pass                                          # settings are not a load
+                elif _loaded_plan:
+                    summary += f"  |  loaded: {_loaded_plan}"      # every card, experts in RAM, cache type
+                elif _lc and _lg is not None:
                     summary += (f"  |  loaded: ctx={int(_lc)} gpu_layers={_describe_gpu_rec(_lg)}"
                                 f" batch={int(_eff.get('n_batch') or 0)}")
             except Exception:
@@ -1799,30 +1796,16 @@ class SettingsModelMixin:
                 dock.set_summary(summary)
             self.status_signal.emit(summary)
 
-            # Apply the calculated profile to the live spinboxes so load_model()
-            # reads the model-specific values as its primary (attempt 1) load.
-            # setValue() clamps to each spinbox's range automatically.
-            # CANONICAL ctx = the user's chosen value (preserved), NOT the possibly
-            # VRAM-reduced rec.n_ctx — writing the reduced effective back would strand
-            # the user at a lower ctx next boot. The load path's smart-fit reduces to
-            # fit (and logs) at load time; the effective value lives in hw_profile_*.
+            # CANONICAL ctx = the user's chosen value, not the possibly VRAM-reduced rec.n_ctx
+            # — writing the reduced value back would strand the user at a lower ctx next boot;
+            # smart-fit already reduces to fit at load time.
             _canonical_ctx = int(_user_pinned_ctx) if _user_pinned_ctx else int(rec.n_ctx)
-            # Same rule for layers: an explicit user value is a preference, not a
-            # measurement, so the recommendation goes to hw_profile_n_gpu_layers
-            # and the loader still reduces to fit at load time (which IS transient).
-            # A pinned layer count belongs to the MODEL it was chosen for. It is an
-            # absolute number of layers, so it means something entirely different on
-            # a different model: 7 was right for a 15.66GB 27B on 8GB of VRAM, and
-            # stranded 25 of 32 layers on the CPU when a 4GB model that fits VRAM
-            # whole was loaded under the same 7 -- the tuner correctly measured 32,
-            # said so, and stood down because "yours" wins. Nothing recorded which
-            # model the pin came from, so it followed the user silently across swaps.
-            # Same rule the headless/server loader applies, from the same helper,
-            # so the desktop app and the API can never disagree about which
-            # layer count is live. "All layers" (99 / -1) is exempt there: it is
-            # a policy, correct on every model, and the loader reduces it to fit.
-            # Same normalisation the matcher uses, or a pin stamped on Windows
-            # would never match the key computed when it is read back.
+            # A pinned layer count is an absolute number scoped to the MODEL it was chosen
+            # for, not portable: 7 layers was right for a 27B model on 8GB VRAM, but stranded
+            # 25/32 layers on CPU for a 4GB model that fit whole — the pin carried no model
+            # identity and silently followed the user across swaps. Same normalisation the
+            # headless/server loader and the pin-matcher both use, so desktop/API/Windows
+            # pins can't disagree about which layer count is live.
             try:
                 from eli.core.runtime_settings import model_identity_key as _mk
                 _this_model = _mk(model_path)
@@ -1870,8 +1853,6 @@ class SettingsModelMixin:
                 self.n_ctx_input.setValue(int(_user_pinned_ctx or 0))
                 self.n_gpu_layers_input.setValue(_canonical_layers)
                 self.batch_size_input.setValue(_canonical_batch)
-                if int(rec.n_threads) > 0:
-                    self.n_threads_input.setValue(int(rec.n_threads))
             except Exception as _spin_err:
                 self._hardware_tuning_log(f"Warning: spinbox apply failed: {_spin_err}")
 
@@ -2109,35 +2090,7 @@ class SettingsModelMixin:
                     self.active_backend = backend
                     self.memory_system.log_event('model_load', f"Loaded {model_name_display} via {provider}")
                     if provider != "ollama":
-                        from eli.core.hardware_profile import format_gpu_layers_status as _fmt_gpu
-                        _active_gpu = int(getattr(self.model_manager, 'n_gpu_layers', 0) or 0)
-                        _fitted_gpu = int(getattr(self.model_manager, 'fitted_gpu_layers', 0) or 0)
-                        _gpu_disp = _fmt_gpu(
-                            _active_gpu,
-                            fitted_layers=_fitted_gpu,
-                            gpu_integrated=bool(getattr(self.model_manager, 'gpu_integrated', False)),
-                            gpu_name=str(getattr(self.model_manager, 'gpu_name', '') or ''),
-                            gpu_vendor=str(getattr(self.model_manager, 'gpu_vendor', '') or ''),
-                        )
-                        # "gpu=40" alone misreads as 40/40 fully resident — for MoE, only
-                        # the small core tensors offload; experts stay in RAM. Show both.
-                        try:
-                            from eli.core import moe_offload as _moe_status
-                            _moe_plan = _moe_status.plan_for_load(model_path, True)
-                        except Exception:
-                            _moe_plan = None
-                        _moe_note = ""
-                        if _moe_plan:
-                            _moe_note = (
-                                f", {_moe_plan['resident_gb']:.1f}GB actually on GPU — "
-                                f"{_moe_plan['experts_gb']:.1f}GB of experts always stay in RAM"
-                            )
-                        self.status_signal.emit(
-                            f"🟢 Model ready: {model_name_display} "
-                            f"(ctx={int(getattr(self.model_manager, 'n_ctx', 0) or 0)} "
-                            f"gpu={_gpu_disp}{_moe_note} "
-                            f"batch={int(getattr(self.model_manager, 'n_batch', 0) or 0)})"
-                        )
+                        self.status_signal.emit(self.model_manager.status_line())
                     else:
                         self.status_signal.emit(f"🟢 Model ready: {model_name_display}")
                     # Tell the CognitiveEngine the model is available so its
@@ -2163,17 +2116,15 @@ class SettingsModelMixin:
                             _gpu_supported = getattr(self.model_manager, "gpu_offload_supported", None)
                             if _requested_gpu > 0 and (_gpu_supported is False or _effective_gpu <= 0):
                                 from eli.core.hardware_profile import (
+                                    detect_hardware as _gpu_hw,
                                     gpu_offload_unavailable_message as _gpu_msg,
                                 )
+                                _hw_now = _gpu_hw()
                                 self.status_signal.emit(
                                     _gpu_msg(
-                                        gpu_vendor=str(getattr(self.model_manager, "gpu_vendor", "") or ""),
-                                        gpu_integrated=bool(
-                                            getattr(self.model_manager, "gpu_integrated", False)
-                                        ),
-                                        vulkan_available=bool(
-                                            getattr(self.model_manager, "vulkan_available", False)
-                                        ),
+                                        gpu_vendor=str(_hw_now.gpu_vendor or ""),
+                                        gpu_integrated=bool(_hw_now.gpu_integrated),
+                                        vulkan_available=bool(_hw_now.vulkan_available),
                                     )
                                 )
                     except Exception:
@@ -2236,8 +2187,8 @@ class SettingsModelMixin:
         try:
             # 0 is auto; whether a saved number is still yours is decided per model when tuning
             self.n_ctx_input.setValue(int(s.get("n_ctx") or 0))
-            self.n_threads_input.setValue(int(s.get("n_threads", 8)))
-            self.n_gpu_layers_input.setValue(int(s.get("n_gpu_layers", 99)))
+            self.n_threads_input.setValue(int(s.get("n_threads") or 0))
+            self.n_gpu_layers_input.setValue(max(0, int(s.get("n_gpu_layers") or 0)))   # -1 (every layer) is auto
             self.max_tokens_input.setValue(int(s.get("max_tokens", 4096)))
             self.temperature_input.setValue(float(s.get("temperature", 0.7)))
             _batch = s.get("batch_size") or s.get("n_batch")

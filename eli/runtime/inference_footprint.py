@@ -321,7 +321,8 @@ def _conversational_opener(question: str, live: Dict[str, Any]) -> str:
         or int(live.get("inference_components_bytes") or 0)
         or int(live.get("rss_bytes") or 0)
     )
-    headline_gb = headline_bytes / (1024 ** 3)
+    from eli.core.mem_units import bytes_to_gib
+    headline_gb = bytes_to_gib(headline_bytes)
     mode = str(live.get("load_mode") or "CPU")
     n_ctx = int(live.get("n_ctx_live") or live.get("n_ctx") or 0)
 
@@ -394,18 +395,25 @@ def format_inference_footprint_report(
 
     try:
         import psutil
+        from eli.core.mem_units import bytes_to_gib
         vm = psutil.virtual_memory()
         lines.append(
             f"- whole-machine RAM: {vm.percent:.0f}% used "
-            f"({vm.used / (1024 ** 3):.2f} GB / {vm.total / (1024 ** 3):.2f} GB)"
+            f"({bytes_to_gib(vm.used):.2f} GB / {bytes_to_gib(vm.total):.2f} GB)"
         )
     except Exception:
         log.debug("psutil unavailable for system RAM line", exc_info=True)
 
-    if include_latency_note or int(live.get("n_gpu_layers") or 0) <= 0:
+    _gl = int(live.get("n_gpu_layers") or 0)
+    if _gl <= 0:
         lines.append(
-            "- latency: CPU-only inference runs tokens on the CPU; "
+            "- latency: no layers are on the graphics card, so the model runs entirely on the processor; "
             "most of the RAM above is model weights plus the allocated context buffer."
+        )
+    elif include_latency_note:
+        lines.append(
+            f"- latency: {_gl} layers are on the graphics card; whatever is not (other layers, or expert "
+            "weights of a mixture-of-experts model) runs on the processor, which is the slower part."
         )
     lines.append(
         "- note: SQLite / FAISS memory stores are separate and much smaller than inference RAM."

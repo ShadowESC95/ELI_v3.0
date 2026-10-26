@@ -147,7 +147,9 @@ def format_verified_memory_block(
     for h in hits[:shown]:
         if format_grounding_memory_line:
             line = format_grounding_memory_line(h)
-            raw_ts = h.get("ts") or h.get("timestamp") or 0
+            # when it was said (event_ts), not when the row was last stored again
+            from eli.cognition.evidence_format import row_time
+            raw_ts = row_time(h) or 0
             try:
                 ts_str = _time.strftime(
                     "%Y-%m-%d %H:%M", _time.localtime(float(raw_ts)),
@@ -195,7 +197,7 @@ _FAMILIES = (
     (r"\b(?:apps?|applications?|programs?|open(?:ed)?|launch\w*|closed?)\b",
      lambda a: a.startswith(("OPEN_", "CLOSE_", "FOCUS_"))),
     (r"\b(?:search\w*|web|google\w*|looked?\s+up|news|websites?|sites?)\b",
-     lambda a: a in ("WEB_SEARCH", "NEWS_FETCH", "OPEN_URL", "OPEN_BROWSER", "MORNING_REPORT")),
+     lambda a: a in ("WEB_SEARCH", "WEB_FETCH", "NEWS_FETCH", "OPEN_URL", "OPEN_BROWSER", "MORNING_REPORT")),
     (r"\b(?:timers?|alarms?|remind\w*|schedul\w*)\b",
      lambda a: a in ("SET_TIMER", "SET_ALARM", "SCHEDULE_TASK") or a.startswith("POMODORO")),
     (r"\b(?:files?|documents?|pdfs?|notes?|scripts?)\b",
@@ -254,7 +256,7 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
     """The period a question asks about, in order: what the user said and what ELI ran.
 
     ELI's own prose replies are left out on purpose (a made-up reply would turn into history);
-    each action line is the executor's own report, e.g. "Paused — spotify (Mos Def — Sunshine)".
+    each action line is the executor's own report, e.g. "Paused — spotify (Mirelo — Daybreak)".
     The actions the question is about come first; when the rest doesn't fit, each day keeps an
     equal share and the header says what was left out."""
     stats = getattr(tr, "window_stats", None) or {}

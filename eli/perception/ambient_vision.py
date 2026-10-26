@@ -97,8 +97,9 @@ def _swap_is_expensive() -> bool:
         from pathlib import Path
         from eli.core.paths import get_paths
         snap = json.loads((Path(get_paths().artifacts_dir) / "runtime_snapshot.json").read_text(encoding="utf-8"))
+        from eli.core.mem_units import file_size_gib
         path = Path(str(snap.get("model_path") or ""))
-        return path.is_file() and path.stat().st_size / (1024 ** 3) > _LARGE_MODEL_GB
+        return path.is_file() and file_size_gib(path) > _LARGE_MODEL_GB
     except Exception:
         return False
 
@@ -141,7 +142,7 @@ def _do_glance() -> None:
         # Capture the screen.
         try:
             from eli.perception.os_controller import take_screenshot
-            ss = take_screenshot(region="full")
+            ss = take_screenshot(region="full", keep=False)
             path = ss.get("path") or ss.get("file") or ""
         except Exception as e:
             _state["last_skip_reason"] = f"screenshot failed: {e}"

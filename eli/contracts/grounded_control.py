@@ -15,7 +15,23 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-GROUNDED_CONTROL_ACTIONS = {
+def _control_actions() -> frozenset:
+    try:
+        from eli.runtime.control_contracts import CONTROL_ACTIONS
+        return frozenset(CONTROL_ACTIONS)
+    except Exception:
+        return frozenset()
+
+
+# Actions whose evidence a file/document read produced — a binary file decoded as
+# text and fed to the model is exactly the confabulation class this guard exists for.
+FILE_EVIDENCE_ACTIONS = frozenset({
+    "SUMMARIZE_FILE", "READ_FILE", "ANALYZE_PDF", "ANALYZE_PDF_FOLDER",
+    "ANALYZE_IMAGE", "OCR_IMAGE", "TRANSCRIBE", "CONVERT_DOCUMENT",
+    "FILE_AUDIT", "SCREEN_READ_ANALYZE",
+})
+
+GROUNDED_CONTROL_ACTIONS = _control_actions() | FILE_EVIDENCE_ACTIONS | {
     "RUNTIME_STATUS",
     "MEMORY_COUNT",
     "MEMORY_STATUS",
@@ -156,6 +172,19 @@ def _looks_like_runtime_status_complete(text: str) -> bool:
     return hits >= 7 or (has_model and has_ctx and has_gpu and has_batch and has_threads)
 
 
+def _looks_like_file_evidence_complete(text: str) -> bool:
+    """Catches binary-decoded-as-text (low printable ratio / decode-error marker) and
+    an empty read (a bare dict key like "result" surviving _collect_text isn't evidence)."""
+    if not text or len(text.strip()) < 20:
+        return False
+    sample = text[:4000]
+    printable = sum(1 for ch in sample if ch.isprintable() or ch in "\n\t")
+    if printable / len(sample) < 0.85:
+        return False
+    low = text.lower()
+    return not any(x in low for x in ("traceback", "unicodedecodeerror", "codec can't decode"))
+
+
 def _looks_like_memory_count_complete(text: str) -> bool:
     low = text.lower()
     return (
@@ -178,6 +207,9 @@ def evidence_complete_for_action(action: str, local_vars: Mapping[str, Any]) -> 
     if action in {"MEMORY_COUNT", "MEMORY_STATUS"}:
         return _looks_like_memory_count_complete(text)
 
+    if action in FILE_EVIDENCE_ACTIONS:
+        return _looks_like_file_evidence_complete(text)
+
     # Conservative generic rule for other grounded controls:
     # only suppress clarification when the executor returned ok evidence/content.
     low = text.lower()
@@ -186,6 +218,36 @@ def evidence_complete_for_action(action: str, local_vars: Mapping[str, Any]) -> 
         and any(x in low for x in ("content", "response", "report", "evidence"))
         and not any(x in low for x in ("traceback", "exception", "error:"))
     )
+
+
+def evidence_gap_reason(action: str, local_vars: Mapping[str, Any]) -> str:
+    """Why evidence_complete_for_action said False — for a distinct response per gap type,
+    not one generic "I can't answer that". One of: complete, missing, corrupted,
+    unreliable_tool, incomplete. Never raises; degrades to "incomplete" on any lookup failure.
+    """
+    action = str(action or "").strip().upper()
+    if evidence_complete_for_action(action, local_vars):
+        return "complete"
+
+    text = _collect_text(local_vars, limit=70000)
+    if not text or len(text.strip()) < 20:
+        return "missing"
+
+    if action in FILE_EVIDENCE_ACTIONS:
+        sample = text[:4000]
+        printable = sum(1 for ch in sample if ch.isprintable() or ch in "\n\t")
+        if len(sample) and printable / len(sample) < 0.85:
+            return "corrupted"
+
+    try:
+        from eli.runtime.evidence_ledger import action_reliability
+        rel = action_reliability(action)
+        if rel.get("n", 0) >= 5 and rel.get("p", 1.0) < 0.4:
+            return "unreliable_tool"
+    except Exception:
+        pass
+
+    return "incomplete"
 
 
 def should_suppress_clarification(local_vars: Mapping[str, Any]) -> bool:

@@ -63,6 +63,49 @@ def turn_stamp(ts: Any, now: Optional[float] = None) -> str:
     return f"{stamp}, {age}" if age else stamp
 
 
+def as_of(text: Any, ts: Any, now: Optional[float] = None) -> str:
+    """Text written on an earlier day, with its relative day words made that day's dates.
+
+    A summary from 15 October said "up late last night"; read on 20 October, ELI told the user they
+    had been up late last night. A dated line alone did not stop it: the words inside still said
+    last night."""
+    import re
+    text = str(text or "")
+    t = _ts(ts)
+    if t is None or age_label(t, now) == "today":
+        return text
+    day = lambda x: time.strftime("%a %d %b", time.localtime(x))
+    on, before = day(t), day(t - 86400)
+    for pattern, said in ((r"last night", f"the night before {on}"), (r"yesterday", f"on {before}"),
+                          (r"tonight", f"on the night of {on}"), (r"this (morning|afternoon|evening)", rf"on the \1 of {on}"),
+                          (r"this (week|weekend)", rf"the \1 of {on}"), (r"today", f"on {on}"),
+                          (r"(?:right now|currently|at the moment|these days)", f"at the time ({on})"),
+                          (r"a few (days|weeks|months) ago", rf"a few \1 before {on}"),
+                          (r"recently", f"shortly before {on}")):
+        text = re.sub(rf"\b{pattern}\b", said, text, flags=re.I)
+
+    # "two weeks ago" in a fact recorded on 16 Oct is around 02 Oct, not two weeks before whenever
+    # it is read: "recently took a trip ... two weeks ago" was told back as current five days on.
+    def _ago(m):
+        count = _COUNT_WORDS.get(m.group(1).lower()) or int(m.group(1))
+        when = t - count * _UNIT_DAYS[m.group(2).lower()] * 86400
+        return "around " + time.strftime("%d %b %Y", time.localtime(when))
+    return re.sub(r"\b(?:(?:approximately|about|roughly|around)\s+)?(\d+|" + "|".join(_COUNT_WORDS) + r")\s+"
+                  r"(day|week|month|year)s?\s+ago\b", _ago, text, flags=re.I)
+
+
+_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+_UNIT_DAYS = {"day": 1.0, "week": 7.0, "month": 365.25 / 12, "year": 365.25}
+
+
+def dated(text: Any, ts: Any, now: Optional[float] = None) -> str:
+    """'[Thu 15 Oct 18:24, 5 days ago] text', with the text's own day words resolved."""
+    stamp = turn_stamp(ts, now)
+    body = as_of(text, ts, now)
+    return f"[{stamp}] {body}" if stamp else body
+
+
 def row_time(row: Any) -> Optional[float]:
     """When a row's content happened: event_ts, else ts, else timestamp."""
     if not isinstance(row, dict):

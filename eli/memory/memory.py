@@ -318,21 +318,21 @@ def _add_column_if_missing(conn, table, name, decl):
 
 
 def _migrate_memory_provenance(conn) -> None:
-    """One-time alignment: auto_extracted rows are hypothesis tier, not grounding."""
+    """One-time alignment: auto_extracted rows are hypothesis tier, not grounding.
+
+    Runs on every connection, so it reads first: the UPDATE took the write lock each time and failed
+    with "database is locked" whenever another writer held it."""
+    match = """WHERE LOWER(COALESCE(tags, '')) LIKE '%auto_extracted%'
+              AND COALESCE(verification_status, 'verified') = 'verified'
+              AND COALESCE(provenance_kind, 'user_verbatim') = 'user_verbatim'"""
     try:
         cols = _table_columns(conn, "memories")
-        if "verification_status" not in cols:
+        if "verification_status" not in cols or not conn.execute(
+                f"SELECT EXISTS(SELECT 1 FROM memories {match})").fetchone()[0]:
             return
-        conn.execute(
-            """
-            UPDATE memories
-            SET verification_status = 'hypothesis',
-                provenance_kind = 'auto_extract'
-            WHERE LOWER(COALESCE(tags, '')) LIKE '%auto_extracted%'
-              AND COALESCE(verification_status, 'verified') = 'verified'
-              AND COALESCE(provenance_kind, 'user_verbatim') = 'user_verbatim'
-            """
-        )
+        conn.execute(f"UPDATE memories SET verification_status = 'hypothesis', provenance_kind = 'auto_extract' {match}")
+    except sqlite3.OperationalError as e:
+        log.debug("provenance alignment waits for the next connection: %s", e)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 
@@ -1991,7 +1991,7 @@ class Memory(metaclass=_MemoryMeta):
         Decide whether a user turn is a durable self-fact worth promoting into the
         long-term store — identity, preference, relationship, commitment — rather
         than chit-chat or a question. This is what lets facts stated once in
-        passing ("Shadow (my dog)") survive, without the user saying "remember".
+        passing ("Biscuit (my dog)") survive, without the user saying "remember".
         """
         t = (text or "").strip()
         low = t.lower()
@@ -2161,9 +2161,10 @@ class Memory(metaclass=_MemoryMeta):
                         "provenance_kind": provenance_kind,
                     },
                 ))
-                if vector_indexed and hasattr(vs, "flush"):
-                    vs.flush()
-                elif not vector_indexed:
+                # No save here: each save rewrites the whole index (18 MB at 2,900 memories), and a
+                # 349-PDF read stored 2,399 rows, 24 GB of writes in 50 minutes that stalled the
+                # machine. add() saves in batches; shutdown saves the rest.
+                if not vector_indexed:
                     # Ran without raising but declined the write (the embedder returned no vector):
                     # a real failed write, not "no vector store configured". Feeds the World tab's
                     # memory_uncertainty bar.
@@ -2193,8 +2194,8 @@ class Memory(metaclass=_MemoryMeta):
 
         # Extract entity-relation triples into knowledge graph (fire-and-forget)
         try:
-            if origin != _policy.ORIGIN_TELEMETRY:
-                from eli.memory.knowledge_graph import get_knowledge_graph
+            from eli.memory.knowledge_graph import feeds_graph, get_knowledge_graph
+            if feeds_graph(origin):
                 kg = get_knowledge_graph()
                 kg.extract_from_memory(t, source=source)
         except Exception:
@@ -2367,19 +2368,25 @@ class Memory(metaclass=_MemoryMeta):
                 # The keyword channels filter out ELI's own records and unverified rows in SQL; vector
                 # hits skipped that, and the index still holds 372 telemetry rows embedded before the
                 # storage policy ("Top topics: days, past, memory" was the top recall). Same filters,
-                # one query; rows deleted since they were indexed drop out too.
+                # one query; rows deleted since they were indexed drop out too. The row is the record: an
+                # index entry whose text is not the row's (the id now belongs to another memory, as after
+                # a reset or a restore) is stale, and its own copy of the text was shown as a memory.
                 _vec_ids = [int(v['id']) for v in vector_results if str(v.get('id')).isdigit()]
                 if _vec_ids:
                     try:
+                        _row_text = "COALESCE(m.text, m.content, '')" if "content" in cols else "COALESCE(m.text, '')"
                         _ok_rows = conn.execute(
-                            f"SELECT m.id, COALESCE(m.timestamp, m.ts, 0) FROM memories m "
+                            f"SELECT m.id, COALESCE(m.timestamp, m.ts, 0), {_row_text} FROM memories m "
                             f"WHERE m.id IN ({','.join('?' * len(_vec_ids))}) {_kind_filter}{_verify_filter}",
                             (*_vec_ids, *_kind_params),
                         ).fetchall()
-                        _ok = {int(r[0]): r[1] for r in _ok_rows}
+                        _ok = {int(r[0]): (r[1], str(r[2] or "")) for r in _ok_rows}
+                        _same = lambda a, b: " ".join(str(a).split()) == " ".join(str(b).split())
                         vector_results = [
-                            dict(v, ts=v.get('ts') or _ok[int(v['id'])], timestamp=v.get('ts') or _ok[int(v['id'])])
+                            dict(v, ts=v.get('ts') or _ok[int(v['id'])][0], timestamp=v.get('ts') or _ok[int(v['id'])][0],
+                                 text=_ok[int(v['id'])][1])
                             for v in vector_results if str(v.get('id')).isdigit() and int(v['id']) in _ok
+                            and _same(v.get('text', ''), _ok[int(v['id'])][1])
                         ][:limit]
                     except Exception:
                         log.debug("vector hit filter skipped", exc_info=True)
@@ -2632,7 +2639,7 @@ class Memory(metaclass=_MemoryMeta):
                 try:
                     _q_low2 = q.lower()
                     # Key on distinctive content nouns, not the whole question. "what is my dog's name" must
-                    # surface a turn saying "...my dog Shadow", and a verbatim '%what is my dog's name%' LIKE never
+                    # surface a turn saying "...my dog Biscuit", and a verbatim '%what is my dog's name%' LIKE never
                     # matches. Drop interrogatives, possessives and generic-memory words so it keys on "dog", and
                     # de-pluralise so "dogs" finds "dog".
                     _fb_stop = {
@@ -3182,6 +3189,53 @@ class Memory(metaclass=_MemoryMeta):
         hits = self.recall_memory(str(query or ""), limit=int(limit), verified_only=False) or []
         return [{"id": h["id"], "text": str(h.get("text") or h.get("content") or "")[:160]}
                 for h in hits if str(h.get("id", "")).isdigit()]
+
+    # Document text the old folder reader filed as memories: kind "pdf:<id>", from a tool.
+    _FILED_DOCUMENTS = "kind LIKE 'pdf:%' AND COALESCE(source, '') = 'tool'"
+
+    def refile_documents(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Documents filed as memories go to the document index, where documents are searched; the
+        rows leave memory, and so do the graph relations made from tool text, which the extractor read
+        as the user's own words. One 349-PDF folder had made 2,399 of 2,929 memories and 969 relations
+        such as "User prefers screening". Not forget(): it matches words against the whole profile,
+        and book text shares words with everything."""
+        conn = self._get_connection()
+        try:
+            rows = [{"id": r[0], "text": r[1], "tags": r[2]} for r in conn.execute(
+                f"SELECT id, COALESCE(text, content, ''), COALESCE(tags, '') FROM memories WHERE {self._FILED_DOCUMENTS}")]
+            paths = sorted({m.group(1).strip() for r in rows for m in [re.match(r"PDF (.+)\nPages read:", r["text"])] if m})
+            report: Dict[str, Any] = {"memories": len(rows), "documents": len(paths), "relations": 0, "entities": 0}
+            has_graph = _eli_table_exists(conn, "kg_relations") and _eli_table_exists(conn, "kg_entities")
+            if has_graph:
+                report["relations"] = conn.execute("SELECT COUNT(*) FROM kg_relations WHERE source = 'tool'").fetchone()[0]
+            if dry_run or not (rows or report["relations"]):
+                return report
+            self._remove_rows(conn, rows)
+            if has_graph:
+                ends = {e for pair in conn.execute("SELECT subject_id, object_id FROM kg_relations WHERE source = 'tool'")
+                        for e in pair}
+                conn.execute("DELETE FROM kg_relations WHERE source = 'tool'")
+                for eid in ends:
+                    if not conn.execute("SELECT EXISTS(SELECT 1 FROM kg_relations WHERE subject_id = ? OR object_id = ?)",
+                                        (eid, eid)).fetchone()[0] and conn.execute(
+                            "SELECT LOWER(name) != 'user' FROM kg_entities WHERE id = ?", (eid,)).fetchone() == (1,):
+                        conn.execute("DELETE FROM kg_entities WHERE id = ?", (eid,))
+                        report["entities"] += 1
+            conn.commit()
+        finally:
+            conn.close()
+        self._drop_turn_cache()
+        try:
+            from eli.memory.document_index import note_document
+            for path in paths:
+                if os.path.isfile(path):
+                    note_document(path, source="folder analysis")
+        except Exception:
+            log.debug("filed documents not queued for the index", exc_info=True)
+        log.info("[MEMORY] moved %d document passages out of memory (%d files to the document index), "
+                 "%d graph relations and %d entities made from them", report["memories"], report["documents"],
+                 report["relations"], report["entities"])
+        return report
 
     def forget(self, ids, *, include_turns: bool = True) -> Dict[str, int]:
         """Delete memories and everything derived from them: index entries, claims, summaries, profile items, stances, graph."""
@@ -3768,7 +3822,8 @@ class Memory(metaclass=_MemoryMeta):
         try:
             # A history read pending after an update runs on this start, not tomorrow.
             from eli.memory import claims as _claims
-            pending = self._meta_get(conn, "claims_extract_version") != _claims.EXTRACT_VERSION
+            pending = self._meta_get(conn, "claims_extract_version") != _claims.EXTRACT_VERSION or bool(
+                conn.execute(f"SELECT EXISTS(SELECT 1 FROM memories WHERE {self._FILED_DOCUMENTS})").fetchone()[0])
             if self._meta_get(conn, "last_upkeep_day") == time.strftime("%Y-%m-%d") and not pending:
                 return False
             try:
@@ -3795,6 +3850,7 @@ class Memory(metaclass=_MemoryMeta):
             ("identity", lambda: self.merge_user_ids() if not dry_run else {}),
             ("learning", lambda: self.tidy_learning_tables(dry_run=dry_run)),
             ("semantic", lambda: self.consolidate_semantic(dry_run=dry_run)),
+            ("documents", lambda: self.refile_documents(dry_run=dry_run)),
         )
         for name, fn in steps:
             try:
@@ -3931,12 +3987,14 @@ class Memory(metaclass=_MemoryMeta):
                                           role=str(role or ""), text=content,
                                           tags=None)
 
-        # Promote facts stated in passing ("my dog Shadow") into durable memory so they're recallable,
+        # Promote facts stated in passing ("my dog Biscuit") into durable memory so they're recallable,
         # not buried in the raw turn log. User-authored turns only (identity-grade trust). Two captures:
         # (a) entity/relation triples into the knowledge graph, (b) salience-scored durable memory rows
         # for anything ELI judges memorable, so important statements survive without "remember this".
         if str(role or "").lower() == "user":
-            _content_s = str(content or "")
+            # facts come from the user's own words, never from text they pasted (split_pasted)
+            from eli.cognition.correction_patterns import split_pasted
+            _content_s = split_pasted(str(content or ""))[0]
             try:
                 from eli.memory.knowledge_graph import get_knowledge_graph
                 get_knowledge_graph().extract_from_memory(_content_s, source="user")
@@ -4063,6 +4121,14 @@ class Memory(metaclass=_MemoryMeta):
             ).fetchone()
             if not row or not row[0]:
                 return
+            # A complaint, insult or correction aimed at ELI is not a topic ELI holds a position on:
+            # "it is 2026 you fucking idiot" was recorded as a stance on "2026 idiot".
+            try:
+                from eli.cognition.self_claims import asks_about_own_behaviour
+                if asks_about_own_behaviour(str(row[0])):
+                    return
+            except Exception:
+                log.debug("stance: own-behaviour check failed", exc_info=True)
             topic = capture(conn.cursor(), str(row[0]), str(reply or ""))
             if topic:
                 conn.commit()
@@ -4200,7 +4266,10 @@ class Memory(metaclass=_MemoryMeta):
             conn.close()
 
     def search_conversations(self, query, user_id=None, limit=10, session_id=None,
-                             include_assistant=False):
+                             include_assistant=False, match_all=False):
+        """Turns whose text holds the query's keywords: any one of them, or every one with
+        match_all ("drive to the coast" must not match every message that says "drive"). limit=None
+        returns every match, oldest first."""
         q = str(query or "").strip()
         if not q:
             return []
@@ -4227,7 +4296,7 @@ class Memory(metaclass=_MemoryMeta):
         conn = self._get_connection()
         try:
             # Build OR conditions — a turn is relevant if ANY keyword appears in it.
-            conditions = " OR ".join(
+            conditions = (" AND " if match_all else " OR ").join(
                 "LOWER(COALESCE(content, '')) LIKE ?" for _ in keywords
             )
             params: list = [f"%{kw}%" for kw in keywords]
@@ -4247,8 +4316,10 @@ class Memory(metaclass=_MemoryMeta):
                 params.append(user_id)
             # Fetch DESC then reverse so caller gets chronological order,
             # consistent with get_recent_conversation().
-            sql += " ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT ?"
-            params.append(int(limit))
+            sql += " ORDER BY COALESCE(timestamp, ts, 0) DESC"
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(int(limit))
             rows = conn.execute(sql, params).fetchall()
             rows = list(reversed(rows))  # chronological order
             result = [
@@ -5882,194 +5953,16 @@ def _eli_sync_world_model_from_memory(mem_obj, *, kind: str, role: str = "", tex
 # Explicit FAISS persistence helper. vs.flush() should persist the index but has been unreliable, so
 # this writes faiss.write_index() to the canonical artifacts/vectors/ paths so post-rebuild state
 # survives a restart.
-def _eli_persist_loaded_vector_store(rows_for_meta=None):
-    """Persist the live VectorStore index/meta to canonical FAISS artifacts.
-
-    Uses canonical vector_store paths instead of constructing repo paths here.
-    """
-
-    try:
-        import faiss
-    except Exception as exc:
-        return {"ok": False, "error": f"faiss_import_failed:{exc}", "persisted": False}
-
-    from eli.memory import vector_store as _vs
-
-    index_path_s, meta_path_s = _vs._get_index_paths()
-    index_path = Path(index_path_s).resolve()
-    meta_path = Path(meta_path_s).resolve()
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-
-    store = _vs.get_vector_store()
-    if store is None:
-        return {"ok": False, "error": "get_vector_store_returned_none",
-                "persisted": False, "index_path": str(index_path),
-                "meta_path": str(meta_path)}
-
-    def _attr(obj, names):
-        for name in names:
-            if hasattr(obj, name):
-                value = getattr(obj, name)
-                if value is not None:
-                    return name, value
-        return None, None
-
-    index_attr, index_obj = _attr(
-        store, ("index", "_index", "faiss_index", "_faiss_index", "idx", "_idx"),
-    )
-    meta_attr, meta_obj = _attr(
-        store, ("metadata", "_metadata", "meta", "_meta", "metas", "_metas",
-                "records", "_records", "items", "_items"),
-    )
-
-    rows = list(rows_for_meta or [])
-
-    # Case A: VectorStore already has a live FAISS index.
-    if index_obj is not None and hasattr(index_obj, "ntotal"):
-        ntotal = int(index_obj.ntotal)
-        if ntotal <= 0:
-            return {"ok": False, "error": "faiss_index_empty", "persisted": False,
-                    "index_attr": index_attr, "ntotal": ntotal}
-
-        if not isinstance(meta_obj, (list, tuple)) or len(meta_obj) != ntotal:
-            meta_obj = rows[:ntotal]
-
-        faiss.write_index(index_obj, str(index_path))
-        # Write meta as JSON via the canonical writer — _load_meta reads JSON, and
-        # pickle was deliberately retired (RCE-on-load). Writing pickle here corrupted
-        # meta.json so the next load failed and silently auto-rebuilt.
-        _vs._dump_meta(str(meta_path), list(meta_obj))
-
-        return {"ok": True, "persisted": True, "method": "write_live_faiss_index",
-                "index_attr": index_attr, "meta_attr": meta_attr,
-                "ntotal": ntotal,
-                "index_path": str(index_path), "meta_path": str(meta_path),
-                "index_size": index_path.stat().st_size if index_path.exists() else 0,
-                "meta_size": meta_path.stat().st_size if meta_path.exists() else 0}
-
-    # Case B: VectorStore stores vectors as numpy arrays/lists, not FAISS index.
-    vec_attr, vectors = _attr(
-        store, ("vectors", "_vectors", "embeddings", "_embeddings", "matrix", "_matrix"),
-    )
-
-    if vectors is not None:
-        try:
-            import numpy as np
-            arr = np.asarray(vectors, dtype="float32")
-            if arr.ndim == 1:
-                arr = arr.reshape(1, -1)
-            if arr.ndim == 2 and arr.shape[0] > 0 and arr.shape[1] > 0:
-                faiss.normalize_L2(arr)
-                idx = faiss.IndexFlatIP(int(arr.shape[1]))
-                idx.add(arr)
-                if not isinstance(meta_obj, (list, tuple)) or len(meta_obj) != int(arr.shape[0]):
-                    meta_obj = rows[: int(arr.shape[0])]
-                faiss.write_index(idx, str(index_path))
-                _vs._dump_meta(str(meta_path), list(meta_obj))   # JSON, not pickle (see above)
-                return {"ok": True, "persisted": True, "method": "build_from_vector_array",
-                        "vector_attr": vec_attr,
-                        "ntotal": int(idx.ntotal), "dim": int(arr.shape[1]),
-                        "index_path": str(index_path), "meta_path": str(meta_path),
-                        "index_size": index_path.stat().st_size if index_path.exists() else 0,
-                        "meta_size": meta_path.stat().st_size if meta_path.exists() else 0}
-        except Exception as exc:
-            return {"ok": False, "error": f"vector_array_persist_failed:{exc}",
-                    "persisted": False, "vector_attr": vec_attr}
-
-    return {"ok": False, "error": "no_faiss_index_or_vector_array_found",
-            "persisted": False, "store_type": str(type(store)),
-            "index_path": str(index_path), "meta_path": str(meta_path)}
-
-
 def rebuild_vector_index_from_search_db() -> Dict[str, Any]:
-    """Compatibility helper: rebuild the vector index from the search-authority DB.
-
-    Rebuilds the vector index from the search-authority DB and then persists
-    the FAISS files through canonical vector_store paths.
-    """
-    search_mem = get_search_memory()
-    db_path = Path(getattr(search_mem, "db_path", "")).expanduser().resolve()
-
-    from eli.memory.vector_store import get_vector_store, EMBED_DIM
-    import faiss
+    """Re-embed every memory the storage policy indexes, through the vector store's own rebuild
+    (VectorStore.rebuild_from_db)."""
+    from eli.memory.vector_store import get_vector_store
     vs = get_vector_store()
     if vs is None:
-        return {"ok": False, "indexed": 0, "db_path": str(db_path), "error": "vector_store_unavailable"}
-
-    conn = search_mem._get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, "
-            "COALESCE(text, content, value, '') AS text, "
-            "COALESCE(kind, 'memory') AS kind, "
-            "COALESCE(source, 'memory') AS source, "
-            "COALESCE(tags, '') AS tags "
-            "FROM memories "
-            "WHERE TRIM(COALESCE(text, content, value, '')) <> '' "
-            "ORDER BY COALESCE(timestamp, ts, 0) ASC"
-        ).fetchall()
-    finally:
-        conn.close()
-
-    try:
-        with vs._lock:
-            vs._index = faiss.IndexFlatL2(EMBED_DIM)
-            vs._meta = []
-            vs._adds_since_save = 0
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    source_count = 0
-    indexed = 0
-    skipped = 0
-    for row in rows:
-        text = (row[1] or "").strip()
-        if not text:
-            continue
-        source_count += 1
-        try:
-            meta = {
-                "memory_id": row[0],
-                "kind": row[2],
-                "source": row[3],
-                "tags": row[4],
-            }
-            if vs.add(text, metadata=meta):
-                indexed += 1
-            else:
-                skipped += 1
-        except Exception:
-            skipped += 1
-            continue
-
-    try:
-        vs.flush()
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    # vs.flush() should persist, but explicit persistence keeps rebuilds
-    # durable through canonical artifacts/vectors paths.
-    persist = _eli_persist_loaded_vector_store(rows_for_meta=[
-        {"id": int(r[0]), "text": (r[1] or "").strip(), "kind": r[2], "source": r[3], "tags": r[4]}
-        for r in rows if (r[1] or "").strip()
-    ])
-
-    result = {
-        "ok": True,
-        "source_count": source_count,
-        "indexed": indexed,
-        "skipped": skipped,
-        "db_path": str(db_path),
-    }
-    if persist.get("ok") and persist.get("persisted"):
-        result["faiss_persisted"] = True
-        result["faiss_index_path"] = persist.get("index_path")
-        result["faiss_meta_path"] = persist.get("meta_path")
-        result["faiss_ntotal"] = persist.get("ntotal")
-    else:
-        result["faiss_persisted"] = False
-        result["faiss_persist_error"] = persist.get("error", "unknown")
+        return {"ok": False, "indexed": 0, "source_count": 0, "error": "vector_store_unavailable"}
+    result = vs.rebuild_from_db()
+    result["skipped"] = max(0, int(result.get("source_count", 0)) - int(result.get("indexed", 0)))
     return result
 
 # Persistence behavior is implemented directly in Memory.store_memory,
-# Memory.add_conversation_turn, and rebuild_vector_index_from_search_db.
+# Memory.add_conversation_turn, and VectorStore.rebuild_from_db.

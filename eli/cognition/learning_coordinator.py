@@ -76,6 +76,24 @@ def finalize_turn(
     # process() completes whatever a turn skipped; this turn did Stage 12 itself.
     _request_context.note_turn_fact("finalized", True)
 
+    # 5. Task-event capture. The CHAT path (_finalize_chat_result -> _maybe_store_memory)
+    # already does this unconditionally for every chat turn - chat has no real ok/fail
+    # axis to gate on. This is the other, disjoint path (non-streaming/action turns,
+    # per this function's own docstring) - confirmed it never captured task events at
+    # all before this. Gated on ok, unlike the chat path: a failed action turn ("set a
+    # timer" that silently didn't fire) should not be recorded as a decided/done step.
+    # A nested turn's input is a fragment of the user's message (or ELI's own
+    # followthrough clause); the parent captures from the real message.
+    try:
+        _nested = bool((_request_context.turn_facts_var.get() or {}).get("parent_request_id"))
+        if bool(result.get("ok", True)) and not _nested:
+            from eli.planning.goal_store import capture_task_events
+            capture_task_events(str(user_input or ""))
+    except Exception as exc:
+        log.debug(f"[LEARNING] task event capture failed: {exc}")
+    # process() completes whatever a turn skipped; this turn did Stage 12 itself.
+    _request_context.note_turn_fact("finalized", True)
+
     log_pipeline_stage(
         12,
         component="learning_coordinator",

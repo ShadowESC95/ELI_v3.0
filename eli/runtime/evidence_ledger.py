@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from eli.core.sqlite_util import apply_pragmas
 import time
 import hashlib
 import hmac
@@ -31,6 +30,9 @@ def _project_root() -> Path:
 
 def _artifacts_dir() -> Path:
     """The artifacts dir the loader actually writes to (honours the override)."""
+    override = os.environ.get("ELI_ARTIFACTS_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
     try:
         from eli.core.paths import get_paths as _gp
         return Path(_gp().artifacts_dir)
@@ -180,6 +182,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 # Handles race conditions from concurrent threads and duplicate call paths for the
 # same conversation turn. Set to 0 to disable.
 _DEDUP_WINDOW_SECONDS: float = 10.0
+
+
+# What an action's result says happened. Only "ok" and "failed" say whether the action works:
+# "started" was handed to a background job (whose own run is recorded), "no_effect" ran and changed
+# nothing, "unknown" carries no verdict. A result without "ok" used to count as a success, so
+# "RAM info unavailable (install psutil)" and a job merely queued were recorded as verified runs.
+DECIDED_OUTCOMES = ("ok", "failed")
+
+
+def execution_outcome(result: Any) -> str:
+    if not isinstance(result, dict) or "ok" not in result:
+        return "unknown"
+    if not result.get("ok") or result.get("played") is False:
+        return "failed"
+    if result.get("background"):
+        return "started"
+    if result.get("needs_input"):
+        return "unknown"
+    if result.get("effect") is False:
+        return "no_effect"
+    return "ok"
 
 
 def record_event(
@@ -638,14 +661,21 @@ _MIN_HISTORY = 3
 
 
 def action_reliability(action: str, *, days: float = 30.0, half_life_days: float = 7.0,
-                       db_path: Optional[str | Path] = None) -> Dict[str, Any]:
-    """Recency-weighted success rate of an action from its tool_execution events (Beta(1,1) prior)."""
+                       since: Optional[float] = None, db_path: Optional[str | Path] = None) -> Dict[str, Any]:
+    """Recency-weighted success rate of an action from its tool_execution events (Beta(1,1) prior).
+
+    `since`, when given, replaces the rolling `days` window with an exact cutoff — e.g.
+    self_improvement's staged-deployment check wants reliability strictly after a patch's
+    adoption time, not blended with whatever history came before it.
+    """
     now = time.time()
+    cutoff = float(since) if since is not None else now - float(days) * 86400.0
     conn = _connect(db_path)
     try:
         rows = conn.execute(
             "SELECT COALESCE(ts, timestamp, 0), outcome FROM runtime_events WHERE event_type = 'tool_execution' "
-            "AND action = ? AND COALESCE(ts, timestamp, 0) >= ?", (str(action or "").upper(), now - float(days) * 86400.0)
+            "AND action = ? AND COALESCE(ts, timestamp, 0) >= ? AND outcome IN (?, ?)",
+            (str(action or "").upper(), cutoff, *DECIDED_OUTCOMES)
         ).fetchall()
     finally:
         conn.close()
@@ -657,6 +687,23 @@ def action_reliability(action: str, *, days: float = 30.0, half_life_days: float
         else:
             wf += w
     return {"action": str(action or "").upper(), "n": len(rows), "p": (ws + 1.0) / (ws + wf + 2.0)}
+
+
+def verified_actions(*, db_path: Optional[str | Path] = None) -> Dict[str, float]:
+    """Each action's most recent successful run on this machine (a tool_execution with outcome ok)."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT action, MAX(COALESCE(ts, timestamp, 0)) FROM runtime_events WHERE event_type = 'tool_execution' "
+            "AND outcome = 'ok' GROUP BY action").fetchall()
+    finally:
+        conn.close()
+    return {str(a).upper(): float(t) for a, t in rows if a and t}
+
+
+def last_verified_success(action: str, *, db_path: Optional[str | Path] = None) -> Optional[float]:
+    """Timestamp of the most recent successful tool_execution for this action, or None."""
+    return verified_actions(db_path=db_path).get(str(action or "").upper())
 
 
 def predict_success(action: str, *, db_path: Optional[str | Path] = None) -> Optional[float]:
@@ -675,7 +722,7 @@ def unreliable_actions(*, min_runs: int = 5, below: float = 0.8, limit: int = 5,
     try:
         names = [r[0] for r in conn.execute(
             "SELECT action FROM runtime_events WHERE event_type = 'tool_execution' AND COALESCE(ts, timestamp, 0) >= ? "
-            "GROUP BY action HAVING COUNT(*) >= ?", (since, int(min_runs))).fetchall()]
+            "AND outcome IN (?, ?) GROUP BY action HAVING COUNT(*) >= ?", (since, *DECIDED_OUTCOMES, int(min_runs))).fetchall()]
     finally:
         conn.close()
     out = [r for r in (action_reliability(n, db_path=db_path) for n in names if n) if r["p"] < below]
@@ -689,7 +736,8 @@ def calibration_report(*, days: float = 90.0, db_path: Optional[str | Path] = No
     try:
         rows = conn.execute(
             "SELECT payload_json, outcome FROM runtime_events WHERE event_type = 'tool_execution' "
-            "AND COALESCE(ts, timestamp, 0) >= ? AND payload_json LIKE '%\"predicted\"%'", (since,)).fetchall()
+            "AND COALESCE(ts, timestamp, 0) >= ? AND outcome IN (?, ?) AND payload_json LIKE '%\"predicted\"%'",
+            (since, *DECIDED_OUTCOMES)).fetchall()
     finally:
         conn.close()
     pairs = []

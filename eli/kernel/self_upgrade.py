@@ -530,24 +530,13 @@ class SelfUpgrader:
     def _rebuild_kg(self):
         """Rebuild the knowledge graph by re-extracting triples from stored memories."""
         try:
-            from eli.memory.knowledge_graph import get_knowledge_graph
+            from eli.memory.knowledge_graph import rebuild_from_memories
             from eli.memory import get_search_memory
-            kg = get_knowledge_graph()
-            mem = get_search_memory()
-            conn = mem._get_connection()
+            conn = get_search_memory()._get_connection()
             try:
-                rows = conn.execute(
-                    "SELECT COALESCE(text, content, ''), COALESCE(source, 'user') "
-                    "FROM memories ORDER BY id"
-                ).fetchall()
+                count = rebuild_from_memories(conn)
             finally:
                 conn.close()
-            count = 0
-            for text, source in rows:
-                t = (text or "").strip()
-                if t:
-                    kg.extract_from_memory(t, source=source)
-                    count += 1
             return True, f"Knowledge graph rebuilt from {count} memories."
         except Exception as e:
             return False, str(e)[:120]

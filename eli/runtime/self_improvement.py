@@ -48,7 +48,6 @@ _PROTECTED_PATCH_PATHS = {
     "eli/runtime/deterministic_grounding_gate.py",
     "eli/execution/shell_gate.py",        # shell denylist (extracted from executor)
     "eli/runtime/authority_gate.py",      # action allow/check gate
-    "eli/execution/route_authority.py",   # routing authority
     "eli/runtime/persistence_gate.py",    # upstream action/persistence gate
     "eli/runtime/evidence_ledger.py",     # the record calibration and reliability are judged from
     "eli/runtime/lessons.py",             # decides which lessons survive
@@ -130,6 +129,10 @@ def _dotted_module_for_path(p: Path) -> Optional[str]:
     return ".".join(parts) if parts else None
 
 
+# Detail of an import check that could not run at all: not a pass, so the patch is labelled unverified.
+_NOT_RUN = "could not run: "
+
+
 def _smoke_import_module(dotted: str, timeout: float = 30.0) -> Tuple[bool, str]:
     """Import a module in an isolated subprocess; return (ok, detail).
 
@@ -139,7 +142,8 @@ def _smoke_import_module(dotted: str, timeout: float = 30.0) -> Tuple[bool, str]
     *caller* via a differential check (import before vs after the patch), so this
     deliberately does NOT special-case ModuleNotFoundError. Inability to launch
     the subprocess at all (infra error) returns ok=True so we never falsely
-    revert on our own tooling failure.
+    revert on our own tooling failure, with a detail starting _NOT_RUN so the
+    caller reports the patch unverified instead of checked.
     """
     code = (
         "import importlib, sys\n"
@@ -159,7 +163,7 @@ def _smoke_import_module(dotted: str, timeout: float = 30.0) -> Tuple[bool, str]
     except subprocess.TimeoutExpired:
         return False, f"import of {dotted} exceeded {timeout:.0f}s"
     except Exception as exc:
-        return True, f"smoke-test skipped (infra): {exc}"
+        return True, f"{_NOT_RUN}{exc}"
     if proc.returncode == 0:
         return True, ""
     tail = "\n".join((proc.stderr or "").splitlines()[-6:])
@@ -259,6 +263,7 @@ def _ensure_failure_tables(conn: sqlite3.Connection) -> None:
     )
     _ensure_columns(conn, "code_patches", {
         "hypothesis": "TEXT", "verdict": "TEXT", "results": "TEXT", "cost_s": "REAL", "parent_id": "INTEGER",
+        "probation_actions": "TEXT", "probation_baseline": "TEXT", "probation_started": "REAL",
     })
     conn.commit()
 
@@ -268,6 +273,35 @@ _WORKSPACE_DIRS = ("eli", "api", "tests", "tools", "config")
 _WORKSPACE_FILES = ("pytest.ini", "pyproject.toml", "conftest.py")
 _REPLAYABLE_ACTIONS = frozenset({"DATE", "TIME", "GPU_STATUS", "RUNTIME_STATUS", "MEMORY_STATUS", "MEMORY_STATS",
                                  "SYSTEM_STATUS", "CPU_USAGE", "LIST_DIR", "EXPLAIN_MEMORY_RUNTIME", "IMAGE_STATUS"})
+
+# Staged deployment: invocations needed for a verdict, max reliability drop before it
+# counts as a regression, and how long to watch before giving up on low traffic.
+_PROBATION_MIN_INVOCATIONS = 5
+_PROBATION_REGRESSION_DROP = 0.15
+_PROBATION_MAX_DAYS = 14.0
+
+
+def _actions_for_patch_file(file_path: str) -> List[str]:
+    """Actions worth watching after patching this file — only where the file->action
+    mapping is unambiguous (a plugin's own plugin.py). executor_enhanced.py/
+    router_enhanced.py each back hundreds of actions; a patch there can't be
+    attributed to any one of them, so those patches keep today's immediate-adopt
+    behaviour rather than a misleading probation.
+    """
+    try:
+        rel = Path(file_path).resolve().relative_to(_patch_root()).as_posix()
+    except Exception:
+        rel = str(file_path or "")
+    m = re.match(r"eli/plugins/([^/]+)/plugin\.py$", rel)
+    if not m:
+        return []
+    plugin_name = m.group(1)
+    try:
+        from eli.runtime.capability_sync import CapabilitySync
+        caps = CapabilitySync(repo_root=_patch_root()).discover()
+    except Exception:
+        return []
+    return sorted(a for a, meta in caps.items() if meta.get("plugin") == plugin_name)
 
 
 def failure_capsule(action: str, args: Any, result: Any, *, request_id: str = "") -> Dict[str, Any]:
@@ -386,10 +420,8 @@ class SelfImprovementEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def log_failure(self, input_text: str, error: str = "", confidence: float = 0.0, context: dict = None):
-        # Guard: never persist a unit-test mock as a real failure. When a test patches subprocess.run,
-        # the executor's stdout concat gives a MagicMock repr ("<MagicMock name='run().stdout.__add__()'
-        # ...>") that leaked into the live failures DB and polluted SELF_ANALYZE. Drop mock reprs at the
-        # write source so a test-isolation slip can't pollute real failures.
+        # Drop MagicMock reprs at the source — a patched subprocess.run in a test leaked
+        # "<MagicMock name=...>" into the live failures DB and polluted SELF_ANALYZE.
         import re as _re_mock
         if _re_mock.search(r"<\s*(?:Magic)?Mock\b|(?:Magic)?Mock\s+name=|\bMock\s+id=0x",
                            f"{error} {input_text}"):
@@ -430,9 +462,8 @@ class SelfImprovementEngine:
         finally:
             conn.close()
 
-        # Escalation clauses (a recurring error is raised with the user): >=5x is "notice" (flag it
-        # in the next conversation turn); >=10x is "act" (also attempt a self-resolution and report
-        # the outcome). Skip user-input/clarification cases (fault=False); they aren't real faults.
+        # Escalation: >=5x notices next turn, >=10x also attempts self-resolution.
+        # Skips fault=False (user-input/clarification, not real faults).
         if new_count in (5, 10) or (new_count > 10 and new_count % 5 == 0):
             if not (isinstance(ctx, dict) and ctx.get("fault") is False):
                 stage = "notice" if new_count < 10 else "act"
@@ -485,9 +516,8 @@ class SelfImprovementEngine:
             _report()
             return
 
-        # Attempt code patches for failures with file tracebacks and high recurrence.
-        # Gated behind auto_patch_enabled (default off) so patches never apply without
-        # explicit user opt-in via settings.json.
+        # Patches failures with file tracebacks + high recurrence; gated behind
+        # auto_patch_enabled (default off, opt-in via settings.json).
         try:
             from eli.core.full_control import is_full_control as _ifc
         except Exception:
@@ -628,6 +658,11 @@ class SelfImprovementEngine:
         `propose=True`) belongs only on a BOUNDED BACKGROUND job — it invokes the coding agent, which fans out to
         tens of sequential model calls (see propose_via_agent).
         """
+        try:
+            self._check_probationary_patches()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
         failures = self.analyze_failures(limit=25, min_cluster_size=1)
         improvements: List[Dict[str, Any]] = []
 
@@ -1120,8 +1155,11 @@ class SelfImprovementEngine:
         # (unresolved name, broken top-level statement, bad import). For importable `eli` modules that
         # imported cleanly before the patch, smoke-import the patched file in an isolated subprocess and
         # revert if it no longer loads.
+        import_not_run = ""
         if verify_dotted and pre_import_ok:
             imp_ok, imp_detail = _smoke_import_module(verify_dotted)
+            if imp_detail.startswith(_NOT_RUN):
+                import_not_run = imp_detail
             if not imp_ok:
                 if backup.exists():
                     shutil.copy2(str(backup), str(p))
@@ -1151,6 +1189,8 @@ class SelfImprovementEngine:
                         shutil.copy2(str(backup), str(p))
                     return {"ok": False, "applied": False, "verification": verification,
                             "message": f"Patch reverted, its tests could not run ({t_detail[:160]})"}
+        if import_not_run:
+            verification = f"unverified: the import check {import_not_run}"
 
         # Log the applied patch
         try:
@@ -1292,11 +1332,14 @@ class SelfImprovementEngine:
                 _rollback_all()
                 return {"ok": False, "applied": False,
                         "message": f"compile error in {p.name} (all reverted): {exc}"}
+        unchecked: List[str] = []
         if verify:
             for p in order:
                 d = dotted.get(p)
                 if d and pre_ok.get(p):
                     ok, detail = _smoke_import_module(d)
+                    if detail.startswith(_NOT_RUN):
+                        unchecked.append(f"{p.name} ({detail})")
                     if not ok:
                         _rollback_all()
                         return {"ok": False, "applied": False,
@@ -1311,6 +1354,7 @@ class SelfImprovementEngine:
                     reloaded.append(d)
         log.debug(f"[SELF-IMPROVE] Patch set applied atomically across {len(files)} file(s): {files}")
         return {"ok": True, "applied": True, "files": files, "reloaded": reloaded,
+                **({"verification": "unverified: import check " + "; ".join(unchecked)} if unchecked else {}),
                 "message": f"Applied {len(patches)} patch(es) across {len(files)} file(s)"}
 
     def verify_in_workspace(self, patch: dict, *, tests: Optional[List[str]] = None, reproducer: Optional[List[str]] = None,
@@ -1385,13 +1429,39 @@ class SelfImprovementEngine:
             conn.close()
         if not row or row[4] != "verified" or row[5] != "fixed":
             return {"ok": False, "applied": False, "message": "only a candidate that fixed its reproducer with no regression can be adopted"}
+        watched = _actions_for_patch_file(row[0])
+        baseline: Dict[str, float] = {}
+        if watched:
+            from eli.runtime.evidence_ledger import action_reliability
+            baseline = {a: action_reliability(a)["p"] for a in watched}
         res = self.apply_code_patch({"file": row[0], "old": row[2], "new": row[3], "description": row[1]}, verify=True)
+        if res.get("applied") and watched:
+            status = "probationary"
+        else:
+            status = "adopted" if res.get("applied") else "rolled_back"
         conn = self.memory._get_connection()
         try:
-            conn.execute("UPDATE code_patches SET status = ? WHERE id = ?", ("adopted" if res.get("applied") else "rolled_back", int(candidate_id)))
+            conn.execute(
+                "UPDATE code_patches SET status = ?, probation_actions = ?, probation_baseline = ?, "
+                "probation_started = ? WHERE id = ?",
+                (status, json.dumps(watched) if watched else None, json.dumps(baseline) if watched else None,
+                 time.time() if status == "probationary" else None, int(candidate_id)))
             conn.commit()
         finally:
             conn.close()
+        if res.get("applied"):
+            # A verified fix becomes a lesson for that file: the same failure pattern next
+            # time should try the same change first, not be re-diagnosed from scratch.
+            try:
+                from eli.runtime import lessons as _lessons
+                _lessons.propose(
+                    applies_to=str(row[0]), trigger=f"recurrence of: {row[1][:200]}",
+                    evidence=[f"candidate {candidate_id} verified fixed, no regression"],
+                    proposed_change=str(row[1])[:400], hypothesis="same root cause as the verified candidate",
+                    predicted_outcome="fixed", category="self_repair",
+                )
+            except Exception:
+                log.debug("self_improvement: lesson recording failed", exc_info=True)
         return res
 
     def apply_autonomously(self, patch: dict, failure: Optional[dict] = None) -> dict:
@@ -1468,6 +1538,60 @@ class SelfImprovementEngine:
         except Exception:
             log.debug("self-improve: test-verify failed", exc_info=True)
             return {"verified": None, "target": None}
+
+    def _resolve_probation(self, candidate_id: int, status: str) -> None:
+        conn = self.memory._get_connection()
+        try:
+            conn.execute("UPDATE code_patches SET status = ? WHERE id = ?", (status, int(candidate_id)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _check_probationary_patches(self) -> None:
+        """Re-check every probationary patch's watched actions against its pre-adoption
+        baseline. A real regression auto-reverts via the existing revert_patch(); enough
+        clean invocations promotes it to permanent 'adopted'; too little real traffic to
+        ever judge it flips it to 'adopted' anyway once the time ceiling is hit — it
+        can't sit in limbo forever on a single-user desktop app with sparse usage.
+        """
+        conn = self.memory._get_connection()
+        try:
+            _ensure_failure_tables(conn)
+            rows = conn.execute(
+                "SELECT id, file_path, probation_actions, probation_baseline, probation_started "
+                "FROM code_patches WHERE status = 'probationary'").fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return
+        from eli.runtime.evidence_ledger import action_reliability
+        now = time.time()
+        for pid, file_path, actions_json, baseline_json, started in rows:
+            try:
+                watched = json.loads(actions_json or "[]")
+                baseline = json.loads(baseline_json or "{}")
+            except Exception:
+                watched, baseline = [], {}
+            if not watched:
+                self._resolve_probation(pid, "adopted")
+                continue
+            regressed = False
+            all_clean = True
+            for a in watched:
+                r = action_reliability(a, since=float(started) if started else None)
+                if r["n"] < _PROBATION_MIN_INVOCATIONS:
+                    all_clean = False
+                    continue
+                base_p = baseline.get(a)
+                if base_p is not None and r["p"] < base_p - _PROBATION_REGRESSION_DROP:
+                    regressed = True
+            if regressed:
+                self.revert_patch(file_path)
+                self._resolve_probation(pid, "rolled_back")
+            elif all_clean:
+                self._resolve_probation(pid, "adopted")
+            elif started and now - float(started) > _PROBATION_MAX_DAYS * 86400.0:
+                self._resolve_probation(pid, "adopted")
 
     def run_patch_cycle(
         self,

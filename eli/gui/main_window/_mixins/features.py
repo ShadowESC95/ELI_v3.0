@@ -447,37 +447,24 @@ class FeaturesMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        if shutil.which("nvidia-smi"):
-            try:
-                out = subprocess.check_output(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=memory.used,memory.total,memory.free,utilization.gpu,name",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    stderr=subprocess.DEVNULL,
-                    timeout=2,
-                ).decode().strip().splitlines()
-                if out:
-                    parts = [p.strip() for p in out[0].split(",")]
-                    used_mb = int(float(parts[0]))
-                    total_mb = int(float(parts[1]))
-                    free_mb = int(float(parts[2]))
-                    util = None
-                    if len(parts) > 3 and parts[3] not in ("", "[N/A]", "N/A"):
-                        util = float(parts[3])
-                    name = parts[4] if len(parts) > 4 else "NVIDIA GPU"
-                    stats.update({
-                        "gpu_present": True,
-                        "gpu_name": name,
-                        "gpu_util_percent": util,
-                        "vram_used_mb": used_mb,
-                        "vram_total_mb": total_mb,
-                        "vram_free_mb": free_mb,
-                        "vram_percent": (used_mb / total_mb * 100.0) if total_mb > 0 else 0.0,
-                    })
-            except Exception:
-                stats["gpu_name"] = "GPU detected, live VRAM probe failed"
+        # every card, from the one telemetry reader (hardware_profile.get_live_gpu_telemetry)
+        try:
+            from eli.core.hardware_profile import get_live_gpu_telemetry
+            _t = get_live_gpu_telemetry()
+        except Exception:
+            _t = {}
+        if _t.get("ok") and _t.get("total_mb"):
+            used_mb = int(_t.get("used_mb") or max(0, int(_t["total_mb"]) - int(_t.get("free_mb") or 0)))
+            total_mb = int(_t["total_mb"])
+            stats.update({
+                "gpu_present": True,
+                "gpu_name": str(_t.get("name") or "GPU"),
+                "gpu_util_percent": _t.get("util_pct"),
+                "vram_used_mb": used_mb,
+                "vram_total_mb": total_mb,
+                "vram_free_mb": int(_t.get("free_mb") or 0),
+                "vram_percent": (used_mb / total_mb * 100.0) if total_mb > 0 else 0.0,
+            })
         elif self.detected_system_info.get("has_gpu"):
             stats["gpu_name"] = "GPU detected, live VRAM telemetry unavailable"
 

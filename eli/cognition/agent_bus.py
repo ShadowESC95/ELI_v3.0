@@ -1,5 +1,5 @@
 """
-eli/brain/agents/agent_bus.py
+eli/cognition/agent_bus.py
 
 Multi-agent orchestration layer for ELI.
 
@@ -14,43 +14,46 @@ uses to build a richer, more confident reply.
 Agents are evidence-gatherers and action-executors, not LLM proxies.
 The LLM synthesis step still lives in CognitiveEngine._get_chat_response().
 
-Agent roster
+Agent roster (the classes in this file; a per-action profile picks which run — see the profile
+table above _BaseAgent)
 -----------
-  MemoryAgent          – semantic recall, conversation history, stored facts,
-                         habit rules, session summaries
-  SystemAgent          – OS actions: open apps/files/URLs, volume, screenshot,
-                         clipboard, keyboard, shell, timers, alarms
-  HabitAgent           – pattern detection, automation rule proposals,
-                         event logging for app launches
+  BusMemoryAgent       – semantic recall, conversation history, stored facts, session summaries
+  SystemAgent          – OS and app actions: open/close/focus apps, files, URLs, volume, screenshot,
+                         clipboard, keyboard, shell, timers, alarms, media, and the web actions
+                         (WEB_SEARCH / WEB_FETCH / GET_WEATHER / NEWS_FETCH) when the net is on
+  HabitAgent           – pattern detection, automation rule proposals, app-launch event logging
   SelfImprovementAgent – failure logging, improvement proposals, correction loop
   ProactiveAgent       – background daemon status, morning report, insights
-  FrontierAgent        – cross-system runtime matrix (memory/self/proactive/
-                         image/world/labs/chatflow)
-  PluginAgent          – weather, calendar, web automation, document reader,
-                         PDF/CSV analysis, smart home
+  FrontierAgent        – cross-system runtime matrix (memory/self/proactive/image/world/labs/chatflow)
+  PluginAgent          – plugin-backed tools: calendar, document reader, PDF/CSV analysis, smart home
+  CapabilityAgent      – what ELI can do (the capability surface), for help/capability queries
   VoiceAgent           – TTS/STT status, voice preference queries
-  KnowledgeAgent       – pure-LLM synthesis fallback (used when no other agent
-                         supplies grounded evidence)
+  OrchestratorAgent    – planning only: produces the plan, not evidence (excluded from scoring)
+  FileCodeAgent        – reads real source for code questions (snippets, files scanned)
+  KnowledgeGraphAgent  – entities and relations from the knowledge graph
+  IntrospectionBusAgent, ReflectionAgent, SpecAgent – runtime introspection, reflection, contracts
+  CriticAgent          – a reviewer over the others' evidence (profile "critic")
 
 Confidence model
 ----------------
-Each AgentResult carries a raw confidence (0.0–1.0).  The bus aggregates
-them using a weighted scheme:
+Evidence-driven, with no hardcoded per-agent weights (see _aggregate_confidence). Each contributing
+agent's share is evidence_quality × density × calibration × relevance:
+  - evidence_quality: the agent's self-reported confidence, blended with a tool-result score for
+    tool-typed results (evidence_arbitration).
+  - density: a smooth measure of how much real payload the result carries (_evidence_density).
+  - calibration: a rolling per-(agent, action) multiplier learned from the agent_metrics table.
+  - relevance: gates quality/density on whether the result is actually about the user's message.
+Route certainty contributes _ROUTE_BASE_WEIGHT (0.30) of the total; any one agent is capped at
+_SINGLE_AGENT_CAP (0.30); a dispatch with no grounded evidence is capped at _EMPTY_BUS_CEILING
+(0.65). The final score maps to a word label via eli.core.confidence.confidence_label
+(very low … very high), as the logs show (agg_conf).
 
-  base          = router intent confidence  (0.0–1.0)
-  memory hit    += 0.08 per relevant result (capped at +0.20)
-  system ok     += 0.15 if action succeeded, -0.10 if failed
-  plugin data   += 0.12 if plugin returned a real result
-  habit match   += 0.06 per matched rule
-  multi-agent   += 0.05 if ≥ 3 agents contributed evidence
-  grounded      += 0.08 if executor evidence has file paths / line numbers
-
-Final score is clamped to [0.02, 0.98].
-
-Offline guarantee
------------------
-No agent makes any network call.  All I/O is local SQLite, local filesystem,
-or subprocess calls to system binaries (playerctl, paplay, etc.).
+Network
+-------
+Local-first and offline by default. Most agents only touch local SQLite, the local filesystem, or
+subprocess calls to system binaries (playerctl, paplay, …). The web actions above are the exception:
+SystemAgent performs them only when the user has turned the network on, and every outbound request
+passes through the netguard egress ledger (eli.core.netguard).
 """
 
 from __future__ import annotations
@@ -995,7 +998,8 @@ class BusMemoryAgent(_BaseAgent):
                         continue
                     role = "User"
                     text = (t.get("content") or "")[:_tn["cog.mem_recent_chars"]]  # trim each turn
-                    line = f"{role}: {text}"
+                    from eli.cognition.evidence_format import dated
+                    line = f"{role}: " + dated(text, t.get("ts") or t.get("timestamp"))
                     char_count += len(line)
                     if char_count > 3500:
                         break
@@ -1013,10 +1017,13 @@ class BusMemoryAgent(_BaseAgent):
                     from eli.runtime.memory_provenance import format_grounding_memory_line
                 except Exception:
                     format_grounding_memory_line = None  # type: ignore
+                from eli.cognition.evidence_format import row_time
                 for h in raw_hits[:_tn["cog.mem_semantic_shown"]]:
                     if format_grounding_memory_line:
                         line = format_grounding_memory_line(h)
-                        raw_ts = h.get("ts") or h.get("timestamp") or 0
+                        # when it was said (event_ts), not when the row was last stored again: a
+                        # re-pinned memory from 14 Sep showed as 24 Sep
+                        raw_ts = row_time(h) or 0
                         try:
                             ts_str = time.strftime(
                                 "%Y-%m-%d %H:%M", time.localtime(float(raw_ts)),
@@ -1025,15 +1032,18 @@ class BusMemoryAgent(_BaseAgent):
                             ts_str = str(raw_ts)
                         if ts_str:
                             line = line.replace("] ", f"] [{ts_str}] ", 1)
-                        hits_text.append(line)
+                        from eli.cognition.evidence_format import as_of
+                        hits_text.append(as_of(line, raw_ts))
                         continue
                     txt = (h.get("text") or h.get("content") or "")[:_tn["cog.mem_fact_chars"]]
-                    raw_ts = h.get("ts") or h.get("timestamp") or 0
+                    raw_ts = row_time(h) or 0
                     try:
                         ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(raw_ts))) if raw_ts else ""
                     except Exception:
                         ts_str = str(raw_ts)
                     if txt:
+                        from eli.cognition.evidence_format import as_of
+                        txt = as_of(txt, raw_ts)
                         hits_text.append(f"  - [{ts_str}] {txt}")
                 if hits_text:
                     from eli.memory.unified_retrieval import VERIFIED_SCOPE_NOTE
@@ -1062,6 +1072,8 @@ class BusMemoryAgent(_BaseAgent):
                     except Exception:
                         _ts_str = str(_raw_ts or "")
                     if txt:
+                        from eli.cognition.evidence_format import as_of
+                        txt = as_of(txt, _raw_ts)
                         conv_text.append(f"  [{_ts_str}] {role}: {txt}" if _ts_str
                                          else f"  {role}: {txt}")
                 if conv_text:
@@ -1071,13 +1083,15 @@ class BusMemoryAgent(_BaseAgent):
                         "exchange):\n" + "\n".join(conv_text))
 
             if summaries:
+                from eli.cognition.evidence_format import dated
                 sum_text = []
                 for s in summaries[:_tn["cog.mem_summaries_shown"]]:
                     txt = (s.get("summary") or s.get("content") or "")[:_tn["cog.mem_summary_chars"]]
                     if txt:
-                        sum_text.append(f"  - {txt}")
+                        sum_text.append("  - " + dated(txt, s.get("ended_at") or s.get("started_at")))
                 if sum_text:
-                    context_parts.append("Session summaries:\n" + "\n".join(sum_text))
+                    context_parts.append("Summaries of earlier sessions (dated; what was true then, not now):\n"
+                                         + "\n".join(sum_text))
 
             memory_context = "\n\n".join(context_parts).strip()
             elapsed = (time.perf_counter() - t0) * 1000
@@ -1148,7 +1162,7 @@ class SystemAgent(_BaseAgent):
         # ── System stats ─────────────────────────────────────────────────────
         "GPU_STATUS", "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS", "HARDWARE_PROFILE",
         # ── Network / web ─────────────────────────────────────────────────────
-        "WEB_SEARCH", "GET_WEATHER", "NEWS_FETCH", "MORNING_REPORT",
+        "WEB_SEARCH", "WEB_FETCH", "GET_WEATHER", "NEWS_FETCH", "MORNING_REPORT",
         # ── Smart home ───────────────────────────────────────────────────────
         "SMART_HOME",
         # ── Plugin management ─────────────────────────────────────────────────
@@ -3065,16 +3079,23 @@ class ReflectionAgent(_BaseAgent):
                 _SWLOG.debug("suppressed exception", exc_info=True)
 
             try:
-                obs = list(mem.get_recent_observations(limit=8) or [])
+                from eli.core.cognition_tunables import snapshot as _cog_snapshot
+                _n_obs = max(0, int(_cog_snapshot().get("cog.mem_observations", 10)))
+            except Exception:
+                _n_obs = 10
+            _n_sums = max(1, _n_obs // 2)  # was a fixed 8 observations and 3 summaries
+
+            try:
+                obs = list(mem.get_recent_observations(limit=_n_obs) or []) if _n_obs else []
             except Exception:
                 obs = []
 
             try:
-                sums = list(mem.get_session_summaries(user_id=user_id, limit=3) or [])
+                sums = list(mem.get_session_summaries(user_id=user_id, limit=_n_sums) or [])
             except Exception:
                 sums = []
 
-            for row in obs[:8]:
+            for row in obs[:_n_obs]:
                 text = str(
                     row.get("observation")
                     or row.get("content")
@@ -3084,10 +3105,11 @@ class ReflectionAgent(_BaseAgent):
                 if text:
                     insights.append(text[:220])
 
-            for row in sums[:3]:
+            from eli.cognition.evidence_format import dated
+            for row in sums[:_n_sums]:
                 text = str(row.get("summary") or row.get("content") or "").strip()
                 if text:
-                    insights.append(text[:220])
+                    insights.append(dated(text[:220], row.get("ended_at") or row.get("started_at")))
 
             local_conf = conf_from_flag(bool(_synth), hi=0.78, lo=conf_from_flag(bool(insights), hi=0.68, lo=0.20))
             elapsed = (time.perf_counter() - t0) * 1000
@@ -3156,8 +3178,11 @@ class KnowledgeGraphAgent(_BaseAgent):
             except Exception:
                 _query = user_input
 
-            from eli.core.cognition_tunables import get_tunable as _cog_get
-            ctx = kg.context_for_prompt(_query, max_chars=_cog_get("cog.kg_max_chars"))
+            from eli.core.cognition_tunables import snapshot as _cog_snapshot
+            _tn = _cog_snapshot()  # tier-scaled; get_tunable() isn't
+            ctx = kg.context_for_prompt(_query, max_chars=int(_tn.get("cog.kg_max_chars", 3200)))
+            _kg_seeds = max(1, int(_tn.get("cog.kg_entities", 8)) // 2)
+            _kg_chains = max(1, int(_tn.get("cog.kg_relations", 8)))
 
             # Multi-hop reasoning: context_for_prompt is only 1-hop. Traverse the graph
             # 2 hops out from the top matched entities (kg.related BFS) to surface CONNECTED
@@ -3165,11 +3190,11 @@ class KnowledgeGraphAgent(_BaseAgent):
             multihop: List[str] = []
             try:
                 _seen_chain: set = set()
-                for _s in (kg.search_entities(_query, limit=3) or []):
+                for _s in (kg.search_entities(_query, limit=_kg_seeds) or []):
                     _nm = (_s.get("name") if isinstance(_s, dict) else "") or ""
                     if not _nm:
                         continue
-                    for _rel in (kg.related(_nm, hops=2) or [])[:6]:
+                    for _rel in (kg.related(_nm, hops=2) or [])[:_kg_chains]:
                         if not isinstance(_rel, dict):
                             continue
                         _subj = str(_rel.get("subject") or "").strip()
@@ -3193,7 +3218,7 @@ class KnowledgeGraphAgent(_BaseAgent):
             if multihop:
                 kg_block += (("\n" if kg_block else "")
                              + "Connected facts (multi-hop):\n"
-                             + "\n".join(f"- {c}" for c in multihop[:8]))
+                             + "\n".join(f"- {c}" for c in multihop[:_kg_seeds * _kg_chains]))
             # Multi-hop chains are higher-value evidence — reward them in the confidence.
             confidence = min(0.90, conf_from_count(stats["relations"], base=0.4, step=0.02, cap=0.9) + (0.06 if multihop else 0.0))
             log.debug(f"[AGENT:knowledge_graph] {stats['entities']} entities, "

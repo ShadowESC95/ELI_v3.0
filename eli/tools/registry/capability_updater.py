@@ -8,7 +8,6 @@ This module is kept as the stable GUI/self-upgrade entry point.
 """
 
 import json
-import re
 import time
 from pathlib import Path
 
@@ -25,39 +24,33 @@ def _eli_root() -> Path:
 ELI_ROOT = _eli_root()
 
 
-def extract_executor_actions(executor_path: Path) -> list:
-    """Extract all action names handled by the executor."""
-    src = executor_path.read_text(encoding="utf-8", errors="replace")
-    # Match: if a == "ACTION_NAME":  or  if a in ("A", "B"):
-    single = re.findall(r'if a == ["\'](\w+)["\']', src)
-    multi  = re.findall(r'if a in \(([^)]+)\)', src)
-    actions = set(single)
-    for group in multi:
-        for name in re.findall(r'["\'](\w+)["\']', group):
-            actions.add(name)
-    return sorted(actions)
+def _plugin_permission_rollup(plugin_id: str) -> str:
+    """permission_state for a plugin-sourced action.
 
-
-def extract_plugin_actions(plugins_dir: Path) -> dict:
-    """Extract actions from each plugin's plugin.py."""
-    plugin_actions = {}
-    if not plugins_dir.exists():
-        return plugin_actions
-    for plugin_dir in plugins_dir.iterdir():
-        plugin_py = plugin_dir / "plugin.py"
-        if not plugin_py.exists():
-            continue
-        try:
-            src = plugin_py.read_text(encoding="utf-8", errors="replace")
-            actions = re.findall(r'["\'](\w+)["\']', src)
-            # Filter to uppercase action-like names
-            plugin_actions[plugin_dir.name] = [
-                a for a in actions
-                if a.isupper() and len(a) > 3 and "_" in a or a.isupper()
-            ][:20]
-        except Exception:
-            pass
-    return plugin_actions
+    PermissionStore is keyed by (plugin_id, capability-CLASS) — one of 14
+    generic classes (network, filesystem_write, ...) a plugin declares in
+    its manifest — not by individual action name, and there is no existing
+    mapping from "this action" to "which of those 14 classes it needs" (a
+    plugin can expose several actions under one set of capability grants).
+    So this is a plugin-level rollup, not a per-action lookup: "denied" if
+    the plugin has any deny_always on record (the more cautious signal when
+    grants are mixed), "granted" if it has at least one allow_always and no
+    deny_always, "undetermined" if nothing persistent has been decided yet.
+    Coarser than per-action, but every value here is grounded in a real
+    stored decision — nothing invented to fill in a mapping that doesn't
+    exist.
+    """
+    try:
+        from eli.plugins.permissions import DENY_ALWAYS, ALLOW_ALWAYS, store
+        grants = store().grants_for(plugin_id)
+    except Exception:
+        return "undetermined"
+    decisions = {g.get("decision") for g in grants.values()}
+    if DENY_ALWAYS in decisions:
+        return "denied"
+    if ALLOW_ALWAYS in decisions:
+        return "granted"
+    return "undetermined"
 
 
 def _manifest_matches(path, manifest) -> bool:
@@ -74,6 +67,79 @@ def _manifest_matches(path, manifest) -> bool:
            {k: v for k, v in manifest.items() if k != "generated_at"}
 
 
+def _missing_modules(needs) -> list:
+    import importlib.util
+    out = []
+    for name in needs or ():
+        try:
+            if importlib.util.find_spec(name) is None:
+                out.append(name)
+        except (ImportError, ValueError):
+            out.append(name)
+    return out
+
+
+def manifest_entry(action: str, meta: dict) -> dict:
+    """What the code says about one action, for the shipped manifest: where it lives, how it is reached,
+    the third-party modules its own branch imports. Whether it has worked here, and whether what it needs
+    is present, belong to this machine and are kept in its capability state (capability_status). The
+    manifest used to carry both: every action read "active", and a test run's results were written into
+    the tracked file as verified successes."""
+    return {
+        "action": action,
+        "source": meta.get("source", "unknown"),
+        "plugin": meta.get("plugin"),
+        "routable": bool(meta.get("routable")),
+        "in_dispatch": bool(meta.get("in_dispatch")),
+        "in_supported_list": bool(meta.get("in_supported_list")),
+        "needs": sorted(meta.get("needs") or []),
+    }
+
+
+def _build_capability_entry(action: str, meta: dict) -> dict:
+    """The manifest entry, and this machine's state for the action brought up to date."""
+    from eli.runtime import capability_state as _cs
+
+    entry = manifest_entry(action, meta)
+    _cs.touch_discovered(action)
+    # Permission decisions can change between runs and are cheap to recompute: refreshed every call.
+    fields = {"permission_state": _plugin_permission_rollup(entry["plugin"]) if entry["plugin"] else "not_applicable"}
+    if entry["needs"]:
+        # measured here: a module the branch imports is installed or it is not
+        fields["dependency_ready"] = not _missing_modules(entry["needs"])
+    _cs.upsert_state(action, **fields)
+    return entry
+
+
+def capability_status(actions=None) -> dict:
+    """This install's view of its capabilities. "verified": it has worked here (a real success in the
+    evidence ledger); "unavailable": something it needs is missing here, it was found unreachable, or
+    its plugin is denied; "untested": neither yet. The manifest only says what the code can do."""
+    from eli.runtime import capability_state as _cs
+    from eli.runtime.evidence_ledger import verified_actions
+    if actions is None:
+        try:
+            actions = [c["action"] for c in json.loads((ELI_ROOT / "capability_manifest.json").read_text(
+                encoding="utf-8")).get("capabilities", [])]
+        except Exception:
+            actions = []
+    worked = verified_actions()
+    states = _cs.all_states()
+    view = {}
+    for action in actions:
+        st = states.get(str(action).upper()) or {}
+        blocked = (any(st.get(k) is False for k in ("dependency_ready", "reachable", "device_available"))
+                   or st.get("permission_state") == "denied")
+        view[action] = {
+            "status": "unavailable" if blocked else ("verified" if action in worked else "untested"),
+            "verified_at": worked.get(action),
+            **{k: st.get(k) for k in ("dependency_ready", "permission_state", "reachable", "device_available",
+                                      "evidence_state", "discovered_at", "last_probe_at")},
+        }
+    counts = {k: sum(1 for v in view.values() if v["status"] == k) for k in ("verified", "unavailable", "untested")}
+    return {"discovered": len(view), **counts, "actions": view}
+
+
 def update_capability_manifest():
     from eli.runtime.capability_sync import CapabilitySync
 
@@ -84,15 +150,7 @@ def update_capability_manifest():
     manifest_path = ELI_ROOT / "capability_manifest.json"
 
     capabilities = [
-        {
-            "action": action,
-            "source": meta.get("source", "unknown"),
-            "active": True,
-            "plugin": meta.get("plugin"),
-            "routable": bool(meta.get("routable")),
-            "in_dispatch": bool(meta.get("in_dispatch")),
-            "in_supported_list": bool(meta.get("in_supported_list")),
-        }
+        _build_capability_entry(action, meta)
         for action, meta in sorted(capabilities_map.items())
     ]
 

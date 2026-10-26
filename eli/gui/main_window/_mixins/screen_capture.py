@@ -18,7 +18,7 @@ class ScreenCaptureMixin:
                 try:
                     from eli.perception.os_controller import take_screenshot
 
-                    captured = take_screenshot("full")
+                    captured = take_screenshot("full", keep=False)
                     cap_path = str(captured.get("path") or "")
                     if captured.get("ok") and cap_path:
                         self._sc_screenshot_path = cap_path
