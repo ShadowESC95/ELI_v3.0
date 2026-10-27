@@ -36,10 +36,9 @@ def test_pytest_failure_and_empty_and_stdlib_exclusion():
     assert not any("site-packages" in f or f.startswith("/usr") for f in d3["affected_files"])
 
 
-def test_resolve_reproduces_a_real_failing_test_readonly(tmp_path):
-    # resolve(apply=False) must RUN the validation and confirm the failure without touching source.
-    import subprocess, sys, os
-    from pathlib import Path
+def test_v2_verify_reproduces_readonly(tmp_path):
+    """v2 slight frontier improvement: verify() runs the failing test (reproduce) but stays
+    read-only — no governed apply loop (that's v3-only)."""
     from eli.runtime import autopilot_debugger as dbg
     root = dbg._repo_root()
     probe = root / "tests" / "test_ap_probe_tmp.py"

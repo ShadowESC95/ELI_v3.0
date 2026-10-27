@@ -72,17 +72,7 @@ def test_free_vram_is_reported_net_of_what_generation_will_take():
     # v3 keeps the GPU report in the effectors package
     src = (pathlib.Path(__file__).resolve().parents[1] / "eli" / "execution"
            / "executor_enhanced.py").read_text(encoding="utf-8")
-    i = src.index("MiB VRAM reads free")
+    i = src.index("MiB VRAM free")
     window = src[max(0, i - 2000):i + 1500]
-    assert "_compute_graph_reserve_mb" in window
-    assert "_CUDA_OVERHEAD_MB" in window
     assert "vram_reserve_mb" in window
-
-
-def test_the_live_numbers_report_no_spare_room():
-    """Your session: 1493 MiB read free, but the commitment exceeds it."""
-    from eli.core.hardware_profile import (_compute_graph_reserve_mb,
-                                           _CUDA_OVERHEAD_MB, vram_reserve_mb)
-    committed = (_compute_graph_reserve_mb(12288, 128)
-                 + _CUDA_OVERHEAD_MB + vram_reserve_mb())
-    assert committed > 1493, f"committed {committed} should exceed the 1493 MiB that read free"
+    assert "_compute_graph_reserve_mb" not in window and "_CUDA_OVERHEAD_MB" not in window

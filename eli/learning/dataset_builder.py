@@ -92,13 +92,8 @@ REJECT_PATTERNS = [
 # Redact the actual local checkout dynamically. Do not assume a username,
 # a Desktop checkout, a Linux-only host, or a historical checkout folder name.
 PROJECT_PATH_RE = re.compile(re.escape(str(PROJECT_ROOT)))
-PROJECT_ALIAS_PATH_RE = re.compile(
-    r"(?:"
-    r"/home/[A-Za-z0-9._-]+/[^\s]*?(?:ELI_MKXI|Eli_v\d+)[^/\s]*"
-    r"|/Users/[A-Za-z0-9._-]+/[^\s]*?(?:ELI_MKXI|Eli_v\d+)[^/\s]*"
-    r"|[A-Za-z]:\\Users\\[^\\\s]+\\[^\s]*?(?:ELI_MKXI|Eli_v\d+)[^\\\s]*"
-    r")"
-)
+# one pattern, shared with dataset_filters (another checkout's folder name, either case)
+from eli.learning.dataset_filters import PROJECT_ALIAS_PATH_RE  # noqa: E402
 
 # Sanitisation patterns for common user-home path shapes. These are redaction
 # rules, not operational filesystem defaults.

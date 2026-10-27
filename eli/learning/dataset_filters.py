@@ -14,9 +14,9 @@ except Exception:
 
 PROJECT_ALIAS_PATH_RE = re.compile(
     r"(?:"
-    r"/home/[A-Za-z0-9._-]+/[^\s]*?(?:ELI_MKXI|Eli_v\d+)[^/\s]*"
-    r"|/Users/[A-Za-z0-9._-]+/[^\s]*?(?:ELI_MKXI|Eli_v\d+)[^/\s]*"
-    r"|[A-Za-z]:\\Users\\[^\\\s]+\\[^\s]*?(?:ELI_MKXI|Eli_v\d+)[^\\\s]*"
+    r"/home/[A-Za-z0-9._-]+/[^\s]*?(?:ELI_MKXI|(?i:eli)_v\d+)[^/\s]*"
+    r"|/Users/[A-Za-z0-9._-]+/[^\s]*?(?:ELI_MKXI|(?i:eli)_v\d+)[^/\s]*"
+    r"|[A-Za-z]:\\Users\\[^\\\s]+\\[^\s]*?(?:ELI_MKXI|(?i:eli)_v\d+)[^\\\s]*"
     r")"
 )
 

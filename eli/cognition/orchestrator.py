@@ -193,26 +193,53 @@ class PlannerAgent:
         identity  = any(k in low for k in ("who am i", "my name", "remember me"))
         runtime   = any(k in low for k in ("memory function", "memory work", "cognition", "how do you work"))
 
+        # One tier-scaled read of the tunables. get_tunable() doesn't apply the
+        # model-tier scaling, so this path used to gather at small-model limits on
+        # any model, and deep modes used fixed 20/20/15, below the balanced default.
+        try:
+            from eli.core.cognition_tunables import snapshot as _cog_snapshot
+            _tn = _cog_snapshot()
+        except Exception:
+            _tn = {}
+
+        def _lim(key: str, fallback: int, floor: int, scale: float = 1.0,
+                 by_mode: bool = True) -> int:
+            mult = _budget if by_mode else 1.0
+            return max(floor, int(round(float(_tn.get(key, fallback)) * mult * scale)))
+
+        # Every limit sequential_retrieve and unified_retrieval read, so none of
+        # them falls back to a hardcoded number.
+        common = {
+            "kg_limit":      _lim("cog.kg_entities", 8, 2),
+            # History depth follows the model tier, not the mode: an expert turn
+            # times 2.5 would put ~190 recent turns in front of a slow prefill.
+            "recent_limit":  _lim("cog.mem_recent_turns", 30, 4, by_mode=False),
+            "summary_limit": _lim("cog.mem_summaries_recall", 40, 2, by_mode=False),
+            "hop2_limit":    _lim("cog.mem_hop2_recall", 20, 2),
+            "merge_cap":     _lim("cog.mem_merge_cap", 40, 8),
+        }
+
         if mode == "fast":
-            _kw = max(4, int(round(6 * _budget)))
             return {
+                **common,
                 "need_keyword":   True,
                 "need_semantic":  False,      # not kept unless evidence is thin (see sequential_retrieve)
                 "need_rag":       doc_query,  # quick mode reads documents only when asked about one
                 "rag_strict":     False,
                 "need_kg":        identity,
-                "keyword_limit":  _kw,
+                "keyword_limit":  _lim("cog.orch_keyword_limit", 32, 4, scale=0.25),
                 "semantic_limit": 0,
-                "rag_limit":      max(2, int(round(4 * _budget))) if doc_query else 0,
+                "rag_limit":      _lim("cog.orch_rag_limit", 24, 2, scale=0.25) if doc_query else 0,
                 "prefer_identity": identity,
                 "prefer_runtime":  runtime,
                 "skip_hyde":       True,      # signals MemoryAgent to never run HyDE
                 "max_react_iter":  1,
             }
         elif mode == "deep":
-            _kw = max(8, int(round(20 * _budget)))
-            _sem = max(8, int(round(20 * _budget)))
+            # The mode budget (research 200%, expert 250% by default) already
+            # widens these; deep never gathers less than balanced.
             return {
+                **common,
                 "need_keyword":   True,
                 "need_semantic":  True,
                 # Asked about a document: its best passages. Otherwise only passages that clearly
@@ -220,17 +247,17 @@ class PlannerAgent:
                 "need_rag":       docs_indexed,
                 "rag_strict":     not doc_query,
                 "need_kg":        True,
-                "keyword_limit":  _kw,
-                "semantic_limit": _sem,
-                "rag_limit":      max(4, int(round(15 * _budget))),
+                "keyword_limit":  _lim("cog.orch_keyword_limit", 32, 8),
+                "semantic_limit": _lim("cog.orch_semantic_limit", 32, 8),
+                "rag_limit":      _lim("cog.orch_rag_limit", 24, 4),
                 "prefer_identity": identity,
                 "prefer_runtime":  runtime,
                 "skip_hyde":       False,
                 "max_react_iter":  3,
             }
         else:  # balanced (default)
-            from eli.core.cognition_tunables import get_tunable as _cog_get
             return {
+                **common,
                 "need_keyword":   True,
                 "need_semantic":  True,
                 # Asked about a document: its best passages. Otherwise only passages that clearly
@@ -238,9 +265,9 @@ class PlannerAgent:
                 "need_rag":       docs_indexed,
                 "rag_strict":     not doc_query,
                 "need_kg":        True,
-                "keyword_limit":  max(4, int(round(_cog_get("cog.orch_keyword_limit") * _budget))),
-                "semantic_limit": max(4, int(round(_cog_get("cog.orch_semantic_limit") * _budget))),
-                "rag_limit":      max(2, int(round(_cog_get("cog.orch_rag_limit") * _budget))),
+                "keyword_limit":  _lim("cog.orch_keyword_limit", 32, 4),
+                "semantic_limit": _lim("cog.orch_semantic_limit", 32, 4),
+                "rag_limit":      _lim("cog.orch_rag_limit", 24, 2),
                 "prefer_identity": identity,
                 "prefer_runtime":  runtime,
                 "skip_hyde":       False,
@@ -416,9 +443,18 @@ class OrchestratorMemoryAgent:
         try:
             from eli.memory.knowledge_graph import get_knowledge_graph
             _kg = get_knowledge_graph()
-            # Scale max_chars roughly with limit (default ~600 at limit=6)
-            _max_chars = max(400, min(2000, limit * 120))
-            _ctx = _kg.context_for_prompt(query, max_chars=_max_chars)
+            # The KG character budget the user set (tier-scaled). This was
+            # min(2000, limit * 120): ~960 chars at the default limit whatever
+            # cog.kg_max_chars said.
+            try:
+                from eli.core.cognition_tunables import snapshot as _cog_snapshot
+                _max_chars = int(_cog_snapshot().get("cog.kg_max_chars", 3200))
+            except Exception:
+                _max_chars = 3200
+            if _max_chars <= 0:
+                return []
+            _ctx = _kg.context_for_prompt(query, max_chars=_max_chars,
+                                          max_entities=max(1, int(limit)))
             if not _ctx:
                 return []
             return [{
@@ -716,7 +752,8 @@ class AgentOrchestrator:
                 reasoning_mode=reasoning_mode,
                 trace=getattr(wm, "trace", None),
                 recent_turns=getattr(self.engine, "memory", None)
-                and self.engine.memory.get_recent_conversation(8) or None,
+                and self.engine.memory.get_recent_conversation(
+                    limit=_recent_turns_limit(reasoning_mode), user_id=self.engine.user_id) or None,
             )
             if _esc is None:
                 return None

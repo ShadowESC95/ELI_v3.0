@@ -173,12 +173,13 @@ def test_a_folder_listing_follows_up_into_the_entry(tmp_path, monkeypatch):
 
 
 def test_a_web_search_lists_its_results(monkeypatch):
+    # results that answer the query: off-topic ones are held back and not offered as picks
     from eli.execution.effectors import web_info
     monkeypatch.setattr("eli.core.config.network_allowed", lambda: True)
     monkeypatch.setattr("eli.plugins.web.plugin._web_search_results",
-                        lambda q, max_results=5: [{"title": "pgvector HNSW", "href": "https://x.org/a", "body": "fast"}])
+                        lambda q, max_results=5: [{"title": "pgvector HNSW vector index", "href": "https://x.org/a", "body": "fast"}])
     got = web_info._h_web_search("WEB_SEARCH", {"query": "vector index"})
-    assert got["listed"] == [{"title": "pgvector HNSW", "ref": "https://x.org/a", "summary": "fast"}]
+    assert got["listed"] == [{"title": "pgvector HNSW vector index", "ref": "https://x.org/a", "summary": "fast"}]
     assert got["follow_up"] == {"action": "WEB_SEARCH", "arg": "query"}
 
 

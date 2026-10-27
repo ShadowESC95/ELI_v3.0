@@ -1,6 +1,7 @@
 """Tests for the background task manager, the cost/should-background heuristic,
 and the CHECK_JOB / BACKGROUND_JOBS executor actions. No model required."""
 
+import pytest
 import time
 
 
@@ -81,28 +82,33 @@ def test_cost_open_ended_backgrounds():
     assert should_background("write a function to add two numbers")["background"] is False
 
 
-def test_fix_file_backgrounds_by_default():
-    from eli.execution.executor_enhanced import _maybe_background_code_work
+@pytest.fixture
+def held_jobs(monkeypatch):
+    """Jobs are taken, not run. Cancelling one that had started did not stop it: it ran on after its
+    test, loaded the stand-in model, and wrote n_ctx=1 into the real runtime snapshot, which a later
+    test then read as this machine's window."""
     from eli.runtime.background_tasks import get_background_tasks
+    taken = []
+    monkeypatch.setattr(get_background_tasks(), "submit", lambda name, fn, **kw: taken.append(name) or len(taken))
+    return taken
+
+
+def test_fix_file_backgrounds_by_default(held_jobs):
+    from eli.execution.executor_enhanced import _maybe_background_code_work
     result = _maybe_background_code_work("FIX_FILE", {"path": "eli/memory/memory.py"})
     assert result is not None
     assert result.get("background") is True
     assert "job #" in result["content"].lower()
-    jid = result.get("job_id")
-    if jid:
-        get_background_tasks().cancel(jid)
+    assert held_jobs == ["FIX_FILE: eli/memory/memory.py"]
 
 
-def test_examine_sweep_backgrounds():
+def test_examine_sweep_backgrounds(held_jobs):
     from eli.execution.executor_enhanced import _maybe_background_code_work
-    from eli.runtime.background_tasks import get_background_tasks
     result = _maybe_background_code_work(
         "EXAMINE_CODE", {"request": "examine the codebase for bugs"})
     assert result is not None
     assert result.get("background") is True
-    jid = result.get("job_id")
-    if jid:
-        get_background_tasks().cancel(jid)
+    assert held_jobs == ["EXAMINE_CODE: examine the codebase for bugs"]
 
 
 def test_examine_recall_skips_background():
@@ -129,3 +135,33 @@ def test_executor_check_and_list_jobs():
 
     r3 = execute("CHECK_JOB", {"job_id": 999999})
     assert r3["ok"] is False and "no background job" in r3["content"].lower()
+
+
+def test_a_job_reports_how_far_it_has_got_and_what_is_left():
+    import threading
+    from eli.runtime import background_tasks as bgt
+    from eli.execution.executor_enhanced import execute
+    bt = bgt.get_background_tasks()
+    go, half = threading.Event(), threading.Event()
+
+    def work():
+        bgt.report(0, 4, "reading")
+        bgt.report(2, 4, "reading")
+        half.set()
+        go.wait(5)
+        return {"ok": True, "content": "read"}
+
+    jid = bt.submit("Analyse 4 PDFs: physics", work)
+    assert half.wait(5)
+    bt._tasks[jid].progress["since"] -= 60          # two of four took a minute: a minute to go
+    t = bt.get(jid)
+    assert 55 <= t["eta_s"] <= 65
+    assert t["progress"]["done"] == 2 and t["progress"]["total"] == 4 and t["eta_s"] is not None
+    msg = execute("CHECK_JOB", {})["content"]                 # no number: the running job
+    assert f"#{jid}" in msg and "Reading: 2 of 4" in msg and "left" in msg
+    from eli.execution.router_enhanced import route
+    assert route("cool, do you have an eta?")["action"] == "CHECK_JOB"
+    assert route("how long is the eiffel tower?")["action"] != "CHECK_JOB"
+    go.set()
+    bt.wait(jid, timeout=5)
+    assert bt.get(jid)["eta_s"] is None

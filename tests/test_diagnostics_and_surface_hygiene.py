@@ -14,7 +14,7 @@ about itself, and leaked its own internals into what the user reads:
     asked for no action at all.
   * A mistyped "ply" was answered with a raw JSON blob on screen:
     {"event": "input_fragment_guard", "heard": "ply", ...}
-  * "i am not saying close files (the name of the app) ... this is the issue"
+  * "i do not mean close files (the app's name) ... that is the problem"
     was routed to EXAMINE_CODE at 0.96 and answered with lint warnings about
     unused imports, because an issue-word and a file-word merely had to
     co-occur somewhere in the sentence.
@@ -100,8 +100,8 @@ def test_fragment_guard_still_records_the_diagnostic():
 
 # ── a complaint about ELI is not a request to audit ELI ────────────────────
 @pytest.mark.parametrize("phrase", [
-    "i am not saying close files (the name of the app/spftware) because you "
-    "will just shut my pc down, but there you go, this is the issue",
+    "i do not mean close files (the app's name, the softwre) because you "
+    "would just close everything, but anyway, that is the issue",
     "the issue is that spotify keeps repeating the same file",
     "that is the problem with your code of conduct",
     "what's the issue with the code of conduct file",
@@ -131,25 +131,15 @@ def test_real_code_audit_requests_still_route(phrase):
 @pytest.mark.parametrize("fn", ["_mpv_alive", "_mpv_ipc", "_mpv_load_confirmed"])
 def test_mpv_ipc_helpers_cannot_leak_a_socket(fn):
     """Each closed its socket only after the last statement, so any raise in
-    between leaked the fd -- the ResourceWarnings in the session log.
-
-    The wrappers now delegate to the cross-platform helpers (Unix socket or
-    Windows named pipe); either the wrapper or the helper it calls must hold
-    the socket in a with-block."""
+    between leaked the fd -- the ResourceWarnings in the session log."""
     from eli.integrations.media import cross_platform as cp
-
-    src = inspect.getsource(getattr(ex, fn))
+    # The helpers delegate to the cross-platform implementation (Unix socket or Windows named pipe),
+    # which owns the socket.
+    delegate = {"_mpv_alive": cp.mpv_alive, "_mpv_ipc": cp.mpv_ipc_send, "_mpv_load_confirmed": cp.mpv_ipc_send}[fn]
+    src = inspect.getsource(delegate)
+    assert "with _sock.socket(" in src, f"{fn} no longer uses a context manager"
     assert not re.search(r"^\s*s = _sock\.socket\(", src, re.M), \
         f"{fn} constructs a bare socket outside a with-block again"
-    if "with _sock.socket(" in src:
-        return
-    delegates = [h for h in ("mpv_ipc_send", "mpv_alive") if h in src]
-    assert delegates, f"{fn} neither uses a context manager nor delegates to a helper that does"
-    for helper in delegates:
-        hsrc = inspect.getsource(getattr(cp, helper))
-        assert "with _sock.socket(" in hsrc, f"{helper} no longer uses a context manager"
-        assert not re.search(r"^\s*s = _sock\.socket\(", hsrc, re.M), \
-            f"{helper} constructs a bare socket outside a with-block again"
 
 
 def test_mpv_helpers_survive_a_missing_socket():

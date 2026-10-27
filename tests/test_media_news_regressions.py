@@ -199,35 +199,35 @@ def test_browser_play_button_routes_to_browser_media_control():
 
 
 def test_play_specific_music_defaults_to_spotify_search_target():
-    result = route("play soldiers logic by diabolic")
+    result = route("play silver lanterns by veridian")
     assert result["action"] == "PLAY_MEDIA"
-    assert result["args"]["query"] == "soldiers logic by diabolic"
+    assert result["args"]["query"] == "silver lanterns by veridian"
     assert result["args"]["target"] == "spotify"
 
 
 def test_play_specific_explicit_spotify_target_is_preserved():
-    result = route("play soldiers logic by diabolic on spotify")
+    result = route("play silver lanterns by veridian on spotify")
     assert result["action"] == "PLAY_MEDIA"
-    assert result["args"]["query"] == "soldiers logic by diabolic"
+    assert result["args"]["query"] == "silver lanterns by veridian"
     assert result["args"]["target"] == "spotify"
 
 
 def test_play_specific_explicit_youtube_target_is_preserved():
-    result = route("play soldiers logic by diabolic on youtube")
+    result = route("play silver lanterns by veridian on youtube")
     assert result["action"] == "PLAY_MEDIA"
-    assert result["args"]["query"] == "soldiers logic by diabolic"
+    assert result["args"]["query"] == "silver lanterns by veridian"
     assert result["args"]["target"] == "youtube"
 
 
 def test_play_specific_video_provider_targets_are_normalized():
-    netflix = route("play Oppenheimer, on netflix")
-    prime = route("play Oppenheimer on prime")
+    netflix = route("play Coco, on netflix")
+    prime = route("play Coco on prime")
 
     assert netflix["action"] == "PLAY_MEDIA"
-    assert netflix["args"]["query"].lower() == "oppenheimer"
+    assert netflix["args"]["query"].lower() == "coco"
     assert netflix["args"]["target"] == "netflix"
     assert prime["action"] == "PLAY_MEDIA"
-    assert prime["args"]["query"].lower() == "oppenheimer"
+    assert prime["args"]["query"].lower() == "coco"
     assert prime["args"]["target"] == "primevideo"
 
 
@@ -236,14 +236,14 @@ def test_play_specific_music_provider_targets_are_normalized():
     "play X on TARGET" contract entirely — an explicit "on apple music" request fell
     through to a generic "X by Y" match and got silently misrouted to Spotify instead
     of the platform the user actually named."""
-    apple = route("play soldiers logic by diabolic on apple music")
-    tidal = route("play soldiers logic by diabolic on tidal")
-    deezer = route("play soldiers logic by diabolic on deezer")
-    soundcloud = route("play soldiers logic by diabolic on soundcloud")
-    amazon_music = route("play soldiers logic by diabolic on amazon music")
+    apple = route("play silver lanterns by veridian on apple music")
+    tidal = route("play silver lanterns by veridian on tidal")
+    deezer = route("play silver lanterns by veridian on deezer")
+    soundcloud = route("play silver lanterns by veridian on soundcloud")
+    amazon_music = route("play silver lanterns by veridian on amazon music")
 
     assert apple["action"] == "PLAY_MEDIA"
-    assert apple["args"]["query"].lower() == "soldiers logic by diabolic"
+    assert apple["args"]["query"].lower() == "silver lanterns by veridian"
     assert apple["args"]["target"] == "applemusic"
 
     assert tidal["action"] == "PLAY_MEDIA"
@@ -260,7 +260,7 @@ def test_play_specific_music_provider_targets_are_normalized():
 
     # "amazon prime"/"amazon" alone must still mean Prime Video, unaffected by the
     # new "amazon music" alias.
-    amazon_prime = route("play Oppenheimer on amazon prime")
+    amazon_prime = route("play Coco on amazon prime")
     assert amazon_prime["args"]["target"] == "primevideo"
 
 
@@ -276,14 +276,14 @@ def test_play_specific_streaming_target_never_falls_through_to_youtube(monkeypat
 
     from eli.execution.executor_enhanced import play_specific
 
-    for target, query in (("netflix", "rick and morty"), ("primevideo", "severance")):
+    for target, query in (("netflix", "bluey"), ("primevideo", "severance")):
         result = play_specific(query, target)
         assert "YouTube" not in (result.get("response") or "")
         assert result.get("target") == target
         assert query in (result.get("response") or "")
 
     assert calls == [
-        ("netflix", "rick and morty", False),
+        ("netflix", "bluey", False),
         ("primevideo", "severance", False),
     ]
 
@@ -819,3 +819,58 @@ def test_gguf_stream_keeps_global_llm_lock_during_iteration():
     assert [chunk["choices"][0]["text"] for chunk in stream] == ["ok"]
     assert observed == [True]
     assert owns_lock() is False
+
+
+def test_live_media_question_routes_to_now_playing_even_when_wrapped():
+    """A question about the live session reads NOW_PLAYING, not a guess from history — even when
+    wrapped in a longer sentence. Observed live: 'do you know what i am watching now?' and
+    'can you check what i am watching, now?' fell to chat.long_question_guard and ELI claimed it was
+    blind, while the bare 'what am i watching?' worked. Declarative remarks stay chat."""
+    for q in [
+        "do you know what i am watching now? and we can get to the project later",
+        "you are forgetting the other films. Can you not check what i am watching, now?",
+        "what am i watching?",
+        "what's playing?",
+        "do you know what i'm listening to",
+    ]:
+        assert route(q)["action"] == "NOW_PLAYING", f"expected NOW_PLAYING for {q!r}"
+
+    # A declarative remark (no request lead) and the calendar must NOT be grabbed as now-playing.
+    for q in ["see, you can see what i am watching", "it's okay, you can see what i'm watching"]:
+        assert route(q)["action"] != "NOW_PLAYING", f"declarative wrongly routed: {q!r}"
+    assert route("what's on my calendar today?")["action"] != "NOW_PLAYING"
+
+
+def test_a_clarification_question_with_by_does_not_play_music():
+    """'then what did you mean by the first message?' is a question to ELI, not '<song> by <artist>'.
+    Live: the leading 'then' slipped past the implied-song opener guard and 'by' matched, so
+    ELI played (and crashed) Spotify with a spotify:search of the whole sentence."""
+    for q in [
+        "then what did you mean by the first message?",
+        "so what do you mean by the second one",
+        "wait, what did you mean by that",
+        "why did you say that by the way",
+    ]:
+        assert route(q)["action"] != "PLAY_MEDIA", f"clarification wrongly played music: {q!r}"
+
+    # Real "<song> by <artist>" still plays — including titles that contain 'you mean' / 'what you'.
+    for q in [
+        "bohemian rhapsody by queen",
+        "you mean everything to me by neil sedaka",
+        "baby what you want me to do by jimmy reed",
+    ]:
+        assert route(q)["action"] == "PLAY_MEDIA", f"real song wrongly blocked: {q!r}"
+
+
+@pytest.mark.parametrize("said", ["well, that is what's new with me", "here's what's new", "this is what's new",
+                                  "what's new with you?", "guess what's new", "what's new with me"])
+def test_whats_new_said_or_aimed_at_a_person_is_not_the_news(said):
+    """Live: ELI asked what was new with the user, was shown what was playing, and the reply saying
+    that was what's new got three headlines. "What's new" is the news only asked about the world."""
+    assert route(said)["action"] != "NEWS_FETCH"
+
+
+@pytest.mark.parametrize("asked", ["what's new?", "whats new", "what's new in the world?", "what's new today",
+                                   "what's the news", "any news?", "latest news", "headlines please"])
+def test_asking_for_the_news_still_gets_it(asked):
+    assert route(asked)["action"] == "NEWS_FETCH"

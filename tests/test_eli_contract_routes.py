@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 from eli.execution.router_enhanced import route
 from eli.execution.executor_enhanced import execute
@@ -50,8 +51,8 @@ def test_repeated_gui_audit_proof_route():
 
 
 def test_latency_route():
-    r = assert_route("it took you 20 minutes to generate that answer?", "EXPLAIN_COGNITION_RUNTIME")
-    assert r["args"]["diagnostic_focus"] == "latency_timing"
+    # how long the last reply took is answered from its audit row, not from a RAM report
+    assert_route("it took you 20 minutes to generate that answer?", "ROUTING_FAULT_EXPLAIN")
 
 
 def test_inference_runtime_route():
@@ -93,3 +94,68 @@ def test_gui_runtime_audit_executor_shape():
         "proof_requested": True,
     })
     assert_standard_result(result, "GUI_RUNTIME_AUDIT")
+
+
+def test_a_slow_reply_is_answered_from_its_record_and_ram_with_ram(monkeypatch):
+    """'that took over a minute??' got the inference-RAM report, twice. A remark that the last reply
+    was slow goes to the last-turn rule (ROUTING_FAULT_EXPLAIN): the audit rows, with model time, and
+    where the model runs. RAM questions keep the RAM report; how to speed up gets the runtime settings."""
+    assert_route("that took over a minute?? i didn't ask if anything was carried out", "ROUTING_FAULT_EXPLAIN")
+    assert route("how much ram are you using?")["args"]["diagnostic_focus"] == "inference_ram"
+    assert route("how can we decrease latency?")["args"]["diagnostic_focus"] == "inference_runtime"
+    for not_about_eli in ("you take a seat", "it took a lot of work to build the shed", "this movie is so slow"):
+        assert route(not_about_eli)["action"] != "ROUTING_FAULT_EXPLAIN", not_about_eli
+
+    from eli.cognition import self_claims
+    from eli.runtime import deterministic_grounding_gate as g
+    from eli.runtime.personal_memory_deep_response import build_routing_fault_explanation
+    monkeypatch.setattr(self_claims, "turn_record_lines", lambda *a, **k: [
+        "[today 20:42] “Hey Eli, how are you doing this evening?” -> CHAT (quick, 71 s): ok; model ran 1 time "
+        "on 5,898 prompt characters, 69 s of model time"])
+    monkeypatch.setattr(g, "_inference_runtime_lines", lambda: "Inference runtime (live, from the loaded model):")
+    out = build_routing_fault_explanation("that took over a minute??")
+    assert "69 s of model time" in out and "Inference runtime" in out
+    assert "inference RAM" not in out and "re-run through the live router" not in out
+
+
+@pytest.mark.parametrize("asked", [
+    "took you a minute and a half for that response?",
+    "how long did that take",
+    "how long did your response take",
+    "your reply took ages",
+])
+def test_a_question_about_the_last_response_time_is_grounded_not_guessed(asked):
+    """Live: "took you a minute and a half for that response?" went to chat and the model invented
+    "one and a half seconds" for an 83 s reply. It must reach the real recorded timing."""
+    from eli.execution.router_enhanced import route
+    from eli.runtime.control_contracts import route_control_text
+    assert route(asked)["action"] in ("EXPLAIN_LAST_RESPONSE", "ROUTING_FAULT_EXPLAIN")
+    assert route_control_text(asked) in ("EXPLAIN_LAST_RESPONSE", "ROUTING_FAULT_EXPLAIN")
+
+
+@pytest.mark.parametrize("asked", [
+    # a complaint that opens "took too long" is talk, not a timing lookup, and keeps its own command
+    "took too long, you need to sort out a plan. open nasa website",
+    "why are you processing that so slowly",
+    "how long until the bus comes", "the download was slow last night",
+    "play that song", "take a screenshot",
+])
+def test_an_unrelated_or_complaint_duration_phrase_is_not_a_timing_report(asked):
+    from eli.execution.router_enhanced import route
+    assert route(asked)["action"] != "EXPLAIN_LAST_RESPONSE"
+
+
+@pytest.mark.parametrize("asked", [
+    "no dude, they come out every 2 weeks on a wednesday, why did you not search the web properly?!",
+    "why didn't you search the web right?",
+    "why did you not look that up properly",
+])
+def test_complaint_about_search_quality_is_not_a_routing_fault_dump(asked):
+    """'why did you NOT search properly' wants a better search, not the routing table — the opposite
+    of a 'why DID you web this' routing fault. Live it dumped the router table and got a
+    'what the hell?'."""
+    assert route(asked)["action"] != "ROUTING_FAULT_EXPLAIN", asked
+
+
+def test_genuine_went_to_web_complaint_still_explains_routing():
+    assert_route("why did you search the web for that?", "ROUTING_FAULT_EXPLAIN")

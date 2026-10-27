@@ -16,20 +16,7 @@ from eli.runtime import self_facts
 
 # The trigger as wired into the persona handoff (engine.py). Kept in sync here
 # so a phrasing regression is caught by a fast unit test, not a live session.
-def _is_self_descriptive(text: str) -> bool:
-    low = text.lower()
-    return bool(
-        (re.search(r"\byoursel(?:f|ves)\b", low)
-         and re.search(r"\b(know|knew|tell|telling|describe|description|explain|"
-                       r"detail|detailed|accurate|accurately|about|of)\b", low))
-        or re.search(
-            r"\b(what are you|who are you|describe yourself|"
-            r"your (?:architecture|internals?|capabilit\w+|components?|design|"
-            r"databases?|storage|memory system|codebase|upgrade path)|"
-            r"how (?:do|are) you (?:built|structured|made|work)|"
-            r"how do you (?:upgrade|update) yourself|what do you run on)\b",
-            low)
-    )
+from eli.runtime.self_facts import is_self_descriptive as _is_self_descriptive  # the shipped predicate
 
 
 @pytest.mark.parametrize("question", [
@@ -42,6 +29,11 @@ def _is_self_descriptive(text: str) -> bool:
     "how do you upgrade yourself",
     "tell me about your architecture",
     "where are your databases",
+    "what operating system are we on?",
+    "are we on mac? check properly",
+    "do you have full control?",
+    "what are your permissions",
+    "are you sandboxed",
 ])
 def test_self_descriptive_questions_are_grounded(question):
     assert _is_self_descriptive(question), question
@@ -53,6 +45,8 @@ def test_self_descriptive_questions_are_grounded(question):
     "what do you know about me",
     "how are you feeling",
     "taking over the universe, the usual",
+    "this is a windows pc, eli",
+    "what's for dinner",
 ])
 def test_ordinary_conversation_is_not_hijacked(question):
     assert not _is_self_descriptive(question), question
@@ -76,6 +70,24 @@ def test_block_names_the_real_upgrade_mechanism_and_denies_the_invented_one():
     assert "no upgrade shell script" in block
 
 
+def test_block_states_the_real_operating_system_not_a_guess():
+    """On a Windows PC ELI said "macOS" four times; the OS is now a grounded fact read now."""
+    import platform
+    block = self_facts.render_self_facts_block()
+    name = {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}.get(platform.system(), platform.system())
+    assert f"operating system: {name}" in block
+    others = {"macOS", "Windows", "Linux"} - {name}
+    assert not any(f"operating system: {o}" in block for o in others)
+
+
+def test_block_states_the_real_full_control_state(monkeypatch):
+    """Asked to take control, ELI narrated "strictly sandboxed" while Full Control had flipped on."""
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: True)
+    assert "Full Control is ON" in self_facts.render_self_facts_block()
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    assert "Full Control is OFF" in self_facts.render_self_facts_block()
+
+
 def test_version_is_not_read_from_stale_installed_metadata():
     """A months-old egg-info reported 2.1.29 while pyproject said 2.1.48."""
     import tomllib
@@ -94,8 +106,12 @@ def test_components_come_from_the_real_import_graph():
 
 
 def test_identity_canon_is_reachable_at_runtime():
-    """The reviewed canon shipped in the repo but was training-only."""
-    assert self_facts._canon_lines(), "self-model canon should now be readable at runtime"
+    """A reviewed self-model canon, where one is kept locally (training/ is private and not shipped),
+    is read at runtime, not only for training."""
+    from eli.core.paths import project_root
+    if not (project_root() / self_facts._CANON_REL).is_file():
+        pytest.skip("no local self-model canon on this machine")
+    assert self_facts._canon_lines(), "self-model canon should be readable at runtime"
 
 
 def test_block_never_invents_when_sources_are_missing(monkeypatch):
@@ -106,6 +122,8 @@ def test_block_never_invents_when_sources_are_missing(monkeypatch):
     monkeypatch.setattr(self_facts, "_components", lambda: [])
     monkeypatch.setattr(self_facts, "_upgrade_mechanism", lambda: "")
     monkeypatch.setattr(self_facts, "_network_reach", lambda: "")
+    monkeypatch.setattr(self_facts, "_machine", lambda: "")
+    monkeypatch.setattr(self_facts, "_control_state", lambda: "")
     monkeypatch.setattr(self_facts, "_install_kind_safe", lambda: "", raising=False)
 
     import eli.kernel.self_upgrade as su

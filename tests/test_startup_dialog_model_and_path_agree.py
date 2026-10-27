@@ -80,27 +80,13 @@ def test_dropdown_matches_the_path_even_when_is_file_check_fails(app, tmp_path):
     assert d.selected_model_path() == str(missing)
 
 
-def test_dropdown_matches_the_path_even_when_is_file_check_fails(app, tmp_path):
-    """Regression: the dropdown was observed showing a different (scanned,
-    unrelated) model than the one that actually loaded — a live session's
-    "Custom path" field correctly named the real model (and that model DID
-    load) while the dropdown showed a completely different, smaller model
-    that happened to also be on disk. Root cause: the fallback that lists an
-    unscanned saved path was gated on Path(target).is_file(), which can
-    transiently miss (observed at early AppImage startup) even for a path
-    that resolves fine moments later — the dropdown then silently kept
-    whatever the scan's first match was. The fallback must not depend on a
-    live filesystem check succeeding at that exact instant."""
-    scanned = tmp_path / "other-model.gguf"
-    scanned.write_bytes(b"x" * 10)
-    missing = tmp_path / "not-yet-visible.gguf"  # deliberately NOT created
-    d = _dialog(
-        [{"source": "custom", "name": "other-model.gguf", "path": str(scanned), "size_gb": 0.1}],
-        str(missing),
-    )
-    assert d.gguf_combo.currentData() == str(missing), (
-        "dropdown must name the same model as the path field, not silently "
-        "fall back to the first scanned entry"
-    )
-    assert d.model_path_input.text() == str(missing)
-    assert d.selected_model_path() == str(missing)
+def test_a_browsed_model_is_what_the_list_shows(app, tmp_path, monkeypatch):
+    """Browse set the path but left the list on the model before: "[custom] Qwen2.5-7B" over a Qwen3.6 path."""
+    from PySide6.QtWidgets import QFileDialog
+    listed, picked = tmp_path / "listed.gguf", tmp_path / "picked.gguf"
+    listed.write_bytes(b"x" * 10)
+    picked.write_bytes(b"x" * 20)
+    d = _dialog([{"source": "custom", "name": "listed.gguf", "path": str(listed), "size_gb": 0.1}], str(listed))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(picked), "")))
+    d._browse_gguf_file()
+    assert d.gguf_combo.currentData() == str(picked) == d.model_path_input.text()

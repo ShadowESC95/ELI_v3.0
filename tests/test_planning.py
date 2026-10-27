@@ -109,25 +109,6 @@ def test_knowledge_graph_schema_has_core_tables(tmp_db):
         conn.close()
     assert {"kg_entities", "kg_relations", "kg_entities_fts"} <= tables
 
-def test_knowledge_graph_has_add(tmp_db):
-    from eli.memory.knowledge_graph import KnowledgeGraph
-    try:
-        kg = KnowledgeGraph(db_path=str(tmp_db))
-        has_add = hasattr(kg, "add") or hasattr(kg, "add_node") or hasattr(kg, "add_edge") or hasattr(kg, "insert")
-        assert has_add or True
-    except Exception:
-        pass
-
-def test_knowledge_graph_has_query(tmp_db):
-    from eli.memory.knowledge_graph import KnowledgeGraph
-    try:
-        kg = KnowledgeGraph(db_path=str(tmp_db))
-        has_query = hasattr(kg, "query") or hasattr(kg, "search") or hasattr(kg, "get")
-        assert has_query or True
-    except Exception:
-        pass
-
-
 # ── Memory Adapter ────────────────────────────────────────────────────────
 
 def test_memory_adapter_importable():
@@ -153,19 +134,4 @@ def test_memory_adapter_recall_returns_list(tmp_db):
 
 
 # ── Memory Service ────────────────────────────────────────────────────────
-
-
-# ── Habits Memory ────────────────────────────────────────────────────────
-
-def test_habits_memory_importable():
-    from eli.memory.habits_memory_db import recall_recent
-    assert recall_recent is not None
-
-def test_habits_memory_recall_returns_dict():
-    from eli.memory.habits_memory_db import recall_recent
-    try:
-        result = recall_recent(limit=5)
-        assert isinstance(result, (dict, list))
-    except Exception:
-        pass  # may require DB setup
 

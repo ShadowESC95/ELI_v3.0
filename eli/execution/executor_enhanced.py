@@ -2607,6 +2607,7 @@ SUPPORTED_ACTIONS = [
     'USER_IDENTITY_SUMMARY',
     'VOLUME',
     'WEB_SEARCH',
+    'WEB_FETCH',  # a linked page read and answered from
     'WRITE_NOTE',
 ]
 
@@ -4865,107 +4866,47 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         return {"ok": True, "action": a, "content": msg, "response": msg}
     # ---- HELP / LIST_CAPABILITIES ----
     if a in ("HELP", "LIST_CAPABILITIES"):
-        # Try live introspection first (awareness module)
-        public_actions = []
-        capabilities = []
-        fallback_msg = None
-
+        # What the code has, and what this machine has shown of it: a bare count read as that many
+        # working capabilities, when most had never been run here.
+        caps: Dict[str, Any] = {}
         try:
             from eli.runtime.capability_sync import CapabilitySync
-            sync = CapabilitySync()
-            caps = sync.discover()
-            capabilities = sorted(caps.keys())
-            public_actions = [
-                {"action": k, "sources": [v.get("source", "")], "aliases": [],
-                 "plugins": [v["plugin"]] if v.get("plugin") else []}
-                for k, v in caps.items()
-            ]
-        except Exception as e:
-            fallback_msg = f"Live introspection failed: {e}"
+            caps = CapabilitySync().discover()
+        except Exception:
+            log.debug("capability discovery failed", exc_info=True)
+        status: Dict[str, Any] = {}
+        try:
+            from eli.tools.registry.capability_updater import capability_status
+            status = capability_status(sorted(caps) or None)
+        except Exception:
+            log.debug("capability status unavailable", exc_info=True)
+        here = status.get("actions") or {}
+        capabilities = sorted(caps) or sorted(here) or sorted(set(SUPPORTED_ACTIONS))
 
-        # Fallback: generated report file
-        if not capabilities:
-            repo_root = Path(__file__).resolve().parents[2]
-            report_path = repo_root / "capability_public_report.generated.json"
-            if report_path.exists():
-                try:
-                    report = json.loads(report_path.read_text(encoding="utf-8"))
-                    public_actions = report.get("public_actions", []) or []
-                    capabilities = [
-                        item.get("action")
-                        for item in public_actions
-                        if isinstance(item, dict) and item.get("action")
-                    ]
-                except Exception as e:
-                    fallback_msg = f"Generated report unreadable: {e}"
-            else:
-                fallback_msg = "Generated capability report not found."
+        def _why_not(st: Dict[str, Any]) -> str:
+            if st.get("dependency_ready") is False:
+                return "something it needs is not installed"
+            if st.get("permission_state") == "denied":
+                return "its plugin is not allowed"
+            return "its device was not found"
 
-        # Fallback: SUPPORTED_ACTIONS
-        if not capabilities:
-            capabilities = sorted(set(SUPPORTED_ACTIONS))
-            if not fallback_msg:
-                fallback_msg = "Using SUPPORTED_ACTIONS fallback."
-
-        if a == "HELP":
-            lines = ["ELI Capabilities:"]
-            if public_actions:
-                for item in public_actions:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get("action") or "").strip()
-                    if not name:
-                        continue
-                    aliases = item.get("aliases") or []
-                    plugins = item.get("plugins") or []
-                    sources = item.get("sources") or []
-                    extras = []
-                    if aliases:
-                        extras.append("aliases=" + ", ".join(str(x) for x in aliases))
-                    if plugins:
-                        extras.append("plugins=" + ", ".join(str(x) for x in plugins))
-                    if sources:
-                        extras.append("sources=" + ", ".join(str(x) for x in sources))
-                    if extras:
-                        lines.append(f"  {name} ({'; '.join(extras)})")
-                    else:
-                        lines.append(f"  {name}")
-                if fallback_msg:
-                    lines.append("")
-                    lines.append(f"[note] {fallback_msg}")
-            else:
-                for cap in capabilities:
-                    lines.append(f"  {cap}")
-                if fallback_msg:
-                    lines.append("")
-                    lines.append(f"[note] {fallback_msg}")
-
-            txt = "\n".join(lines)
-            return {
-                "ok": True,
-                "action": a,
-                "count": len(capabilities),
-                "capabilities": capabilities,
-                "capability_report": public_actions,
-                "content": txt,
-                "response": txt,
-            }
-
-        lines = [f"Loaded {len(capabilities)} public capabilities:"]
-        for cap in capabilities:
-            lines.append(f"- {cap}")
-        msg = "\n".join(lines)
-        if fallback_msg:
-            msg += f"\n\n[note] {fallback_msg}"
-        return {
-            "ok": True,
-            "action": a,
-            "count": len(capabilities),
-            "capabilities": capabilities,
-            "capability_report": public_actions,
-            "content": msg,
-            "response": msg,
-        }
+        public_actions, lines = [], []
+        for name in capabilities:
+            meta, st = caps.get(name) or {}, here.get(name) or {}
+            state = st.get("status", "untested")
+            public_actions.append({"action": name, "sources": [meta.get("source", "")],
+                                   "plugins": [meta["plugin"]] if meta.get("plugin") else [], "status": state})
+            notes = {"verified": ["has worked here"], "unavailable": ["cannot run here: " + _why_not(st)]}.get(state, [])
+            if a == "HELP" and meta.get("plugin"):
+                notes.append(f"plugin {meta['plugin']}")
+            lines.append(f"- {name}" + (f" ({'; '.join(notes)})" if notes else ""))
+        _worked = int(status.get("verified", 0))
+        head = (f"{len(capabilities)} actions in my code; {_worked} {'has' if _worked == 1 else 'have'} worked on this machine"
+                + (f", {status['unavailable']} cannot run here" if status.get("unavailable") else "")
+                + ", the rest have not been tried here yet.")
+        msg = head + "\n" + "\n".join(lines)
+        return {"ok": True, "action": a, "count": len(capabilities), "capabilities": capabilities,
+                "capability_report": public_actions, "content": msg, "response": msg}
 
     # ---- OPEN_IDE REDIRECT GUARD ----
     if a == "OPEN_IDE":
@@ -8808,7 +8749,7 @@ try:
         exist there and ran `git -C` against a directory that is not a repository.
         Observed live at 2.1.81: every runtime field printed None ("model_name:
         None, loaded: None") in the same session whose log shows the model loaded
-        and the snapshot written to ~/.local/share/ELI_v2/artifacts/. This is the
+        and the snapshot written to ~/.local/share/ELI_v3/artifacts/. This is the
         same class of bug as the v2.1.6 sweep, missed by it because the root is
         resolved in a local function rather than a module-level constant.
         """
@@ -8900,7 +8841,7 @@ try:
     def _eli_self_build_recent_updates_report(question=""):
         root = _eli_self_project_root()
 
-        # Packaged AppImage/portable runs anchor project_root at ~/.local/share/ELI_v2, which often
+        # Packaged AppImage/portable runs anchor project_root at ~/.local/share/ELI_v3, which often
         # holds an old extracted source tree with a stale .git (a v2.3.89 AppImage reported v2.3.62
         # commits). Never trust git there unless it's a genuine dev checkout of the running version.
         _installed_ver = _eli_self_installed_version()

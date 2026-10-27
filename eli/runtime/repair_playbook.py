@@ -195,7 +195,7 @@ def build_repair_playbook_report(question: str = "", *, live: bool = True) -> st
         "",
         "AppImage patching:",
         "  Set ELI_SOURCE_ROOT=/path/to/git/checkout to patch dev tree from frozen build.",
-        "  Writable overlay: ~/.local/share/ELI_v2/eli/ (see patch_capability).",
+        "  Writable overlay: ~/.local/share/ELI_v3/eli/ (see patch_capability).",
     ]
 
     if q:

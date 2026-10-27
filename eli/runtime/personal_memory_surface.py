@@ -197,7 +197,7 @@ def _artifacts_dir() -> Path:
         /tmp/.mount_ELI_v2bIpcAe/usr/app/_internal/artifacts/db/user.sqlite3
 
     while the daemon in the same process was correctly using
-    ~/.local/share/ELI_v2/artifacts/db/user.sqlite3.
+    ~/.local/share/ELI_v3/artifacts/db/user.sqlite3.
     """
     try:
         from eli.core.paths import get_paths as _gp

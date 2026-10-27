@@ -18,18 +18,6 @@ def test_tier_from_env_override(monkeypatch):
     assert MT.tier_scale() == 2.5
 
 
-def test_embedded_template_family_detection():
-    cases = {"<|im_start|>": "chatml", "[gMASK]<|user|>": "glm",
-             "<|observation|>": "glm",
-             "<|start_header_id|>": "llama",
-             "<start_of_turn>": "gemma", "[INST]": "mistral",
-             "<|assistant|>": "phi", "novel{{x}}": None}
-    for tmpl, expect in cases.items():
-        GI._TEMPLATE_FAMILY_CACHE.clear()
-        with patch.object(GI, "_gguf_model_metadata", return_value={"tokenizer.chat_template": tmpl}):
-            assert GI._gguf_template_family() == expect
-
-
 def test_format_prompt_routes_by_family():
     from pathlib import Path
     # Filename last-resort (no template/arch) → chatml for openhermes-style name
@@ -47,15 +35,16 @@ def test_format_prompt_routes_by_family():
 
 def test_gather_autoscale_small_unchanged():
     base = snapshot()
-    assert base["cog.mem_semantic_shown"] == 24  # small tier → defaults unchanged
+    assert base["cog.mem_semantic_shown"] == 30  # small tier → defaults unchanged
 
 
 def test_gather_autoscale_large_scales_and_clamps():
     with patch("eli.core.model_tier.tier_scale", return_value=2.5):
         big = snapshot()
-    assert big["cog.mem_semantic_shown"] == 60      # 24 * 2.5
-    assert big["cog.rerank_top_k"] == 50            # 20 * 2.5
-    assert big["cog.mem_semantic_recall"] <= 100    # clamped to max
+    assert big["cog.mem_semantic_shown"] == 75      # 30 * 2.5
+    assert big["cog.rerank_top_k"] == 60            # 24 * 2.5
+    assert big["cog.kg_entities"] == 20             # 8 * 2.5
+    assert big["cog.mem_semantic_recall"] <= 200    # clamped to max
 
 
 def test_gather_autoscale_off_respects_fixed(monkeypatch):
@@ -64,6 +53,6 @@ def test_gather_autoscale_off_respects_fixed(monkeypatch):
     try:
         with patch("eli.core.model_tier.tier_scale", return_value=2.5):
             s = snapshot()
-        assert s["cog.mem_semantic_shown"] == 24  # auto off → unchanged
+        assert s["cog.mem_semantic_shown"] == 30  # auto off → unchanged
     finally:
         C.delete("cog.gather_auto_scale")

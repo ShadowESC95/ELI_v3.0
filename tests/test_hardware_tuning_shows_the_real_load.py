@@ -1,9 +1,8 @@
 """The Hardware Tuning tab must report the same figures as the terminal.
 
 The tab showed only the TUNER's output: a recommendation computed before the
-model loads. The load ladder then measures free VRAM, costs the fit, may run a
-subprocess probe and selects a rung — all of it printed to the terminal as
-[GUI][LOAD] / [LOAD_PROBE] / [GGUF][EFFECTIVE], and none of it reaching the tab.
+model loads. The load then plans against what is free on every card — all of it
+printed to the terminal as [LOAD_PLAN] lines, and none of it reaching the tab.
 So a launch showed "ctx=4096" in the panel while the session ran at 8192.
 
 Rather than recompute anything for the panel (a second source of truth that can
@@ -52,16 +51,17 @@ def _drive(messages):
     return dock.log_line.sent
 
 
-REAL_TERMINAL_LINES = [
-    "[STARTUP_DIALOG][HW_OPT] regenerated profile ctx=12288 gpu_layers=29 batch=128 free_vram=6334MB",
-    "[GUI][HW_PROFILE] startup profile read: ctx=12288 gpu_layers=29 batch=128",
-    "[GUI][GPU] requested_layers=99 effective_layers=99 offload_supported=True",
-    "[GUI][LOAD] smart-fit (post-init free=6251MB reserve=700MB kvq=True): ctx=12288 gpu_layers=28 batch=128",
-    "[GUI][LOAD] attempt 1/12: requested (ctx=12288 gpu_layers=99 batch=128)",
-    "[LOAD_PROBE] timed out after 60s — treating as unproven",
-    "[GUI][LOAD] selected=smart-fit (ctx=12288 gpu_layers=28 batch=128)",
-    "[GGUF][EFFECTIVE] requested ctx=12288 gpu_layers=99 -> effective ctx=12288 gpu_layers=28",
-    "[HW_AUTHORITY] advisory (not enforced): n_ctx 12288 > recommended 10240",
+REAL_TERMINAL_LINES = [   # a development launch on two RTX 2060 SUPER, 2026-10-19
+    "[STARTUP_DIALOG][HW_OPT] regenerated profile ctx=50000 gpu_layers=43 batch=128 "
+    "gpu=NVIDIA GeForce RTX 2060 SUPER ×2 free_vram=13991MB",
+    "[LOAD_PLAN] your settings fit as asked",
+    "[LOAD_PLAN] 2 configurations simulated by llama.cpp",
+    "[LOAD_PLAN] gemma-4-E4B-it-Q8_0.gguf: ctx=50000 batch=128 42/42 layers on GPU + output "
+    "(CUDA0 NVIDIA GeForce RTX 2060 SUPER: uses 3241 of 6330 MB free; CUDA1 NVIDIA GeForce RTX 2060 SUPER: "
+    "uses 3831 of 7689 MB free), KV q8_0, flash attention on, measured",
+    "[LOAD_PLAN] mode budgets re-derived from effective ctx=50000: ['max_tokens', 'mode_presets']",
+    "[GUI][LOAD] mode budget re-derivation skipped: no model loaded",
+    "[HW_AUTHORITY] advisory (not enforced): n_ctx 50000 > recommended 40960",
 ]
 
 
@@ -69,11 +69,11 @@ def test_every_hardware_line_reaches_the_dock():
     assert _drive(REAL_TERMINAL_LINES) == REAL_TERMINAL_LINES
 
 
-def test_the_selected_rung_is_shown():
-    """`selected=` is the line that says what actually loaded — the single most
-    important figure the tab was missing."""
+def test_what_loaded_is_shown():
+    """The plan line says what actually loads and where — the single most important figure the tab
+    was missing."""
     sent = _drive(REAL_TERMINAL_LINES)
-    assert any("selected=" in m for m in sent)
+    assert any("layers on GPU" in m and "measured" in m for m in sent)
 
 
 def test_unrelated_logging_is_not_dumped_into_the_tab():
@@ -128,3 +128,55 @@ def test_the_relay_is_installed_once():
     i = src.index("def _install_hardware_log_relay")
     body = src[i:src.index("\n    def ", i + 10)]
     assert "_hardware_log_relay" in body and "is not None:" in body
+
+
+def test_hardware_probe_runs_off_the_gui_thread_without_freezing():
+    """detect_hardware() is uncached and shells out to nvidia-smi/lspci with multi-second timeouts;
+    run inline it froze the window ("Not Responding") for a few seconds at the start of every load.
+    run_pumping (eli/gui/off_thread.py, shared by the main window and the start-up window) runs it on
+    a worker thread and pumps the event loop meanwhile, so the GUI stays live and the result still
+    comes back on the caller's thread. The module imports no Qt binding."""
+    import time as _time
+    from eli.gui.off_thread import run_pumping
+
+    class _FakeApp:
+        def __init__(self):
+            self.pumped = 0
+
+        def processEvents(self):
+            self.pumped += 1
+
+    app = _FakeApp()
+
+    def _slow_probe():
+        _time.sleep(0.08)
+        return {"ctx": 8192}
+
+    out = run_pumping(_slow_probe, app)
+    assert out == {"ctx": 8192}
+    assert app.pumped > 0, "the event loop was not pumped while the probe ran"
+
+    # app is None (headless / tests): runs inline and still returns.
+    assert run_pumping(lambda: 7, None) == 7
+
+    # a failure in the probe surfaces on the caller's thread, not swallowed on the worker.
+    import pytest
+    with pytest.raises(ValueError):
+        run_pumping(lambda: (_ for _ in ()).throw(ValueError("boom")), app)
+
+
+def test_the_startup_window_prepares_the_load_off_its_thread():
+    """Live: pressing OK in the start-up window loaded Whisper, read the GPUs again and had
+    llama.cpp simulate the load on the window's thread, past the desktop's patience ("Not Responding").
+    The slow part runs through run_pumping and takes the window's values as arguments: no widget is
+    touched off the window's thread."""
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "eli" / "gui" / "panels" / "startup.py").read_text(encoding="utf-8")
+    i = src.index("        def _prepare_load(")
+    body = src[i:src.index("        def _accept_wrapper():", i)]
+    assert "detect_hardware" in body and "recommend" in body and "preload_model" in body
+    assert not re.search(r"\bself\.", body), "the off-thread part reads a widget"
+    wrapper = src[src.index("        def _accept_wrapper():"):src.index("        self.accept = _accept_wrapper")]
+    assert "run_pumping(_prepare_load" in wrapper
+    assert "buttons.setEnabled(False)" in wrapper and "_preparing_load" in wrapper

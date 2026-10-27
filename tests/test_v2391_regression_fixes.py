@@ -15,12 +15,12 @@ def _route(text: str) -> dict:
 
 
 def test_youtube_com_not_spotify_for_song_by_artist():
-    out = _route("play lion and thief by diabolic on youtube com")
+    out = _route("play salt and stone by veridian on youtube com")
     assert out["action"] == "PLAY_MEDIA"
     args = out.get("args") or {}
     assert args.get("target") == "youtube website"
     assert args.get("browser") is True
-    assert "diabolic" in str(args.get("query") or "").lower()
+    assert "veridian" in str(args.get("query") or "").lower()
 
 
 def test_play_on_spotify_does_not_set_browser_flag():
@@ -32,12 +32,14 @@ def test_play_on_spotify_does_not_set_browser_flag():
 
 
 def test_lp_album_request_detected():
-    assert album_request("marshall matters lp") == ("marshall matters", None)
+    assert album_request("harbour matters lp") == ("harbour matters", None)
     assert album_request("the martial matters lp") == ("martial matters", None)
 
 
 def test_phatic_skips_orchestrator_again():
-    # process() is the per-turn wrapper; the pipeline this checks is _process_impl.
+    # process() is now a thin per-request-identity wrapper (Phase 1 of the
+    # identity/provenance plan, 2026-10-02); the actual turn pipeline this
+    # test checks moved to _process_impl, same body, new name.
     src = inspect.getsource(CognitiveEngine._process_impl)
     assert '_qclass != "PHATIC"' in src
     assert "_is_brief_phatic_prompt(user_input)" in src

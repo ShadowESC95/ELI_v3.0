@@ -87,6 +87,16 @@ AUDITED_2026_09_18_PASS2 = {
     "CLEAR_CHAT_HISTORY", "REFRESH_USER_INFO", "MESSAGE_TIME_QUERY",
 }
 
+# Fifth pass (2026-10-02): RESUME_TASK, added by the task-continuity bridge
+# (2026-09-29) after this audit shipped, was routable but never added to the
+# verbatim set — the exact gap test_every_routable_action_is_covered_or_
+# documented_excluded exists to catch. Its handler does a real goal_store
+# lookup and builds its own staleness-grounded message; re-narration risks a
+# model inventing staleness the lookup never reported.
+AUDITED_2026_10_02_PASS5 = {
+    "RESUME_TASK",
+}
+
 # Third pass, same day: the remaining confirmation/report/raw-content actions
 # from the full ~186 routable-action sweep.
 AUDITED_2026_09_18_PASS3 = {
@@ -110,13 +120,14 @@ AUDITED_2026_09_18_PASS4 = {
 # states the design intent is LLM narration) or the action never reaches a
 # verifiable single handler (CHAT is the model call itself; SHOW_DIFF routes
 # straight to chat(); WEB_SEARCH's own comment says its results are evidence
-# for the model, not the answer; EXECUTE_GOAL has no executor handler at all;
-# NOOP has no single handler in the dispatch ladder). MEMORY_AUDIT is an evidence
-# builder (control_contracts._EVIDENCE_BUILDER_ACTIONS): its packet grounds the model's
-# answer to "why did you think X", it is not the answer.
+# for the model, not the answer, and the same holds for WEB_FETCH, a linked page's
+# text (2026-10-19); EXECUTE_GOAL has no executor handler at all; NOOP has no
+# single handler in the dispatch ladder).
+# MEMORY_AUDIT is an evidence builder (control_contracts._EVIDENCE_BUILDER_ACTIONS): its packet grounds
+# the model's answer to "why did you think X", it is not the answer.
 AUDITED_2026_09_18_EXCLUDED = {
     "FIX_FILE", "RUN_TESTS", "CODE_SOLVE", "GENERATE_SCRIPT", "CHAT",
-    "SHOW_DIFF", "WEB_SEARCH", "EXECUTE_GOAL", "NOOP", "MEMORY_AUDIT",
+    "SHOW_DIFF", "WEB_SEARCH", "WEB_FETCH", "EXECUTE_GOAL", "NOOP", "MEMORY_AUDIT",
 }
 
 # The highest-risk entries: raw content/tool output that must never be
@@ -149,6 +160,12 @@ def test_all_pass3_audited_actions_are_in_the_set():
 def test_all_pass4_audited_actions_are_in_the_set():
     actions = _deterministic_direct_payload_actions()
     missing = AUDITED_2026_09_18_PASS4 - actions
+    assert not missing, f"regression: dropped from the verbatim set: {sorted(missing)}"
+
+
+def test_all_pass5_audited_actions_are_in_the_set():
+    actions = _deterministic_direct_payload_actions()
+    missing = AUDITED_2026_10_02_PASS5 - actions
     assert not missing, f"regression: dropped from the verbatim set: {sorted(missing)}"
 
 

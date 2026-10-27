@@ -60,11 +60,37 @@ def test_big_ram_machines_can_keep_llamacpp_defaults(monkeypatch):
 
 
 def test_every_loader_gets_it_through_the_one_patch():
-    """GUI, engine and load probe all build through expert_offload_params()."""
+    """The window, the terminal launcher and the engine all load through gguf_inference.load_model,
+    which builds the model through expert_offload_params()."""
     import inspect
     from eli.core import moe_offload
     src = inspect.getsource(moe_offload.expert_offload_params)
     assert "return apply_zero_copy(params)" in src
+    gui = (Path(__file__).resolve().parents[1] / "eli/gui/main_window/models.py").read_text(encoding="utf-8")
+    assert "_gg.load_request(" in gui and "Llama(" not in gui.split("class LocalModelManager", 1)[1].split("\nclass ", 1)[0]
+
+
+@pytest.mark.parametrize("experts,blocks,expected", [(19, 40, 19), (40, 40, None), (None, 40, "no override")])
+def test_the_model_is_built_with_the_experts_the_plan_keeps_in_ram(monkeypatch, experts, blocks, expected):
+    """Experts of the first N layers stay in RAM as the plan says; all of them when N covers every
+    layer; none when the plan keeps none (the window's own loader once ignored the setting)."""
+    import contextlib
+    from types import SimpleNamespace
+    from eli.cognition import gguf_inference as gi
+    from eli.core import moe_offload
+    seen = []
+
+    @contextlib.contextmanager
+    def _override(layers=None):
+        seen.append(layers)
+        yield
+    monkeypatch.setattr(moe_offload, "expert_offload_params", _override)
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(Llama=lambda **kw: ("model", kw)))
+    plan = SimpleNamespace(experts_in_ram=experts, blocks=blocks, n_gpu_layers=blocks + 1,
+                           llama_kwargs=lambda: {"model_path": "m.gguf", "n_gpu_layers": blocks + 1})
+    built = gi._new_llama(plan)
+    assert built[0] == "model"
+    assert seen == ([] if expected == "no override" else [expected])
 
 
 # ── 2. an installed pack is switched back on, not downloaded again ───────────
@@ -115,9 +141,11 @@ def test_a_successful_install_records_the_gpu_choice(gp):
     assert "record_gpu_choice(dest.parent)" in src[ok:]
 
 
-@pytest.mark.parametrize("starter", ["def _start_gpu_pack_install(", "def _wiz_start_gpu_pack_install("])
-def test_install_buttons_enable_an_existing_pack_before_downloading(starter):
+def test_install_buttons_enable_an_existing_pack_before_downloading():
     src = STARTUP.read_text(encoding="utf-8")
-    i = src.index(starter)
-    body = src[i:src.index("\n    def ", i + 10)]
-    assert body.index("_enable_switched_off_pack(self)") < body.index("_GpuPackInstallThread(")
+    i = src.index("def _install_gpu_pack(")
+    body = src[i:src.index("\ndef ", i + 10)]
+    assert body.index("_enable_switched_off_pack(owner)") < body.index("_GpuPackInstallThread(")
+    for starter in ("def _start_gpu_pack_install(", "def _wiz_start_gpu_pack_install("):
+        j = src.index(starter)
+        assert "_install_gpu_pack(self" in src[j:src.index("\n    def ", j + 10)], starter

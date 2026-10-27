@@ -616,7 +616,30 @@ def _is_repeat_of_recent(candidate: str, prior_replies, *,
             continue
         if _repeat_ratio(cand[:n], p[:n]) >= ratio:
             return True
+
+    # The same content re-presented: sentences ELI already delivered, reformatted (a paragraph turned
+    # into a list under bold headings) or reordered, open differently and pass every test above. Live:
+    # told the news was not what was asked for, ELI served the same stories again as a bulleted list
+    # under a new opening line. A reply mostly made of sentences already said is a repeat.
+    prior_sents = _prior_sentences(prior_replies)
+    if prior_sents:
+        lines = []
+        for sentence, _gap in _split_sentences_with_gaps(cand):
+            for line in _LIST_ITEM_SPLIT_RE.split(sentence):
+                line = _LIST_LEAD_RE.sub("", line).strip()
+                if len(_clarifier_norm(line)) >= _REPEAT_MIN_REDACT_CHARS:
+                    lines.append(line)
+        restated = sum(1 for line in lines if _sentence_seen_before(line, prior_sents, partial=False))
+        if restated >= _REPEAT_MIN_RESTATED and 2 * restated >= len(lines):
+            return True
     return False
+
+
+# Where a list item starts: a new line, or a bullet inline once the reply's lines were joined.
+_LIST_ITEM_SPLIT_RE = re.compile(r"\n+|\s+(?=[*•·-]\s+\S)")
+# A list item's lead: the bullet or number, and a bold label ("*   **UK Aid Spending:** ...").
+_LIST_LEAD_RE = re.compile(r"^\s*(?:(?:[-*•·]|\d+[.)])\s+)?(?:(?:\*\*|__)[^*_\n]{1,80}?(?:\*\*|__)\s*:?\s*)?")
+_REPEAT_MIN_RESTATED = 2     # one sentence said again can be a quote; two of them is the reply again
 
 
 class _RepeatDetected(Exception):

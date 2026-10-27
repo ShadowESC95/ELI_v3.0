@@ -17,15 +17,13 @@ cosmetic problem.
 """
 import pytest
 
-from eli.core import hardware_profile as hp
 from eli.core.hardware_profile import (HardwareProfile, _layers_for_size, recommend,
                                        unified_fit_config, vram_reserve_mb)
 
 
 @pytest.fixture(autouse=True)
-def _gpu_backend_active(monkeypatch):
+def _gpu_backend_active(monkeypatch, gpu_offload_runtime):
     """These cases simulate discrete-GPU hosts where the CUDA/Vulkan pack is active."""
-    monkeypatch.setattr(hp, "_llama_gpu_offload_available", lambda: True)
     monkeypatch.delenv("ELI_VRAM_RESERVE_MB", raising=False)
     monkeypatch.delenv("ELI_FORCE_GPU_LAYERS", raising=False)
     monkeypatch.delenv("ELI_MIN_BATCH", raising=False)
@@ -53,7 +51,7 @@ def _loader_fit(size_gb: float, free_mb: int, ctx: int, kv_q: bool, avail_ram_gb
         min_batch=128,
         gpu_integrated=False,
     )
-    return _c, (total if int(layers) >= 99 else int(layers))
+    return _c, (total if int(layers) < 0 else int(layers))      # -1: every layer
 
 
 @pytest.mark.parametrize("size_gb,free_mb,total_mb", [

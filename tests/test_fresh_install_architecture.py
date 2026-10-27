@@ -131,6 +131,9 @@ def test_frozen_data_and_config_dirs_use_eli_v3(tmp_path, monkeypatch):
     monkeypatch.delenv("ELI_DATA_DIR", raising=False)
     monkeypatch.delenv("ELI_CONFIG_DIR", raising=False)
     monkeypatch.delenv("ELI_PROJECT_ROOT", raising=False)
+    # the per-path overrides the test run sets would hide the frozen layout
+    monkeypatch.delenv("ELI_PERSONA_AUTO_PATH", raising=False)
+    monkeypatch.delenv("ELI_NOTEBOOK_DIR", raising=False)
 
     from eli.core import paths
 

@@ -11,7 +11,7 @@ The transcript is the specification here, so the fixtures are its actual text.
 ``[ANTI-REPEAT] contract injected (3 prior replies)`` on *every one* of those turns —
 the guard was running and being ignored. It was prompt-level only: it asked the model
 not to repeat and never checked whether it had. The worst instance came right after
-the user said "Shut the fuck up about my sleep" and ELI answered "I'll stop", then
+the user said "Stop going on about my schedule" and ELI answered "I'll stop", then
 repeated the paragraph on the next turn.
 
 **2. "Good.. morning report?" did not produce a morning report.** The router matched
@@ -179,7 +179,7 @@ def test_an_explicit_repeat_request_stands_the_guard_down(asked):
     "Morning Eli",
     "summary please pal",
     "keep going haha",
-    "I told you not to worry about my sleep, I will sleep properly tonight.",
+    "I told you not to worry about my schedule, I will sort it out tonight.",
     "Good.. morning report?",
     "Eli, why the fuck do you keep repeating yourself??",
     "",
@@ -495,3 +495,26 @@ def test_cross_session_recall_carries_only_the_users_words():
         "cross-session recall can still surface ELI's own statements as history"
     )
     assert "their words only" in src[i - 200:i + 200]
+
+
+# ── 7. the same reply re-presented is a repeat ──────────────────────────────
+def test_a_reply_reformatted_as_a_list_is_still_a_repeat():
+    """Live: told the news was not what was asked for, ELI served the same stories again as a
+    bulleted list under bold headings. It opened differently, so the opening and head-to-head tests passed it."""
+    from eli.kernel.engine import _is_repeat_of_recent
+    prior = ("The harbour council has opened an independent review into the ferry collision to establish what "
+             "happened before and after the impact [Coast News — 15:49]. Ada Brennan received a suspended "
+             "eight-month sentence after admitting the warehouse fire [City Desk — 14:16]. The region is projected "
+             "to miss its target for new rail lines by an estimated twelve kilometres [Transport Desk — 06:59].")
+    again = ("Here are the latest updates:\n\n*   **Ferry Review:** The harbour council opened an independent "
+             "review into the ferry collision to establish what happened before and after the impact "
+             "[Coast News — 15:49].\n*   **Brennan Sentenced:** Ada Brennan received a suspended eight-month "
+             "sentence after admitting the warehouse fire [City Desk — 14:16].")
+    assert _is_repeat_of_recent(again, [prior])
+    fresh = ("Got it, my mistake: you were telling me what's new with you, the show you're watching. "
+             "How far into the season are you?")
+    assert not _is_repeat_of_recent(fresh, [prior])
+    quoting_one = ("You're right, I listed the review into the ferry collision to establish what happened "
+                   "before and after the impact. That was the news, not what you meant, and I should have "
+                   "asked about the show instead. So how is the season going so far for you?")
+    assert not _is_repeat_of_recent(quoting_one, [prior])

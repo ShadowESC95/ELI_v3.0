@@ -441,10 +441,18 @@ def test_a_duration_is_not_a_complaint_about_speed(text):
     assert route(text)["action"] != "EXPLAIN_COGNITION_RUNTIME"
 
 
-@pytest.mark.parametrize("text", ["it took you 20 minutes to generate that answer?", "why did you take 20 minutes to respond?"])
-def test_a_complaint_about_speed_still_gets_the_timing_report(text):
+def test_a_complaint_about_speed_is_answered_from_the_turn_record():
+    """The last-turn rule reads how long the turn took (621087c9); "why did you take 20 minutes?" reaches
+    the same explainer through chat (tests/test_name_and_explain_routing.py)."""
     from eli.execution.router_enhanced import route
-    assert route(text)["action"] == "EXPLAIN_COGNITION_RUNTIME"
+    assert route("it took you 20 minutes to generate that answer?")["action"] == "ROUTING_FAULT_EXPLAIN"
+
+
+@pytest.mark.parametrize("text", ["why does it take 20 minutes to boil an egg?", "why did it take 3 hours to fly there?"])
+def test_a_question_about_how_long_something_else_takes_is_not_about_the_reply(text):
+    from eli.cognition.self_claims import asks_about_own_behaviour
+    from eli.execution.router_enhanced import route
+    assert route(text)["action"] != "ROUTING_FAULT_EXPLAIN" and not asks_about_own_behaviour(text)
 
 
 # ── asking for help with something is not asking what ELI can do ─────────────
@@ -489,14 +497,14 @@ def test_questions_about_elis_memory_still_get_the_report(text, action):
 
 @pytest.mark.parametrize("text,place", [("check the weather for tomorrow", None), ("weather for tomorrow", None),
                                         ("what's the weather in Dublin tomorrow", "Dublin"), ("weather in Paris", "Paris"),
-                                        ("what's the forecast for this weekend in Galway", "Galway")])
+                                        ("what's the forecast for this weekend in Bristol", "Bristol")])
 def test_a_day_is_not_a_place_and_asking_about_tomorrow_is_not_a_job_for_tomorrow(text, place):
     from eli.execution.router_enhanced import route
     got = route(text)
     assert got["action"] == "GET_WEATHER" and got["args"]["location"] == place
 
 
-@pytest.mark.parametrize("text", ["check the weather in Cork at 7am tomorrow", "get the news at 7am", "open spotify at 8pm"])
+@pytest.mark.parametrize("text", ["check the weather in York at 7am tomorrow", "get the news at 7am", "open spotify at 8pm"])
 def test_a_clock_time_still_makes_it_a_job(text):
     from eli.execution.router_enhanced import route
     assert route(text)["action"] == "SCHEDULE_TASK"
@@ -550,7 +558,7 @@ def test_where_is_asked_once_and_the_answer_completes_the_request(monkeypatch, p
         rc.session_id_var.reset(token)
 
 
-@pytest.mark.parametrize("reply,is_it", [("Dublin", True), ("in Cork", True), ("new york", True), ("it's Galway", True),
+@pytest.mark.parametrize("reply,is_it", [("Dublin", True), ("in York", True), ("new york", True), ("it's Bristol", True),
                                          ("no", False), ("never mind", False), ("yes", False), ("what do you mean", False),
                                          ("somewhere near the coast i think maybe", False)])
 def test_a_reply_that_is_only_a_place_is_the_detail_asked_for(reply, is_it):
@@ -620,14 +628,14 @@ def test_an_event_is_offered_back_only_with_the_time_the_user_gave(agenda, said,
 def test_a_request_that_names_its_own_event_does_not_borrow_another_events_time(agenda):
     from datetime import datetime
     now = datetime(2026, 10, 5, 9, 5)
-    said = "I thought i had a presentation at 10am for RAIMS, but it is not until 7.30pm haha"
+    said = "I was sure the ORBIT presentation was at 10am, but it is not until 7.30pm haha"
     assert ag.from_text("add dentist appointment to my calendar", earlier=[said], now=now) is None      # asks when
     asked = ag.do_add_event({"text": "add dentist appointment to my calendar"}, earlier=[said], now=now)
     assert not asked["ok"] and asked["response"].startswith("I can add that. When is it?")
-    same = ag.from_text("add the RAIMS presentation to my calendar", earlier=[said], now=now)            # the same event
-    assert same["title"] == "RAIMS presentation" and datetime.fromtimestamp(same["start_ts"]).strftime("%H:%M") == "19:30"
+    same = ag.from_text("add the ORBIT presentation to my calendar", earlier=[said], now=now)            # the same event
+    assert same["title"] == "ORBIT presentation" and datetime.fromtimestamp(same["start_ts"]).strftime("%H:%M") == "19:30"
     it = ag.from_text("add it to my calendar", earlier=[said], now=now)                                   # names nothing
-    assert it["title"] == "RAIMS presentation" and datetime.fromtimestamp(it["start_ts"]).strftime("%H:%M") == "19:30"
+    assert it["title"] == "ORBIT presentation" and datetime.fromtimestamp(it["start_ts"]).strftime("%H:%M") == "19:30"
 
 
 # ── offers made as statements, and questions from any action ─────────────────

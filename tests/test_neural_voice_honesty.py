@@ -24,7 +24,6 @@ Three defects, all fixed here:
    ``pip install -e ".[natural]"  (from the ELI project root)``. In an AppImage there
    is no project root and no writable site-packages.
 """
-import re
 from pathlib import Path
 
 import pytest
@@ -111,13 +110,14 @@ def _release_yaml() -> dict:
 
 def test_linux_bundles_the_neural_extra():
     d = _release_yaml()
-    extras = (d["jobs"]["build-linux"].get("env") or {}).get(
-        "OPTIONAL_EXTRAS", d["env"]["OPTIONAL_EXTRAS"])
-    assert "chatterbox" in extras.split(), "the AppImage no longer bundles the clone engine"
+    for job in ("build-linux", "build-windows", "build-macos"):
+        extras = (d["jobs"][job].get("env") or {}).get(
+            "OPTIONAL_EXTRAS", d["env"]["OPTIONAL_EXTRAS"])
+        assert "natural" not in extras.split(), f"{job} bundles the neural engine again"
 
 
 @pytest.mark.parametrize("job", ["build-windows", "build-macos"])
-def test_other_platforms_do_not_pull_the_torch_stack(job):
+def test_other_platforms_do_not_pull_the_torch_stack(job):  # noqa: D401
     """Only the linux job installs CPU torch first and guards against CUDA wheels.
     Adding `natural` globally makes windows/macos resolve torch from PyPI and blows
     the 2 GiB per-asset limit — which fails the whole release, not just one job."""
@@ -127,11 +127,15 @@ def test_other_platforms_do_not_pull_the_torch_stack(job):
     assert "chatterbox" not in extras.split(), f"{job} would pull the CUDA torch stack"
 
 
-def test_linux_installs_the_cpu_torch_stack_before_the_extras_loop():
-    d = _release_yaml()
-    step = next(s for s in d["jobs"]["build-linux"]["steps"]
+def _linux_deps() -> str:
+    """The Linux build's dependency install: the build-linux job's own step."""
+    step = next(s for s in _release_yaml()["jobs"]["build-linux"]["steps"]
                 if "Install dependencies" in str(s.get("name", "")))
-    run = step["run"]
+    return step["run"]
+
+
+def test_linux_installs_the_cpu_torch_stack_before_the_extras_loop():
+    run = _linux_deps()
     cpu_at = run.index("download.pytorch.org/whl/cpu")
     loop_at = run.index("for extra in $OPTIONAL_EXTRAS")
     assert cpu_at < loop_at, "extras resolve torch before the CPU index is used"
@@ -139,10 +143,7 @@ def test_linux_installs_the_cpu_torch_stack_before_the_extras_loop():
 
 
 def test_a_cuda_regression_fails_the_linux_build():
-    d = _release_yaml()
-    step = next(s for s in d["jobs"]["build-linux"]["steps"]
-                if "Install dependencies" in str(s.get("name", "")))
-    assert "nvidia-" in step["run"], "no guard against CUDA wheels re-entering the bundle"
+    assert "nvidia-" in _linux_deps(), "no guard against CUDA wheels re-entering the bundle"
 
 
 def test_the_two_gib_asset_guard_is_still_in_place():

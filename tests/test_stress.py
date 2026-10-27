@@ -217,11 +217,13 @@ def test_tts_list_voices_50_times():
         assert len(result) >= 3
 
 def test_tts_find_voice_50_times():
-    from eli.perception.tts_router import find_voice_model
+    from eli.perception.tts_router import _voice_search_dirs, find_voice_model
+    installed = [f.stem for d in _voice_search_dirs() for f in Path(d).glob("*.onnx")]
+    if not installed:
+        pytest.skip("no Piper voices installed")
     for _ in range(50):
-        result = find_voice_model("en_US-lessac-high")
-        assert result is not None
-        assert result.exists()
+        result = find_voice_model(installed[0])
+        assert result is not None and result.exists()
 
 def test_tts_clean_text_stress():
     from eli.perception.tts_router import _clean_text
@@ -239,17 +241,10 @@ def test_no_memory_marker_on_empty_recall(tmp_db):
     mem = Memory(db_path=str(tmp_db))
     # These specific queries should return empty
     queries = [
-        "immortal technique concert 2024",
+        "quiet machine concert 2024",
         "quantum mechanics lecture notes",
         "purple elephant flying machine",
         "xyzzy_nonexistent_topic_123",
     ]
     for q in queries:
-        result = mem.recall_memory(q)
-        assert isinstance(result, list)
-        # Empty result should trigger no-memory marker in engine context (not tested here)
-        # Just verify recall doesn't fabricate entries
-        assert len(result) == 0 or all(
-            q.lower().split()[0][:5] in (r.get("text", "")).lower()
-            for r in result
-        ) or True  # actual grounding check is in engine context assembly
+        assert mem.recall_memory(q) == [], f"an empty memory recalled something for {q!r}"

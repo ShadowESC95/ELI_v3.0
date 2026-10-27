@@ -50,9 +50,15 @@ def test_defaults_has_temperature():
 def test_defaults_has_n_gpu_layers():
     assert "n_gpu_layers" in DEFAULTS
 
-def test_defaults_has_n_threads():
-    assert "n_threads" in DEFAULTS
-    assert DEFAULTS["n_threads"] >= 1
+def test_defaults_has_n_threads(monkeypatch):
+    """0 is auto: one thread per physical core, worked out on the machine at every load."""
+    from eli.core import config
+    from eli.core.hardware_profile import recommend_cpu_threads
+    assert DEFAULTS["n_threads"] == 0
+    for var in ("ELI_GGUF_THREADS", "ELI_N_THREADS", "ELI_CPU_THREADS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(config, "get", lambda key, default=None: 0 if key == "n_threads" else default)
+    assert config.get_n_threads() == recommend_cpu_threads()
 
 def test_defaults_has_batch_size():
     assert "batch_size" in DEFAULTS
@@ -189,6 +195,16 @@ def test_migrate_preserves_other_keys():
     out, _ = _migrate_legacy_keys(data)
     assert out["temperature"] == 0.7
     assert out["provider"] == "custom_gguf"
+
+
+def test_a_thread_count_the_tuner_wrote_goes_back_to_auto_once(monkeypatch):
+    from eli.core.runtime_settings import _bring_up_to_date
+    monkeypatch.setattr("os.cpu_count", lambda: 12)
+    out, migrated = _bring_up_to_date({"n_threads": 10})
+    assert out["n_threads"] == 0 and "settings_revision" in migrated
+    out, migrated = _bring_up_to_date({**out, "n_threads": 10})    # chosen afterwards: kept
+    assert out["n_threads"] == 10 and migrated == []
+    assert _bring_up_to_date({"n_threads": 4})[0]["n_threads"] == 4  # not a figure the tuner wrote
 
 
 # ── _resolve_relative_model_paths ────────────────────────────────────────

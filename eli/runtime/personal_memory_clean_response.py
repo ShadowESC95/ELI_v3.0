@@ -20,7 +20,7 @@ def _db_paths() -> tuple[Path, Path]:
     project_root() and the artifacts dir are the SAME directory in a source
     checkout and different ones in a shipped build: the code lives on the
     read-only AppImage mount while the databases live under
-    ~/.local/share/ELI_v2/artifacts. Deriving the DB path from the project root
+    ~/.local/share/ELI_v3/artifacts. Deriving the DB path from the project root
     therefore pointed at a tree that does not exist — see the identical failure
     fixed in personal_memory_surface, where "who am I?" reported the user DB
     missing at a /tmp/.mount_* path.

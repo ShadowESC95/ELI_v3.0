@@ -60,9 +60,11 @@ def _effector_registered_actions() -> frozenset:
 
 
 def executor_action_branches() -> frozenset:
-    from eli.tools.registry.capability_updater import extract_executor_actions
-    if_chain = extract_executor_actions(REPO / "eli" / "execution" / "executor_enhanced.py")
-    return frozenset(if_chain) | _effector_registered_actions()
+    """Actions with a dispatch path: a branch of the executor's if-chain, or a handler an effector module
+    registered (eli/execution/effectors, which the executor dispatches through first)."""
+    from eli.runtime.capability_sync import _ast_extract_dispatch_actions
+    return frozenset(_ast_extract_dispatch_actions(
+        (REPO / "eli" / "execution" / "executor_enhanced.py").read_text(encoding="utf-8"))) | _effector_registered_actions()
 
 
 @lru_cache(maxsize=1)

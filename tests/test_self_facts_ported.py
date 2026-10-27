@@ -46,7 +46,8 @@ def test_facts_are_populated_from_the_live_system():
     assert f["install_kind"] in {"source", "appimage", "frozen"}
     # Present-or-absent, but never a fabricated value.
     if "capabilities" in f:
-        assert int(f["capabilities"]) > 0
+        # what the code has and what this machine has shown of it, not a bare count
+        assert re.match(r"\d+ in the code", f["capabilities"]), f["capabilities"]
 
 
 def test_database_paths_are_real_and_absolute():

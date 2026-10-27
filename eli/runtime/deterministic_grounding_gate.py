@@ -60,7 +60,7 @@ def _artifacts_dir() -> Path:
 
     The project root and the artifacts dir are the same directory in a source
     checkout and different ones in a shipped build — the code sits on the
-    read-only AppImage mount while data lives under ~/.local/share/ELI_v2. So
+    read-only AppImage mount while data lives under ~/.local/share/ELI_v3. So
     `PROJECT_ROOT / "artifacts"` reads a tree that is not there: the snapshot
     comes back empty and the memory report declares every database missing.
     """

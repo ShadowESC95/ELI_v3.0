@@ -96,9 +96,9 @@ def complains_about_eli(text: Any) -> bool:
     return True
 
 
-# Words that name nothing: a message made only of these ("What the fuck is going on!?", "seriously??",
-# "why?!", "huh?") has no subject of its own, so it is about ELI's last reply. Live, "What the fuck is
-# going on" matched none of the patterns and the model invented a "RAG phase" and a "reflection agent".
+# Words that name nothing: a message made only of these ("what the hell is going on!?", "seriously??",
+# "why?!", "huh?") has no subject of its own, so it is about ELI's last reply. Live, a bare reaction like
+# that matched none of the patterns and the model invented a "RAG phase" and a "reflection agent".
 _REACTION_WORDS = frozenset("""
 a an the is was it its it's this that what what's whats why huh eh wtf fuck fucking fucked hell heck
 going on happening happened wrong now again really seriously actually even still just so oh god jesus
@@ -113,6 +113,13 @@ def reacts_to_last_reply(text: Any) -> bool:
         return False
     words = re.findall(r"[a-z']+", low)
     return 0 < len(words) <= 10 and all(w.strip("'") in _REACTION_WORDS for w in words)
+
+
+def subject_words(text: Any) -> List[str]:
+    """The words of a message that name something: not stopwords, and not the words a bare reaction
+    is made of ("what", "the", "fuck", "this", "really")."""
+    from eli.cognition.scoring import tokenize
+    return [w for w in tokenize(str(text or "")) if w.strip("'") not in _REACTION_WORDS]
 
 
 def asks_about_own_behaviour(text: Any) -> bool:
@@ -577,6 +584,12 @@ class _Check:
                     if d not in self.unrecorded_days:
                         self.unrecorded_days.append(d)
                 return f"writes about {', '.join(missing)}, when nothing is recorded that day"
+        try:
+            from eli.cognition.output_governor import contradicts_the_loaded_placement
+            if contradicts_the_loaded_placement(s):
+                return "says the model is wholly on the GPU, and the loader put part of it in RAM"
+        except Exception:
+            log.debug("loaded-placement check skipped", exc_info=True)
         ran = self._ran_at_start or bool(self._facts.get("executed_actions"))
         if not ran and _ENABLED_CLAIM.search(s):
             return "reports a change nothing made"

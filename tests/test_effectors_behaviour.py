@@ -26,7 +26,17 @@ def test_background_jobs_returns_list():
     assert r["ok"] is True
 
 
-def test_check_job_without_id_prompts():
+def test_check_job_without_id_prompts(monkeypatch):
+    # No id means the running job, else the latest; with no jobs at all there is nothing to report.
+    # The registry is process-wide, so an earlier test's job must not answer for this one.
+    class _NoJobs:
+        def list(self, *a, **k):
+            return []
+
+        def get(self, *a, **k):
+            return None
+
+    monkeypatch.setattr("eli.runtime.background_tasks.get_background_tasks", lambda: _NoJobs())
     r = _contract(get("CHECK_JOB")("CHECK_JOB", {}), "CHECK_JOB")
     assert r["ok"] is False
 

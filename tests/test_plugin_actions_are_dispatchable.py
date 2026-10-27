@@ -155,6 +155,28 @@ def test_ambiguous_bare_name_is_reported_not_guessed(installed, monkeypatch):
     assert mgr.dispatch("RIVAL_HELLO", {})["content"] == "rival hello"
 
 
+def test_media_plugin_is_dispatchable(monkeypatch):
+    """MediaPlugin didn't inherit from Plugin, so PluginManager's issubclass check
+    never found it — it loaded fine but was silently unregistered. Covers the real
+    eli/plugins/media/plugin.py, not a synthetic fixture. _load_plugin_from_file
+    execs it under a fresh module name (plugins.media.plugin, not
+    eli.plugins.media.plugin), so the MPRIS backend has to be patched at its own
+    module rather than on media/plugin.py's `_b` — both resolve the same object."""
+    import eli.plugins.manager as M
+    from eli.plugins.media import plugin as media_plugin_mod
+    from eli.integrations.mpris import playerctl_backend
+
+    monkeypatch.setattr(playerctl_backend, "play", lambda player=None: {"ok": True, "content": "playing"})
+    monkeypatch.setattr(M, "_load_state", lambda: {"enabled": ["media"], "disabled": []})
+
+    mgr = M.PluginManager()
+    mgr._load_plugin_from_file("media", media_plugin_mod.__file__)
+    assert isinstance(mgr._loaded["media"], media_plugin_mod.Plugin)
+
+    res = mgr.dispatch("MEDIA_PLAY", {"player": "spotify"})
+    assert res is not None and res["ok"] is True and res["content"] == "playing"
+
+
 def test_a_plugin_cannot_shadow_a_builtin_action():
     """Dispatch is the LAST stop in the executor. A listing declaring SHUTDOWN or
     SEND_EMAIL must not take that verb over for the whole assistant."""
@@ -166,3 +188,30 @@ def test_a_plugin_cannot_shadow_a_builtin_action():
     assert "get_manager().dispatch" in tail, (
         "plugin dispatch must sit at the end of _execute_impl, after every "
         "built-in handler has had its chance to claim the action")
+
+
+def test_installing_a_built_in_uses_the_shipped_plugin_and_uninstalling_keeps_it(tmp_path, monkeypatch):
+    """A built-in with no download got a generated stub whose every action answered ok "executed
+    (stub)", and it replaced the real plugin in memory; uninstalling deleted ELI's own plugin folder."""
+    import inspect
+
+    import eli.plugins.manager as M
+
+    pdir = tmp_path / "plugins"
+    state = {"enabled": [], "disabled": [], "installed": {}}
+    monkeypatch.setattr(M, "_plugins_dir", lambda: pdir)
+    monkeypatch.setattr(M, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(M, "_save_state", lambda s: state.update(s))
+    shipped = M._bundled_plugins_dir() / "pomodoro" / "plugin.py"
+    before = shipped.read_bytes()
+
+    mgr = M.PluginManager()
+    res = mgr.install("pomodoro")
+    assert res["ok"], res
+    assert not pdir.exists() or not any(pdir.rglob("plugin.py"))
+    loaded = mgr._loaded["pomodoro"]
+    assert inspect.getsourcefile(type(loaded)) == str(shipped)
+    assert "stub" not in str(loaded.actions["status"]({}))
+
+    assert mgr.uninstall("pomodoro")["ok"]
+    assert shipped.read_bytes() == before

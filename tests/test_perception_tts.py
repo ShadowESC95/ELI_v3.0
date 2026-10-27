@@ -44,14 +44,26 @@ def test_list_voices_no_duplicates():
     voices = list_voices()
     assert len(voices) == len(set(voices))
 
-def test_list_voices_includes_lessac_high():
-    assert "en_US-lessac-high" in list_voices()
+def _installed_voices():
+    """The Piper voices on this machine (the shipped set on CI, any added ones here)."""
+    from eli.perception.tts_router import _voice_search_dirs
+    return sorted({f.stem for d in _voice_search_dirs() for f in Path(d).glob("*.onnx")
+                   if Path(str(f) + ".json").exists()})
 
-def test_list_voices_includes_ryan_high():
-    assert "en_US-ryan-high" in list_voices()
 
-def test_list_voices_includes_cori_high():
-    assert "en_GB-cori-high" in list_voices()
+def test_every_installed_voice_is_found_and_the_natural_ones_listed():
+    """These tests named three high-quality voices that were only ever on the developer's machine;
+    the release ships a smaller set. What holds anywhere: every installed voice is found, and every
+    one that is not a robotic low-quality voice is offered."""
+    installed = _installed_voices()
+    if not installed:
+        pytest.skip("no Piper voices installed")
+    listed = list_voices()
+    for name in installed:
+        found = find_voice_model(name)
+        assert found is not None and found.exists() and found.stem == name, name
+        if not name.endswith("low"):
+            assert name in listed, name
 
 
 # ── Voice model finding ───────────────────────────────────────────────────
@@ -59,21 +71,6 @@ def test_list_voices_includes_cori_high():
 def test_find_voice_model_returns_path_or_none():
     result = find_voice_model("en_US-lessac-high")
     assert result is None or isinstance(result, Path)
-
-def test_find_lessac_high_exists():
-    result = find_voice_model("en_US-lessac-high")
-    assert result is not None
-    assert result.exists()
-
-def test_find_ryan_high_exists():
-    result = find_voice_model("en_US-ryan-high")
-    assert result is not None
-    assert result.exists()
-
-def test_find_cori_high_exists():
-    result = find_voice_model("en_GB-cori-high")
-    assert result is not None
-    assert result.exists()
 
 def test_find_nonexistent_voice():
     result = find_voice_model("en_US-nonexistent-ultra")
@@ -297,3 +294,55 @@ def test_tts_refuses_unspeakable_fragment(frag):
 def test_tts_speaks_real_short_text(ok):
     from eli.perception.tts_router import _eli_tts_is_unspeakable
     assert _eli_tts_is_unspeakable(ok) is False
+
+
+def test_speaking_works_with_no_piper_program(monkeypatch, tmp_path):
+    """The packaged app ships Piper's library and voices but no piper program; on a machine with no
+    working piper program elsewhere ELI had no voice. With no program to run, the library speaks,
+    a pause kept between sentences."""
+    import io
+    import sys
+    import types
+    import wave
+    from eli.perception import tts_router as t
+
+    calls = []
+
+    class _Chunk:
+        sample_rate, sample_width, sample_channels = 22050, 2, 1
+        audio_int16_bytes = b"\x01\x00" * 22050          # one second
+
+    class _Voice:
+        @classmethod
+        def load(cls, path, config_path=None):
+            calls.append(("load", path))
+            return cls()
+
+        def synthesize(self, text, syn_config=None):
+            calls.append(("say", text, getattr(syn_config, "kw", None)))
+            return [_Chunk(), _Chunk()]
+
+    class _Config:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(PiperVoice=_Voice, SynthesisConfig=_Config))
+    monkeypatch.setattr(t, "_PIPER_LIB_VOICES", {})
+    model = tmp_path / "voice.onnx"
+    model.write_bytes(b"onnx")
+    monkeypatch.setattr(t, "find_voice_model", lambda name: model)
+    monkeypatch.setattr(t, "_find_piper_config", lambda m: None)
+    monkeypatch.setattr(t, "_find_piper_bin", lambda: None)
+    monkeypatch.setattr(t, "_packaged_piper_binary_candidates", lambda: [])
+    monkeypatch.delenv("ELI_PIPER_BINARY", raising=False)
+    monkeypatch.delenv("ELI_PIPER_BIN", raising=False)
+    monkeypatch.setenv("ELI_TTS_SPEAKING_LOCK", str(tmp_path / "speaking.lock"))
+    played = []
+    monkeypatch.setattr(t, "_play_wav_blocking", lambda wav: played.append(wav.read_bytes()) or True)
+
+    assert t._speak_piper_cli("Hello there. A second sentence.") is True
+    assert ("load", str(model)) in calls
+    said = [c for c in calls if c[0] == "say"]
+    assert said and said[0][2] and "length_scale" in said[0][2], "the program's prosody is not passed on"
+    with wave.open(io.BytesIO(played[0])) as w:
+        assert w.getnframes() > 2 * 22050, "no pause between the sentences"

@@ -3595,7 +3595,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         _prev_user, _prev_eli = "", ""
         try:
             _turns = self.memory.get_recent_conversation(
-                limit=6, user_id=self.user_id) or []
+                limit=6, user_id=self.user_id, session_id=self.session_id) or []
             for _t in reversed(_turns):
                 _role = str(_t.get("role") or "").strip().lower()
                 _content = str(_t.get("content") or "").strip()
@@ -3608,13 +3608,21 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     _prev_user = _content
                     break
             if _prev_eli:
-                _prior = (
-                    "The exchange you are correcting:\n"
-                    + (f"User: {_prev_user[:600]}\n" if _prev_user else "")
-                    + f"You: {_prev_eli[:900]}\n\n"
-                )
+                # The exchanges before it too: a correction often points further back. Told that the news
+                # was not wanted and that the user had been answering ELI's own question from two turns
+                # earlier, the repair, shown only the last exchange, read the misread message as a news
+                # request a second time and served the same headlines again.
+                _lines = []
+                for _t in _turns:
+                    _role = str(_t.get("role") or "").strip().lower()
+                    _content = str(_t.get("content") or "").strip()
+                    if not _content or (_role == "user" and _content == str(user_input or "").strip()):
+                        continue
+                    _lines.append(f"User: {_content[:600]}" if _role == "user" else f"You: {_content[:900]}")
+                _prior = "The exchange you are correcting (oldest first):\n" + "\n".join(_lines) + "\n\n"
         except Exception:
             log.debug("[COGNITIVE] correction: prior turn lookup failed", exc_info=True)
+
 
         _low_corr = (user_input or "").lower()
 
@@ -3629,8 +3637,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 _low_corr,
             )
         )
-        if _reject_data_dump and _prev_user:
-            _corr_target = _prev_user
 
         import datetime as _dt_corr
         _now_corr = _dt_corr.datetime.now().astimezone()
@@ -3652,9 +3658,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "do not ask them to clarify a question about your own previous answer."
         )
         if _reject_data_dump:
+            # Re-answering the user's earlier message repeated the misreading: told the news was not
+            # what was asked for, it answered that same message with the same headlines again.
             _corr_system += (
-                " Your last reply wrongly dumped memory/runtime statistics or internal diagnostics. "
-                "Re-answer the user's ORIGINAL message conversationally, in ELI's voice. "
+                " The user says your last reply was not what they asked for (a data dump, or the wrong "
+                "thing altogether). Do not repeat, summarise or re-list anything from it. Read the "
+                "conversation above and their correction, work out what they actually meant, and "
+                "respond to that conversationally, in ELI's voice. "
                 "No counts, no bullet lists of stores, no 'as an AI' or 'language model' disclaimers."
             )
         try:
@@ -3843,6 +3853,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 _corr_response = govern_output(_corr_response or "", is_grounded=False).strip()
             except Exception:
                 _corr_response = (_corr_response or "").strip()
+            if _corr_response and _prev_eli and _is_repeat_of_recent(_corr_response, [_prev_eli]):
+                log.debug("[COGNITIVE] Correction: the repair repeats the reply being corrected, escalating")
+                return None
 
             if _corr_response:
                 self._store_assistant_turn(_corr_response)
@@ -5035,7 +5048,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                     _mqs_r = str(_mqs_r or "").strip()
                             else:
                                 _mqs_r = (_mqs_r or "").strip()
-                            if _mqs_r:
+                            # Drop a low-confidence segment instead of concatenating garbage.
+                            try:
+                                _mqs_low_conf = _mqs_conf is not None and float(_mqs_conf) < 0.5
+                            except (TypeError, ValueError):
+                                _mqs_low_conf = False
+                            if _mqs_r and not _mqs_low_conf and not _mqs_failed:
                                 _mqs_responses.append(_mqs_r)
                             elif _mqs_r:
                                 log.debug(
@@ -7461,7 +7479,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if action in {"CHAT", "chat"}:
             try:
                 self._last_request_meta = {
-                    "request_id": str(getattr(trace, "request_id", "") or ""),
+                    "request_id": str((trace or {}).get("request_id") or ""),
                     "intent": str((intent or {}).get("action") or ""),
                     "intent_confidence": float((intent or {}).get("confidence", 0.0) or 0.0),
                     "reasoning_mode": str(reasoning_mode or "quick"),
