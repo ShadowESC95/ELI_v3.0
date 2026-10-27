@@ -242,12 +242,14 @@ _COURTESY_TAIL = re.compile(
     r"right\s+now|now|eli))+[\s,.!?]*$", re.I)
 
 
-# The same before a command: "good. play the third world by immortal technique" searched for
-# "good. play the third world". Only with punctuation after it ("right click" is a command), and never
-# yes/no: those answer a question ELI asked.
+# The same before a command: "good. play the first light by quiet machine" searched for
+# "good. play the first light". Only with punctuation after it ("right click" is a command), and never
+# yes/no: those answer a question ELI asked. A name or "again" may follow the word: "Thanks bud, open
+# youtube please" went to the intent model (32 s) and came back as an app to install.
 _COURTESY_HEAD = re.compile(
     r"^\s*(?:(?:good|great|nice|cool|ok|okay|right|alright|perfect|lovely|grand|brilliant|sweet|cheers|thanks|"
-    r"thank\s+you)\s*[,.!;:]+\s*)+(?=\w)", re.I)
+    r"thank\s+you)(?:\s+(?:mate|pal|bud|buddy|man|dude|eli|again|a\s+lot|so\s+much|very\s+much))*"
+    r"\s*[,.!;:]+\s*)+(?=\w)", re.I)
 
 
 def _without_courtesy(text: str) -> str:
@@ -576,7 +578,7 @@ def _eli_schedule_prepass(user_text: str):
     if _QUESTION_RX.search(t):
         return None
     # _QUESTION_RX is ^-anchored and only saw the start, so an imperative opener followed by a
-    # question slipped through ("Stop talking about reactors.. How is the head, this evening?"
+    # question slipped through ("Stop talking about engines.. How are things, this evening?"
     # created a background task). Test the closing sentence too. Polite requests ("can you open
     # spotify at 8pm?") still schedule; only a real trailing question is refused.
     if _QUESTION_RX.search(_eli_final_clause(t)):
@@ -616,7 +618,7 @@ def _eli_multi_command_prepass(user_text: str):
         segs = None
     if not segs:
         return None
-    # "open the browser and search QFT" is one browser request, not two. Splitting it opened the
+    # "open the browser and search KITE" is one browser request, not two. Splitting it opened the
     # home page and answered the search in chat. Only decline to split when the whole phrase
     # resolves to a browser search with a query; other chained utterances still split.
     try:
@@ -813,7 +815,7 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
             return None
 
     # "my name is X" / "call me X" go through the same extractor as the profile and the
-    # graph: it rejects "If my name is listed as unknown, ..." (renamed a user "listed").
+    # graph: it rejects "my name is listed wrongly, ..." (renamed a user "listed").
     from eli.runtime.identity_validation import (
         _DECLARATION_RE, _drop_hypothetical_clauses, extract_explicit_identity_facts)
     _said = _drop_hypothetical_clauses(_re.sub(r"(?i)\bmy name's\b", "my name is", raw))
@@ -936,9 +938,10 @@ def _route_set_communication_style(raw: str, low: str) -> Optional[Dict[str, Any
     return None
 
 
+
 # Stems that make a turn a request rather than a remark. The personal-memory route is a
 # substring test over a keyword table and can't tell a question from a passing mention ("My
-# memory is fine, it is yours that we are concerned about" hit PERSONAL_MEMORY_DEEP_EXPLAIN at
+# memory is fine, it is yours that we are worried about" hit PERSONAL_MEMORY_DEEP_EXPLAIN at
 # 0.99). Require that something was actually asked.
 _ASKING_STEMS = (
     "what", "which", "how", "why", "when", "where", "who", "whose",
@@ -948,7 +951,7 @@ _ASKING_STEMS = (
 )
 
 # Word-boundary anchored: a bare `in` test is the defect this guard stops ("it is yourS that we are
-# concerned" contains "is your").
+# worried" contains "is your").
 _ASKING_RE = re.compile(
     r"\b(?:" + "|".join(s.replace(" ", r"\s+") for s in _ASKING_STEMS) + r")\b",
     re.I,
@@ -1089,8 +1092,16 @@ def _route_grounded_runtime_intent(
                    matched_by="router.memory_audit.belief", need_grounding=True,
                    allow_chat_without_evidence=False)
 
+
     if _is_identity and not _has_system_kw:
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="identity.chat_classified")
+
+
+_JOB_PROGRESS = re.compile(
+    r"\b(?:eta(?!\s+(?:on|for|of)\s+(?!(?:it|that|this|the\s+job)\b))|how\s+much\s+longer|how\s+far\s+along|time\s+(?:left|remaining)|any\s+progress|"
+    r"how\s+long\s+(?:left|to\s+go|(?:will|does|is|should)\s+(?:it|that|this)(?:\s+(?:take|be))?)|"
+    r"(?:is\s+(?:it|that)|it'?s)\s+(?:done|finished|ready)(?:\s+yet)?|"
+    r"how'?s\s+(?:it|that)\s+(?:going|coming\s+along))\b")
 
 
 def _route_plugin_bridge_prepass(raw: str, low: str):
@@ -1354,6 +1365,30 @@ def _eli_react_to_content_prepass(original_text: str, raw: str, low: str):
     )
 
 
+_LINK_RE = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
+_OPEN_LINK_RE = re.compile(r"^\s*(?:open|launch|visit|browse|go\s+to|navigate\s+to|show)\b", re.I)
+
+
+def _eli_linked_page_prepass(raw: str):
+    """A link with a question or request about it ("<link> --> what do you think?", "summarise
+    this <link>"): the page is read (WEB_FETCH) and the reply answers from it. Answered as pasted
+    text, ELI said it could not browse the web. A link on its own, or with "open"/"go to", is left
+    to the rules that open it."""
+    m = _LINK_RE.search(raw or "")
+    if not m:
+        return None
+    url = m.group(0).rstrip(".,;:!?")
+    rest = re.sub(r"[-=]+>|<[-=]+|[\s,;:]+", " ", (raw[:m.start()] + " " + raw[m.end():])).strip()
+    if not rest or _OPEN_LINK_RE.match(rest) or len(rest.split()) > 40:
+        return None
+    from eli.runtime.command_splitter import is_request, starts_with_command
+    asks = "?" in rest or bool(re.match(r"(?:what|how|why|who|which|is|are|does|do|can|could|would|should)\b",
+                                        rest, re.I))
+    if not (asks or starts_with_command(rest, after_lead=True) or is_request(rest)):
+        return None
+    return _mk("WEB_FETCH", {"url": url}, 0.95, matched_by="web.read_linked_page", entities={"url": url})
+
+
 def _eli_web_lookup_prepass(raw: str, low: str):
     """Route real-time factual lookups and explicit web searches to WEB_SEARCH
     when networking is enabled.
@@ -1547,8 +1582,8 @@ def _trailing_request_clause(raw: str) -> str:
     """The final sentence of a multi-sentence utterance, if it is a short request.
 
     The long-question guard measures the whole utterance, but the request often
-    lives in the last clause: "Nope, i don't want to be stuck in that loop anymore
-    than you do, broken now anyway. What's the morning report?" is 20 words, while
+    lives in the last clause: "No, i don't want to go round in circles either, the old one
+    is broken now anyway. What's the morning report?" is 21 words, while
     the thing being asked for is 5. Returns "" when there is no distinct trailing
     clause, or when it is not short enough to be an unambiguous request — the
     caller then falls back to CHAT exactly as before.
@@ -1571,6 +1606,62 @@ _SEE_CUE_RE = re.compile(r"\b(?:see|visible|showing|shown|displayed|open|appears
 def _asks_what_is_on_screen(low: str) -> bool:
     """A question about what the screen currently shows. It needs the screen read, not a chat answer."""
     return bool(_ON_SCREEN_RE.search(low) and _SEE_CUE_RE.search(low))
+
+
+def _asks_now_playing(low: str) -> bool:
+    """A question about the LIVE media session — what is currently playing or being watched —
+    including wrapped request forms ('do you know what I'm watching', 'can you check what I'm
+    watching now'). Routes to NOW_PLAYING so ELI reads the active session instead of guessing from
+    memory/history. Declarative remarks ('you can see what I'm watching') carry no request lead, so
+    they deliberately fall through to chat. 'what's on' is left out — too ambiguous with the
+    calendar/agenda ('what's on today')."""
+    if re.search(r"\bnow\s+playing\b", low):
+        return True
+    if re.search(r"\bwhat(?:'?s| is| are\s+you)\s+playing\b", low):
+        return True
+    if re.search(r"\bwhat\s+(?:song|track|music|movie|film|show|episode|series)\s+is\s+"
+                 r"(?:this|that|playing)\b", low):
+        return True
+    # bare interrogative: "what am i (currently) watching/playing/listening to"
+    if re.search(r"\bwhat\s+am\s+i\s+(?:currently\s+)?(?:watching|playing|listening(?:\s+to)?)\b", low):
+        return True
+    # wrapped request: "do you know / can|could you … what i'm watching/playing/listening"
+    if re.search(r"\b(?:do\s+you\s+know|can\s+you|could\s+you|tell\s+me|show\s+me)\b[^?.!\n]{0,40}"
+                 r"\bwhat\s+i(?:'m|\s+am)\s+(?:watching|playing|listening(?:\s+to)?)\b", low):
+        return True
+    return False
+
+
+# "when did I tell you about X", "what day did I drive to X", "the day that I went to X", "the
+# timestamps of that interaction": answered from the conversation log, which has every message's
+# time. ELI answered from memories whose dates had moved when they were stored again, and said the
+# times weren't recorded.
+_WHEN_SAID_RE = re.compile(
+    r"\b(?:when|what\s+(?:day|date|time))\s+did\s+(?:i|we)\s+(?:first\s+|last\s+|ever\s+)?"
+    r"(?:tell|told|mention|say|said|talk|speak|bring|ask|go|went|drive|travel|visit|fly|head)\w*\s+"
+    r"(?:(?:you|me|up|about|of|to|from|on|that)\s+)*(?P<topic>[^,.;!?]+)", re.I)
+_DAY_I_RE = re.compile(
+    r"\bthe\s+(?:\w+\s+)?(?:day|date|time)\s+(?:that\s+|when\s+)?(?:i|we)\s+"
+    r"(?:went|drove|travelled|traveled|flew|headed|visited|told|mentioned|said|talked|spoke)\w*\s+"
+    r"(?:(?:you|me|about|of|to|from|that)\s+)*(?P<topic>[^,.;!?]+)", re.I)
+_TIMESTAMPS_OF_RE = re.compile(
+    r"\btime\s?stamps?\s+(?:of|for|on)\s+(?:that|this|the|those|our)\s+"
+    r"(?:interaction|conversation|chat|message|talk|exchange)s?\b"
+    r"|^(?:\w+[\s,]+){0,3}(?:give|show|tell)\s+me\s+the\s+time\s?stamps?(?:\s+then)?[\s.!?]*$", re.I)
+
+
+def when_said_topic(text: str) -> Optional[str]:
+    """What a "when did I mention X" question asks about: X; "" when it points back at the exchange
+    just had ("give me the timestamps of that interaction"); None when it is not that question."""
+    t = str(text or "").strip()
+    for rx in (_WHEN_SAID_RE, _DAY_I_RE):
+        m = rx.search(t)
+        if m:
+            topic = re.split(r"\s+(?:because|but|since|cause|cos|and then)\b", m.group("topic"), maxsplit=1)[0]
+            topic = topic.strip(" '\"")
+            if topic:
+                return topic
+    return "" if _TIMESTAMPS_OF_RE.search(t) else None
 
 
 def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
@@ -1622,21 +1713,24 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             task_family="grounded_audit",
         )
 
-    if not _explain_prior_claim and re.search(
-        r"\b(took you|took so long|why did you take|response time|slow response|that took ages|"
-        r"you don't believe me|dont believe me|took over|took nearly|"
-        r"took just under|how much ram\b|how much memory\b|ram\b.{0,30}\butili[sz]|"
-        r"memory\b.{0,30}\bfor (?:the )?model|decrease latency|reduce latency)\b",
-        low,
-    ) and not re.search(r"\b(memories|sqlite|database|faiss|embedder|remember me)\b", low):
+    # How long the last reply took is the last-turn rule's (pre-route, ROUTING_FAULT_EXPLAIN, answered
+    # from the audit rows). This rule answered "that took over a minute??" with RAM figures, twice.
+    # What it keeps: RAM questions, and how to make replies faster (the runtime settings).
+    _asks_speed_up = re.search(
+        r"\b(response time|slow response|decrease latency|reduce latency|speed (?:it|you|this|replies) up)\b", low)
+    _asks_ram = re.search(
+        r"\b(how much ram\b|how much memory\b|ram\b.{0,30}\butili[sz]|memory\b.{0,30}\bfor (?:the )?model)\b",
+        low)
+    if not _explain_prior_claim and (_asks_speed_up or _asks_ram) and not re.search(
+            r"\b(memories|sqlite|database|faiss|embedder|remember me)\b", low):
         return _mk(
             "EXPLAIN_COGNITION_RUNTIME",
             {
                 "question": raw,
-                "diagnostic_focus": "latency_timing",
+                "diagnostic_focus": "inference_ram" if _asks_ram else "inference_runtime",
             },
             0.995,
-            matched_by="router.primary_contract_diagnostics.latency_timing",
+            matched_by="router.primary_contract_diagnostics.runtime_or_ram",
             need_grounding=True,
             allow_chat_without_evidence=False,
             task_family="grounded_audit",
@@ -1838,6 +1932,19 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     ):
         return _mk("CHAT", {"message": raw}, 0.9, matched_by="chat.relational_concern")
 
+    _said = when_said_topic(raw)
+    if _said is not None:
+        return _mk("MESSAGE_TIME_QUERY", {"topic": _said, "question": raw}, 0.95,
+                   matched_by="memory.when_said", allow_chat_without_evidence=False)
+
+    # A question about the live media session reads the active session (NOW_PLAYING), not a guess from
+    # history — even when wrapped in a longer sentence ("do you know what i am watching now? and we
+    # can get to the project later"). This runs BEFORE the long-question guard, which otherwise swallowed the
+    # wrapped forms into CHAT: observed live, ELI claimed it was blind while NOW_PLAYING could see the
+    # stream the whole time (the bare "what am i watching?" worked, the wrapped ones didn't).
+    if _asks_now_playing(low):
+        return _mk("NOW_PLAYING", {}, 0.95, matched_by="media.now_playing")
+
     # Long-question guard: a long rambling question goes to CHAT at 0.85 so the LLM intent resolver
     # never mis-maps it. It shadows ~300 keyword routes, so asking completely must never get a worse
     # answer than asking tersely. The guard measures the whole message but the request lives in a
@@ -2023,6 +2130,18 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if _bare_mem:
         return _mk('MEMORY_RECALL', {'query': 'recent conversations'},
                    0.95, matched_by='memory.search_bare')
+    # A recap of this conversation's last few messages is read from the conversation itself, every
+    # reply whole (session_continuity), not searched for: "check the last, say 7-8 messages, summarise
+    # what has been said" went to the intent model (90 s) and came back as a memory dump from August.
+    try:
+        from eli.cognition.correction_patterns import refers_to_earlier_reply as _rter
+        if _rter(text) and re.search(
+                r"\b(?:summar\w*|recap\w*|break\s*down|go\s+over|run\s+through|"
+                r"what\s+(?:has|have|had|was|were)?\s*(?:been\s+)?(?:said|happening|going\s+on|discussed))\b", low):
+            return _mk("CHAT", {"message": text}, 0.95, matched_by="conversation.recap")
+    except Exception:
+        _SWLOG.debug("suppressed exception", exc_info=True)
+
     # Conversation recall — "do you remember what we were talking about last week?"
     if re.search(
         r"\b(?:do you|can you|did you)\s+remember\b",
@@ -2449,6 +2568,12 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                        0.95, matched_by="dev.check_job")
     if re.search(r"\b(?:background\s+jobs|list\s+(?:background\s+|running\s+)?jobs|running\s+jobs|what\s+jobs)\b", low):
         return _mk("BACKGROUND_JOBS", {}, 0.9, matched_by="dev.background_jobs")
+    # "do you have an eta?" while a job runs: the job's own progress, not a guess ("several hours" for a
+    # ten-minute read of a few hundred PDFs, after a detour through the intent model)
+    if _JOB_PROGRESS.search(low):
+        from eli.runtime.background_tasks import get_background_tasks as _bt_running
+        if _bt_running().list(limit=1, status="running"):
+            return _mk("CHECK_JOB", {"job_id": None, "text": raw}, 0.9, matched_by="dev.running_job_progress")
 
     # ── Scheduled-task control ────────────────────────────────────────────────
     # Chat had no way to see or change the scheduler: the triggers above demand the
@@ -2985,7 +3110,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                    matched_by="timer.set_duration", entities={"seconds": val})
 
     m = re.search(
-        r"\b(?:(?:set|create)\s+(?:a\s+)?)?(?:alarm|reminder)\s+(?:for\s+)?(\d{1,2}[:.]\d{2})\b",
+        r"\b(?:(?:set|create)\s+(?:an?\s+)?)?(?:alarm|reminder)\s+(?:for\s+)?(\d{1,2}[:.]\d{2})\b",
         low)
     if m:
         alarm_time = m.group(1).replace(".", ":")
@@ -2993,7 +3118,8 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                    matched_by="timer.set_alarm", entities={"time": alarm_time})
 
     m = re.search(
-        r"\b(?:set|create)\s+(?:a\s+)?(?:alarm|timer|reminder)\b",
+        # "an": "set an alarm for 30 minutes" matched nothing and went to chat
+        r"\b(?:set|create)\s+(?:an?\s+)?(?:alarm|timer|reminder)\b",
         low)
     if m:
         # Try to find a time anywhere in the string
@@ -3443,9 +3569,6 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("GET_CLIPBOARD", {}, 0.9, matched_by="clipboard.show")
 
     # Exclude habit queries from file-read
-    if re.match(r"^(?:show|list|read)\s+habits?", low):
-        return _mk("HABIT_STATUS", {}, 0.95, matched_by="habits.show")
-    # Exclude habit queries from file-read
     if re.match(r"^(?:show|list|read)\s+habits?$", low):
         return _mk("HABIT_STATUS", {}, 0.95, matched_by="habits.show")
     m = re.match(r"^(read|show)\s+(~?/?[\w./\-]+(?:\.[\w]+)?)", raw, re.I)
@@ -3716,6 +3839,16 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         if _hit is not None:
             return _hit
 
+    # A question about ELI's own tastes or views ("what's your favourite kind of music?", "do you like
+    # jazz?") is conversation. Left at the fallback's confidence it went to the intent model, and a
+    # small one sent it to NEWS_FETCH. Every specific route above has already had its turn.
+    if re.search(r"\b(?:what|which)(?:'?s|\s+is|\s+are|\s+would\s+be)?\s+(?:your|ur)\s+(?:favou?rite|fav|preferred)\b"
+                 r"|\bdo\s+(?:you|u)\s+(?:like|love|enjoy|prefer|hate|dislike)\b"
+                 r"|\bhow\s+do\s+(?:you|u)\s+feel\s+about\b"
+                 r"|\bwhat\s+(?:kind|sort|type)s?\s+of\s+\w+(?:\s+\w+)?\s+do\s+(?:you|u)\s+"
+                 r"(?:like|enjoy|prefer|listen\s+to|watch|read)\b", low):
+        return _mk("CHAT", {"message": raw}, 0.9, matched_by="chat.opinion_of_eli")
+
     _eli_pipeline_trace("router.fallback_chat_selected", text=str(raw)[:160])
     return _mk("CHAT", {"message": raw}, 0.6, matched_by="fallback.chat")
 
@@ -3747,12 +3880,12 @@ def _eli_mqc_clean_query(q: str) -> str:
     """
     q = _eli_mqc_re.sub(r"\s+", " ", str(q or "")).strip(" .,!?:;")
     q = _eli_mqc_re.sub(r"^(open|play|search|find)\s+", "", q, flags=_eli_mqc_re.I).strip()
-    # Punctuation between words is not part of the song: "play evil; by eminem" searched "evil; eminem".
+    # Punctuation between words is not part of the song: "play evil; by orlo" searched "evil; orlo".
     # Inside a word it stays (P!nk, AC/DC, B.I.G.).
     q = _eli_mqc_re.sub(r"[\"“”]+|(?:[;!?,]+|\.{2,}|…)(?=\s|$)", " ", q)
     # Strip trailing service qualifiers — the router already extracted `target`.
-    # Without this, "logic by diabolic on spotify" → query="logic by diabolic on spotify"
-    # instead of the expected "logic by diabolic".
+    # Without this, "logic by veridian on spotify" → query="logic by veridian on spotify"
+    # instead of the expected "logic by veridian".
     q = _eli_mqc_re.sub(
         r"\s+on\s+(spotify|youtube|yt|youtube\.com|mpv|soundcloud|apple\s+music|tidal|deezer|amazon\s+music)\s*$",
         "",
@@ -4106,11 +4239,43 @@ def _eli_pm_wants_personal_memory(low):
     ))
     return has_memory and has_depth
 
+# "why did you go to the browser / search the web for that": a complaint about ELI's own
+# dispatch. Was any "why ... search/web/online", so "why the vector search is drifting"
+# got a routing-trace dump about an earlier, unrelated command.
+_ROUTING_FAULT_COMPLAINT_RE = _eli_pm_re.compile(
+    r"\bwhy\b[^.?!]{0,40}?\b(?:did|do|does|are|were|would|have|has)\s+(?:you|eli|it)\b"
+    r"[^.?!]{0,40}?\b(?:go|went|going|open|opened|opening|send|sent|sending|search|searched|"
+    r"searching|use|used|using|launch|launched|pull|pulled|take|took|bring|brought|"
+    r"redirect|redirected)\b[^.?!]{0,40}?\b(?:browser|web|online|internet|google)\b"
+    r"|\bwhy\b[^.?!]{0,30}?\b(?:go|goes|went)\b[^.?!]{0,20}?\bbrowser\b",
+    _eli_pm_re.I,
+)
+
+# "why did you NOT search properly" / "why didn't you search the web right" is a complaint about the
+# QUALITY of a search the user wanted done, not a complaint that ELI went to the web at all: the
+# opposite of a routing fault. Routed to ROUTING_FAULT_EXPLAIN it dumped the routing table at the
+# user. Those stay out of the routing-fault path and go to chat (ELI apologises / offers a fresh search).
+_WANTED_BETTER_SEARCH_RE = _eli_pm_re.compile(
+    r"\bwhy\b[^.?!]{0,40}?\b(?:did\s*n[o']?t|didn'?t|not|never|failed\s+to|couldn'?t|could\s+not)\b"
+    r"[^.?!]{0,25}?\b(?:search|look|check|google|browse)\b"
+    r"|\b(?:search|look|google|browse)\w*\b[^.?!]{0,20}?\b(?:properly|correctly|right|better|"
+    r"thoroughly|harder|again)\b",
+    _eli_pm_re.I,
+)
+
+
+def wants_routing_fault_explain(text: str) -> bool:
+    s = str(text or "")
+    if _WANTED_BETTER_SEARCH_RE.search(s):
+        return False
+    return bool(_ROUTING_FAULT_COMPLAINT_RE.search(s))
+
+
 def _eli_pm_pre_route(text):
     raw = str(text or "").strip()
     low = raw.lower()
 
-    if _eli_pm_re.search(r"\bwhy\b.*\b(browser|web|online|search)\b", low) or _eli_pm_re.search(r"\bwhy.*go.*browser\b", low):
+    if wants_routing_fault_explain(low):
         return _eli_pm_mk(
             "ROUTING_FAULT_EXPLAIN",
             {"question": raw},
@@ -4144,6 +4309,13 @@ def _eli_pm_pre_route(text):
             r"\bwhy\s+(?:the\s+\w+\s+)?(?:did|does|is|was)\s+(?:(?:it|that|this)\s+tak\w+\s+(?:you\s+)?|you\s+tak\w+\s+)"
             r"(?:so|that)\s+long(?:\s+to\s+(?:answer|reply|respond|do|get|come|load|think|say|work)\b[^?,]*)?\s*(?:\?|$|,|\band\b)", low)
         or _eli_pm_re.search(r"\bwhy\s+(?:are|were|was|is)\s+(?:you|that|it)\s+(?:so\s+|that\s+)?slow\b", low)
+        # a remark that the last reply was slow: "that took over a minute??", "it took you 20 minutes"
+        or _eli_pm_re.search(
+            r"\b(?:that|it|this|you)\s+took\s+(?:you\s+)?(?:(?:over|nearly|almost|more\s+than|about|just\s+under|like)\s+)?"
+            r"(?:(?:a|an|one|\d+)\s*(?:minutes?|mins?|seconds?|secs?|hours?)|so\s+long|too\s+long|way\s+too\s+long|ages|forever)\b", low)
+        or _eli_pm_re.search(
+            r"\b(?:you(?:'re|’re|\s+are|\s+were)|that(?:'s|’s|\s+was|\s+is)|it(?:'s|’s|\s+was|\s+is))\s+"
+            r"(?:(?:so|too|really|very)\s+slow|taking\s+(?:so|too|way\s+too)\s+long)\b", low)
         or _eli_pm_re.search(
             r"\bwhat\s+(?:exactly\s+)?did\s+you\s+(?:just\s+|actually\s+)?do\s*"
             r"(?:\?|$|there\b|to\s+(?:answer|get)\b|just\s+now\b|for\s+that\b|with\s+that\b)", low)
@@ -4371,6 +4543,27 @@ def _eli_self_improvement_phrase_guard(text):
             },
         }
 
+    # A request to see the findings from the last code audit again ("pull up each of those 59
+    # findings once more") replays the stored audit, not chat, where the model invented a fake file
+    # tree of files that do not exist. Only fires when a stored audit actually exists, so an unrelated
+    # "pull those up" cannot route here.
+    try:
+        from eli.runtime import code_examiner as _ce_recall
+        if _ce_recall.is_recall_request(raw) and _ce_recall.get_last_audit():
+            return {
+                "action": "EXAMINE_CODE",
+                "args": {"request": raw},
+                "confidence": 0.97,
+                "meta": {
+                    "matched_by": "eli.examine_code_recall",
+                    "need_grounding": True,
+                    "allow_chat_without_evidence": False,
+                    "task_family": "grounded_audit",
+                },
+            }
+    except Exception:
+        pass
+
     # EXAMINE_CODE: "examine/review/scan <file|module|codebase> for errors". Needs a code word, .py
     # path or eli.* module so "examine this image" doesn't match. GUI/runtime audits with proof go to
     # the core router's gui_audit_proof contract instead.
@@ -4398,8 +4591,8 @@ def _eli_self_improvement_phrase_guard(text):
             # NOT a fix request — "fix the bugs in foo.py" is FIX_FILE's job; this is the
             # diagnose-only "is there any issues with the files?" form.
             not re.search(r"\b(fix|repair|correct|patch|solve|resolve|debug|rewrite)\b", low)
-            # The issue word and the code word must be about each other, not just co-occur ("i am not
-            # saying close files (the name of the app)... this is the issue" went to a code examination at
+            # The issue word and the code word must be about each other, not just co-occur ("i do not
+            # mean close files (the app's name)... that is the problem" went to a code examination at
             # 0.96). Requiring them within a few words keeps "any issues with the files?" and "the code has
             # bugs" and drops incidental co-occurrence.
             and re.search(
@@ -4712,7 +4905,7 @@ def _eli_recent_memory_processing_question(text: object) -> bool:
         return False
 
     # Looking something up in memory, or asking about the user's own life, is recall, not the memory
-    # store's activity: "check your memories again for the most recent show i have been watching" got
+    # store's activity: "look in your memories for the latest series i have been watching" got
     # a count of memory rows.
     if (_eli_recent_mem_re.search(r"\b(?:check|search|look|dig|go|scan)\b.{0,24}\b(?:memor(?:y|ies)|records|logs|history|notes)\b"
                                   r".{0,16}\b(?:for|and|to|about|what|when|which|if)\b", low)
@@ -5345,16 +5538,8 @@ def _eli_phase38_followup_passthrough_contract(raw):
     # continuation — "give me an in depth response about X" was matching here and getting the
     # quick, evidence-free follow-up treatment instead of a real answer. Gate it on brevity, the
     # same signal the literal short_contextual set above already relies on.
-    if (
-        len(low.split()) <= 8
-        and _re.search(
-            r"\b(?:be (?:more )?(?:in depth|detailed|specific)|"
-            r"(?:go |be )?(?:more )?(?:in depth|deeper)|"
-            r"what else(?:\s+can you tell me)?)\b",
-            low,
-        )
-        and not _re.search(r"\b(?:reasoning modes?|all modes|every mode)\b", low)
-    ):
+    from eli.runtime.control_contracts import is_identity_depth_followup
+    if is_identity_depth_followup(low):
         return _mk(
             "CHAT",
             {"message": str(raw or "")},
@@ -5638,7 +5823,15 @@ def _eli_media_contract_post(raw, result):
             r"(.{4,70})\s+by\s+([a-z][a-z\s]{1,35})$",
             text,
         )
-        if m:
+        if m and not re.search(
+                # "then what did you mean by the first message" is a clarification question addressed to
+                # ELI, not "<song> by <artist>" — the leading "then" slipped past the ^-anchored opener
+                # guard and "by" did the rest, so ELI played (and crashed) Spotify. Narrow: a question
+                # word + "you mean/said" is a clarification; real titles ("You Mean Everything to Me by
+                # …", "Baby What You Want Me to Do by …") have no "what … you mean/said".
+                r"\b(?:what|why|how|who|when|where)\b[^.?!]{0,25}"
+                r"\byou\s+(?:mean|meant|said|say|think|thought)\b",
+                m.group(1)):
             return _play("spotify", raw, "media.implied_song_by_artist")
 
         m = re.match(r"^(open|launch|start|close|quit|kill|exit)\s+(.+?)$", text)
@@ -6793,6 +6986,8 @@ try:
                 ("pending_remediation_confirm", _stage_pending_remediation_confirm),
                 ("timestamp_and_shell_followup", _stage_timestamp_and_shell_followup),
                 ("pending_proposal_confirm", _stage_pending_proposal_confirm),
+                # before pasted text: a link to read is not text to react to
+                ("read_linked_page", lambda t, *a, **k: _eli_linked_page_prepass(str(t or ""))),
                 ("react_to_pasted_content", _stage_react_to_pasted_content),
                 ("mcp_explicit", _stage_mcp_explicit),
                 ("computer_use_explicit", _stage_computer_use_explicit),
@@ -6892,9 +7087,29 @@ try:
                 _SWLOG.debug("fits check failed", exc_info=True)
                 return True
 
+        def _eli_target_took_the_rest(whole) -> bool:
+            """Whether a command took the rest of the message as its target: "open steam, set an
+            alarm for 30 minutes, and tell me the meaning of life" opened an app by that whole
+            name, and "look up the tide tables and tell me what you can see" searched for the instruction."""
+            from eli.execution.route_contracts import TARGET_ARGS
+            from eli.runtime.command_splitter import holds_more_than_one
+            args = (whole or {}).get("args") or {}
+            return any(isinstance(args.get(k), str) and holds_more_than_one(args[k]) for k in TARGET_ARGS)
+
+        def _eli_carried_by(tells, told, whole) -> bool:
+            """Whether the command the whole message routed to carries this instruction: it is that
+            command ("write a note saying buy milk"), or the instruction is inside what it was given
+            ("call mom" in the note's text). "open steam, set an alarm for 30 minutes" set the timer
+            and left "open steam" out."""
+            if str((told or {}).get("action") or "").upper() == str((whole or {}).get("action") or "").upper():
+                return True
+            given = " ".join(str(v) for v in ((whole or {}).get("args") or {}).values() if isinstance(v, str))
+            words = lambda t: " ".join(re.findall(r"[a-z0-9']+", str(t).lower()))   # noqa: E731
+            return bool(words(tells)) and words(tells) in words(given)
+
         def _eli_instructions_and_talk(text, whole, *args, **kwargs):
-            """A message of several sentences that is not one command: the sentences that tell
-            ELI to do something are carried out, and the rest is talk to be answered.
+            """A message of several sentences or instructions that is not one command: the ones that
+            tell ELI to do something are carried out, and the rest is talk to be answered.
 
             "see, you can do it! open spotify" was answered by the model alone, which wrote that
             it had opened Spotify. A complaint ending in "open nasa website" stopped the film and
@@ -6902,24 +7117,40 @@ try:
             try:
                 from eli.execution.route_contracts import is_command
                 from eli.runtime.command_splitter import read_message
-                if is_command(whole):
-                    return None
-                parts = read_message(text)
+                # chained instructions are looked for when one command took the message, or a
+                # command rule matched it and was turned down for the other words it holds
+                chained = is_command(whole) or bool(((whole or {}).get("meta") or {}).get("not_told"))
+                parts = read_message(text, chains=chained)
                 if not (2 <= len(parts) <= 12):
                     return None
-                steps, talk = [], []
+                steps, talk, told_parts = [], [], []
                 for part in parts:
                     tells = part["tells"]
                     told = _eli_route_with_courtesy(tells, *args, **kwargs) if tells else None
                     if tells and is_command(told):
                         steps.append(tells.rstrip(" .!"))
+                        told_parts.append((tells, told))
                     else:
                         talk.append(part["said"])
                 if not steps or len(steps) > 5:
                     return None
+                if (is_command(whole) and not _eli_target_took_the_rest(whole)
+                        and all(_eli_carried_by(tells, told, whole) for tells, told in told_parts)):
+                    return None                    # one command that carries every instruction in it
                 rest = " ".join(talk).strip()
                 if len(re.findall(r"[A-Za-z0-9']+", _without_courtesy(rest) if rest else "")) < 3:
                     rest = ""                      # "well done." before a command is not a second subject
+                # One thing to read and something to say about it ("look up ORBIT and tell me what
+                # you can see"): the read, with its own words as its target, answered against the
+                # whole message, as "look up ORBIT" alone is. Shown first as a result and then
+                # replied to, the search was a list of links and the reply saw 600 characters of it.
+                # A read that points back at the rest ("explain whether you recalled this") needs it.
+                from eli.execution.route_contracts import changes_something
+                if (rest and len(told_parts) == 1 and not changes_something(told_parts[0][1].get("action"))
+                        and not re.search(r"\b(?:this|that|these|those|it|them)\b", told_parts[0][0], re.I)):
+                    out = dict(told_parts[0][1])
+                    out["meta"] = dict(out.get("meta") or {}, read_as="message.read_and_answer")
+                    return out
                 if not rest:
                     if len(steps) == 1:
                         out = _eli_route_with_courtesy(steps[0], *args, **kwargs)
@@ -6947,9 +7178,37 @@ try:
                     return out
             return _eli_priority_route_core(text, *args, **kwargs)
 
+        def _eli_misspelt_command(text, whole, *args, **kwargs):
+            """A short message that is a command with a letter wrong ("vol don"): the one reading
+            with a word corrected that routes to a command. It went to chat, which wrote "Volume
+            down again." while nothing ran."""
+            try:
+                from eli.execution.route_contracts import TARGET_ARGS, is_command
+                from eli.runtime.command_splitter import misspelt_commands
+                if is_command(whole):
+                    return None
+                found = []
+                for reading, corrected in misspelt_commands(text):
+                    out = _eli_route_with_courtesy(reading, *args, **kwargs)
+                    given = " ".join(str(v) for k, v in (out.get("args") or {}).items()
+                                     if k in TARGET_ARGS + ("text", "message", "content") and isinstance(v, str))
+                    if is_command(out) and corrected not in re.findall(r"[a-z]+", given.lower()):
+                        found.append((reading, out))
+                if len({str(o.get("action")) for _r, o in found}) != 1:
+                    return None                      # nothing, or two different commands: not a guess to act on
+                reading, out = found[0]
+                out = dict(out)
+                out["meta"] = dict(out.get("meta") or {}, read_as=f"misspelt: {reading}")
+                return out
+            except Exception:
+                _SWLOG.debug("misspelling check failed", exc_info=True)
+                return None
+
         def _eli_priority_route(raw="", *args, **kwargs):
             whole = _eli_route_with_courtesy(raw, *args, **kwargs)
-            return _eli_instructions_and_talk(str(raw or ""), whole, *args, **kwargs) or whole
+            return (_eli_instructions_and_talk(str(raw or ""), whole, *args, **kwargs)
+                    or _eli_misspelt_command(str(raw or ""), whole, *args, **kwargs)
+                    or whole)
 
         def _eli_priority_route_core(raw="", *args, **kwargs):
             text = str(raw or "")

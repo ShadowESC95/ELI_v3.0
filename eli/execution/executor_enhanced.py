@@ -733,10 +733,8 @@ def _gpu_status_report() -> Dict[str, Any]:
             _reading.append(f"- Loaded BELOW request ({_detail}) — reduced to fit "
                             f"available VRAM, not a settings error.")
         elif _raised and _gap.get("moe_expert_offload"):
-            # A mixture-of-experts model raises n_gpu_layers above what was requested (llama.cpp's
-            # "put everything on the GPU" convention) — this was being reported as "loaded exactly
-            # as requested" although the number the operator asked for and the number that loaded
-            # do not match, and the RAM/CPU side that comes with it went unmentioned entirely.
+            # MoE raises n_gpu_layers above what was requested (llama.cpp puts everything on
+            # GPU) — report the real requested->effective numbers, not "as requested".
             _detail = "; ".join(
                 f"{k} {v['requested']} → {v['effective']}" for k, v in sorted(_raised.items())
             )
@@ -762,45 +760,33 @@ def _gpu_status_report() -> Dict[str, Any]:
                             "higher than GPU mode.")
 
     if free is not None and total:
-        _free_pct = (float(free) / float(total)) * 100.0
-        # "Free" from nvidia-smi isn't spare: llama.cpp allocates its compute buffer lazily at first
-        # decode, so the reserve the loader held back still reads as free. Reporting it as headroom told
-        # the operator to raise settings into committed memory (the mid-generation CUDA aborts). Subtract
-        # what generation will take and report what's genuinely spare.
-        _committed = 0.0
+        # What reads free is spare except what llama.cpp still takes as it works: its compute buffers are
+        # allocated with the model, and what it adds on the first prompts was measured on this machine
+        # (eli/core/load_plan.py, headroom). The spare memory is turned into context this model's cache holds.
         try:
-            from eli.core.hardware_profile import (_compute_graph_reserve_mb,
-                                                   _CUDA_OVERHEAD_MB, vram_reserve_mb)
+            from eli.core.hardware_profile import model_cost, vram_reserve_mb
+            _lazy = float(vram_reserve_mb())
+        except Exception:
+            model_cost, _lazy = None, 0.0
+        _spare = max(0.0, float(free) - _lazy)
+        _reading.append(f"- {free:.0f} MiB of {total:.0f} MiB VRAM free"
+                        + (f", {_lazy:.0f} MiB of it what llama.cpp was measured to add as it works" if _lazy else "")
+                        + ".")
+        _more = None
+        try:
             _eff_r = (runtime_snapshot or {}).get("effective") or runtime_snapshot or {}
             _c = int(_eff_r.get("n_ctx") or 0)
-            _b = int(_eff_r.get("n_batch") or 0)
-            if _c > 0 and _b > 0:
-                _committed = (float(_compute_graph_reserve_mb(_c, _b))
-                              + float(_CUDA_OVERHEAD_MB) + float(vram_reserve_mb()))
+            _cost = model_cost((runtime_snapshot or {}).get("model_path"),
+                               kv_cache_type=str((runtime_snapshot or {}).get("cache_type_k") or "") or None) \
+                if model_cost and _c > 0 else None
+            if _cost is not None:
+                _per_token = (_cost.kv_mb(_c + 1024) - _cost.kv_mb(_c)) / 1024.0
+                _more = int(_spare / _per_token) if _per_token > 0 else None
         except Exception:
-            _committed = 0.0
-        _spare = float(free) - _committed
-        if _committed > 0:
-            _reading.append(
-                f"- {free:.0f} MiB of {total:.0f} MiB VRAM reads free ({_free_pct:.1f}%), but "
-                f"{_committed:.0f} MiB is already committed to generation (compute buffer, "
-                f"CUDA overhead and the kept reserve) — llama.cpp allocates it lazily at the "
-                f"first decode.")
-            if _spare >= 512:
-                _reading.append(
-                    f"- Genuinely spare: {_spare:.0f} MiB — room to raise context or batch.")
-            else:
-                _reading.append(
-                    "- Genuinely spare: none to speak of. Raising context, batch or GPU "
-                    "layers from here is what aborts mid-generation.")
-        elif _free_pct < 10:
-            _reading.append(
-                f"- {free:.0f} MiB of {total:.0f} MiB VRAM free ({_free_pct:.1f}%): no headroom "
-                "to raise context or batch without lowering GPU layers.")
-        else:
-            _reading.append(
-                f"- {free:.0f} MiB of {total:.0f} MiB VRAM free ({_free_pct:.1f}%): headroom "
-                "available for a larger context or batch.")
+            _more = None
+        _reading.append(f"- Spare: {_spare:.0f} MiB"
+                        + (f", room for about {_more} more tokens of context for this model." if _more is not None
+                           else "."))
 
     if _reading:
         lines.extend(["", "Performance reading:"] + _reading)
@@ -1766,12 +1752,12 @@ def _format_cognition_runtime(report: Dict[str, Any], args: Optional[Dict[str, A
     lines = []
     _args = args if isinstance(args, dict) else {}
     _focus = str(_args.get("diagnostic_focus") or "").strip().lower()
-    if _focus in ("inference_ram", "latency_timing", "inference_runtime"):
+    if _focus in ("inference_ram", "inference_runtime"):
         try:
             from eli.runtime.inference_footprint import format_inference_footprint_report
             from eli.runtime.deterministic_grounding_gate import _inference_runtime_lines
             parts = []
-            if _focus in ("latency_timing", "inference_runtime"):
+            if _focus == "inference_runtime":
                 try:
                     parts.append(_inference_runtime_lines())
                 except Exception:
@@ -2221,12 +2207,8 @@ def _record_tool_execution(action: str, args: Any, result: Any) -> None:
         return
     if not action or action.upper() == "CHAT":
         return
-    from eli.runtime.evidence_ledger import predict_success, record_event
-    ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
-    # "I opened the search but nothing played" came back ok: four failed Spotify plays in a row
-    # left PLAY_MEDIA recorded at 95% success.
-    if isinstance(result, dict) and result.get("played") is False:
-        ok = False
+    from eli.runtime.evidence_ledger import execution_outcome, predict_success, record_event
+    outcome = execution_outcome(result)
     predicted = predict_success(action)
     text = ""
     if isinstance(result, dict):
@@ -2237,15 +2219,21 @@ def _record_tool_execution(action: str, args: Any, result: Any) -> None:
         action=action,
         subject=",".join(sorted(str(k) for k in (args or {}))) if isinstance(args, dict) else "",
         content=text[:200],
-        payload={"ok": ok, **({"predicted": predicted} if predicted is not None else {})},
-        outcome="ok" if ok else "failed",
-        severity="info" if ok else "warning",
+        payload={"ok": outcome == "ok", **({"predicted": predicted} if predicted is not None else {})},
+        outcome=outcome,
+        severity="warning" if outcome == "failed" else "info",
     )
-    try:
-        from eli.runtime.lessons import observe_action
-        observe_action(action, ok)
-    except Exception:
-        log.debug("lesson observation skipped", exc_info=True)
+    if outcome in ("ok", "failed"):
+        try:
+            from eli.runtime.lessons import observe_action
+            observe_action(action, outcome == "ok")
+        except Exception:
+            log.debug("lesson observation skipped", exc_info=True)
+        try:
+            from eli.runtime.capability_state import observe_run
+            observe_run(action, outcome, f"{result.get('error') or ''} {text}" if isinstance(result, dict) else text)
+        except Exception:
+            log.debug("capability state not updated", exc_info=True)
 
 
 def _maybe_background_code_work(action, args):
@@ -2383,12 +2371,14 @@ def _maybe_background_file_analysis(action, args):
         _bg_args = dict(args)
         _bg_args["_no_background"] = True
         _bg_args["folder"] = folder
+        from eli.kernel import request_context as _rc_bg
+        _bg_args["_user_id"] = str(_rc_bg.user_id_var.get() or "")   # the job's thread has no request
         _label = os.path.basename(folder.rstrip("/")) or folder
         jid = bt.submit(f"Analyse {_n_pdfs} PDFs: {_label}",
                         lambda: execute("ANALYZE_PDF_FOLDER", _bg_args))
-        msg = (f"That folder has {_n_pdfs} PDFs — reading and summarising them properly takes time, "
-               f"so I've started it in the background as job #{jid}. Say “check job {jid}” for the "
-               f"summary when it's ready, or “background jobs” to see all running tasks.")
+        msg = (f"That folder has {_n_pdfs} PDFs, so I've started reading them in the background as job "
+               f"#{jid}: each one goes into the document index, then one summary covering all of them is "
+               f"saved as a PDF. Ask how it's going any time, or say “check job {jid}”.")
         return {"ok": True, "action": "ANALYZE_PDF_FOLDER", "background": True, "job_id": jid,
                 "content": msg, "response": msg}
     except Exception as _bg_e:
@@ -3005,7 +2995,13 @@ def self_test() -> Dict[str, Any]:
         return {"ok": overall_ok, "action": "SELF_TEST", "results": results,
                 "content": msg, "response": msg, "evidence_source": "self_test"}
 
-    if not _ollama_reachable():
+    try:
+        from eli.integrations.ollama.client import ollama_chosen as _ollama_chosen
+        _use_ollama = _ollama_chosen()
+    except Exception:
+        _use_ollama = False
+    if not _use_ollama or not _ollama_reachable():
+        # Ollama is tested only when it is the backend the user chose, not whenever one is running
         gguf_run = _self_test_gguf(model_label)
         results["tests"] = gguf_run["tests"]
         results["active_backend"] = "gguf"
@@ -3475,7 +3471,14 @@ def chat(message: str, *, model: Optional[str] = None, skip_router: bool = False
     except Exception:
         log.debug("suppressed exception", exc_info=True)  # GGUF unavailable → fall through to Ollama
 
-    # ── Ollama fallback (requires network / local Ollama server) ──────────────
+    # ── Ollama: only when the user chose it as the backend, never as a fallback ──
+    try:
+        from eli.integrations.ollama.client import ollama_chosen
+        if not ollama_chosen():
+            err = "The model is not loaded yet. ELI uses its GGUF model; load it in Settings > Model."
+            return {"ok": False, "action": "CHAT", "error": "model_not_loaded", "content": err, "response": err}
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
     try:
         body = {"model": model, "messages": [{"role": "user", "content": msg}], "stream": False}
         res = requests.post(f"{_OLLAMA_HOST}/api/chat", json=body, timeout=CHAT_TIMEOUT_S)
@@ -3535,6 +3538,15 @@ def chat_stream(message: str, *, model: Optional[str] = None):
             "Run PERSONA_LOCK_SET with the intended model/modelfile, or fix environment drift."
         )
         return
+
+    try:
+        from eli.integrations.ollama.client import ollama_chosen
+        if not ollama_chosen():
+            # Ollama only when the user chose it as the backend: never a fallback for the GGUF model
+            yield "The model is not loaded yet. ELI uses its GGUF model; load it in Settings > Model."
+            return
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
 
     model = (model or DEFAULT_CHAT_MODEL).strip()
     full = []
@@ -4540,57 +4552,9 @@ def _artifacts_dir() -> "Path":
     return Path(__file__).resolve().parents[2] / "artifacts"
 
 
-def _save_artifact(content: str, subdir: str, filename: str, fmt: str = "md") -> str:
-    """
-    Save content to artifacts/{subdir}/{filename}.{fmt}.
-    Supported fmt: md, docx, txt, py, sh, csv, html.
-    Returns the absolute path string.
-    """
-    import re as _re
-
-    root = _artifacts_dir() / subdir
-    root.mkdir(parents=True, exist_ok=True)
-
-    # Clean filename
-    safe = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(". ")[:80] or "output"
-    out_path = root / f"{safe}.{fmt}"
-    # Avoid collisions
-    if out_path.exists():
-        import time as _t
-        ts = _t.strftime("%Y%m%d_%H%M%S")
-        out_path = root / f"{safe}_{ts}.{fmt}"
-
-    if fmt == "docx":
-        try:
-            from docx import Document
-            from docx.shared import Pt
-            doc = Document()
-            # Style
-            style = doc.styles["Normal"]
-            style.font.name = "Calibri"
-            style.font.size = Pt(11)
-            for block in content.split("\n\n"):
-                block = block.strip()
-                if not block:
-                    continue
-                # Heading detection (markdown ## style)
-                if block.startswith("### "):
-                    p = doc.add_heading(block[4:].strip(), level=3)
-                elif block.startswith("## "):
-                    p = doc.add_heading(block[3:].strip(), level=2)
-                elif block.startswith("# "):
-                    p = doc.add_heading(block[2:].strip(), level=1)
-                else:
-                    p = doc.add_paragraph(block)
-            doc.save(str(out_path))
-        except Exception as _de:
-            # Fallback to txt if docx fails
-            out_path = out_path.with_suffix(".txt")
-            out_path.write_text(content, encoding="utf-8")
-    else:
-        out_path.write_text(content, encoding="utf-8")
-
-    return str(out_path)
+# Saving an artifact lives in effectors._base (one copy for the executor and every effector).
+from eli.execution.effectors._base import _save_artifact  # noqa: E402,F401
+from eli.execution.effectors._base import _read_document_text  # noqa: E402
 
 
 def _eli_self_description_block(limit: int = 2600) -> str:
@@ -5894,7 +5858,7 @@ def _action_post_dispatch(
     retired in phaseBW2.
     """
     try:
-        from eli.runtime.evidence_ledger import record_event as _eli_record_event
+        from eli.runtime.evidence_ledger import execution_outcome, record_event as _eli_record_event
         # Whose turn ran it, so a period log on a shared install shows each user their own.
         try:
             from eli.kernel import request_context as _rc_who
@@ -5916,8 +5880,8 @@ def _action_post_dispatch(
             ),
             content=str((result or {}).get("content") or (result or {}).get("response") or (result or {}).get("error") or ""),
             payload={"args": args or {}, "result": result or {}},
-            severity="info" if bool((result or {}).get("ok", True)) else "error",
-            outcome="ok" if bool((result or {}).get("ok", True)) else "failed",
+            severity="error" if execution_outcome(result) == "failed" else "info",
+            outcome=execution_outcome(result),
             reusable=True,
             user_id=_who,
             session_id=_sess,
@@ -6746,6 +6710,13 @@ def _eli_safe_read_file(args=None):
         except Exception as _ld_err:
             return {"ok": False, "action": "READ_FILE",
                     "content": f"Could not read directory {p}: {_ld_err}"}
+    _doc = _read_document_text(p)
+    if _doc is not None:
+        if not _doc.get("ok"):
+            return {"ok": False, "action": "READ_FILE",
+                    "content": _doc.get("content", "Could not read file.")}
+        return {"ok": True, "action": "READ_FILE", "path": str(p),
+                "content": _doc.get("content", "")}
     data = None
     for enc in ("utf-8", "utf-8-sig", "latin-1"):
         try:
@@ -7631,8 +7602,10 @@ def _eli_second_execute(action, args=None, *pargs, **kwargs):
         try:
             from eli.runtime.reasoning_status import current_reasoning_mode_text
             msg = current_reasoning_mode_text()
-        except Exception:
-            msg = "Current reasoning mode: unavailable"
+        except Exception as _rm_err:
+            msg = "Couldn't read the current reasoning mode."
+            return {"ok": False, "action": "REASONING_MODE_STATUS", "error": str(_rm_err), "content": msg,
+                    "response": msg}
         return {"ok": True, "action": "REASONING_MODE_STATUS", "content": msg, "response": msg}
 
     if action_name == "TILE_WINDOWS":

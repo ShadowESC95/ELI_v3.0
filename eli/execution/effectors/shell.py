@@ -2,10 +2,19 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
+
+# Commands of cmd.exe itself, not programs: RUN_CMD runs them inside cmd on Windows
+_WINDOWS_CMD_BUILTINS = frozenset({
+    "dir", "echo", "type", "copy", "move", "ren", "rename", "md", "mkdir", "rd", "rmdir", "del", "erase",
+    "cls", "set", "ver", "vol", "date", "time", "path", "pushd", "popd", "start", "assoc", "ftype",
+    "mklink", "title", "color", "cd", "chdir",
+})
+
 
 def _execute_impl(*a, **k):
     from eli.execution.executor_enhanced import _execute_impl as _f
@@ -61,7 +70,18 @@ def _h_run_cmd(a, args):
             if not cmd_str:
                 return {"ok": False, "action": a, "error": "empty_cmd", "content": "", "response": ""}
             import shlex
-            argv = shlex.split(cmd_str)
+            from eli.utils import platform_compat as _pc_rc
+            if shell:
+                # SHELL_EXEC: the OS's own shell, after the gate above has read the whole line
+                argv = (["cmd.exe", "/d", "/s", "/c", cmd_str] if _pc_rc.WINDOWS
+                        else ["/bin/sh", "-c", cmd_str])
+            else:
+                # Windows paths keep their backslashes (POSIX splitting ate them), and cmd's
+                # built-ins (dir, type, echo...) are no programs, so they run inside cmd.
+                argv = [t.strip('"') for t in shlex.split(cmd_str, posix=not _pc_rc.WINDOWS)]
+                if (_pc_rc.WINDOWS and argv and not shutil.which(argv[0])
+                        and argv[0].lower() in _WINDOWS_CMD_BUILTINS):
+                    argv = ["cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline(argv)]
             if not argv:
                 return {"ok": False, "action": a, "error": "empty_cmd", "content": "", "response": ""}
             p = subprocess.run(

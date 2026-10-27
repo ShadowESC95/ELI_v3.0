@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import re
-import subprocess
+from typing import Any, Dict
 
 from eli.utils.log import get_logger
 from eli.execution.effectors.system_helpers import (
@@ -16,28 +16,22 @@ from eli.execution.effectors.system_helpers import (
 log = get_logger(__name__)
 
 
+def open_settings_panel(action: str, role: str, what: str) -> Dict[str, Any]:
+    """Open a settings panel ("settings", "sound settings", "power settings", ...) the way this OS
+    does: ms-settings: on Windows, System Settings panes on macOS, the desktop's own panel on Linux."""
+    from eli.utils.platform_compat import open_role
+    opened = open_role(role)
+    if opened:
+        msg = f"Opened {what}."
+        return {"ok": True, "action": action, "opened": opened, "content": msg, "response": msg}
+    msg = f"No {what} app was found on this system."
+    return {"ok": False, "action": action, "error": msg, "content": msg, "response": msg}
+
+
 def _h_open_audio_settings(a, args):
-    try:
-        candidates = [
-            ["pavucontrol"],
-            ["gnome-control-center", "sound"],
-            ["gnome-control-center"],
-            ["systemsettings5", "kcm_pulseaudio"],
-            ["systemsettings5"],
-            ["kcmshell5", "kcm_pulseaudio"],
-            ["mate-volume-control"],
-            ["xfce4-mixer"],
-        ]
-        for cmd in candidates:
-            try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened audio settings: {' '.join(cmd)}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
-        raise FileNotFoundError("No audio settings app found (pavucontrol / gnome-control-center / systemsettings5 / etc).")
-    except Exception as e:
-        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+    # This OS's own sound settings: ms-settings:sound on Windows, the Sound pane on macOS, the
+    # desktop's sound panel (or a mixer) on Linux.
+    return open_settings_panel(a, "sound settings", "sound settings")
 
 
 def _h_open_browser(a, args):
@@ -82,43 +76,11 @@ def _h_open_browser(a, args):
 
 
 def _h_open_system_settings(a, args):
-    try:
-        candidates = [
-            ["gnome-control-center"],
-            ["systemsettings5"],
-            ["xfce4-settings-manager"],
-            ["mate-control-center"],
-            ["cinnamon-settings"],
-        ]
-        for cmd in candidates:
-            try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened system settings: {' '.join(cmd)}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
-        raise FileNotFoundError("No settings app found")
-    except Exception as e:
-        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+    return open_settings_panel(a, "settings", "system settings")
 
 
 def _h_open_power_settings(a, args):
-    try:
-        candidates = [
-            ["gnome-control-center", "power"],
-            ["systemsettings5", "kcm_energyinfo"],
-            ["xfce4-power-manager-settings"],
-        ]
-        for cmd in candidates:
-            try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened power settings: {' '.join(cmd)}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
-        raise FileNotFoundError("No power settings app found")
-    except Exception as e:
-        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+    return open_settings_panel(a, "power settings", "power settings")
 
 
 def _h_open_file_system(a, args):
@@ -132,8 +94,15 @@ def _h_open_file_system(a, args):
 
         low_target = raw_target.lower()
 
-        if low_target in {"trash", "/trash"}:
-            probe = open_app_with_timeout(["xdg-open", "trash:///"])
+        if low_target in {"trash", "/trash", "recycle bin", "bin"}:
+            # each OS's own: the trash:// location on Linux, ~/.Trash on macOS, the Recycle Bin on Windows
+            from eli.utils import platform_compat as _pc_trash
+            if _pc_trash.WINDOWS:
+                probe = open_app_with_timeout(["explorer.exe", "shell:RecycleBinFolder"])
+            elif _pc_trash.MACOS:
+                probe = open_app_with_timeout(["open", os.path.expanduser("~/.Trash")])
+            else:
+                probe = open_app_with_timeout(["xdg-open", "trash:///"])
             if probe.get("ok") or probe.get("spawned"):
                 msg = "Opened folder: trash:///"
                 return {"ok": True, "action": a, "content": msg, "response": msg, "probe": probe}
@@ -219,24 +188,21 @@ def _h_open_media_hub(a, args):
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
-        candidates = [
-            ["spotify"],
-            ["flatpak", "run", "com.spotify.Client"],
-        ]
-        for cmd in candidates:
-            try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened media: {' '.join(cmd)}"
+        # Spotify when installed (found as an app on every OS), else this OS's music player, else the
+        # Music folder. A bare `spotify` command is absent from PATH on Windows and macOS.
+        from eli.system.portable_app_control import open_app as _open_app, resolve_app
+        from eli.utils.platform_compat import known_user_dir, open_role
+        if resolve_app("spotify").source != "unknown":
+            r = _open_app("spotify")
+            if r.get("ok"):
+                msg = "Opened media: Spotify"
                 return {"ok": True, "action": a, "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
+        player = open_role("music")
+        if player:
+            msg = f"Opened media: {player}"
+            return {"ok": True, "action": a, "content": msg, "response": msg}
 
-        url = "https://music.youtube.com"
-        result = open_browser(url)
-        if result.get("ok"):
-            return result
-
-        music_dir = os.path.expanduser("~/Music")
+        music_dir = known_user_dir("music") or os.path.expanduser("~/Music")
         return open_file_system(music_dir)
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}

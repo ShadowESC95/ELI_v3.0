@@ -154,7 +154,7 @@ class LifecycleMixin:
         try:
             from eli.runtime.self_improvement import get_self_improvement
             si = get_self_improvement()
-            si.analyze_and_improve()
+            si.analyze_and_improve(propose=False)
         except Exception:
             logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
 
@@ -167,22 +167,15 @@ class LifecycleMixin:
         except Exception as _mem_err:
             log.debug(f"[COGNITIVE] Shutdown: memory close failed (non-fatal): {_mem_err}")
 
-        # 7. Close the vector-store embedder (also a llama_cpp Llama instance,
-        # so it needs the same explicit unload treatment as the main model).
-        # Read the module singleton directly — do NOT lazy-init during shutdown.
+        # 7. Close the vector-store embedder (also a llama_cpp Llama instance, so it needs the same
+        # explicit unload as the main model). Read the module singleton directly — do NOT lazy-init
+        # during shutdown.
         try:
             from eli.memory import vector_store as _vs_mod
             vs = getattr(_vs_mod, "_store", None)
-            embedder = getattr(vs, "_embedder", None) if vs is not None else None
-            if embedder is not None:
-                _emb_close = getattr(embedder, "close", None)
-                if callable(_emb_close):
-                    _emb_close()
-                else:
-                    _underlying = getattr(embedder, "_llm", None) or getattr(embedder, "llm", None)
-                    _u_close = getattr(_underlying, "close", None) if _underlying is not None else None
-                    if callable(_u_close):
-                        _u_close()
+            if vs is not None:
+                vs.flush(pending_only=True)   # memories added since the last batched save
+                vs.close()
                 log.debug("[COGNITIVE] Shutdown: vector-store embedder closed")
         except Exception as _emb_err:
             log.debug(f"[COGNITIVE] Shutdown: embedder close failed (non-fatal): {_emb_err}")
@@ -313,19 +306,47 @@ class LifecycleMixin:
 
     def _start_reflection_loop(self) -> None:
         def loop() -> None:
-            _MAX_RETRIES = 4  # Fix 7: retry instead of skipping
             initial_delay = int(
     os.environ.get(
         "ELI_REFLECTION_START_DELAY_SEC",
          "300") or 300)
             time.sleep(max(0, initial_delay))
+            last_reflection = 0.0
+            _FLOOR = 30 * 60      # never reflect more than once per 30 min, even under a signal burst
+            _CEILING = 24 * 3600  # still reflect at least once a day with zero signal
+            _POLL = 30 * 60       # how often to check for an early-wake signal
             while self.running:
-                self._reflect()
-                time.sleep(24 * 3600)
+                self._reflection_wake.wait(timeout=_POLL)
+                self._reflection_wake.clear()
+                now = time.time()
+                if now - last_reflection < _FLOOR:
+                    continue
+                if now - last_reflection >= _CEILING or self._significant_reflection_signal(last_reflection):
+                    self._reflect()
+                    last_reflection = time.time()
         threading.Thread(
     target=loop,
     daemon=True,
      name="eli-reflection").start()
+
+    def _significant_reflection_signal(self, since: float) -> bool:
+        """Cheap reuse of reflect_on_period's own significance checks, run early instead
+        of only inside the 24h reflection: a fresh user challenge or an active failure
+        cluster is worth reflecting on now, not up to a day later."""
+        try:
+            from eli.runtime.evidence_ledger import recent_events
+            rows = recent_events(limit=1, event_type="user_challenge")
+            if rows and float(rows[0].get("timestamp") or 0) > since:
+                return True
+        except Exception:
+            log.debug("reflection wake: user_challenge check failed", exc_info=True)
+        try:
+            from eli.runtime import lessons as _lessons
+            if _lessons.from_failure_clusters(days=1.0, min_count=3):
+                return True
+        except Exception:
+            log.debug("reflection wake: failure cluster check failed", exc_info=True)
+        return False
 
     def _reflect(self) -> None:
         _MAX_RETRIES = 4

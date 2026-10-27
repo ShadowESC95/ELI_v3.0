@@ -17,6 +17,23 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 
+# Replies that are a report or a recall list rather than ELI talking: what they quote is not ELI's
+# offer or question (pending_proposal.read_reply is not run on them).
+_REPORT_REPLY_ACTIONS = frozenset({
+    "MEMORY_RECALL", "PERSONAL_MEMORY_DEEP_EXPLAIN", "PERSONAL_MEMORY_SUMMARY", "ROUTING_FAULT_EXPLAIN",
+    "DETERMINISTIC_INTROSPECTION", "USER_INFO_REPORT", "USER_IDENTITY_SUMMARY", "MEMORY_STATS",
+    "LIST_CAPABILITIES", "META_DIAGNOSTIC",
+})
+
+
+def _reply_is_a_report(engine: Any) -> bool:
+    act = str(getattr(engine, "_last_response_action", "") or "").upper()
+    if not act:
+        trace = getattr(engine, "_last_trace", None) or {}
+        act = str(trace.get("action") or (trace.get("intent") or {}).get("action") or "").upper()
+    return act in _REPORT_REPLY_ACTIONS or act.startswith("EXPLAIN_") or act.endswith(("_STATUS", "_AUDIT"))
+
+
 class MemoryCommitMixin:
     """Turn-commit stage: store memory / turns, learn from the executed result."""
 
@@ -100,7 +117,10 @@ class MemoryCommitMixin:
             source = "user"
 
         if role == "user":
-            user_text = text.lower()
+            # the user's own words: ChatGPT's pasted "I am making it more precise" was stored as an
+            # identity fact about the user
+            from eli.cognition.correction_patterns import split_pasted
+            user_text = split_pasted(text)[0].lower()
             stripped = user_text.strip().rstrip("?!.")
             if stripped.endswith("?") or user_text.strip().endswith("?"):
                 return
@@ -241,6 +261,12 @@ class MemoryCommitMixin:
             _request_context.note_turn_fact("user_stored", True)
         except Exception as e:
             log.debug(f"[COGNITIVE] User turn store failed: {e}")
+        try:
+            from eli.runtime.diagnostic_patterns import is_user_challenge
+            if is_user_challenge(text):
+                self._reflection_wake.set()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
 
     def _store_assistant_turn(self, text: str) -> None:
         if not text or self._in_nested_turn():
@@ -283,7 +309,15 @@ class MemoryCommitMixin:
             )
             _facts = _request_context.turn_facts_var.get() or {}
             _listed = listing(_facts.get("listed"))
-            if not _facts.get("proposal_set_by_action"):
+            if _reply_is_a_report(self):
+                # A report or a recall list quotes other text; a question in it is not ELI asking
+                # (a recalled "what did I ask you to start yesterday?" was kept as ELI's own
+                # question). What the report listed stays open to pick from.
+                if _listed:
+                    set_pending_proposal("", listed=_listed, from_reply=True)
+                else:
+                    clear_pending_proposal()
+            elif not _facts.get("proposal_set_by_action"):
                 _open = read_reply(_shown, offers_only=bool(_facts.get("executed_actions")))
                 if _open["items"] or _open["question"] or _listed:
                     set_pending_proposal("", items=_open["items"], question=_open["question"],

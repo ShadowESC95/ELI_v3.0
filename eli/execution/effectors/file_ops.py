@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from eli.utils.log import get_logger
-from eli.execution.effectors._base import _full_control, _save_artifact
+from eli.execution.effectors._base import _full_control, _read_document_text, _save_artifact
 
 log = get_logger(__name__)
 
@@ -292,11 +292,18 @@ def _h_summarize_file(a, args):
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     try:
-        # Read the WHOLE file — no 8000-byte truncation. The summariser does
-        # hierarchical map-reduce sized to the model context, so an arbitrarily
-        # large file is fully covered instead of summarising only its first 10%.
-        with open(expanded, errors="replace") as _sf:
-            _sf_raw = _sf.read()
+        _sf_doc = _read_document_text(expanded)
+        if _sf_doc is not None:
+            if not _sf_doc.get("ok"):
+                return {"ok": False, "action": a, "error": _sf_doc.get("error"),
+                        "content": _sf_doc.get("content"), "response": _sf_doc.get("response")}
+            _sf_raw = _sf_doc.get("content", "")
+        else:
+            # Read the WHOLE file — no 8000-byte truncation. The summariser does
+            # hierarchical map-reduce sized to the model context, so an arbitrarily
+            # large plain-text file is fully covered instead of just its first 10%.
+            with open(expanded, errors="replace") as _sf:
+                _sf_raw = _sf.read()
         _sf_summary = None
         try:
             _sf_summary = _summarize_long_text(_sf_raw, _sf_instruction)

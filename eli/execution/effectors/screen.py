@@ -59,19 +59,12 @@ def _h_screen_read_analyze(a, args):
                 depth = "standard"
         # 1. Take screenshot
         from eli.perception.os_controller import take_screenshot
-        ss_result = take_screenshot(region=str(args.get("area") or args.get("region") or "full"))
+        ss_result = take_screenshot(region=str(args.get("area") or args.get("region") or "full"), keep=False)
         ss_path = ss_result.get("path") or ss_result.get("file") or ""
-        if not ss_path or not Path(ss_path).exists():
-            try:
-                import subprocess as _sp
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                tmp.close()
-                _sp.run(["scrot", tmp.name], check=True)
-                ss_path = tmp.name
-            except Exception:
-                return {"ok": False, "action": a,
-                        "error": "Screenshot failed — no screenshot path returned.",
-                        "content": "Screenshot failed.", "response": "Screenshot failed."}
+        if not ss_result.get("ok") or not ss_path or not Path(ss_path).exists():
+            why = str(ss_result.get("error") or "no picture of the screen came back")
+            return {"ok": False, "action": a, "error": why,
+                    "content": f"I couldn't see the screen: {why}", "response": f"I couldn't see the screen: {why}"}
         _sra_prompt = build_screen_analysis_prompt(
             user_q,
             explicit_prompt=str(args.get("prompt") or args.get("instruction") or "").strip(),

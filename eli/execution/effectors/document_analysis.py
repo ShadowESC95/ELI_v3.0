@@ -44,7 +44,7 @@ def _h_analyze_pdf(a, args):
                 "3. Propose specific falsification criteria, experiments, or observational tests.\n"
                 "4. Check dimensional consistency of every equation.\n"
                 "5. Flag hidden assumptions, missing derivation steps, or scope overreach.\n"
-                "6. Cross-reference against established physics (GR, QFT, thermodynamics, etc.).\n"
+                "6. Cross-reference against established physics (GR, KITE, thermodynamics, etc.).\n"
                 "7. Verdict per claim: TESTABLE | UNFALSIFIABLE | ALREADY FALSIFIED | VALID.\n\n"
                 "Conclude with: (a) overall falsifiability assessment, (b) strongest predictions, "
                 "(c) fatal flaws if any, (d) recommended next steps for validation.\n"

@@ -173,8 +173,16 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
         low):
         return _mk("SELF_UPDATE", {}, 0.99, matched_by="router.self_update", allow_chat_without_evidence=False)
 
+
     if re.search(r"\b(confidence in (?:your|my) last response|which agents contributed|what agents contributed|last response trace|previous response trace|last turn trace)\b", low):
         return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.99, matched_by="router.explain_last_response", allow_chat_without_evidence=False)
+
+    # How long / why slow the last response was, answered from the real recorded timing (model calls
+    # and seconds in the turn record), not the model's guess. Live, "took you a minute and a half for
+    # that response?" went to chat and the model invented "one and a half seconds" for an 83 s reply.
+    if re.search(r"how\s+long\s+(?:did|does|will)\s+(?:that|this|it|your(?:\s+last)?\s+(?:response|reply|answer))\s+take|(?:took|take|taking)\s+(?:you\s+)?(?:about\s+|roughly\s+|like\s+)?(?:\d|a|an|half|couple|few|several|ages|forever|too\s+long|so\s+long)\b[^?.!\n]{0,45}\bfor\s+(?:that|this|your|the)\s+(?:last\s+)?(?:response|reply|answer|one)\b|(?:that|this|your)\s+(?:last\s+)?(?:response|reply|answer)\s+(?:took|was)\s+[^?.!\n]{0,20}\b(?:slow|forever|ages|too\s+long|so\s+long)\b", low):
+        return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.96, matched_by="router.explain_last_response.timing",
+                   need_grounding=True, allow_chat_without_evidence=False)
 
     # Where did ELI get its last statement, in plain words. The jargon route above missed "where are
     # you getting this information?", so the model invented a source. The bus knows which agents

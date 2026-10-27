@@ -306,6 +306,11 @@ def _is_brief_phatic_prompt(text: str) -> bool:
 _AUTONOMOUS_SOURCES = ("habit", "proactive", "scheduler", "system", "autonomy")
 
 
+# Reading the web: a search's results, or the page a link points to. Both are answered from what came
+# back and nothing else.
+_WEB_READS = frozenset(("WEB_SEARCH", "WEB_FETCH"))
+
+
 def _is_autonomous_source(source: str) -> bool:
     """True when `source` (process()'s own origin tag) is ELI's own automation, not a
     real user turn — one vocabulary, shared by every place that needs the distinction."""

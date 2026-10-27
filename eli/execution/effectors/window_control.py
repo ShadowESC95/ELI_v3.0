@@ -1,5 +1,6 @@
 """Window-control effector — minimise/maximise/focus/close/cycle/workspace."""
 from __future__ import annotations
+import os
 
 import shutil
 import subprocess
@@ -137,14 +138,11 @@ def _h_tile_windows(a, args):
 
 def _h_open_in_ide(a, args):
     path = str(args.get("path") or "").strip()
-    for editor in ["code", "codium", "subl", "gedit", "kate"]:
-        try:
-            cmd = [editor] + ([path] if path else [])
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            msg = f"Opened {path or 'IDE'} in {editor}"
-            return {"ok": True, "action": a, "content": msg, "response": msg}
-        except FileNotFoundError:
-            continue
+    from eli.utils.platform_compat import open_role
+    opened = open_role("ide", *([os.path.expanduser(path)] if path else []))
+    if opened:
+        msg = f"Opened {path or 'IDE'} in {opened}"
+        return {"ok": True, "action": a, "content": msg, "response": msg}
     return {"ok": False, "action": a, "error": "No IDE found", "content": "No IDE found", "response": "No IDE found"}
 
 

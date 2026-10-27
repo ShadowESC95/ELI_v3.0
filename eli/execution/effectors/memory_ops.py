@@ -20,6 +20,46 @@ MEMORY_PATH = Path(os.environ.get("ELI_MEMORY_FILE", str(get_paths().artifacts_d
 MAX_HISTORY_MESSAGES = int(os.environ.get("ELI_MAX_HISTORY_MESSAGES", "32"))
 
 
+def _when_said_answer(a: str, topic: str) -> Dict[str, Any]:
+    """When the user wrote about `topic`: every one of their messages that mentions it, by day, from
+    the conversation log. An empty topic means the exchange just had ("give me the timestamps of that
+    interaction"): what the user's recent messages were about. Questions asking when are left out,
+    or the answer would list them."""
+    import time as _t
+    from eli.cognition.evidence_format import age_label, row_time
+    from eli.execution.router_enhanced import when_said_topic
+    from eli.memory import get_memory
+    from eli.runtime.conversation_thread import last_subject
+    mem = get_memory()
+    if not topic:
+        recent = []
+        for turn in mem.get_recent_conversation(role="user") or []:
+            asked = when_said_topic(turn.get("content"))
+            if asked != "":
+                recent.append({**turn, "content": asked} if asked else turn)
+        topic = last_subject(recent)
+    if not topic:
+        msg = "Which conversation do you mean? Tell me what it was about and I'll give you the times."
+        return {"ok": True, "action": a, "needs_input": True, "content": msg, "response": msg}
+    hits = [(row_time(h), h) for h in mem.search_conversations(topic, limit=None, match_all=True) or []
+            if when_said_topic(h.get("content")) is None]
+    hits = sorted((when, h) for when, h in hits if when)
+    if not hits:
+        msg = f"I can't find a message of yours that mentions “{topic}” in our conversation log."
+        return {"ok": True, "action": a, "content": msg, "response": msg, "evidence_source": "conversation_turns"}
+    days: Dict[str, List[float]] = {}
+    for when, _h in hits:
+        days.setdefault(_t.strftime("%Y-%m-%d", _t.localtime(when)), []).append(when)
+    lines = [f"- {_t.strftime('%a %d %b %Y', _t.localtime(times[0]))} ({age_label(times[0])}): "
+             + ", ".join(_t.strftime("%H:%M", _t.localtime(x)) for x in times) for _day, times in sorted(days.items())]
+    first_when, first = hits[0]
+    opening = re.split(r"(?<=[.!?])\s", str(first.get("content") or "").strip(), maxsplit=1)[0]
+    msg = (f"You wrote about “{topic}” in {len(hits)} message{'s' if len(hits) != 1 else ''}, first on "
+           f"{_t.strftime('%a %d %b %Y at %H:%M', _t.localtime(first_when))} (“{opening}”):\n" + "\n".join(lines)
+           + "\nThese are when you wrote about it; the day of the event itself is only here if you said it.")
+    return {"ok": True, "action": a, "content": msg, "response": msg, "evidence_source": "conversation_turns"}
+
+
 def _get_canonical_memory():
     """Lazy import to avoid circular import."""
     from eli.memory import get_memory
@@ -417,6 +457,12 @@ def _h_user_identity_summary(a, args):
 
 
 def _h_message_time_query(a, args):
+    # "when did I write about X": every message of the user's that mentions it, by day
+    if (args or {}).get("topic") is not None:
+        try:
+            return _when_said_answer(a, str((args or {}).get("topic") or "").strip())
+        except Exception as e:
+            return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
     import sqlite3 as _sq3
     from datetime import datetime as _dt
     from eli.memory import get_memory as _mt_get_memory

@@ -161,7 +161,8 @@ def _eli_is_rapport_prompt(text: str) -> bool:
 # What ELI may do because its own reply said it would: look something up. Anything that changes
 # the calendar, the screen, files or settings waits for the user (see pending_proposal).
 _FOLLOWTHROUGH_READS = frozenset((
-    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT", "WEB_SEARCH", "GET_WEATHER", "LIST_EVENTS", "NOW_PLAYING",
+    "NEWS_FETCH", "MORNING_REPORT", "DAILY_REPORT", "WEB_SEARCH", "WEB_FETCH", "GET_WEATHER", "LIST_EVENTS",
+    "NOW_PLAYING",
     "SEARCH_NOTES", "LIST_NOTES", "MEMORY_RECALL", "CHECK_JOB", "BACKGROUND_JOBS", "SYSTEM_STATS", "CPU_USAGE",
     "RAM_USAGE", "GPU_STATUS", "LIST_DIR", "READ_FILE",
     # status reports: surfaced only when the reply promised to report (handled where they return)
@@ -563,7 +564,8 @@ class GenerationMixin:
                             enhanced_system = _truncate_system_prompt_preserving_evidence(
                                 enhanced_system, _sys_room)
                     if _reused_system and len(enhanced_system) + len(prompt) > _max_prompt_chars:
-                        prompt = prompt[-max(200, _max_prompt_chars - len(enhanced_system)):]
+                        from eli.runtime.session_continuity import fit_exchange_prompt as _fit_exchange
+                        prompt = _fit_exchange(prompt, max(200, _max_prompt_chars - len(enhanced_system)))
                         log.debug(f"[COGNITIVE] Prompt capped to {_max_prompt_chars}chars (the turn's system prompt kept)")
                     elif len(enhanced_system) + len(prompt) > _max_prompt_chars:
                         # Give the user prompt at least 25% of the budget so the
@@ -576,7 +578,8 @@ class GenerationMixin:
                             # keep it whole and shrink the persona/rules around it instead.
                             enhanced_system = _truncate_system_prompt_preserving_evidence(
                                 enhanced_system, _sys_budget)
-                        prompt = prompt[-_prompt_budget:]
+                        from eli.runtime.session_continuity import fit_exchange_prompt as _fit_exchange
+                        prompt = _fit_exchange(prompt, _prompt_budget)
                         log.debug(
     f"[COGNITIVE] Prompt capped to {_max_prompt_chars}chars "
     f"(evidence-preserving; n_ctx={_n_ctx_pf1}, qcap={_qcap})")
@@ -618,7 +621,8 @@ class GenerationMixin:
                         _prompt_budget2 = _max_prompt_chars2 - _sys_budget2
                         enhanced_system = _truncate_system_prompt_preserving_evidence(
                             enhanced_system, _sys_budget2)
-                        prompt = prompt[-_prompt_budget2:]
+                        from eli.runtime.session_continuity import fit_exchange_prompt as _fit_exchange
+                        prompt = _fit_exchange(prompt, _prompt_budget2)
                         log.debug(
     f"[COGNITIVE] Direct GGUF overflow: truncated to fit n_ctx={_n_ctx_pf2}")
                     with self._gguf_lock:
@@ -860,6 +864,22 @@ class GenerationMixin:
                     reasoning_mode=reasoning_mode,
                     situation_brief=situation_brief,
                 )
+                # The turn record (what the pipeline did on recent turns, put in for a question or complaint about
+                # ELI) goes beside the recent exchange, just before the message: in the middle of the system prompt
+                # the overflow trim cut it, and "you just told me a news article" was answered without it.
+                try:
+                    from eli.kernel.request_context import turn_facts_var as _tfv
+                    _rec_rows = list(((_tfv.get() or {}).get("_record_lines")) or [])
+                    if _rec_rows:
+                        from eli.cognition.self_claims import record_block as _record_block
+                        _rec_blk = _record_block(_rec_rows)
+                        if _rec_blk and _rec_blk not in prompt:
+                            enhanced_system = enhanced_system.replace(_rec_blk, "")
+                            _rh, _rsep, _rmsg = prompt.rpartition("\n\nYou: ")
+                            prompt = (_rh + "\n" + _rec_blk + _rsep + _rmsg) if _rsep else (
+                                _rec_blk + "\n\nYou: " + prompt)
+                except Exception:
+                    log.debug("[COGNITIVE] turn record placement skipped", exc_info=True)
                 # Pre-flight clamp
                 _pt = max(1, (len(enhanced_system) + len(prompt)) // 3)
                 _avail_s = max(128, _n_ctx - _pt - 64)
@@ -886,7 +906,8 @@ class GenerationMixin:
                         enhanced_system = self._trim_enhanced_system_for_stream(
                             enhanced_system, _sys_budget
                         )
-                    prompt = prompt[-_prompt_budget:]
+                    from eli.runtime.session_continuity import fit_exchange_prompt as _fit_exchange
+                    prompt = _fit_exchange(prompt, _prompt_budget)
                     log.debug(
     f"[COGNITIVE] Stream overflow: truncated to fit n_ctx={_n_ctx}")
                     # Re-fit answer budget against the prompt actually sent (see non-stream
@@ -1001,12 +1022,16 @@ class GenerationMixin:
                 _ctx_overflow = ("context window" in _emsg.lower()
                                  or "requested tokens" in _emsg.lower())
                 _empty = "empty response" in _emsg.lower()
+                # A KV-slot decode failure ("llama_decode returned 2") near full context is transient and
+                # recoverable — the non-stream retry below clears the cache and decodes fresh — so don't
+                # flip _gguf_available for it either, or one near-ctx turn poisons every later one.
+                _decode_slot = "llama_decode returned" in _emsg.lower()
                 log.debug(f"[COGNITIVE] GGUF streaming failed: {_emsg}")
                 # A context-window overflow is recoverable and doesn't mean the GGUF backend is dead. Don't
                 # flip _gguf_available (that poisons every later turn) and never show the raw exception as
                 # ELI's reply. Retry once non-streaming; generate() now truncates an over-ctx prompt to the
                 # model's n_ctx_train.
-                if not _ctx_overflow and not _empty:
+                if not _ctx_overflow and not _empty and not _decode_slot:
                     self._gguf_available = False
                 self._gguf_load_error = _emsg
                 if provider != "ollama":
@@ -1873,6 +1898,12 @@ class GenerationMixin:
             if not _followthrough_may_run(_ft_action, user_input, _query):
                 log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' not run "
                           f"({_ft_action or 'no action'}: not a read, and not what the user asked for)")
+                # The promise is already on screen; it must not stand as if kept ("I am going to check the
+                # current load…", and nothing checked anything).
+                _not_done = (f"(I haven't done that: nothing ran for “{str(commit['clause']).strip().rstrip('.')}”. "
+                             "Ask and I'll do it.)")
+                yield "\n\n" + _not_done
+                self._store_followthrough_reply(full, _not_done)
                 return
             if _ft_action in _FOLLOWTHROUGH_REPORTS and not _FT_PROMISED_REPORT.search(
                     str(commit.get("clause") or "") + " " + str(full or "")):
@@ -1978,7 +2009,10 @@ class GenerationMixin:
         prompt = str((args or {}).get("message") or user_input or "").strip()
         started = _time.perf_counter()
         _eli_pipeline_trace = str(__import__("os").environ.get("ELI_PIPELINE_TRACE", "")).strip().lower() in {"1", "true", "yes", "on"}
-        _eli_pipeline_req = str(getattr(self, "_pipeline_req_id", "") or "n/a")
+        # Read the turn's own id; self._pipeline_req_id is shared across
+        # concurrent turns on this singleton.
+        _eli_pipeline_req = str(_request_context.request_id_var.get()
+                                or getattr(self, "_pipeline_req_id", "") or "n/a")
 
         def _eli_pipe_stream(stage: str, **fields) -> None:
             if not _eli_pipeline_trace:

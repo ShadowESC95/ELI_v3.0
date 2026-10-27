@@ -36,44 +36,25 @@ def _h_data_fabricator(a, args):
         topic = str((args or {}).get("topic") or (args or {}).get("query") or (args or {}).get("text") or (args or {}).get("message") or "").strip()
         if topic:
             r = _execute_impl(action="CREATE_DOCUMENT", args={"topic": topic, "format": (args or {}).get("format") or "md"})
-            # If generation succeeded, also open in an editor if available
+            # If generation succeeded, also open it in this OS's editor
             if r.get("ok") and r.get("path"):
-                path = r.get("path")
-                editors = [
-                    ["code", path],
-                    ["codium", path],
-                    ["gedit", path],
-                    ["kate", path],
-                    ["nano", path],
-                ]
-                for cmd in editors:
-                    try:
-                        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        break
-                    except FileNotFoundError:
-                        continue
+                from eli.utils.platform_compat import open_role
+                open_role("editor", str(r.get("path"))) or open_file(str(r.get("path")))
             return r
 
-        # Otherwise just open an editor for a new blank file.
-        out_dir = Path(str(Path.home() / "Documents" / "ELI" / "artifacts")).resolve()
+        # Otherwise a new blank file in ELI's own documents folder (not a generic ~/Documents/ELI),
+        # opened in this OS's editor.
+        from eli.core.paths import documents_dir
+        from eli.utils.platform_compat import open_role
+        out_dir = Path(documents_dir())
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"data_construct_{int(time.time())}.md"
         if not out_path.exists():
             out_path.write_text("# Data Construct\n\n", encoding="utf-8")
-
-        editors = [
-            ["code", str(out_path)],
-            ["codium", str(out_path)],
-            ["gedit", str(out_path)],
-            ["libreoffice", "--writer", str(out_path)],
-        ]
-        for cmd in editors:
-            try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened editor: {' '.join(cmd)}"
-                return {"ok": True, "action": a, "path": str(out_path), "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
+        editor = open_role("editor", str(out_path))
+        if editor:
+            msg = f"Opened editor: {editor}"
+            return {"ok": True, "action": a, "path": str(out_path), "content": msg, "response": msg}
 
         # Fallback: open with default system handler
         open_file(str(out_path))

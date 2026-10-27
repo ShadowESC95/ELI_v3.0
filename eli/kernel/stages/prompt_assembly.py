@@ -1443,18 +1443,8 @@ Answer:"""
             # Anchored on "yourself" rather than an exact verb phrase: the question that produced
             # the fabricated paths was typed "what fo you know of yourself", and a strict pattern
             # would have let a typo decide whether the answer was grounded or invented.
-            _self_descriptive = bool(
-                (re.search(r"\byoursel(?:f|ves)\b", _ui_low)
-                 and re.search(r"\b(know|knew|tell|telling|describe|description|explain|"
-                               r"detail|detailed|accurate|accurately|about|of)\b", _ui_low))
-                or re.search(
-                    r"\b(what are you|who are you|describe yourself|"
-                    r"your (?:architecture|internals?|capabilit\w+|components?|design|"
-                    r"databases?|storage|memory system|codebase|upgrade path)|"
-                    r"how (?:do|are) you (?:built|structured|made|work)|"
-                    r"how do you (?:upgrade|update) yourself|what do you run on)\b",
-                    _ui_low)
-            )
+            from eli.runtime.self_facts import is_self_descriptive as _is_self_desc
+            _self_descriptive = _is_self_desc(_ui_low)
             if _self_descriptive:
                 from eli.runtime.self_facts import render_self_facts_block as _rsf
                 _sf = _rsf()
@@ -1630,9 +1620,24 @@ Answer:"""
         except Exception:
             reranked = []
 
+        # Prompt-side counts come from the (tier-scaled) tunables. These were a
+        # fixed 8 reranked hits and 8 recent turns whatever cog.rerank_top_k or
+        # cog.mem_recent_turns said; context_budget still fits the block to the
+        # model's window, dropping reranked evidence before recent turns.
+        try:
+            from eli.core.cognition_tunables import snapshot as _cog_snapshot, prompt_count
+            _tn = _cog_snapshot()
+            _rerank_shown = max(1, prompt_count("cog.rerank_top_k", reasoning_mode, _tn))
+            _recent_shown = max(1, prompt_count("cog.mem_recent_turns", reasoning_mode, _tn))
+        except Exception:
+            _tn = {}
+            _rerank_shown, _recent_shown = 12, 8
+        _hit_chars = max(260, int(_tn.get("cog.mem_fact_chars", 240)))
+        _recent_chars = max(220, int(_tn.get("cog.mem_recent_chars", 180)))
+
         if reranked:
             hit_lines: List[str] = []
-            for i, hit in enumerate(reranked[:8], 1):
+            for i, hit in enumerate(reranked[:_rerank_shown], 1):
                 if isinstance(hit, dict):
                     txt = str(hit.get("text") or hit.get("content") or hit.get("snippet") or "").strip()
                     src = str(hit.get("source") or hit.get("kind") or hit.get("path") or "").strip()
@@ -1645,7 +1650,7 @@ Answer:"""
                 if not txt:
                     continue
 
-                txt = re.sub(r"\s+", " ", txt)[:260]
+                txt = re.sub(r"\s+", " ", txt)[:_hit_chars]
 
                 score_txt = ""
                 if score not in (None, ""):
@@ -1668,13 +1673,14 @@ Answer:"""
 
         if recent_turns:
             turn_lines: List[str] = []
-            for turn in recent_turns[-8:]:
+            for turn in recent_turns[-_recent_shown:]:
                 try:
                     role = "User" if str(turn.get("role", "")).lower() == "user" else "ELI"
                     content = re.sub(r"\s+", " ", str(turn.get("content", "") or "")).strip()
                     if content:
                         _tw = _evidence_format.when_label(_evidence_format.row_time(turn))
-                        turn_lines.append(f"[{_tw}] {role}: {content[:220]}" if _tw else f"{role}: {content[:220]}")
+                        _c = content[:_recent_chars]
+                        turn_lines.append(f"[{_tw}] {role}: {_c}" if _tw else f"{role}: {_c}")
                 except Exception:
                     continue
             if turn_lines:

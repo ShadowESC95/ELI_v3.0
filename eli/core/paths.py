@@ -226,7 +226,7 @@ def _is_dev_mode() -> bool:
 
 
 def temp_path(name: str) -> Path:
-    """`name` in the system temp folder, under this version's own name (ELI_v2-tts_speaking.lock).
+    """`name` in the system temp folder, under this version's own name (ELI_v3-tts_speaking.lock).
     A lock, socket, log or report one ELI version leaves there must never be read by another one
     running beside it: with shared names, v2 speaking muted v3's microphone and either version
     could drive the other's video player."""
@@ -496,14 +496,27 @@ def persona_path() -> Path:
 
 
 def persona_auto_path() -> Path:
-    """Canonical auto-updating persona overlay."""
+    """Canonical auto-updating persona overlay.
+
+    Override: ELI_PERSONA_AUTO_PATH (same pattern as user_db_path()) — a test
+    run once overwrote the real overlay with fixture data with no escape hatch.
+    """
+    override = os.environ.get("ELI_PERSONA_AUTO_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
     if _is_dev_mode():
         return project_root() / "eli" / "cognition" / "persona.auto.txt"
     return config_dir() / "persona.auto.txt"
 
 
 def notebook_dir() -> Path:
-    """ELI notebook / journal directory."""
+    """ELI notebook / journal directory.
+
+    Override: ELI_NOTEBOOK_DIR — same escape-hatch pattern as persona_auto_path().
+    """
+    override = os.environ.get("ELI_NOTEBOOK_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
     if _is_dev_mode():
         return project_root() / "eli_notebook"
     return data_dir() / "notebook"

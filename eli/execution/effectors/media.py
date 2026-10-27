@@ -466,15 +466,8 @@ def _mpv_numeric(val: Any) -> bool:
 
 def _mpv_load_confirmed(sock_path: str) -> bool:
     """True once mpv has actually opened a stream (not merely spawned)."""
-    from eli.integrations.media.cross_platform import mpv_ipc_send
-    idle = mpv_ipc_send(["get_property", "idle-active"], sock_path=sock_path, want_response=True)
-    if idle is True:
-        return False
-    dur = mpv_ipc_send(["get_property", "duration"], sock_path=sock_path, want_response=True)
-    if _mpv_numeric(dur):
-        return True
-    pos = mpv_ipc_send(["get_property", "time-pos"], sock_path=sock_path, want_response=True)
-    return _mpv_numeric(pos)
+    from eli.integrations.media.youtube_playback import mpv_load_confirmed
+    return mpv_load_confirmed(sock_path)
 
 
 def _prune_mpv_logs(keep: int = 5) -> None:
@@ -1167,6 +1160,18 @@ def now_playing() -> Dict[str, Any]:
         msg = f"{head}: {title} — YouTube ({mode})."
         return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
+    # Windows and macOS have no MPRIS: ask the OS what is playing (eli.integrations.media.system_session)
+    from eli.utils import platform_compat as _pc_np
+    if _pc_np.WINDOWS or _pc_np.MACOS:
+        from eli.integrations.mpris import playerctl_backend as _pb_np
+        _st = _pb_np.get_player_status()
+        if _st.get("ok") and _st.get("title"):
+            head = {"playing": "▶ Playing", "paused": "⏸ Paused", "stopped": "⏹ Stopped"}.get(
+                str(_st.get("status")), "▶ Playing")
+            meta = f"{_st['artist']} — {_st['title']}" if _st.get("artist") else _st["title"]
+            msg = f"{head}: {meta} — {_st.get('player')}."
+            return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+
     # Live playerctl metadata beats the cached _MEDIA_STATE title — the cache
     # stores what we *asked* Spotify to play ("liked songs (playlist)"), not
     # what is actually playing (artist — track).
@@ -1225,20 +1230,32 @@ def _h_media_control(a, args):
         if mapped == "REPEAT_MEDIA":
             return repeat_media(target=target)
         return _execute_impl(mapped, forwarded)
-    # Fallback: playerctl generic
-    try:
-        subprocess.run(["playerctl", cmd], timeout=5, capture_output=True)
-        msg = f"Media: {cmd}"
-        return {"ok": True, "action": a, "content": msg, "response": msg}
-    except Exception as e:
-        return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+    # Anything else ("toggle"): the media backend, which is MPRIS on Linux and the OS's media
+    # session or media keys on Windows and macOS (a bare playerctl existed only on Linux)
+    res = _playerctl({"toggle": "play-pause", "playpause": "play-pause"}.get(cmd, cmd), target)
+    res["action"] = a
+    return res
 
 
 def _h_skip_youtube_ad(a, args):
-    msg = (
-        "YouTube ad skip is not available in this build — use the browser "
-        "skip button, or say 'play on youtube.com' to open YouTube in your browser."
-    )
+    # YouTube's own skip button, found on the screen and clicked (screen_locator: OCR or the local
+    # vision model, then a click; every OS). ELI's own YouTube player (mpv) plays no ads.
+    if _MEDIA_STATE.get("source") == "mpv" and _mpv_alive():
+        msg = "ELI's YouTube player has no ads to skip."
+        return {"ok": True, "action": a, "content": msg, "response": msg}
+    try:
+        from eli.perception.screen_locator import locate_on_screen
+        last = {}
+        for label in ("Skip Ads", "Skip Ad", "Skip"):
+            last = locate_on_screen(query=label, click=True) or {}
+            if last.get("clicked"):
+                msg = "Skipped the ad."
+                return {"ok": True, "action": a, "content": msg, "response": msg}
+        why = str(last.get("error") or "").strip()
+        msg = ("No skip button is on the screen yet; YouTube shows it a few seconds into an ad."
+               + (f" ({why})" if why else ""))
+    except Exception as e:
+        msg = f"Could not look for the skip button: {e}"
     return {"ok": False, "action": a, "content": msg, "response": msg}
 
 

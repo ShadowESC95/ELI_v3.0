@@ -19,7 +19,7 @@ import zipfile
 
 import pytest
 
-from eli.plugins.document_reader.plugin import DocumentReaderPlugin, _html_to_text
+from eli.plugins.document_reader.plugin import DocumentReaderPlugin, html_to_text
 
 ODT_CONTENT_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content
@@ -366,16 +366,16 @@ def test_extensionless_text_still_reads(plugin, tmp_path):
 
 
 # ── html extraction unit ────────────────────────────────────────────────────
-def test_html_to_text_separates_block_elements():
-    assert _html_to_text("<p>one</p><p>two</p>").splitlines() == ["one", "two"]
+def testhtml_to_text_separates_block_elements():
+    assert html_to_text("<p>one</p><p>two</p>").splitlines() == ["one", "two"]
 
 
-def test_html_to_text_resolves_entities():
-    assert "AT&T" in _html_to_text("<p>AT&amp;T</p>")
+def testhtml_to_text_resolves_entities():
+    assert "AT&T" in html_to_text("<p>AT&amp;T</p>")
 
 
-def test_html_to_text_survives_malformed_markup():
-    _html_to_text("<p>unclosed <b>bold")   # must not raise
+def testhtml_to_text_survives_malformed_markup():
+    html_to_text("<p>unclosed <b>bold")   # must not raise
 
 
 # ── coverage matches what is advertised ─────────────────────────────────────
@@ -405,7 +405,7 @@ def _write_docx_with_table(path):
     t = d.add_table(rows=2, cols=2)
     t.cell(0, 0).text = "Name"
     t.cell(0, 1).text = "Score"
-    t.cell(1, 0).text = "Diabolic"
+    t.cell(1, 0).text = "Veridian"
     t.cell(1, 1).text = "9"
     d.add_paragraph("Outro paragraph text.")
     d.save(str(path))
@@ -420,7 +420,7 @@ def test_docx_reads_table_cells(plugin, tmp_path):
     res = plugin.read({"path": str(_write_docx_with_table(tmp_path / "report.docx"))})
     assert res["ok"] is True
     assert "Name | Score" in res["content"]
-    assert "Diabolic | 9" in res["content"]
+    assert "Veridian | 9" in res["content"]
     assert "Intro paragraph text." in res["content"]
     assert "Outro paragraph text." in res["content"]
 

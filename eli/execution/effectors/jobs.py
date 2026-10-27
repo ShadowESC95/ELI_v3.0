@@ -8,6 +8,15 @@ from eli.utils.log import get_logger
 log = get_logger(__name__)
 
 
+def _duration(seconds) -> str:
+    s = int(round(float(seconds or 0)))
+    if s < 90:
+        return f"{s} s"
+    if s < 5400:
+        return f"{round(s / 60)} min"
+    return f"{s // 3600} h {round(s % 3600 / 60)} min"
+
+
 def _h_check_job(a, args):
     import re as _re_jb
     from eli.runtime.background_tasks import get_background_tasks as _get_bt
@@ -24,8 +33,11 @@ def _h_check_job(a, args):
     if _jid is None:
         _m = _re_jb.search(r"\b(\d+)\b", str(args.get("text") or args.get("query") or args.get("description") or ""))
         _jid = _m.group(1) if _m else None
+    if _jid is None:        # "how's it going?": the job that is running, else the latest
+        _jobs = _bt.list(limit=1, status="running") or _bt.list(limit=1)
+        _jid = _jobs[0]["id"] if _jobs else None
     if _jid is None:
-        msg = "Which job? e.g. 'check job 3'."
+        msg = "No background jobs."
         return {"ok": False, "action": a, "content": msg, "response": msg}
     t = _bt.get(int(_jid))
     if not t:
@@ -49,7 +61,12 @@ def _h_check_job(a, args):
     elif t["status"] == "failed":
         msg = f"Job #{_jid} failed: {(t.get('error') or '')[:200]}"
     else:
-        msg = f"Job #{_jid} ({t['name']}) is {t['status']} — {t['elapsed_s']}s elapsed."
+        msg = f"Job #{_jid} ({t['name']}) is {t['status']}, {_duration(t['elapsed_s'])} in."
+        _p = t.get("progress") or {}
+        if _p.get("total"):
+            msg += f" {str(_p.get('stage') or 'working').capitalize()}: {_p.get('done', 0)} of {_p['total']}"
+            msg += (f", about {_duration(t['eta_s'])} left for that at the rate so far." if t.get("eta_s")
+                    else ".")
     return {"ok": True, "action": a, "job": t, "content": msg, "response": msg}
 
 

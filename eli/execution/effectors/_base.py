@@ -301,40 +301,32 @@ def _artifacts_dir() -> Path:
 
 
 def _save_artifact(content: str, subdir: str, filename: str, fmt: str = "md") -> str:
-    """Save content to artifacts/{subdir}/{filename}.{fmt}. Returns the path."""
+    """
+    Save content to artifacts/{subdir}/{filename}.{fmt}.
+    Supported fmt: md, docx, pdf, txt, py, sh, csv, html.
+    Returns the absolute path string.
+    """
     import re as _re
 
     root = _artifacts_dir() / subdir
     root.mkdir(parents=True, exist_ok=True)
 
+    # Clean filename
     safe = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename).strip(". ")[:80] or "output"
     out_path = root / f"{safe}.{fmt}"
+    # Avoid collisions
     if out_path.exists():
-        ts = time.strftime("%Y%m%d_%H%M%S")
+        import time as _t
+        ts = _t.strftime("%Y%m%d_%H%M%S")
         out_path = root / f"{safe}_{ts}.{fmt}"
 
-    if fmt == "docx":
+    if fmt in ("docx", "pdf"):
+        # one writer for documents (eli/runtime/rich_document.py): headings, lists, typeset formulas
         try:
-            from docx import Document
-            from docx.shared import Pt
-            doc = Document()
-            style = doc.styles["Normal"]
-            style.font.name = "Calibri"
-            style.font.size = Pt(11)
-            for block in content.split("\n\n"):
-                block = block.strip()
-                if not block:
-                    continue
-                if block.startswith("### "):
-                    doc.add_heading(block[4:].strip(), level=3)
-                elif block.startswith("## "):
-                    doc.add_heading(block[3:].strip(), level=2)
-                elif block.startswith("# "):
-                    doc.add_heading(block[2:].strip(), level=1)
-                else:
-                    doc.add_paragraph(block)
-            doc.save(str(out_path))
+            from eli.runtime.rich_document import write_document
+            out_path = write_document(content, out_path)
         except Exception:
+            log.debug("[ARTIFACT] document not written; saved as text", exc_info=True)
             out_path = out_path.with_suffix(".txt")
             out_path.write_text(content, encoding="utf-8")
     else:
@@ -342,4 +334,17 @@ def _save_artifact(content: str, subdir: str, filename: str, fmt: str = "md") ->
 
     return str(out_path)
 
-__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_artifacts_dir', '_save_artifact', '_allowed_apps_set']
+# .docx/.pdf/etc are binary containers: open(path).read() decodes them as mojibake and the model
+# confabulates from the garbage. The document_reader plugin has real per-format extraction; both
+# SUMMARIZE_FILE and READ_FILE route through it.
+_DOC_READER_SUFFIXES = (".pdf", ".docx", ".doc", ".odt", ".epub")
+
+
+def _read_document_text(path):
+    if Path(path).suffix.lower() not in _DOC_READER_SUFFIXES:
+        return None
+    from eli.plugins.document_reader.plugin import DocumentReaderPlugin
+    return DocumentReaderPlugin().read({"path": str(path)})
+
+
+__all__ = ['_full_control', '_open_in_browser', '_allowed_cmds_set', '_allow_or_block', '_run_argv', '_get_security_manager', '_shell_command_allowed_fallback', '_run', '_run_ok', '_artifacts_dir', '_save_artifact', '_allowed_apps_set', '_DOC_READER_SUFFIXES', '_read_document_text']

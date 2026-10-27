@@ -1,5 +1,6 @@
 """Status-reports effector — self-contained diagnostic/status actions."""
 from __future__ import annotations
+import os
 
 from eli.utils.log import get_logger
 
@@ -148,13 +149,25 @@ def _h_cpu_usage(a, args):
             return {"ok": True, "action": a, "percent": pct, "cores": count,
                     "temperature_c": _cpu_temp, "content": msg, "response": msg}
         except ImportError:
+            # without psutil: the load average (Linux, macOS) or Windows' own processor load
             import subprocess as _sp
+            from eli.utils import platform_compat as _pc_cpu
+            # psutil is a required dependency: a reading that can't be taken is a failure, not an answer
+            msg = ""
             try:
-                out = _sp.check_output(["top", "-bn1"], text=True, timeout=5)
-                cpu_line = next((l for l in out.splitlines() if "Cpu(s)" in l or "%Cpu" in l), "")
-                msg = f"CPU: {cpu_line.strip()}" if cpu_line else "CPU info unavailable (install psutil)"
+                if _pc_cpu.WINDOWS:
+                    out = _sp.check_output(["powershell", "-NoProfile", "-Command",
+                                            "(Get-CimInstance Win32_Processor | Measure-Object -Property "
+                                            "LoadPercentage -Average).Average"], text=True, timeout=15).strip()
+                    msg = f"CPU usage: {out}%" if out else ""
+                else:
+                    one, five, _ = os.getloadavg()
+                    msg = f"CPU load average: {one:.2f} (1 min), {five:.2f} (5 min) over {os.cpu_count()} cores"
             except Exception:
-                msg = "CPU info unavailable (install psutil: pip install psutil)"
+                log.debug("CPU load fallback failed", exc_info=True)
+            if not msg:
+                msg = "CPU info unavailable: psutil, which ELI needs, isn't installed (pip install psutil)."
+                return {"ok": False, "action": a, "error": "psutil missing", "content": msg, "response": msg}
             return {"ok": True, "action": a, "content": msg, "response": msg}
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
@@ -232,16 +245,17 @@ def _h_hardware_profile(a, args):
 def _h_ram_usage(a, args):
     try:
         import psutil
+        from eli.core.mem_units import bytes_to_gib
         vm = psutil.virtual_memory()
-        used_gb = vm.used / (1024 ** 3)
-        total_gb = vm.total / (1024 ** 3)
+        used_gb = bytes_to_gib(vm.used)
+        total_gb = bytes_to_gib(vm.total)
         msg = f"RAM usage: {vm.percent:.1f}%  ({used_gb:.1f} GB used / {total_gb:.1f} GB total)"
         return {"ok": True, "action": a, "percent": vm.percent,
                 "used_gb": round(used_gb, 2), "total_gb": round(total_gb, 2),
                 "content": msg, "response": msg}
     except ImportError:
-        msg = "RAM info unavailable (install psutil: pip install psutil)"
-        return {"ok": True, "action": a, "content": msg, "response": msg}
+        msg = "RAM info unavailable: psutil, which ELI needs, isn't installed (pip install psutil)."
+        return {"ok": False, "action": a, "error": "psutil missing", "content": msg, "response": msg}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
@@ -249,13 +263,14 @@ def _h_ram_usage(a, args):
 def _h_system_stats(a, args):
     try:
         import psutil, platform as _platform
+        from eli.core.mem_units import bytes_to_gib
         cpu_pct = psutil.cpu_percent(interval=0.5)
         vm = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
-        used_ram = vm.used / (1024 ** 3)
-        total_ram = vm.total / (1024 ** 3)
-        used_disk = disk.used / (1024 ** 3)
-        total_disk = disk.total / (1024 ** 3)
+        used_ram = bytes_to_gib(vm.used)
+        total_ram = bytes_to_gib(vm.total)
+        used_disk = bytes_to_gib(disk.used)
+        total_disk = bytes_to_gib(disk.total)
         lines = [
             f"System: {_platform.system()} {_platform.release()}",
             f"CPU:    {cpu_pct:.1f}%  ({psutil.cpu_count()} cores)",
@@ -272,8 +287,8 @@ def _h_system_stats(a, args):
         return {"ok": True, "action": a, "content": msg, "response": msg,
                 "cpu_percent": cpu_pct, "ram_percent": vm.percent, "disk_percent": disk.percent}
     except ImportError:
-        msg = "System stats unavailable (install psutil: pip install psutil)"
-        return {"ok": True, "action": a, "content": msg, "response": msg}
+        msg = "System stats unavailable: psutil, which ELI needs, isn't installed (pip install psutil)."
+        return {"ok": False, "action": a, "error": "psutil missing", "content": msg, "response": msg}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

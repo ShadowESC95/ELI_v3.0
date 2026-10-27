@@ -77,8 +77,8 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
             return _mk("CLEAR_TONE", {}, 0.9, matched_by="tone.clear")
     # SET: an explicit tone directive naming a palette tone/alias. Needs a tone-setting verb and a
     # phrase that resolves to a real tone, so "be comedic" fires but "that joke was comedic gold"
-    # doesn't. The verb list used to include more/less/get/go, so "i am not sad eli, i am just
-    # trying to get your codebas correct" set the tone to sad. "be more cheerful" still works via `be`.
+    # doesn't. The verb list used to include more/less/get/go, so "i am not sad, i am only
+    # trying to get this fixed" set the tone to sad. "be more cheerful" still works via `be`.
     # The tone has to follow the verb ("be more cheerful", "use a sarcastic tone"), and the verb
     # has to be an instruction to ELI. Both words anywhere in the message was enough before:
     # "how fast does a serious incident have to be reported" set the tone to serious.

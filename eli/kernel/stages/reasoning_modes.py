@@ -1,12 +1,13 @@
 """Engine stage — reasoning modes. The per-mode reasoning strategies (chain-of-thought, tree-of-thought, self-consistency, constitutional) plus the chat reasoning loop and answer synthesis. Mixed into CognitiveEngine; process() selects the mode and calls into these."""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, Optional
 
 import time
 
-from eli.kernel.stages._common import _clarifier_norm, _eli_test_mode
+from eli.kernel.stages._common import _WEB_READS, _clarifier_norm, _eli_test_mode
 from eli.kernel.stages.guards import (
     _REPEAT_MIN_SENTENCE_CHARS,
     _eli_bad_identity_self_report_output,
@@ -771,9 +772,13 @@ class ReasoningModesMixin:
             except Exception:
                 _eli_gc_action = ""
 
-            from eli.contracts.grounded_control import is_grounded_control_action
+            from eli.contracts.grounded_control import (
+                is_grounded_control_action, evidence_complete_for_action)
 
-            if is_grounded_control_action(_eli_gc_action):
+            _eli_gate_off = os.environ.get("ELI_EVIDENCE_GATE_DISABLE", "").lower() in ("1", "true")
+            if is_grounded_control_action(_eli_gc_action) and (
+                _eli_gate_off or evidence_complete_for_action(
+                    _eli_gc_action, {"evidence": evidence, "best_answer": best_answer})):
                 log.debug(
                     f"[COGNITIVE][FINAL] grounded-control no-clarify v2 suppressed "
                     f"action={_eli_gc_action} score={best_score:.2f} threshold={threshold:.2f}",
@@ -786,6 +791,12 @@ class ReasoningModesMixin:
                     'clarified': False,
                     'clarify_suppressed': True,
                 }
+            elif is_grounded_control_action(_eli_gc_action):
+                from eli.contracts.grounded_control import evidence_gap_reason
+                log.debug(
+                    f"[COGNITIVE][FINAL] grounded-control no-clarify v2 NOT suppressed "
+                    f"action={_eli_gc_action} gap={evidence_gap_reason(_eli_gc_action, {'evidence': evidence, 'best_answer': best_answer})}",
+                )
 
             log.debug(
                 f'[COGNITIVE][FINAL] clarify score={best_score:.2f} threshold={threshold:.2f}'
@@ -894,7 +905,7 @@ class ReasoningModesMixin:
             # max_tokens=-1 means "fill the rest of the context" (~8.8k tokens), which slows the reply and
             # starves the prompt budget so the system prompt and grounding get truncated. Cap it so the
             # evidence fits. Non-quick keeps its larger 1800.
-            if _max_tokens == -1 and str(action or "").upper() in ("WEB_SEARCH", "NEWS_FETCH"):
+            if _max_tokens == -1 and str(action or "").upper() in (_WEB_READS | {"NEWS_FETCH"}):
                 _max_tokens = 700
             _gen_kwargs = _eli_apply_response_kwargs(
                 {"max_tokens": _max_tokens, "temperature": 0.35},

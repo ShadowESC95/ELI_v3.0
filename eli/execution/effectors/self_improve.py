@@ -230,6 +230,7 @@ def _h_self_improve(a, args):
         _si_result = {
             "ok": True,
             "action": a,
+            "effect": cycle.get("effect"),
             "content": msg,
             "response": msg,
             "result": cycle,
@@ -259,7 +260,8 @@ def _h_self_patch(a, args):
         )
         msg = str(cycle.get("content") or cycle.get("summary") or "Patch cycle complete.")
         fire_maintenance_world_event(cycle)
-        return {"ok": True, "action": a, "content": msg, "response": msg, "result": cycle}
+        return {"ok": True, "action": a, "effect": cycle.get("effect"), "content": msg, "response": msg,
+                "result": cycle}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

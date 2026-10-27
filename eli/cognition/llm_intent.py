@@ -115,6 +115,21 @@ def _action_grammar(catalogue: List[str]):
     return grammar
 
 
+def _catalogue_prompt_lines(catalogue: List[str]) -> str:
+    """"NAME: description" per action, from the same curated map the capabilities
+    doc renders from — bare names alone left near-neighbours (ANALYZE_PDF vs
+    SUMMARIZE_FILE, FIX_FILE vs CODE_SOLVE) indistinguishable to the model."""
+    try:
+        from eli.tools.registry.capabilities_doc import _C
+    except Exception:
+        _C = {}
+    lines = []
+    for a in catalogue:
+        desc = _C.get(a, (None, None, None))[1]
+        lines.append(f"{a}: {desc}" if desc else a)
+    return "\n".join(lines)
+
+
 # A few diverse FORMAT examples (teach arg extraction + the CHAT default). These
 # illustrate the output shape and generalise — they are not a per-phrase routing
 # table. Kept short and cross-domain on purpose.
@@ -195,6 +210,26 @@ def shares_with_catalogue(text: str) -> bool:
     return any(w in known or (w.endswith("s") and w[:-1] in known) for w in re.findall(r"[a-z]{3,}", str(text or "").lower()))
 
 
+_SOCIAL_OPENER = re.compile(
+    r"^\s*(?:good\s+)?(?:morning|afternoon|evening|night|hi|hey|hello|hiya|yo|howdy|sup)\b"
+    r"|\b(?:(?:are\s+)?you\s+(?:back|there|awake|alive|up|ok|okay|alright|good|well)"
+    r"|how\s+(?:are|r)\s+(?:you|ya|u)|how'?s\s+(?:it\s+going|the\s+head|you)"
+    r"|what'?s\s+up|how\s+have\s+you\s+been)\b", re.I)
+_ACTION_WORD = re.compile(
+    r"\b(?:open|close|play|pause|stop|skip|set|search|find|look|show|read|start|turn|remind|"
+    r"timer|alarm|volume|news|weather|file|folder|app|launch|send|create|write|make|delete|"
+    r"install|run|check|fetch|download|summari[sz]e|translate|convert)\b", re.I)
+
+
+def is_social_checkin(text: str) -> bool:
+    """A greeting or how-are-you with nothing to act on. The resolver's catalogue prompt
+    is ~3k tokens: "afternoon, you back yet?" spent over half a minute in it before the
+    reply even started (35B MoE)."""
+    t = " ".join(str(text or "").split())
+    return (len(t.split()) <= 12 and bool(_SOCIAL_OPENER.search(t))
+            and not _ACTION_WORD.search(t))
+
+
 def is_plain_statement(text: str) -> bool:
     """Conversation, not a command: no question, and no sentence that tells ELI to do something
     (it starts with a command's verb, or is framed as a request). Nothing for an intent model to resolve.
@@ -241,6 +276,22 @@ def parse_with_llm(text: str, context: str = "") -> Dict[str, Any]:
     if not text:
         return {"action": "CHAT", "args": {"message": text}, "confidence": 0.5}
 
+    # A real file marker is a structured, deterministic fact — don't spend a 199-way
+    # LLM guess on it. Empirically the model confused this with ANALYZE_PDF/READ_FILE
+    # regardless of prompt tuning; SUMMARIZE_FILE's own extension dispatch is what
+    # actually gets it right (PDF/image/etc all redirect correctly from there).
+    _tag_m = re.search(r"\[(?:Image|File|PDF):\s*(.+?)\]", text)
+    _marker_path = _tag_m.group(1).strip() if _tag_m else None
+    if not _marker_path:
+        try:
+            from eli.execution.router_enhanced import _attachment_marker_path
+            _marker_path = _attachment_marker_path(text)
+        except Exception:
+            _marker_path = None
+    if _marker_path:
+        return {"action": "SUMMARIZE_FILE", "args": {"path": _marker_path},
+                "confidence": 0.9, "meta": {"matched_by": "llm_intent.file_marker"}}
+
     catalogue = _catalogue()
     if not catalogue:
         return {"action": "CHAT", "args": {"message": text}, "confidence": 0.5}
@@ -263,7 +314,7 @@ def parse_with_llm(text: str, context: str = "") -> Dict[str, Any]:
             # message is read anew. In the user turn they were read again each time (22-27 s on
             # a 35B model).
             + "\n\nACTIONS (choose exactly one, or CHAT):\n"
-            + ", ".join(catalogue)
+            + _catalogue_prompt_lines(catalogue)
             + "\n\nEXAMPLES (format only):\n" + _FEW_SHOT
         )
         # The open record goes in the user turn, not the system prompt: the system prompt's model

@@ -452,18 +452,16 @@ def _h_open_url(a, args):
 
 
 def _h_open_communication_hub(a, args):
+    # The mail app installed on this OS (Thunderbird/Evolution, Mail/Outlook, Outlook/Mail), else
+    # whatever the OS opens mailto: links with. It was three Linux apps, then a webmail site.
     try:
-        for cmd in (["thunderbird"], ["evolution"], ["geary"]):
-            try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                msg = f"Opened Communication Hub: {' '.join(cmd)}"
-                return {"ok": True, "action": a, "content": msg, "response": msg}
-            except FileNotFoundError:
-                continue
-        url = "https://mail.google.com"
-        open_browser(url)
-        msg = f"Opened Communication Hub: {url}"
-        return {"ok": True, "action": a, "content": msg, "response": msg}
+        from eli.utils.platform_compat import open_app_uri, open_role
+        opened = open_role("mail") or ("your mail app" if open_app_uri("mailto:") else "")
+        if opened:
+            msg = f"Opened Communication Hub: {opened}"
+            return {"ok": True, "action": a, "content": msg, "response": msg}
+        msg = "No mail app is installed, and nothing on this system opens mail links."
+        return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

@@ -185,7 +185,7 @@ def route_capture_input(text: str, raw: str, low: str, text_l: str):
         return _mk("SCREEN_READ_ANALYZE", {}, 0.93, matched_by="screen.read_ocr")
 
     # A question about the capability isn't a request to use it. "So, you can see my screen?" and
-    # "just confirming that you can actually see what i see" each fired another SCREEN_READ_ANALYZE
+    # "just checking you can really see what i see" each fired another SCREEN_READ_ANALYZE
     # (~20s, new screenshot) and answered neither. The split is syntactic: a request puts the modal
     # first ("can you see my screen?"), a confirmation puts the subject first. Falling through lets
     # CHAT answer the yes/no.

@@ -608,9 +608,9 @@ def _h_generate_project(a, args):
 
 def _h_generate_tests(a, args):
     try:
-        from eli.runtime.test_generator import run_testgen
+        from eli.runtime import test_generator as TG
         limit = int(args.get("limit") or 3)
-        res = run_testgen(limit=max(1, min(limit, 10)))
+        res = TG.run_testgen(limit=max(1, min(limit, 10)))
         if not res.get("ok"):
             msg = f"Test generation unavailable: {res.get('reason')}"
             return {"ok": False, "action": a, "content": msg, "response": msg}
@@ -619,7 +619,7 @@ def _h_generate_tests(a, args):
                f"test(s) (rejected {res.get('rejected', 0)} of {res.get('targets', 0)} "
                f"targets — those failed verification). "
                + ("Accepted: " + ", ".join(files) if files else "Nothing accepted this run.")
-               + " Review them in tests/generated/ (manifest: _manifest.json).")
+               + f" They are drafts in {TG.GEN_DIR} (manifest: _manifest.json); read one before moving it into tests/.")
         return {"ok": True, "action": a, "content": msg, "response": msg, "result": res}
     except Exception as e:
         msg = f"GENERATE_TESTS failed: {e}"

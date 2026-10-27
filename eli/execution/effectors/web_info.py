@@ -320,6 +320,27 @@ def _h_web_search(a, args):
                 entry += f"\n   {href}"
             lines.append(entry)
         msg = "\n".join(lines)
+        # Relevance gate (the escalation ladder's scorer). The live backend can return unrelated pages
+        # for an obscure query, and everything downstream treats web_grounded results as authoritative,
+        # so the model wrote a confident non-answer from them. Clearly off-topic results are not
+        # grounding and are not offered as picks. Fails open: no scorer, or no content terms in the
+        # query, keeps the results.
+        try:
+            from eli.runtime.grounding_escalation import (
+                web_evidence_relevance as _web_rel,
+                _web_relevance_floor as _web_floor,
+            )
+            _rel = _web_rel(query, results)
+            if _rel < _web_floor():
+                off = (f"I searched the web for \"{query}\" but nothing that came back actually "
+                       f"answers that, so I won't guess. Try rephrasing it or giving me a more "
+                       f"specific detail and I'll look again.")
+                log.debug("[WEB_SEARCH] results off-topic (relevance=%.2f < floor %.2f): not grounded",
+                          _rel, _web_floor())
+                return {"ok": True, "action": a, "query": query, "results": results,
+                        "web_offtopic": True, "content": off, "response": off}
+        except Exception:
+            log.debug("web relevance gate unavailable; returning results as grounded", exc_info=True)
         return {"ok": True, "action": a, "query": query, "results": results,
                 "content": msg, "response": msg, "web_grounded": True,
                 "listed": [{"title": (r.get("title") or r.get("name") or "").strip(),
@@ -331,6 +352,38 @@ def _h_web_search(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
+def _h_web_fetch(a, args):
+    """Read a linked page so the reply answers from it (a link with a question or request about it)."""
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return {"ok": False, "action": a, "error": "No link given", "content": "Give me the link to read.",
+                "response": "Give me the link to read."}
+    try:
+        from eli.core.config import network_allowed
+        _net = network_allowed()
+    except Exception:
+        _net = False
+    if not _net:
+        msg = (f"I can't read {url} right now: network access is off. Turn on the Net toggle and ask "
+               "again. I won't guess at what the page says.")
+        return {"ok": False, "action": a, "url": url, "offline": True, "content": msg, "response": msg}
+    try:
+        from eli.plugins.web.plugin import read_page
+        page = read_page(url)
+    except Exception as e:
+        msg = f"I couldn't read {url}: {e}. I won't guess at what it says."
+        return {"ok": False, "action": a, "url": url, "error": str(e), "content": msg, "response": msg}
+    if not page["text"].strip():
+        msg = f"{url} came back with no readable text (it may need a browser to run its scripts)."
+        return {"ok": False, "action": a, "url": url, "content": msg, "response": msg}
+    head = f"The page {page['title'] or url} ({url})"
+    msg = (f"{head}, as fetched just now (authoritative — answer from it, not prior knowledge)"
+           f"{'; its first part only' if page['truncated'] else ''}:\n{page['text']}")
+    return {"ok": True, "action": a, "url": url, "title": page["title"],
+            "results": [{"title": page["title"] or url, "href": url, "body": page["text"][:220]}],
+            "content": msg, "response": msg, "web_grounded": True}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -338,5 +391,6 @@ for _action, _fn in {
     "GET_WEATHER": _h_get_weather,
     "NEWS_FETCH": _h_news_fetch,
     "WEB_SEARCH": _h_web_search,
+    "WEB_FETCH": _h_web_fetch,
 }.items():
     _register(_action, _fn)
