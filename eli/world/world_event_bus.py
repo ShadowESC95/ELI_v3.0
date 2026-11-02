@@ -100,22 +100,17 @@ def fire_confidence_event(
         )
 
 
-def fire_tool_result_event(action: str, ok: bool, source: str = "executor") -> None:
-    """Fire task_completed or error_detected based on executor result."""
+def fire_tool_result_event(action: str, ok: bool, source: str = "executor", detail: str = "") -> None:
+    """A tool ELI used: work done when it worked (which eases the repair pressure and
+    doubt a failure raised); when it did not, an error that says what went wrong
+    (`detail`), so ELI's world knows its trouble in words."""
+    name = str(action or "").upper()
     if ok:
-        fire_world_event(
-            "task_completed",
-            source,
-            f"Action {action} completed successfully.",
-            {"action": action},
-        )
+        fire_world_event("task_completed", source, f"{name} worked.", {"action": name})
     else:
-        fire_world_event(
-            "error_detected",
-            source,
-            f"Action {action} failed.",
-            {"action": action},
-        )
+        said = " ".join(str(detail or "").split())
+        fire_world_event("error_detected", source, (f"{name} failed: {said}" if said else f"{name} failed.")[:300],
+                         {"action": name})
 
 
 def fire_social_context_event(

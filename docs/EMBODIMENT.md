@@ -36,7 +36,7 @@ A client that never says hello is a version 1 client and gets exactly what versi
 | Version | Carries |
 |---|---|
 | 1 | Room, avatar, awareness, objects; the client's room events |
-| 2 | All of 1, and how each object looks and where it stands, ELI's own room, what ELI last did and why; the scene; sentences; building; undo |
+| 2 | All of 1, and how each object looks and where it stands, ELI's own room and every room of the house ELI has relit, what ELI last did and why; the scene; sentences; building; undo |
 
 ## Routes
 
@@ -51,7 +51,7 @@ All on the local server, behind its own token and role checks. Loopback callers 
 | `POST /v1/world/scene` | What the user and ELI can see now | 2 |
 | `POST /v1/world/say` | A sentence from inside the world: a turn of conversation, or building | 2 |
 | `POST /v1/world/edit` | The user moving or changing a thing by hand | 2 |
-| `POST /v1/world/compose` | ELI making one thing in its own room, unasked | 2 |
+| `POST /v1/world/compose` | ELI making something unasked: of a moment of its own, in any room it chooses | 2 |
 | `POST /v1/world/undo` | Take back the last change made by building | 2 |
 | `GET /v1/world/mind` | Which model is loaded, which would be used, which ones ELI has | 2 |
 | `POST /v1/world/mind` | Choose ELI's model (admin) | 2 |
@@ -92,6 +92,11 @@ its own, set the sky, the ground, the light and the mist.
   word in an action. The ledger keeps both.
 - **ELI's own room is beside the house.** It lives in `EliWorldState.spaces`, not among the nine
   rooms, so the house view and the nine-room prompt text are unchanged.
+- **The rooms of the house take ELI's light.** A room of the house keeps its own sky, ground and air;
+  ELI may give it a light (`building.HOUSE_LOOK`), which its glowing fixtures wear in ELI VR. It is
+  kept in `rooms[room].mood`, read with `building.look_of`, and sent in the feed's `spaces` beside
+  ELI's own room (a room still as it was built is not sent). Anything else asked of one is refused
+  with the reason.
 - **Undo.** Each batch records how to take it back. `undo` takes back the last batch not yet taken
   back; a thing removed comes back where it stood.
 - **Limits.** Twelve edits a batch, sixty things a room, nine metres from the middle.
@@ -114,9 +119,10 @@ A small model still mishears, so the plain cases are not left to it:
 - a new thing is never put where the user stands or inside another thing;
 - if nothing changed, ELI says so, whatever the model claimed.
 
-Unasked (`compose(None, ...)`), ELI does exactly one thing in its own room. The op, the shape and
-the place are chosen in code so that a small model does not repeat itself; the name, the colour and
-the meaning are ELI's.
+Unasked (`compose(None, ...)`), every op is open, nothing is chosen for ELI, and the edits may be
+empty. Without a moment of its own (the BUILD button), what ELI makes is made in its own room. With
+one, the prompt names every room of the house with its purpose, and a new thing or a change of light
+may carry `"room"`: the grammar holds a room of the house to a light.
 
 `generate_json` takes an optional `grammar` for this, and parses with `strict=False`.
 
@@ -151,15 +157,23 @@ Nothing here has a clock of its own, and nothing chooses for ELI.
 
 - `urges.consider(state, event)` runs for every event entering ELI's world. An event that is a moment
   of ELI's own and has words (a `reflection` such as the synthesised insight, `task_opened`,
-  `task_closed`, `improvement_proposal`) is kept in `spaces.own_room.urges`, twelve at most.
-- `urges.act_when_free()` is called from the proactive loop after the insight step. It does nothing
+  `task_closed`, `improvement_proposal`, and `error_detected`: a failure the executor logged, in the
+  words of what went wrong) is kept in `spaces.own_room.urges`, twelve at most. The World panel's
+  buttons for trying events out are not moments.
+- `urges.act_when_free()` is called from the proactive loop after the insight step, at most once a
+  pass (each act is a model call, and a reply sent meanwhile would wait for it). It does nothing
   unless a model is already in memory and `affect_policy.should_defer_proactive` does not ask ELI to
   hold back; the loop has already checked that nobody is mid-request.
 - `composer.compose(None, scene, about=urge)` gives ELI `mindset()`: its persona text, cached
   insight, goal titles, recent semantic memories, tone and awareness values, each line present only
   if the record is. Then the moment. All ops are open and the edits may be empty.
 - What ELI makes carries `links` to the moment, a `reason` that begins "Because:", and a journal
-  entry. With no meaning of ELI's own, the moment's words are the meaning.
+  entry. With no meaning of ELI's own, the moment's words are the meaning. Where it goes is ELI's
+  choice (see above).
+
+Every action the executor runs reaches the world through `fire_tool_result_event`: a tool that worked
+as `task_completed` (which eases repair pressure and doubt), a failure as `error_detected` with what
+went wrong. A chat reply is not a tool.
 
 `POST /v1/world/compose` answers the oldest urge, or with none, asks ELI from its mindset alone.
 
@@ -172,7 +186,8 @@ Version 2 of the feed adds, to the objects, things that are ELI's records and no
 
 ## Not there yet
 
-- Only ELI's own room can be given a new sky; the nine rooms are as they are.
+- The nine rooms keep their own sky and ground. ELI relights them and puts things in them, but cannot
+  move or change what they were built with.
 - No model large enough to be offered free parts has been tried; they have been drawn from edits
   sent by hand.
 - Claims and open conflicts (`eli/memory/claims.py`) are not yet shown on the Evidence Wall or in

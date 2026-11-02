@@ -5907,6 +5907,12 @@ def _action_post_dispatch(
                                    "follow_up": dict(result["follow_up"])}
     except Exception:
         log.debug("suppressed exception", exc_info=True)
+    # ELI's world feels its tools (eli/world/world_event_bus.py, queued, never in the reply's way): a tool
+    # that worked is work done, which eases the trouble a failure raised. Talking is not a tool. A
+    # failure reaches the world below, where it is logged with what went wrong.
+    if isinstance(result, dict) and result.get("ok") is True and str(action or "").upper() != "CHAT":
+        from eli.world.world_event_bus import fire_tool_result_event
+        fire_tool_result_event(str(action), True)
 
     repeat_hint = ""
     # Non-bugs that poisoned the SI failure feed: expected responses (no query typed, plugin not
@@ -5956,6 +5962,8 @@ def _action_post_dispatch(
                 # returns the result to the caller, just doesn't poison SI.
                 return result
 
+            from eli.world.world_event_bus import fire_tool_result_event
+            fire_tool_result_event(str(action), False, detail=err_text)
             signature_input = f"{str(action or '').upper()} {_json.dumps(args or {}, sort_keys=True, default=str)}"
             # Failures live in one store, the agent/self-improvement DB (agent.sqlite3) next to
             # improvements and code_patches. Dual-writing to the user DB split the log; the

@@ -5,14 +5,14 @@ What in ELI's own life asks to be made into something.
 
 Nothing here runs on a clock of its own and nothing here decides what ELI
 makes. When something happens in ELI (an insight is formed, a goal is taken
-on or finished, an ambition to improve is raised) the event already passes
-through ELI's world. The ones that carry words are kept as *urges*: the moment,
-in its own words, with where it came from.
+on or finished, an ambition to improve is raised, something ELI tried fails)
+the event already passes through ELI's world. The ones that carry words are
+kept as *urges*: the moment, in its own words, with where it came from.
 
 Later, when ELI is free (a model already in memory, nobody waiting, and
 the user's mood not asking for restraint), ELI may make something of one in
-its own room. What ELI makes is up to ELI, and a small model may choose to
-make nothing. Whatever ELI makes is linked to the record the moment came from, so "why
+whichever room of its house ELI chooses, or relight one. What ELI makes, and
+where, is up to ELI, and a small model may choose to make nothing. Whatever ELI makes is linked to the record the moment came from, so "why
 is this here" has a true answer.
 
     consider(state, event)   in the engine: keep a moment that has words
@@ -39,8 +39,10 @@ MOMENTS = {
     "improvement_proposal": "ambition",
     "upgrade_candidate": "ambition",
     "belief_changed": "belief",
+    "error_detected": "trouble",
 }
-_NOT_HIS = ("spatial_client", "composer", "world_building")     # the room itself talking
+# the room itself talking, and the World panel's buttons for trying events out
+_NOT_HIS = ("spatial_client", "composer", "world_building", "eli_world_panel")
 
 
 def consider(state: EliWorldState, event: WorldEvent) -> None:

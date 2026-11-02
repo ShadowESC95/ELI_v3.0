@@ -2,8 +2,8 @@
 eli/world/building.py
 ─────────────────────
 ELI's hand on its own world: placing things in the rooms, moving and changing
-them, taking them away again, and setting the sky, light and ground of the one
-room that is ELI's own.
+them, taking them away again, setting the sky, light and ground of the one
+room that is ELI's own, and the light of every other room.
 
 Nothing here draws. An edit is a small dict; this module checks it, turns it
 into the world's own actions, and those go the way every world action goes:
@@ -14,6 +14,7 @@ feed and draws it.
     apply(edits, actor=..., summary=...)   check, record and apply a batch
     form_of(obj)                           how an object looks and where it stands
     mood_of(spaces, room)                  sky, light, ground and mist of ELI's room
+    look_of(rooms, room)                   the light ELI gave a room of the house
 
 Two ways to say what a thing is. A *shape* is one word (pillar, tree, lamp):
 enough for the smallest model. A list of *parts* is anything at all: boxes,
@@ -44,9 +45,11 @@ from eli.world.core.schemas import (
 EVENT_TYPE = "world_edit"
 BUILT = "built"                      # object_type of a thing made this way
 
-# The one room that is ELI's to shape. The nine rooms of the house are what
-# they are; ELI may put things in them, but their sky and ground are not its to
-# change. ELI's own room is kept in the world's `spaces`, beside the house.
+# The one room that is ELI's to shape whole. The nine rooms of the house keep
+# their own sky, ground and air; ELI may put things in them and give each a
+# light of its choosing (HOUSE_LOOK), worn by the room's glowing fixtures and
+# kept with the room. ELI's own room is
+# kept in the world's `spaces`, beside the house.
 OWN_ROOM = "own_room"
 OWN_ROOM_INFO: Dict[str, Any] = {
     "name": "ELI's Room",
@@ -63,6 +66,7 @@ SKIES = ("stars", "dawn", "mist", "sunset", "void")
 PAINTED = "painted"                  # a sky that is not one of those: ELI's own colours
 GROUNDS = ("stone", "marble", "wood", "sand", "snow", "moss", "metal", "dark")
 DEFAULT_MOOD: Dict[str, Any] = {"sky": "stars", "light": "#9fd8ff", "ground": "stone", "mist": 0.15}
+HOUSE_LOOK = ("light",)
 
 # What a thing can be made of, part by part.
 PART_KINDS = ("box", "ball", "cylinder", "cone", "torus", "capsule", "prism", "lathe", "extrude", "tube", "text")
@@ -432,6 +436,38 @@ def mood_of(spaces: Dict[str, Any], room: str = OWN_ROOM) -> Dict[str, Any]:
 
 
 # ── from edits to the world's own actions ────────────────────────────────────
+def look_of(rooms: Dict[str, Any], room: str) -> Dict[str, Any]:
+    """What ELI has given a room of the house: its light. Empty when the room is
+    still as it was built."""
+    info = rooms.get(room) if isinstance(rooms, dict) else None
+    given = info.get("mood") if isinstance(info, dict) else None
+    if not isinstance(given, dict) or not colour(given.get("light")):
+        return {}
+    return {"light": colour(given.get("light"))}
+
+
+def _relight(state: EliWorldState, edit: Dict[str, Any], room: str) -> Dict[str, Any]:
+    """A room of the house takes the light ELI gives it; its sky, ground and air stay its own."""
+    info = state.rooms.get(room)
+    if not isinstance(info, dict):
+        return {"op": "room", "ok": False, "reason": f"there is no room {room!r}"}
+    before = look_of(state.rooms, room)
+    undo = {"op": "room", "room": room, "whole": before}
+    if "whole" in edit:
+        whole = {k: v for k, v in edit["whole"].items() if k in HOUSE_LOOK}
+        if whole:
+            info["mood"] = whole
+        else:
+            info.pop("mood", None)
+        return {"op": "room", "ok": True, "room": room, "inverse": undo}
+    given = {k: edit[k] for k in HOUSE_LOOK if k in edit}
+    if not given:
+        return {"op": "room", "ok": False,
+                "reason": "a room of the house keeps its own sky, ground and air: only its light can change"}
+    info["mood"] = {**before, **given}
+    return {"op": "room", "ok": True, "room": room, "inverse": undo}
+
+
 def _standing(state: EliWorldState, room: str) -> List[WorldObject]:
     return [o for o in state.objects.values() if o.room == room and not o.retired]
 
@@ -541,7 +577,7 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
 
     if op == "room":
         if room != OWN_ROOM:
-            return {"op": op, "ok": False, "reason": "only ELI's own room can be given a new sky or ground"}
+            return _relight(state, edit, room)
         info = state.spaces.setdefault(OWN_ROOM, dict(OWN_ROOM_INFO))
         before = mood_of(state.spaces)
         if "whole" in edit:

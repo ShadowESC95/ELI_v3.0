@@ -145,7 +145,7 @@ def test_what_cannot_be_done_says_so(world):
     assert not out["ok"]
     reasons = [r["reason"] for r in out["results"]]
     assert "there is no 'Throne' here" in reasons[0] and "no room 'the_moon'" in reasons[1]
-    assert "only ELI's own room" in reasons[2]
+    assert "keeps its own sky, ground and air" in reasons[2]
     assert "Lantern" in _standing(world())
 
 
@@ -176,6 +176,22 @@ def test_his_own_room_takes_a_sky_a_ground_a_light_and_mist(world):
                          actor="eli", asked=True)
     assert out["ok"]
     assert building.mood_of(world().spaces) == {"sky": "dawn", "ground": "moss", "light": "#e2b44a", "mist": 1.0}
+
+
+def test_a_room_of_the_house_takes_a_light_and_keeps_its_own_sky_and_air(world):
+    assert building.look_of(world().rooms, "workshop") == {}, "as it was built"
+    out = building.apply([{"op": "room", "room": "workshop", "light": "gold", "mist": 0.4}], actor="eli")
+    assert out["ok"] and [a.room for a in world().actions if a.payload.get("built")] == ["workshop"]
+    assert building.look_of(world().rooms, "workshop") == {"light": "#e2b44a"}, "the light, and no mist"
+    assert building.mood_of(world().spaces) == building.DEFAULT_MOOD, "ELI's own room is not touched"
+    out = building.apply([{"op": "room", "room": "workshop", "mist": 0.9}], actor="eli")
+    assert not out["ok"] and "only its light can change" in out["results"][0]["reason"]
+    building.apply([{"op": "room", "room": "workshop", "light": "#ff5a36"}], actor="eli")
+    assert building.look_of(world().rooms, "workshop") == {"light": "#ff5a36"}
+    building.apply([{"op": "undo"}], actor="user", asked=True)
+    assert building.look_of(world().rooms, "workshop") == {"light": "#e2b44a"}
+    building.apply([{"op": "undo"}], actor="user", asked=True)
+    assert building.look_of(world().rooms, "workshop") == {}, "taken back to the room as it was built"
 
 
 # ── taking it back ───────────────────────────────────────────────────────────
@@ -314,6 +330,7 @@ def test_of_his_own_accord_nothing_is_chosen_for_him(world):
     prompt = asked[0]
     assert "Nobody has asked for anything" in prompt and "Your latest insight: quiet work goes further." in prompt
     assert "If not, leave the edits empty." in prompt and "This time" not in prompt
+    assert "the whole house is yours" not in prompt, "what it makes when the user asks it to is made here"
     assert out["room"] == building.OWN_ROOM and not out["asked"] and out["text"] == ""
     pool = _standing(world())["Still Water"]
     assert pool.symbolic_meaning == "nothing pressing" and pool.reason == "ELI built of its own accord"
@@ -365,7 +382,14 @@ def test_the_answer_is_held_to_an_exact_shape_that_llama_cpp_accepts():
     assert 'target ::= "\\"Lantern\\"" | "\\"Quiet Stone\\""' in text, "only what is there can be moved or changed"
     empty = composer.grammar_text(own=True)
     assert "edit ::= create | room | undo" in empty, "with nothing there, nothing can be moved or taken away"
-    assert "room" not in composer.grammar_text(own=False).split("edit ::=")[1].split("\n")[0]
+    house = composer.grammar_text(own=False)
+    assert "room" in house.split("edit ::=")[1].split("\n")[0]
+    room_rule = [line for line in house.splitlines() if line.startswith("room ::=")][0]
+    assert "light" in room_rule and "mist" not in room_rule and "sky" not in room_rule and "ground" not in room_rule, \
+        "a room of the house can be given a light, never a sky, a ground or a mist"
+    anywhere = composer.grammar_text(own=True, rooms=["workshop", "memory_archive", 'bad"room'])
+    assert 'place ::= "\\"own_room\\"" | "\\"workshop\\"" | "\\"memory_archive\\""' in anywhere
+    assert '(",\\"room\\":" place)?' in anywhere and '"{\\"op\\":\\"room\\",\\"room\\":" house' in anywhere
     alone = composer.grammar_text(own=True, ops=("change",), targets=["Lantern"], one=True)
     assert "edit ::= change" in alone and '"[" ws edit ws "]"' in alone, "unasked: exactly one"
     assert "{1," not in composer.grammar_text(bounded=False)
@@ -376,7 +400,8 @@ def test_the_answer_is_held_to_an_exact_shape_that_llama_cpp_accepts():
     assert "sky_top" in free and "sky_top" not in plain, "a mind large enough may paint the sky"
     try:
         from llama_cpp import LlamaGrammar
-        LlamaGrammar.from_string(text, verbose=False)
+        for grammar in (text, house, anywhere, composer.grammar_text(own=True, rooms=["workshop"], free=True)):
+            LlamaGrammar.from_string(grammar, verbose=False)
     except Exception as unavailable:  # mocked or absent here
         pytest.skip(f"llama.cpp not usable in this lane ({type(unavailable).__name__})")
 
@@ -442,6 +467,8 @@ def test_a_sentence_about_a_thing_that_is_there_cannot_make_a_new_one():
     assert composer.plan("get rid of the lantern", lantern, True) == ("remove",)
     assert composer.plan("make the sky dawn", lantern, True) == ("room",)
     assert "room" not in composer.plan("make the sky dawn", lantern, False)
+    assert composer.plan("make the lighting warmer", lantern, False) == ("room",), "a room of the house has a light"
+    assert "room" not in composer.plan("fill the place with mist", [], False), "its air is its own"
     assert composer.plan("build a pillar", [], True) == ("create",)
     assert composer.plan("make something for me", [], True) == ("create", "room")
     assert composer.plan("make something for me", [], False) == ("create",)
@@ -676,10 +703,14 @@ def test_a_moment_of_his_own_with_words_is_kept_and_the_rest_is_not(world):
         WorldEvent("tool_activity", "executor", "ran a command that says nothing about ELI"),
         WorldEvent("reflection", "spatial_client", "the room itself talking is not a thought of ELI's"),
         WorldEvent("reflection", "x", "too short"),
+        WorldEvent("error_detected", "executor", "WEB_SEARCH failed: the network is off"),
+        WorldEvent("error_detected", "eli_world_panel", "Manual runtime fault event."),
     ):
         engine.ingest_event(event)
     kept = urges.waiting()
-    assert [(u["kind"], u["source"]) for u in kept] == [("insight", "insight_synthesis"), ("goal", "goal_store")]
+    assert [(u["kind"], u["source"]) for u in kept] == [
+        ("insight", "insight_synthesis"), ("goal", "goal_store"), ("trouble", "executor")], \
+        "a failure in its own words is a moment too; a button for trying events out is not"
     assert kept[0]["text"] == "You answer faster when the question is about your own code."
 
 
@@ -706,6 +737,28 @@ def test_what_he_makes_of_a_moment_is_tied_to_it(world, monkeypatch):
     assert hush.reason == "Because: Quiet work goes further than loud work."
     assert written and "Made of my own accord: Hush" in written[-1]["title"] and "Because: Quiet work" in written[-1]["body"]
     assert urges.waiting() == [] and urges.act(None, generate=model) is None, "answered once, and nothing left waiting"
+
+
+def test_a_moment_may_be_made_into_something_in_any_room_of_the_house(world):
+    from eli.world import urges
+    from eli.world.core.schemas import WorldEvent
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("error_detected", "executor", "WEB_SEARCH failed: the network is off"))
+    asked = []
+
+    def model(prompt):
+        asked.append(prompt)
+        return {"say": "", "edits": [
+            {"op": "create", "name": "Cut Wire", "shape": "ring", "meaning": "", "room": "debug_basement"},
+            {"op": "room", "room": "debug_basement", "light": "#ff5a36"}]}
+
+    out = urges.act(None, generate=model)
+    assert "What has just happened in you (trouble): WEB_SEARCH failed: the network is off" in asked[0]
+    assert "the whole house is yours" in asked[0] and "- debug_basement: Debug Basement, Faults" in asked[0]
+    assert [r["ok"] for r in out["results"]] == [True, True]
+    assert "Cut Wire" in _standing(world(), "debug_basement") and "Cut Wire" not in _standing(world()), \
+        "where ELI put it, not its own room"
+    assert building.look_of(world().rooms, "debug_basement") == {"light": "#ff5a36"}
 
 
 def test_a_moment_he_makes_nothing_of_is_let_go_and_one_he_cannot_answer_waits(world):

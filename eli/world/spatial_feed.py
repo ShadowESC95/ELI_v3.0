@@ -186,6 +186,13 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             "purpose": str(own.get("purpose") or building.OWN_ROOM_INFO["purpose"]),
             "mood": building.mood_of(spaces),
         }}
+        # each room of the house ELI has given a light or a mist of its own
+        rooms = state.get("rooms") or {}
+        for room_id, info in rooms.items():
+            look = building.look_of(rooms, room_id)
+            if look and room_id != building.OWN_ROOM:
+                message["spaces"][room_id] = {"name": str(info.get("name") or room_id),
+                                              "purpose": str(info.get("purpose") or ""), "mood": look}
         message["recent"] = _recent(state)
         try:
             # ELI's real memories and goals, standing in the rooms named for them
@@ -349,7 +356,7 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
 
     @router.post("/v1/world/compose", dependencies=[Depends(require_act)])
     def world_compose():
-        """ELI making or changing one thing in its own room, unasked."""
+        """ELI making something unasked: of a moment of its own, in any room it chooses; with none, in its own room."""
         from eli.world import composer, embodiment, urges
         try:
             # a moment of ELI's own that is waiting comes first; with none, what is on ELI's mind

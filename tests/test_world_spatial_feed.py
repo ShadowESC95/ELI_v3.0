@@ -166,6 +166,9 @@ def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypat
                  "metadata": {"form": {"shape": "lamp", "colour": "#f5b942", "size": 1.2, "glow": 0.8,
                                        "pos": [1.0, 0.0, 3.0]}}}},
              "spaces": {"own_room": {"name": "ELI's Room", "mood": {"sky": "dawn", "ground": "moss"}}},
+             "rooms": {"workshop": {"name": "Workshop", "purpose": "Tools and repair.",
+                                    "mood": {"light": "#ff8800", "mist": 0.3, "sky": "dawn"}},
+                       "core_room": {"name": "Core Room", "purpose": "The centre."}},
              "actions": [{"action_type": "avatar_move", "actor": "eli", "room": "own_room"},
                          {"action_type": "create_object", "actor": "eli", "room": "own_room",
                           "reason": "ELI chose to.", "permission_class": "world_safe"},
@@ -180,6 +183,10 @@ def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypat
     assert bench["shape"] == "table" and len(bench["pos"]) == 3 and bench["size"] > 1.0
     mood = msg["spaces"]["own_room"]["mood"]
     assert (mood["sky"], mood["ground"], mood["light"]) == ("dawn", "moss", "#9fd8ff")
+    assert msg["spaces"]["workshop"] == {"name": "Workshop", "purpose": "Tools and repair.",
+                                         "mood": {"light": "#ff8800"}}, \
+        "a room of the house ELI relit, with only what a room of the house can take"
+    assert "core_room" not in msg["spaces"], "a room still as it was built is not sent"
     assert msg["recent"] == [{"what": "create_object", "who": "eli", "room": "own_room",
                               "why": "ELI chose to.", "allowed": True}], "ELI's walking about is left out"
 

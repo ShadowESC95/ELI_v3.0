@@ -78,6 +78,8 @@ _MOVING = re.compile(r"\b(move|shift|bring|put|place|push|pull|slide|drag)\b", r
 _LOOK = re.compile(r"\b(colou?r|paint|glow|brighter|dimmer|bright|dim|shape|turn (it|that|the)|make (it|that|the))\b",
                    re.IGNORECASE)
 _ROOM = re.compile(r"\b(sky|ground|floor|mist|fog|lighting|the light|the room)\b", re.IGNORECASE)
+# What of a room of the house can change: its light (building.HOUSE_LOOK).
+_LIGHT = re.compile(r"\b(lighting|the light|the lights)\b", re.IGNORECASE)
 # A question is conversation, even with a making word in it ("what do you make of this place").
 _QUESTION = re.compile(r"^\W*(what|why|how|who|when|where|which|do you|did you|are you|is it|is there|is this|"
                        r"have you|tell me|describe|explain)\b", re.IGNORECASE)
@@ -213,11 +215,14 @@ def mindset(state: Dict[str, Any]) -> List[str]:
 # ── what may be asked of the model this time ─────────────────────────────────
 def plan(text: Optional[str], things: List[Dict[str, Any]], own: bool) -> Tuple[str, ...]:
     """The ops the answer may use. Asked: the ones that make sense for the
-    sentence. Unasked: all of them. Which ELI uses, if any, is up to ELI."""
+    sentence. Unasked: all of them. Which ELI uses, if any, is up to ELI. In a
+    room of the house only its light can change, so a sentence there is about
+    the room only when it is about the light."""
     if not text:
-        ops = [op for op in ALL_OPS if op != "undo" and (own or op != "room")]
+        ops = [op for op in ALL_OPS if op != "undo"]
         return tuple(op for op in ops if things or op in ("create", "room"))
-    ops = [op for op in ALL_OPS if op != "undo" and (own or op != "room")]
+    about_room = _ROOM.search(text) if own else _LIGHT.search(text)
+    ops = [op for op in ALL_OPS if op != "undo" and (op != "room" or own or about_room)]
     if not things:
         ops = [op for op in ops if op in ("create", "room")]
     if _A_NEW.search(text):
@@ -234,7 +239,7 @@ def plan(text: Optional[str], things: List[Dict[str, Any]], own: bool) -> Tuple[
         if _MOVING.search(text):
             return ("move",)
         ops.remove("create")
-    elif own and _ROOM.search(text) and not _NEW.search(text):
+    elif about_room and not _NEW.search(text):
         return ("room",)            # about the room itself
     return tuple(ops)
 
@@ -245,17 +250,33 @@ def _quoted(words: Sequence[str]) -> str:
 
 def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequence[str] = (),
                  one: bool = False, bounded: bool = True, some: bool = False,
-                 free: bool = False) -> str:
+                 free: bool = False, rooms: Sequence[str] = ()) -> str:
     """The shape of an answer, as a llama.cpp grammar. `ops`: what may be done.
     `targets`: the names of the things there, the only ones that can be moved,
     changed or taken away. `one`: exactly one edit. `some`: at least one, for a
     sentence that asked for something (a small model, left free to, does none).
-    `free`: a thing may also be made part by part, and the sky painted."""
+    `free`: a thing may also be made part by part, and the sky painted.
+    `rooms`: the other rooms of the house ELI may put a new thing in or relight,
+    when where is ELI's choice; a room of the house takes only a light."""
     def text(limit: int) -> str:
         return '"\\"" char%s "\\""' % ("{1,%d}" % limit if bounded else "+")
 
     safe = [t for t in targets if t and re.fullmatch(r"[^\"\\\x00-\x1f]+", t)]
-    allowed = [op for op in ops if (own or op != "room") and (safe or op in ("create", "room", "undo"))]
+    allowed = [op for op in ops if safe or op in ("create", "room", "undo")]
+    elsewhere = [r for r in rooms if re.fullmatch(r"[a-z0-9_]+", str(r))]
+    where = ' (",\\"room\\":" place)?' if elsewhere else ""
+    own_room = ('"{\\"op\\":\\"room\\"" (",\\"sky\\":" sky)? (",\\"ground\\":" ground)? '
+                '(",\\"light\\":" colour)? (",\\"mist\\":" number)?' + (
+                    ' (",\\"sky_top\\":" colour)? (",\\"sky_horizon\\":" colour)? (",\\"stars\\":" number)? '
+                    '(",\\"sun\\":{\\"height\\":" number ",\\"bearing\\":" number ",\\"colour\\":" colour ",\\"size\\":" number "}")? '
+                    '(",\\"ground_colour\\":" colour)? (",\\"terrain\\":" number)?' if free else "") + ' "}"')
+    house_look = '",\\"light\\":" colour "}"'
+    if elsewhere:
+        room_rule = own_room + ' | "{\\"op\\":\\"room\\",\\"room\\":" house ' + house_look
+    elif own:
+        room_rule = own_room
+    else:
+        room_rule = '"{\\"op\\":\\"room\\"" ' + house_look
     listed = ""
     if allowed:
         listed = "edit" if one else ('edit ("," ws edit)*' if some else '(edit ("," ws edit)*)?')
@@ -267,9 +288,9 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
     lines += [
         "create ::= shaped" + (" | made" if free else ""),
         'shaped ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"shape\\":" shape ",\\"colour\\":" colour '
-        '",\\"size\\":" number ",\\"at\\":" spot ",\\"glow\\":" number ",\\"meaning\\":" meaning "}"',
+        '",\\"size\\":" number ",\\"at\\":" spot ",\\"glow\\":" number ",\\"meaning\\":" meaning' + where + ' "}"',
         'made ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"parts\\":[" part ("," part)%s "],\\"at\\":" spot '
-        '",\\"meaning\\":" meaning "}"' % ("{0,%d}" % (building.MAX_PARTS - 1) if bounded else "*"),
+        '",\\"meaning\\":" meaning' % ("{0,%d}" % (building.MAX_PARTS - 1) if bounded else "*") + where + ' "}"',
         'part ::= "{\\"kind\\":" kind ",\\"pos\\":" vec ",\\"size\\":" vec ",\\"colour\\":" colour '
         '(",\\"rot\\":" vec)? (",\\"glow\\":" number)? (",\\"metal\\":" number)? (",\\"clear\\":" number)? '
         '(",\\"spin\\":" number)? (",\\"profile\\":" pairs)? (",\\"outline\\":" pairs)? (",\\"path\\":" triples)? '
@@ -283,11 +304,7 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         '(",\\"glow\\":" number)? (",\\"shape\\":" shape)? (",\\"meaning\\":" meaning)? "}"',
         'remove ::= "{\\"op\\":\\"remove\\",\\"name\\":" target "}"',
         'undo ::= "{\\"op\\":\\"undo\\"}"',
-        'room ::= "{\\"op\\":\\"room\\"" (",\\"sky\\":" sky)? (",\\"ground\\":" ground)? '
-        '(",\\"light\\":" colour)? (",\\"mist\\":" number)?' + (
-            ' (",\\"sky_top\\":" colour)? (",\\"sky_horizon\\":" colour)? (",\\"stars\\":" number)? '
-            '(",\\"sun\\":{\\"height\\":" number ",\\"bearing\\":" number ",\\"colour\\":" colour ",\\"size\\":" number "}")? '
-            '(",\\"ground_colour\\":" colour)? (",\\"terrain\\":" number)?' if free else "") + ' "}"',
+        "room ::= " + room_rule,
         "target ::= " + (_quoted(safe) if safe else "name"),
         'spot ::= "[" number "," number "]"',
         'number ::= "-"? [0-9] [0-9]? ("." [0-9] [0-9]?)?',
@@ -302,13 +319,16 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         "ground ::= " + _quoted(building.GROUNDS),
         "ws ::= [ \\n]?",
     ]
+    if elsewhere:
+        lines += ["place ::= " + _quoted([building.OWN_ROOM, *elsewhere]), "house ::= " + _quoted(elsewhere)]
     return "\n".join(lines) + "\n"
 
 
 def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Dict[str, Any], room: str,
                  ops: Sequence[str] = ALL_OPS, about: Optional[Dict[str, Any]] = None,
-                 free: bool = False) -> str:
+                 free: bool = False, rooms: Sequence[str] = ()) -> str:
     own = room == building.OWN_ROOM
+    house = state.get("rooms") or {}
     name = (scene or {}).get("room_name") or ((state.get("rooms") or {}).get(room) or {}).get("name") \
         or (building.OWN_ROOM_INFO["name"] if own else room.replace("_", " ").title())
     user = (scene or {}).get("user") or {"pos": [0.0, 1.7, 0.0], "facing": [0.0, 1.0]}
@@ -335,6 +355,11 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
             parts.append(f"What has just happened in you ({str(about.get('kind', '')).replace('_', ' ')}): "
                          f"{str(about.get('text', ''))[:300]}")
             parts.append("Make of that what you will here: a thing, a change to one, a change to the room.")
+            if rooms:
+                parts.append('It need not be here: the whole house is yours. To make a thing in another room, or to '
+                             'change the light of one, give it "room":')
+                parts += [f"- {r}: {(house.get(r) or {}).get('name') or r}, "
+                          f"{str((house.get(r) or {}).get('purpose') or '').rstrip('.')}." for r in rooms]
         else:
             parts.append("If there is something you want to make or change here, do. If not, leave the edits empty.")
     parts += ["", 'Answer as JSON: "say" (one or two short sentences, spoken to the user), then "edits" (a list).']
@@ -360,6 +385,10 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
         parts.append("To move a thing: its name, and at [right, forward].")
     if "remove" in ops:
         parts.append("To take a thing away: its name.")
+    if not own and "room" in ops:
+        look = building.look_of(house, room)
+        parts.append(f"This room keeps its own sky, ground and air. To change the colour of its lights "
+                     f"(now {look.get('light') or 'as it was built'}): light (a colour).")
     if own and "room" in ops:
         mood = building.mood_of(state.get("spaces") or {})
         parts.append(f"To change the room itself (now sky {mood['sky']}, ground {mood['ground']}, mist {mood['mist']}): "
@@ -369,6 +398,8 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
             parts.append("Or paint it yourself: sky_top and sky_horizon (colours), stars (0 none, 1 full), "
                          "sun (height 0 horizon to 1 overhead, bearing in degrees, colour, size), "
                          "ground_colour, terrain (0 flat, 1 hills).")
+        if rooms:
+            parts.append("Another room keeps its own sky, ground and air: only its light changes.")
     if text:
         parts.append("Use as few edits as do the job.")
     return "\n".join(parts)
@@ -533,7 +564,9 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
     ops = plan(text if asked else None, things, own)
     names = [t["name"] for t in things]
     free = capable()
-    prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free)
+    # a moment of ELI's own may belong in any room of the house: where it goes is ELI's choice
+    rooms = [r for r in (world.get("rooms") or {}) if r != building.OWN_ROOM] if about and not asked else []
+    prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free, rooms)
     # one edit when the sentence is about one thing: a new one ("a lamp"), or one that is here.
     # Asked for something, or moved by a moment of its own: at least one. Otherwise as it likes.
     one = asked and ((len(ops) == 1 and ops[0] != "create") or (
@@ -541,8 +574,8 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
         and not re.search(r"\b(two|three|four|five|few|several|some|more)\b|\band an?\b", text, re.I)))
     some = asked
     ask = generate or (lambda p: _generate(
-        p, grammar_text(own, ops, names, one=one, some=some, free=free),
-        grammar_text(own, ops, names, one=one, some=some, free=free, bounded=False)))
+        p, grammar_text(own, ops, names, one=one, some=some, free=free, rooms=rooms),
+        grammar_text(own, ops, names, one=one, some=some, free=free, bounded=False, rooms=rooms)))
     data: Any = None
     for attempt in (1, 2):                 # a second go if the first is not an answer at all
         try:
