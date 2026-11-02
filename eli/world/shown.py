@@ -114,37 +114,39 @@ def _conflicts() -> List[Dict[str, Any]]:
     return out
 
 
+def _insight() -> List[Dict[str, str]]:
+    from eli.planning.insight_synthesis import get_cached_insight
+    insight = " ".join(str(get_cached_insight() or "").split())
+    return [{"kind": "insight", "text": insight[:200]}] if insight else []
+
+
+def _moments() -> List[Dict[str, str]]:
+    from eli.world import urges
+    return [{"kind": str(u.get("kind", "moment")), "text": str(u.get("text", ""))[:200]} for u in urges.waiting()[:3]]
+
+
+def _first_goal() -> List[Dict[str, str]]:
+    from eli.planning.goal_store import summarize_goals
+    titles = [str(t) for t in (summarize_goals() or {}).get("titles") or [] if str(t).strip()]
+    return [{"kind": "goal", "text": titles[0][:200]}] if titles else []
+
+
+def _tone() -> List[Dict[str, str]]:
+    from eli.cognition import tone_adaptor
+    tone = str(tone_adaptor.current_tone().get("tone") or "")
+    return [{"kind": "tone", "text": tone}] if tone and tone != "neutral" else []
+
+
 def _mind() -> List[Dict[str, str]]:
     """Its latest insight, the moments of its own waiting to be made into something, the goal
-    it holds first, and its tone. Each only if the record is there."""
+    it holds first, and its tone. Each only if the record is there; one that cannot be read
+    gives nothing of its own."""
     out: List[Dict[str, str]] = []
-    try:
-        from eli.planning.insight_synthesis import get_cached_insight
-        insight = " ".join(str(get_cached_insight() or "").split())
-        if insight:
-            out.append({"kind": "insight", "text": insight[:200]})
-    except Exception:
-        pass
-    try:
-        from eli.world import urges
-        for urge in urges.waiting()[:3]:
-            out.append({"kind": str(urge.get("kind", "moment")), "text": str(urge.get("text", ""))[:200]})
-    except Exception:
-        pass
-    try:
-        from eli.planning.goal_store import summarize_goals
-        titles = [str(t) for t in (summarize_goals() or {}).get("titles") or [] if str(t).strip()]
-        if titles:
-            out.append({"kind": "goal", "text": titles[0][:200]})
-    except Exception:
-        pass
-    try:
-        from eli.cognition import tone_adaptor
-        tone = str(tone_adaptor.current_tone().get("tone") or "")
-        if tone and tone != "neutral":
-            out.append({"kind": "tone", "text": tone})
-    except Exception:
-        pass
+    for source in (_insight, _moments, _first_goal, _tone):
+        try:
+            out.extend(source())
+        except Exception:
+            continue
     return [t for t in out if t["text"].strip()]
 
 
