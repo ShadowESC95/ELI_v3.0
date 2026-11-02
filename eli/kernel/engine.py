@@ -59,6 +59,8 @@ from eli.kernel.stages.fast_actions import (  # noqa: F401
     _PHASE45_SILENT_FAST_ACTIONS,
     _is_live_state_action,
     _is_soft_informational_action,
+    _held_to_requested_format,
+    _told_to_do_it,
     _phase45_action_name,
     _phase45_force_direct_result,
     _phase45_result_text,
@@ -160,7 +162,7 @@ from eli.kernel.stages._common import _phatic_rapport_style_rule  # noqa: F401
 
 # Response governance (coverage patch)
 try:
-    from eli.cognition.response_governance import normalize_response, should_store_as_memory
+    from eli.cognition.output_governor import clean_gguf_artifacts as normalize_response, should_store_as_memory
     _HAS_GOVERNANCE = True
 except ImportError:
     _HAS_GOVERNANCE = False
@@ -2186,6 +2188,25 @@ def _audit_result_outcome(result: Any) -> tuple:
     return bool(text), ("ok" if text else "empty_reply")
 
 
+def _plain_artifact_reply(result):
+    """The executor's record of a file it made is for code, and was shown to the person as it stood:
+    {"event": "artifact_generated", "kind": "script", ...}. The record stays on the result."""
+    if not isinstance(result, dict):
+        return result
+    text = str(result.get("response") or result.get("content") or "").strip()
+    if not text.startswith("{") or '"artifact_generated"' not in text:
+        return result
+    try:
+        info = json.loads(text)
+    except ValueError:
+        return result
+    kind = str(info.get("kind") or "file").replace("_", " ")
+    said = f"Saved the {kind} as {info.get('path') or info.get('filename') or 'a file'}."
+    if info.get("verified") or info.get("solved"):
+        said += " It ran and passed its checks."
+    return dict(result, content=said, response=said, artifact=info)
+
+
 def _visible_reply_text(result: Any) -> str:
     """The reply text a non-streamed turn showed the user."""
     if isinstance(result, dict):
@@ -3167,71 +3188,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return self._run_self_consistency(user_input, working_context, gen_overrides, situation_brief)
         return None
 
-    def _maybe_apply_mode_runtime_adaptation(self, reasoning_mode: Optional[str], mode_contract: Dict[str, Any]) -> None:
-        """
-        Apply non-quick runtime pressure adaptation when the mode contract
-        recommends a reload (lower batch / lower GPU layers for VRAM headroom).
-        """
-        if not isinstance(mode_contract, dict):
-            return
-        mode = str(mode_contract.get("mode") or reasoning_mode or "quick").strip().lower() or "quick"
-        if mode == "quick":
-            return
-        runtime = dict(mode_contract.get("runtime") or {})
-        if not runtime.get("reload_recommended"):
-            return
-        if gguf_inference is None or not bool(getattr(self, "_gguf_available", False)):
-            return
-
-        now_ts = time.time()
-        last_ts = float(getattr(self, "_last_runtime_retune_ts", 0.0) or 0.0)
-        # Cooldown to avoid thrashing across turns.
-        if (now_ts - last_ts) < 45.0:
-            return
-
-        target_ctx = int(runtime.get("target_n_ctx") or runtime.get("n_ctx") or 0)
-        target_batch = int(runtime.get("target_n_batch") or runtime.get("n_batch") or 0)
-        target_gpu = int(runtime.get("target_n_gpu_layers") or runtime.get("n_gpu_layers") or 0)
-        if target_ctx <= 0 or target_batch <= 0 or target_gpu < 0:
-            return
-
-        live = self._live_runtime_snapshot()
-        live_ctx = int(live.get("n_ctx") or 0)
-        live_batch = int(live.get("batch") or 0)
-        live_gpu = int(live.get("gpu_layers") or 0)
-
-        # Reload only when a meaningful runtime shift is requested.
-        if (
-            target_ctx == live_ctx
-            and target_batch == live_batch
-            and target_gpu == live_gpu
-        ):
-            return
-
-        try:
-            with self._gguf_lock:
-                gguf_inference.load_model(
-                    force_reload=True,
-                    n_ctx=target_ctx,
-                    n_batch=target_batch,
-                    n_gpu_layers=target_gpu,
-                )
-            refreshed = self._live_runtime_snapshot()
-            try:
-                self._ctx = int(refreshed.get("n_ctx") or self._ctx)
-                self._gpu_layers = int(refreshed.get("gpu_layers") or self._gpu_layers)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            self._last_runtime_retune_ts = now_ts
-            log.debug(
-                "[MODE][RUNTIME_ADAPT] "
-                f"mode={mode} ctx={live_ctx}->{target_ctx} "
-                f"batch={live_batch}->{target_batch} "
-                f"gpu_layers={live_gpu}->{target_gpu}"
-            )
-        except Exception as _mode_reload_err:
-            log.debug(f"[MODE][RUNTIME_ADAPT] reload failed: {_mode_reload_err}")
-
     def _should_bypass_reasoning_loop(self, user_input: str, memory_context: str,
                                       intent: Dict[str, Any], reasoning_mode: Optional[str] = None) -> bool:
         low = (user_input or "").strip().lower()
@@ -4094,6 +4050,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         _result_is_generator = isinstance(result, (_types.GeneratorType,)) or hasattr(result, '__next__')
 
         if not stream or not _result_is_generator:
+            # Native orchestrator results return directly instead of passing through
+            # _finalize_chat_result. Only explicit format requests, never tool results.
+            if isinstance(result, str):
+                result = _held_to_requested_format(user_input, result, None)
+            elif isinstance(result, dict) and result.get("ok", True) and str(result.get("action") or "").upper() == "CHAT":
+                _raw_answer = str(result.get("response") or result.get("content") or "")
+                _visible_answer = _held_to_requested_format(user_input, _raw_answer, result.get("trace"))
+                if _visible_answer != _raw_answer:
+                    result = dict(result, response=_visible_answer, content=_visible_answer)
             # Every non-streamed orchestrated turn exits here — publish its meta so the badge and
             # last_trace.json are not left stale. The GUI always calls process(..., stream=True)
             # regardless of reasoning mode (generate_worker in the window's send_message), but a
@@ -4358,6 +4323,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # held back as they stream (the buffered modes get the same check in govern_output).
         from eli.cognition.self_claims import gate_stream as _gate
         _claims_evidence = f"{memory_context or ''}\n{situation_brief or ''}"
+
+        def _say_again(dropped, served):
+            said = str((_request_context.turn_facts_var.get() or {}).get("user_input") or prompt)
+            return self._say_in_own_words(said, self._what_actually_happened(), not_this=" ".join(dropped),
+                                          already_said=served, reasoning_mode=reasoning_mode)
+
         try:
             yield from _gate(_stream_holding_back_repeats(
                 stream_factory(situation_brief, memory_context, None),
@@ -4365,7 +4336,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 allow_retry=True,
                 echo_sources=_echo_sources,
                 leak=_leak,
-            ), _claims_evidence)
+            ), _claims_evidence, rewrite=_say_again, instructions=situation_brief)
             return
         except _RepeatDetected:
             log.debug("[ANTI-REPEAT] opening matched a recent reply — regenerating")
@@ -4465,6 +4436,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             raise
         if inspect.isgenerator(result):
             return self._context_bound_stream(result, ctx, facts)
+        result = _plain_artifact_reply(result)
         ctx.run(self._finalize_turn_backstop, facts, _visible_reply_text(result), result)
         ok, outcome = _audit_result_outcome(result)
         self._commit_turn_audit(ctx, facts, ok=ok, outcome=outcome, result=result)
@@ -4590,6 +4562,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # The commands in a message of commands and talk were typed by the user: each is shown
         # with its result when there are several. One command, or steps ELI offered, show the result.
         _typed = bool(agreed.get("rest_of_message"))
+        # A quoted instruction in a message that says it is material is data, whatever a router found.
+        if _typed and commands:
+            from eli.cognition.supplied_in_message import supplied_as_data
+            if supplied_as_data(said):
+                log.warning("[COGNITIVE] ignored embedded commands inside text supplied as data")
+                commands = []
         if commands:
             try:
                 ran = execute_action("MULTI_COMMAND", {"commands": commands, "raw": " and ".join(commands),
@@ -4665,6 +4643,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             ran = [a for a in dict.fromkeys(facts.get("executed_actions") or []) if a and a != action]
             if ran:
                 outcome = f"{outcome or 'ok'}; also executed: {','.join(ran)}"
+            try:
+                from eli.runtime.self_improvement import note_turn_anomalies
+                note_turn_anomalies(facts, action, outcome)
+            except Exception as _anomaly_err:
+                log.debug("anomaly record skipped", exc_info=True)
+                outcome = f"{outcome or 'ok'}; failure record not written: {_anomaly_err}"
             agents = (meta.get("agents_used") or trace.get("agents_used")
                       or getattr(bus, "agents_used", None) or [])
             # None, not 0.0, when the turn measured nothing — a 0.0 reads as
@@ -6428,7 +6412,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     and os.environ.get("ELI_LOWGROUND_DOWNGRADE", "1").strip().lower()
                         not in ("0", "false", "no", "off")
                     and str((intent.get("meta") or {}).get("matched_by") or "") == "llm_intent.resolver"
-                    and _is_soft_informational_action(action)):
+                    and _is_soft_informational_action(action)
+                    and not _told_to_do_it(user_input)):
                 try:
                     from eli.runtime.grounding_escalation import _mode_target as _gt
                     _gconf = float((trace or {}).get("grounding_confidence") or 0.0)
@@ -6529,6 +6514,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             or _chosen_payload.get("result")
                             or ""
                         ).strip()
+                        # A direct action bypasses the chat finalizer. Only a value the person's own
+                        # records agree on, never text mined from a transcript or the question.
+                        if _action_upper == "MEMORY_RECALL" and bool(_chosen_payload.get("ok", True)):
+                            from eli.cognition.exact_recall_value import exact_value_from_hits
+                            _eli_value = exact_value_from_hits(user_input, _chosen_payload)
+                            if _eli_value is not None:
+                                _direct_content = _eli_value
+                                if isinstance(trace, dict):
+                                    trace["exact_recall_value"] = {"from_structured_hits": True}
                         # Tool/control results are the evidence, so return the deterministic result directly in every
                         # mode. Synthesis stuffed 5K+ of evidence into 6K+ of persona, truncated, produced garbage and
                         # hit a CUDA OOM assertion.
@@ -8066,14 +8060,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         try:
             from eli.cognition.llm_intent import is_plain_statement, is_social_checkin
             from eli.cognition.self_claims import asks_about_own_behaviour
+            from eli.cognition.supplied_in_message import holds_its_own_answer
             # A remark, a check-in, or a question/complaint about ELI's own last reply is never a
             # command: asking the model which action an exasperated "what is going on" was cost 45 s.
             if router_intent and _matched_by == "fallback.chat" and (
-                    is_plain_statement(text) or is_social_checkin(text) or asks_about_own_behaviour(text)):
+                    is_plain_statement(text) or is_social_checkin(text) or asks_about_own_behaviour(text)
+                    or holds_its_own_answer(text)):
                 return router_intent
         except Exception:
             log.debug("statement check failed", exc_info=True)
         try:
+            from eli.cognition.action_trust import may_choose_actions
+            if not may_choose_actions():
+                return router_intent
             from eli.cognition.llm_intent import parse_cached
             from eli.runtime.pending_proposal import describe_open, get_follow_up
             li = parse_cached(text, describe_open(get_follow_up()))
@@ -8149,8 +8148,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             # What the model resolves is held to the same test as what a rule matches: an action
             # that changes something is carried out only when the sentence tells ELI to do it.
             try:
-                from eli.execution.route_contracts import fits as _fits
-                if li and not _fits(text, li):
+                from eli.execution.route_contracts import fits as _fits, has_what_it_needs
+                if li and not (_fits(text, li) and has_what_it_needs(text, li)):
                     log.debug(f"[COGNITIVE] {li.get('action')} not carried out: the message does not tell ELI to do it")
                     li = {"action": "CHAT", "args": {"message": text}, "confidence": 0.6}
             except Exception:

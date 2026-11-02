@@ -315,6 +315,27 @@ def _is_live_state_action(a: str) -> bool:
     return a in _LIVE_STATE_ACTIONS or a.endswith(_LIVE_STATE_ACTION_SUFFIXES)
 
 
+def _held_to_requested_format(user_input: str, reply: str, trace: object) -> str:
+    """"YES or NO only", "YYYY-MM-DD only" and the like, when the reply already holds that answer."""
+    from eli.cognition.explicit_output_contract import enforce_explicit_output_contract
+    held, kind = enforce_explicit_output_contract(user_input, reply)
+    if kind and held != reply and isinstance(trace, dict):
+        trace["explicit_output_contract"] = {"kind": kind, "changed": True}
+    return held if kind else reply
+
+
+def _told_to_do_it(text) -> bool:
+    """Grounding says how well memory backs an answer. An instruction has nothing to be backed by
+    until it has run: "do the pdfs!!!" was read rightly as the folder analysis and then turned into
+    chat for want of evidence, and the model wrote "Processing the remaining 29 PDFs now"."""
+    try:
+        from eli.runtime.command_splitter import tells_eli_to_do
+        return bool(tells_eli_to_do(text))
+    except Exception:
+        logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
+        return False
+
+
 def _is_soft_informational_action(action) -> bool:
     """True when `action` is a synthesised informational action (the only kind safe to silently
     re-route to CHAT on low grounding). False for CHAT itself and for every control / OS / media /

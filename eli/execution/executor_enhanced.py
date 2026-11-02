@@ -2340,6 +2340,32 @@ def _maybe_background_code_work(action, args):
         return None
 
 
+def _wants_analysis(instruction) -> bool:
+    """Asked to analyse, not summarise: all of each document gets read, not its opening."""
+    return bool(re.search(r"\b(?:analy[sz]|evaluat|critiqu|assess|examin)", str(instruction or ""), re.I))
+
+
+def _stub_marker(code: str) -> str:
+    """What makes generated code a stub, or "". It says so in a comment, or it is the prompt coming
+    back. The words alone are not enough: a repo analyser that counts TODOs, 100 s of real code, was
+    thrown away for saying "TODO" in a string."""
+    for echo in ("Generate only the requested source code", "This is a request for"):
+        if echo.lower() in code.lower():
+            return echo
+    for n, line in enumerate(code.splitlines(), 1):
+        note = re.search(r"(?:^|\s)(?:#|//|--|/\*)\s*(.*)$", line)
+        if note and re.search(r"\b(?:TODO|add code here|placeholder)\b", note.group(1), re.I):
+            return f"“{line.strip()[:60]}” on line {n}"
+    return ""
+
+
+def _asks_which(action: str, what: str) -> dict:
+    """A file command with nothing named and nothing in hand. Never the current folder."""
+    msg = f"Which {what}? Give me the path."
+    return {"ok": False, "action": action, "error": "no path given", "content": msg, "response": msg,
+            "awaiting": {"command": "analyse {answer}", "action": action, "needs": "path"}}
+
+
 def _maybe_background_file_analysis(action, args):
     """Heavy folder/PDF analysis (many PDFs → extract + summarise) is slow and
     would block the UI. Run it on a background thread and return a job-id message
@@ -2350,35 +2376,42 @@ def _maybe_background_file_analysis(action, args):
             return None
         if os.environ.get("ELI_FILE_ANALYSIS_BACKGROUND", "1").strip().lower() in ("0", "false", "no", "off"):
             return None
+        targets = [str(t).strip() for t in (args.get("folders") or []) if str(t).strip()]
         folder = str(args.get("folder") or args.get("path") or "").strip()
-        if not folder:
+        targets = targets or ([folder] if folder else [])
+        if not targets:
             return None
         from pathlib import Path as _PB
-        exp = os.path.expanduser(folder)
-        if not os.path.isdir(exp):
+        exps = [os.path.expanduser(t) for t in targets]
+        if len(exps) == 1 and not os.path.isdir(exps[0]):
             return None  # single file is fast enough inline
         try:
-            _n_pdfs = sum(1 for _ in _PB(exp).rglob("*.pdf"))
+            _n_pdfs = sum(1 if not os.path.isdir(e) else sum(1 for _ in _PB(e).rglob("*.pdf")) for e in exps)
         except Exception:
             _n_pdfs = 0
         _threshold = int(os.environ.get("ELI_FILE_ANALYSIS_BG_THRESHOLD", "5") or 5)
         # Background when there are enough PDFs to be slow, OR the user asked.
         _asked = bool(args.get("_force_background"))
-        if _n_pdfs < _threshold and not _asked:
+        if _n_pdfs < _threshold and not _asked and len(exps) == 1:
             return None
         from eli.runtime.background_tasks import get_background_tasks
         bt = get_background_tasks()
         _bg_args = dict(args)
         _bg_args["_no_background"] = True
-        _bg_args["folder"] = folder
+        _bg_args["folders"] = targets
         from eli.kernel import request_context as _rc_bg
         _bg_args["_user_id"] = str(_rc_bg.user_id_var.get() or "")   # the job's thread has no request
-        _label = os.path.basename(folder.rstrip("/")) or folder
+        _label = (f"{len(targets)} folders" if len(targets) > 1
+                  else os.path.basename(targets[0].rstrip("/")) or targets[0])
+        _whole = _wants_analysis(args.get("instruction"))
         jid = bt.submit(f"Analyse {_n_pdfs} PDFs: {_label}",
-                        lambda: execute("ANALYZE_PDF_FOLDER", _bg_args))
-        msg = (f"That folder has {_n_pdfs} PDFs, so I've started reading them in the background as job "
-               f"#{jid}: each one goes into the document index, then one summary covering all of them is "
-               f"saved as a PDF. Ask how it's going any time, or say “check job {jid}”.")
+                        lambda: execute("ANALYZE_PDF_FOLDER", _bg_args),
+                        meta={"action": "ANALYZE_PDF_FOLDER", "targets": targets, "tell": True})
+        _there = f"Those {len(targets)} folders have" if len(targets) > 1 else "That folder has"
+        msg = (f"{_there} {_n_pdfs} PDFs, so I've started on them in the background as job "
+               f"#{jid}: each one goes into the document index, then one "
+               f"{'analysis of the whole text' if _whole else 'summary covering all of them'} is "
+               f"saved as a PDF. I'll tell you when it ends; ask how it's going any time, or say “check job {jid}”.")
         return {"ok": True, "action": "ANALYZE_PDF_FOLDER", "background": True, "job_id": jid,
                 "content": msg, "response": msg}
     except Exception as _bg_e:
@@ -6239,11 +6272,12 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
             log.debug("runtime_health assessment failed", exc_info=True)
         txt = json.dumps(ev, ensure_ascii=False, indent=2)
         model_name = (runtime_eff.get('model_path') or rep.get('model_path', '')).split('/')[-1]
+        from eli.runtime.live_reads import measured_health as _measured_health
         summary = (
             f"I'm ELI (Enhanced Learning Interface), running {model_name} locally "
             f"on GPU ({runtime_eff.get('n_gpu_layers', '?')} layers offloaded). "
             f"Context window: {runtime_eff.get('n_ctx', '?')} tokens. "
-            f"All core systems nominal."
+            + _measured_health(ev)
         )
         if _active_user:
             summary += f" You're {_active_user}."
@@ -7357,17 +7391,11 @@ except NameError:
         if not code:
             return _eli_v3_error(action_name, "Script generation returned no source code.")
 
-        bad_markers = (
-            "TODO",
-            "Add code here",
-            "placeholder",
-            "Generate only the requested source code",
-            "This is a request for",
-        )
-        if any(marker.lower() in code.lower() for marker in bad_markers):
+        _stub = _stub_marker(code)
+        if _stub:
             return _eli_v3_error(
                 action_name,
-                "Generated script rejected: output contained stub/template markers.",
+                f"Generated script rejected: output contained stub/template markers ({_stub}).",
             )
         if re.fullmatch(r"\s*(?:pass|return\s+None)\s*", code):
             return _eli_v3_error(
@@ -8799,11 +8827,11 @@ try:
         return lines[:limit]
 
     def _eli_self_installed_version():
+        from importlib.metadata import PackageNotFoundError, version as _pkg_version
         try:
-            from importlib.metadata import version as _pkg_version
             return str(_pkg_version("eli"))
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+        except PackageNotFoundError:   # a bundle has no package record: normal, and printed a traceback every time
+            log.debug("no package record")
         try:
             import tomllib as _toml
             pp = _eli_self_Path(__file__).resolve().parents[2] / "pyproject.toml"

@@ -334,7 +334,7 @@ def test_failures_leave_by_kind_so_a_client_need_not_guess(monkeypatch):
     client, _ = _client(monkeypatch, chat=lambda *a: (_ for _ in ()).throw(RuntimeError("engine down")))
     from eli.world import composer
 
-    def no_model(*a):
+    def no_model(*a, **k):    # a moment waiting in the world composes by keyword
         raise composer.ComposeError("model_unavailable", "GGUF model not available")
 
     monkeypatch.setattr(composer, "compose", no_model)

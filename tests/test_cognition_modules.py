@@ -100,17 +100,6 @@ def test_hyde_with_dummy_infer():
 
 # ── Response Governance ───────────────────────────────────────────────────
 
-def test_response_governance_importable():
-    from eli.cognition.response_governance import govern_response
-    assert govern_response is not None
-
-def test_govern_response_returns_something():
-    try:
-        from eli.cognition.response_governance import govern_response
-        result = govern_response("Hello world", action="CHAT", args={})
-        assert result is None or isinstance(result, (str, dict))
-    except Exception:
-        pytest.skip("govern_response not callable with these args")
 
 
 # ── Reranker ────────────────────────────────────────────────────────────

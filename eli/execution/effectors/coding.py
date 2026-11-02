@@ -362,12 +362,10 @@ def _h_generate_script(a, args):
         )
         if any(p in _low for p in _refusal_phrases) and _code.count("\n") < 30:
             return "model refused the task with prose instead of producing code"
-        _bad_markers = (
-            "TODO", "Add code here", "placeholder",
-            "Generate only the requested source code", "This is a request for",
-        )
-        if any(_m.lower() in _code.lower() for _m in _bad_markers):
-            return "output contained stub/template markers"
+        from eli.execution.executor_enhanced import _stub_marker
+        _stub = _stub_marker(_code)
+        if _stub:
+            return f"output contained stub/template markers ({_stub})"
         _lines_real = [l for l in _code.splitlines()
                        if l.strip() and not l.strip().startswith("#")
                        and not l.strip().startswith('"""')]

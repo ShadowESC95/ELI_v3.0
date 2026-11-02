@@ -61,7 +61,7 @@ import time
 from pathlib import Path
 import uvicorn
 
-from eli.kernel.engine import get_engine
+from eli.kernel.engine import get_engine, MAIN_REPLY_DONE_SENTINEL
 
 # Bearer-token gate. Enforced ONLY when ELI_API_TOKEN is set — which the launcher does
 # automatically when binding beyond loopback (--lan). Loopback (default) runs tokenless
@@ -267,6 +267,25 @@ def _eli_startup_hooks():
             import threading
             threading.Thread(target=preload_model, daemon=True,
                              name="eli-whisper-preload").start()
+    except Exception:
+        pass
+    # Preload the GGUF chat model at boot (BACKGROUND thread, like whisper above) so the
+    # FIRST chat request isn't stuck loading it. Otherwise a large model makes the first
+    # reply appear to "hang" for minutes (or fail on VRAM), which reads as a dead server.
+    # Failures surface in the log at startup instead of as a silent spinner. Run the server
+    # standalone so the model loads once — not alongside the desktop GUI (double-load OOM).
+    try:
+        import threading as _th, logging as _lg
+        def _preload_chat_model():
+            _log = _lg.getLogger("eli.api.server")
+            try:
+                from eli.cognition import gguf_inference as _gi
+                if not _gi.is_loaded():
+                    _gi.load_model()
+                    _log.info("[SERVER] chat model preloaded — first request will be fast")
+            except Exception as _e:
+                _log.warning("[SERVER] chat model preload failed (first chat will retry): %s", _e)
+        _th.Thread(target=_preload_chat_model, daemon=True, name="eli-gguf-preload").start()
     except Exception:
         pass
 
@@ -3787,10 +3806,14 @@ def chat(request: ChatRequest, principal: Principal = Depends(require_member)):
         session_id = request.session_id or str(int(time.time()))
         who = _effective_user(principal, request.user_id)
 
+        # The engine is one process-wide instance: the turn runs as this caller, in this session, so
+        # concurrent callers never read or overwrite each other's turn state.
         result = engine.process(
             request.message,
             source=f"api:{who}",
-            stream=False
+            stream=False,
+            user_id=who,
+            session_id=session_id,
         )
 
         _audit("api_chat", user_id=who, action="CHAT", session_id=session_id)
@@ -3820,7 +3843,8 @@ def chat_stream(request: ChatRequest, principal: Principal = Depends(require_mem
     def _gen():
         yield _frame({"session_id": session_id})
         try:
-            result = engine.process(request.message, source=f"api:{who}", stream=True)
+            result = engine.process(request.message, source=f"api:{who}", stream=True,
+                                    user_id=who, session_id=session_id)
             if isinstance(result, dict):
                 yield _frame({"delta": _extract_response_text(result)})
             elif isinstance(result, str):
@@ -3834,7 +3858,7 @@ def chat_stream(request: ChatRequest, principal: Principal = Depends(require_mem
                              or chunk.get("response") or "")
                     else:
                         t = str(chunk)
-                    if t:
+                    if t and t != MAIN_REPLY_DONE_SENTINEL:   # the end-of-reply marker is never text
                         yield _frame({"delta": t})
             yield _frame({"done": True})
         except Exception as e:
@@ -3872,8 +3896,8 @@ def list_models():
     return {"object": "list",
             "data": [{"id": "eli-local", "object": "model", "created": 0, "owned_by": "eli"}]}
 
-@app.post("/v1/chat/completions", tags=["Chat"], dependencies=[Depends(require_member)])
-def chat_completions(request: CompletionRequest):
+@app.post("/v1/chat/completions", tags=["Chat"])
+def chat_completions(request: CompletionRequest, principal: Principal = Depends(require_member)):
     """Standard chat-completions shape, answered by ELI's LOCAL model + pipeline.
     Honours `stream`; returns the canonical `chat.completion` / `chat.completion.chunk`
     objects (and the `[DONE]` sentinel) so standard clients work drop-in.
@@ -3885,6 +3909,9 @@ def chat_completions(request: CompletionRequest):
     model = request.model or "eli-local"
     created = int(time.time())
     cid = "chatcmpl-" + secrets.token_hex(12)
+    # Stateless by design (the client sends the whole conversation): each call is its own session, so
+    # nothing one call left behind (an open question, the last command) is read by another caller's.
+    who = _effective_user(principal, "default")
 
     def _chunk(delta: dict, finish=None) -> str:
         return "data: " + json.dumps({
@@ -3895,7 +3922,8 @@ def chat_completions(request: CompletionRequest):
         def _gen():
             try:
                 yield _chunk({"role": "assistant"})
-                result = engine.process(prompt, source="api:completions", stream=True)
+                result = engine.process(prompt, source="api:completions", stream=True,
+                                        user_id=who, session_id=cid)
                 if isinstance(result, dict):
                     t = _extract_response_text(result)
                     if t:
@@ -3923,7 +3951,8 @@ def chat_completions(request: CompletionRequest):
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     try:
-        result = engine.process(prompt, source="api:completions", stream=False)
+        result = engine.process(prompt, source="api:completions", stream=False,
+                                user_id=who, session_id=cid)
         text = _extract_response_text(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4158,10 +4187,10 @@ def connectivity_wifi_connect(req: WifiConnect):
     return lc.wifi_connect(req.ssid, req.password or "")
 
 @app.get("/v1/connectivity/audio/outputs", tags=["Devices"], dependencies=[Depends(_require_token)])
-def connectivity_audio_outputs():
+def connectivity_audio_outputs(refresh: bool = False):
     """List system audio sinks (speakers, HDMI, Bluetooth) — route media without cloud."""
     from eli.runtime import local_connectivity as lc
-    return lc.list_audio_outputs()
+    return lc.list_audio_outputs(refresh=bool(refresh))
 
 @app.post("/v1/connectivity/audio/default", tags=["Devices"], dependencies=[Depends(require_member)])
 def connectivity_audio_default(req: AudioRoute):
@@ -4694,6 +4723,11 @@ def _firewall_hint() -> dict:
         tool = "Windows Firewall"
         cmds = [f'netsh advfirewall firewall add rule name="ELI" dir=in '
                 f'action=allow protocol=TCP localport={port}']
+        if hport:
+            cmds.append(
+                f'netsh advfirewall firewall add rule name="ELI HTTPS" dir=in '
+                f'action=allow protocol=TCP localport={hport}'
+            )
     elif osname == "darwin":
         tool = "macOS firewall"
         cmds = ["System Settings → Network → Firewall → allow incoming connections for "
@@ -4961,7 +4995,9 @@ def research_query(req: ResearchQuery, principal: Principal = Depends(require_me
               "the answer, say so plainly — do not invent.\n\nSOURCES:\n" + ctx +
               "\n\nQUESTION: " + req.question)
     try:
-        answer = _extract_response_text(get_engine().process(prompt, source="api:research", stream=False))
+        answer = _extract_response_text(get_engine().process(
+            prompt, source="api:research", stream=False,
+            user_id=_effective_user(principal, req.user), session_id="research-" + secrets.token_hex(8)))
     except Exception as e:
         answer = f"(retrieval succeeded; local-model synthesis unavailable: {e})"
     sources = [{"source": h["source"], "score": h["score"], "excerpt": (h["text"] or "")[:240]}
@@ -5043,7 +5079,8 @@ def _world_chat(text: str, principal, session_id: str = "") -> str:
     same person as /v1/chat: a body is another surface of the owner, not another user, so
     the turn is never attributed to the client's own name."""
     who = _effective_user(principal, "default")
-    result = get_engine().process(text, source=f"api:{who}", stream=False)
+    result = get_engine().process(text, source=f"api:{who}", stream=False,
+                                  user_id=who, session_id=session_id or None)
     _audit("api_chat", user_id=who, action="CHAT", subject="world", session_id=session_id or "")
     return _extract_response_text(result)
 

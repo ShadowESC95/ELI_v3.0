@@ -1112,6 +1112,12 @@ class AgentOrchestrator:
             user_input, intent, "", stm, reasoning_mode=reasoning_mode)
         retrieval_plan["window"] = _followup_window(self.engine, user_input,
                                                     _query_planner.plan_window(user_input))
+        # A calculation over a date in the message needs reasoning, not stored logs.
+        if _query_planner.is_date_arithmetic(user_input):
+            retrieval_plan["window"] = None
+            for _eli_source in ("need_keyword", "need_semantic", "need_rag", "need_kg"):
+                retrieval_plan[_eli_source] = False
+            retrieval_plan["skip_hyde"] = True
         log.debug("[ORCHESTRATOR] Stage 4: Planner → mode=%s %s" % (
             reasoning_mode or "balanced", retrieval_plan))
         _eli_pipe_orch("stage_4", mode=(reasoning_mode or "balanced"))
@@ -1300,6 +1306,14 @@ class AgentOrchestrator:
                     wm.assembled_context = (_passages + "\n\n" + str(wm.assembled_context or "").strip()).strip()
         except Exception as _dp_err:
             log.debug(f"[ORCHESTRATOR] document passages skipped: {_dp_err}")
+        # What it can read in a moment is read, not left for the person to ask for: told "I don't have
+        # a live feed" while a series played, they had to call the tool for it. Jobs likewise.
+        from eli.runtime.live_reads import live_facts
+        _live = live_facts(user_input)
+        if _live:
+            wm.assembled_context = (_live + "\n\n" + str(wm.assembled_context or "").strip()).strip()
+            from eli.kernel.request_context import note_turn_fact as _note_live
+            _note_live("_live_facts", _live)
         # Asked about its own behaviour, ELI gets what the pipeline recorded doing; routing and
         # escalation never reach the model, so without this any account is invented.
         try:
@@ -1314,7 +1328,7 @@ class AgentOrchestrator:
                     # never ELI's own earlier prose.
                     from eli.kernel.request_context import note_turn_fact as _note_record
                     _note_record("_record_lines", _rows)
-                    _note_record("_record", "\n".join(_rows) + "\n" + str(_period or ""))
+                    _note_record("_record", "\n".join(_rows) + "\n" + str(_period or "") + "\n" + str(_live or ""))
         except Exception as _tr_err:
             log.debug(f"[ORCHESTRATOR] turn record skipped: {_tr_err}")
         try:

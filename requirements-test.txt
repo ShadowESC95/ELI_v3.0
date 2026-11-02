@@ -4,6 +4,7 @@
 # and eli.runtime.package_bootstrap.ensure_test_packages().
 fastapi>=0.110
 uvicorn[standard]>=0.27
+websockets>=14.0   # pinned explicitly — see requirements.txt for why
 httpx>=0.27
 paho-mqtt>=1.6,<3
 pyflakes>=3.0

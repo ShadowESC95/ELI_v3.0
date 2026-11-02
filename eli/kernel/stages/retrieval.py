@@ -319,10 +319,10 @@ class RetrievalMixin:
 
                                 def _quick_infer(p: str) -> str:
                                     try:
-                                        from eli.cognition.gguf_inference import gguf_try_infer
+                                        from eli.cognition.gguf_inference import FACTUAL_ANSWER_SYSTEM, gguf_try_infer
                                         _hyp = gguf_try_infer(
                                             p,
-                                            system="You are a knowledge assistant. Write a short factual answer (2-3 sentences, no roleplay, no filler).",
+                                            system=FACTUAL_ANSWER_SYSTEM,
                                             max_tokens=96,
                                             temperature=0.4,
                                             lock_timeout=2.0,
@@ -396,7 +396,7 @@ class RetrievalMixin:
                     # because the model was told it was knowledge to report. Drop any recalled memory that ELI
                     # said; the user's own words stay.
                     try:
-                        from eli.cognition.output_governor import is_echo_of_recent
+                        from eli.kernel.stages.guards import _is_repeat_of_recent
                         _own = []
                         for _t in (self.memory.get_recent_conversation(limit=30) or []):
                             if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
@@ -405,7 +405,8 @@ class RetrievalMixin:
                                     _own.append(_c)
                         if _own and mem_results:
                             _kept = [m for m in mem_results
-                                     if not is_echo_of_recent(str(m.get("text") or ""), _own)]
+                                     if not _is_repeat_of_recent(str(m.get("text") or ""), _own[::-1],
+                                                                 whole_reply=True)]
                             if len(_kept) != len(mem_results):
                                 log.debug(f"[MEMORY] dropped {len(mem_results) - len(_kept)} "
                                           "recalled memories that were ELI's own replies")

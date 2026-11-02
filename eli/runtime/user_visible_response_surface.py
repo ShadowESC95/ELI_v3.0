@@ -160,6 +160,8 @@ def format_name_source_audit(text: Any = "") -> str:
     )
 
 
+
+
 def _consume_generator(gen: Any) -> str:
     # The engine's end-of-main-reply marker drives the stream consumer; it is never text. It
     # reached replies glued to a sentence ("...21 October.__MAIN_REPLY_DONE__").
@@ -335,15 +337,3 @@ def _coerce_streaming_result(result: Any, user_input: Any = "", mode: Any = "") 
     return coerce_user_visible(result, user_input=user_input, mode=mode)
 
 
-def install_engine_response_surface(CognitiveEngine: Any) -> None:
-    """
-    Deprecated no-op.
-
-    The global CognitiveEngine.process response-surface wrapper has been retired.
-    User-visible coercion now belongs at consumer boundaries, using
-    eli.runtime.visible_text.to_user_visible_text().
-
-    This function remains only as a compatibility shim for older imports.
-    It must not mutate CognitiveEngine.process.
-    """
-    return None

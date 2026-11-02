@@ -1,25 +1,20 @@
 """
-tests/conftest.py — complete replacement
-Fixes all 8 root causes from junit_20260428_170455.xml
+Root conftest: session isolation and the shared fixtures (see tests/conftest.py for the rest).
 """
-import sys
 import json
 import sqlite3
 import importlib
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  pytest_configure — runs BEFORE any module collection or import
-#  This is the only hook that fires early enough to beat broken system packages
 # ─────────────────────────────────────────────────────────────────────────────
 
 def pytest_configure(config):
-    """Install all heavy-dep stubs into sys.modules before anything else loads."""
-    _install_stubs()
-    _ensure_test_runtime_packages()
+    """Test-run isolation. The real libraries are used: replacing the model runtime, FAISS, PyTorch,
+    Qt and others with mocks let tests pass against code that could not run."""
     # Test isolation: never write generated artifacts into the user's LIVE
     # artifacts/ tree. Several tests exercise GENERATE_SCRIPT (supernova,
     # quantum-decoherence, ton_618, relative_time) whose deterministic writers
@@ -39,119 +34,7 @@ def pytest_configure(config):
     # search routing is stable (offline → OPEN_BROWSER); tests that need network
     # mock network_allowed() directly.
     _os.environ.setdefault("ELI_OFFLINE", "1")
-
-
-def _install_stubs():
-    # ── A  llama_cpp  ────────────────────────────────────────────────────────
-    # The real llama_cpp is installed but broken (no .so compiled).
-    # Force-replace it entirely so `from llama_cpp import Llama` works.
-    _llama = MagicMock(name="llama_cpp")
-    _llama.Llama = MagicMock(name="Llama")
-    _llama.LlamaGrammar = MagicMock(name="LlamaGrammar")
-    _llama.LlamaTokenizer = MagicMock(name="LlamaTokenizer")
-    _llama.LlamaCache = MagicMock(name="LlamaCache")
-    sys.modules["llama_cpp"] = _llama
-    sys.modules["llama_cpp.llama"] = _llama
-    sys.modules["llama_cpp.llama_grammar"] = _llama
-
-    # ── B  Qt  ───────────────────────────────────────────────────────────────
-    # qt_compat.py waterfall: PySide6 → PyQt6 → PyQt5
-    # All three must expose Qt, QTimer, QThread etc. as real attributes
-    # (not just MagicMock attribute access) so `from X.QtCore import Qt` works.
-    _QT_ATTRS = [
-        "Qt", "QTimer", "QThread", "QObject", "QRunnable", "QThreadPool",
-        "pyqtSignal", "pyqtSlot", "Signal", "Slot",
-        "QSettings", "QCoreApplication", "QApplication",
-        "QMutex", "QMutexLocker", "QAbstractListModel",
-        "QModelIndex", "QVariant", "QSize", "QPoint", "QRect",
-    ]
-
-    def _make_qtcore():
-        m = MagicMock(name="QtCore")
-        for a in _QT_ATTRS:
-            setattr(m, a, MagicMock(name=a))
-        return m
-
-    for _pkg in ("PySide6", "PyQt6", "PyQt5"):
-        _core = _make_qtcore()
-        _widgets = MagicMock(name=f"{_pkg}.QtWidgets")
-        _gui = MagicMock(name=f"{_pkg}.QtGui")
-        _mm = MagicMock(name=f"{_pkg}.QtMultimedia")
-        _mod = MagicMock(name=_pkg)
-        _mod.QtCore = _core
-        _mod.QtWidgets = _widgets
-        _mod.QtGui = _gui
-        _mod.QtMultimedia = _mm
-        sys.modules[_pkg] = _mod
-        sys.modules[f"{_pkg}.QtCore"] = _core
-        sys.modules[f"{_pkg}.QtWidgets"] = _widgets
-        sys.modules[f"{_pkg}.QtGui"] = _gui
-        sys.modules[f"{_pkg}.QtMultimedia"] = _mm
-
-    # ── C  PIL / Pillow  ─────────────────────────────────────────────────────
-    # real PIL is installed but missing compiled parts → force full mock
-    _PIL_SUBS = [
-        "Image", "ImageDraw", "ImageEnhance", "ImageFilter",
-        "ImageFont", "ImageOps", "ImageColor", "ImageChops", "ImageSequence",
-    ]
-    _pil = MagicMock(name="PIL")
-    for _s in _PIL_SUBS:
-        _sub = MagicMock(name=f"PIL.{_s}")
-        setattr(_pil, _s, _sub)
-        sys.modules[f"PIL.{_s}"] = _sub
-    sys.modules["PIL"] = _pil
-
-    # ── faiss  ───────────────────────────────────────────────────────────────
-    # "partially initialized module faiss has no attribute IndexFlatL2"
-    # → real faiss installed but C extension broken; nuke and replace
-    _faiss = MagicMock(name="faiss")
-    _faiss.IndexFlatL2 = MagicMock(name="IndexFlatL2")
-    _faiss.IndexIDMap = MagicMock(name="IndexIDMap")
-    _faiss.IndexHNSWFlat = MagicMock(name="IndexHNSWFlat")
-    _faiss.read_index = MagicMock(name="read_index")
-    _faiss.write_index = MagicMock(name="write_index")
-    _faiss.normalize_L2 = MagicMock(name="normalize_L2")
-    sys.modules["faiss"] = _faiss
-    sys.modules["faiss.swigfaiss"] = _faiss
-
-    # ── Other heavy deps  ────────────────────────────────────────────────────
-    _OTHER = [
-        "torch", "torchvision", "torchaudio",
-        "torch.nn", "torch.nn.functional", "torch.cuda",
-        "whisper", "faster_whisper",
-        "sounddevice", "soundfile", "pyaudio",
-        "sentence_transformers",
-        "transformers", "transformers.models",
-        "diffusers", "accelerate",
-        "ollama",
-        "dbus", "dbus.mainloop", "dbus.mainloop.glib",
-        "gi", "gi.repository", "gi.repository.Notify",
-        "cv2",
-        "scipy", "scipy.spatial",
-        "sklearn", "sklearn.metrics", "sklearn.metrics.pairwise",
-        "pydantic",
-        "aiohttp",
-        "httpx",
-    ]
-    for _dep in _OTHER:
-        if _dep not in sys.modules:
-            sys.modules[_dep] = MagicMock(name=_dep)
-
-
-def _ensure_test_runtime_packages():
-    """API/RBAC subprocess tests need real fastapi — not stubbed, not system-bare."""
-    if "fastapi" in sys.modules and not isinstance(sys.modules["fastapi"], MagicMock):
-        return
-    try:
-        import fastapi  # noqa: F401
-        return
-    except ImportError:
-        pass
-    try:
-        from eli.runtime.package_bootstrap import ensure_test_packages
-        ensure_test_packages()
-    except Exception:
-        pass
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

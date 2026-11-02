@@ -160,10 +160,14 @@ def route_runtime_voice(text: str, raw: str, low: str, text_l: str):
     # A bare install/download of a named voice id/accent with no "voice" word ("install
     # en_US-amy-medium"). Gated on the query resolving to a catalog voice, so "install firefox" is
     # unaffected. Skip news intents ("get news about X" must not match et_EE-news-medium).
-    if re.search(r"\b(download|install|fetch|add|get)\b", low) and not re.search(r"\bnews\b", low):
+    # The verb has to start what it asks for, and the voice has to be named after it: "don't get ahead
+    # of yourself, i am still waiting for my pdfs" installed a voice.
+    _dl_ask = re.search(r"(?:^|[.!?]\s+)(?:(?:please|can\s+you|could\s+you)\s+)?(?:download|install|fetch|add|get)\b[^.!?]*",
+                        low)
+    if _dl_ask and not re.search(r"\bnews\b", low):
         try:
             from eli.runtime.voice_assets import resolve_voice_query
-            _vr = resolve_voice_query(raw)
+            _vr = resolve_voice_query(_dl_ask.group(0))
             if _vr.get("voice") and _vr.get("kind") in ("id", "name", "accent"):
                 return _mk("DOWNLOAD_VOICE", {"query": raw}, 0.9, matched_by="voice.download.byid")
         except Exception:

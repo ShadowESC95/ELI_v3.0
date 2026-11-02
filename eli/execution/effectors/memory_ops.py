@@ -527,6 +527,9 @@ def _h_memory_recall(a, args):
         from eli.memory.memory import get_memory as _get_mem_recall
         _mem_r = _get_mem_recall()
         hits = _mem_r.search_memory(q, limit=20) or []
+        from eli.kernel.request_context import turn_facts_var
+        _said = str((turn_facts_var.get() or {}).get("user_input") or "").strip()
+        hits = [h for h in hits if str(h.get("text", "") or "").strip() != _said]
         if isinstance(hits, list):
             # Truncate each hit and cap total to prevent context overflow.
             # Large hits (e.g. repeated conversation dumps) crash llama.cpp.

@@ -341,7 +341,6 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | Module | LOC | Role |
 |---|---|---|
 | `output_governor.py` | 1704 | **Canonical** governance: sanitize, role-prefix/identity-drift repair, self↔user confusion repair, style cleanup, confabulation detection, quality scoring, memory-worthiness, GGUF-artifact cleaning (`clean_gguf_artifacts`), evidence validation. |
-| `response_governance.py`, `response_sanitizer.py` | 28+14 | **Re-export shims** → output_governor (kept for back-compat). |
 | `tone_analyzer.py` | 371 | Analyses recent user turns → tone preferences ELI adapts to over time. |
 
 ## Profile
@@ -374,7 +373,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | `config.py` | 357 | Thin config shim over runtime_settings (canonical key mapping). |
 | `model_download.py` | 673 | Curated GGUF catalogue + VRAM-based recommend + download. |
 | `dag.py` | 475 | **Generic DAG engine** (Kahn topo-order, parallel layers, critical path) — shared by the agent bus + coding engine. |
-| `dynamic_runtime_budget.py` | 271 | Per-boot runtime budget derivation. |
+| `load_plan.py` | 986 | What a model loads with on this machine, measured by llama.cpp's load simulation on every GPU. |
 | `netguard.py` | 586 | **Offline-by-default** socket-level network gate (fail-closed) + `guarded_urlopen`/`http_get_json`. |
 | `memory_reset.py` | 333 | Factory-reset of memory/identity (scrub names, clear DBs, backup). |
 | `cognition_tunables.py` | 292 | User-tunable knowledge-gathering limits + synthesis cap registry (GUI-surfaced). |

@@ -24,11 +24,11 @@ import os
 # Re-baselined for v3.0.8: the LAN-HTTPS/cert + Connect feature work added a handful of
 # best-effort guards; ratchet reset to the current honest count. Do not raise casually.
 # v3.0.97: bulk conversion removed 284 handlers (656 → 372).
-CEILING = 217
+CEILING = 206
 # Catch-all handlers (bare, Exception, BaseException) that only log. Observable in a debug log, but
 # the caller still carries on as if the step worked: a failed run read as a clean one this way.
 # Ratchet DOWN only: a new one must decide what the failure means for the result.
-LOG_ONLY_CEILING = 1754
+LOG_ONLY_CEILING = 1749
 
 _ELI_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "eli"))
 _LOGGERS = {"log", "logger", "logging", "_log", "LOG", "_logger"}

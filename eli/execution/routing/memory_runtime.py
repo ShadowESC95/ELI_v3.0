@@ -298,6 +298,14 @@ def _eli_self_report_recent_updates_question(text):
     return bool(update_ref and (self_ref or " you " in f" {low} " or " your " in f" {low} "))
 
 
+def _not_about_the_machinery(text) -> bool:
+    """"how does it feel to have a working memory, haha?" is said to someone, and a block of pasted
+    text that mentions memory is not asking how it works. Both got the database dump."""
+    said = str(text or "")
+    return (len([ln for ln in said.splitlines() if ln.strip()]) >= 4
+            or bool(re.search(r"\bhow\s+(?:does|do|did)\s+(?:it|that|this|you)\s+feel\b", said, re.I)))
+
+
 def _eli_memory_runtime_route_lock_should_trigger(text):
     import re as _re
 
@@ -307,7 +315,7 @@ def _eli_memory_runtime_route_lock_should_trigger(text):
     if not low:
         return False
 
-    if _asks_for_remembered_content(low):
+    if _asks_for_remembered_content(low) or _not_about_the_machinery(text):
         return False
     # "GPU memory", "VRAM temperature": hardware, not the memory subsystem, unless it also names the machinery.
     if _re.search(r"\b(?:gpu|vram|cuda|nvidia|graphics|thermal|temperature|temp)\b", low) and not _re.search(

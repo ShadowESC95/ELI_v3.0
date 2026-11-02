@@ -370,7 +370,7 @@ def _eli_shell_prepass(user_text: str):
 
 
 _SCHEDULE_TIME_RX = re.compile(
-    r"\b(overnight|tonight|later tonight|tomorrow"
+    r"\b(overnight|tonight|later tonight|tomorrow(?:\s+(?:morning|afternoon|evening|night))?|today"
     r"|this\s+(?:morning|afternoon|evening|noon)"
     r"|every\s+(?:morning|day|night|evening|week)|each\s+(?:morning|day|night)"
     r"|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?"
@@ -403,6 +403,24 @@ _SCHEDULE_ACTION_RX = re.compile(
     r"|daily briefing|daily summary|engine eval|test suite|test report"
     r"|self[\s_-]?test|generate tests?|test generation|lora|fine[\s_-]?tune"
     r"|self[\s_-]?upgrade|reflection)\b", re.I)
+
+
+_DAY_QUALIFIER_RX = re.compile(r"^(today|tonight|tomorrow|overnight)$", re.I)
+
+
+def _extract_when(t: str) -> str:
+    """The time markers of a request, for the time parser. A clock time and its day are separate
+    matches and both are needed ("for 8:45am today"), but a clock time beats a vague day-part from
+    another clause: in "it rained this morning. Schedule it for 8:45am today", "this morning" is
+    narration. The whole sentence fed the parser a paragraph."""
+    parts: List[str] = []
+    for m in _SCHEDULE_TIME_RX.finditer(t):
+        p = m.group(0).strip()
+        if p.lower() not in {s.lower() for s in parts}:
+            parts.append(p)
+    if any(ch.isdigit() for p in parts for ch in p):
+        parts = [p for p in parts if any(ch.isdigit() for ch in p) or _DAY_QUALIFIER_RX.match(p)]
+    return " ".join(parts).strip()
 
 
 def _strip_schedule_time(t: str) -> str:
@@ -558,6 +576,14 @@ def _eli_agenda_prepass(user_text: str):
     return None
 
 
+# Banter and second-person commentary are not task requests, however many clock words they hold.
+_SCHEDULE_CHATTER_RX = re.compile(
+    r"\b(you think|you're|you are|being so|stop being|i think|i reckon|do you want|don't want|dont want"
+    r"|go back to sleep|haha|lol|jesus christ|for fuck'?s sake|shut up|calm down|wake up)\b", re.I)
+# "can you open spotify at 8pm?" is a request put politely, and the only question that schedules.
+_SCHEDULE_POLITE_ASK_RX = re.compile(r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you\b", re.I)
+
+
 def _eli_schedule_prepass(user_text: str):
     """Detect 'do <any command> at <future time>' → SCHEDULE_TASK (background workers).
 
@@ -583,8 +609,15 @@ def _eli_schedule_prepass(user_text: str):
     # spotify at 8pm?") still schedule; only a real trailing question is refused.
     if _QUESTION_RX.search(_eli_final_clause(t)):
         return None
+    # The opener only sees the start: "you think i want to run that at 8:30 on a sunday?" got scheduled.
+    if any(not _SCHEDULE_POLITE_ASK_RX.match(q) for q in re.findall(r"[^.!?\n]+\?", t)):
+        return None
+    if _SCHEDULE_CHATTER_RX.search(t):
+        return None
     m_action = _SCHEDULE_ACTION_RX.search(t)
-    if not (_SCHEDULE_VERB_RX.search(t) or m_action or _IMPERATIVE_RX.search(t)):
+    # The verb and the time belong to one sentence: anywhere in a paragraph, "stop" and "this morning" made a job.
+    _timed = [s for s in re.split(r"(?<=[.!?])\s+|\n+", t) if _SCHEDULE_TIME_RX.search(s)]
+    if not (m_action or any(_SCHEDULE_VERB_RX.search(s) or _IMPERATIVE_RX.search(s) for s in _timed)):
         return None
     # A day on its own usually says what the request is about, not when to do it: "help me plan
     # a study session for tonight", "check the weather for tomorrow", "write a speech for
@@ -598,7 +631,7 @@ def _eli_schedule_prepass(user_text: str):
         inner = f"run the {inner}"
     return {
         "action": "SCHEDULE_TASK",
-        "args": {"request": inner, "when": t},
+        "args": {"request": inner, "when": _extract_when(t)},
         "confidence": 0.9,
         "meta": {"matched_by": "schedule.prepass"},
     }
@@ -630,6 +663,15 @@ def _eli_multi_command_prepass(user_text: str):
             return None
     except Exception:
         log.debug("multi_command: browser-request probe failed", exc_info=True)
+    # "get out of your room and do some work" joins two remarks: each went to chat alone and came back
+    # as a bulleted pair of replies. At least one part has to be something ELI can carry out.
+    try:
+        from eli.execution.route_contracts import is_command
+        if not any(is_command(route(seg)) for seg in segs):
+            return None
+    except Exception:
+        log.debug("multi_command: part check failed", exc_info=True)
+        return None
     return {
         "action": "MULTI_COMMAND",
         "args": {"commands": segs, "raw": str(user_text or "")},
@@ -1104,6 +1146,85 @@ _JOB_PROGRESS = re.compile(
     r"how'?s\s+(?:it|that)\s+(?:going|coming\s+along))\b")
 
 
+_PATH_START = re.compile(r"(?<![\w/~.])(?:~/|[A-Za-z]:[\\/]|/(?=\S))")
+_DOC_ASK = re.compile(r"\b(?:summari[sz]e|analy[sz]e|read|look\s+(?:at|through)|evaluate|go\s+through|process|index)\b", re.I)
+_REMAINING = re.compile(r"\b(?:remaining|the\s+rest|the\s+others?|other\s+\d*\s*(?:pdf|file|folder|document|paper))", re.I)
+_REFERS_TO_WORK = re.compile(r"\b(?:them|those|these)\b|" + _REMAINING.pattern, re.I)
+
+
+def paths_named(text: str) -> list:
+    """Every file or folder a message names that exists, as (as written, absolute). Paths hold spaces
+    and brackets, so each is the longest stretch that exists; what follows it is searched too. The
+    rule that read one path took the first of four folders and dropped the others without a word."""
+    found = []
+    for line in str(text or "").splitlines():
+        pos = 0
+        while True:
+            m = _PATH_START.search(line, pos)
+            if not m:
+                break
+            words = line[m.start():].split(" ")
+            hit = next((c for c in (" ".join(words[:k]).rstrip(" ,;:") for k in range(len(words), 0, -1))
+                        if os.path.exists(os.path.expanduser(c))), None)
+            if hit is None:
+                pos = m.end()
+                continue
+            whole = os.path.abspath(os.path.expanduser(hit))
+            if whole not in (p for _, p in found):
+                found.append((hit, whole))
+            pos = m.start() + len(hit)
+    return found
+
+
+def _holds_a_pdf(path: str) -> bool:
+    if os.path.isfile(path):
+        return path.lower().endswith(".pdf")
+    return any(n.lower().endswith(".pdf") for _, _, names in os.walk(path) for n in names)
+
+
+def _route_several_paths(text: str, low: str):
+    """Several files or folders and a word asking to read them: all of them, as one piece of work."""
+    global _last_used_path
+    if "/" not in text and "\\" not in text:
+        return None
+    named = paths_named(text)
+    if len(named) < 2:
+        return None
+    rest = text
+    for spelt, _ in named:
+        rest = rest.replace(spelt, " ")
+    if not _DOC_ASK.search(rest):
+        return None
+    paths = [p for _, p in named]
+    _last_used_path = paths[-1]
+    if all(_holds_a_pdf(p) for p in paths):
+        return _mk("ANALYZE_PDF_FOLDER", {"folders": paths, "recursive": True, "instruction": text},
+                   0.95, matched_by="analyze.several_paths")
+    return _mk("MULTI_COMMAND", {"commands": [f"summarise {p}" for p in paths], "raw": text},
+               0.92, matched_by="analyze.several_paths")
+
+
+def _route_work_in_hand(raw: str, low: str):
+    """"Them", "those", "the 3 remaining folders": the files or folders of the job in hand, not a
+    topic to look up in memory and not the current folder ("Not a PDF: /home/x"). None with nothing
+    in hand. "The rest" of a job that finished has nothing to run: that one is talked through."""
+    if not _REFERS_TO_WORK.search(low):
+        return None
+    from eli.runtime.background_tasks import work_targets
+    remaining = bool(_REMAINING.search(low))
+    targets = work_targets(unfinished_only=remaining)
+    if not targets and remaining and work_targets():
+        return _mk("CHAT", {"message": raw}, 0.85, matched_by="chat.nothing_remaining")
+    if not targets and _last_used_path and not remaining:
+        targets = [_last_used_path]
+    targets = [t for t in targets if os.path.exists(os.path.expanduser(str(t)))]
+    if not targets:
+        return None
+    return _mk("ANALYZE_PDF_FOLDER",
+               {"folders": targets, "recursive": True, "instruction": raw, "_force_background": True},
+               0.9, matched_by="analyze.work_in_hand")
+
+
 def _route_plugin_bridge_prepass(raw: str, low: str):
     """
     High-priority plugin routing prepass.
@@ -1473,6 +1594,11 @@ def _eli_web_lookup_prepass(raw: str, low: str):
     if re.search(r"\byour\s+(?:own\s+)?(?:code|codebase|agents?|cognition|"
                  r"pipeline|architecture|internals?|memory\s+system)\b", raw, re.I):
         return None
+    # "what did you actually search for?" asks about ELI's last turn, and searches for nothing.
+    from eli.cognition.self_claims import asks_about_own_behaviour
+    from eli.runtime.command_splitter import tells_eli_to_do
+    if asks_about_own_behaviour(raw) and not tells_eli_to_do(raw):
+        return None
     # Bare search instruction with NO subject — fall back to CHAT so ELI asks
     # what to look up instead of searching its own instruction.
     if not web_query_has_substance(query):
@@ -1629,6 +1755,8 @@ def _asks_now_playing(low: str) -> bool:
     if re.search(r"\b(?:do\s+you\s+know|can\s+you|could\s+you|tell\s+me|show\s+me)\b[^?.!\n]{0,40}"
                  r"\bwhat\s+i(?:'m|\s+am)\s+(?:watching|playing|listening(?:\s+to)?)\b", low):
         return True
+    if re.search(r"^(?:\w+[,!\s]+){0,2}?(?:look\s+at|check)\s+what\s+i(?:'m|\s+am)\s+(?:watching|playing|listening(?:\s+to)?)\b", low):
+        return True
     return False
 
 
@@ -1670,6 +1798,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
 
     raw, low = _normalize_text(text)
     text_l = low  # compatibility alias for legacy route guards
+    _several = _route_several_paths(str(text or ""), low)
+    if _several is not None:
+        return _several
     _plugin_prepass = _route_plugin_bridge_prepass(raw, low)
     if _plugin_prepass is not None:
         return _plugin_prepass
@@ -2577,7 +2708,8 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             return _mk("CHECK_JOB", {"job_id": _jm.group(1) if _jm else None,
                                      "notify": _notify, "text": raw},
                        0.95, matched_by="dev.check_job")
-    if re.search(r"\b(?:background\s+jobs|list\s+(?:background\s+|running\s+)?jobs|running\s+jobs|what\s+jobs)\b", low):
+    if re.search(r"\b(?:background\s+jobs|(?:list|check)\s+(?:the\s+|my\s+|on\s+)?(?:background\s+|running\s+)?jobs|"
+                 r"running\s+jobs|what\s+jobs)\b", low):
         return _mk("BACKGROUND_JOBS", {}, 0.9, matched_by="dev.background_jobs")
     # "do you have an eta?" while a job runs: the job's own progress, not a guess ("several hours" for a
     # ten-minute read of a few hundred PDFs, after a detour through the intent model)
@@ -3679,6 +3811,11 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         raw, re.I,
     ) or re.match(rf"^(?:please\s+)?(?:{_DOC_VERBS})\s+(.+)$", raw, re.I)
     if m:
+        # Text supplied in the request is not a memory-search topic, and stays data, not orders.
+        from eli.cognition.supplied_in_message import supplied_as_data
+        if supplied_as_data(raw):
+            return _mk("CHAT", {"message": raw}, 0.97, matched_by="chat.supplied_text")
+
         target = m.group(1).strip()
         # If target contains an absolute path, extract from the first / or ~/
         # This handles typos, extra verbs, and multi-word prefixes cleanly.
@@ -3777,12 +3914,19 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                 or re.search(r"\bread\s+(?:the|my)\s+(?:response|reply|message|answer)\b", low)
                 or re.search(r"\bthe\s+(?:last\s+)?thing\s+i\s+(?:just\s+)?said\b", low)):
             return _mk("CHAT", {"message": raw}, 0.6, matched_by="chat.conversation_self_ref")
-        return _mk("MEMORY_RECALL", {"query": target},
-                   0.8, matched_by="memory.summarize_topic")
+        _in_hand = _route_work_in_hand(raw, low)
+        if _in_hand is not None:
+            return _in_hand
+        # Summarising a topic is a question for memory. "Analyse the 3 remaining folders", "look at
+        # what i'm watching" and "analyse them" are not: each got a dump of old messages.
+        if re.match(r"^(?:please\s+)?(?:can\s+you\s+)?(?:summari[sz]e\b|read\s+about\b)", raw, re.I):
+            return _mk("MEMORY_RECALL", {"query": target},
+                       0.8, matched_by="memory.summarize_topic")
 
     # PDF analysis
-    if any(w in low for w in ["pdf", "pdfs"]) and any(w in low for w in [
-            "analyze", "analyse", "summarize", "summarise", "read", "extract"]):
+    if any(w in low for w in ["pdf", "pdfs"]) and (any(w in low for w in [
+            "analyze", "analyse", "summarize", "summarise", "read", "extract"])
+            or re.match(r"^(?:\w+[,!\s]+){0,2}do\s+(?:the|those|these|them|my)\b", low)):
         path_match = _extract_pdf_path(raw)
         if path_match:
             return _mk("ANALYZE_PDF", {"path": path_match, "instruction": raw}, 0.95,
@@ -3792,7 +3936,10 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         if _is_referential and _last_used_path and os.path.isdir(_last_used_path):
             return _mk("ANALYZE_PDF_FOLDER", {"folder": _last_used_path, "recursive": True},
                        0.90, matched_by="analyze.pdf_referential")
-        return _mk("ANALYZE_PDF", {"path": ".", "instruction": raw},
+        _in_hand = _route_work_in_hand(raw, low)
+        if _in_hand is not None:
+            return _in_hand
+        return _mk("ANALYZE_PDF", {"path": "", "instruction": raw},
                    0.85, matched_by="analyze.pdf_default")
 
     # CSV analysis
@@ -5340,11 +5487,13 @@ def _eli_phase38_final_memory_question_contract(raw):
         r"\b(?:what(?:'s| is| are)|whats|define|explain what|tell me what)\s+(?:(?:a|an|the)\s+)?" + _mechanism +
         r"(?:\s+(?:is|are|used for|for|in general|exactly|actually|anyway|mean|means))*\s*[?.!]*$"
         r"|\b(?:a|an)\s+" + _mechanism + r"\b", low))
+    from eli.execution.routing.memory_runtime import _not_about_the_machinery
     asks_memory_internals = (
         not _memory_compliment
         and not _other_subject
         and not _general_definition
         and not _asks_for_remembered_content(low)
+        and not _not_about_the_machinery(raw)
         and (
         "memory system" in low
         or "memory internals" in low
@@ -7128,10 +7277,15 @@ try:
             try:
                 from eli.execution.route_contracts import is_command
                 from eli.runtime.command_splitter import read_message
+                # Commands are read from the person's own words, not from what the message quotes.
+                from eli.cognition.supplied_in_message import supplied_as_data, without_supplied_text
+                if supplied_as_data(text):
+                    return None
+                own_words = without_supplied_text(text)
                 # chained instructions are looked for when one command took the message, or a
                 # command rule matched it and was turned down for the other words it holds
                 chained = is_command(whole) or bool(((whole or {}).get("meta") or {}).get("not_told"))
-                parts = read_message(text, chains=chained)
+                parts = read_message(own_words, chains=chained)
                 if not (2 <= len(parts) <= 12):
                     return None
                 steps, talk, told_parts = [], [], []
@@ -7195,7 +7349,7 @@ try:
             down again." while nothing ran."""
             try:
                 from eli.execution.route_contracts import TARGET_ARGS, is_command
-                from eli.runtime.command_splitter import misspelt_commands
+                from eli.runtime.command_splitter import COMPLETERS, misspelt_commands
                 if is_command(whole):
                     return None
                 found = []
@@ -7203,7 +7357,9 @@ try:
                     out = _eli_route_with_courtesy(reading, *args, **kwargs)
                     given = " ".join(str(v) for k, v in (out.get("args") or {}).items()
                                      if k in TARGET_ARGS + ("text", "message", "content") and isinstance(v, str))
-                    if is_command(out) and corrected not in re.findall(r"[a-z]+", given.lower()):
+                    target = re.findall(r"[a-z]+", given.lower())
+                    # "clock off" is not "click off": a word that only completes a command is no target
+                    if is_command(out) and corrected not in target and not (target and set(target) <= set(COMPLETERS)):
                         found.append((reading, out))
                 if len({str(o.get("action")) for _r, o in found}) != 1:
                     return None                      # nothing, or two different commands: not a guess to act on

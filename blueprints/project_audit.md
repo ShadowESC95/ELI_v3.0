@@ -199,9 +199,8 @@ Hardware + runtime substrate: `hardware_profile.py` (1,040, free-VRAM sizing, co
 storage / path healing), `paths.py`/`portable_paths.py`/`legacy_paths.py`/`db_paths.py`,
 `netguard.py` (204, offline-by-default socket failsafe), `dag.py` (474, orchestrator),
 `crisis_guard.py`, `full_control.py`, `model_download.py`, `cognition_tunables.py`.
-**Finding [V]:** `dynamic_runtime_budget.py` (`DynamicRuntimeBudget`) has **zero references
-repo-wide** — a dead/unwired module that is a half-built hardware-budget the governor could
-fold in (§10).
+**Finding [V]:** `dynamic_runtime_budget.py` (`DynamicRuntimeBudget`) had **zero references
+repo-wide** and has been **removed**; the load plan (`load_plan.py`) is the one budget (§10).
 
 ### 4.12 Runtime — `runtime/` (79 files, 22,225)
 The catch-all: deterministic_grounding_gate.py (4292), grounded_remediation.py (1604),
@@ -311,8 +310,8 @@ Severity P0=integrity, P1=routing/exec, P2=quality. Status as of `a641471`.
 ---
 
 ## 10. Dead / unwired / duplication (refactor targets)
-- **`core/dynamic_runtime_budget.py`** — `DynamicRuntimeBudget` has **zero references**
-  repo-wide. Dead; overlaps the governor's intended budget object. **[V]**
+- **`dynamic_runtime_budget.py`** (`DynamicRuntimeBudget`) had **zero references** repo-wide
+  and has been **removed**. **[V]**
 - **`eli/integrations/`** (1 file, 0 LOC) — empty package. (`eli/guards/` was the other empty package; it has been **removed**.) **[V]**
 - **`eli/tools/image_engine`** appears both as a 1,750-LOC module and a nested
   `image_engine/image_engine/` package (engine 1,483 + visual_core 1,447) — possible duplication

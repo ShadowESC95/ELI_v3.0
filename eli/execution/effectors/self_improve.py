@@ -82,6 +82,8 @@ def _h_self_analyze(a, args):
             ui = str(failure.get("user_input") or "")
             err = str(failure.get("error") or "")
             low = f"{ui}\n{err}".lower()
+            if err.startswith(("anomaly (", "background job failed")):
+                return err      # what the pipeline recorded, not a guess at it
             if "missing topic for document generation" in low:
                 return (
                     "CREATE_DOCUMENT was called without topic/name/target — "
@@ -347,11 +349,12 @@ def _h_self_report(a, args):
         log.debug("runtime_health assessment failed", exc_info=True)
     txt = json.dumps(ev, ensure_ascii=False, indent=2)
     model_name = (runtime_eff.get('model_path') or rep.get('model_path', '')).split('/')[-1]
+    from eli.runtime.live_reads import measured_health as _measured_health
     summary = (
         f"I'm ELI (Enhanced Learning Interface), running {model_name} locally "
         f"on GPU ({runtime_eff.get('n_gpu_layers', '?')} layers offloaded). "
         f"Context window: {runtime_eff.get('n_ctx', '?')} tokens. "
-        f"All core systems nominal."
+        + _measured_health(ev)
     )
     if _active_user:
         summary += f" You're {_active_user}."

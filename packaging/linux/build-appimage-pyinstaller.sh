@@ -39,6 +39,15 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr"
 cp -a "$BUNDLE" "$APPDIR/usr/app"
 
+# An AppImage has no installer step to show terms in, so put them at the AppDir
+# root (visible to `--appimage-extract`) and in the conventional doc location.
+mkdir -p "$APPDIR/usr/share/doc/eli"
+for _doc in LICENSE NOTICE THIRD_PARTY_NOTICES.md; do
+    [ -f "$ROOT/$_doc" ] || fail "$_doc missing from the repo root — the AppImage must ship the licence"
+    cp "$ROOT/$_doc" "$APPDIR/$_doc"
+    cp "$ROOT/$_doc" "$APPDIR/usr/share/doc/eli/$_doc"
+done
+
 # Oldest glibc the bundle starts on, measured from its binaries. AppRun checks it.
 mkdir -p "$APPDIR/usr/share/eli"
 GLIBC_FLOOR="$(python3 "$ROOT/packaging/linux/glibc_floor.py" "$APPDIR/usr/app" 2>/dev/null || true)"

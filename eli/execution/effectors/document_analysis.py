@@ -1,6 +1,8 @@
 """Document-analysis effector — ANALYZE_PDF, ANALYZE_PDF_FOLDER (chunked LLM analysis)."""
 from __future__ import annotations
 
+import os
+
 from eli.utils.log import get_logger
 from eli.execution.effectors._base import _save_artifact
 
@@ -20,11 +22,14 @@ def _h_analyze_pdf(a, args):
         from eli.perception.analyze_pdfs import analyze
 
         path = str(args.get("path") or "").strip()
-        if not path:
-            return {"ok": False, "action": a, "error": "Missing path",
-                    "content": "Missing path", "response": "Missing path"}
-
         _instruction = str(args.get("instruction") or "").strip()
+        # No path, or a folder: not something to open as one PDF ("Not a PDF: /home/x").
+        if not path or path == "." or os.path.isdir(os.path.expanduser(path)):
+            _given = {"instruction": _instruction, "_force_background": bool(args.get("_force_background"))}
+            if path and path != ".":
+                _given["folder"] = path
+            return {**_h_analyze_pdf_folder("ANALYZE_PDF_FOLDER", _given), "action": a}
+
         _instr_low = _instruction.lower()
 
         analysis = analyze(path)
@@ -229,10 +234,20 @@ def _h_analyze_pdf_folder(a, args):
     """A folder of documents is read into the document index and summarised as a document, not
     poured into memory: the old reader stored every analysis as memories, which filled recall and
     the knowledge graph with paper fragments."""
+    from eli.execution.executor_enhanced import _asks_which, _maybe_background_file_analysis, _wants_analysis
+    targets = [str(t).strip() for t in (args.get("folders") or []) if str(t).strip()]
     folder = str(args.get("folder") or args.get("path") or "").strip()
-    if not folder:
-        return {"ok": False, "action": a, "error": "Missing folder path",
-                "content": "Missing folder path", "response": "Missing folder path"}
+    targets = targets or ([folder] if folder and folder != "." else [])
+    if not targets:     # the model chose this for "do the pdfs": the job in hand, if there is one
+        from eli.runtime.background_tasks import work_targets
+        targets = work_targets()
+    if not targets:
+        return _asks_which(a, "folder")
+    _missing = [t for t in targets if not os.path.exists(os.path.expanduser(t))]
+    if _missing:
+        msg = "I can't find " + ", ".join(_missing) + "."
+        return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+    args = dict(args, folders=targets)
     # Heavy folders → run async and hand back a job id (don't block).
     _bg = _maybe_background_file_analysis(a, args)
     if _bg is not None:
@@ -240,7 +255,8 @@ def _h_analyze_pdf_folder(a, args):
     try:
         from eli.kernel import request_context as _rc_fa
         from eli.runtime.folder_analysis import analyse
-        out = analyse(folder, recursive=bool(args.get("recursive", True)),
+        out = analyse(targets, recursive=bool(args.get("recursive", True)),
+                      whole=_wants_analysis(args.get("instruction")),
                       limit=int(args["limit"]) if args.get("limit") else None,
                       per_file=bool(args.get("per_file") or args.get("each_file")),
                       fmt=str(args.get("format") or "pdf"),

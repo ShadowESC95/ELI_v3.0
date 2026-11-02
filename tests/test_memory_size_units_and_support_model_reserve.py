@@ -161,7 +161,7 @@ def test_gui_dropdown_and_hardware_profile_discover_agree_on_a_real_file(tmp_pat
     with the hardware-tuning panel's own figure.
     """
     _require_real_qt()
-    from eli.gui.eli_pro_audio_gui_v2_0 import discover_gguf_models
+    from eli.gui.main_window._common import discover_gguf_models
 
     model = tmp_path / "model.gguf"
     _sparse(model, int(5.5 * 1024 ** 3))

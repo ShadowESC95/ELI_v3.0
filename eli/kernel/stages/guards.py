@@ -357,6 +357,7 @@ def _strip_reasoning_scaffold(text: str) -> str:
 # control, checking whether it did is.
 _REPEAT_HEAD_CHARS = 200      # buffered before first paint — see the streaming guard
 _REPEAT_RATIO = 0.86          # difflib ratio over normalised text
+_REPEAT_TERM_OVERLAP = 0.82   # share of a whole reply's terms already in an earlier one
 # A stock opener repeated across replies reads as a tic even when the rest differs.
 # Short openers ("Yes.", "Okay.") are exempt — they are not a stylistic rut.
 _REPEAT_OPENING_MIN_CHARS = 12
@@ -575,7 +576,7 @@ def _opening_stem(text: str) -> str:
 
 
 def _is_repeat_of_recent(candidate: str, prior_replies, *,
-                         ratio: float = _REPEAT_RATIO) -> bool:
+                         ratio: float = _REPEAT_RATIO, whole_reply: bool = False) -> bool:
     """True when `candidate` restates something ELI already said.
 
     Compared head-to-head over the same number of characters: a reply that opens
@@ -632,6 +633,20 @@ def _is_repeat_of_recent(candidate: str, prior_replies, *,
         restated = sum(1 for line in lines if _sentence_seen_before(line, prior_sents, partial=False))
         if restated >= _REPEAT_MIN_RESTATED and 2 * restated >= len(lines):
             return True
+
+    # Two more that only a whole reply can show (an opening shares its terms with anything): the
+    # same terms reworded, and a long run lifted from the last reply with a cosmetic prefix on it.
+    if whole_reply:
+        from eli.cognition.scoring import term_overlap
+        low = cand.lower()
+        for prior in list(prior_replies or [])[:_REPEAT_COMPARE_AGAINST]:
+            p = str(prior or "").strip()
+            if len(p) < 40:
+                continue
+            plow = p.lower()
+            run = difflib.SequenceMatcher(None, low, plow, autojunk=False).find_longest_match(0, len(low), 0, len(plow))
+            if term_overlap(cand, p) >= _REPEAT_TERM_OVERLAP or run.size >= max(40, len(plow) // 2):
+                return True
     return False
 
 

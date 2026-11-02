@@ -130,7 +130,9 @@ def test_main_handles_the_license_flag():
 def test_xtts_device_can_be_forced(monkeypatch, forced):
     """XTTS shares the GPU with the main model; pinning it to CPU must not
     require a code edit."""
+    torch = pytest.importorskip("torch")
     from eli.perception.tts_xtts import _select_device
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)   # the force is checked against the build
     monkeypatch.setenv("ELI_XTTS_DEVICE", forced)
     assert _select_device() == forced
 

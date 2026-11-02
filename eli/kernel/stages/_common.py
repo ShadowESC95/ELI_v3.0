@@ -20,8 +20,8 @@ log = get_logger(__name__)
 # normalize_response (GGUF-artifact cleaning); the memory-commit stage uses
 # should_store_as_memory. Both gate on the same _HAS_GOVERNANCE flag.
 try:
-    from eli.cognition.response_governance import (  # noqa: F401
-        normalize_response,
+    from eli.cognition.output_governor import (  # noqa: F401
+        clean_gguf_artifacts as normalize_response,
         should_store_as_memory,
     )
     _HAS_GOVERNANCE = True

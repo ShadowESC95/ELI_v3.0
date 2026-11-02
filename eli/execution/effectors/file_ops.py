@@ -259,7 +259,8 @@ def _h_summarize_file(a, args):
         import glob as _glob
         _pdfs = _glob.glob(_os2.path.join(expanded, "**", "*.pdf"), recursive=True)
         if _pdfs:
-            return _execute_impl("ANALYZE_PDF_FOLDER", {"folder": expanded, "recursive": True})
+            return _execute_impl("ANALYZE_PDF_FOLDER", {"folder": expanded, "recursive": True,
+                                                        "instruction": _sf_instruction})
         # No PDFs: fall back to ls -R + GGUF description
         try:
             _ls_result = _sfsp.run(

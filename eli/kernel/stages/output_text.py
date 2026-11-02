@@ -28,20 +28,8 @@ _SYS_DIAG_RE = re.compile(
 )
 
 
-def _strip_special_tokens(text: str) -> str:
-    try:
-        from eli.cognition.model_output_tokens import strip_special_tokens as _strip_all
-        return _strip_all(text)
-    except Exception:
-        t = text or ""
-        for tok in ("[INST]", "[/INST]", "<s>", "</s>",
-                    "<|im_start|>", "<|im_end|>", "<|endoftext|>",
-                    "<|end_of_turn|>", "<end_of_turn>", "<start_of_turn>", "</start_of_turn>"):
-            t = t.replace(tok, "")
-        t = re.sub(r"<\|end_of_turn\|>", "", t, flags=re.I)
-        t = re.sub(r"</?start_of_turn>", "", t, flags=re.I)
-        t = re.sub(r"^(?:system|user|assistant)\n", "", t, flags=re.I)
-        return t.strip()
+from eli.cognition.model_output_tokens import strip_special_tokens as _strip_special_tokens
+
 
 def _sanitize_identity_drift(text: str) -> str:
     t = (text or "").strip()

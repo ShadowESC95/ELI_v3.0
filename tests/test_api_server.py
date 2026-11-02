@@ -277,6 +277,22 @@ def test_chat_mocked_engine(tokenless_client, monkeypatch):
     assert "echo: hello there" in r.json()["response"]
 
 
+def test_chat_runs_the_turn_as_the_caller(tokenless_client, monkeypatch):
+    """One engine serves every caller: who a turn belongs to has to reach it per call."""
+    seen = {}
+
+    class _Engine:
+        def process(self, message, **kwargs):
+            seen.update(kwargs)
+            return {"response": "ok"}
+
+    monkeypatch.setattr("eli.kernel.engine.get_engine", lambda *a, **k: _Engine())
+    monkeypatch.setattr("api.server.get_engine", lambda *a, **k: _Engine(), raising=False)
+    r = tokenless_client.post("/v1/chat", json={"message": "hello there", "user_id": "u1", "session_id": "s1"})
+    assert r.status_code == 200
+    assert seen["session_id"] == "s1" and seen["user_id"] == r.json()["user_id"]
+
+
 def test_chat_requires_auth(secured, monkeypatch):
     client, _ = secured(monkeypatch)
     # /v1/chat is token-gated; no token → 401 before the engine is ever touched.

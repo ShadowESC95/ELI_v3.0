@@ -41,12 +41,14 @@ _OUTPUT_RESERVE_TOKENS = int(os.environ.get("ELI_OUTPUT_RESERVE_TOKENS", "1024")
 
 
 from eli.kernel.stages.guards import (
+    _is_repeat_of_recent,
     _failed_executor_is_failed_block,
     _failed_executor_query_from_prompt,
     _failed_executor_relevant_block,
     _failed_executor_surface,
 )
 from eli.kernel.stages.fast_actions import (
+    _held_to_requested_format,
     _PHASE45_DIRECT_FAST_ACTIONS,
     _PHASE45_SILENT_FAST_ACTIONS,
     _phase45_action_name,
@@ -421,13 +423,6 @@ class GenerationMixin:
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
 
-        try:
-            _mode_contract = dict(getattr(self, "_last_mode_execution_contract", {}) or {})
-            if _mode_contract:
-                self._maybe_apply_mode_runtime_adaptation(reasoning_mode, _mode_contract)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
         if self._gguf_available:
             try:
                 if gguf_inference is None:
@@ -745,12 +740,6 @@ class GenerationMixin:
                 self._gguf_load_error = None
         if self._gguf_available and gguf_inference is not None:
             try:
-                try:
-                    _mode_contract = dict(getattr(self, "_last_mode_execution_contract", {}) or {})
-                    if _mode_contract:
-                        self._maybe_apply_mode_runtime_adaptation(reasoning_mode, _mode_contract)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
                 # Context size guard (same logic as the non-streaming path). Use the model's real usable
                 # ceiling (min of loaded n_ctx and n_ctx_train), not the config default: a model trained on less
                 # than the requested ctx must be sized to its trained length or the prompt overflows. Config
@@ -1154,11 +1143,18 @@ class GenerationMixin:
         response = govern_output(response, is_grounded=evidence_used, history=_gov_hist,
                                  memory_diag=getattr(self, "_memory_diag", None))
         response = str(response or "").strip()
+        _facts_now = _request_context.turn_facts_var.get()
+        _short = _facts_now.pop("reply_fell_short", None) if isinstance(_facts_now, dict) else None
+        if _short:
+            _again = self._say_in_own_words(user_input, self._what_actually_happened(),
+                                            not_this=" ".join(_short["dropped"]), already_said=_short["served"],
+                                            reasoning_mode=reasoning_mode)
+            if _again:
+                response = f"{_short['served'].strip()}\n\n{_again}".strip()
         # Anti-echo: never serve ELI's previous reply back to the user. Replies get stored and recalled,
         # so on a short turn the model latches onto its own last line. repeat_penalty can't see across
         # turns. Regenerate once with a do-not-repeat instruction; if it still echoes keep the original.
         try:
-            from eli.cognition.output_governor import is_echo_of_recent
             _prev_replies = []
             try:
                 for _t in (self.memory.get_recent_conversation(limit=8) or []):
@@ -1168,7 +1164,7 @@ class GenerationMixin:
                         _prev_replies.append(str(_content))
             except Exception:
                 log.debug("[ECHO] recent-reply lookup failed", exc_info=True)
-            if _prev_replies and is_echo_of_recent(response, _prev_replies):
+            if _prev_replies and _is_repeat_of_recent(response, _prev_replies[::-1], whole_reply=True):
                 log.debug("[ECHO] reply repeated a recent one — regenerating once")
                 trace["echo_repaired"] = True
                 _fresh = self._get_chat_response(
@@ -1183,7 +1179,7 @@ class GenerationMixin:
                     gen_overrides={"max_tokens": 320, "temperature": 0.7},
                 )
                 _fresh = govern_output(str(_fresh or "").strip(), is_grounded=evidence_used).strip()
-                if _fresh and not is_echo_of_recent(_fresh, _prev_replies):
+                if _fresh and not _is_repeat_of_recent(_fresh, _prev_replies[::-1], whole_reply=True):
                     response = _fresh
         except Exception:
             log.debug("[ECHO] anti-echo guard skipped", exc_info=True)
@@ -1282,11 +1278,13 @@ class GenerationMixin:
             log.debug(f"[COGNITIVE] Dynamic-status guard skipped: {_dyn_guard_err}")
         # Strip role-leakage artefacts ([HH:MM] User: …, "Assistant:", etc.)
         try:
-            from eli.cognition.response_sanitizer import sanitize_assistant_text as _san
+            from eli.cognition.output_governor import sanitize_assistant_text as _san
             response = _san(response) or response
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         grounded = bool(evidence_used)
+
+        response = _held_to_requested_format(user_input, response, trace)
 
         if threshold is None or float(threshold) <= 0.0:
             threshold = self._required_confidence_threshold(
@@ -1422,10 +1420,7 @@ class GenerationMixin:
         if raw_direct:
             try:
                 from eli.cognition.gguf_inference import gguf_try_infer
-                _raw_system = (
-                    "You are a knowledge assistant. Write a short factual answer "
-                    "(2-3 sentences, no roleplay, no filler)."
-                )
+                _raw_system = gguf_inference.FACTUAL_ANSWER_SYSTEM
                 response = gguf_try_infer(
                     prompt,
                     system=_raw_system,
@@ -1484,6 +1479,35 @@ class GenerationMixin:
             situation_brief=situation_brief,
         ).strip()
 
+    def _say_in_own_words(self, user_input: str, what_to_say: str, *, not_this: str = "", already_said: str = "",
+                          reasoning_mode: Optional[str] = None) -> str:
+        """The model's own wording of something ELI knows to be so, checked before it is served.
+        "" when no model is loaded or what it wrote does not hold up, for the caller's plain fact."""
+        from eli.cognition import gguf_inference as _ggi
+        from eli.cognition.self_claims import holds_up
+        facts = _request_context.turn_facts_var.get()
+        if not _ggi.is_loaded() or (isinstance(facts, dict) and facts.get("_said_in_own_words")):
+            return ""
+        if isinstance(facts, dict):
+            facts["_said_in_own_words"] = True
+        prompt = (f"WHAT THEY JUST SAID:\n{user_input}\n\nWHAT IS TRUE:\n{what_to_say}\n\n"
+                  + (f"You were about to say this, and nothing backs it, so do not say it:\n{not_this}\n\n" if not_this else "")
+                  + (f"You have already told them:\n{already_said}\nGo on from there.\n\n" if already_said else "")
+                  + "Reply to them in your own voice, as you would to someone you know, using only what is true "
+                    "above. Add no other facts and promise nothing that has not happened.")
+        reply = str(self._get_chat_response(prompt, "", reasoning_mode=reasoning_mode) or "").strip()
+        return reply if reply and holds_up(reply, what_to_say) else ""
+
+    def _what_actually_happened(self) -> str:
+        """This turn as the pipeline recorded it, for a reply that has to be said again."""
+        facts = _request_context.turn_facts_var.get() or {}
+        ran = [a for a in dict.fromkeys(facts.get("executed_actions") or []) if a]
+        lines = [f"Carried out this turn: {', '.join(ran)}." if ran else "Nothing was carried out this turn."]
+        if facts.get("_live_facts"):
+            lines.append(str(facts["_live_facts"]))
+        lines.extend(str(x) for x in (facts.get("_record_lines") or []))
+        return "\n".join(lines)
+
     def _maybe_fail_closed_chat(
         self,
         user_input: str,
@@ -1494,12 +1518,13 @@ class GenerationMixin:
     ) -> Optional[str]:
         try:
             from eli.cognition.chat_grounding_gate import evaluate_chat_grounding_gate
-            return evaluate_chat_grounding_gate(
+            fact = evaluate_chat_grounding_gate(
                 user_input,
                 query_class=query_class,
                 memory_context=memory_context,
                 bus_result=bus_result,
             )
+            return (self._say_in_own_words(user_input, fact) or fact) if fact else None
         except Exception as _fc_err:
             log.debug(f"[COGNITIVE] chat fail-closed gate skipped: {_fc_err}")
             return None
@@ -1865,6 +1890,9 @@ class GenerationMixin:
         if _offer:
             yield "\n\n" + _offer
             self._store_followthrough_reply(full, _offer)
+        # Unlock input now — any followthrough re-run below can take a while.
+        from eli.kernel.engine import MAIN_REPLY_DONE_SENTINEL
+        yield MAIN_REPLY_DONE_SENTINEL
         if not full or getattr(self, "_in_followthrough", False):
             return
         try:
@@ -1900,8 +1928,8 @@ class GenerationMixin:
                           f"({_ft_action or 'no action'}: not a read, and not what the user asked for)")
                 # The promise is already on screen; it must not stand as if kept ("I am going to check the
                 # current load…", and nothing checked anything).
-                _not_done = (f"(I haven't done that: nothing ran for “{str(commit['clause']).strip().rstrip('.')}”. "
-                             "Ask and I'll do it.)")
+                _not_done = f"(I haven't done that: nothing ran for “{str(commit['clause']).strip().rstrip('.')}”.)"
+                _request_context.note_turn_fact("promise_unkept", str(commit["clause"]).strip())
                 yield "\n\n" + _not_done
                 self._store_followthrough_reply(full, _not_done)
                 return

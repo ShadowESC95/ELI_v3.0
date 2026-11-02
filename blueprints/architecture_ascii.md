@@ -81,7 +81,7 @@ pipeline/memory/gating close-ups). Every layer and box maps to a real path.
 ┌─ CORE INFRA (cross-cutting — used by every layer) ────────────────────────────────┐
 │  netguard (process-wide offline failsafe)   paths/portable_paths/legacy_paths/db_  │
 │  runtime_settings · config   hardware_profile · startup_hardware_optimizer ·       │
-│  dynamic_runtime_budget   model_download (curated GGUF)   first_run/_wizard         │
+│  load_plan                model_download (curated GGUF)   first_run/_wizard         │
 └────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─ BACKGROUND DAEMONS (continuous, started at boot) ────────────────────────────────┐
@@ -198,7 +198,7 @@ eli/  (223,219 LOC, 626 files)  ·  api/server.py  (FastAPI web app + dashboard)
 │   ├── netguard.py            offline failsafe + allow_network()
 │   ├── paths.py · portable_paths.py · legacy_paths.py · db_paths.py
 │   ├── runtime_settings.py · config.py · grounding.py
-│   ├── hardware_profile.py · startup_hardware_optimizer.py · dynamic_runtime_budget.py
+│   ├── hardware_profile.py · startup_hardware_optimizer.py · load_plan.py
 │   ├── model_download.py
 │
 ├── gui/               27.4k ─── PySide6 desktop

@@ -303,7 +303,7 @@ def _extract_int(raw: str, default: int, min_value: int,
 
 _WALLCLOCK_TIME_PATTERNS = (
     r"\bwhat(?:'?s|\s+is)?\s+(?:the\s+)?time\b",
-    r"\bcurrent time\b", r"\bclock\b", r"^time[?!.\s]*$", r"\btell me the time\b",
+    r"\bcurrent time\b", r"^(?:the\s+)?clock[?!.\s]*$", r"\b(?:what|check|read|see|look\s+at|show)\b[^.?!]*\bclock\b", r"^(?:(?:i\s+(?:need|want)\s+)?the\s+)?time(?:\s+please)?[?!.\s]*$", r"\btell me the time\b",
     r"\bwhat\s+time\s+is\s+it\b",
     # Compound asks — "the day and time", "date & time".
     r"\b(?:day|date)\s*(?:,)?\s*(?:and|&|\+)\s*(?:the\s+)?time\b",
@@ -320,7 +320,7 @@ _WALLCLOCK_DATE_PATTERNS = (
     r"\bcurrent date\b",
     # today's date / today is the date — no greedy .* (would match "update")
     r"\btoday'?s?\s+(?:is\s+the\s+|the\s+)?date\b",
-    r"^date[?!.\s]*$",
+    r"^(?:(?:i\s+(?:need|want)\s+)?the\s+)?date(?:\s+please)?[?!.\s]*$",
     r"\bwhat(?:'s| is) today\b",
     r"\bwhat day is it\b", r"\bwhat day is this\b",
     r"\bwhat'?s?\s+the\s+day\b", r"\bwhat'?s?\s+the\s+days\b",

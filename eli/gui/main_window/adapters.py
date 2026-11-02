@@ -536,10 +536,8 @@ class _GUIEngineAdapter:
 
         if raw_direct:
             # HyDE hypothetical-doc generation — minimal system, tiny token budget
-            system = (
-                "You are a knowledge assistant. Write a short factual answer "
-                "(2-3 sentences, no roleplay, no filler)."
-            )
+            from eli.cognition.gguf_inference import FACTUAL_ANSWER_SYSTEM
+            system = FACTUAL_ANSWER_SYSTEM
             max_tok = 72
         else:
             system   = (working_memory.assembled_context

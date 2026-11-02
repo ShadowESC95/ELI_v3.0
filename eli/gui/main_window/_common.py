@@ -406,8 +406,11 @@ def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[st
                 if key in seen:
                     continue
                 seen.add(key)
-                from eli.core.mem_units import file_size_gib
-                size_gb = file_size_gib(path)
+                from eli.core.gguf_sizes import is_later_part, model_bytes
+                from eli.core.mem_units import bytes_to_gib
+                if is_later_part(path):
+                    continue    # the file past the first of a split model: the first stands for them all
+                size_gb = bytes_to_gib(model_bytes(path))
                 family = 'unknown'
                 name_low = path.name.lower()
                 draft_only = False

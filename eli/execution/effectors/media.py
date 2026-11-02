@@ -757,13 +757,25 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
                 msg = f"Playing “{_track_q}” on Spotify."
                 return {"ok": True, "action": "PLAY_MEDIA", "played": True,
                         "content": msg, "response": msg}
+            # The same request played a moment later, live, so it gets a second go before being
+            # called a failure.
+            try:
+                from eli.integrations.media.cross_platform import spotify_play_top_search_result as _sp_again
+                if _sp_again(_track_q, launch=False):
+                    _, _np_artist, _np_title = _spotify_live_meta()
+                    _np = f"{_np_artist} — {_np_title}" if _np_artist and _np_title else _track_q
+                    _set_now_playing("spotify", _np)
+                    msg = f"Playing “{_np}” on Spotify."
+                    return {"ok": True, "action": "PLAY_MEDIA", "played": True, "content": msg, "response": msg}
+            except (ImportError, OSError, subprocess.SubprocessError):
+                log.debug("second Spotify try failed", exc_info=True)
             _np_head, _np_artist, _np_title = _spotify_live_meta()
             if _np_head.startswith("▶") and (_np_artist or _np_title):
                 # Whatever is playing, it is not what was asked for: Spotify's top result for a
                 # different song, or an earlier track that carried on. Say which, claim nothing.
-                msg = (f"Spotify is playing “{_np_artist} — {_np_title}”, not “{_track_q}”. Give me "
-                       f"the artist as well, or say “play {_track_q} on youtube”.")
-                return {"ok": True, "action": "PLAY_MEDIA", "played": False, "mismatch": True,
+                msg = (f"Spotify is playing “{_np_artist} — {_np_title}”, not “{_track_q}”. It didn't "
+                       f"find that after two tries; say “play {_track_q} on youtube” for YouTube.")
+                return {"ok": False, "action": "PLAY_MEDIA", "played": False, "mismatch": True,
                         "search_only": True, "target": "spotify", "content": msg, "response": msg}
             msg = (f"Spotify didn't start anything for “{_track_q}”: it showed its search results "
                    f"but no song began playing, and its media controls didn't respond to play.")

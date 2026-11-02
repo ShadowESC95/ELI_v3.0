@@ -26,13 +26,14 @@ def _h_check_job(a, args):
         if not jobs:
             msg = "No background jobs."
         else:
-            msg = "Background jobs:\n" + "\n".join(
-                f"  #{j['id']} [{j['status']}] {j['name']} ({j['elapsed_s']}s)" for j in jobs)
+            from eli.runtime.background_tasks import work_lines
+            msg = "Background jobs:\n" + "\n".join(f"  {ln}" for ln in work_lines())
         return {"ok": True, "action": a, "jobs": jobs, "content": msg, "response": msg}
     _jid = args.get("job_id") or args.get("id")
     if _jid is None:
         _m = _re_jb.search(r"\b(\d+)\b", str(args.get("text") or args.get("query") or args.get("description") or ""))
         _jid = _m.group(1) if _m else None
+    _named_job = _jid is not None
     if _jid is None:        # "how's it going?": the job that is running, else the latest
         _jobs = _bt.list(limit=1, status="running") or _bt.list(limit=1)
         _jid = _jobs[0]["id"] if _jobs else None
@@ -50,16 +51,31 @@ def _h_check_job(a, args):
             extra = f" → {r.get('script_path')}"
             if r.get("solved"):
                 extra += f" (verified, score {r.get('score')})"
-        msg = f"Job #{_jid} ({t['name']}) done in {t['elapsed_s']}s{extra}."
+        msg = f"Job #{_jid} ({t['name']}) done in {_duration(t['elapsed_s'])}{extra}."
         # Surface the actual result (e.g. the PDF-folder summary), not just a
-        # 'done' status — that's what the user is waiting for.
+        # 'done' status — that's what the user is waiting for. Not when they asked what is
+        # going on and this is only the latest job: "eta on that job?" got the whole report back.
         _job_content = ""
         if isinstance(r, dict):
             _job_content = str(r.get("content") or r.get("response") or "").strip()
-        if _job_content and _job_content not in (msg,):
+        _job_content = _job_content or " ".join(
+            x for x in (t.get("note"), (t.get("meta") or {}).get("document_path")) if x)
+        _result_asked = _named_job or _re_jb.search(
+            r"\b(?:results?|summary|analysis|show|read|output)\b", str(args.get("text") or ""), _re_jb.I)
+        if not _result_asked:
+            msg = "Nothing is running. " + msg + (f" {_job_content.splitlines()[0]}" if _job_content else "")
+        elif _job_content and _job_content not in (msg,):
             msg += "\n\n" + _job_content
     elif t["status"] == "failed":
-        msg = f"Job #{_jid} failed: {(t.get('error') or '')[:200]}"
+        msg = f"Job #{_jid} ({t['name']}) failed: {(t.get('error') or '')}"
+    elif t["status"] == "interrupted":
+        msg = (f"Job #{_jid} ({t['name']}) was cut off when ELI closed, after {_duration(t['elapsed_s'])}. "
+               "Say “do them again” to start it over.")
+    elif t["status"] == "scheduled":
+        import time as _time_jb
+        msg = f"Job #{_jid} ({t['name']}) is scheduled" + (
+            _time_jb.strftime(" for %A %H:%M.", _time_jb.localtime(float(t["scheduled_for"])))
+            if t.get("scheduled_for") else ".")
     else:
         msg = f"Job #{_jid} ({t['name']}) is {t['status']}, {_duration(t['elapsed_s'])} in."
         _p = t.get("progress") or {}

@@ -22,7 +22,7 @@ from datetime import datetime
 import pytest
 
 from eli.core.when import parse_when
-from eli.execution.routing.schedule import _eli_schedule_prepass as prepass
+from eli.execution.router_enhanced import _eli_schedule_prepass as prepass
 
 
 # The session clock: Saturday 1 August 2026, 08:44:56.
