@@ -18,7 +18,8 @@ is this here" has a true answer.
     consider(state, event)   in the engine: keep a moment that has words
     waiting()                the urges not yet acted on
     act(scene)               make something of the oldest, if ELI will
-    act_when_free()          the same, only when ELI is free: for ELI's own background loop
+    free()                   whether ELI is free to: a model in memory, and nobody's mood against it
+    act_when_free()          act, only when ELI is free: for ELI's own background loop
 """
 from __future__ import annotations
 
@@ -106,22 +107,29 @@ def act(scene: Optional[Dict[str, Any]] = None, *,
     return outcome
 
 
-def act_when_free() -> Optional[Dict[str, Any]]:
-    """For ELI's own background loop. Acts only with a model already in memory
-    (one is never loaded for this) and when the user's mood does not ask ELI to
-    hold back. The loop itself has already checked that nobody is waiting on ELI."""
+def free() -> bool:
+    """Whether ELI is free to make something of its own: a model already in memory
+    (one is never loaded for this) and the user's mood not asking ELI to hold back.
+    Whoever asks has already checked that nobody is waiting on ELI."""
     try:
         from eli.cognition.gguf_inference import is_loaded
         if not is_loaded():
-            return None
+            return False
     except Exception:
-        return None
+        return False
     try:
         from eli.cognition.affect_policy import should_defer_proactive
         if should_defer_proactive()[0]:
-            return None
+            return False
     except Exception:
         pass
+    return True
+
+
+def act_when_free() -> Optional[Dict[str, Any]]:
+    """For ELI's own background loop: act, only when ELI is free."""
+    if not free():
+        return None
     try:
         from eli.world import embodiment
         return act(embodiment.live())

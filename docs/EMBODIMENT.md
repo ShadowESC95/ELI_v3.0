@@ -188,6 +188,13 @@ brighter the surer ELI is) and `kind: "conflict"` in `anomaly_room` (each open d
 `goal_store.summarize_goals()`, cached for thirty seconds; claims and conflicts show as many as the
 room holds (`building.MAX_PER_ROOM`), newest and surest first.
 
+Version 2 also carries what is on ELI's mind (`mind`, from `shown.thoughts()`: its latest insight,
+the moments waiting in `urges`, the goal it holds first and its tone, each only if the record is
+there), how many moments are waiting (`waiting`), and whether ELI is free to make something of one
+(`free`: `urges.free()`, a model already in memory and nobody's mood asking ELI to hold back, the
+same test ELI's own background loop uses, read as often as the records). A body may let the thoughts
+rise from ELI, and may ask `POST /v1/world/compose` while someone is there to see what ELI makes.
+
 ## Not there yet
 
 - The nine rooms keep their own sky and ground. ELI relights them and puts things in them, but cannot

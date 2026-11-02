@@ -196,6 +196,41 @@ def test_what_eli_believes_is_on_the_evidence_wall_and_what_disagrees_is_in_the_
     shown.forget()
 
 
+def test_what_is_on_eli_s_mind_comes_from_its_records_and_rises_in_the_feed(monkeypatch):
+    from eli.world import shown, urges
+    insight_module = pytest.importorskip("eli.planning.insight_synthesis")
+    goal_store = pytest.importorskip("eli.planning.goal_store")
+    from eli.cognition import tone_adaptor
+    monkeypatch.setattr(insight_module, "get_cached_insight", lambda: "  Quiet work   goes further than loud work. ")
+    monkeypatch.setattr(urges, "waiting", lambda: [{"kind": "trouble", "text": "WEB_SEARCH failed: the network is off"}])
+    monkeypatch.setattr(goal_store, "summarize_goals", lambda: {"titles": ["Learn the filing system", "Tidy the index"]})
+    monkeypatch.setattr(tone_adaptor, "current_tone", lambda: {"tone": "calm"})
+    monkeypatch.setattr(shown, "items", lambda now=None: [])
+    shown.forget()
+    assert shown.thoughts() == [
+        {"kind": "insight", "text": "Quiet work goes further than loud work."},
+        {"kind": "trouble", "text": "WEB_SEARCH failed: the network is off"},
+        {"kind": "goal", "text": "Learn the filing system"},
+        {"kind": "tone", "text": "calm"},
+    ]
+    assert spatial_feed.spatial_state(WORLD, version=2)["mind"] == shown.thoughts()
+    assert "mind" not in spatial_feed.spatial_state(WORLD), "version 1 is as it was"
+    world = {**WORLD, "spaces": {"own_room": {"urges": [{"kind": "insight", "text": "x" * 20}, "junk"]}}}
+    monkeypatch.setattr(urges, "free", lambda: True)
+    shown.forget()
+    msg = spatial_feed.spatial_state(world, version=2)
+    assert msg["waiting"] == 1 and msg["free"] is True
+    monkeypatch.setattr(urges, "free", lambda: False)
+    assert spatial_feed.spatial_state(world, version=2)["free"] is True, "read as often as the records, not every poll"
+    shown.forget()
+    assert spatial_feed.spatial_state(world, version=2)["free"] is False
+    monkeypatch.setattr(insight_module, "get_cached_insight", lambda: "")
+    monkeypatch.setattr(tone_adaptor, "current_tone", lambda: {"tone": "neutral"})
+    shown.forget()
+    assert [t["kind"] for t in shown.thoughts()] == ["trouble", "goal"], "nothing made up to fill a gap"
+    shown.forget()
+
+
 def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypatch):
     from eli.world import shown
     monkeypatch.setattr(shown, "items", lambda now=None: [])

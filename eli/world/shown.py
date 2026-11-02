@@ -17,6 +17,8 @@ Reading ELI's records for every poll of the world would be wasteful, so what is
 shown is refreshed at most every half minute.
 
     items()     the things to show, as the world feed carries things
+    thoughts()  what is on ELI's mind now, in its records' own words, for a body to let rise from ELI
+    free()      whether ELI is free to make something of its own now (eli/world/urges.py)
 """
 from __future__ import annotations
 
@@ -112,6 +114,68 @@ def _conflicts() -> List[Dict[str, Any]]:
     return out
 
 
+def _mind() -> List[Dict[str, str]]:
+    """Its latest insight, the moments of its own waiting to be made into something, the goal
+    it holds first, and its tone. Each only if the record is there."""
+    out: List[Dict[str, str]] = []
+    try:
+        from eli.planning.insight_synthesis import get_cached_insight
+        insight = " ".join(str(get_cached_insight() or "").split())
+        if insight:
+            out.append({"kind": "insight", "text": insight[:200]})
+    except Exception:
+        pass
+    try:
+        from eli.world import urges
+        for urge in urges.waiting()[:3]:
+            out.append({"kind": str(urge.get("kind", "moment")), "text": str(urge.get("text", ""))[:200]})
+    except Exception:
+        pass
+    try:
+        from eli.planning.goal_store import summarize_goals
+        titles = [str(t) for t in (summarize_goals() or {}).get("titles") or [] if str(t).strip()]
+        if titles:
+            out.append({"kind": "goal", "text": titles[0][:200]})
+    except Exception:
+        pass
+    try:
+        from eli.cognition import tone_adaptor
+        tone = str(tone_adaptor.current_tone().get("tone") or "")
+        if tone and tone != "neutral":
+            out.append({"kind": "tone", "text": tone})
+    except Exception:
+        pass
+    return [t for t in out if t["text"].strip()]
+
+
+_thoughts_cache: Tuple[float, List[Dict[str, str]]] = (0.0, [])
+_free_cache: Tuple[float, bool] = (-REFRESH_SECONDS, False)
+
+
+def thoughts(now: float | None = None) -> List[Dict[str, str]]:
+    """What is on ELI's mind now, refreshed as often as the records in the rooms."""
+    global _thoughts_cache
+    now = time.monotonic() if now is None else now
+    if _thoughts_cache[1] and now - _thoughts_cache[0] < REFRESH_SECONDS:
+        return _thoughts_cache[1]
+    _thoughts_cache = (now, _mind())
+    return _thoughts_cache[1]
+
+
+def free(now: float | None = None) -> bool:
+    """Whether ELI is free to make something of its own, read as often as its records."""
+    global _free_cache
+    now = time.monotonic() if now is None else now
+    if now - _free_cache[0] < REFRESH_SECONDS:
+        return _free_cache[1]
+    try:
+        from eli.world import urges
+        _free_cache = (now, bool(urges.free()))
+    except Exception:
+        _free_cache = (now, False)
+    return _free_cache[1]
+
+
 def items(now: float | None = None) -> List[Dict[str, Any]]:
     """The records to show. A source that cannot be read shows nothing of its own."""
     global _cache
@@ -129,5 +193,7 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
 
 
 def forget() -> None:
-    global _cache
+    global _cache, _thoughts_cache, _free_cache
     _cache = (0.0, [])
+    _thoughts_cache = (0.0, [])
+    _free_cache = (-REFRESH_SECONDS, False)
