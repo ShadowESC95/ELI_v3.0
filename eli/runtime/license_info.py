@@ -17,6 +17,7 @@ platform and in every download.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -102,6 +103,13 @@ def license_text() -> str:
             encoding="utf-8", errors="replace")
     except OSError:
         return text.rstrip() + "\n" + _MISSING.format(name=EULA_NAME)
+
+
+def made_by() -> str:
+    """Who holds the copyright, as the licence this build ships with names them: who made ELI.
+    "" when the licence names nobody."""
+    m = re.search(r"Copyright\s*(?:©|\(c\))\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?\s+)?([^.\n]+)", license_text(), re.I)
+    return m.group(1).strip() if m else ""
 
 
 def print_license() -> int:
