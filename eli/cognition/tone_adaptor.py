@@ -34,6 +34,10 @@ log = logging.getLogger(__name__)
 
 _OVERRIDE: Optional[str] = None          # explicit user-set tone (wins over detection)
 _OVERRIDE_TS: float = 0.0
+# Whether _OVERRIDE is known: read from the settings once, or set or cleared here since. Re-read
+# while it was None, a world thread reading the tone between clear_tone() dropping it and saving
+# the cleared setting took the old tone back up and kept it.
+_OVERRIDE_KNOWN = False
 
 
 def enabled() -> bool:
@@ -153,43 +157,45 @@ def set_tone(name_or_phrase: str) -> Dict[str, Any]:
     if not resolved:
         return {"ok": False, "error": f"no tone matches {name_or_phrase!r}",
                 "available": _palette.list_tones()}
-    _OVERRIDE, _OVERRIDE_TS = resolved, time.time()
+    global _OVERRIDE_KNOWN
+    _OVERRIDE, _OVERRIDE_TS, _OVERRIDE_KNOWN = resolved, time.time(), True
     try:
         from eli.core.runtime_settings import save_settings
         save_settings({"expressed_tone": resolved})
     except Exception:
         log.debug("tone_adaptor: persist override failed", exc_info=True)
+    sync_world(force=True)
     return {"ok": True, "tone": resolved, "desc": _palette.get_tone(resolved).get("desc", "")}
 
 
 def clear_tone() -> Dict[str, Any]:
     """Drop the override — back to autonomous, emotion-adaptive expression."""
-    global _OVERRIDE
-    _OVERRIDE = None
+    global _OVERRIDE, _OVERRIDE_KNOWN
+    _OVERRIDE, _OVERRIDE_KNOWN = None, True
     try:
         from eli.core.runtime_settings import save_settings
         save_settings({"expressed_tone": ""})
     except Exception:
         log.debug("tone_adaptor: clear override persist failed", exc_info=True)
+    sync_world(force=True)
     return {"ok": True, "tone": "auto"}
 
 
 def _load_override() -> Optional[str]:
-    global _OVERRIDE
-    if _OVERRIDE is not None:
+    global _OVERRIDE, _OVERRIDE_KNOWN
+    if _OVERRIDE_KNOWN:
         return _OVERRIDE
     try:
         from eli.core.runtime_settings import load_settings
         v = str((load_settings() or {}).get("expressed_tone", "")).strip()
-        if v:
-            _OVERRIDE = v
-            return v
     except Exception:
         log.debug("tone_adaptor: override load failed", exc_info=True)
-    return None
+        return None             # not known yet: read again next time
+    if not _OVERRIDE_KNOWN:     # set or cleared here while the settings were being read
+        _OVERRIDE, _OVERRIDE_KNOWN = (v or None), True
+    return _OVERRIDE
 
 
-# ── The public read + the three output channels ──────────────────────────────
 def current_tone() -> Dict[str, Any]:
     """The tone ELI will express now: {tone, detected, source, confidence}.
     Override → 'override'; else the fused autonomous read → 'auto'; default neutral."""
@@ -334,6 +340,9 @@ def build_situation_brief(
 
     _dir = text_directive()
     _cur = current_tone()
+    # ELI's world, and ELI's light in VR, show the feeling ELI speaks in: this was never sent, and
+    # the world only ever had the few expressions its own state gives. Sent when it changes.
+    sync_world()
     if _dir and _cur.get("tone") != "neutral":
         brief = _prepend_block(
             brief,

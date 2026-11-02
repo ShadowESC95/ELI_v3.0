@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from eli.bundles import Bundle, discover
+from eli.bundles import Bundle, Offer, discover, offers
 
 log = logging.getLogger("eli.bundles")
 SETTING = "startup_target"  # "ask" (default) | "eli" | "bundle:<id>"
@@ -27,6 +27,25 @@ def _remember(value: str) -> None:
         save_settings({SETTING: value})
     except Exception:
         log.warning("could not remember the start-up choice", exc_info=True)
+
+
+def entries(listed: list[Offer]) -> list[tuple[str, bool, str]]:
+    """What the chooser shows for each bundle: its text, whether it can be opened, and its id. A
+    bundle that cannot be opened here is shown anyway, with why: ELI VR, ELI Legal and the ones to
+    come are upgrades a person is told about, not left to guess at."""
+    out = []
+    for offer in listed:
+        summary = offer.bundle.summary[:90] if offer.bundle and offer.bundle.summary else ""
+        if offer.state == "ready":
+            text = offer.label + (f" — {summary}" if summary else "")
+        elif offer.state == "needs_key":
+            text = f"{offer.label} — needs a licence key: enter it from ELI v3's Bundles menu"
+        elif offer.state == "not_installed":
+            text = f"{offer.label} — not installed" + (f": {offer.releases}" if offer.releases else "")
+        else:
+            text = f"{offer.label} — coming"
+        out.append((text, offer.state == "ready", offer.id))
+    return out
 
 
 def choose(bundles: dict[str, Bundle]) -> str | None:
@@ -59,15 +78,19 @@ def choose(bundles: dict[str, Bundle]) -> str | None:
     main = QPushButton("ELI v3 — the full assistant")
     main.clicked.connect(lambda: pick("eli"))
     layout.addWidget(main)
-    for bundle in bundles.values():
-        text = f"{bundle.title}" + (
-            f" — {bundle.summary[:90]}" if bundle.summary else ""
-        )
+    try:
+        listed = offers()
+    except Exception:  # noqa: BLE001 - the licence or edition files unreadable: the installed ones
+        log.warning("bundle availability unavailable; listing the installed ones", exc_info=True)
+        listed = [Offer(b.id, b.title, "ready", "", b) for b in bundles.values()]
+    for text, can_open, bundle_id in entries(listed):
         button = QPushButton(text)
-        if bundle.icon:
+        bundle = bundles.get(bundle_id)
+        if bundle is not None and bundle.icon:
             button.setIcon(QIcon(bundle.icon))
-        button.setToolTip(f"{bundle.kind}; from {bundle.origin}")
-        button.clicked.connect(lambda _c=False, b=bundle.id: pick(b))
+        button.setEnabled(can_open)
+        if can_open:
+            button.clicked.connect(lambda _c=False, b=bundle_id: pick(b))
         layout.addWidget(button)
     remember = QCheckBox(
         "Always open this (change it in Settings, or start with --choose)"

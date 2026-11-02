@@ -12,9 +12,17 @@ are meant to follow the same contract. The code is in `eli/bundles/`.
 | `eli --bundle legal` | Opens ELI Legal in place of ELI v3's window |
 | `eli --bundle vr` | Opens ELI VR, with ELI's local server answering for it |
 | `eli --bundles` | Lists the bundles installed, how each was found, and whether the licence allows it |
-| Bundles menu in ELI v3's window | Opens a bundle in a window of its own beside ELI v3 |
+| Bundles menu in ELI v3's window | Every official bundle with what it takes here: open it, enter its licence key, get it (find a downloaded copy, or its download page where it has one), or "coming" for one not released yet |
 
 The remembered choice is the `startup_target` setting: `ask` (the default), `eli`, or `bundle:<id>`.
+
+ELI VR, ELI Legal and the bundles to come are upgrades to ELI v3, and a person starting their own
+ELI v3 is told which they have (`eli.bundles.offers()`): the menu and the start-up question list every
+official bundle, the ones that cannot be opened here greyed with why. A bundle's edition manifest says
+whether it ships as an application of its own (`"app"`: the files it ships as, and a download page if it
+has a public one); ELI v3 finds such a copy left on the desktop, in Downloads or in an applications
+folder (`find_installed`) without its being registered, and `register_program` puts one pointed to by
+hand on the list.
 
 ## How a bundle makes itself known
 

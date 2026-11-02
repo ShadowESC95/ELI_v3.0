@@ -136,27 +136,69 @@ class TabsMixin:
         help_menu.addAction(about_action)
 
     def _add_bundles_menu(self, menubar):
-        """Separate ELI applications (ELI Legal, …) installed beside ELI v3, each opened in a
-        window of its own."""
-        try:
-            from eli.bundles import discover
+        """Separate ELI applications (ELI Legal, ELI VR, …) beside ELI v3, each opened in a window of
+        its own. Shown whenever one exists, installed or not: hidden until something had registered,
+        the menu gave no way in to an ELI VR sitting on the desktop."""
+        self._bundles_menu = menubar.addMenu("&Bundles")
+        self._fill_bundles_menu()
 
-            bundles = discover()
+    def _fill_bundles_menu(self):
+        """Every official bundle with what it takes here: open it, enter its key, get it, or wait."""
+        from eli.bundles import offers
+
+        menu = self._bundles_menu
+        menu.clear()
+        try:
+            listed = offers()
         except Exception:
-            log.debug("bundle discovery failed", exc_info=True)
-            bundles = {}
-        if not bundles:
-            return
-        menu = menubar.addMenu("&Bundles")
-        for bundle in bundles.values():
-            action = QAction(f"Open {bundle.title} in its own window", self)
-            action.setToolTip(bundle.summary)
-            action.triggered.connect(lambda _checked=False, b=bundle.id: self._open_bundle(b))
+            log.warning("the list of bundles could not be read", exc_info=True)
+            listed = []
+        for offer in listed:
+            if offer.state == "ready":
+                action = QAction(f"Open {offer.label} in its own window", self)
+                action.triggered.connect(lambda _checked=False, b=offer.id: self._open_bundle(b))
+            elif offer.state == "needs_key":
+                action = QAction(f"{offer.label}: enter a licence key…", self)
+                action.triggered.connect(lambda _checked=False, b=offer.id: self._open_bundle(b))
+            elif offer.state == "not_installed":
+                action = QAction(f"Get {offer.label}…", self)
+                action.triggered.connect(lambda _checked=False, o=offer: self._get_bundle(o))
+            else:
+                action = QAction(f"{offer.label}: coming", self)
+                action.setEnabled(False)
+            action.setToolTip(offer.detail or (offer.bundle.summary if offer.bundle else ""))
             menu.addAction(action)
-        menu.addSeparator()
-        ask = QAction("Ask at start-up which to open", self)
-        ask.triggered.connect(self._ask_bundle_at_startup)
-        menu.addAction(ask)
+        menu.menuAction().setVisible(bool(menu.actions()))
+        if any(o.state == "ready" for o in listed):
+            menu.addSeparator()
+            ask = QAction("Ask at start-up which to open", self)
+            ask.triggered.connect(self._ask_bundle_at_startup)
+            menu.addAction(ask)
+
+    def _get_bundle(self, offer):
+        """A bundle not installed here: where to download it, or point to a copy already downloaded."""
+        from eli.bundles import bundle_apps, register_program
+
+        box = QMessageBox(self)
+        box.setWindowTitle(offer.label)
+        box.setText(f"{offer.label} is not installed on this machine.")
+        find = box.addButton("Find a downloaded copy…", QMessageBox.ButtonRole.AcceptRole)
+        page = box.addButton("Open the download page", QMessageBox.ButtonRole.ActionRole) if offer.releases else None
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if page is not None and box.clickedButton() is page:
+            QDesktopServices.openUrl(QUrl(offer.releases))
+            return
+        if box.clickedButton() is not find:
+            return
+        names = " ".join((bundle_apps().get(offer.id) or {}).get("files") or [])
+        picked, _ = QFileDialog.getOpenFileName(
+            self, f"Find {offer.label}", str(Path.home()), f"{offer.label} ({names});;All files (*)")
+        if not picked:
+            return
+        register_program(offer.id, Path(picked))
+        self._fill_bundles_menu()
+        self._open_bundle(offer.id)
 
     def _open_bundle(self, bundle_id):
         try:

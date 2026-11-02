@@ -138,3 +138,19 @@ def test_tone_actions_registered():
 def test_tone_routing(text, action):
     from eli.execution.router_enhanced import route
     assert (route(text).get("action") or "").upper() == action
+
+
+def test_the_feeling_eli_speaks_in_reaches_its_world(monkeypatch):
+    """Nothing sent the tone to ELI's world, so its light in VR only ever had the few expressions its
+    own state gives. Sent each turn it changes, and at once when the tone is set by hand."""
+    import eli.world.world_event_bus as bus
+    sent = []
+    monkeypatch.setattr(bus, "fire_social_context_event", lambda **kw: sent.append(kw["expression"]))
+    monkeypatch.setattr(ta, "_last_world_sync", ())
+    ta.set_tone("joyful")
+    assert sent == [ta.expression()] and sent[0] != "neutral"
+    ta.build_situation_brief("hello there", include_timeline=False, include_voice_cue=False)
+    assert len(sent) == 1, "an unchanged tone is not sent again"
+    ta.clear_tone()
+    assert len(sent) == 2
+

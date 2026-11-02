@@ -144,6 +144,59 @@ def registry_dirs() -> list[Path]:
     return unique
 
 
+def bundle_apps() -> dict[str, dict[str, Any]]:
+    """Official bundles that ship as applications of their own, by id: their label, the files they
+    ship as, and where they are released, from their edition's manifest ("app")."""
+    from eli.editions import discover_editions
+    from eli.licensing.products import OFFICIAL_BUNDLES
+
+    out: dict[str, dict[str, Any]] = {}
+    for name, edition in discover_editions().items():
+        app = edition.manifest.get("app")
+        if name in OFFICIAL_BUNDLES and isinstance(app, dict) and app.get("files"):
+            out[name] = {"label": edition.label, "files": [str(f) for f in app["files"]],
+                         "releases": str(app.get("releases") or "")}
+    return out
+
+
+def _search_folders() -> list[Path]:
+    """Where a downloaded application is usually put: the desktop, downloads, an applications folder."""
+    home = Path.home()
+    out = [home / "Desktop", home / "Downloads", home / "Applications"]
+    if sys.platform == "darwin":
+        out.append(Path("/Applications"))
+    if sys.platform == "win32":
+        out.append(Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "Programs")
+    return [p for p in out if p.is_dir()]
+
+
+def find_installed(bundle_id: str) -> Path | None:
+    """A copy of an official bundle's application where one is usually put, in the folder itself or
+    one unpacked into it; the newest when there are several. ELI VR registered itself only when
+    told by hand, so ELI v3 had no way in to a copy sitting on the desktop."""
+    app = bundle_apps().get(bundle_id)
+    if not app:
+        return None
+    found: list[Path] = []
+    for folder in _search_folders():
+        for pattern in app["files"]:
+            found += [p for p in (*folder.glob(pattern), *folder.glob(f"*/{pattern}")) if p.exists()]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def register_program(bundle_id: str, program: Path) -> Path:
+    """Put a separately installed bundle on the list as the program given, as the bundle itself
+    would ("eli-vr bundle register"): for a copy found or picked by hand."""
+    app = bundle_apps().get(bundle_id, {})
+    folder = registry_dirs()[-1]
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{bundle_id}.json"
+    path.write_text(json.dumps({"contract": CONTRACT, "id": bundle_id, "title": app.get("label") or bundle_id,
+                                "edition": bundle_id, "command": [str(program)], "needs": ["server"]},
+                               indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def discover() -> dict[str, Bundle]:
     """Every bundle that can be started here, by id. One that cannot be read is skipped and
     logged; it never stops ELI starting."""
@@ -200,7 +253,51 @@ def discover() -> dict[str, Bundle]:
                 log.warning(
                     "bundle registration %s could not be read", path, exc_info=True
                 )
+    for bundle_id, app in bundle_apps().items():
+        if bundle_id in found:
+            continue
+        program = find_installed(bundle_id)
+        if program is not None:
+            add(Bundle(id=bundle_id, title=app["label"], edition=bundle_id, kind="external",
+                       command=(str(program),), origin=f"found at {program}", extra={"needs": ["server"]}))
     return dict(sorted(found.items()))
+
+
+@dataclass(frozen=True)
+class Offer:
+    """One bundle as a person starting their own ELI v3 is told about it."""
+
+    id: str
+    label: str
+    state: str  # "ready" | "needs_key" | "not_installed" | "coming"
+    detail: str = ""
+    bundle: Bundle | None = None
+    releases: str = ""
+
+
+def offers() -> list[Offer]:
+    """Every official bundle and what it takes to use it here: open it, enter its key, install it,
+    or wait for it. ELI VR, ELI Legal and the bundles to come are upgrades to ELI v3, and a person
+    is told which they have rather than finding a menu with nothing in it. A third party's bundle
+    found here is listed as it is."""
+    from eli.licensing.products import OFFICIAL_BUNDLES
+
+    found, apps = discover(), bundle_apps()
+    out: list[Offer] = []
+    for product, label in OFFICIAL_BUNDLES.items():
+        bundle, app = found.get(product), apps.get(product) or {}
+        if bundle is not None:
+            ok, why = entitled(bundle)
+            out.append(Offer(product, bundle.title or label, "ready" if ok else "needs_key",
+                             "" if ok else why, bundle, app.get("releases", "")))
+        elif app:
+            out.append(Offer(product, app["label"], "not_installed",
+                             f"{app['label']} is not installed on this machine.", None, app.get("releases", "")))
+        else:
+            out.append(Offer(product, label, "coming", f"{label} is not released yet."))
+    out += [Offer(bundle.id, bundle.title, "ready", "", bundle) for bundle in found.values()
+            if bundle.id not in OFFICIAL_BUNDLES]
+    return out
 
 
 def entitled(bundle: Bundle) -> tuple[bool, str]:

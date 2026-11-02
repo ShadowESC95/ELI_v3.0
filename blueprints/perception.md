@@ -202,6 +202,12 @@ Decides the emotion ELI **expresses** and drives three output channels at once.
   `_apply_tone_pitch` shifts the actual audio pitch** so sad sounds lower, ecstatic higher —
   applied on the Piper, natural-neural and clone paths), and face
   (`world/avatar/persona_mapper` + the animated `gui/widgets/eli_face.py` take the expression).
+  ELI's world gets the tone too (`sync_world`, a `social_context` event): each turn it changes, from
+  `build_situation_brief`, and at once on `set_tone`/`clear_tone`. Nothing sent it before, so ELI's
+  world, and ELI's light in ELI VR, only ever had the few expressions ELI's own state gives. The
+  override is read from the settings once per process: re-read while it was None, a world thread
+  reading the tone between `clear_tone()` dropping it and saving the cleared setting took the old
+  tone back up.
 - **Core personality is never overwritten** — the directive explicitly shades *how* ELI
   delivers, not *who* it is (emergent-voice principle). `ELI_TONE_ADAPT=0` disables.
 

@@ -15,6 +15,7 @@ def isolated(monkeypatch, tmp_path):
     """No installed packages, no real registry folders: only what each test provides."""
     monkeypatch.setattr(bundles, "entry_points", lambda group=None: [])
     monkeypatch.setattr(bundles, "registry_dirs", lambda: [tmp_path / "registry"])
+    monkeypatch.setattr(bundles, "_search_folders", lambda: [])   # not this machine's desktop
     monkeypatch.delenv("ELI_EXTRA_BUNDLES", raising=False)
     return tmp_path
 
@@ -313,3 +314,71 @@ def test_eli_vr_has_an_edition_pack_like_the_others():
 
     policy = importlib.import_module(vr.policy_module)
     assert policy.blocked_actions() == set() and policy.output_disclaimer() is None
+
+
+def test_eli_vr_on_the_desktop_is_found_without_being_registered(isolated, monkeypatch):
+    """Registering was a command typed by hand, so v3 had no way in to a copy on the desktop."""
+    import os
+    desktop = isolated / "Desktop"
+    desktop.mkdir()
+    old, new = desktop / "ELI_VR-0.9.1-x86_64.AppImage", desktop / "ELI_VR-0.9.2-x86_64.AppImage"
+    for i, path in enumerate((old, new)):
+        path.write_text("")
+        os.utime(path, (1_000_000 + i, 1_000_000 + i))
+    monkeypatch.setattr(bundles, "_search_folders", lambda: [desktop])
+    found = bundles.discover()
+    assert found["vr"].kind == "external" and found["vr"].command == (str(new),), "the newest copy"
+    assert "server" in found["vr"].extra["needs"]
+
+
+def test_a_copy_pointed_to_by_hand_is_put_on_the_list(isolated):
+    program = isolated / "ELI-VR.x86_64"
+    program.write_text("")
+    written = bundles.register_program("vr", program)
+    assert written.parent == isolated / "registry"
+    found = bundles.discover()
+    assert found["vr"].command == (str(program),) and found["vr"].title == "ELI VR"
+
+
+def test_every_official_bundle_is_listed_with_what_it_takes_here(isolated, monkeypatch):
+    """ELI VR, ELI Legal and the bundles to come are upgrades to ELI v3: a person starting their own
+    ELI v3 is told which they have, which need a key, which to get, and which are coming."""
+    from eli.licensing.products import OFFICIAL_BUNDLES
+    listed = {o.id: o for o in bundles.offers()}
+    assert set(OFFICIAL_BUNDLES) <= set(listed)
+    assert listed["vr"].state == "not_installed" and listed["legal"].state == "not_installed"
+    assert all(listed[p].state == "coming" for p in OFFICIAL_BUNDLES if p not in bundles.bundle_apps())
+    (isolated / "ELI-VR.x86_64").write_text("")
+    bundles.register_program("vr", isolated / "ELI-VR.x86_64")
+    monkeypatch.setattr(bundles, "entitled", lambda b: (False, "no ELI VR licence on this machine"))
+    assert bundles.offers()[[o.id for o in bundles.offers()].index("vr")].state == "needs_key"
+    monkeypatch.setattr(bundles, "entitled", lambda b: (True, ""))
+    assert {o.id: o for o in bundles.offers()}["vr"].state == "ready"
+
+
+def test_the_menu_and_the_start_up_choice_say_what_each_bundle_needs(isolated, monkeypatch):
+    """Hidden until something had registered, the menu gave no way in to ELI VR at all."""
+    from eli.bundles.chooser import entries
+    from eli.gui.main_window._common import QApplication, QMenu, QWidget
+    from eli.gui.main_window._mixins.tabs import TabsMixin
+    QApplication.instance() or QApplication([])
+
+    class Window(QWidget, TabsMixin):
+        pass
+
+    window = Window()
+    window._bundles_menu = QMenu()
+    window._fill_bundles_menu()
+    menu = {a.text(): a.isEnabled() for a in window._bundles_menu.actions()}
+    assert menu.get("Get ELI VR…") is True and menu.get("Get ELI Legal…") is True
+    assert menu.get("ELI Healthcare: coming") is False and window._bundles_menu.menuAction().isVisible()
+    shown = {bundle_id: (text, can) for text, can, bundle_id in entries(bundles.offers())}
+    assert shown["vr"] == ("ELI VR — not installed", False) and shown["healthcare"][1] is False
+
+    (isolated / "ELI-VR.x86_64").write_text("")
+    bundles.register_program("vr", isolated / "ELI-VR.x86_64")
+    monkeypatch.setattr(bundles, "entitled", lambda b: (True, ""))
+    window._fill_bundles_menu()
+    menu = {a.text() for a in window._bundles_menu.actions()}
+    assert "Open ELI VR in its own window" in menu and "Get ELI VR…" not in menu
+    assert {b: c for _t, c, b in entries(bundles.offers())}["vr"] is True

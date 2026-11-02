@@ -16,5 +16,14 @@
     "personal",
     "pro",
     "enterprise"
-  ]
+  ],
+  "app": {
+    "files": [
+      "ELI_VR*.AppImage",
+      "ELI-VR.x86_64",
+      "ELI-VR.exe",
+      "ELI VR.app"
+    ],
+    "releases": ""
+  }
 }

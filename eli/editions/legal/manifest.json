@@ -19,5 +19,14 @@
   "suggested_tiers": [
     "pro",
     "enterprise"
-  ]
+  ],
+  "app": {
+    "files": [
+      "ELI_Legal*.AppImage",
+      "ELI Legal.app",
+      "ELI_Legal*/eli-legal",
+      "ELI_Legal*.exe"
+    ],
+    "releases": ""
+  }
 }
