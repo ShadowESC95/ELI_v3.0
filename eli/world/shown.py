@@ -6,7 +6,10 @@ What of ELI's own records stands in the rooms of its house.
 The rooms are named for what ELI does: remembering, working, improving. This
 puts the real thing in each: in the Memory Archive, the memories ELI has formed
 lately, each a light that carries its own words; in the Upgrade Bay, the goals
-ELI holds now. They are read from ELI's memory and goal store, never made up,
+ELI holds now; on the Evidence Wall, what ELI believes about the user, each with
+when it learned it (a contested belief shows as one); in the Anomaly Room, where
+two things ELI was told disagree, with the question that would settle it. A room
+shows as many as it holds (building.MAX_PER_ROOM), the newest and surest first. They are read from ELI's memory and goal store, never made up,
 and they are not things ELI built: a body draws them, and may let the user pick
 one up, but moving one changes nothing in ELI.
 
@@ -71,6 +74,44 @@ def _goals() -> List[Dict[str, Any]]:
     return out
 
 
+def _claims() -> List[Dict[str, Any]]:
+    from eli.memory.claims import describe
+    from eli.memory.memory import get_memory
+    from eli.world.building import MAX_PER_ROOM
+    rows = [r for r in get_memory().claims_current() or [] if isinstance(r, dict) and str(r.get("value", "")).strip()]
+    rows.sort(key=lambda r: (float(r.get("recorded_at") or 0.0), float(r.get("confidence") or 0.0)), reverse=True)
+    out = []
+    for row in rows[:MAX_PER_ROOM]:
+        key = f"claim_{row.get('id')}"
+        contested = bool(row.get("contested"))
+        sure = max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
+        out.append({
+            "id": key, "name": f"{str(row.get('relation', '')).replace('_', ' ')}: {row.get('value')}"[:48],
+            "kind": "claim", "room": "evidence_wall", "x": 0.0, "y": 0.0, "importance": sure,
+            "meaning": describe(row)[:200], "made_by": "claims",
+            "form": {"shape": "board", "colour": "#f5b942" if contested else "#d9e4f2", "size": 0.6,
+                     "glow": round(0.3 + 0.6 * sure, 2), "pos": _spot(key, 0.9, 2.1)},
+        })
+    return out
+
+
+def _conflicts() -> List[Dict[str, Any]]:
+    from eli.memory.claims import conflict_question
+    from eli.memory.memory import get_memory
+    from eli.world.building import MAX_PER_ROOM
+    out = []
+    for conflict in (get_memory().claim_conflicts() or [])[:MAX_PER_ROOM]:
+        relation = str(conflict.get("relation", ""))
+        key = f"conflict_{hashlib.sha1(relation.encode('utf-8')).hexdigest()[:10]}"
+        out.append({
+            "id": key, "name": relation.replace("_", " ").capitalize()[:47] + "?", "kind": "conflict",
+            "room": "anomaly_room", "x": 0.0, "y": 0.0, "importance": 0.9,
+            "meaning": conflict_question(conflict)[:200], "made_by": "claims",
+            "form": {"shape": "crystal", "colour": "#ff6a4d", "size": 0.7, "glow": 0.9, "pos": _spot(key, 0.4, 1.6)},
+        })
+    return out
+
+
 def items(now: float | None = None) -> List[Dict[str, Any]]:
     """The records to show. A source that cannot be read shows nothing of its own."""
     global _cache
@@ -78,7 +119,7 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
     if _cache[1] and now - _cache[0] < REFRESH_SECONDS:
         return _cache[1]
     found: List[Dict[str, Any]] = []
-    for source in (_memories, _goals):
+    for source in (_memories, _goals, _claims, _conflicts):
         try:
             found.extend(source())
         except Exception:

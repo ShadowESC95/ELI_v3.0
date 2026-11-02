@@ -57,6 +57,13 @@ def _registry_path() -> Path:
 
 
 def _refs_dir() -> Path:
+    """Where a cloned voice's reference recording is kept: beside the models, unless
+    ELI_VOICE_REFS_DIR names the folder."""
+    named = os.environ.get("ELI_VOICE_REFS_DIR")
+    if named:
+        d = Path(named)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
     try:
         from eli.core.paths import models_dir
         base = Path(models_dir())

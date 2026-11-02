@@ -180,9 +180,13 @@ went wrong. A chat reply is not a tool.
 ## ELI's records in the rooms (`eli/world/shown.py`)
 
 Version 2 of the feed adds, to the objects, things that are ELI's records and not things ELI built:
-`kind: "memory"` in `memory_archive` (its recent semantic memories, each with its text) and
-`kind: "goal"` in `upgrade_bay` (the goal titles ELI holds). Read from `get_memory()` and
-`goal_store.summarize_goals()`, cached for thirty seconds.
+`kind: "memory"` in `memory_archive` (its recent semantic memories, each with its text),
+`kind: "goal"` in `upgrade_bay` (the goal titles ELI holds), `kind: "claim"` on `evidence_wall`
+(each belief ELI holds about the user now, as `claims.describe` words it, amber when contested,
+brighter the surer ELI is) and `kind: "conflict"` in `anomaly_room` (each open disagreement, with
+`claims.conflict_question` as its meaning). Read from `get_memory()` and
+`goal_store.summarize_goals()`, cached for thirty seconds; claims and conflicts show as many as the
+room holds (`building.MAX_PER_ROOM`), newest and surest first.
 
 ## Not there yet
 
@@ -190,8 +194,8 @@ Version 2 of the feed adds, to the objects, things that are ELI's records and no
   move or change what they were built with.
 - No model large enough to be offered free parts has been tried; they have been drawn from edits
   sent by hand.
-- Claims and open conflicts (`eli/memory/claims.py`) are not yet shown on the Evidence Wall or in
-  the Anomaly Room, and a conceded belief does not yet raise an urge.
+- A conceded belief does not yet raise an urge, and a conflict cannot yet be settled from inside the
+  world (the user answers it in conversation).
 - Pictures of ELI's own (a sky or a surface from the image engine) are not wired in.
 - The scene is held in the server process. A turn taken in another process does not see it.
 - One world, one user: a second person's client would report into the same scene.

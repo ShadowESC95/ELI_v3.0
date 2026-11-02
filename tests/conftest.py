@@ -51,6 +51,7 @@ os.environ["ELI_DATA_DIR"] = str(SANDBOX)
 os.environ["ELI_LEARNING_DIR"] = str(SANDBOX / "training")
 os.environ["ELI_CONFIG_DIR"] = str(SANDBOX / "config")
 os.environ["ELI_GPU_PACK_LOG"] = str(SANDBOX / "gpu-pack.log")   # it would go beside the checkout's runtime/
+os.environ["ELI_VOICE_REFS_DIR"] = str(SANDBOX / "voice_profiles")   # and a cloned voice beside its models/
 
 
 def _fresh_config() -> None:
@@ -315,7 +316,7 @@ def reset_gguf_inference_globals():
 # created or changed there is named. It fails the run in CI and with ELI_TEST_STRICT_ISOLATION=1;
 # otherwise it is only reported, since a copy of ELI running from this checkout (ELI's own
 # RUN_TESTS) writes its state while the tests run.
-_OWN_STATE = [ROOT / name for name in ("artifacts", "config", "training", "runtime", "voices", "plugins")]
+_OWN_STATE = [ROOT / name for name in ("artifacts", "config", "training", "runtime", "voices", "plugins", "models")]
 
 
 def _own_state() -> dict:

@@ -147,12 +147,52 @@ def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
     assert memory["meaning"] == "The user keeps their invoices by year, newest first." and memory["form"]["shape"] == "orb"
     assert goal["room"] == "upgrade_bay" and goal["name"] == "Learn the filing system" and goal["form"]["shape"] == "beacon"
     assert memory["form"]["pos"] == shown.items()[0]["form"]["pos"], "a record keeps its place"
+    read_once = len(reads)
     spatial_feed.spatial_state(WORLD, version=2)
-    assert reads == [1], "ELI's records are not read again for every poll"
+    assert len(reads) == read_once, "ELI's records are not read again for every poll"
     assert "memory" not in {o["kind"] for o in spatial_feed.spatial_state(WORLD)["objects"]}, "version 1 is as it was"
     shown.forget()
     monkeypatch.setattr(memory_module, "get_memory", lambda: (_ for _ in ()).throw(RuntimeError("no memory")))
     assert {o["kind"] for o in shown.items()} == {"goal"}, "a source that cannot be read shows nothing of its own"
+    shown.forget()
+
+
+def test_what_eli_believes_is_on_the_evidence_wall_and_what_disagrees_is_in_the_anomaly_room(monkeypatch):
+    import sqlite3
+    from eli.memory import claims
+    from eli.world import building, shown
+    memory_module = pytest.importorskip("eli.memory.memory")
+    conn = sqlite3.connect(":memory:")
+    claims.record(conn, "works_as", "a ferry pilot", origin="user_said", now=1_780_000_000.0)
+    claims.record(conn, "lives_in", "Harbour Town", origin="user_said", now=1_780_100_000.0)
+    claims.record(conn, "lives_in", "Upper Ridge", origin="eli_said", now=1_780_200_000.0)
+
+    class Memory:
+        def get_recent_semantic_memories(self, limit=16):
+            return []
+
+        def claims_current(self):
+            return claims.current(conn)
+
+        def claim_conflicts(self):
+            return claims.open_conflicts(conn)
+
+    monkeypatch.setattr(memory_module, "get_memory", lambda: Memory())
+    shown.forget()
+    shown_now = shown.items()
+    beliefs = [o for o in shown_now if o["kind"] == "claim"]
+    assert [o["name"] for o in beliefs] == ["lives in: Harbour Town", "works as: a ferry pilot"], "newest first"
+    assert all(o["room"] == "evidence_wall" and o["form"]["shape"] == "board" for o in beliefs)
+    assert beliefs[0]["meaning"].startswith("lives in: Harbour Town (since ")
+    assert beliefs[0]["form"]["colour"] == "#f5b942", "the belief something else disputes shows as contested"
+    assert beliefs[1]["form"]["colour"] == "#d9e4f2"
+    [conflict] = [o for o in shown_now if o["kind"] == "conflict"]
+    assert conflict["room"] == "anomaly_room" and conflict["name"] == "Lives in?"
+    assert "Harbour Town" in conflict["meaning"] and "Upper Ridge" in conflict["meaning"] and conflict["meaning"].endswith("?")
+    for n in range(building.MAX_PER_ROOM + 5):
+        claims.record(conn, f"likes_{n}", f"thing {n}", single_valued=False, origin="user_said", now=1_780_300_000.0 + n)
+    shown.forget()
+    assert sum(o["kind"] == "claim" for o in shown.items()) == building.MAX_PER_ROOM, "as many as the room holds"
     shown.forget()
 
 
