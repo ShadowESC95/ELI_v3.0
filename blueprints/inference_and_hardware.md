@@ -156,7 +156,12 @@ bundled copy via `sys.path`.
   to force the subprocess probe on every single GUI launch regardless of
   whether the marker file already said the pack was good.
 - Writes `runtime/gpu/.gpu_pack_ok` + `.gpu_pack.json` (backend, version) on
-  success; respects `runtime/.gpu_choice` for CPU opt-out.
+  success; respects `runtime/.gpu_choice` for CPU opt-out. A pack verified in its own process
+  keeps its marker even when this process cannot switch to it; the next start will.
+- **A new runtime updates the pack it finds** (`outdated_pack`, `eli_entry._first_run_gpu_offer`):
+  same backend, without asking the first-install question again. An update that fails keeps the
+  GPU choice and is tried again at the next start, and a `cpu-install-failed` marker beside an
+  older pack is retried too: a failed download used to be recorded as a CPU choice for good.
 - **One source for the runtime**: the bundled `llama-cpp-python` and every pack are built from
   `packaging/llama_source.py`: pinned llama-cpp-python and llama.cpp archives checked against their
   SHA-256, the binding changes a newer llama.cpp needs, and the version in

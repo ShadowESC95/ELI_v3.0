@@ -792,6 +792,18 @@ def pack_matches_runtime(dest: Path) -> bool:
     return not want or not have or want == have
 
 
+def outdated_pack(dest: Path | None = None) -> str | None:
+    """The version of an installed pack that came with an earlier ELI whose llama.cpp this
+    build no longer runs; None when there is no such pack."""
+    try:
+        dest = dest or (_eli_root() / "runtime" / "gpu")
+    except RuntimeError:
+        return None
+    if not (dest / "llama_cpp").is_dir() or not (dest / ".gpu_pack.json").is_file():
+        return None
+    return None if pack_matches_runtime(dest) else pack_version(dest)
+
+
 def _wanted_pack_version() -> str | None:
     """The only pack version this build may install: its own runtime's."""
     return bundled_runtime_version()

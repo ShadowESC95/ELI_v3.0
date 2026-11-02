@@ -175,7 +175,7 @@ def gp(tmp_path, monkeypatch):
     (meipass / "llama_cpp").mkdir(parents=True)
     (meipass / "llama_cpp" / "__init__.py").write_text('__version__ = "0.3.36"\n')
     monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
-    # not through ELI_PROJECT_ROOT: any thread's load_settings() removes a path outside the install
+    # not through ELI_PROJECT_ROOT: the process's first load_settings() removes a path outside the install
     monkeypatch.setattr(eli_gpu_pack, "_eli_root", lambda: tmp_path / "root")
     return eli_gpu_pack
 
@@ -266,5 +266,64 @@ def test_a_failed_activation_no_longer_deletes_the_marker():
     src = (ROOT / "packaging" / "pyinstaller" / "eli_entry.py").read_text()
     i = src.index("def _first_run_gpu_offer(")
     body = src[i:src.index("\ndef ", i + 10)]
-    j = body.index("if not _gp.activate_gpu_pack_runtime(dest, verify=True):")
-    assert ".unlink(" not in body[j:j + 400]
+    assert '".gpu_pack_ok").unlink' not in body, "a pack verified in its own process keeps its marker"
+
+
+def test_a_pack_from_an_earlier_version_is_named_as_such(gp, tmp_path):
+    dest = _pack(tmp_path, "0.3.35")
+    assert gp.outdated_pack(dest) == "0.3.35"
+    (dest / "llama_cpp" / "__init__.py").write_text('__version__ = "0.3.36"\n')
+    assert gp.outdated_pack(dest) is None
+
+
+_OFFER = """
+import importlib.util, json, sys
+s = importlib.util.spec_from_file_location("eli_entry", sys.argv[1])
+m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+sys.frozen, sys._MEIPASS = True, sys.argv[2]
+gp, calls = m._gpu_pack_module(), []
+def install(argv):
+    calls.append(argv)
+    return 1
+def dialog(*, title, label, work_fn, indeterminate=False):
+    calls.append(label)
+    return work_fn({})
+gp.install, m._run_progress_dialog = install, dialog
+m._message_box_ask = lambda **k: calls.append("asked")
+m._message_box_warning = lambda *a: None
+m._first_run_gpu_offer()
+print(json.dumps(calls))
+"""
+
+
+def _offer(tmp_path, backend, choice):
+    import os
+    import subprocess
+    dest = _pack(tmp_path, "0.3.35")
+    (dest / ".gpu_pack.json").write_text(json.dumps({"version": "0.3.35", "backend": backend}))
+    (dest.parent / ".gpu_choice").write_text(choice)
+    entry = ROOT / "packaging" / "pyinstaller" / "eli_entry.py"
+    out = subprocess.run([sys.executable, "-c", _OFFER, str(entry), sys._MEIPASS],
+                         env={**os.environ, "ELI_PROJECT_ROOT": str(tmp_path / "root")},
+                         capture_output=True, text=True, timeout=120, cwd=ROOT, check=True)
+    return json.loads(out.stdout.strip().splitlines()[-1]), (dest.parent / ".gpu_choice").read_text()
+
+
+@pytest.mark.parametrize("backend, argv", [("cuda", ["--force"]), ("vulkan", ["--vulkan", "--force"])])
+def test_an_update_brings_the_pack_up_to_date_without_asking_again(gp, tmp_path, backend, argv):
+    """A new runtime asked a GPU user the first-install question again."""
+    if sys.platform == "darwin":
+        pytest.skip("macOS builds carry Metal, no pack")
+    calls, choice = _offer(tmp_path, backend, "gpu")
+    assert "asked" not in calls and calls[1] == argv
+    assert "0.3.35 → 0.3.36" in calls[0]
+    # the download failed (the fake returns 1): still the person's GPU choice, tried again next start
+    assert choice == "gpu"
+
+
+def test_a_failed_update_recorded_as_cpu_is_tried_again(gp, tmp_path):
+    """A failed pack download was recorded as a CPU choice and every start after stayed on the CPU."""
+    if sys.platform == "darwin":
+        pytest.skip("macOS builds carry Metal, no pack")
+    calls, _choice = _offer(tmp_path, "cuda", "cpu-install-failed")
+    assert calls[1] == ["--force"] and "asked" not in calls

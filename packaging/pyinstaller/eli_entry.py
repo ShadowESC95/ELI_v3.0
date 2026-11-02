@@ -886,7 +886,9 @@ def _first_run_gpu_offer() -> None:
 
         if marker.is_file():
             choice = marker.read_text(encoding="utf-8", errors="replace").strip()
-            if choice.startswith("cpu"):
+            # A pack the person chose that failed to update is not a choice of the CPU (a failed
+            # download used to be recorded so, and every start after stayed on the CPU): tried again.
+            if choice.startswith("cpu") and not (choice == "cpu-install-failed" and _gp.outdated_pack(dest)):
                 return
 
         if _gp.gpu_pack_looks_installed(dest) or _gp.gpu_pack_operational(dest):
@@ -898,38 +900,47 @@ def _first_run_gpu_offer() -> None:
                       "running on the bundled runtime")
             return
 
-        from eli.core.hardware_profile import detect_hardware, integrated_gpu_label
-        hp = detect_hardware()
-        runtime.mkdir(parents=True, exist_ok=True)
-        if not hp.has_gpu:
-            marker.write_text("cpu-no-gpu-hardware", encoding="utf-8")
-            return
-
-        nvidia, vulkan, intel_igpu = _gpu_vendor_flags(hp)
-        backend = "NVIDIA CUDA" if nvidia else "Vulkan"
-        size = "roughly 400–500 MB" if nvidia else "roughly 90–200 MB"
-        if intel_igpu or hp.gpu_integrated:
-            gpu_line = (
-                f"{integrated_gpu_label(hp.gpu_name, getattr(hp, 'gpu_vendor', ''))} "
-                f"({hp.ram_gb:.1f} GB RAM, shared memory)"
-            )
+        old = _gp.outdated_pack(dest)
+        chosen = _gp._pack_backend(dest) if old else ""
+        if chosen:
+            # Chosen under an earlier ELI whose llama.cpp this one no longer runs: the pack follows
+            # the app, same backend, without asking again.
+            nvidia, vulkan = chosen == "cuda", chosen == "vulkan"
+            label = (f"Updating the GPU pack to match this version of ELI "
+                     f"(llama.cpp {old} → {_gp.bundled_runtime_version()})…")
         else:
-            vram_gb = max(hp.total_vram_mb, hp.free_vram_mb) / 1024.0
-            gpu_line = f"{hp.gpu_name} — {vram_gb:.0f} GB VRAM"
+            from eli.core.hardware_profile import detect_hardware, integrated_gpu_label
+            hp = detect_hardware()
+            runtime.mkdir(parents=True, exist_ok=True)
+            if not hp.has_gpu:
+                marker.write_text("cpu-no-gpu-hardware", encoding="utf-8")
+                return
 
-        if not _message_box_ask(
-            title="ELI - GPU acceleration",
-            text=f"ELI detected: {gpu_line}",
-            informative=(
-                f"Install the {backend} GPU pack now? This downloads the GPU inference engine "
-                f"once ({size}). CPU mode always works; you can install or change the pack "
-                "later from the model load screen or with ELI --install-gpu-pack."
-            ),
-            yes_text=f"Install {backend} GPU pack (recommended)",
-            no_text="Use CPU only",
-        ):
-            marker.write_text("cpu-user-choice", encoding="utf-8")
-            return
+            nvidia, vulkan, intel_igpu = _gpu_vendor_flags(hp)
+            backend = "NVIDIA CUDA" if nvidia else "Vulkan"
+            if intel_igpu or hp.gpu_integrated:
+                gpu_line = (
+                    f"{integrated_gpu_label(hp.gpu_name, getattr(hp, 'gpu_vendor', ''))} "
+                    f"({hp.ram_gb:.1f} GB RAM, shared memory)"
+                )
+            else:
+                vram_gb = max(hp.total_vram_mb, hp.free_vram_mb) / 1024.0
+                gpu_line = f"{hp.gpu_name} — {vram_gb:.0f} GB VRAM"
+
+            if not _message_box_ask(
+                title="ELI - GPU acceleration",
+                text=f"ELI detected: {gpu_line}",
+                informative=(
+                    f"Install the {backend} GPU pack now? This downloads the GPU inference engine "
+                    "once. CPU mode always works; you can install or change the pack "
+                    "later from the model load screen or with ELI --install-gpu-pack."
+                ),
+                yes_text=f"Install {backend} GPU pack (recommended)",
+                no_text="Use CPU only",
+            ):
+                marker.write_text("cpu-user-choice", encoding="utf-8")
+                return
+            label = "Installing GPU acceleration pack…"
 
         install_argv: list[str] = []
         if vulkan and not nvidia:
@@ -944,19 +955,19 @@ def _first_run_gpu_offer() -> None:
 
         rc = _run_progress_dialog(
             title="ELI - GPU acceleration",
-            label="Installing GPU acceleration pack…",
+            label=label,
             work_fn=_install_work,
             indeterminate=True,
         )
         if rc == 0 and _gp.gpu_pack_operational(dest):
             marker.write_text("gpu-vulkan" if (vulkan and not nvidia) else "gpu", encoding="utf-8")
+            # Verified just now in its own process; if this one cannot switch to it (the bundled
+            # runtime is already loaded), the next start will. Its marker stays.
             if not _gp.activate_gpu_pack_runtime(dest, verify=True):
-                try:
-                    (dest / ".gpu_pack_ok").unlink(missing_ok=True)
-                except Exception:
-                    pass
+                print("[gpu-pack] installed and verified; active from the next start")
         elif rc != 0:
-            marker.write_text("cpu-install-failed", encoding="utf-8")
+            if not old:
+                marker.write_text("cpu-install-failed", encoding="utf-8")
             try:
                 reason = _gp.last_failure()
                 log_path = _gp._log_path()
@@ -968,6 +979,9 @@ def _first_run_gpu_offer() -> None:
                 else "ELI --install-gpu-pack --force"
             )
             body = (
+                "ELI could not update the GPU pack for this version and runs on CPU for now "
+                f"(fully functional). It tries again at the next start, or now with: {retry}"
+                if old else
                 "ELI could not install a GPU acceleration pack for this machine "
                 f"and will run on CPU (fully functional). Retry with: {retry}"
             )
