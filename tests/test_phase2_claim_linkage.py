@@ -140,15 +140,3 @@ def test_revising_a_stance_supersedes_the_old_claim_and_links_the_new_one(cur):
     ).fetchone()
     assert new_row[0] != old_claim_id
     assert new_row[0] == claims.current(cur)[0]["id"]
-
-
-# ── session_summaries: explicitly NOT linked ─────────────────────────────────
-
-def test_session_summaries_has_no_claim_id_column():
-    """Deliberate scope boundary, not an oversight — see module docstring."""
-    import inspect
-    from eli.runtime import profile_extractor as pe
-    src = inspect.getsource(pe.ensure_profile_tables)
-    i = src.index("CREATE TABLE IF NOT EXISTS session_summaries")
-    j = src.index(")", i)
-    assert "claim_id" not in src[i:j]

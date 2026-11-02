@@ -102,16 +102,3 @@ def test_runtime_status_evidence_carries_ram_and_cpu(monkeypatch):
     from eli.contracts import runtime_status as rs
     ev = rs.build_live_evidence(runtime_snapshot={}, settings={})
     assert "ram_total_gb: 33.5" in rs.build_content(ev, requested_mode="quick", surface="t")
-
-
-def test_eli_runtime_statements_are_not_stored_as_knowledge(monkeypatch):
-    from eli.kernel.engine import CognitiveEngine as CE
-    stored = []
-    stub = SimpleNamespace(
-        session_id="s", user_id="u",
-        _store_memory_record=lambda *a, **k: stored.append(a),
-    )
-    import eli.kernel.engine as eng
-    monkeypatch.setattr(eng, "_HAS_GOVERNANCE", False, raising=False)
-    src = __import__("inspect").getsource(CE._maybe_store_memory)
-    assert "runtime-state statement" in src, "the storage rule must stay in _maybe_store_memory"

@@ -55,15 +55,6 @@ def test_prose_given_to_the_model_matches_the_real_bands():
             f"{h:02d}:00 — prose says {stated}, part_of_day says {actual}")
 
 
-def test_the_greeting_never_becomes_a_farewell():
-    """'Good night' is a farewell; the daemon template must not produce it."""
-    import eli.planning.proactive_daemon as pd
-    src = inspect.getsource(pd)
-    assert 'f"Good {_part_of_day()}"' not in src, (
-        "the greeting drops part_of_day straight into 'Good {...}', which now "
-        "yields 'Good night' as a GREETING")
-
-
 def test_report_label_follows_the_clock():
     assert report_label(_at(2)).lower().startswith("night")
     assert report_label(_at(9)).lower().startswith("morning")

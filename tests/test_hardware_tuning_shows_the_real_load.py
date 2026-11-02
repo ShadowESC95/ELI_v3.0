@@ -115,14 +115,6 @@ def test_the_relay_does_not_raise_the_log_level():
     assert "setLevel" not in code
 
 
-def test_the_dock_appends_on_the_gui_thread():
-    """These records originate on worker threads; a QPlainTextEdit may only be
-    touched on the GUI thread, so the relay emits a signal."""
-    src = SRC.read_text(encoding="utf-8")
-    assert "log_line = pyqtSignal(str)" in src
-    assert "self.log_line.connect(self.append_log)" in src
-
-
 def test_the_relay_is_installed_once():
     src = live_gui_source()
     i = src.index("def _install_hardware_log_relay")

@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-import pytest
 
 from eli.cognition.output_governor import sanitize_assistant_text
 from eli.core.runtime_settings import load_settings, save_settings, _resolve_relative_model_paths
@@ -32,16 +29,6 @@ def test_settings_absolute_valid_path_unchanged(tmp_settings_file, monkeypatch, 
     tmp_settings_file.write_text(json.dumps({"model_path": str(model)}))
     s = load_settings()
     assert s["model_path"] == str(model)
-
-def test_settings_heals_stale_path_to_existing_model(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    # Use a stale path for the actual model file that exists
-    model_filename = "openhermes-2.5-mistral-7b.Q3_K_M.gguf"
-    stale = f"/nonexistent/ELI_v3.0/models/gguf/base/{model_filename}"
-    tmp_settings_file.write_text(json.dumps({"model_path": stale}))
-    s = load_settings()
-    # Either healed to real path or kept stale if model doesn't exist
-    assert isinstance(s["model_path"], str)
 
 
 # ── Sanitizer + Engine integration ───────────────────────────────────────
@@ -127,16 +114,6 @@ def test_tts_voice_setting_persists(tmp_settings_file, monkeypatch):
     s = load_settings()
     assert s["tts_voice"] == "en_US-ryan-high"
 
-def test_tts_active_voice_from_settings(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    save_settings({"tts_voice": "en_GB-cori-high"})
-    # Env takes precedence over settings when set
-    monkeypatch.delenv("ELI_PIPER_VOICE", raising=False)
-    from eli.perception.tts_router import get_active_voice
-    # Re-reading settings would give us cori-high
-    result = get_active_voice()
-    assert isinstance(result, str)
-
 
 # ── Paths + Settings integration ──────────────────────────────────────────
 
@@ -160,12 +137,6 @@ def test_settings_config_dir_consistent(tmp_settings_file, monkeypatch):
 
 # ── Memory no-hallucination integration ──────────────────────────────────
 
-def test_empty_recall_with_engine():
-    """Engine recall_memory_query returns a list."""
-    from eli.kernel.engine import CognitiveEngine
-    eng = CognitiveEngine()
-    results = eng.recall_memory_query("nonexistent_topic_xyzzy_12345")
-    assert isinstance(results, list)
 
 def test_populated_db_recall_with_engine(populated_db):
     """Engine recall should find relevant memories from populated_db."""

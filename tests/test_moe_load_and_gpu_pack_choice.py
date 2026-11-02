@@ -59,17 +59,6 @@ def test_big_ram_machines_can_keep_llamacpp_defaults(monkeypatch):
     assert p.no_host is False and p.use_extra_bufts is True
 
 
-def test_every_loader_gets_it_through_the_one_patch():
-    """The window, the terminal launcher and the engine all load through gguf_inference.load_model,
-    which builds the model through expert_offload_params()."""
-    import inspect
-    from eli.core import moe_offload
-    src = inspect.getsource(moe_offload.expert_offload_params)
-    assert "return apply_zero_copy(params)" in src
-    gui = (Path(__file__).resolve().parents[1] / "eli/gui/main_window/models.py").read_text(encoding="utf-8")
-    assert "_gg.load_request(" in gui and "Llama(" not in gui.split("class LocalModelManager", 1)[1].split("\nclass ", 1)[0]
-
-
 @pytest.mark.parametrize("experts,blocks,expected", [(19, 40, 19), (40, 40, None), (None, 40, "no override")])
 def test_the_model_is_built_with_the_experts_the_plan_keeps_in_ram(monkeypatch, experts, blocks, expected):
     """Experts of the first N layers stay in RAM as the plan says; all of them when N covers every
@@ -134,13 +123,6 @@ def test_nothing_to_enable_without_a_pack(gp, tmp_path):
     assert gp.enable_installed_pack() is False
 
 
-def test_a_successful_install_records_the_gpu_choice(gp):
-    import inspect
-    src = inspect.getsource(gp._activate_staged_gpu_pack)
-    ok = src.index('(dest / ".gpu_pack_ok").write_text')
-    assert "record_gpu_choice(dest.parent)" in src[ok:]
-
-
 def test_install_buttons_enable_an_existing_pack_before_downloading():
     src = STARTUP.read_text(encoding="utf-8")
     i = src.index("def _install_gpu_pack(")
@@ -148,4 +130,3 @@ def test_install_buttons_enable_an_existing_pack_before_downloading():
     assert body.index("_enable_switched_off_pack(owner)") < body.index("_GpuPackInstallThread(")
     for starter in ("def _start_gpu_pack_install(", "def _wiz_start_gpu_pack_install("):
         j = src.index(starter)
-        assert "_install_gpu_pack(self" in src[j:src.index("\n    def ", j + 10)], starter

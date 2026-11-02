@@ -168,10 +168,6 @@ def test_the_voice_survives(persona):
 
 
 # ── the defect ELI's own audit found ───────────────────────────────────────
-def test_first_sentence_is_defined_once():
-    src = Path("eli/kernel/stages/guards.py").read_text(encoding="utf-8")
-    assert src.count("\ndef _first_sentence(") == 1, \
-        "the duplicate definition is back; the later one silently wins"
 
 
 def test_first_sentence_understands_ellipses_and_quotes():
@@ -181,11 +177,3 @@ def test_first_sentence_understands_ellipses_and_quotes():
     assert _first_sentence("Hello there. Second one.") == "Hello there."
     assert _first_sentence("") == ""
     assert _first_sentence("no punctuation") == "no punctuation"
-
-
-def test_governor_applies_all_casual_guards():
-    import inspect
-    src = inspect.getsource(og.govern_output)
-    for fn in ("drop_repeated_clarification", "drop_unverified_self_status",
-               "repair_embodied_self_claims"):
-        assert fn in src, f"{fn} is not wired into the choke point"

@@ -370,12 +370,6 @@ def test_buffered_replies_go_through_the_same_check(turn):
     assert "Consider it done" not in out and "already logged" in out
 
 
-def test_the_self_model_says_logging_is_always_on():
-    import inspect
-    from eli.runtime.awareness_boot import AwarenessState
-    assert "Logging is always on" in inspect.getsource(AwarenessState._live_self_model)
-
-
 def test_troubleshooting_eli_is_not_stored_as_the_users_work(tmp_path):
     """The session summary's "current work" once held ELI's own invented diagnosis, which then
     came back in every prompt as a recalled topic."""

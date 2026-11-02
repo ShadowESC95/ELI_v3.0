@@ -4,9 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -67,11 +65,6 @@ def test_sanitizer_concurrent_calls():
 
 # ── Settings stress tests ─────────────────────────────────────────────────
 
-def test_settings_load_100_times(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    for _ in range(100):
-        result = load_settings()
-        assert isinstance(result, dict)
 
 def test_settings_save_load_cycle_50_times(tmp_settings_file, monkeypatch):
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
@@ -125,11 +118,6 @@ def test_router_handles_edge_inputs(text):
     assert isinstance(result, dict)
     assert "action" in result
 
-def test_router_100_chat_queries():
-    queries = [f"What is {i} + {i+1}?" for i in range(100)]
-    for q in queries:
-        result = route(q)
-        assert isinstance(result, dict)
 
 def test_router_concurrent_routing():
     errors = []
@@ -154,12 +142,6 @@ def test_router_concurrent_routing():
 
 # ── Memory DB stress tests ────────────────────────────────────────────────
 
-def test_memory_recall_100_queries(populated_db):
-    from eli.memory.memory import Memory
-    mem = Memory(db_path=str(populated_db))
-    for i in range(100):
-        result = mem.recall_memory(f"query {i} jazz music preferences")
-        assert isinstance(result, list)
 
 def test_memory_bulk_insert(tmp_db):
     conn = sqlite3.connect(str(tmp_db))

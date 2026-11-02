@@ -20,9 +20,9 @@ def engine(tmp_path, monkeypatch):
     mem = Memory(db_path=tmp_path / "user.sqlite3")
     now = time.time()
     c = sqlite3.connect(mem.db_path)
-    for days, text in [(3, "i am watching the hobbit again, the second one"),
-                       (9, "just started the new paddington film"),
-                       (33, "i am watching bluey, not much of a deal")]:
+    for days, text in [(3, "i am watching the lighthouse keeper again, the second one"),
+                       (9, "just started the new marlow film"),
+                       (33, "i am watching puffin cove, not much of a deal")]:
         ts = now - days * DAY
         c.execute("insert into conversation_turns (session_id, user_id, role, content, ts, timestamp) "
                   "values ('s', 'old-id', 'user', ?, ?, ?)", (text, ts, ts))
@@ -41,14 +41,14 @@ def test_only_the_period_asked_about_is_returned(engine):
     q = "What movies or series was i watching the past week or two?"
     kw, sem, tr = orchestrator_retrieve(engine, q, q, _plan(q))
     said = format_period_log(tr, q) + " ".join(h["text"] for h in kw + sem)
-    assert "hobbit" in said and "paddington" in said
-    assert "bluey" not in said
+    assert "lighthouse keeper" in said and "marlow" in said
+    assert "puffin cove" not in said
 
 
 def test_without_a_period_nothing_is_filtered_by_time(engine):
-    q = "what do you know about bluey"
+    q = "what do you know about puffin cove"
     kw, sem, tr = orchestrator_retrieve(engine, q, q, {"need_keyword": True, "need_semantic": True})
-    assert "bluey" in " ".join(h["text"] for h in kw + sem)
+    assert "puffin cove" in " ".join(h["text"] for h in kw + sem)
 
 
 def test_every_hit_exposes_its_date_to_ranking_and_display(engine):
@@ -64,7 +64,7 @@ def test_every_hit_exposes_its_date_to_ranking_and_display(engine):
 def test_turns_from_earlier_user_ids_are_still_found(engine):
     q = "what was i watching the past week"
     _, sem, _ = orchestrator_retrieve(engine, q, q, _plan(q))
-    assert any("hobbit" in h["text"] for h in sem)
+    assert any("lighthouse keeper" in h["text"] for h in sem)
 
 
 def test_the_date_filter_finds_memories_the_topic_search_cannot(engine):

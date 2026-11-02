@@ -50,11 +50,6 @@ def test_normalize_content_fallback_to_error():
     assert r["content"] == "boom" and isinstance(r["response"], str)
 
 
-def test_normalize_guarantees_string_fields():
-    r = ex._normalize_result({"ok": True, "content": 123})
-    assert isinstance(r["content"], str) and isinstance(r["response"], str)
-
-
 # --------------------------------------------------------------------------- #
 # _strip_ollama_artifacts
 # --------------------------------------------------------------------------- #

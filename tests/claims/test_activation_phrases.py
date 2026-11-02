@@ -93,14 +93,8 @@ _ACCEPTABLE = {
     "MINIMIZE_WINDOW": {"MINIMIZE_APP"},
     "MINIMISE_APP": {"MINIMIZE_APP"},
     "HIDE_APP": {"MINIMIZE_APP"},
-}
-
-# genuine routing gaps surfaced by this examination (keyword captured elsewhere);
-# recorded as known, non-blocking. SELF_TEST / SELF_ANALYZE / PROACTIVE_* /
-# EXECUTE_GOAL were fixed (self_improvement guard matchers); MOUSE_CONTROL stays a
-# gap on purpose — bare "left click" is wired to GAZE_CLICK (gaze-cursor design).
-_KNOWN_GAPS = {
-    "MOUSE_CONTROL": "bare 'left click' → GAZE_CLICK by design (gaze cursor)",
+    # a bare "left click" clicks where the gaze cursor is: the same click, by design
+    "MOUSE_CONTROL": {"GAZE_CLICK"},
 }
 
 _SMART = str.maketrans({"“": "", "”": "", "‘": "", "’": "'"})
@@ -128,8 +122,6 @@ for action, (_cat, _desc, phrases) in CURATED.items():
 
 @pytest.mark.parametrize("action,phrases", _CASES, ids=[a for a, _ in _CASES])
 def test_action_reachable_by_a_documented_phrase(action, phrases):
-    if action in _KNOWN_GAPS:
-        pytest.xfail(_KNOWN_GAPS[action])
     routed = {(route(p).get("action") or "").upper() for p in phrases}
     ok = action in routed or bool(routed & _ACCEPTABLE.get(action, set()))
     assert ok, (f"{action}: no documented phrase routed to it or an accepted "

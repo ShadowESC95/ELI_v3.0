@@ -14,7 +14,8 @@ try:
     PROJECT_ROOT = canonical_root(Path(__file__).resolve().parents[2])
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RUNS_DIR = PROJECT_ROOT / "training/runs"
+# runs are recorded where ELI keeps its training (learning_dir), never inside the install
+from eli.learning.lora_trainer_guard import RUNS_DIR  # noqa: E402
 
 ALLOWED_TARGETS = {"eli_phi", "eli_phi_ultra"}
 DEFAULT_EVAL_PATH = PROJECT_ROOT / "training/evals/eli_self_model_eval.jsonl"

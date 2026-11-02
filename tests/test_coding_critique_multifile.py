@@ -20,12 +20,6 @@ def test_critique_empty_when_ok_or_no_model():
     assert critique_candidate("x", "code", generate=None) == ""
 
 
-def test_agent_wires_critique():
-    import inspect
-    from eli.coding import agent
-    assert "critique_candidate" in inspect.getsource(agent)
-
-
 # ── E — atomic multi-file patch set ─────────────────────────────────────────
 @pytest.fixture
 def workspace():

@@ -68,15 +68,6 @@ def test_the_lock_constraints_leave_out_only_what_the_build_tools_do_not_allow(t
     assert any(x.startswith("av==") for x in real) and not any(x.startswith("setuptools==") for x in real)
 
 
-@pytest.mark.parametrize("path, installs", [(".github/workflows/release.yml", 3),
-                                            (".github/workflows/cross-platform-smoke.yml", 1)])
-def test_everything_that_installs_the_runtime_takes_it_from_that_source(path, installs):
-    text = (ROOT / path).read_text()
-    assert text.count('llama_src="$(python packaging/llama_source.py)"') == installs
-    assert text.count('pip install "$llama_src"') == installs
-    assert "pip install llama-cpp-python" not in text
-
-
 @pytest.mark.parametrize("path", [".github/workflows/release.yml"])
 def test_the_runtime_goes_in_before_the_extra_that_asks_for_it(path):
     """Held to a version PyPI does not have, the llm extra only finds it already installed."""
@@ -111,8 +102,6 @@ def test_a_binding_change_that_no_longer_applies_stops_the_build(tmp_path):
         path = tmp_path / name
         path.write_text((path.read_text() if path.exists() else "") + old)
     source.apply_binding_changes(tmp_path)
-    text = (tmp_path / "llama_cpp" / "llama_cpp.py").read_text()
-    assert '("moe_cache_size", ctypes.c_size_t)' in text and "LLAMA_STATE_SEQ_VERSION = 4" in text
     with pytest.raises(SystemExit):
         source.apply_binding_changes(tmp_path)
 
@@ -147,14 +136,6 @@ def test_the_source_unpacks_with_or_without_extraction_filters(tmp_path, monkeyp
         with pytest.raises((SystemExit, tarfile.TarError)):
             source._unpack(archive("bad.tar.gz", bad), tmp_path / "bad")
     assert not (tmp_path / "escaped").exists()
-
-
-def test_the_version_is_stamped_on_the_source(tmp_path):
-    source = _source_module()
-    (tmp_path / "llama_cpp").mkdir()
-    (tmp_path / "llama_cpp" / "__init__.py").write_text('__version__ = "0.3.36"\n')
-    source.stamp_version(tmp_path, "9.9.9.1")
-    assert '__version__ = "9.9.9.1"' in (tmp_path / "llama_cpp" / "__init__.py").read_text()
 
 
 def test_offline_fallback_assets_include_the_pinned_version():

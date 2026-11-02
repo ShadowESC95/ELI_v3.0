@@ -146,25 +146,3 @@ def test_install_script_omits_cpu_only_for_gpu(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.platform", "linux")
     _script, argv = install_script_for_profile(root)
     assert "--cpu-only" not in argv
-
-
-def test_wrappers_funnel_to_eli_setup():
-    for rel in (
-        "scripts/eli_one_click_setup.sh",
-        "scripts/install_eli.sh",
-        "scripts/eli_startup.sh",
-    ):
-        src = Path(rel).read_text(encoding="utf-8")
-        assert "eli_setup.sh" in src
-
-
-def test_model_download_auto_hard_fails_missing_aux():
-    src = Path("eli/core/model_download.py").read_text(encoding="utf-8")
-    assert "aux_ok" in src
-    assert "return 0 if (ok and aux_ok) else 1" in src
-
-
-def test_startup_support_assets_always_scoped_network():
-    src = Path("eli/gui/panels/startup.py").read_text(encoding="utf-8")
-    assert 'allow_network("firstboot-support-assets")' in src
-    assert "offline — asset prefetch skipped" not in src

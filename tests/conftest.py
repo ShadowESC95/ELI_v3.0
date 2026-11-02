@@ -39,20 +39,45 @@ os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-# Redirect ALL artifact writes (documents, runtime snapshots, the scheduled-task
-# store) to a throwaway IN-PROJECT dir for the whole test session, so a test run can
-# never pollute the real artifacts/ or wipe the user's standing scheduled jobs. This
-# is plain config (an in-project path runtime_settings won't strip) — NOT a
-# monkeypatch. _artifacts_dir() and _store_path() both honour ELI_ARTIFACTS_DIR.
-os.environ["ELI_ARTIFACTS_DIR"] = str(ROOT / "artifacts" / "_pytest")
+# Every place ELI keeps state is a throwaway IN-PROJECT dir for the whole session (in-project, so
+# runtime_settings does not strip it as a stale path). data_dir() holds the conversations,
+# incidents, runtime state, per-user files and databases; config_dir() the small settings files
+# (pomodoro, voice clones); learning_dir() the training runs. Pointing these roots at the sandbox
+# covers everything resolved through them, so no test can write into this checkout's own state.
+# The config dir starts each run as a fresh install has it: the tracked files and nothing else.
+SANDBOX = ROOT / "artifacts" / "_pytest"
+os.environ["ELI_ARTIFACTS_DIR"] = str(SANDBOX)
+os.environ["ELI_DATA_DIR"] = str(SANDBOX)
+os.environ["ELI_LEARNING_DIR"] = str(SANDBOX / "training")
+os.environ["ELI_CONFIG_DIR"] = str(SANDBOX / "config")
+os.environ["ELI_GPU_PACK_LOG"] = str(SANDBOX / "gpu-pack.log")   # it would go beside the checkout's runtime/
+
+
+def _fresh_config() -> None:
+    import shutil
+    import subprocess
+    target = SANDBOX / "config"
+    shutil.rmtree(target, ignore_errors=True)
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z", "config"], cwd=ROOT, capture_output=True,
+                                 check=True).stdout.decode("utf-8").split("\0")
+    except (OSError, subprocess.CalledProcessError):
+        tracked = []                    # not a git checkout: start with none, as an empty install would
+    for name in filter(None, tracked):
+        dest = target / Path(name).relative_to("config")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, dest)
+    target.mkdir(parents=True, exist_ok=True)
+
+
+_fresh_config()
 os.environ.setdefault("ELI_CPU_PREFLIGHT", "0")  # no smoke subprocess in tests
 # ELI_ARTIFACTS_DIR alone did NOT isolate the SQLite stores — the user DB path is resolved
 # by eli.core.paths.user_db_path(), which honours ELI_USER_DB/ELI_MEMORY_DB FIRST (before
 # any dev-tree fallback). So tests that called store_memory()/awareness reflection were
 # writing into the REAL artifacts/db/user.sqlite3 and injecting rows ("test store", auto
 # reflections) into the user's memory. Pin the user + memory DB to the throwaway _pytest
-# tree via the highest-priority override so NO test can pollute the real database — and
-# without touching artifacts_dir()/data_dir() (ELI_DATA_DIR would, breaking path tests).
+# tree via the highest-priority override so NO test can pollute the real database.
 _PYTEST_DB = ROOT / "artifacts" / "_pytest" / "db" / "user.sqlite3"
 _PYTEST_DB.parent.mkdir(parents=True, exist_ok=True)
 os.environ["ELI_USER_DB"]   = str(_PYTEST_DB)
@@ -285,33 +310,30 @@ def reset_gguf_inference_globals():
         pass
 
 
-# A test that escapes ELI_ARTIFACTS_DIR can overwrite the real runtime snapshot with
-# junk (a MagicMock loads as n_ctx=1), which later runs read as machine state. Restore
-# it after the session and name any test that touches it.
-_REAL_SNAPSHOT = ROOT / "artifacts" / "runtime_snapshot.json"
-_SNAPSHOT_TOUCHED: list = []
+# Whatever escapes the sandbox anyway (a path built by hand, a new store) is caught: this
+# checkout's own state is listed before the session and compared after it, and every file
+# created or changed there is named. It fails the run in CI and with ELI_TEST_STRICT_ISOLATION=1;
+# otherwise it is only reported, since a copy of ELI running from this checkout (ELI's own
+# RUN_TESTS) writes its state while the tests run.
+_OWN_STATE = [ROOT / name for name in ("artifacts", "config", "training", "runtime", "voices", "plugins")]
 
 
-def _snapshot_state():
-    try:
-        return _REAL_SNAPSHOT.read_bytes() if _REAL_SNAPSHOT.exists() else None
-    except OSError:
-        return None
+def _own_state() -> dict:
+    seen = {}
+    for top in _OWN_STATE:
+        for path in top.rglob("*") if top.is_dir() else ():
+            if SANDBOX in path.parents or "__pycache__" in path.parts:
+                continue
+            try:
+                if path.is_file():
+                    info = path.stat()
+                    seen[path] = (info.st_mtime_ns, info.st_size)
+            except OSError:
+                continue
+    return seen
 
 
-@pytest.fixture(autouse=True, scope="function")
-def guard_real_runtime_snapshot(request):
-    before = _snapshot_state()
-    yield
-    if _snapshot_state() != before:
-        _SNAPSHOT_TOUCHED.append(request.node.nodeid)
-        try:
-            if before is None:
-                _REAL_SNAPSHOT.unlink(missing_ok=True)
-            else:
-                _REAL_SNAPSHOT.write_bytes(before)
-        except OSError:
-            pass
+_STATE_BEFORE = _own_state()
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -333,8 +355,14 @@ def measurements_stay_on_this_machine(monkeypatch, tmp_path):
 # Every pytest run (re)writes artifacts/test_report.md with the live results, so
 # the report is dynamic — never stale. ELI's RUN_TESTS action reads/summarises it.
 def pytest_sessionfinish(session, exitstatus):
-    if _SNAPSHOT_TOUCHED:
-        print("\n[conftest] tests that modified the REAL runtime_snapshot.json (restored):", *_SNAPSHOT_TOUCHED[:10], sep="\n  ")
+    asked = Path(session.config.getoption("xmlpath", None) or ROOT / "-").resolve()   # --junitxml
+    escaped = sorted(str(p.relative_to(ROOT)) for p, was in _own_state().items()
+                     if _STATE_BEFORE.get(p) != was and p.resolve() != asked)
+    if escaped:
+        print(f"\n[conftest] TEST ISOLATION BREACH: {len(escaped)} files in this checkout's own state were "
+              "written during the run:", *escaped, sep="\n  ")
+        if os.environ.get("CI") or os.environ.get("ELI_TEST_STRICT_ISOLATION"):
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
     try:
         import datetime
         from collections import defaultdict

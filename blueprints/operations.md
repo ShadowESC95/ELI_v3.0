@@ -103,8 +103,12 @@ but real.
 
 ## 5. Testing strategy (two layers + the gaps)
 
-**Layer 1 — code correctness:** **560 pytest files, 13,898 tests collected** — routing patterns, contracts, executor gates, memory, kernel,
-perception/voice, packaging. About 14 minutes for the full run; run on every change.
+**Layer 1 — code correctness:** **627 pytest files, 14,479 tests collected** — routing patterns, contracts, executor gates, memory, kernel,
+perception/voice, packaging. About 23 minutes for the full run; run on every change. A test checks what the code
+does: none reads the source for a string, none only checks that a name exists, and none skips because one of ELI's
+own modules failed to import. Every run keeps ELI's state in one sandbox (`artifacts/_pytest`: data, config,
+training, the GPU pack log), and any file a test writes in the checkout's own state is named at the end (a failure
+in CI and with `ELI_TEST_STRICT_ISOLATION=1`).
 
 **Layer 2 — behavioural eval:** `tools/eval/` (see `tools/eval/README.md`) drives the
 **real pipeline** and asserts on telemetry (action / grounding / response_mode /

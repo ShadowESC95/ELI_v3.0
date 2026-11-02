@@ -139,12 +139,6 @@ def test_a_failing_truncator_still_returns_a_fitting_budget(monkeypatch):
 
 
 # ── the clamp must sit where it cannot be bypassed ──────────────────────────
-def test_every_generation_path_goes_through_the_fit():
-    """The chat path clamped, the JSON path clamped, streaming did neither.
-    _safe_invoke_llm is the one function all three funnel into."""
-    import inspect
-    src = inspect.getsource(G._safe_invoke_llm)
-    assert "_fit_generation_budget" in src
 
 
 # NOTE: the loader's candidate ORDER is asserted in

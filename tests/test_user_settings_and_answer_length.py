@@ -29,7 +29,6 @@ Nothing here hardcodes a new number — it removes four. The one real constraint
 prompt + generation <= n_ctx, is computed per call from the ACTUAL prompt in
 gguf_inference._fit_generation_budget, which is the only place that can know it.
 """
-from tests._live_gui import live_gui_files, live_gui_source
 from pathlib import Path
 
 import pytest
@@ -68,13 +67,6 @@ def test_padding_is_still_discouraged():
     """"Say more" must not become "waffle"."""
     persona = (REPO / "eli/cognition/persona.txt").read_text(encoding="utf-8").lower()
     assert "filler" in persona or "padding" in persona
-
-
-def test_a_scoped_terse_tone_is_still_allowed():
-    """The 'exasperated' entry in the emotion palette is a deliberate, temporary
-    tone — it is not the base voice and must survive."""
-    palette = (REPO / "eli/cognition/emotion_palette.py").read_text(encoding="utf-8")
-    assert "terse" in palette.lower(), "the scoped exasperated tone was removed too"
 
 
 # ── 2. no artificial ceiling on the answer ────────────────────────────────
@@ -154,6 +146,3 @@ def test_the_budget_is_whatever_the_window_actually_has_left(n_ctx, prompt_tok, 
     _, budget = G._fit_generation_budget(FakeLLM(), "x" * (prompt_tok * 4), n_ctx)
     assert budget >= at_least
     assert prompt_tok + budget <= n_ctx
-
-
-# ── 3. the operator's settings are attempted first ────────────────────────

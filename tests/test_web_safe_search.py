@@ -15,31 +15,10 @@ Screening is host-based on purpose. A snippet-keyword blocklist would bury
 legitimate medical and biological results, so the locks below assert that
 those still come through.
 """
-from tests._live_gui import live_gui_files, live_gui_source
-import inspect
 
 import pytest
 
 from eli.plugins.web import plugin as web
-
-
-# ── every provider must ask for strict filtering ───────────────────────────
-@pytest.mark.parametrize("fn_name,marker", [
-    ("_duckduckgo_search", "safesearch"),
-    ("_searxng_search", "safesearch"),
-    ("_duckduckgo_html_search", "kp=1"),
-    ("_ddg_lite_search", '"kp"'),
-    ("_bing_html_search", "adlt=strict"),
-])
-def test_provider_requests_safe_search(fn_name, marker):
-    src = inspect.getsource(getattr(web, fn_name))
-    assert marker in src, f"{fn_name} no longer requests safe search ({marker!r})"
-
-
-def test_choke_point_filters_and_cleans():
-    src = inspect.getsource(web._web_search_results)
-    assert "_filter_results(" in src, "results are no longer screened at the choke point"
-    assert "_clean_search_query(" in src, "query is no longer cleaned at the choke point"
 
 
 # ── screening: adult hosts out, everything else untouched ──────────────────
@@ -110,32 +89,3 @@ def test_cleaning_never_empties_a_query():
     """A short query beats an empty one — an emptied query searches for nothing."""
     for raw in ("search", "open the browser", "please", "find"):
         assert web._clean_search_query(raw).strip(), f"{raw!r} cleaned to nothing"
-
-
-# ── the toggle has to exist where a user can reach it ──────────────────────
-def _gui_src() -> str:
-    return live_gui_source()
-
-
-def test_safe_search_has_a_gui_toggle():
-    src = _gui_src()
-    assert "web_safe_search_checkbox" in src, "no safe-search control in the GUI"
-    assert 'self._section_card(vbox, "WEB SEARCH")' in src, "no WEB SEARCH settings card"
-
-
-def test_safe_search_toggle_is_loaded_and_saved():
-    src = _gui_src()
-    assert 's.get("web_safe_search", True)' in src, "toggle is never loaded back"
-    assert '"web_safe_search": bool(' in src, "toggle is never persisted"
-
-
-def test_safe_search_toggle_applies_without_a_restart():
-    src = _gui_src()
-    assert "_apply_web_safe_search" in src, "toggle only takes effect on Save"
-    assert '_cfg.set("web_safe_search"' in src, "toggle does not write the setting"
-
-
-def test_safe_search_defaults_to_on():
-    """A redistributable assistant must not ship with filtering off."""
-    import inspect
-    assert "True" in inspect.getsource(web._safe_search_enabled)

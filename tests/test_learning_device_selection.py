@@ -10,7 +10,6 @@ what it is, and a refusal has to say what would fix it.
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from eli.learning import lora_trainer as lt
 from tests._sparse import sparse_file
@@ -57,18 +56,6 @@ def test_apple_and_intel_are_named_and_marked_untrainable():
     with patch.dict("sys.modules", {"torch": t2}):
         acc2 = lt._accelerator()
     assert acc2["vendor"] == "intel" and acc2["trainable"] is False
-
-
-def test_mocked_torch_never_produces_a_mock_vram_number():
-    """A Mock leaking into the VRAM comparison used to raise TypeError inside job
-    building, which the pipeline swallowed as a failed stage."""
-    t = MagicMock()
-    t.cuda.is_available.return_value = True
-    t.version.hip = None
-    with patch.dict("sys.modules", {"torch": t}):
-        acc = lt._accelerator()
-    assert isinstance(acc["free_gb"], float)
-    assert isinstance(acc["total_gb"], float)
 
 
 def test_small_model_fits_a_small_card(tmp_path):

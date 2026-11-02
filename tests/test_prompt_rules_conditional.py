@@ -11,7 +11,6 @@ Plus the fail-safe: an unassessable turn gets the complete block.
 """
 from __future__ import annotations
 
-import pathlib
 
 import pytest
 
@@ -47,9 +46,6 @@ def test_selection_is_always_a_subset_of_the_full_block():
 
 def test_all_rules_is_byte_identical_to_the_previous_block():
     """The whole point: assembling everything reproduces the old prompt exactly."""
-    src = (pathlib.Path(__file__).resolve().parent.parent
-           / "eli" / "kernel" / "stages" / "prompt_assembly.py").read_text(encoding="utf-8")
-    assert "prompt_rules" in src, "prompt_assembly no longer uses prompt_rules"
     # every guard constant must appear verbatim in the assembled block
     for key in pr._ORDER:
         assert pr._TEXT[key] in pr.all_rules()

@@ -2,25 +2,15 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 import pytest
 
 from eli.memory.memory import Memory
-
-
-# ── SQLite Memory Store ───────────────────────────────────────────────────
-
-
-# ── Stores ────────────────────────────────────────────────────────────────
 
 
 # ── DB Paths ──────────────────────────────────────────────────────────────
 # Canonical module is eli.core.db_paths (db_paths was consolidated there; it was
 # never a submodule of eli.memory). eli.memory exposes resolve_db_paths().
 
-def test_db_paths_importable():
-    from eli.core.db_paths import get_db_paths
-    assert get_db_paths is not None
 
 def test_db_paths_resolve_returns_something():
     from eli.core.db_paths import get_db_paths
@@ -32,23 +22,6 @@ def test_db_paths_has_user_db():
     result = get_db_paths()
     user_db = getattr(result, "user_db", None) or getattr(result, "memory_db", None)
     assert user_db is not None
-
-def test_db_paths_user_db_is_path():
-    from eli.core.db_paths import get_db_paths
-    result = get_db_paths()
-    user_db = getattr(result, "user_db", None)
-    if user_db:
-        assert isinstance(user_db, (Path, str))
-
-
-# ── System Index ──────────────────────────────────────────────────────────
-
-def test_system_index_importable():
-    try:
-        from eli.memory.system_index import SystemIndex
-        assert SystemIndex is not None
-    except ImportError:
-        pytest.skip("system_index not available")
 
 
 # ── Memory store write/read cycle ────────────────────────────────────────
@@ -65,31 +38,12 @@ def _write_memories(tmp_db, count=10):
     conn.close()
 
 
-def test_memory_write_read_cycle(tmp_db):
-    _write_memories(tmp_db, 10)
-    mem = Memory(db_path=str(tmp_db))
-    result = mem.recall_memory("python programming")
-    assert isinstance(result, list)
-
 def test_memory_count_after_write(tmp_db):
     _write_memories(tmp_db, 5)
     conn = sqlite3.connect(str(tmp_db))
     count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     conn.close()
     assert count == 5
-
-def test_memory_recall_order(tmp_db):
-    conn = sqlite3.connect(str(tmp_db))
-    for i in range(5):
-        conn.execute(
-            "INSERT INTO memories (text, timestamp, kind, importance) VALUES (?,?,?,?)",
-            (f"Important memory {i}", f"2024-0{i+1}-01T00:00:00", "memory", float(i)/5)
-        )
-    conn.commit()
-    conn.close()
-    mem = Memory(db_path=str(tmp_db))
-    result = mem.recall_memory("Important memory", limit=5)
-    assert isinstance(result, list)
 
 
 # ── FTS5 Index ────────────────────────────────────────────────────────────
@@ -100,15 +54,6 @@ def test_fts5_table_exists(tmp_db):
     conn.close()
     assert "memories_fts" in tables
 
-def test_fts5_search(tmp_db):
-    conn = sqlite3.connect(str(tmp_db))
-    conn.execute("INSERT INTO memories (text, kind, timestamp) VALUES (?, ?, ?)",
-                 ("User mentioned Python programming language", "memory", 1700000000.0))
-    conn.commit()
-    conn.close()
-    mem = Memory(db_path=str(tmp_db))
-    result = mem.recall_memory("Python")
-    assert isinstance(result, list)
 
 def test_fts5_no_false_positives(tmp_db):
     conn = sqlite3.connect(str(tmp_db))
@@ -120,22 +65,6 @@ def test_fts5_no_false_positives(tmp_db):
     result = mem.recall_memory("elephant aerodynamics quantum")
     assert isinstance(result, list)
     assert len(result) == 0
-
-
-# ── Memory importance scoring ────────────────────────────────────────────
-
-@pytest.mark.parametrize("importance", [0.0, 0.25, 0.5, 0.75, 1.0])
-def test_memory_importance_values(tmp_db, importance):
-    conn = sqlite3.connect(str(tmp_db))
-    conn.execute(
-        "INSERT INTO memories (text, importance, kind, timestamp) VALUES (?,?,?,?)",
-        ("Test memory with importance", importance, "memory", 1700000000.0)
-    )
-    conn.commit()
-    conn.close()
-    mem = Memory(db_path=str(tmp_db))
-    result = mem.recall_memory("Test memory")
-    assert isinstance(result, list)
 
 
 # ── Noise filtering ───────────────────────────────────────────────────────
@@ -168,25 +97,6 @@ def test_orchestrator_source_filtered(tmp_db):
     result = mem.recall_memory("Orchestrator internal")
     for r in result:
         assert r.get("source") != "orchestrator"
-
-
-# ── Memory tags ───────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("tags", [
-    "identity", "preferences", "skills", "work", "music",
-    "identity,preferences", "skills,python", ""
-])
-def test_memory_tags_retrievable(tmp_db, tags):
-    conn = sqlite3.connect(str(tmp_db))
-    conn.execute(
-        "INSERT INTO memories (text, tags, kind, timestamp) VALUES (?,?,?,?)",
-        (f"Memory with tags: {tags}", tags, "memory", 1700000000.0)
-    )
-    conn.commit()
-    conn.close()
-    mem = Memory(db_path=str(tmp_db))
-    result = mem.recall_memory("Memory with tags")
-    assert isinstance(result, list)
 
 
 # ── Large DB performance ──────────────────────────────────────────────────

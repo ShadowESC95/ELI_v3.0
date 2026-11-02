@@ -18,7 +18,6 @@ another one — with auto_init_gguf defaulting to True, hence the second model
 load. Only the proactive daemon had its own duplicate guard; the habit
 scheduler and self-improvement loop did not.
 """
-import inspect
 import threading
 
 from eli.kernel import engine as eng
@@ -37,30 +36,4 @@ def test_set_engine_exists_and_publishes():
 def test_get_engine_is_locked():
     """Two background threads racing would each build an engine, and the loser's
     daemons would already be running when it was discarded."""
-    src = inspect.getsource(eng.get_engine)
-    assert "_engine_lock" in src
     assert isinstance(eng._engine_lock, type(threading.Lock()))
-
-
-def test_the_gui_publishes_its_engine():
-    import pathlib
-    # the window the launcher opens (eli/gui/main_window); the old single-file GUI is not run
-    gui = pathlib.Path(eng.__file__).resolve().parents[1] / "gui" / "main_window" / "window.py"
-    src = gui.read_text(encoding="utf-8")
-    i = src.index("self._cognitive_engine = CognitiveEngine(")
-    j = src.index("CognitiveEngine singleton ready", i)
-    assert "set_engine(self._cognitive_engine)" in src[i:j], (
-        "the GUI builds an engine the rest of the process cannot see, so "
-        "get_engine() will construct a second one"
-    )
-
-
-def test_the_gui_engine_does_not_autoload_the_model():
-    """The startup dialog loads it later with the operator's parameters; a
-    second engine defaulting to auto_init_gguf=True is what loaded it twice."""
-    import pathlib
-    # the window the launcher opens (eli/gui/main_window); the old single-file GUI is not run
-    gui = pathlib.Path(eng.__file__).resolve().parents[1] / "gui" / "main_window" / "window.py"
-    src = gui.read_text(encoding="utf-8")
-    i = src.index("self._cognitive_engine = CognitiveEngine(")
-    assert "auto_init_gguf=False" in src[i:i + 200]

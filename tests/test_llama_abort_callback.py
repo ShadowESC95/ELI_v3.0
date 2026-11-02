@@ -10,11 +10,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_gguf_inference_installs_abort_callback():
-    src = (ROOT / "eli/cognition/gguf_inference.py").read_text(encoding="utf-8")
-    assert "_install_llama_abort_callback(llm)" in src
-
-
 def test_a_new_load_does_not_free_the_callback_of_a_model_still_decoding(small_chat_model):
     """A full test run died with SIGSEGV in llama_decode: a background job was decoding on one model
     when another load replaced the only reference to that model's abort callback. The same happens in

@@ -63,11 +63,3 @@ def test_windows_open_url_smoke(monkeypatch):
     monkeypatch.setattr(pc, "MACOS", False)
     assert pc._windows_open_url("https://example.com") is True
     assert opened == ["https://example.com"]  # the default browser, not Chrome by name
-
-
-def test_volume_helpers_exist():
-    from eli.utils.platform_compat import get_volume, set_volume, adjust_volume, set_muted
-    assert callable(get_volume)
-    assert callable(set_volume)
-    assert callable(adjust_volume)
-    assert callable(set_muted)

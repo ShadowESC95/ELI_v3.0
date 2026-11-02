@@ -57,9 +57,6 @@ def test_fix_file_refuses_a_protected_guardrail():
 
     assert r.get("ok") is False
     assert "protected" in (r.get("error") or "").lower()
-    # Nothing should have been read/patched -- refused before any model work.
-    real = pathlib.Path("eli/runtime/security.py").read_text(encoding="utf-8")
-    assert "def " in real  # sanity: the real file is untouched and still real python
 
 
 # ── post-write verification + rollback ───────────────────────────────────────

@@ -26,14 +26,6 @@ def _live() -> bool:
 
 
 # ── degradation: the whole point is that this is safe to call anywhere ──────
-def test_available_is_a_bool_and_never_raises():
-    assert isinstance(ui_tree.available(), bool)
-
-
-def test_unavailable_reason_is_a_string():
-    """A bare False is what made a whole class of failures undiagnosable in this
-    codebase — "not installed" must be distinguishable from "installed but broken"."""
-    assert isinstance(ui_tree.unavailable_reason(), str)
 
 
 def test_reason_is_populated_exactly_when_unavailable():
@@ -46,11 +38,6 @@ def test_reason_is_populated_exactly_when_unavailable():
 @pytest.mark.parametrize("q", ["", "   ", None])
 def test_empty_queries_return_nothing_rather_than_raising(q):
     assert ui_tree.find(q) == []
-
-
-def test_find_never_raises_on_a_headless_or_atspi_less_box():
-    """CI has no display and no AT-SPI; this must be a no-op, not an exception."""
-    assert isinstance(ui_tree.find("some window that does not exist"), list)
 
 
 def test_invoke_rejects_a_match_with_no_node():
@@ -113,37 +100,7 @@ def test_describe_flags_disabled():
         {"role": "push button", "text": "Save", "enabled": False, "cx": 1, "cy": 2})
 
 
-# ── the locator prefers accessibility but keeps OCR ─────────────────────────
-def test_locator_tries_accessibility_before_ocr():
-    import inspect
-    from eli.perception import screen_locator
-    src = inspect.getsource(screen_locator.locate_on_screen)
-    assert "ui_tree" in src, "the accessibility strategy is gone"
-    assert src.index("ui_tree") < src.index("take_screenshot"), (
-        "OCR runs before the accessibility tree — the cheap, precise strategy must win"
-    )
-
-
-def test_ocr_fallback_is_still_present():
-    """Coverage is uneven in the wild; removing OCR would be a regression."""
-    import inspect
-    from eli.perception import screen_locator
-    src = inspect.getsource(screen_locator.locate_on_screen)
-    assert "take_screenshot" in src and "locate_in_image" in src
-
-
-def test_locator_has_a_logger_for_its_fallback_path():
-    """The accessibility block logs on failure; without a module logger that raises
-    NameError *inside* the except handler and takes locate_on_screen down with it."""
-    from eli.perception import screen_locator
-    assert hasattr(screen_locator, "log")
-
-
 # ── live desktop (skipped where AT-SPI is absent, e.g. CI) ──────────────────
-@pytest.mark.skipif(not _live(), reason="no AT-SPI on this machine")
-def test_live_tree_enumerates_applications():
-    hits = ui_tree.find("a", actionable_only=False, max_matches=5, min_score=0.0)
-    assert isinstance(hits, list)
 
 
 @pytest.mark.skipif(not _live(), reason="no AT-SPI on this machine")

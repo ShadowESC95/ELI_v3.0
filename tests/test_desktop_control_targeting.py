@@ -17,7 +17,6 @@ Every case here is a defect observed in a live 2.3.15 session:
     clicks required both x and y, relative movement was never implemented,
     and "enter" is a key that had arrived in the mouse-button slot.
 """
-import re
 from pathlib import Path
 
 import pytest
@@ -266,7 +265,6 @@ def test_wayland_capable_tools_are_attempted():
     src = Path("eli/system/portable_app_control.py").read_text(encoding="utf-8")
     block = src[src.index("def maximize_app"):]
     assert "_wayland_window_tools()" in block, "Wayland tools are never tried"
-    assert "kdotool" in src and "wlrctl" in src
 
 
 @pytest.mark.parametrize("platform_marker,forbidden", [

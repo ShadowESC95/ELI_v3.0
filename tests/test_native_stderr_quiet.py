@@ -123,7 +123,6 @@ def test_embedder_wraps_only_the_embedding_call():
     from eli.memory import vector_store
 
     src = inspect.getsource(vector_store)
-    assert "quiet_native_stderr" in src, "embedder no longer suppresses llama.cpp noise"
     guarded = src[src.index("with quiet_native_stderr():"):]
     assert "create_embedding" in guarded[:200], "the guard drifted off the embed call"
 

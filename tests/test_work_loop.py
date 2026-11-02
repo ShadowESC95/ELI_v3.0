@@ -201,11 +201,3 @@ def test_an_unavailable_goal_store_is_reported_not_crashed(monkeypatch):
     monkeypatch.setattr("eli.planning.goal_store.list_active_goals", boom)
     out = wl.work_tick()
     assert out["ok"] is False and "store gone" in out["error"]
-
-
-def test_scheduler_runs_the_work_loop_only_in_goal_driven():
-    import inspect
-    from eli.planning import autonomy_scheduler as sched
-    src = inspect.getsource(sched.scheduler_tick)
-    goal_driven_at = src.index('mode == "goal_driven"')
-    assert src.index("work_tick") > goal_driven_at, "work must sit inside the goal_driven branch"

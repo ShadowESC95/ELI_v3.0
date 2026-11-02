@@ -28,7 +28,7 @@ def test_classify_factual_domains():
     assert G.classify_factual("who are you")[1] == "local"
     assert G.classify_factual("what model are you running")[1] == "local"
     # banter / opinion / command / chitchat → not factual
-    for t in ("how are you", "fuck off", "i hate kendrick", "play the next song",
+    for t in ("how are you", "fuck off", "i hate techno", "play the next song",
               "what do you think of jazz", "love ya bud"):
         assert G.classify_factual(t) == (False, "none"), t
 
@@ -287,7 +287,7 @@ def test_degenerate_answer_falls_through_to_hedge(monkeypatch):
 
 def test_web_candidate_classic_question():
     assert G.classify_web_candidate("is it a classic ? it is barely out a month...")
-    assert G.classify_web_candidate("when did paddington in peru come out?")
+    assert G.classify_web_candidate("when did marlow at sea come out?")
 
 
 def test_web_candidate_escalates_on_very_low_grounding(monkeypatch):
@@ -296,13 +296,13 @@ def test_web_candidate_escalates_on_very_low_grounding(monkeypatch):
     monkeypatch.setattr(
         E, "execute",
         lambda a, args=None: ({"web_grounded": True,
-                               "results": [{"title": "Paddington in Peru - Wikipedia",
+                               "results": [{"title": "Marlow at Sea - Wikipedia",
                                             "body": "Released July 31, 2026 in the United States."}],
                                "content": "Wikipedia: released July 31, 2026"}
                               if a == "WEB_SEARCH" else {}))
     r = G.escalate(
         _FakeEngine(),
-        "is paddington in peru a classic yet?",
+        "is marlow at sea a classic yet?",
         {"action": "CHAT"},
         _FakeBus(0.18),
         reasoning_mode="quick",
@@ -310,17 +310,10 @@ def test_web_candidate_escalates_on_very_low_grounding(monkeypatch):
     assert r is not None and r["meta"]["response_mode"] == "escalation_web"
 
 
-def test_orchestrator_has_pre_generation_escalation():
-    import inspect
-    from eli.cognition.orchestrator import AgentOrchestrator
-    src = inspect.getsource(AgentOrchestrator.run)
-    assert "_maybe_grounding_escalate" in src
-
-
 def test_correction_turn_with_pop_culture_does_not_web_escalate(monkeypatch):
-    """User correcting ELI's recency must not trigger Paddington web lookup."""
+    """User correcting ELI's recency must not trigger a web lookup for the film."""
     monkeypatch.setattr(C, "network_allowed", lambda: True)
-    q = "paddington was today, can you not read a fucking timestamp?!"
+    q = "marlow was today, can you not read a fucking timestamp?!"
     assert G.classify_web_candidate(q) is False
     assert G.classify_factual(q) == (False, "none")
     assert G.escalate(_FakeEngine(), q, {"action": "CHAT"}, _FakeBus(0.18)) is None

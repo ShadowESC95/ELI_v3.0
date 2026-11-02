@@ -19,7 +19,6 @@ the failure class this project spends most of its guards preventing.
      nothing for a call that succeeded is the same failure as the
      generator-repr leak _CleanTokenStream exists to prevent.
 """
-import inspect
 
 import pytest
 
@@ -28,25 +27,6 @@ from eli.cognition import gguf_inference as gi
 
 # ── 1. "effective" means what the runtime really did ───────────────────────
 # tests/test_runtime_snapshot_requested_ctx_batch.py: what loaded is read from the live model.
-
-
-# ── 2. the load parameters must actually be recorded ───────────────────────
-def test_last_params_is_populated_on_load():
-    src = inspect.getsource(gi)
-    assert 'globals()["_last_params"] = {' in src, \
-        "_last_params is declared and never assigned again"
-
-
-def test_get_last_load_params_falls_back_to_live():
-    """Even if the write is missed, reporting nothing about a model that is
-    demonstrably loaded is worse than reporting the live snapshot."""
-    src = inspect.getsource(gi.get_last_load_params)
-    assert "_live_runtime_params" in src
-
-
-def test_get_last_load_params_returns_a_dict():
-    out = gi.get_last_load_params()
-    assert isinstance(out, dict)
 
 
 # ── 3. a stream's str() must not drop the text ─────────────────────────────

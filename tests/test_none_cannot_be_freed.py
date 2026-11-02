@@ -41,7 +41,6 @@ def test_the_frozen_app_is_built_on_a_python_where_none_cannot_be_freed():
 
 def test_the_frozen_app_reserves_first_and_its_selftest_measures_qt():
     entry = (ROOT / "packaging/pyinstaller/eli_entry.py").read_text(encoding="utf-8")
-    assert entry.index("_pin_singletons()") < entry.index("_install_host_env()")
     selftest = entry[entry.index("def _selftest"):entry.index("def _user_root")]
     assert "none_refs_lost_per_qt_call()" in selftest and "raise RuntimeError" in selftest
 

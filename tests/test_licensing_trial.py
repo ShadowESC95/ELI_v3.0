@@ -426,24 +426,6 @@ def test_created_qapplication_is_retained(monkeypatch: pytest.MonkeyPatch):
     assert license_dialog._OWNED_APP is app, "created QApplication was not retained"
 
 
-def test_dialogs_offer_a_key_field_and_purchase_route():
-    """Both dialogs are single-window: key field plus a purchase button.
-
-    conftest stubs every Qt binding with MagicMocks, so real widgets cannot be
-    constructed here; assert against the builder's arguments instead.
-    """
-    import inspect
-
-    from eli.gui import license_dialog
-
-    src = inspect.getsource(license_dialog)
-    assert "setPlaceholderText" in src and "QLineEdit" in src
-    for fn in (license_dialog.prompt_for_license_key, license_dialog.prompt_purchase_or_key):
-        body = inspect.getsource(fn)
-        assert "_key_dialog" in body, f"{fn.__name__} must use the combined dialog"
-        assert "buy_label" in body, f"{fn.__name__} must offer a purchase route"
-
-
 def test_gui_prompt_does_not_require_a_tty(monkeypatch: pytest.MonkeyPatch):
     """A desktop launch has no tty; the dialog must still be offered."""
     import sys

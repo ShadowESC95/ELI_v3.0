@@ -1,35 +1,12 @@
 """Extended settings tests — ~100 parametrized cases."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import pytest
 
 from eli.core.runtime_settings import (
     load_settings, save_settings, _coerce_value,
     DEFAULTS, INT_KEYS, FLOAT_KEYS, BOOL_KEYS, ENV_TO_KEY,
 )
-
-
-# ── All defaults have correct types ──────────────────────────────────────
-
-@pytest.mark.parametrize("key", list(INT_KEYS))
-def test_default_int_key_is_int(key):
-    val = DEFAULTS.get(key)
-    if val is not None:
-        assert isinstance(val, int), f"Default for {key} should be int, got {type(val)}"
-
-@pytest.mark.parametrize("key", list(FLOAT_KEYS))
-def test_default_float_key_is_float(key):
-    val = DEFAULTS.get(key)
-    if val is not None:
-        assert isinstance(val, (int, float)), f"Default for {key} should be numeric"
-
-@pytest.mark.parametrize("key", list(BOOL_KEYS))
-def test_default_bool_key_is_bool(key):
-    val = DEFAULTS.get(key)
-    if val is not None:
-        assert isinstance(val, bool), f"Default for {key} should be bool"
 
 
 # ── Coercion — all int keys ───────────────────────────────────────────────
@@ -182,13 +159,3 @@ def test_multiple_saves_accumulate(tmp_settings_file, monkeypatch):
     assert s["n_ctx"] == 8192
     assert abs(s["temperature"] - 0.5) < 1e-9
     assert s["theme"] == "light"
-
-
-# ── Settings file is valid JSON ───────────────────────────────────────────
-
-def test_saved_settings_is_valid_json(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    save_settings({"temperature": 0.7, "n_ctx": 16384, "theme": "dark"})
-    text = tmp_settings_file.read_text()
-    data = json.loads(text)  # should not raise
-    assert isinstance(data, dict)

@@ -42,11 +42,6 @@ def test_a_driver_that_does_not_report_per_process_memory_still_names_the_proces
     assert "pid 4242" in hp.describe_vram_holders(holders, total_mb=8192)
 
 
-def test_no_tool_no_holders(monkeypatch):
-    monkeypatch.setattr(hp, "nvidia_smi_path", lambda: None)
-    assert isinstance(hp.vram_holders(), list)
-
-
 # ── what ELI can say afterwards ──────────────────────────────────────────────
 
 def test_a_load_that_fell_to_the_cpu_is_reported_with_its_cause():

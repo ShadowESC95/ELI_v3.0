@@ -1,27 +1,12 @@
 """Tests for eli.cognition.persona — ~80 tests."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
 
 # ── Import guard ──────────────────────────────────────────────────────────
 
-try:
-    from eli.cognition.persona import (
-        load_persona,
-        get_persona_text,
-    )
-    HAS_PERSONA = True
-except ImportError:
-    try:
-        from eli.cognition import persona as _persona_mod
-        load_persona = getattr(_persona_mod, "load_persona", None)
-        get_persona_text = getattr(_persona_mod, "get_persona_text",
-                           getattr(_persona_mod, "get_persona", None))
-        HAS_PERSONA = True
-    except ImportError:
-        HAS_PERSONA = False
+from eli.cognition.persona import get_persona
 
 
 # ── Persona file ──────────────────────────────────────────────────────────
@@ -55,28 +40,14 @@ def test_persona_contains_wrong_right_examples():
         assert "WRONG" in text or "wrong" in text.lower()
 
 
-# ── load_persona / get_persona_text ───────────────────────────────────────
+# ── get_persona ──────────────────────────────────────────────────────────
 
-@pytest.mark.skipif(not HAS_PERSONA, reason="persona module not available")
-def test_get_persona_text_returns_string():
-    fn = get_persona_text or load_persona
-    if fn:
-        result = fn()
-        assert isinstance(result, str)
 
-@pytest.mark.skipif(not HAS_PERSONA, reason="persona module not available")
 def test_get_persona_text_not_empty():
-    fn = get_persona_text or load_persona
-    if fn:
-        result = fn()
-        assert len(result.strip()) > 0
+    assert get_persona().strip()
 
-@pytest.mark.skipif(not HAS_PERSONA, reason="persona module not available")
 def test_get_persona_text_contains_eli():
-    fn = get_persona_text or load_persona
-    if fn:
-        result = fn()
-        assert "eli" in result.lower() or "ELI" in result
+    assert "eli" in get_persona().lower()
 
 
 # ── Persona content validation ────────────────────────────────────────────
@@ -112,32 +83,6 @@ def test_persona_uses_english():
         words = set(text.lower().split())
         overlap = words & common
         assert len(overlap) >= 3
-
-
-# ── persona.auto.txt ──────────────────────────────────────────────────────
-
-def test_persona_auto_txt_loadable():
-    auto_path = Path(__file__).parents[1] / "eli" / "cognition" / "persona.auto.txt"
-    if auto_path.exists():
-        text = auto_path.read_text(encoding="utf-8")
-        assert isinstance(text, str)
-
-
-# ── persona_hygiene ───────────────────────────────────────────────────────
-
-def test_persona_hygiene_importable():
-    try:
-        from eli.cognition import persona_hygiene
-        assert persona_hygiene is not None
-    except ImportError:
-        pytest.skip("persona_hygiene not available")
-
-def test_persona_values_importable():
-    try:
-        from eli.cognition import persona_values
-        assert persona_values is not None
-    except ImportError:
-        pytest.skip("persona_values not available")
 
 
 # ── Response sanitizer alignment with persona ────────────────────────────

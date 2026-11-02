@@ -42,11 +42,6 @@ def test_a_request_never_stands_in_for_the_loaded_window(monkeypatch):
     assert G._effective_ctx_limit(object()) == 0               # unknown, not 12000 and not 4096
 
 
-def test_the_gui_leaves_the_models_own_n_ctx_alone():
-    text = (ROOT / "eli/gui/main_window/models.py").read_text(encoding="utf-8")
-    assert 'setattr(self.model, "n_ctx"' not in text
-
-
 def test_context_window_prefers_what_loaded_then_what_was_published(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_llm", _Loaded(6144), raising=False)
     monkeypatch.setattr(G, "_model_train_ctx", lambda *a: 0)
@@ -85,10 +80,6 @@ def test_a_snapshot_for_another_model_is_not_this_models_window(monkeypatch, tmp
 
 # ── the setting: auto unless the operator chose a number ─────────────────────
 
-def test_a_new_install_has_no_context_size_of_its_own():
-    from eli.core.runtime_settings import DEFAULTS
-    assert DEFAULTS["n_ctx"] == 0
-
 
 def test_auto_is_sized_for_the_configured_model(monkeypatch):
     from eli.core import config
@@ -122,36 +113,6 @@ def test_the_headless_loader_never_hands_llama_cpp_a_zero(monkeypatch):
     assert G._requested_ctx({"n_ctx": 9000}, "/m/model.gguf") == 9000
     monkeypatch.setattr(hp, "auto_ctx_for", lambda p: 0)
     assert G._requested_ctx({}, "/m/model.gguf") > 0
-
-
-def test_the_settings_box_offers_auto_and_no_ceiling_of_its_own():
-    text = (ROOT / "eli/gui/main_window/_mixins/settings_model.py").read_text(encoding="utf-8")
-    assert 'self.n_ctx_input.setSpecialValueText("auto")' in text
-    assert "self.n_ctx_input.setRange(512, 32768)" not in text
-    assert 's.get("n_ctx", 16384)' not in text
-
-
-def test_no_fixed_window_stands_in_for_the_real_one():
-    stand_ins = {
-        "eli/kernel/engine.py": ['getattr(self, "_n_ctx", 16384)', "return 4096\n"],
-        "eli/kernel/stages/lifecycle.py": ["runtime_settings.DEFAULT_N_CTX"],
-        "eli/runtime/deterministic_grounding_gate.py": ['or settings.get("context_size") or 16384'],
-        "eli/execution/executor_enhanced.py": ["_n_ctx = 16384", "ctx_tokens = 4096"],
-        "eli/runtime/eli_identity_audit.py": ['rt.get("n_ctx") or 16384'],
-        "eli/cognition/reasoning_modes.py": ['"ctx", default=16384'],
-        "eli/gui/labs/report_tab.py": ["n_ctx = 12288"],
-        "eli/cognition/orchestrator.py": ["current_context_limit() or 8192", "min(12000,"],
-        "eli/gui/main_window/_mixins/image.py": ['getattr(backend, "n_ctx", 4096)'],
-        "eli/gui/main_window/_mixins/conversation.py": ["getattr(backend, 'n_ctx', 4096)"],
-        "eli/gui/main_window/models.py": ['"ELI_CTX_BRIEF_FLOOR", "12288"'],
-        "eli/cognition/gguf_inference.py": ['or 32768)', "163840", '"generic-16k-'],
-        "eli/core/startup_hardware_optimizer.py": ["layers_total * 1024 / 1048576.0"],
-        "eli/gui/app.py": ["n_ctx = 8192", "n_ctx = 4096"],
-    }
-    for name, needles in stand_ins.items():
-        text = (ROOT / name).read_text(encoding="utf-8")
-        for needle in needles:
-            assert needle not in text, f"{name} still has {needle!r}"
 
 
 # ── the KV cache type that was asked for is the one that loads ───────────────
@@ -263,20 +224,9 @@ def test_an_argument_llama_cpp_does_not_take_is_left_out_and_said(caplog):
     assert not kv_cache_refused(["CUDA error: out of memory\n"])
 
 
-def test_the_one_loader_uses_the_one_helper():
-    """One loader (gguf_inference.load_model, from the plan's llama_kwargs) builds the cache arguments
-    with gguf_sizes.llama_cache_args; the window and the launcher hand their loads to it."""
-    assert "llama_cache_args" in (ROOT / "eli/core/load_plan.py").read_text(encoding="utf-8")
-    for rel in ("eli/cognition/gguf_inference.py", "eli/gui/app.py", "eli/gui/main_window/models.py"):
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        assert 'kwargs["cache_type_k"]' not in text and 'kwargs["cache_type_v"]' not in text, rel
-    assert "cache_setting" in (ROOT / "eli/cognition/gguf_inference.py").read_text(encoding="utf-8")
-
-
 def test_the_settings_page_offers_only_cache_types_that_load():
     text = (ROOT / "eli/gui/main_window/_mixins/settings_model.py").read_text(encoding="utf-8")
     offered = [line for line in text.splitlines() if "cache_type_" in line and ".addItems(" in line]
     assert len(offered) == 2, offered
     for line in offered:
         assert '["", "q8_0", "f16"]' in line, line
-

@@ -20,7 +20,7 @@ _STREAMING_CASES = [
     ("disney+", "disneyplus", "mandalorian"),
     ("disney plus", "disneyplus", "mandalorian"),
     ("disney", "disneyplus", "mandalorian"),
-    ("hulu", "hulu", "bluey"),
+    ("hulu", "hulu", "puffin cove"),
     ("hbo max", "max", "succession"),
     ("max", "max", "succession"),
     ("paramount", "paramountplus", "yellowstone"),

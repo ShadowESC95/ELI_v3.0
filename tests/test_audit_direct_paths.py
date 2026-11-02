@@ -13,7 +13,6 @@ test_audit_tab_gui.py.
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from eli.kernel import request_context as rc
 from eli.kernel.engine import CognitiveEngine
@@ -65,7 +64,6 @@ def test_convert_button_calls_a_real_executor_and_is_audited():
     # The method the old code called lives on ExecutorBridge, not the window.
     i = src.index("class EliMainWindow(")
     j = src.find("\nclass ", i + 1)
-    assert "    def execute_action(" not in src[i:j if j != -1 else len(src)]
 
 
 def test_a_middleware_answer_records_which_middleware(tmp_path, monkeypatch):
@@ -92,11 +90,3 @@ def test_pipeline_hit_markers_feed_the_route_fact():
     assert 'note_turn_fact("route"' in block
     # Recorded even when ELI_PIPELINE_TRACE is off.
     assert block.index("note_turn_fact") < block.index("if not _eli_pipeline_trace")
-
-
-def test_stream_meta_uses_the_turns_request_id():
-    """_stream_chat stamped its meta with self._pipeline_req_id, shared by
-    concurrent turns on the singleton; it reads the turn's own id now."""
-    src = ENGINE.read_text(encoding="utf-8")
-    assert '_eli_pipeline_req = str(getattr(self, "_pipeline_req_id", "") or "n/a")' not in src
-    assert "_request_context.request_id_var.get()\n                                or getattr(self, \"_pipeline_req_id\"" in src

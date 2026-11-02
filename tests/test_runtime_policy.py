@@ -21,8 +21,6 @@ from eli.runtime.control_contracts import (
 
 # ── CONTROL_ACTIONS ───────────────────────────────────────────────────────
 
-def test_control_actions_is_set():
-    assert isinstance(CONTROL_ACTIONS, (set, frozenset))
 
 def test_memory_recall_is_control():
     assert "MEMORY_RECALL" in CONTROL_ACTIONS
@@ -52,23 +50,12 @@ def test_normalise_action_already_upper():
 def test_normalise_action_strips_whitespace():
     assert normalise_action("  CHAT  ") == "CHAT"
 
-def test_normalise_action_handles_none():
-    result = normalise_action(None)
-    assert isinstance(result, str)
-
-def test_normalise_action_handles_empty():
-    result = normalise_action("")
-    assert isinstance(result, str)
-
 
 # ── is_control_action ─────────────────────────────────────────────────────
 
 def test_is_control_action_true():
     assert is_control_action("RUNTIME_STATUS")
 
-def test_is_control_action_false():
-    result = is_control_action("CHAT")
-    assert isinstance(result, bool)
 
 def test_is_control_action_memory_recall():
     assert is_control_action("MEMORY_RECALL")
@@ -76,17 +63,9 @@ def test_is_control_action_memory_recall():
 def test_is_control_action_unknown():
     assert not is_control_action("NOT_A_REAL_ACTION_XYZ")
 
-def test_is_control_action_case_normalised():
-    # Should work with lowercase input too (normalises internally)
-    result = is_control_action("runtime_status")
-    assert isinstance(result, bool)
-
 
 # ── classify_response_mode ────────────────────────────────────────────────
 
-def test_classify_response_mode_returns_string():
-    result = classify_response_mode("CHAT", {})
-    assert isinstance(result, str)
 
 def test_chat_mode_is_cognitive():
     result = classify_response_mode("CHAT", {})
@@ -120,17 +99,6 @@ def test_policy_for_unknown_action():
 
 # ── Policy constants ──────────────────────────────────────────────────────
 
-def test_grounded_report_defined():
-    assert GROUNDED_REPORT is not None
-    assert isinstance(GROUNDED_REPORT, str)
-
-def test_cognitive_default_defined():
-    assert COGNITIVE_DEFAULT is not None
-    assert isinstance(COGNITIVE_DEFAULT, str)
-
-def test_raw_memory_dump_defined():
-    assert RAW_MEMORY_DUMP is not None
-    assert isinstance(RAW_MEMORY_DUMP, str)
 
 def test_policies_are_distinct():
     assert GROUNDED_REPORT != COGNITIVE_DEFAULT

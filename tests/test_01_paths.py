@@ -1,5 +1,3 @@
-import pytest
-from pathlib import Path
 from eli.core.paths import get_paths, project_root, artifacts_dir, config_dir
 
 def test_project_root():
@@ -7,10 +5,17 @@ def test_project_root():
     assert (root / "eli").exists()
     assert (root / "README.md").exists()
 
-def test_artifacts_dir():
-    art = artifacts_dir()
-    assert art.parent == project_root()
-    assert art.name == "artifacts"
+def test_artifacts_dir(monkeypatch):
+    """With nothing overriding it, a checkout keeps its state in its own artifacts/ folder."""
+    from eli.core import paths
+    monkeypatch.delenv("ELI_DATA_DIR", raising=False)
+    paths.data_dir.cache_clear()
+    try:
+        art = artifacts_dir()
+        assert art.parent == project_root()
+        assert art.name == "artifacts"
+    finally:
+        paths.data_dir.cache_clear()
 
 def test_config_dir():
     cfg = config_dir()

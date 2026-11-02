@@ -24,17 +24,11 @@ from eli.perception.tts_router import (
 
 # ── Voice discovery ───────────────────────────────────────────────────────
 
-def test_list_voices_returns_list():
-    result = list_voices()
-    assert isinstance(result, list)
 
 def test_list_voices_at_least_three():
     result = list_voices()
     assert len(result) >= 3, f"Expected >=3 voices, got {result}"
 
-def test_list_voices_are_strings():
-    for v in list_voices():
-        assert isinstance(v, str)
 
 def test_list_voices_no_extension():
     for v in list_voices():
@@ -129,9 +123,6 @@ def test_set_active_voice_changes_active(monkeypatch, tmp_path):
 
 # ── available_backends ────────────────────────────────────────────────────
 
-def test_available_backends_returns_dict():
-    result = available_backends()
-    assert isinstance(result, dict)
 
 def test_available_backends_has_piper_python():
     result = available_backends()
@@ -230,11 +221,6 @@ def test_run_tts_speaks_more_than_three_chunks(monkeypatch):
 
 # ── Voice search dirs ─────────────────────────────────────────────────────
 
-def test_voice_search_dirs_is_list():
-    assert isinstance(_VOICE_SEARCH_DIRS, list)
-
-def test_voice_dir_is_path():
-    assert isinstance(_voice_dir(), Path)
 
 def test_voice_dir_contains_models_tts_piper():
     assert "piper" in str(_voice_dir()) or "voices" in str(_voice_dir())
@@ -357,4 +343,3 @@ def test_the_speaking_lock_is_held_for_the_whole_reply(tmp_path, monkeypatch):
     monkeypatch.setattr(tr, "_run_tts_impl", lambda text, voice_name=None: seen.append(lock.read_text()) or True)
     assert tr._run_tts("hello there", voice_name="any") is True
     assert seen == [str(os.getpid())] and not lock.exists()
-

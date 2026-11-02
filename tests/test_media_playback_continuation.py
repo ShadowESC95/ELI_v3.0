@@ -54,15 +54,6 @@ def test_permanent_failures_are_not_retried(tail):
     assert yt_is_client_bound_failure(tail) is False
 
 
-def test_403_failure_message_names_the_remedy():
-    """A stale yt-dlp is the other common cause and no client can compensate
-    for it, so a total refusal has to say so."""
-    from pathlib import Path
-    src = Path("eli/integrations/media/youtube_playback.py").read_text(encoding="utf-8")
-    assert "refused the stream for every player client" in src
-    assert "upgrade yt-dlp" in src, "no actionable advice for a total refusal"
-
-
 # ── Spotify: a playlist is a different context from a song ─────────────────
 @pytest.mark.parametrize("query,expected", [
     ("my workout playlist", "workout"),
@@ -91,17 +82,3 @@ def test_repeat_one_is_only_cleared_when_actually_set(monkeypatch):
     assert ex._spotify_clear_track_repeat() is False
     monkeypatch.setattr(ex, "_spotify_loop_status", lambda: "None")
     assert ex._spotify_clear_track_repeat() is False
-
-
-def test_playlist_path_resolves_concrete_uri_before_search_tab():
-    from pathlib import Path
-    src = Path("eli/execution/effectors/media.py").read_text(encoding="utf-8")
-    assert "_spotify_resolve_playlist_uri(_pl_name)" in src
-
-
-def test_playlist_without_a_platform_does_not_go_to_youtube():
-    from pathlib import Path
-    import re
-    src = Path("eli/execution/effectors/media.py").read_text(encoding="utf-8")
-    assert re.search(r"_spotify_running\(\)\s*\n\s*and \(_si\.playlist_name\(query\)", src), \
-        "a bare playlist request still falls through to YouTube search"

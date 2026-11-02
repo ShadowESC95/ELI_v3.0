@@ -27,7 +27,6 @@ on arbitrary hardware and neither layer alone is enough:
                       the installing shell; the app runs inside the bundle,
                       and those are different environments.
 """
-import re
 from pathlib import Path
 
 import pytest
@@ -139,24 +138,6 @@ def test_installed_pack_reports_offload_after_preload(machine_gpu):
 
 
 # ── layer 3: a pack that cannot READ the model must step aside by itself ───
-# The first two layers cover a pack that cannot offload. This covers the other
-# way a pack strands a user: it drives the GPU perfectly but predates the
-# model's architecture (a CUDA pack from an index that stops at 0.3.19 cannot
-# read hybrid attention+SSM GGUFs). Telling the user to set an environment
-# variable is not a fix for software that ships to people who will never read
-# the message -- the loader retries on the bundled runtime instead.
-def test_deactivate_gpu_pack_exists():
-    from eli.cognition import model_load_diagnostics as mld
-    assert hasattr(mld, "deactivate_gpu_pack")
-
-
-def test_deactivation_clears_path_and_module_cache():
-    import inspect
-    from eli.cognition import model_load_diagnostics as mld
-    src = inspect.getsource(mld.deactivate_gpu_pack)
-    assert "_sys.path.remove" in src
-    assert "_sys.modules.pop" in src, \
-        "the imported copy would keep serving after the path is cleared"
 
 
 def test_deactivation_is_a_noop_when_no_pack_is_active(monkeypatch):

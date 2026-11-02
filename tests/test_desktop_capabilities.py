@@ -25,10 +25,3 @@ def test_precision_backend_disabled_by_default(monkeypatch):
 def test_locate_without_backend_returns_error():
     hit = ug.locate_with_precision_backend("blue icon", "/tmp/nope.png", backend="none")
     assert hit.get("ok") is False
-
-
-def test_no_http_in_module_source():
-    import inspect
-    src = inspect.getsource(ug)
-    assert "urlopen" not in src
-    assert "127.0.0.1" not in src

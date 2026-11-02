@@ -276,14 +276,14 @@ def test_play_specific_streaming_target_never_falls_through_to_youtube(monkeypat
 
     from eli.execution.executor_enhanced import play_specific
 
-    for target, query in (("netflix", "bluey"), ("primevideo", "severance")):
+    for target, query in (("netflix", "puffin cove"), ("primevideo", "severance")):
         result = play_specific(query, target)
         assert "YouTube" not in (result.get("response") or "")
         assert result.get("target") == target
         assert query in (result.get("response") or "")
 
     assert calls == [
-        ("netflix", "bluey", False),
+        ("netflix", "puffin cove", False),
         ("primevideo", "severance", False),
     ]
 

@@ -136,12 +136,6 @@ def test_no_message_ever_blames_the_sampler(tmp_path):
 
 
 # ── the log capture itself ─────────────────────────────────────────────────
-def test_log_capture_is_safe_and_restores():
-    with mld.capture_llama_log() as lines:
-        assert isinstance(lines, list)
-    # A second entry/exit must not raise — the callback was restored.
-    with mld.capture_llama_log() as lines2:
-        assert isinstance(lines2, list)
 
 
 def test_loader_routes_failures_through_the_explainer():

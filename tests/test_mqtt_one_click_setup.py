@@ -14,9 +14,7 @@ What was actually there:
   * There was no single entry point that goes from nothing to working.
 """
 import inspect
-from pathlib import Path
 
-import pytest
 
 from eli.runtime import mqtt_setup
 from eli.runtime import device_server
@@ -25,8 +23,6 @@ from eli.runtime import device_server
 # ── discovery ──────────────────────────────────────────────────────────────
 def test_mdns_discovery_exists():
     assert hasattr(mqtt_setup, "discover_brokers_mdns")
-    src = inspect.getsource(mqtt_setup.discover_brokers_mdns)
-    assert "_mqtt._tcp" in src, "does not browse the standard MQTT service type"
 
 
 def test_mdns_discovery_never_raises_without_zeroconf(monkeypatch):
@@ -85,8 +81,6 @@ def test_autodetect_reports_what_it_tried(monkeypatch):
 
 
 # ── one-click ──────────────────────────────────────────────────────────────
-def test_one_click_setup_exists():
-    assert hasattr(mqtt_setup, "one_click_setup")
 
 
 def test_one_click_without_a_broker_returns_the_install_step(monkeypatch):
@@ -110,16 +104,6 @@ def test_one_click_explains_mqtt_in_plain_language(monkeypatch):
 
 
 # ── connect() must configure itself ────────────────────────────────────────
-def _code_only(src: str) -> str:
-    """Source with whole-line comments removed -- a structural check must read
-    code, not the comment quoting the old broken behaviour."""
-    return "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
-
-
-def test_connect_autodetects_when_nothing_is_configured():
-    src = _code_only(inspect.getsource(device_server.DeviceServer.connect))
-    assert "autodetect_broker" in src, "connect() still dead-ends on an unset mqtt_host"
-    assert "set mqtt_host" not in src, "the dead-end error message is back"
 
 
 def test_connect_autodetect_can_be_turned_off():
@@ -127,9 +111,3 @@ def test_connect_autodetect_can_be_turned_off():
     sig = inspect.signature(device_server.DeviceServer.connect)
     assert "autodetect" in sig.parameters
     assert sig.parameters["autodetect"].default is True
-
-
-def test_setup_endpoint_is_exposed():
-    src = Path("api/server.py").read_text(encoding="utf-8")
-    assert "/v1/devices/setup" in src, "no one-click endpoint on the API surface"
-    assert "one_click_setup" in src

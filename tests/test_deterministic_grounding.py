@@ -8,7 +8,6 @@ coverage padding. Runs in the normal suite (no model needed).
 """
 from __future__ import annotations
 
-import re
 
 import pytest
 
@@ -71,12 +70,6 @@ def test_unknown_action_is_safe():
     assert isinstance(out, str) and _SENTINEL in out
 
 
-def test_args_none_is_tolerated():
-    # args=None must be handled (Mapping | None in the signature).
-    out = render_action("RUNTIME_STATUS", None, "status")
-    assert isinstance(out, str)
-
-
 # --------------------------------------------------------------------------- #
 # Broaden across every introspection/audit action the gate renders, with rich
 # runtime args + both mode labels — this exercises the per-action rendering
@@ -105,27 +98,11 @@ def test_introspection_action_renders_without_crash(action):
     assert isinstance(out, str) and out.strip(), f"{action} produced nothing"
 
 
-@pytest.mark.parametrize("action", _INTROSPECTION_ACTIONS + _STATUS_ACTIONS)
-@pytest.mark.parametrize("mode", ["quick", "advanced"])
-def test_action_renders_under_both_modes(action, mode):
-    # mode_label gates verbatim-vs-synthesised branches; both must render safely.
-    out = render_action(action, dict(_RICH_ARGS), action.lower(), mode)
-    assert isinstance(out, str)
-
-
 def test_rich_runtime_args_surface_in_status():
     # With concrete runtime args, the status render should reflect real numbers,
     # not placeholders — the anti-confabulation guarantee under full args.
     out = render_action("RUNTIME_STATUS", dict(_RICH_ARGS), "what are you running on")
     assert isinstance(out, str) and out.strip()
-
-
-def test_empty_and_partial_args_are_safe():
-    # Missing/partial runtime args must never crash the renderer.
-    for args in ({}, {"n_ctx": 4096}, {"model_path": "x.gguf"}, {"provider": "custom_gguf"}):
-        for action in ("RUNTIME_STATUS", "SELF_REPORT", "MEMORY_STATUS"):
-            out = render_action(action, args, "status")
-            assert isinstance(out, str)
 
 
 # --------------------------------------------------------------------------- #

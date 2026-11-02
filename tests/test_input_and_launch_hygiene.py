@@ -18,7 +18,6 @@ capable:
 """
 import subprocess
 import sys
-import warnings
 from pathlib import Path
 
 import pytest
@@ -31,17 +30,9 @@ from eli.system import portable_app_control as pac
 def test_key_press_prefers_native_tools_on_linux():
     import inspect
     src = inspect.getsource(pc.key_press)
-    assert "_native_input_tool()" in src, "key_press no longer tries a native tool"
     idx_native = src.index("_native_input_tool()")
     idx_pyauto = src.index("import pyautogui")
     assert idx_native < idx_pyauto, "pyautogui is tried before the native tool again"
-
-
-def test_type_text_prefers_native_tools_on_linux():
-    import inspect
-    src = inspect.getsource(pc.type_text)
-    assert "_native_input_tool()" in src
-    assert src.index("_native_input_tool()") < src.index("import pyautogui")
 
 
 def test_wayland_selects_ydotool_over_xdotool(monkeypatch):

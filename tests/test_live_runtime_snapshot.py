@@ -23,13 +23,6 @@ class _LlamaLike:
         return 6144
 
 
-def test_llama_cpp_still_exposes_n_ctx_as_a_method():
-    """If upstream ever makes it a plain attribute the guard is harmless, but this
-    records WHY the callable check is there."""
-    import llama_cpp
-    assert callable(getattr(llama_cpp.Llama, "n_ctx", None))
-
-
 def test_snapshot_calls_a_callable_before_coercing():
     src = inspect.getsource(CognitiveEngine._live_runtime_snapshot)
     head = src[:src.index("Common llama_cpp parameter containers")]

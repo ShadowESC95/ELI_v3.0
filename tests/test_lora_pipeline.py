@@ -21,14 +21,6 @@ def test_target_modules_falls_back_to_all_linear_when_unknown():
     assert _resolve_target_modules(object(), {}) == "all-linear"
 
 
-def test_target_modules_not_hardcoded_to_phi():
-    # the old hardcoded ["qkv_proj"] default must be gone from the train path
-    import inspect
-    from eli.learning import lora_trainer
-    src = inspect.getsource(lora_trainer.run_training)
-    assert '["qkv_proj"]' not in src and "_resolve_target_modules(model" in src
-
-
 # ── pipeline DAG (dry-run) ───────────────────────────────────────────────────
 def test_pipeline_runs_stages_in_order_dry_run():
     from eli.learning.lora_pipeline import run_pipeline

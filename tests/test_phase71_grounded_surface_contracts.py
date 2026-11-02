@@ -136,8 +136,6 @@ def test_phase71_grounding_gate_uses_immutable_policy_engine():
 
     assert getattr(gate, "_ELI_DETERMINISTIC_GROUNDING_POLICY_ENGINE_V1", False) is True
     assert callable(gate._RENDER_PIPELINE)
-    import inspect
-    assert "globals().get(\"render_action\")" not in inspect.getsource(gate), "layers are composed explicitly, not captured"
 
 
 def test_render_action_is_one_ordered_pipeline_and_unknown_actions_say_so():

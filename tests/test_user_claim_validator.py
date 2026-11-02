@@ -53,8 +53,8 @@ def test_wild_night_bait_after_user_negation():
     assert "verified memory" in verdict["sanitized"].lower()
 
 
-def test_wrong_show_when_user_watching_paddington():
-    user = "wrong again, I'm watching the new paddington."
+def test_wrong_show_when_user_watching_something_else():
+    user = "wrong again, I'm watching the new marlow."
     out = (
         "Watching Severance and catching up on chess videos sounds like "
         "my kind of entertainment."
@@ -68,13 +68,13 @@ def test_wrong_show_when_user_watching_paddington():
 
 
 def test_temporal_anchor_from_was_today():
-    assert "paddington" in extract_current_user_activity(
-        "paddington was today, can you not read a timestamp?!"
+    assert "marlow" in extract_current_user_activity(
+        "marlow was today, can you not read a timestamp?!"
     ).lower()
 
 
 def test_stale_last_week_stripped_when_user_said_today():
-    user = "paddington was today, can you not read a timestamp?!"
+    user = "marlow was today, can you not read a timestamp?!"
     out = (
         "Yeah — I checked the session logs, and last week you were genuinely "
         "concerned about my sanity."

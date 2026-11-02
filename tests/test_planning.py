@@ -1,71 +1,10 @@
 """Tests for eli.planning modules — ~60 tests."""
 from __future__ import annotations
 
-import pytest
 import sqlite3
-import time
-from unittest.mock import MagicMock, patch
 
 
 # ── Proactive Daemon ──────────────────────────────────────────────────────
-
-def test_proactive_daemon_importable():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    assert ProactiveDaemon is not None
-
-def test_proactive_daemon_has_pause():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    try:
-        d = ProactiveDaemon()
-        assert hasattr(d, "pause")
-        assert callable(d.pause)
-    except Exception:
-        pass
-
-def test_proactive_daemon_has_resume():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    try:
-        d = ProactiveDaemon()
-        assert hasattr(d, "resume")
-        assert callable(d.resume)
-    except Exception:
-        pass
-
-def test_proactive_daemon_has_stop():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    try:
-        d = ProactiveDaemon()
-        assert hasattr(d, "stop")
-    except Exception:
-        pass
-
-def test_proactive_daemon_paused_attribute():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    try:
-        d = ProactiveDaemon()
-        assert hasattr(d, "paused")
-        assert d.paused is False
-    except Exception:
-        pass
-
-def test_proactive_daemon_pause_sets_paused():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    try:
-        d = ProactiveDaemon()
-        d.pause()
-        assert d.paused is True
-    except Exception:
-        pass
-
-def test_proactive_daemon_resume_clears_paused():
-    from eli.planning.proactive_daemon import ProactiveDaemon
-    try:
-        d = ProactiveDaemon()
-        d.pause()
-        d.resume()
-        assert d.paused is False
-    except Exception:
-        pass
 
 
 # ── Plugin system ─────────────────────────────────────────────────────────
@@ -79,19 +18,6 @@ def test_plugins_dir_exists():
 
 # ── Knowledge Graph ───────────────────────────────────────────────────────
 
-def test_knowledge_graph_importable():
-    from eli.memory.knowledge_graph import KnowledgeGraph
-    assert KnowledgeGraph is not None
-
-def test_knowledge_graph_instantiation(tmp_db):
-    from eli.memory.knowledge_graph import KnowledgeGraph
-    try:
-        kg = KnowledgeGraph(db_path=str(tmp_db))
-        assert kg is not None
-        assert str(kg.db_path) == str(tmp_db)
-        assert str(kg.path) == str(tmp_db)
-    except Exception:
-        pass
 
 def test_knowledge_graph_schema_has_core_tables(tmp_db):
     from eli.memory.knowledge_graph import KnowledgeGraph
@@ -110,28 +36,3 @@ def test_knowledge_graph_schema_has_core_tables(tmp_db):
     assert {"kg_entities", "kg_relations", "kg_entities_fts"} <= tables
 
 # ── Memory Adapter ────────────────────────────────────────────────────────
-
-def test_memory_adapter_importable():
-    from eli.memory.memory_adapter import MemoryAdapter
-    assert MemoryAdapter is not None
-
-def test_memory_adapter_has_recall(tmp_db):
-    from eli.memory.memory_adapter import MemoryAdapter
-    try:
-        ma = MemoryAdapter(db_path=str(tmp_db))
-        assert hasattr(ma, "recall_memory")
-    except Exception:
-        pass
-
-def test_memory_adapter_recall_returns_list(tmp_db):
-    from eli.memory.memory_adapter import MemoryAdapter
-    try:
-        ma = MemoryAdapter(db_path=str(tmp_db))
-        result = ma.recall_memory("test query")
-        assert isinstance(result, list)
-    except Exception:
-        pass
-
-
-# ── Memory Service ────────────────────────────────────────────────────────
-

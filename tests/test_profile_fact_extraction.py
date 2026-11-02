@@ -150,16 +150,6 @@ def test_the_summary_parser_recognises_the_section():
     assert sections["CURRENT_WORK"].startswith("stack assembly")
 
 
-def test_the_model_is_asked_for_durable_facts_only():
-    """The prompt must scope the section to the USER and to durable facts, or the
-    model fills it with session mechanics."""
-    import inspect
-    src = inspect.getsource(PE._llm_summarise_session)
-    assert "USER FACTS:" in src
-    assert "durable" in src.lower()
-    assert "ONLY from what the USER said" in src
-
-
 def test_route_summary_writes_facts_end_to_end(cur):
     PE._route_summary_to_profile(cur, (
         "SUMMARY: a session.\n"

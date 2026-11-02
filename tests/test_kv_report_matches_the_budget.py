@@ -71,15 +71,6 @@ def test_context_is_a_weak_lever_for_gpu_layers():
     assert round(freed / per_layer_mb, 1) == 1.2
 
 
-def test_the_panel_states_the_per_1k_cost():
-    """So the trade-off is visible without the operator doing the division."""
-    import inspect
-
-    from eli.core import hardware_profile as hp
-
-    assert "per 1k ctx" in inspect.getsource(hp.recommend)
-
-
 def test_cuda_overhead_is_still_reported_separately():
     """It is a fixed cost, not part of KV, and conflating them would hide the same
     trade-off in a different way."""

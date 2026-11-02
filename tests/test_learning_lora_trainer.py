@@ -1,9 +1,7 @@
 import json
 import subprocess
 import sys
-from pathlib import Path
 
-import pytest
 
 from eli.learning import lora_trainer
 
@@ -167,16 +165,6 @@ def test_phi3_rope_scaling_normalizer_nulls_default_4k_rope():
     fixed = lora_trainer._normalize_phi3_rope_scaling_dict(rope)
     assert fixed is None
 
-def test_trainer_does_not_store_print_trainable_parameters_return_value():
-    from pathlib import Path
-
-    src = Path("eli/learning/lora_trainer.py").read_text(encoding="utf-8")
-
-    assert '"trainable_parameters": trainable_parameter_report' in src
-    assert '"trainable_parameters": model.print_trainable_parameters()' not in src
-    assert '"trainable_parameters": str(model.print_trainable_parameters())' not in src
-    assert "trainable_parameters = model.print_trainable_parameters()" not in src
-    assert "trainable_parameters = str(model.print_trainable_parameters())" not in src
 
 def test_peft_trainable_parameter_report_contains_summary():
     from eli.learning.lora_trainer import _peft_trainable_parameter_report
@@ -248,4 +236,3 @@ def test_phi3_rope_scaling_normalizer_nulls_default_4k_rope():
     assert fixed is not None
     assert fixed["rope_type"] == "default"
     assert fixed["type"] == "default"
-

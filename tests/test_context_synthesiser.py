@@ -8,7 +8,6 @@ one-liner about where the model actually runs. Pure/model-free. Normal suite.
 """
 from __future__ import annotations
 
-import pytest
 
 from eli.cognition.context_synthesiser import build_persona_handoff, live_runtime_brief
 
@@ -34,16 +33,6 @@ def test_handoff_incorporates_grounded_evidence():
     assert "cloudy" in str(h["assembled_context"]).lower()
 
 
-def test_handoff_with_no_context_is_safe():
-    h = build_persona_handoff("just chatting")
-    assert isinstance(h["assembled_context"], str)  # never None/crash
-
-
-def test_intent_is_threaded_through():
-    h = build_persona_handoff("do a thing", intent={"action": "CHAT", "confidence": 0.9})
-    assert isinstance(h["intent"], dict)
-
-
 def test_nonquick_handoff_carries_more_agent_evidence():
     from eli.cognition.context_synthesiser import _handoff_budgets
 
@@ -67,10 +56,6 @@ def test_nonquick_handoff_carries_more_agent_evidence():
     assert "SYNTHESIS MODE (non-Quick)" in ctx_normal
     assert len(ctx_normal) > len(ctx_quick)
     assert ctx_normal.count("detail line") > ctx_quick.count("detail line")
-
-
-def test_live_runtime_brief_is_str():
-    assert isinstance(live_runtime_brief(), str)
 
 
 def test_the_handoff_says_who_made_eli_and_that_the_network_is_off(monkeypatch):

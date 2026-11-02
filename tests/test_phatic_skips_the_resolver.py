@@ -100,26 +100,6 @@ def test_the_resolver_is_skipped_when_the_prompt_is_phatic():
         "the fast-path no longer consults the detector"
 
 
-def test_the_fast_path_can_be_disabled():
-    """It is a routing short-circuit; an operator debugging routing needs it off."""
-    import inspect
-
-    from eli.kernel import engine
-
-    src = inspect.getsource(engine)
-    assert "ELI_PHATIC_FASTPATH" in src
-
-
-def test_phatic_query_class_skips_agent_bus_dispatch():
-    import inspect
-
-    from eli.kernel import engine
-
-    src = inspect.getsource(engine)
-    assert '_qclass == "PHATIC"' in src
-    assert "skipped_phatic" in src or "skipped (PHATIC" in src
-
-
 def test_compound_phatic_beats_self_report_router():
     """Greeting + casual 'notice changes recently' must stay CHAT, not SELF_REPORT."""
     from eli.kernel.engine import CognitiveEngine, _is_brief_phatic_prompt as phatic
@@ -147,13 +127,3 @@ def test_phatic_generation_budget_allows_personality():
     from eli.kernel.engine import _phatic_generation_budget
 
     assert _phatic_generation_budget() >= 128
-
-
-def test_stream_chat_uses_brief_phatic_detector_not_exact_match_set():
-    import inspect
-
-    from eli.kernel import engine
-
-    src = inspect.getsource(engine.CognitiveEngine._stream_chat)
-    assert "_is_brief_phatic_prompt" in src
-    assert "_phatic_stream = _phatic_low in {" not in src

@@ -1,4 +1,3 @@
-from tests._live_gui import live_gui_files, live_gui_source
 import json
 from pathlib import Path
 
@@ -38,14 +37,6 @@ def test_engine_ask_uses_cognitive_engine_dict_response():
     assert 'result.get("response")' in engine_ask
     assert "backend.chat" in engine_ask
     assert engine_ask.index("if isinstance(result, dict):") < engine_ask.index("backend.chat")
-
-
-def test_gui_adopts_the_model_the_launcher_loaded():
-    """A model the terminal launcher loaded is taken over as it is, with the plan it loaded with,
-    instead of being loaded a second time."""
-    models = Path("eli/gui/main_window/models.py").read_text(encoding="utf-8")
-    window = Path("eli/gui/main_window/window.py").read_text(encoding="utf-8")
-    assert "def adopt(self, llm" in models and "model_manager.adopt(" in window
 
 
 def test_runtime_status_context_allows_followup_when_evidence_missing():
@@ -294,14 +285,3 @@ def test_generate_document_normalizes_to_documents_dir(monkeypatch, tmp_path):
     assert payload["event"] == "artifact_generated"
     assert payload["kind"] == "document"
     assert result["doc_path"] == payload["path"]
-
-
-def test_gui_has_generated_artifact_open_signal_and_handlers():
-    # EliMainWindow signal stays in window.py; its handlers moved to mixins — read the package.
-    source = "\n".join(p.read_text(encoding="utf-8")
-                       for p in sorted(Path("eli/gui/main_window").rglob("*.py")))
-
-    assert "_generated_artifact_open_sig = pyqtSignal(object)" in source
-    assert "_open_generated_artifact_from_result" in source
-    assert "_load_path_into_labs_sim_ide" in source
-    assert "self._generated_artifact_open_sig.emit(dict(result))" in source

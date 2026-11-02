@@ -125,20 +125,6 @@ def test_an_all_stopword_query_still_searches_something():
     assert terms, "fallback produced no search terms at all"
 
 
-def test_keyword_channel_is_no_longer_gated_behind_vector_count():
-    """The regression that mattered: FTS5 must not be reachable only when FAISS
-    under-delivers, because with no similarity floor FAISS never does."""
-    import inspect
-
-    from eli.memory import memory as mem
-    src = inspect.getsource(mem.Memory.recall_memory)
-    # Strip comments — the fix documents the old expression in a comment, and a
-    # naive substring check would match the explanation of the bug it prevents.
-    src = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
-    assert "len(vector_results) < max(1, limit // 2)" not in src, \
-        "keyword search is gated behind the vector result count again"
-
-
 def test_the_keyword_channel_reads_what_was_said_not_the_tags(tmp_path):
     """Tags are split at "_" by the index, so "memory" matched every row tagged memory_recall or
     working_memory: a recall of "memory status" brought back eighteen unrelated messages."""
@@ -148,7 +134,6 @@ def test_the_keyword_channel_reads_what_was_said_not_the_tags(tmp_path):
     mem.store_memory("my memory of the trip is hazy", tags=["conversation"])
     by_keyword = [h["text"] for h in mem.search_memory("memory", limit=10) if "keyword" in h.get("_channels", ())]
     assert by_keyword == ["my memory of the trip is hazy"]
-
 
 
 def test_an_index_entry_whose_id_now_belongs_to_another_memory_is_not_recalled(tmp_path, monkeypatch):

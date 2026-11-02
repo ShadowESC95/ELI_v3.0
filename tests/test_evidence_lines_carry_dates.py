@@ -40,13 +40,6 @@ def test_row_time_prefers_the_event_time():
     assert row_time("nope") is None
 
 
-def test_the_engine_prints_dates_on_ranked_hits_and_turns():
-    import inspect
-    from eli.kernel import engine as eng
-    src = inspect.getsource(eng.CognitiveEngine.assemble_precise_context)
-    assert "when_label" in src
-
-
 def test_an_older_summary_says_which_night_it_meant():
     """A 15 October summary said "up late last night"; read on 20 October ELI said the user had been
     up late last night."""

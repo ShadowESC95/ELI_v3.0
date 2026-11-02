@@ -161,10 +161,3 @@ def test_dynamic_cache_compat_v2_has_legacy_phi3_methods():
     cache = DynamicCache()
     assert cache.get_max_length() is None
     assert cache.get_usable_length(5) == 0
-
-
-def test_lora_eval_generation_disables_cache():
-    from pathlib import Path
-
-    src = Path("eli/learning/lora_eval.py").read_text(encoding="utf-8")
-    assert "use_cache=False" in src

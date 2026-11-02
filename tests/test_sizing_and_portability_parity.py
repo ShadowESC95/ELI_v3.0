@@ -38,12 +38,6 @@ def _clean_env(monkeypatch, gpu_offload_runtime):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_gui_app_does_not_restate_the_kv_formula():
-    src = (REPO / "eli/gui/app.py").read_text(encoding="utf-8")
-    assert "_KV_BYTES_PER_TOKEN_PER_LAYER = " not in src, "a third copy of the constant"
-    assert "from eli.core.hardware_profile import" in src
-
-
 # ── the operator's batch is a target, not a ceiling ──────────────────────────
 def test_target_batch_is_honoured_when_the_heuristic_would_go_lower(monkeypatch):
     """Partial offload interpolates well below 512; an explicit target must win."""
@@ -102,13 +96,6 @@ def test_install_sh_does_not_hand_arm_an_x86_march():
     assert "GGML_NATIVE=OFF" in wildcard
 
 
-def test_llama_cpu_compat_flags_agree_with_the_installer():
-    from eli.core.llama_cpu_compat import safe_source_cmake_flags
-    src = inspect.getsource(safe_source_cmake_flags)
-    for arch in ("aarch64", "arm64", "armv8-a", "darwin"):
-        assert arch in src.lower(), f"{arch} unhandled — the two paths have drifted"
-
-
 @pytest.mark.parametrize("machine,expect_absent", [("aarch64", "x86-64"), ("arm64", "x86-64")])
 def test_arm_never_receives_an_x86_flag(monkeypatch, machine, expect_absent):
     import eli.core.llama_cpu_compat as lcc
@@ -133,7 +120,6 @@ def test_windows_installer_warns_on_low_ram():
 # ── frozen builds fail loudly, not silently ──────────────────────────────────
 def test_frozen_entry_proves_the_cpu_before_loading_the_gui():
     entry = (REPO / "packaging/pyinstaller/eli_entry.py").read_text(encoding="utf-8")
-    assert "_verify_cpu_runtime()" in entry, "frozen builds still SIGILL with no message"
     body = entry.split("def _verify_cpu_runtime", 1)[1].split("\ndef ", 1)[0]
     assert "runtime_smoke_test" in body, "the check does not measure init"
     assert "ELI_DISABLE_GPU_PACK" in body, (

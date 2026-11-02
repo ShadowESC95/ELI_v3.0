@@ -316,19 +316,3 @@ def test_the_pipeline_body_never_writes_the_chain_itself():
     assert "orchestrator_audit_ledger" not in body
     assert "record_turn_async" not in body
     assert "_record_turn_audit_row" not in body
-    assert "_record_orchestrator_audit_turn" not in src
-    assert src.count("record_turn_async(") == 1
-
-
-def test_followthrough_no_longer_takes_a_request_id():
-    # the followthrough lives in the generation stage, mixed into the engine
-    src = (ENGINE.parent / "stages" / "generation.py").read_text(encoding="utf-8")
-    i = src.index("def _stream_with_followthrough")
-    assert "request_id" not in src[i:src.index(")", i)]
-
-
-def test_dispatch_does_not_write_the_chain():
-    """dispatch() runs before a turn's outcome is known."""
-    src = AGENT_BUS.read_text(encoding="utf-8")
-    assert "orchestrator_audit_ledger" not in src
-    assert "_persist_orchestrator_audit" not in src

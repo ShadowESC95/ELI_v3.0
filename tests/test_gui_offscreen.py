@@ -56,11 +56,6 @@ def test_qt_compat_binding_resolved():
         assert hasattr(qc, name) or name == "Signal"  # Signal aliased as pyqtSignal
 
 
-def test_ollama_model_selector_imports():
-    from eli.gui.widgets.ollama_model_selector import OllamaModelSelector
-    assert OllamaModelSelector is not None
-
-
 # --------------------------------------------------------------------------- #
 # coding_tab
 # --------------------------------------------------------------------------- #
@@ -78,14 +73,6 @@ LABS_SUBTABS = [
     "_NotebookTab", "_JupyterTab", "_CalculatorTab", "_PhysicsTab", "_ReportTab",
     "_FileChatTab", "_WorkspacesTab", "_SimIDETab", "_OrchestrationTab", "_TestReviewTab",
 ]
-
-
-@pytest.mark.parametrize("clsname", LABS_SUBTABS)
-def test_labs_subtab_constructs(qapp, clsname):
-    import eli.gui.labs_tab as lt
-    cls = getattr(lt, clsname)
-    w = cls()
-    assert isinstance(w, QWidget)
 
 
 def test_labs_container_builds_full_tree(qapp):
@@ -126,21 +113,6 @@ MORE_WIDGETS = [
     ("eli.gui.widgets.ollama_model_selector", "OllamaModelSelector"),
     ("eli.gui.widgets.ollama_model_selector", "_StatusDot"),
 ]
-
-
-@pytest.mark.parametrize("module,clsname", MORE_WIDGETS)
-def test_gui_widget_constructs(qapp, module, clsname):
-    import importlib
-    cls = getattr(importlib.import_module(module), clsname)
-    w = cls()
-    assert isinstance(w, QWidget)
-
-
-def test_agent_edit_dialog_constructs(qapp):
-    from eli.gui.panels.agent_wizard import AgentEditDialog
-    w = AgentEditDialog(agent_info={"name": "tester", "description": "a test agent",
-                                    "triggers": [], "capabilities": []})
-    assert isinstance(w, QWidget)
 
 
 def test_settings_dialog_builds_deep_tree(qapp):

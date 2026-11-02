@@ -11,11 +11,6 @@ def test_router_memory_audit_belief_question():
     assert r.get("args", {}).get("query")
 
 
-def test_personal_memory_render_profile():
-    text = render_profile_summary("what do you know about me")
-    assert isinstance(text, str)
-
-
 def test_personal_memory_render_belief_audit():
     text = render_belief_audit("runtime status")
     assert "Memory audit" in text

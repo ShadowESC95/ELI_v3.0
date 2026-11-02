@@ -77,16 +77,6 @@ def test_icon_is_not_the_truncated_artifact():
     )
 
 
-def test_generator_saves_from_the_largest_frame():
-    """Guard the cause, not just the symptom: saving from imgs[0] is what collapsed
-    the file, and PIL being mocked here means only the source can be inspected."""
-    src = (REPO_ROOT / "eli" / "gui" / "branding.py").read_text(encoding="utf-8")
-    assert "append_images=imgs[1:]" not in src, (
-        "saving the .ico from the smallest frame clamps every size to 16x16"
-    )
-    assert "master.save(ico_path" in src
-
-
 def test_linux_scalable_icon_is_rendered_square():
     """The scalable hicolor slot copied the source art in verbatim — 175x157, not
     square and smaller than the 256 slot beside it, so a desktop preferring

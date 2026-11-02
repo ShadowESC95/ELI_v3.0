@@ -22,9 +22,6 @@ def plan_for(action: str, provider: str = "custom_gguf", quick: bool = False) ->
 
 # ── ExecutionPlan structure ───────────────────────────────────────────────
 
-def test_build_plan_returns_execution_plan():
-    result = plan_for("CHAT")
-    assert isinstance(result, ExecutionPlan)
 
 def test_execution_plan_has_action():
     result = plan_for("CHAT")
@@ -118,10 +115,6 @@ def test_runtime_status_profile_not_empty():
     result = plan_for("RUNTIME_STATUS")
     assert len(result.agent_profile) > 0
 
-def test_cognition_status_profile():
-    result = plan_for("COGNITION_STATUS")
-    assert isinstance(result.agent_profile, list)
-
 
 # ── build_route_decision ──────────────────────────────────────────────────
 
@@ -152,14 +145,6 @@ def test_build_route_decision_from_object():
 def test_build_route_decision_args():
     rd = build_route_decision("test", {"action": "CHAT", "args": {"query": "test"}})
     assert rd.args == {"query": "test"}
-
-
-# ── Multiple consecutive plans ────────────────────────────────────────────
-
-def test_multiple_plan_builds():
-    for action in ["CHAT", "MEMORY_RECALL", "RUNTIME_STATUS", "CHAT"]:
-        result = plan_for(action)
-        assert isinstance(result, ExecutionPlan)
 
 
 # ── RouteDecision ─────────────────────────────────────────────────────────

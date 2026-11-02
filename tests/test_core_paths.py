@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import os
 import pytest
 
 from eli.core.paths import (
@@ -47,8 +46,6 @@ from eli.core.paths import (
 
 # ── Basic imports and constants ───────────────────────────────────────────
 
-def test_project_root_is_path():
-    assert isinstance(project_root(), Path)
 
 def test_project_root_exists():
     assert project_root().exists()
@@ -62,9 +59,6 @@ def test_project_root_constant_matches_function():
 def test_artifacts_dir_constant_matches_function():
     assert ARTIFACTS_DIR == data_dir()
 
-def test_db_path_constant_is_path():
-    assert isinstance(DB_PATH, Path)
-
 
 # ── Dev mode detection ────────────────────────────────────────────────────
 
@@ -75,10 +69,6 @@ def test_find_project_root_returns_path_or_none():
     result = _find_project_root()
     assert result is None or isinstance(result, Path)
 
-def test_dev_mode_detection():
-    # In the dev environment, should detect dev mode
-    result = _is_dev_mode()
-    assert isinstance(result, bool)
 
 def test_installer_like_tree_without_git_is_not_dev_mode(monkeypatch, tmp_path):
     import eli.core.paths as paths
@@ -150,32 +140,8 @@ def test_models_dir_relative_override_is_not_cwd_based(monkeypatch, tmp_path):
     assert paths.models_dir() != cwd / "models"
 
 
-# ── Directory functions return Paths ─────────────────────────────────────
-
-@pytest.mark.parametrize("fn", [
-    project_root, data_dir, config_dir, cache_dir, logs_dir,
-    models_dir, voices_dir, plugins_dir, artifacts_dir,
-    conversations_dir, proactive_dir, documents_dir,
-    scripts_dir, notes_dir, models_root,
-    gguf_models_dir, embedding_models_dir, training_root,
-])
-def test_path_functions_return_path(fn):
-    assert isinstance(fn(), Path)
-
-
 # ── DB path functions ────────────────────────────────────────────────────
 
-def test_user_db_path_is_path():
-    assert isinstance(user_db_path(), Path)
-
-def test_agent_db_path_is_path():
-    assert isinstance(agent_db_path(), Path)
-
-def test_memory_db_path_is_path():
-    assert isinstance(memory_db_path(), Path)
-
-def test_knowledge_graph_db_path_is_path():
-    assert isinstance(knowledge_graph_db_path(), Path)
 
 def test_knowledge_graph_db_same_as_memory():
     assert knowledge_graph_db_path() == memory_db_path()
@@ -218,11 +184,6 @@ def test_models_root_matches_models_dir():
 
 # ── get_paths / PATHS singleton ───────────────────────────────────────────
 
-def test_get_paths_returns_eli_paths():
-    assert isinstance(get_paths(), EliPaths)
-
-def test_paths_singleton_is_eli_paths():
-    assert isinstance(PATHS, EliPaths)
 
 def test_paths_project_root_attr():
     p = get_paths()
@@ -290,9 +251,6 @@ def test_gguf_relative_env_path_anchors_to_project_root(monkeypatch, tmp_path):
 
 # ── path_info ────────────────────────────────────────────────────────────
 
-def test_path_info_returns_dict():
-    info = path_info()
-    assert isinstance(info, dict)
 
 def test_path_info_has_project_root():
     info = path_info()
@@ -314,11 +272,6 @@ def test_path_info_has_is_frozen():
 def test_path_info_has_key(key):
     info = path_info()
     assert key in info
-
-def test_path_info_values_are_strings_or_bool():
-    info = path_info()
-    for k, v in info.items():
-        assert isinstance(v, (str, bool)), f"{k}: {v} is {type(v)}"
 
 
 # ── EliPaths class ────────────────────────────────────────────────────────

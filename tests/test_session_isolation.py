@@ -13,7 +13,7 @@ import os, tempfile
 import pytest
 from eli.memory import Memory
 
-OLD = "still glitchy, post-breakfast haze and Bluey on repeat"
+OLD = "still glitchy, post-breakfast haze and Puffin Cove on repeat"
 
 
 @pytest.fixture

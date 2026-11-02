@@ -17,10 +17,6 @@ def _engine(monkeypatch, fake):
     return CognitiveEngine(auto_init_gguf=False)
 
 
-def test_the_lifecycle_stage_has_the_model_module():
-    assert hasattr(lifecycle, "gguf_inference")
-
-
 def test_the_engine_sees_a_model_that_loaded(monkeypatch, tmp_path):
     model = tmp_path / "m.gguf"
     model.write_bytes(b"GGUF")

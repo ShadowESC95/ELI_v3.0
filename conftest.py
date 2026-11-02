@@ -14,21 +14,10 @@ from pathlib import Path
 
 def pytest_configure(config):
     """Test-run isolation. The real libraries are used: replacing the model runtime, FAISS, PyTorch,
-    Qt and others with mocks let tests pass against code that could not run."""
-    # Test isolation: never write generated artifacts into the user's LIVE
-    # artifacts/ tree. Several tests exercise GENERATE_SCRIPT (supernova,
-    # quantum-decoherence, ton_618, relative_time) whose deterministic writers
-    # save to ELI_ARTIFACTS_DIR (default: PROJECT_ROOT/artifacts/scripts). Without
-    # this redirect, every test run overwrote those real scripts and bumped their
-    # mtimes — making them look "just generated" in the morning report. Redirect
-    # artifact + data writes to a throwaway temp dir for the whole test session.
+    Qt and others with mocks let tests pass against code that could not run. Where ELI keeps its
+    state during tests is set in one place, tests/conftest.py, which pytest loads before this hook
+    runs (a second redirect here once replaced it with another folder)."""
     import os as _os
-    # Must be INSIDE the project root: _eli_runtime_clear_stale_env_paths()
-    # strips ELI_ARTIFACTS_DIR if it points outside the install (portability
-    # guard), which would silently send writes back to the real artifacts/scripts.
-    _test_root = _os.path.join(_os.path.dirname(__file__), ".pytest_artifacts")
-    _os.makedirs(_test_root, exist_ok=True)
-    _os.environ["ELI_ARTIFACTS_DIR"] = _test_root
     # Deterministic network baseline: tests must not depend on the user's live
     # Net toggle (config/settings.json network_enabled). Force offline so e.g.
     # search routing is stable (offline → OPEN_BROWSER); tests that need network

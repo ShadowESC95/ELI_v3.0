@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 
 
 # ── Import ────────────────────────────────────────────────────────────────
@@ -25,12 +24,6 @@ def test_engine_init():
     eng = CognitiveEngine()
     assert eng is not None
 
-def test_engine_has_memory(engine):
-    assert hasattr(engine, "memory")
-    assert engine.memory is not None
-
-def test_engine_has_request_counter(engine):
-    assert hasattr(engine, "_request_counter")
 
 def test_engine_request_counter_starts_zero(engine):
     assert engine._request_counter == 0
@@ -42,9 +35,6 @@ def test_engine_is_singleton_or_instance():
 
 # ── _build_enhanced_system ────────────────────────────────────────────────
 
-def test_build_enhanced_system_returns_string(engine):
-    result = engine._build_enhanced_system()
-    assert isinstance(result, str)
 
 def test_build_enhanced_system_not_empty(engine):
     result = engine._build_enhanced_system()
@@ -103,9 +93,6 @@ def test_build_enhanced_system_valid_modes_list(engine):
 
 # ── _compact_persona ──────────────────────────────────────────────────────
 
-def test_compact_persona_returns_string(engine):
-    result = engine._compact_persona()
-    assert isinstance(result, str)
 
 def test_compact_persona_not_empty(engine):
     result = engine._compact_persona()
@@ -124,85 +111,20 @@ def test_compact_persona_limit_chars(engine):
 
 # ── _normalize_assistant_text ─────────────────────────────────────────────
 
-def test_normalize_assistant_text_strips_filler():
-    from eli.kernel.engine import _normalize_assistant_text
-    result = _normalize_assistant_text("", "Of course! Here's the answer.")
-    assert isinstance(result, str)
-
-def test_normalize_assistant_text_strips_prefix():
-    from eli.kernel.engine import _normalize_assistant_text
-    result = _normalize_assistant_text("", "eli: Hello world")
-    assert isinstance(result, str)
 
 def test_normalize_assistant_text_not_empty():
     from eli.kernel.engine import _normalize_assistant_text
     result = _normalize_assistant_text("", "Hello there")
     assert result
 
-def test_normalize_assistant_text_handles_empty():
-    from eli.kernel.engine import _normalize_assistant_text
-    result = _normalize_assistant_text("", "")
-    assert isinstance(result, str)
-
-def test_normalize_assistant_text_handles_none():
-    from eli.kernel.engine import _normalize_assistant_text
-    result = _normalize_assistant_text("", None or "")
-    assert isinstance(result, str)
-
 
 # ── recall_memory_query ───────────────────────────────────────────────────
 
-def test_recall_memory_query_returns_list(engine):
-    result = engine.recall_memory_query("test query")
-    assert isinstance(result, list)
-
-def test_recall_memory_query_empty_query(engine):
-    result = engine.recall_memory_query("")
-    assert isinstance(result, list)
 
 def test_recall_memory_query_respects_limit(engine):
     result = engine.recall_memory_query("test", limit=3)
     assert len(result) <= 3
 
-
-# ── _is_grounded_status_query ─────────────────────────────────────────────
-
-@pytest.mark.parametrize("query", [
-    "what is your memory status",
-    "runtime status",
-    "system health",
-    "tell me a joke",
-    "what is 2+2",
-    "",
-])
-def test_is_grounded_status_query(engine, query):
-    if hasattr(engine, "_is_grounded_status_query"):
-        result = engine._is_grounded_status_query(query)
-        assert isinstance(result, bool)
-
-
-# ── _should_bypass_reasoning_loop ────────────────────────────────────────
-
-def test_should_bypass_short_phatic(engine):
-    if hasattr(engine, "_should_bypass_reasoning_loop"):
-        for q in ["hello", "hi", "yes", "no", "ok"]:
-            result = engine._should_bypass_reasoning_loop(q, "", {})
-            assert isinstance(result, bool)
-
-
-# ── Memory context grounding ──────────────────────────────────────────────
-
-def test_empty_recall_returns_empty_list(engine):
-    results = engine.recall_memory_query("immortal_technique_xyz_nonexistent_9999")
-    assert isinstance(results, list)
-
-def test_recall_query_is_list_of_dicts(engine):
-    results = engine.recall_memory_query("test")
-    for r in results:
-        assert isinstance(r, dict)
-
-
-# ── Settings integration ──────────────────────────────────────────────────
 
 # ── Multiple engine instances ─────────────────────────────────────────────
 
@@ -247,7 +169,6 @@ def test_fragment_detector_passes_real_answers(ok):
 
 # ── Constitutional grounded-trust override (#3b/Option C) ─────────────────
 def _cai_seq(draft, critique, revised):
-    from unittest.mock import MagicMock
     it = iter([draft, critique, revised])
     return lambda *a, **k: next(it)
 

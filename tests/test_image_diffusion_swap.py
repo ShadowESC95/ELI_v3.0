@@ -5,9 +5,6 @@ Deterministic — no real model load; generate_batch and the GGUF loader are moc
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
 
 from eli.tools.image_engine.image_engine.visual_core import weights_present
 from eli.tools.image_engine import gui_bridge as GB
@@ -71,8 +68,3 @@ def test_no_swap_for_procedural(tmp_path, monkeypatch):
     generate_images(req, settings={"image_auto_personalize": False})
     assert "unload" not in calls and "reload" not in calls
     assert calls == ["generate"]
-
-
-def test_fetch_model_importable():
-    from eli.tools.image_engine import fetch_model
-    assert hasattr(fetch_model, "fetch")

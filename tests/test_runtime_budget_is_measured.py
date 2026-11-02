@@ -45,14 +45,6 @@ def test_ctx_ceiling_subtracts_model_weight_from_available_ram():
     assert tight <= 4096, f"4.7GB free with 1.8GB model should stay modest, got {tight}"
 
 
-def test_the_per_token_cost_is_the_loaders_own_measurement():
-    """Not a constant invented in this module — an earlier draft did exactly
-    that and implied an 18k context on an 8GB machine."""
-    import inspect
-    src = inspect.getsource(sho._ctx_ceiling_for_ram)
-    assert "_kv_cache_mb" in src and "_layers_for_size" in src
-
-
 def test_memory_that_cannot_be_read_is_unknown_not_invented(monkeypatch):
     """Two readers returned 8 GB (and "half of it free") for a machine they could not read."""
     import sys

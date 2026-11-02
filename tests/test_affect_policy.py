@@ -7,7 +7,6 @@ crisis path rather than being answered with a tone tweak.
 """
 from __future__ import annotations
 
-import pytest
 
 from eli.cognition import affect_policy as ap
 
@@ -110,14 +109,6 @@ def test_proactive_suggestions_are_held_when_the_user_is_frustrated(monkeypatch)
     assert defer is True and why == "frustrated"
 
 
-def test_proactive_daemon_consults_the_affect_gate():
-    """_should_emit is the single choke point for unprompted suggestions."""
-    import inspect
-    from eli.planning import proactive_daemon
-    src = inspect.getsource(proactive_daemon.ProactiveDaemon._should_emit)
-    assert "should_defer_proactive" in src
-
-
 def test_emotional_checkin_is_not_gated_by_the_same_path():
     """A low mood is the reason to ask how someone is — it must not suppress that."""
     import inspect
@@ -126,12 +117,3 @@ def test_emotional_checkin_is_not_gated_by_the_same_path():
     idx = src.index("emotion_checkin")
     window = src[max(0, idx - 2000):idx]
     assert "_should_emit(\"emotion_checkin\"" not in window
-
-
-def test_prompt_assembly_carries_the_behavioural_directive():
-    import inspect
-    from eli.kernel.stages import prompt_assembly
-    src = inspect.getsource(prompt_assembly)
-    assert "build_situation_brief" in src
-    from eli.cognition import tone_adaptor
-    assert "affect_policy" in inspect.getsource(tone_adaptor)

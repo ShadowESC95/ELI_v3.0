@@ -88,7 +88,6 @@ def test_the_release_notes_carry_the_floor():
     assert "needs glibc ${LINUX_GLIBC_FLOOR} or newer" in notes[:1500]
 
 
-
 def _run_steps(path: Path):
     for job_name, job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].items():
         for step in job.get("steps") or []:
@@ -241,8 +240,6 @@ def test_the_release_trims_the_bundle_before_it_is_checked_and_packed():
                             "--selftest", "build-appimage-pyinstaller.sh")]
     assert order == sorted(order), "built, trimmed, started, then packed"
     assert "trim_bundle.py --check" in runs[order[1]]
-    entry = (ROOT / "packaging" / "pyinstaller" / "eli_entry.py").read_text(encoding="utf-8")
-    assert 'os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"' in entry
 
 
 # ── the launcher inside the AppImage ─────────────────────────────────────────

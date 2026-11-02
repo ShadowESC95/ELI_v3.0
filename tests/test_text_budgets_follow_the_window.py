@@ -120,23 +120,3 @@ def test_whisper_is_never_put_on_the_gpu_on_a_guess(monkeypatch, tmp_path):
     monkeypatch.setattr(w, "_measured_footprint_mb", lambda c, m: None)
     monkeypatch.setattr(w, "_whisper_weights_mb", lambda m, d: 0.0)         # not downloaded
     assert w._gpu_room_for_whisper("small.en", str(tmp_path)) is False
-
-
-def test_none_of_the_fixed_sizes_came_back():
-    needles = {
-        "eli/kernel/engine.py": ["persona[:12000]", "ctx_window <= 8192", "ctx_window <= 12288"],
-        "eli/kernel/stages/prompt_assembly.py": ["BUDGET_SNIPPETS = 2048", "(_nctx - 6600)", "+ 12000\n"],
-        "eli/runtime/code_examiner.py": ["MAX_FILE_CHARS = 12000"],
-        "eli/execution/executor_enhanced.py": ["_body[:12000]"],
-        "eli/perception/local_whisper_stt.py": ['"ELI_WHISPER_GPU_MIN_MB", "12000"'],
-        "eli/gui/main_window/adapters.py": ["self._n_ctx <= 8192"],
-        "eli/gui/main_window/_common.py": ["min(131072, int(ram_gb * 1024))"],
-        "eli/gui/main_window/_mixins/settings_model.py": ["max_tokens_input.setRange(128, 4096)"],
-        "eli/core/startup_hardware_optimizer.py": ["min(8192, n_ctx // 2)", "min(131072, int(net_gb * 1024))"],
-        "eli/runtime/runtime_policy.py": ["min(4.0, ctx / 8192.0)", "if ctx >= 32768"],
-        "eli/memory/vector_store.py": ["n_ctx=2048,"],
-    }
-    for name, items in needles.items():
-        text = (ROOT / name).read_text(encoding="utf-8")
-        for needle in items:
-            assert needle not in text, f"{name} still has {needle!r}"

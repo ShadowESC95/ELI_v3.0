@@ -23,12 +23,6 @@ def _usable(generated, context=CONTEXT, user_input=CURRENT_INPUT):
     return _clarifier_is_usable(generated, user_input=user_input, context=context)
 
 
-def test_the_method_is_still_on_the_engine():
-    """A module-level def placed inside the class body ends it silently: the file
-    still compiles and the method simply stops existing."""
-    assert hasattr(CognitiveEngine, "_clarifying_response")
-
-
 # ── it must actually be a question ──────────────────────────────────────────
 def test_the_live_failure_is_rejected():
     assert not _usable(USER_FIRST_TURN)

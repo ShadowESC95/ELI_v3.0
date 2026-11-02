@@ -81,12 +81,6 @@ def test_shim_runs_at_most_once(monkeypatch):
     assert tts_xtts._COMPAT_PATCHED is True
 
 
-def test_availability_is_cheap():
-    """Called from tts_router.list_voices() — it must never pull the 1.8GB model."""
-    src = inspect.getsource(tts_xtts.xtts_available)
-    assert "_get_model" not in src
-
-
 # NOTE: v2's `natural_available()` / `list_natural_voices()` / `NATURAL_PREFIX`
 # have no counterpart here — v3 exposes cloning as `clone:<name>` through
 # tts_router and never had the "natural:" voice family. The two tests covering
@@ -101,11 +95,3 @@ def test_unavailable_backend_reports_a_reason():
         assert tts_xtts.xtts_import_error(), "unavailable, but no reason recorded"
     else:
         assert tts_xtts.xtts_import_error() == ""
-
-
-def test_model_loader_patches_before_it_imports():
-    """_get_model() imports TTS.api directly, so it needs the shim too — a caller
-    reaching it without probing first would fail on transformers>=5."""
-    import inspect
-    src = inspect.getsource(tts_xtts._get_model)
-    assert src.index("_patch_transformers_compat()") < src.index("from TTS.api")

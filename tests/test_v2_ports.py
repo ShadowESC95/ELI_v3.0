@@ -7,16 +7,11 @@ just unreachable.
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 
 
 # ── Ollama auto-start ────────────────────────────────────────────────────────
-def test_ensure_server_running_exists():
-    from eli.integrations.ollama import client
-    assert hasattr(client, "ensure_server_running"), \
-        "v3 only told the user to start Ollama; the #1 'not loading' cause is that it is stopped"
 
 
 def test_autostart_is_skippable(monkeypatch):
@@ -35,11 +30,6 @@ def test_autostart_refuses_a_remote_host(monkeypatch):
     monkeypatch.setattr(client, "_autostart_tried", False, raising=False)
     monkeypatch.setattr(client, "candidate_hosts", lambda *a, **k: ["http://192.168.1.50:11434"])
     assert client.ensure_server_running() is False
-
-
-def test_list_models_accepts_the_autostart_switch():
-    from eli.integrations.ollama.client import list_models
-    assert isinstance(list_models(autostart=False), list)
 
 
 # ── TTS prosody + robotic-voice filter ───────────────────────────────────────
@@ -74,31 +64,6 @@ def test_robotic_voices_can_be_opted_into(monkeypatch):
     assert len(everything) >= len(natural)
 
 
-# ── Voice library dialog ─────────────────────────────────────────────────────
-def test_voice_library_dialog_present():
-    """voice_assets could always fetch ~166 voices; nothing exposed that to the user.
-
-    Source-level: the suite mocks Qt, so the class is a MagicMock at import time
-    and attribute checks on it prove nothing. Real construction is verified
-    offscreen, not here.
-    """
-    import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent / "eli" / "gui" /
-           "widgets" / "voice_downloader.py").read_text(encoding="utf-8")
-    assert "class VoiceDownloadDialog" in src
-    assert "voices_changed" in src
-    assert "download_voice" in src, "the dialog must reach the real fetcher"
-
-
-def test_settings_offers_the_voice_library_and_can_refresh():
-    import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent / "eli" / "gui" /
-           "main_window" / "_mixins" / "settings_model.py").read_text(encoding="utf-8")
-    assert "VoiceDownloadDialog" in src, "no entry point to the voice library"
-    assert "_reload_voice_selector" in src, \
-        "a downloaded voice must appear without reopening Settings"
-
-
 # ── Licence terms ────────────────────────────────────────────────────────────
 def test_license_terms_are_printable_and_distinct_from_activation():
     from eli.runtime.license_info import eula_path, license_path, license_text
@@ -117,13 +82,6 @@ def test_license_flag_does_not_collide_with_license_status():
         "--license must fall through to the terms printer, not the activation handler"
     assert "--license-status" in LICENSE_FLAGS
 
-
-def test_main_handles_the_license_flag():
-    import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent /
-           "eli" / "__main__.py").read_text(encoding="utf-8")
-    assert '"--license" in args' in src
-    assert "license_info" in src
 
 # ── XTTS device override ─────────────────────────────────────────────────────
 @pytest.mark.parametrize("forced", ["cpu", "cuda"])

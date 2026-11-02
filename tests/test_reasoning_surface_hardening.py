@@ -3,11 +3,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_engine_has_no_reasoning_mode_self_awareness_phrase():
-    text = (ROOT / "eli/kernel/engine.py").read_text(encoding="utf-8")
-    assert "REASONING MODE SELF-AWARENESS" not in text
-
-
 def test_visible_output_strips_private_reasoning_markers():
     from eli.runtime.visible_output import visible_text
 

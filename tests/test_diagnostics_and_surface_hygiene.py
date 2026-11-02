@@ -23,7 +23,6 @@ Plus the resource leak behind the ResourceWarnings: three mpv IPC helpers
 closed their socket only on the success path.
 """
 import inspect
-import re
 from pathlib import Path
 
 import pytest
@@ -128,18 +127,6 @@ def test_real_code_audit_requests_still_route(phrase):
 
 
 # ── sockets close on every path, not just the happy one ────────────────────
-@pytest.mark.parametrize("fn", ["_mpv_alive", "_mpv_ipc", "_mpv_load_confirmed"])
-def test_mpv_ipc_helpers_cannot_leak_a_socket(fn):
-    """Each closed its socket only after the last statement, so any raise in
-    between leaked the fd -- the ResourceWarnings in the session log."""
-    from eli.integrations.media import cross_platform as cp
-    # The helpers delegate to the cross-platform implementation (Unix socket or Windows named pipe),
-    # which owns the socket.
-    delegate = {"_mpv_alive": cp.mpv_alive, "_mpv_ipc": cp.mpv_ipc_send, "_mpv_load_confirmed": cp.mpv_ipc_send}[fn]
-    src = inspect.getsource(delegate)
-    assert "with _sock.socket(" in src, f"{fn} no longer uses a context manager"
-    assert not re.search(r"^\s*s = _sock\.socket\(", src, re.M), \
-        f"{fn} constructs a bare socket outside a with-block again"
 
 
 def test_mpv_helpers_survive_a_missing_socket():

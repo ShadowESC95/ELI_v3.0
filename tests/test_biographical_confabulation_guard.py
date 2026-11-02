@@ -67,22 +67,11 @@ def test_like_what_alone_is_meta_not_general_factual():
     assert is_meta_conversation("like what?")
 
 
-def test_correction_repair_has_meta_conversation_steering():
-    src = inspect.getsource(engine.CognitiveEngine._correction_repair)
-    assert "that was a question" in src.lower() or "QUESTION you failed" in src
-    assert "like what" in src.lower()
-
-
 def test_correction_repair_has_biographical_dispute_steering():
     src = inspect.getsource(engine.CognitiveEngine._correction_repair)
     low = src.lower()
     assert "biographical" in low or "wild night" in low or "life, habits, or experiences" in low
     assert "patches" in low and "upgrades" in low
-
-
-def test_correction_repair_caps_long_budget():
-    src = inspect.getsource(engine.CognitiveEngine._correction_repair)
-    assert "_corr_max > 512" in src or "512" in src
 
 
 def test_web_search_request_not_hijacked_by_correction_shortcut():
@@ -91,9 +80,3 @@ def test_web_search_request_not_hijacked_by_correction_shortcut():
     assert explicit_web_search_request(msg)
     assert not correction_shortcut_allowed(msg, "WEB_SEARCH")
     assert not correction_shortcut_allowed(msg, "CHAT")
-
-
-def test_persona_handoff_has_low_grounding_guard():
-    src = inspect.getsource(engine.CognitiveEngine._build_persona_handoff_once)
-    assert "LOW GROUNDING" in src
-    assert "wild night" in src.lower() or "personal events" in src.lower()

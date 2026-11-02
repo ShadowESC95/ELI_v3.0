@@ -161,13 +161,6 @@ def test_every_platform_has_candidates_and_a_canonical_table(platform):
         assert pc.APP_ALIASES_BY_PLATFORM[platform][role] == names[0]
 
 
-def test_app_aliases_keeps_str_contract_for_other_platforms():
-    """Back-compat: callers get dict[str, str], resolved or not."""
-    for platform in ("linux", "macos", "windows", "android", "bsd"):
-        for value in pc.app_aliases(platform).values():
-            assert isinstance(value, str)
-
-
 def test_known_aliases_still_resolve():
     assert pc.app_aliases("android")["terminal"] == "com.termux"
     assert pc.normalize_app_name("vs code", "windows") == "code.cmd"

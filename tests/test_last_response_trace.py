@@ -157,49 +157,9 @@ def test_header_line_derives_only_from_fields_already_in_the_trace():
     assert "grounded" not in out  # grounded=False must not claim it
 
 
-def test_last_request_meta_request_id_uses_dict_get_not_getattr():
-    """Live bug found 2026-10-02: engine.py built _last_request_meta's
-    request_id with getattr(trace, "request_id", "") — trace is a plain
-    dict, so getattr on it always returns the "" default. request_id in
-    the EXPLAIN_LAST_RESPONSE trace has been blank ever since this code
-    path was added. Fixed to (trace or {}).get("request_id")."""
-    import pathlib
-    src = (pathlib.Path(__file__).resolve().parents[1] / "eli" / "kernel" / "engine.py").read_text(encoding="utf-8")
-    assert 'getattr(trace, "request_id"' not in src
-    assert '"request_id": str((trace or {}).get("request_id") or "")' in src
-
-
 def test_explain_last_response_leads_with_the_header_then_the_trace():
     engine = type("E", (), {"_last_request_meta": _trace()})()
     result = build_control_evidence(engine, "EXPLAIN_LAST_RESPONSE", {}, "what happened?")
     text = result["content"]
     assert text.startswith("That was a CHAT reply")
     assert text.index("That was a CHAT reply") < text.index("Previous-response trace evidence:")
-
-
-# ── the streaming path must persist ─────────────────────────────────────────
-def test_streaming_path_persists_the_trace():
-    """The actual bug. Every ordinary GUI turn streams, and that path only ever
-    set the in-memory badge (_last_request_meta) — last_trace.json was never
-    written, so 'last response' resolved to some older non-streamed action."""
-    import inspect
-
-    # v3 decomposes the engine into stage mixins; _stream_chat lives on
-    # GenerationMixin rather than on CognitiveEngine directly.
-    from eli.kernel.stages.generation import GenerationMixin
-
-    src = inspect.getsource(GenerationMixin._stream_chat)
-    assert "save_last_trace" in src, \
-        "streamed replies still do not persist a trace"
-    assert "response_text" in src, \
-        "streamed traces do not carry the reply text"
-
-
-def test_publish_records_the_response_text():
-    import inspect
-
-    from eli.kernel import engine
-
-    src = inspect.getsource(engine.CognitiveEngine._publish_last_response_meta)
-    assert '"response_text"' in src
-    assert '"user_input"' in src, "the trace cannot say what it was answering"

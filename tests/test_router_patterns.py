@@ -240,14 +240,6 @@ WEIRD_INPUTS = [
     "inf",
 ]
 
-@pytest.mark.parametrize("text", WEIRD_INPUTS)
-def test_no_crash_weird_inputs(text):
-    try:
-        result = route(text or "")
-        assert isinstance(result, dict)
-    except Exception as e:
-        pytest.fail(f"route crashed with '{text}': {e}")
-
 
 # ── Visual content-questions gather a real glance (not CHAT guessing) ────────
 # Regression: a question about what's ON the screen must route to a real vision

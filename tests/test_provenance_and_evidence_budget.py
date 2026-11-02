@@ -121,15 +121,3 @@ def test_a_bigger_context_yields_a_bigger_evidence_budget():
     small = memory_char_budget(4096, 6100, 1024)
     large = memory_char_budget(16384, 6100, 1024)
     assert large > small
-
-
-def test_both_shipped_guards_use_the_shared_budget():
-    """Assert the call sites, not a re-derivation."""
-    import inspect
-    from eli.kernel import engine as eng
-
-    for fn in (eng.CognitiveEngine._stream_model_response, eng.CognitiveEngine._get_chat_response):
-        src = inspect.getsource(fn)
-        assert "_ctx_budget.memory_char_budget" in src
-        assert "_ctx_budget.trim_memory_context" in src
-        assert "[-_mem_char_budget" not in src, "tail-slicing drops the best-ranked evidence first"

@@ -143,8 +143,8 @@ def _dt(s):
 @pytest.mark.parametrize("said,expected", [
     ("Back from the shop, MBW is on in the background, and i am saying hello", ("watching", "MBW")),
     ("i already said that i am watching MBW!!!", ("watching", "MBW")),
-    ("finished the washing up. I'm actually watching OD coastal paths", ("watching", "OD coastal paths")),
-    ("you're back then. Still watching coastal paths OD, pal.", ("watching", "coastal paths OD")),
+    ("finished the washing up. I'm actually watching XR harbour walks", ("watching", "XR harbour walks")),
+    ("you're back then. Still watching harbour walks XR, pal.", ("watching", "harbour walks XR")),
     ("all fine, still watching ocean diaries", ("watching", "ocean diaries")),
     ("i am still watching the lantern road now, it is on its 2nd film", ("watching", "the lantern road")),
     ("I've been playing Hollow Orchard every evening", ("playing", "Hollow Orchard")),

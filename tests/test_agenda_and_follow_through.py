@@ -366,13 +366,9 @@ def test_an_action_run_from_the_dag_pool_is_recorded_on_the_turn():
 # ── results are shown as they are ────────────────────────────────────────────
 
 def test_calendar_and_timer_results_are_never_handed_to_the_model_to_reword():
-    import inspect
     from eli.kernel import engine as E
     for action in ("ADD_EVENT", "LIST_EVENTS", "SET_ALARM", "SET_TIMER", "MULTI_COMMAND", "MEMORY_FORGET"):
         assert action in E._DIRECT_RESULT_ACTIONS
-    src = inspect.getsource(E.CognitiveEngine._process_impl)
-    assert src.count("_shown_as_is(action, reasoning_mode)") >= 2          # both paths that return an action's result
-    assert "_deterministic_direct_payload_actions = _DIRECT_RESULT_ACTIONS" in src
 
 
 def test_agreed_steps_report_their_outcomes_not_elis_sentences_back(agenda, monkeypatch):

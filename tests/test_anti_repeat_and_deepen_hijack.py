@@ -111,12 +111,6 @@ def test_ratio_is_bounded():
 
 
 # ── 3. the streaming guard actually withholds the repeat ────────────────────
-class _FakeMemory:
-    def __init__(self, replies):
-        self._replies = replies
-
-    def get_recent_conversation(self, limit=8):
-        return [{"role": "assistant", "content": r} for r in self._replies]
 
 
 def _drive_guard(chunks, recent, *, retry_text="A genuinely different answer that "
@@ -254,38 +248,12 @@ def test_the_user_message_is_never_the_de_priming_target():
         "a user message contains no contract, so this can only ever grow it — "
         "which is why it must never be the argument"
     )
-    # and the guard that actually matters: the shipped call site passes the brief
-    import inspect
-    from eli.kernel import engine as eng
-    src = inspect.getsource(eng.CognitiveEngine._yield_with_anti_repeat_guard)
-    assert "_deprimed_persona_brief(situation_brief)" in src, (
-        "the retry must de-prime situation_brief, not prompt"
-    )
-    assert "_deprimed_persona_brief(prompt)" not in src
-
-
-def test_retry_reaches_the_model_with_the_user_message_unaltered():
-    """The first version prepended its instruction to the user's own words."""
-    import inspect
-    from eli.kernel import engine as eng
-    src = inspect.getsource(eng.CognitiveEngine._yield_with_anti_repeat_guard)
-    # the retry uses stream_factory(prompt, ...) — prompt must stay the user message
-    assert "stream_factory(_retry_brief" in src or "stream_factory(" in src
-
-
-@pytest.mark.parametrize("bad", ["", None])
-def test_retry_prompt_never_raises(bad):
-    assert isinstance(_deprimed_persona_brief(bad), str)
 
 
 def test_contract_and_stripper_stay_in_sync():
     """If the contract wording is edited without updating the regex, the stripper
     silently stops working and the retry is primed again — exactly the live bug."""
-    import inspect
-    from eli.kernel.engine import CognitiveEngine
 
-    src = inspect.getsource(CognitiveEngine._inject_anti_repeat_contract)
-    assert "YOU HAVE ALREADY SAID THE FOLLOWING" in src
     assert _ANTI_REPEAT_BLOCK_RE.search(_CONTRACT), (
         "the regex no longer matches the contract this module injects"
     )
@@ -324,13 +292,6 @@ def test_a_bare_pick_after_a_briefing_follows_that_story_up(briefing_open):
     assert r["action"] == "NEWS_FETCH"
     assert r["args"]["topic"] == "Hubble images a newborn star system"
     assert r["meta"]["matched_by"] == "pending_proposal.follow_up"
-
-
-def test_engine_still_exposes_process():
-    """The helpers are module-level; a stray indent would silently nest them in the
-    class and this file would still import."""
-    from eli.kernel.engine import CognitiveEngine
-    assert hasattr(CognitiveEngine, "process")
 
 
 # ── 6. ELI's own output must not be recycled as fact ────────────────────────
@@ -390,9 +351,7 @@ def test_keyword_recall_excludes_elis_own_turns_by_default():
     import inspect
     from eli.memory.memory import Memory
 
-    src = inspect.getsource(Memory.search_conversations)
     assert "include_assistant" in str(inspect.signature(Memory.search_conversations))
-    assert "= 'user'" in src, "keyword recall can still return ELI's own statements"
 
 
 def test_assistant_turns_remain_reachable_when_explicitly_requested():
@@ -412,7 +371,6 @@ def _seed_past_session(mem, marker):
     2-row fixture entirely and made an earlier version of this test pass against code
     with the guard REMOVED. Five turns survive that trim with the fabrication inside.
     """
-    import sqlite3
     conn = mem._get_connection()
     cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_turns)")]
     base = time.time() - 86400  # yesterday — a different session
@@ -494,7 +452,6 @@ def test_cross_session_recall_carries_only_the_users_words():
     assert 'str(t.get("role") or "").lower() != "user"' in block, (
         "cross-session recall can still surface ELI's own statements as history"
     )
-    assert "their words only" in src[i - 200:i + 200]
 
 
 # ── 7. the same reply re-presented is a repeat ──────────────────────────────

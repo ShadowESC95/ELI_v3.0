@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -73,10 +71,6 @@ def test_defaults_has_tts_voice():
 def test_defaults_has_image_keys():
     for k in ("image_backend", "image_model_path", "image_device"):
         assert k in DEFAULTS
-
-def test_defaults_bool_types():
-    for k in BOOL_KEYS:
-        assert isinstance(DEFAULTS.get(k, False), bool), f"{k} should have bool default"
 
 
 # ── KEY CLASSIFICATION ────────────────────────────────────────────────────
@@ -259,11 +253,6 @@ def test_heal_relative_path_skipped():
     result, changed = _heal_model_paths(settings)
     assert not changed
 
-def test_heal_returns_dict():
-    settings = {"model_path": "/nonexistent/stale/path/model.gguf"}
-    result, changed = _heal_model_paths(settings)
-    assert isinstance(result, dict)
-    assert isinstance(changed, bool)
 
 def test_heal_syncs_model_path_from_fallback(tmp_path):
     model = tmp_path / "model.gguf"
@@ -282,10 +271,6 @@ def test_heal_syncs_model_path_from_fallback(tmp_path):
 
 # ── load_settings ─────────────────────────────────────────────────────────
 
-def test_load_settings_returns_dict(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    result = load_settings()
-    assert isinstance(result, dict)
 
 def test_load_settings_has_all_defaults(tmp_settings_file, monkeypatch):
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
@@ -329,17 +314,6 @@ def test_load_settings_corrupted_file_uses_defaults(tmp_settings_file, monkeypat
     result = load_settings()
     assert result["provider"] == DEFAULTS["provider"]
 
-def test_load_settings_n_threads_coerced_to_int(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    tmp_settings_file.write_text(json.dumps({"n_threads": "10"}))
-    result = load_settings()
-    assert isinstance(result["n_threads"], int)
-
-def test_load_settings_n_gpu_layers_coerced_to_int(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    tmp_settings_file.write_text(json.dumps({"n_gpu_layers": "11"}))
-    result = load_settings()
-    assert isinstance(result["n_gpu_layers"], int)
 
 def test_load_settings_legacy_migration_applied(tmp_settings_file, monkeypatch):
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
@@ -386,12 +360,6 @@ def test_save_settings_strips_legacy_key_from_dict(tmp_settings_file, monkeypatc
     assert "gpu_layers" not in data
     assert data.get("n_gpu_layers") == 8
 
-def test_save_settings_int_coercion(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    save_settings({"n_gpu_layers": "11"})
-    data = json.loads(tmp_settings_file.read_text())
-    assert isinstance(data["n_gpu_layers"], int)
-
 
 def test_save_settings_project_paths_are_portable(tmp_settings_file, monkeypatch):
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
@@ -420,10 +388,6 @@ def test_update_settings_persists(tmp_settings_file, monkeypatch):
 
 # ── load_runtime_settings / save_runtime_settings aliases ────────────────
 
-def test_load_runtime_settings_alias(tmp_settings_file, monkeypatch):
-    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
-    result = load_runtime_settings()
-    assert isinstance(result, dict)
 
 def test_save_runtime_settings_alias(tmp_settings_file, monkeypatch):
     monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))

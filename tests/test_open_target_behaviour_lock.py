@@ -185,10 +185,6 @@ def test_go_to_is_not_always_an_address(phrase):
 def test_one_table_of_site_names():
     from eli.execution import app_aliases, portable_intent_contract
     assert router.WEBSITE_ALIASES is app_aliases.WEBSITE_ALIASES is portable_intent_contract.WEBSITE_ALIASES
-    import inspect
-    from eli.execution import executor_enhanced
-    assert "_site_map" not in inspect.getsource(executor_enhanced)
-    assert inspect.getsource(router).count('": "https://') == 0, "the router keeps no table of its own"
 
 
 # ── compound targets: both, or it is a silent data loss bug ─────────────────

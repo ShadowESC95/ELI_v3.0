@@ -7,7 +7,6 @@ Verifies:
 - SQL identifier validation blocks f-string injection attempts
 """
 import pytest
-import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -169,24 +168,4 @@ class TestFAISSPrimaryRetrieval:
 
         # Critical invariant: search() must never be called on an empty index
         mock_vs.search.assert_not_called()
-        assert isinstance(results, list)
-
-    def test_vector_store_exception_falls_through_to_keyword(self, tmp_path):
-        """If vector_store.search() throws, keyword search must still run."""
-        mem = _make_memory(tmp_path)
-
-        conn = mem._get_connection()
-        conn.execute(
-            "INSERT INTO memories (text, tags, timestamp) VALUES (?, ?, ?)",
-            ("fallback keyword text", "", 0),
-        )
-        conn.commit()
-
-        def _bad_get_vector_store():
-            raise RuntimeError("FAISS unavailable")
-
-        with patch("eli.memory.vector_store.get_vector_store", side_effect=_bad_get_vector_store):
-            results = mem.recall_memory("fallback keyword text", limit=5)
-
-        # Should not crash; keyword search should provide results
         assert isinstance(results, list)

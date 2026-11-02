@@ -14,10 +14,6 @@ PLUGIN_NAMES = [
 ]
 
 
-def test_plugins_package_init():
-    assert importlib.import_module("eli.plugins") is not None
-
-
 def test_plugins_manager_has_class():
     mod = importlib.import_module("eli.plugins.manager")
     syms = dir(mod)

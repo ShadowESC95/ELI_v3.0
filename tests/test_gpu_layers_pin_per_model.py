@@ -7,35 +7,8 @@ stranding 25 of them on the CPU. The tuner measured 32, reported "all layers on
 GPU (free VRAM sufficient)", and stood down because the user's value wins. What
 was missing was any record of WHICH model the pin was for.
 """
-import re
-from pathlib import Path
 
 import eli.core.runtime_settings as rs
-
-
-def _tuner_source() -> str:
-    """Read the tuner file from disk.
-
-    The GUI module cannot be imported headlessly (PySide6 symbols are missing),
-    so importing it to inspect its source would only ever fail in CI.
-
-    main_window/_mixins/settings_model.py checked FIRST: where v3's GUI got
-    decomposed into a real package, eli_pro_audio_gui_v2_0.py is dead code
-    that nothing imports, but it is not deleted -- so it still contains a
-    stale copy of this same logic (down to the same `_canonical_layers` name)
-    and used to win this search by file order, silently checking dead code
-    while the live file went unchecked. Confirmed live: a v2.4.56 fix landed
-    correctly in settings_model.py but this search still picked the untouched
-    dead file and reported the fix missing. Where only one of the two exists
-    (v2 has no main_window package), the other is used as before.
-    """
-    root = Path(rs.__file__).resolve().parents[2]
-    for rel in ("eli/gui/main_window/_mixins/settings_model.py",
-                "eli/gui/main_window/models.py"):
-        f = root / rel
-        if f.is_file() and "_canonical_layers" in f.read_text(encoding="utf-8"):
-            return f.read_text(encoding="utf-8")
-    raise AssertionError("tuner source not found under %s" % root)
 
 
 def test_the_provenance_key_exists_and_defaults_to_unknown():
@@ -88,15 +61,6 @@ def test_a_specific_count_for_this_model_is_honoured():
     assert got == 7
 
 
-def test_the_headless_loader_uses_the_same_rule():
-    """The desktop GUI is not the only loader: server/API must not diverge."""
-    root = Path(rs.__file__).resolve().parents[2]
-    src = (root / "eli/cognition/gguf_inference.py").read_text(encoding="utf-8")
-    assert "pinned_gpu_layers_for_model" in src, (
-        "the headless/server load path resolves n_gpu_layers straight from "
-        "settings again, so a stale pin still strands models on the CPU there")
-
-
 def test_saving_settings_does_not_turn_the_setting_into_a_global_override(tmp_path, monkeypatch):
     """apply_env, run after every save, copied n_gpu_layers into ELI_GGUF_N_GPU_LAYERS, which the
     loader reads first: an unpinned 0 became "processor only" and one model's pin applied to all."""
@@ -109,21 +73,6 @@ def test_saving_settings_does_not_turn_the_setting_into_a_global_override(tmp_pa
     rs.save_settings({"n_gpu_layers": 7, "n_gpu_layers_model": "a.gguf", "n_gpu_layers_source": "user"})
     assert load_request("/m/a.gguf").n_gpu_layers == 7
     assert load_request("/m/b.gguf").n_gpu_layers is None
-
-
-def test_the_gui_defers_to_the_shared_rule():
-    """GUI and headless must decide identically or they will drift apart."""
-    src = _tuner_source()
-    assert "pinned_gpu_layers_for_model" in src, (
-        "the tuner decides pin staleness on its own again; it must share the "
-        "helper with the headless loader or the two will disagree")
-
-
-def test_the_pin_is_stamped_with_the_model_when_saved():
-    src = _tuner_source()
-    assert re.search(r'_s\["n_gpu_layers_model"\]\s*=\s*_this_model', src), (
-        "the model is never recorded, so provenance stays unknown forever and "
-        "a deliberate pin can never be told from an inherited one")
 
 
 def test_model_identity_is_case_insensitive():
@@ -207,26 +156,3 @@ def test_all_layers_pin_survives_a_ctx_change_too():
         {"n_gpu_layers": -1, "n_gpu_layers_model": "phi3.gguf", "n_gpu_layers_ctx": 2048},
         current_ctx=12200)
     assert got == -1
-
-
-def test_the_pin_is_stamped_with_ctx_when_saved():
-    src = _tuner_source()
-    assert re.search(r'_s\["n_gpu_layers_ctx"\]\s*=\s*_canonical_ctx', src), (
-        "the ctx a pin was measured at is never recorded, so a stale-ctx pin "
-        "can never be told from a fresh one")
-
-
-def test_the_tuner_checks_ctx_before_honouring_a_pin():
-    src = _tuner_source()
-    assert re.search(r"_pin_for_model\([^)]*current_ctx\s*=", src), (
-        "the tuner calls pinned_gpu_layers_for_model without current_ctx, so "
-        "a pin measured at a different ctx is honoured as if it still applied")
-
-
-def test_the_headless_loader_checks_ctx_before_honouring_a_pin():
-    root = Path(rs.__file__).resolve().parents[2]
-    src = (root / "eli/cognition/gguf_inference.py").read_text(encoding="utf-8")
-    assert re.search(r"pinned_gpu_layers_for_model\([^)]*current_ctx\s*=", src), (
-        "the headless/server load path resolves n_gpu_layers without "
-        "checking ctx, so it can diverge from the GUI on the exact same "
-        "stale-ctx-pin scenario")

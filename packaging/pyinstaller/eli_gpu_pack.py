@@ -58,8 +58,16 @@ _GPU_PACK_FALLBACK_ASSETS: tuple[str, ...] = (
 
 
 def _log_path() -> "Path | None":
-    """Install log location — inside the user root, next to the pack itself."""
+    """Install log location — inside the user root, next to the pack itself, unless
+    ELI_GPU_PACK_LOG names the file."""
     import os
+    named = os.environ.get("ELI_GPU_PACK_LOG")
+    if named:
+        try:
+            Path(named).parent.mkdir(parents=True, exist_ok=True)
+            return Path(named)
+        except OSError:
+            return None
     root = os.environ.get("ELI_PROJECT_ROOT")
     if not root:
         return None

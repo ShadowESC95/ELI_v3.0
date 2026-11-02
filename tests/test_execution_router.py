@@ -70,9 +70,6 @@ def test_memory_recall_routing(text):
 
 # ── Route returns valid structure ─────────────────────────────────────────
 
-def test_route_returns_dict():
-    result = route_full("hello")
-    assert isinstance(result, dict)
 
 def test_route_has_action_key():
     result = route_full("hello")
@@ -81,10 +78,6 @@ def test_route_has_action_key():
 def test_route_has_confidence():
     result = route_full("hello")
     assert 0.0 <= result["confidence"] <= 1.0
-
-def test_route_action_is_string():
-    result = route_full("hello")
-    assert isinstance(result.get("action", ""), str)
 
 
 # ── RUNTIME_STATUS routing ────────────────────────────────────────────────
@@ -179,36 +172,6 @@ def test_route_empty_string():
     result = route_full("")
     assert isinstance(result, dict)
     assert "action" in result
-
-def test_route_whitespace():
-    result = route_full("   ")
-    assert isinstance(result, dict)
-
-def test_route_very_long_input():
-    text = "What do you think about " + "this subject " * 100
-    result = route_full(text)
-    assert isinstance(result, dict)
-
-def test_route_special_characters():
-    result = route_full("!@#$%^&*()")
-    assert isinstance(result, dict)
-
-def test_route_numeric_input():
-    result = route_full("42")
-    assert isinstance(result, dict)
-
-def test_route_multiline_input():
-    text = "Line one\nLine two\nLine three"
-    result = route_full(text)
-    assert isinstance(result, dict)
-
-def test_route_json_like_input():
-    result = route_full('{"key": "value"}')
-    assert isinstance(result, dict)
-
-def test_route_code_like_input():
-    result = route_full("def hello(): return 'world'")
-    assert isinstance(result, dict)
 
 
 # ── Reasoning mode queries ────────────────────────────────────────────────

@@ -69,16 +69,6 @@ def test_each_stage_is_reachable_and_owns_its_intent(stage_name, text, action):
     assert via_route["action"] == action
 
 
-def test_route_delegates_its_tail_to_the_stage_list():
-    """route() must consult INTENT_STAGES rather than carrying inline copies."""
-    import inspect
-
-    import eli.execution.router_enhanced as R
-
-    src = inspect.getsource(R._ROUTE_CORE)
-    assert "INTENT_STAGES" in src
-
-
 def test_intents_do_not_import_the_router_back():
     """The stages are leaves: importing router_enhanced from them would make the
     package a cycle and defeat the extraction."""

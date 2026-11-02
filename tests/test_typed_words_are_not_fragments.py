@@ -26,10 +26,3 @@ def test_typed_thanks_is_conversation():
 
 def test_speech_fragments_are_still_asked_about():
     assert route("thanks")["action"] == "NOOP"
-
-
-def test_the_window_marks_typed_and_spoken_messages():
-    src = "\n".join(p.read_text(encoding="utf-8") for p in (
-        ROOT / "eli/gui/main_window/_mixins/conversation.py",
-        ROOT / "eli/gui/eli_pro_audio_gui_v2_0.py") if p.is_file())
-    assert 'input_channel_var.set("typed")' in src and "self._spoken_send = True" in src

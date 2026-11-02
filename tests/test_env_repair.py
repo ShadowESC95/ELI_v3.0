@@ -192,8 +192,6 @@ def test_the_pytorch_build_is_chosen_from_what_pytorch_publishes_for_this_python
 
 
 def test_the_driver_is_read_by_the_frozen_apps_own_reader():
-    gpu_pack = (ROOT / "packaging" / "pyinstaller" / "eli_gpu_pack.py").read_text(encoding="utf-8")
-    assert "def _driver_cuda_version(" in gpu_pack
     assert "_driver_cuda_version()" in HELPER.read_text(encoding="utf-8")
 
 

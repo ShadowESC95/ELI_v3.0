@@ -24,7 +24,6 @@ forgets is a failing test rather than a shipped release.
 """
 from __future__ import annotations
 
-import inspect
 
 import pytest
 
@@ -139,33 +138,6 @@ CALL_SITES = [
     ("eli.planning.proactive_daemon", "has_auto_tag"),
     ("eli.runtime.reflection", "is_meta_action"),
 ]
-
-
-@pytest.mark.parametrize("module_name,symbol", CALL_SITES)
-def test_call_sites_import_from_the_choke_point(module_name, symbol):
-    module = __import__(module_name, fromlist=["_"])
-    src = inspect.getsource(module)
-    assert "self_provenance" in src, f"{module_name} does not consult the choke point"
-    assert symbol in src, f"{module_name} does not use {symbol}"
-
-
-@pytest.mark.parametrize("module_name,_symbol", CALL_SITES)
-def test_call_sites_do_not_redefine_the_vocabulary(module_name, _symbol):
-    """A private copy is how the four mechanisms diverged in the first place."""
-    module = __import__(module_name, fromlist=["_"])
-    src = inspect.getsource(module)
-    for banned in ("_PLUMBING_CATEGORIES =", "_PLUMBING_PREFIXES =",
-                   "_AUTO_TAG_MARKERS =", "_noise_kinds =", "_noise_sources ="):
-        assert banned not in src, f"{module_name} still defines {banned.strip(' =')}"
-
-
-def test_the_module_has_no_heavy_imports():
-    """It is imported from memory, planning and runtime — it must not drag the
-    engine in behind it or create a cycle."""
-    src = inspect.getsource(sp)
-    for banned in ("from eli.kernel", "import eli.kernel",
-                   "from eli.memory", "from eli.cognition"):
-        assert banned not in src
 
 
 # ── retention ──────────────────────────────────────────────────────────────

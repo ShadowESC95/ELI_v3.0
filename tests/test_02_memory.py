@@ -3,15 +3,7 @@ test_02_memory.py
 =================
 Tests for eli.memory — the full memory subsystem.
 """
-import pytest
 import importlib
-import sqlite3
-import os
-
-
-def test_memory_package_init():
-    mod = importlib.import_module("eli.memory")
-    assert mod is not None
 
 
 def test_memory_main_module_has_class():
@@ -38,18 +30,6 @@ def test_memory_knowledge_graph_has_class():
 # (removed test_memory_working_memory_loadable — eli.memory.working_memory was deleted)
 
 
-def test_memory_system_index_loadable():
-    mod = importlib.import_module("eli.memory.system_index")
-    assert mod is not None
-
-
-
-def test_memory_memory_adapter_loadable():
-    mod = importlib.import_module("eli.memory.memory_adapter")
-    assert mod is not None
-
-
-
 def test_memory_db_paths_exists():
     # db_paths lives in eli.core.db_paths; the memory layer exposes the
     # resolve_db_paths() helper. Verify the memory-layer API resolves DB paths.
@@ -57,4 +37,3 @@ def test_memory_db_paths_exists():
     paths = resolve_db_paths()
     assert paths is not None
     assert any(getattr(paths, a, None) for a in ("user_db", "agent_db", "memory_db"))
-

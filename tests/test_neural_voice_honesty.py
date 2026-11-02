@@ -97,11 +97,6 @@ def test_neural_voice_does_not_report_an_unrelated_model_file():
     )
 
 
-def test_clone_backends_are_real_probes():
-    """v3 reports each clone backend separately: Chatterbox (preferred) and XTTS."""
-    b = tts_router.available_backends()
-    assert isinstance(b["chatterbox"], bool)
-    assert isinstance(b["xtts"], bool)
 # ── 4. the AppImage actually bundles the engine ─────────────────────────────
 def _release_yaml() -> dict:
     import yaml

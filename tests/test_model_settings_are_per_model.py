@@ -26,7 +26,6 @@ one — is not a setting for the model in front of them.
 """
 from pathlib import Path
 
-import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 STARTUP = REPO / "eli" / "gui" / "panels" / "startup.py"
@@ -68,9 +67,6 @@ def test_the_path_may_move_without_losing_the_association():
 
 
 # ── the source must actually do this ───────────────────────────────────────
-def test_the_dialog_scopes_the_saved_context_to_a_model():
-    src = STARTUP.read_text(encoding="utf-8")
-    assert "n_ctx_model" in src, "no model association is recorded"
 
 
 def test_the_association_does_not_fall_back_to_model_path():
@@ -97,20 +93,7 @@ def test_the_batch_default_comes_from_the_hardware():
     assert "recommend" in code, "batch no longer derives from detected hardware"
 
 
-def test_the_choice_is_recorded_when_one_is_made():
-    src = STARTUP.read_text(encoding="utf-8")
-    assert "_rs_update(n_ctx_model=" in src, \
-        "a chosen context is never associated with its model, so it can never be reused"
-
-
 # ── the derivation it falls back to is real ────────────────────────────────
-def test_auto_resolves_per_model_not_per_constant():
-    """"0 = auto" is only a safe fallback if something downstream reads THIS
-    model's trained length."""
-    from eli.core.startup_hardware_optimizer import train_ctx_for_model
-    import inspect
-    src = inspect.getsource(train_ctx_for_model)
-    assert "gguf" in src.lower(), "auto does not consult the model's own metadata"
 
 
 def test_hardware_recommend_supplies_a_batch():

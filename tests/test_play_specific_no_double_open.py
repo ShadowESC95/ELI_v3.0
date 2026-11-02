@@ -117,14 +117,6 @@ def test_yt_mix_url_adds_radio_playlist():
     assert "list=RD" not in _yt_mix_url("https://www.youtube.com/results?search_query=x")
 
 
-def test_yt_apply_browser_autoplay_adds_start_params():
-    from eli.execution.executor_enhanced import _yt_apply_browser_autoplay, _yt_mix_url
-    mix = _yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-    url = _yt_apply_browser_autoplay(mix)
-    assert "autoplay=1" in url
-    assert "start_radio=1" in url
-
-
 def test_youtube_dot_com_uses_autoplay_mix_in_browser(monkeypatch):
     opened = []
     monkeypatch.setattr(

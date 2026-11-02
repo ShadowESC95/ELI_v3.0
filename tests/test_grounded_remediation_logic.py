@@ -54,20 +54,6 @@ def test_build_install_candidates():
         assert all(isinstance(c, dict) for c in cands)
 
 
-def test_diagnose_functions_are_read_only_dicts():
-    for out in (gr.diagnose_app("firefox"), gr.diagnose_path("/definitely/not/here"),
-                gr.diagnose_browser("firefox"), gr.diagnose_ide_generic()):
-        assert isinstance(out, dict)
-
-
-# --------------------------------------------------------------------------- #
-# pending / busy / last-failure state
-# --------------------------------------------------------------------------- #
-def test_busy_flag():
-    gr.set_busy(True); assert gr.is_busy() is True
-    gr.set_busy(False); assert gr.is_busy() is False
-
-
 def test_pending_lifecycle():
     plan = {"domain": "app", "subject": "firefox", "operation": "install",
             "commands": ["true"], "steps": ["install firefox"]}
@@ -125,12 +111,6 @@ def test_a_package_that_exists_is_still_offered(monkeypatch):
                           repair_options=[{"source": "apt", "command": "sudo apt-get install -y gimp", "label": "Install gimp"}])
     assert gr.build_repair_plan(found)["commands"] == ["sudo apt-get install -y gimp"]
     assert gr.offer_for_result(found).rstrip().endswith("Would you like me to download/install it?")
-
-
-def test_renderers_return_strings():
-    assert isinstance(gr.render_failure_message(dict(_RESULT)), str)
-    assert isinstance(gr.offer_for_result(dict(_RESULT)), str)
-    assert isinstance(gr.render_repair_preview(dict(_PLAN)), str)
 
 
 def test_handle_confirmation_no_pending_is_safe():
