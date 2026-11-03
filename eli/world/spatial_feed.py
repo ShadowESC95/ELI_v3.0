@@ -194,6 +194,7 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
                 message["spaces"][room_id] = {"name": str(info.get("name") or room_id),
                                               "purpose": str(info.get("purpose") or ""), "mood": look}
         message["recent"] = _recent(state)
+        message["log"] = _log(state)
         try:
             # ELI's real memories and goals, standing in the rooms named for them
             from eli.world import shown
@@ -206,6 +207,25 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
         except Exception:
             pass
     return message
+
+
+# A screenful of ELI's own log for a body to show where it keeps such things (the Debug Basement's
+# terminals): newest last.
+LOG_LINES = 24
+
+
+def _log(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What has been happening in ELI, as its world recorded it: reasoning stages, recalls, weak
+    evidence, tools that worked or failed and why, goals taken on, reflections. Newest last. What a
+    spatial client reported (the user coming into a room) is the room talking, not ELI, and is left out."""
+    own = [e for e in state.get("events") or []
+           if isinstance(e, dict) and e.get("source") != "spatial_client" and str(e.get("summary") or "").strip()]
+    out = []
+    for event in own[-LOG_LINES:]:
+        out.append({"type": str(event.get("event_type", "")), "source": str(event.get("source", "")),
+                    "text": " ".join(str(event.get("summary")).split())[:_SUMMARY_MAX],
+                    "ts": event.get("timestamp")})
+    return out
 
 
 def _recent(state: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:

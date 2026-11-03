@@ -231,6 +231,24 @@ def test_what_is_on_eli_s_mind_comes_from_its_records_and_rises_in_the_feed(monk
     shown.forget()
 
 
+def test_version_two_carries_a_screenful_of_eli_s_own_log_newest_last(monkeypatch):
+    from eli.world import shown
+    monkeypatch.setattr(shown, "items", lambda now=None: [])
+    events = [{"event_type": "reasoning_stage", "source": "reasoning_engine", "summary": f"Stage {n}", "timestamp": float(n)}
+              for n in range(40)]
+    events.append({"event_type": "error_detected", "source": "executor", "summary": "WEB_SEARCH   failed:\nthe network is off",
+                   "timestamp": 41.0})
+    events.append({"event_type": "tool_activity", "source": "executor", "summary": "  ", "timestamp": 42.0})
+    events.append({"event_type": "user_presence", "source": "spatial_client", "summary": "The user opened ELI VR",
+                   "timestamp": 43.0})
+    msg = spatial_feed.spatial_state({**WORLD, "events": events}, version=2)
+    log = msg["log"]
+    assert log[-1] == {"type": "error_detected", "source": "executor", "text": "WEB_SEARCH failed: the network is off", "ts": 41.0}
+    assert len(log) <= spatial_feed.LOG_LINES and log[0]["text"] == f"Stage {41 - spatial_feed.LOG_LINES}", "the newest screenful"
+    assert all(entry["source"] != "spatial_client" for entry in log), "the room reporting the user is not ELI's log"
+    assert "log" not in spatial_feed.spatial_state({**WORLD, "events": events}), "version 1 is as it was"
+
+
 def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypatch):
     from eli.world import shown
     monkeypatch.setattr(shown, "items", lambda now=None: [])
