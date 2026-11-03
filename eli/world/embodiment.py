@@ -28,10 +28,13 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from eli.utils.log import get_logger
+
 FRESH_SECONDS = 45.0       # a scene older than this is not where anyone is
 SCENE_MAX = 4000           # characters of JSON a report may be
 _TEXT, _LONG = 60, 240
 
+log = get_logger(__name__)
 PROPS_MAX = 400            # real things one body may offer
 _lock = threading.Lock()
 _scenes: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -93,6 +96,63 @@ def _clean(scene: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_present: Dict[str, Dict[str, Any]] = {}     # surface -> when it came and where, while it is here
+BODY_NAMES = {"eli_vr": "ELI VR", "spatial_client": "a spatial client"}
+
+
+def _body_name(surface: str, headset: bool) -> str:
+    name = BODY_NAMES.get(surface, surface.replace("_", " "))
+    return f"{name} ({'headset' if headset else 'flat window'})"
+
+
+def _remember(title: str, text: str) -> bool:
+    """A body coming or going, kept where ELI's recall finds it and in its journal. False when
+    neither could be written."""
+    kept = 0
+    try:
+        from eli.memory import get_memory
+        get_memory().store_memory(text, tags=["embodiment", "body", "vr"], source="embodiment", kind="event")
+        kept += 1
+    except Exception:
+        log.warning("a body's coming or going could not be remembered", exc_info=True)
+        kept += 0
+    try:
+        from eli.world.persistence.journal import append_journal_entry
+        append_journal_entry(title=title, body=text, source="embodiment")
+        kept += 1
+    except OSError:
+        log.warning("a body's coming or going could not be journalled", exc_info=True)
+    return kept > 0
+
+
+def _came(clean: Dict[str, Any]) -> None:
+    surface = clean["surface"]
+    if surface in _present:
+        return
+    now = time.time()
+    room = clean.get("room_name") or clean.get("room") or "its rooms"
+    _present[surface] = {"since": now, "room": room, "headset": bool(clean.get("headset"))}
+    _remember("A body arrived", f"{_body_name(surface, bool(clean.get('headset')))} joined ELI in {room} at "
+              f"{time.strftime('%H:%M on %a %d %b %Y', time.localtime(now))}.")
+
+
+def _went(surface: str) -> None:
+    was = _present.pop(surface, None)
+    if not was:
+        return
+    now = time.time()
+    minutes = max(1, int(round((now - float(was["since"])) / 60.0)))
+    _remember("A body left", f"{_body_name(surface, bool(was.get('headset')))} left at "
+              f"{time.strftime('%H:%M on %a %d %b %Y', time.localtime(now))}, after {minutes} minute"
+              f"{'s' if minutes != 1 else ''} with ELI (it came in {was['room']}).")
+
+
+def present() -> List[Dict[str, Any]]:
+    """The bodies here now: [{"surface", "since", "room", "headset"}]."""
+    with _lock:
+        return [{"surface": s, **dict(v)} for s, v in _present.items()]
+
+
 def report(scene: Any) -> Dict[str, Any]:
     """Take a client's word for what is so now. Raises ValueError for something
     that is not a scene, or is too large to be one."""
@@ -103,6 +163,7 @@ def report(scene: Any) -> Dict[str, Any]:
     clean = _clean(scene)
     with _lock:
         _scenes[clean["surface"]] = (time.monotonic(), clean)
+        _came(clean)
     return clean
 
 
@@ -130,9 +191,14 @@ def report_body(body: Any) -> Dict[str, Any]:
 
 
 def props() -> List[Dict[str, Any]]:
-    """The real things ELI may place, as the last body said: [{"id", "name", "size"}]."""
+    """The real things ELI may place: what the last body said it draws, and ELI's own models
+    (eli/world/models.py), which a body fetches from the feed. [{"id", "name", "size"}]."""
     with _lock:
-        return [dict(p) for p in _body.get("props") or []]
+        out = [dict(p) for p in _body.get("props") or []]
+    seen = {p["id"] for p in out}
+    from eli.world import models
+    out += [p for p in models.props() if p["id"] not in seen][:PROPS_MAX]
+    return out
 
 
 def live(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
@@ -141,6 +207,7 @@ def live(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
     with _lock:
         for surface in [s for s, (at, _) in _scenes.items() if now - at > max_age]:
             del _scenes[surface]
+            _went(surface)
         if not _scenes:
             return None
         return dict(max(_scenes.values(), key=lambda item: item[0])[1])
@@ -156,8 +223,11 @@ def forget(surface: Optional[str] = None) -> None:
     with _lock:
         if surface is None:
             _scenes.clear()
+            for gone in list(_present):
+                _went(gone)
         else:
             _scenes.pop(surface, None)
+            _went(surface)
 
 
 def near_user(scene: Optional[Dict[str, Any]], ahead: float = 2.2) -> Tuple[float, float]:

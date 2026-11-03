@@ -15,6 +15,7 @@ contract, served on the local API server:
     POST /v1/world/scene      what the user and ELI can see now       (version 2)
     POST /v1/world/body       the real things the body can draw, for ELI to place (version 2, props)
     GET  /v1/world/picture/N  a picture ELI took or looked at for the user, by its ledger row (version 2, pictures)
+    GET  /v1/world/model/ID/F a file of a model ELI brought in, as the message's `models` lists it (version 2, models)
     POST /v1/world/say        a sentence to ELI from inside the world  (version 2)
     POST /v1/world/edit       the user moving or changing a thing      (version 2)
     POST /v1/world/compose    ELI making something of its own accord   (version 2)
@@ -46,7 +47,8 @@ PROTOCOL_VERSIONS = (1, 2)
 MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
-    2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures"),
+    2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures",
+        "models"),
 }
 # Close codes a client can tell apart.
 CLOSE_UNAUTHORISED = 4401
@@ -203,6 +205,9 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             message["objects"] = objects + shown.items()
             message["mind"] = shown.thoughts()
             message["coming_up"] = shown.coming_up()
+            # ELI's own models, for a body to fetch and draw
+            from eli.world import models
+            message["models"] = models.listed()
             # moments of ELI's own waiting to be made into something, and whether ELI is free to:
             # a body may ask ELI to make something of one while someone is there to see it
             message["waiting"] = len([u for u in own.get("urges") or [] if isinstance(u, dict)])
@@ -391,6 +396,18 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         with open(path, "rb") as f:
             kind = shown.picture_type(f.read(12))
         return FileResponse(path, media_type=kind, headers={"Cache-Control": "no-store"})
+
+    @router.get("/v1/world/model/{ident}/{rel:path}", dependencies=[Depends(require_read)])
+    def world_model(ident: str, rel: str):
+        """A file of a model ELI brought in: only one the manifest lists, from the model's own folder."""
+        from fastapi.responses import FileResponse
+        from eli.world import models
+        path = models.file_path(ident, rel)
+        if path is None:
+            raise HTTPException(status_code=404, detail="no such model file")
+        kind = "model/gltf+json" if path.suffix == ".gltf" else ("model/gltf-binary" if path.suffix == ".glb"
+                                                                 else "application/octet-stream")
+        return FileResponse(str(path), media_type=kind, headers={"Cache-Control": "no-store"})
 
     @router.post("/v1/world/say")
     def world_say(body: Said, principal: Any = Depends(require_act)):

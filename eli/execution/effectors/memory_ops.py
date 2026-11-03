@@ -11,7 +11,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Tuple, Any, Dict, List, Optional
 from eli.core.paths import get_paths
 from eli.utils.log import get_logger
 log = get_logger(__name__)
@@ -20,7 +20,28 @@ MEMORY_PATH = Path(os.environ.get("ELI_MEMORY_FILE", str(get_paths().artifacts_d
 MAX_HISTORY_MESSAGES = int(os.environ.get("ELI_MAX_HISTORY_MESSAGES", "32"))
 
 
-def _when_said_answer(a: str, topic: str) -> Dict[str, Any]:
+# "the full logs from that comment", "the transcript", "the exact timestamps": the record is asked for,
+# not just when.
+_ASKS_FOR_THE_RECORD = re.compile(r"\b(?:logs?|transcripts?|records?|time\s?stamps?)\b", re.I)
+
+
+def _named_in_last_reply(mem: Any) -> List[str]:
+    """Proper names in ELI's last reply, longest first: what a bare "him", "her" or "that" points at
+    when ELI itself just named it ("▶ Playing — spotify (Immortal Technique — Point Of No Return)")."""
+    try:
+        last = next((str(t.get("content") or "") for t in mem.get_recent_conversation(limit=6) or []
+                     if str(t.get("role", "")).lower() in ("assistant", "eli")), "")
+    except Exception:
+        return []
+    names = re.findall(r"\b(?:[A-Z][\w'’]+(?:\s+(?:of|the|and|&)\s+)?){2,}|\b[A-Z][\w'’]{3,}\b", last)
+    out: List[str] = []
+    for name in sorted((n.strip() for n in names), key=len, reverse=True):
+        if name and name.lower() not in ("playing", "paused", "spotify", "eli", "jason") and name not in out:
+            out.append(name)
+    return out[:4]
+
+
+def _when_said_answer(a: str, topic: str, turn_args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """When the user wrote about `topic`: every one of their messages that mentions it, by day, from
     the conversation log. An empty topic means the exchange just had ("give me the timestamps of that
     interaction"): what the user's recent messages were about. Questions asking when are left out,
@@ -31,21 +52,38 @@ def _when_said_answer(a: str, topic: str) -> Dict[str, Any]:
     from eli.memory import get_memory
     from eli.runtime.conversation_thread import last_subject
     mem = get_memory()
+    asked_for_record = bool(_ASKS_FOR_THE_RECORD.search(str((turn_args or {}).get("question") or "")))
+    candidates = [topic] if topic else []
     if not topic:
         recent = []
         for turn in mem.get_recent_conversation(role="user") or []:
             asked = when_said_topic(turn.get("content"))
             if asked != "":
                 recent.append({**turn, "content": asked} if asked else turn)
-        topic = last_subject(recent)
-    if not topic:
+        candidates = [t for t in [last_subject(recent)] if t]
+        # what ELI itself last named: "you remember him?" after ELI said who was playing
+        candidates += _named_in_last_reply(mem)
+    hits: List[Tuple[float, Dict[str, Any]]] = []
+    for candidate in candidates:
+        found = [(row_time(h), h) for h in mem.search_conversations(candidate, limit=None, match_all=True) or []
+                 if when_said_topic(h.get("content")) is None]
+        found = sorted((when, h) for when, h in found if when)
+        if found:
+            topic, hits = candidate, found
+            break
+    if not candidates:
         msg = "Which conversation do you mean? Tell me what it was about and I'll give you the times."
         return {"ok": True, "action": a, "needs_input": True, "content": msg, "response": msg}
-    hits = [(row_time(h), h) for h in mem.search_conversations(topic, limit=None, match_all=True) or []
-            if when_said_topic(h.get("content")) is None]
-    hits = sorted((when, h) for when, h in hits if when)
     if not hits:
         msg = f"I can't find a message of yours that mentions “{topic}” in our conversation log."
+        return {"ok": True, "action": a, "content": msg, "response": msg, "evidence_source": "conversation_turns"}
+    if asked_for_record:
+        # the record itself: each message, with its time, in full
+        shown = hits[-8:]
+        lines = [f"- {_t.strftime('%a %d %b %Y at %H:%M', _t.localtime(when))} ({age_label(when)}): "
+                 f"“{' '.join(str(h.get('content') or '').split())[:400]}”" for when, h in shown]
+        msg = (f"The record of you on “{topic}”, {len(hits)} message{'s' if len(hits) != 1 else ''}"
+               f"{' (the last 8)' if len(hits) > 8 else ''}:\n" + "\n".join(lines))
         return {"ok": True, "action": a, "content": msg, "response": msg, "evidence_source": "conversation_turns"}
     days: Dict[str, List[float]] = {}
     for when, _h in hits:
@@ -460,7 +498,7 @@ def _h_message_time_query(a, args):
     # "when did I write about X": every message of the user's that mentions it, by day
     if (args or {}).get("topic") is not None:
         try:
-            return _when_said_answer(a, str((args or {}).get("topic") or "").strip())
+            return _when_said_answer(a, str((args or {}).get("topic") or "").strip(), args or {})
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
     import sqlite3 as _sq3
@@ -505,6 +543,51 @@ def _h_message_time_query(a, args):
                 "content": str(e), "response": str(e)}
 
 
+_GRAPH_LINE = re.compile(
+    r"^\s*\[(?P<obj>[^\]]+)\]\s*\((?P<kind>\w+)\)\s*\n?\s*(?P<subj>[\w ]+?)\s*—\[(?P<rel>[^\]]+)\]→\s*"
+    r"(?P<obj2>.+?)(?:\s*\(as of (?P<when>[^)]+)\))?\s*$", re.S)
+_RELATION_WORDS = {"prefers": "prefer", "likes": "like", "dislikes": "dislike", "loves": "love", "hates": "hate",
+                   "is": "are", "has": "have", "wants": "want", "needs": "need", "owns": "own", "uses": "use",
+                   "lives_in": "live in", "works_at": "work at", "works_on": "work on"}
+_DIGEST_LINE = re.compile(r"session digest \(\d+ turns\)", re.I)
+
+
+def _plain_hit(text: str) -> str:
+    """A memory as a sentence: a graph edge ("User —[prefers]→ X (as of 14 Oct)") as "you prefer X (as
+    of 14 Oct)"; a turn ("[Tue 27 Oct 13:01, 7 days ago] ...") as "Tue 27 Oct 13:01 (7 days ago): you
+    said “...”"; a session digest as nothing. ELI dumped the raw lines in the user's face."""
+    text = str(text or "").strip()
+    if _DIGEST_LINE.search(text):
+        return ""
+    m = _GRAPH_LINE.match(text)
+    if m:
+        who = "you" if m.group("subj").strip().lower() in ("user", "you", "owner") else m.group("subj").strip()
+        rel = m.group("rel").strip().lower()
+        verb = _RELATION_WORDS.get(rel, rel.replace("_", " ")) if who == "you" else rel.replace("_", " ")
+        when = f" (as of {m.group('when')})" if m.group("when") else ""
+        return f"{who} {verb} {m.group('obj2').strip()}{when}"
+    m = re.match(r"^\[(?P<stamp>[^\]]+)\]\s*(?P<said>.+)$", text, re.S)
+    if m:
+        stamp = m.group("stamp").strip()
+        said = " ".join(m.group("said").split())
+        if ", " in stamp:
+            day, ago = stamp.split(", ", 1)
+            stamp = f"{day} ({ago})"
+        return f"{stamp}: you said “{said}”"
+    return " ".join(text.split())
+
+
+def _recall_in_words(q: str, lines: List[str]) -> str:
+    """The recall as an answer: what matches the question first, then the rest, each a sentence."""
+    words = [w for w in re.findall(r"[a-z0-9']+", q.lower()) if len(w) > 2]
+    told = [s for s in (_plain_hit(l) for l in lines) if s]
+    told.sort(key=lambda s: -sum(w in s.lower() for w in words))
+    if not told:
+        return f"I have nothing on “{q}” in my memory."
+    head = f"What I have on “{q}”:" if q else "What I have:"
+    return head + "\n" + "\n".join(f"- {s}" for s in told[:8])
+
+
 def _h_memory_recall(a, args):
     q = str(args.get("query", "")).strip()
     try:
@@ -512,6 +595,14 @@ def _h_memory_recall(a, args):
     except Exception:
         lim = 5
 
+    if not q and str(args.get("referent") or "") == "last_reply":
+        # "you remember him?": the one ELI itself last named
+        from eli.memory.memory import get_memory as _get_mem_named
+        names = _named_in_last_reply(_get_mem_named())
+        if not names:
+            msg = "Who do you mean? Give me the name and I'll tell you what I have."
+            return {"ok": True, "action": a, "needs_input": True, "content": msg, "response": msg}
+        q = names[0]
     if not q:
         return {"ok": False, "action": a, "error": "empty_query", "content": "empty_query", "response": "empty_query"}
 
@@ -545,11 +636,11 @@ def _h_memory_recall(a, args):
                 total += len(t)
                 if total >= _MAX_TOTAL_CHARS:
                     break
-            content = "Memory recall:\n" + "\n---\n".join(lines) if lines else "Memory recall:\n(no matches)"
+            content = _recall_in_words(q, lines)
         else:
-            content = "Memory recall:\n(no matches)"
+            content = _recall_in_words(q, [])
         if not content.strip():
-            content = "Memory recall:\n(no matches)"
+            content = _recall_in_words(q, [])
         return {"ok": True, "action": a, "hits": hits, "content": content, "response": content}
     except Exception:
         log.debug("suppressed exception", exc_info=True)

@@ -553,7 +553,9 @@ def test_what_is_coming_up_on_the_agenda_is_in_the_feed(monkeypatch):
     monkeypatch.setattr(agenda, "between", between)
     shown.forget()
     (item,) = shown.coming_up()
-    assert item["what"] == "Ferry to the island" and item["said"].startswith("today") and item["when"] == soon
+    # an hour from now is today, or tomorrow when the test runs in the last hour of the day
+    day = "tomorrow" if clock.localtime(soon).tm_mday != clock.localtime().tm_mday else "today"
+    assert item["what"] == "Ferry to the island" and item["said"].startswith(day) and item["when"] == soon
     assert seen == {"user": "owner", "span": shown.AHEAD_HOURS * 3600}
     assert spatial_feed.spatial_state(WORLD, version=2)["coming_up"] == [item]
     monkeypatch.setattr(agenda, "between", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no agenda")))

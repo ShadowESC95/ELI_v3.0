@@ -248,9 +248,19 @@ def _quoted(words: Sequence[str]) -> str:
     return " | ".join('"\\"%s\\""' % word for word in words)
 
 
+def can_fetch() -> bool:
+    """Whether ELI may bring in a model it does not have: the Net is on."""
+    try:
+        from eli.core.netguard import should_block_network
+        return not should_block_network()
+    except Exception:
+        return False
+
+
 def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequence[str] = (),
                  one: bool = False, bounded: bool = True, some: bool = False,
-                 free: bool = False, rooms: Sequence[str] = (), props: Sequence[str] = ()) -> str:
+                 free: bool = False, rooms: Sequence[str] = (), props: Sequence[str] = (),
+                 fetch: bool = False) -> str:
     """The shape of an answer, as a llama.cpp grammar. `ops`: what may be done.
     `targets`: the names of the things there, the only ones that can be moved,
     changed or taken away. `one`: exactly one edit. `some`: at least one, for a
@@ -258,7 +268,8 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
     `free`: a thing may also be made part by part, and the sky painted.
     `rooms`: the other rooms of the house ELI may put a new thing in or relight,
     when where is ELI's choice; a room of the house takes only a light. `props`: the real
-    things the body can draw (a chair, a lamp), which ELI may place by id."""
+    things the body can draw (a chair, a lamp), which ELI may place by id. `fetch`: a real thing
+    ELI does not have may be brought in by what it is (op create with fetch), when the Net is on."""
     def text(limit: int) -> str:
         return '"\\"" char%s "\\""' % ("{1,%d}" % limit if bounded else "+")
 
@@ -288,7 +299,13 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         lines.append("edit ::= " + " | ".join(allowed))
     real = [p for p in props if re.fullmatch(r"[A-Za-z0-9_-]+", str(p))]
     lines += [
-        "create ::= shaped" + (" | made" if free else "") + (" | furnished" if real else ""),
+        "create ::= shaped" + (" | made" if free else "") + (" | furnished" if real else "") + (" | brought" if fetch else ""),
+    ]
+    if fetch:
+        lines.append(
+        'brought ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"fetch\\":" name ",\\"at\\":" spot '
+        '(",\\"height\\":" number)? (",\\"turn\\":" degrees)? ",\\"meaning\\":" meaning' + where + ' "}"')
+    lines += [
         'shaped ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"shape\\":" shape ",\\"colour\\":" colour '
         '",\\"size\\":" number ",\\"at\\":" spot (",\\"height\\":" number)? (",\\"turn\\":" degrees)? '
         '",\\"glow\\":" number (",\\"art\\":{\\"style\\":" style ",\\"colours\\":[" colour "," colour ("," colour)? ("," colour)? "]}")? '
@@ -336,7 +353,8 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
 
 def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Dict[str, Any], room: str,
                  ops: Sequence[str] = ALL_OPS, about: Optional[Dict[str, Any]] = None,
-                 free: bool = False, rooms: Sequence[str] = (), props: Sequence[Dict[str, Any]] = ()) -> str:
+                 free: bool = False, rooms: Sequence[str] = (), props: Sequence[Dict[str, Any]] = (),
+                 fetch: bool = False) -> str:
     own = room == building.OWN_ROOM
     house = state.get("rooms") or {}
     name = (scene or {}).get("room_name") or ((state.get("rooms") or {}).get(room) or {}).get("name") \
@@ -403,6 +421,10 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
         if props:
             parts.append("Real things you can place, each at its real size (give its id as prop; size 1 is as it "
                          "is): " + "; ".join(f'{p["id"]} ({p["name"]}, {p["size"][1]} m tall)' for p in props) + ".")
+        if fetch:
+            parts.append("A real thing you do not have, you can bring in from a library of free models: give "
+                         "fetch instead of a shape, in two or three plain words for what it is (\"pine tree\", "
+                         "\"wooden bench\", \"old radio\"). Only when nothing you have will do; it takes a moment.")
     if "change" in ops:
         parts.append("To change a thing: its name, and only what changes: colour, size, glow, shape, turn.")
     if "move" in ops:
@@ -591,7 +613,8 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
     # a moment of ELI's own may belong in any room of the house: where it goes is ELI's choice
     rooms = [r for r in (world.get("rooms") or {}) if r != building.OWN_ROOM] if about and not asked else []
     real = embodiment.props()
-    prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free, rooms, real)
+    fetch = "create" in ops and can_fetch()
+    prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free, rooms, real, fetch)
     # one edit when the sentence is about one thing: a new one ("a lamp"), or one that is here.
     # Asked for something, or moved by a moment of its own: at least one. Otherwise as it likes.
     one = asked and ((len(ops) == 1 and ops[0] != "create") or (
@@ -599,9 +622,10 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
         and not re.search(r"\b(two|three|four|five|few|several|some|more)\b|\band an?\b", text, re.I)))
     some = asked
     ask = generate or (lambda p: _generate(
-        p, grammar_text(own, ops, names, one=one, some=some, free=free, rooms=rooms, props=[p["id"] for p in real]),
+        p, grammar_text(own, ops, names, one=one, some=some, free=free, rooms=rooms, props=[p["id"] for p in real],
+                        fetch=fetch),
         grammar_text(own, ops, names, one=one, some=some, free=free, bounded=False, rooms=rooms,
-                     props=[p["id"] for p in real])))
+                     props=[p["id"] for p in real], fetch=fetch)))
     data: Any = None
     for attempt in (1, 2):                 # a second go if the first is not an answer at all
         try:

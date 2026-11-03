@@ -418,6 +418,21 @@ class FeaturesMixin:
             self._proactive_status_timer.timeout.connect(_tick_proactive)
             self._proactive_status_timer.start()
 
+        # What is said to ELI from another surface (ELI VR, the web page) while this window is open:
+        # the same ELI, so it is shown here too. Asked about the VR session, ELI said it had no record.
+        if getattr(self, "_other_surfaces_timer", None) is None:
+            def _tick_other_surfaces():
+                try:
+                    self._show_turns_from_other_surfaces()
+                    self._other_surfaces_fault = ""
+                except Exception as exc:
+                    self._other_surfaces_fault = str(exc)     # shown by the status line, not hidden
+                    log.debug(f"[GUI] other-surfaces tick failed: {exc}")
+            self._other_surfaces_timer = QTimer(self)
+            self._other_surfaces_timer.setInterval(6_000)
+            self._other_surfaces_timer.timeout.connect(_tick_other_surfaces)
+            self._other_surfaces_timer.start()
+
     def _read_live_runtime_stats(self) -> Dict[str, Any]:
         stats: Dict[str, Any] = {
             "timestamp": now_hms(),

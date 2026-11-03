@@ -67,7 +67,7 @@ def _pm_asks_something(low: str) -> bool:
         return True
     return bool(_ASKING_RE.search(t))
 
-from eli.execution.routing._helpers import _is_wallclock_question
+from eli.execution.routing._helpers import _mk, _is_wallclock_question
 from eli.execution.routing.memory_runtime import (
     _eli_activity_question_is_about_dev_work,
     _eli_memory_runtime_route_lock_should_trigger,
@@ -78,6 +78,23 @@ from eli.execution.routing._helpers import (
 
 
 def route_self_report(text: str, raw: str, low: str, text_l: str):
+    # ---- WHICH VERSION, WHAT CHANGED (early: the long-question guard and the multi-command prepass
+    # took these) ----
+    # "notice any updates to your code?", "check the diff / your status logs pre and post install", "what
+    # version are you": answered from the record of versions seen here, not a made-up status report.
+    if re.search(
+            r"\b(?:notice|noticed|see|seen|aware\s+of|know\s+of|spot|spotted|any|been)\s+(?:any\s+|some\s+|new\s+|recent\s+)?"
+            r"(?:updates?|changes?|upgrades?|new\s+code|modifications?|patches?)\s+(?:to|in|of|on)\s+"
+            r"(?:your|the|eli'?s|ur)\s+(?:own\s+)?(?:code|codebase|version|self|runtime|install|installation|software|build|"
+            r"files|source|release|vr|legal)\b"
+            r"|\bcheck\s+(?:the\s+|your\s+)?(?:diff|status\s+logs?|install\s+logs?|changelog|change\s+log)\b"
+            r"|\b(?:pre|post)[- ]?(?:install|update|upgrade)\b"
+            r"|\bwhat\s+(?:changed|is\s+new|'?s\s+new)\s+in\s+(?:your|this|the\s+(?:new|latest))\s+(?:code|version|build|release|install)\b"
+            r"|\b(?:which|what)\s+version\s+(?:are\s+you|is\s+this|of\s+(?:you|eli)\s+is\s+this|are\s+you\s+running|is\s+running)\b"
+            r"|\bwere\s+you\s+(?:updated|upgraded)\b|\bhave\s+you\s+been\s+(?:updated|upgraded)\b", low):
+        return _mk("VERSION_CHANGES", {}, 0.94, matched_by="self.version_changes",
+                   allow_chat_without_evidence=False)
+
     _introspective_subject = re.search(
         r"\b(memory continuity|how you feel|how you'?re feeling|your feelings?|your mood|"
         r"your awareness|your (?:consciousness|experience|thoughts|continuity|wellbeing|"

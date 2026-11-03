@@ -943,11 +943,31 @@ def _turn_context() -> Dict[str, Any]:
         return {}
 
 
+# "Here is the patch for `router_enhanced.py`", "**File:** .../eli/execution/router_enhanced.py",
+# "--- a/eli/...": a change to ELI's own code presented from a reply. Live, ELI "patched" a line that
+# did not exist, with invented line numbers. Without an action that changed code this turn, the words
+# and the code block after them are not served.
+_INVENTED_PATCH = re.compile(
+    r"\b(?:here(?:'s|’s| is) (?:the|a|my|your) (?:patch|diff|fix|code change|corrected (?:code|version))\b"
+    r"|\*\*file:?\*\*:?\s*\S*\beli[/\\]|^\s*(?:---|\+\+\+)\s+[ab]/eli/|\bthe patch (?:is|for|to)\b)", re.I | re.M)
+_CHANGES_CODE = re.compile(r"PATCH|IMPROVE|FIX|REPAIR|EDIT_FILE|WRITE_FILE|APPLY", re.I)
+NO_PATCH_NOTE = ("(I don't change my own code from a reply: no patch was made. The self-improvement cycle "
+                 "changes code from a verified failure, with its tests.)")
+
+
+def _patch_backed(check: "_Check") -> bool:
+    ran = [str(a) for a in (check._facts.get("executed_actions") or [])]
+    return any(_CHANGES_CODE.search(a) for a in ran)
+
+
 def _checked(chunks: Iterable[str], check: _Check):
     """Each sentence held until it ends, then served or dropped. Text inside ``` fences passes
-    straight through."""
+    straight through, unless the words before it presented a patch to ELI's own code that nothing
+    made: then the block goes with them."""
     buf = ""
     in_code = False
+    skip_code = False
+    recent = ""                 # the words since the last code block, for what a block is presented as
     for piece in chunks:
         buf += str(piece or "")
         while buf:
@@ -955,22 +975,38 @@ def _checked(chunks: Iterable[str], check: _Check):
                 end = buf.find("```")
                 if end < 0:
                     if len(buf) > 2:  # the tail could be the start of the closing fence
-                        yield buf[:-2]
+                        if not skip_code:
+                            yield buf[:-2]
                         buf = buf[-2:]
                     break
-                yield buf[:end + 3]
-                buf, in_code = buf[end + 3:], False
+                if skip_code:
+                    yield NO_PATCH_NOTE
+                else:
+                    yield buf[:end + 3]
+                buf, in_code, skip_code, recent = buf[end + 3:], False, False, ""
                 continue
             unit, rest = _next_unit(buf)
             fence = buf.find("```")
             if fence >= 0 and (unit is None or fence < len(unit)):
-                yield from check.feed(buf[:fence]) + check.close()
-                yield "```"
-                buf, in_code, check.code_served = buf[fence + 3:], True, True
+                before = buf[:fence]
+                recent = (recent + before)[-600:]
+                if _INVENTED_PATCH.search(recent) and not _patch_backed(check):
+                    check.dropped.append(before.strip())
+                    skip_code = True
+                    yield from check.close()
+                else:
+                    yield from check.feed(before) + check.close()
+                    yield "```"
+                    check.code_served = True
+                buf, in_code = buf[fence + 3:], True
                 continue
             if unit is None:
                 break
             buf = rest
+            recent = (recent + unit)[-600:]
+            if _INVENTED_PATCH.search(unit) and not _patch_backed(check):
+                check.dropped.append(unit.strip())        # "Here is the patch for ...": not served
+                continue
             yield from check.feed(unit)
     if buf:
         if in_code:

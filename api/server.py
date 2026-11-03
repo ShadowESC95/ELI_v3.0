@@ -262,6 +262,11 @@ def _eli_startup_hooks():
             home_mesh.ensure_watchdog()
     except Exception:
         pass
+    try:
+        from eli.runtime.version_record import note_seen
+        note_seen()
+    except Exception:
+        print("[ELI] the version could not be noted")
     # Preload whisper when cached so web mic (/v1/voice/stt) works offline. Do it in a
     # BACKGROUND thread — loading the model on CPU takes ~20s and would otherwise block
     # uvicorn's startup event, delaying the HTTP/HTTPS port bind (and the Connect page).

@@ -1026,7 +1026,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
         # Phase 7: stop the live-data timers too so they don't fire
         # mid-shutdown and try to read a closed memory/database handle.
-        for _attr in ("_memory_stats_timer", "_proactive_status_timer"):
+        for _attr in ("_memory_stats_timer", "_proactive_status_timer", "_other_surfaces_timer"):
             try:
                 _t = getattr(self, _attr, None)
                 if _t is not None:

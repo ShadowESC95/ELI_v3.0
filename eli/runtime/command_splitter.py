@@ -139,7 +139,8 @@ def split_commands(text: str, *, max_parts: int = 5) -> Optional[List[str]]:
 # courtesy, a joining word.
 _LEAD = re.compile(
     r"^\s*(?:(?:and|but|so|then|also|now|ok|okay|alright|right|well|hey|hi|hello|yo|eli|please|pls|kindly|"
-    r"just|quickly|buddy|bud|mate|man|good|great|nice|cool|thanks|thank you|cheers)\b[\s,.!:;-]*"
+    r"just|quickly|buddy|bud|mate|man|good|great|nice|cool|thanks|thank you|cheers|yes|yeah|yep|yup|sure|fine|"
+    r"go on|go ahead)\b[\s,.!:;-]*"
     # "see, ..." and "look, ..." call for attention; "see if ..." and "look up ..." are verbs
     r"|(?:see|look|listen)\s*[,.!:;-]+\s*)*",
     re.I)
@@ -162,7 +163,7 @@ _ABOUT = re.compile(
 # Speech arrives without punctuation ("that was great can you play some jazz"), so a request's own
 # frame marks the turn as well.
 _CLAUSE_END = re.compile(
-    r"[,;]\s+|\s+[-–—]\s+"
+    r"[,;]\s+|\s+[-–—]\s+|\s*/\s*(?=[a-z])"
     r"|\s+(?=(?:can|could|would|will) (?:you|u)\b|i(?:'d| would) like you to\b|i (?:want|need) you to\b|please\s+\w)")
 _SENTENCE_END = re.compile(r"(?<=[.!?])[\s]+(?=[^\s])|\n+")
 # "mr. brightside", "vs. the world", "feat. red tamsin", initials ("p.s. i love you", "r.e.m."): a
@@ -225,7 +226,7 @@ def _at_the_turn(sentence: str) -> List[str]:
         rest = _LEAD.sub("", sentence[brk.end():], count=1)
         if _REQUEST.match(rest) or _COMMAND_START.match(rest):
             cut = brk.start() + (1 if sentence[brk.start()] in ",;" else 0)
-            return [sentence[:cut].strip(), sentence[brk.end():].strip()]
+            return [sentence[:cut].strip(" /"), sentence[brk.end():].strip()]
     return [sentence]
 
 

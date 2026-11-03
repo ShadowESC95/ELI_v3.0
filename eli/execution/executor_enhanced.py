@@ -2641,6 +2641,8 @@ SUPPORTED_ACTIONS = [
     'VOLUME',
     'WEB_SEARCH',
     'WEB_FETCH',  # a linked page read and answered from
+    'IMPORT_MODEL', 'FETCH_MODEL',  # a real thing brought in for ELI's rooms
+    'VERSION_CHANGES',  # which ELI this is and when it was first seen here
     'WRITE_NOTE',
 ]
 

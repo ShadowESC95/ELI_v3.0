@@ -54,9 +54,12 @@ _GROUNDING_DEMAND_RE = re.compile(
 )
 _SEARCH_VERB_RE = re.compile(
     r"\b(?:web\s+search|search\s+(?:the\s+)?(?:web|online|internet)|"
-    r"search\s+for|look\s+(?:it|this|that)?\s*up|google\b|find\s+out)\b",
+    r"search\s+(?:for|on|about)|(?:do|run|try|make)\s+(?:a|another|one\s+more)\s+(?:quick\s+|web\s+|proper\s+)?search|"
+    r"search\s+again|look\s+(?:it|this|that)?\s*up|google\b|find\s+out)\b",
     re.I,
 )
+# "search again", "try again", "once more": the last thing asked about, not these words
+_AGAIN_RE = re.compile(r"^\W*(?:(?:search|look|try|check|do\s+it|run\s+it|go)\s+)?(?:again|once\s+more|one\s+more\s+time)\W*$", re.I)
 _STOP = frozenset({
     "the", "a", "an", "and", "or", "but", "so", "i", "you", "we", "me", "my",
     "your", "it", "that", "this", "what", "when", "where", "how", "why", "is",
@@ -147,10 +150,12 @@ def expand_web_query(user_input: str, thread_topic: str = "") -> str:
 def extract_search_subject(raw: str) -> str:
     """Pull the searchable subject from a mid-sentence web request."""
     s = str(raw or "").strip()
-    if not s:
+    if not s or _AGAIN_RE.match(s):
         return ""
     patterns = (
         r"search\s+the\s+web(?:\s+and)?\s*(.+)$",
+        r"(?:do|run|try|make)\s+(?:a|another|one\s+more)\s+(?:quick\s+|web\s+|proper\s+)?search\s+(?:on|for|about)\s+(.+)$",
+        r"\bsearch\s+(?:on|about)\s+(.+)$",
         r"(?:search\s+(?:the\s+)?(?:web|online|internet)\s+(?:for\s+)?(.+))$",
         r"(?:do\s+a\s+)?web\s+search\s+(?:and\s+)?(?:get\s+)?(.+)$",
         r"(?:search\s+for|look\s+up|google)\s+(.+)$",

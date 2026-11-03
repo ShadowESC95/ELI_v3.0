@@ -335,8 +335,11 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
             made = parts(raw.get("parts"))
             real = prop_of(_first(raw, "prop", "furniture", "model", "object"))
             shape = _choice(_first(raw, "shape", "kind", "type", "form"), SHAPES, _SHAPE_WORDS)
+            wanted = _text(_first(raw, "fetch", "want", "bring"), NAME_MAX) if op == "create" else ""
             if real:
                 edit["prop"], shape = real, PROP        # a real thing the body has
+            elif wanted:
+                edit["fetch"], shape = wanted, PROP     # a real thing to bring in first (models.fetch)
             elif made:
                 edit["parts"], shape = made, MADE       # anything at all, part by part
             elif shape is None and op == "create":
@@ -655,6 +658,14 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
             return {"op": op, "ok": False, "reason": f"there is no room {room!r}"}
         if len(_standing(state, room)) >= MAX_PER_ROOM:
             return {"op": op, "ok": False, "reason": f"the room is full ({MAX_PER_ROOM} things)"}
+        if edit.get("fetch"):
+            from eli.world import models
+            brought = models.fetch(str(edit["fetch"]))
+            if not brought.get("ok"):
+                return {"op": op, "ok": False, "reason": f"could not bring in {edit['fetch']!r}: {brought.get('reason')}"}
+            edit["prop"] = brought["id"]
+            if not edit.get("name"):
+                edit["name"] = brought["name"]
         size = float(edit.get("size", 1.0))
         near = tuple(edit["at"]) if "at" in edit else tuple(event.payload.get("near") or (0.0, 2.5))
         right, forward = _free_spot(state, room, (float(near[0]), float(near[1])), size,

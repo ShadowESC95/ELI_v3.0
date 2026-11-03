@@ -7466,6 +7466,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     synthesized = self._synthesize_answer(
     evidence, user_input, reasoning_mode=reasoning_mode, action=action)
                     synthesized = govern_output(synthesized, is_grounded=True)
+                    # a reply that denies what the search found is not the answer; the results are
+                    if str(action).upper() in _WEB_READS and isinstance(_action_result, dict):
+                        try:
+                            from eli.runtime.web_answer_check import denies_what_was_found, from_the_results
+                            _found = _action_result.get("results") or []
+                            _q = str(_action_result.get("query") or user_input)
+                            if denies_what_was_found(synthesized, _found, _q):
+                                log.debug("[COGNITIVE] the reply denied what the search found; showing the results")
+                                synthesized = (from_the_results(_q, _found)
+                                               or str(_action_result.get("response") or _action_result.get("content") or synthesized))
+                                _request_context.note_turn_fact("web_denial_replaced", True)
+                        except (TypeError, ValueError, AttributeError):
+                            log.debug("web denial check skipped", exc_info=True)
                     ok_flag = True
                     if isinstance(_action_result, dict):
                         ok_flag = bool(_action_result.get("ok", True))

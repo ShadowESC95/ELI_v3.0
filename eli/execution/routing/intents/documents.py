@@ -42,17 +42,17 @@ def route_documents(text: str, raw: str, low: str, text_l: str):
     # ------------------------------------------------------------
     # 11) CLIPBOARD / WEATHER / CALENDAR
     # ------------------------------------------------------------
-    if any(w in low for w in ["clipboard", "copy", "paste"]):
-        if "copy" in low or "set clipboard" in low:
-            content = re.sub(
-                r'.*(copy|set clipboard to|clipboard)\s+',
-                '',
-                raw,
-                flags=re.I).strip()
-            return _mk("SET_CLIPBOARD", {
-                       "text": content}, 0.9, matched_by="clipboard.set", entities={"text": content})
-        if "get" in low or "what" in low or "show" in low:
-            return _mk("GET_CLIPBOARD", {}, 0.9, matched_by="clipboard.get")
+    # Only an instruction about the clipboard. "paste what, i can't paste a VR interaction..." read the
+    # clipboard and put its contents at the top of the reply.
+    m_set = re.match(r"^\s*(?:please\s+)?(?:copy|put)\s+(.+?)\s+(?:to|into|on|onto)\s+(?:the\s+|my\s+)?clipboard\s*[.!]?$"
+                     r"|^\s*(?:please\s+)?set\s+(?:the\s+|my\s+)?clipboard\s+to\s+(.+?)\s*[.!]?$", raw, re.I)
+    if m_set:
+        content = (m_set.group(1) or m_set.group(2) or "").strip(" \"'")
+        return _mk("SET_CLIPBOARD", {"text": content}, 0.9, matched_by="clipboard.set", entities={"text": content})
+    if re.match(r"^\s*(?:please\s+)?(?:what(?:'s| is)\s+(?:in|on)\s+(?:the|my)\s+clipboard"
+                r"|(?:show|read|get|print|paste)\s+(?:me\s+)?(?:the\s+|my\s+)?clipboard(?:\s+contents?)?"
+                r"|paste\s+(?:it|that|the\s+clipboard)(?:\s+here)?)\s*[?.!]*$", low):
+        return _mk("GET_CLIPBOARD", {}, 0.9, matched_by="clipboard.get")
 
     if any(w in low for w in ["weather", "forecast", "temperature"]):
         # Only route when the sentence is an actual weather *request*, not a

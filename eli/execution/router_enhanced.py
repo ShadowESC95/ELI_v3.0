@@ -1548,7 +1548,8 @@ def _eli_web_lookup_prepass(raw: str, low: str):
         return None
 
     explicit_search = re.search(
-        r"\b(search\s+(?:the\s+)?(?:web|internet|online)|search\s+for|search\b|"
+        r"\b(search\s+(?:the\s+)?(?:web|internet|online)|search\s+(?:for|on|about)|search\b|"
+        r"(?:do|run|try|make)\s+(?:a|another|one\s+more)\s+(?:quick\s+|web\s+|proper\s+)?search(?:\s+(?:on|for|about))?|"
         r"look\s+(?:it|this|that)?\s*up|google\b|"
         r"check\s+the\s+(?:internet|web|online)|find\s+out)\b",
         low,
@@ -1577,7 +1578,10 @@ def _eli_web_lookup_prepass(raw: str, low: str):
             build_thread_aware_query,
             web_query_has_substance,
         )
-        query = build_thread_aware_query(raw, [])
+        # "search again!!" searched for the words "search again": what was asked about last is in
+        # the recent messages. A bare "search" with nothing pointing back asks, as before.
+        _points_back = bool(re.search(r"\b(?:again|once more|one more time|it|that|this|those|them)\b", low))
+        query = build_thread_aware_query(raw, _recent_turns_for_search() if _points_back else [])
     except Exception:
         query = raw.strip()
     if realtime_fact and realtime_fact.start() > 0 and query == raw:
@@ -1775,7 +1779,33 @@ _DAY_I_RE = re.compile(
 _TIMESTAMPS_OF_RE = re.compile(
     r"\btime\s?stamps?\s+(?:of|for|on)\s+(?:that|this|the|those|our)\s+"
     r"(?:interaction|conversation|chat|message|talk|exchange)s?\b"
-    r"|^(?:\w+[\s,]+){0,3}(?:give|show|tell)\s+me\s+the\s+time\s?stamps?(?:\s+then)?[\s.!?]*$", re.I)
+    r"|^(?:\w+[\s,]+){0,3}(?:give|show|tell)\s+me\s+the\s+time\s?stamps?(?:\s+then)?[\s.!?]*$"
+    # "when was that timestamp from exactly", "do you have logs", "can i have the full logs from that
+    # comment on the 27th": the record of the exchange just had, with its times
+    r"|\b(?:when|what\s+(?:time|date|day))\s+(?:was|is|were)\s+(?:that|this|the)\s+"
+    r"(?:time\s?stamps?|message|comment|conversation|chat|exchange|log|record)\s+(?:from|of|for)\b"
+    # "do you have logs eli?": the record is asked for with nothing else named
+    r"|\b(?:do\s+you\s+have|have\s+you\s+got|is\s+there)\s+(?:the\s+|those\s+|any\s+|some\s+|a\s+)?"
+    r"(?:full\s+|raw\s+|exact\s+|complete\s+|actual\s+)?(?:logs?|transcripts?|records?|time\s?stamps?)"
+    r"(?:\s+(?:of|from|for|on)\s+(?:that|this|it|those))?\s*(?:[,.!?]|$|\beli\b)"
+    # "can i have the full logs from that comment on the 27th": the record of a thing said
+    r"|\b(?:can\s+i\s+(?:have|see|get)|could\s+i\s+(?:have|see|get)|give\s+me|show\s+me|send\s+me|pull\s+up|"
+    r"i\s+(?:want|need)|do\s+you\s+have|have\s+you\s+got)\s+(?:the\s+|those\s+|any\s+|some\s+|me\s+the\s+|a\s+)?"
+    r"(?:full\s+|raw\s+|exact\s+|complete\s+|actual\s+)?(?:logs?|transcripts?|records?|time\s?stamps?)\s+"
+    r"(?:of|from|for|on)\s+(?:that|this|it|those|(?:that|this|the|our|my)\s+"
+    r"(?:comment|message|conversation|chat|exchange|interaction|session|turn|remark|statement|thing\s+i\s+said))\b", re.I)
+
+
+def _recent_turns_for_search(limit: int = 8) -> List[Dict[str, str]]:
+    """The last few messages, for a search that points back at them ("search again", "look it up").
+    Read only; nothing when memory cannot be read."""
+    try:
+        from eli.memory import get_memory
+        turns = get_memory().get_recent_conversation(limit=limit) or []
+        return [{"role": str(t.get("role") or ""), "content": str(t.get("content") or "")} for t in turns
+                if isinstance(t, dict)]
+    except Exception:
+        return []
 
 
 def when_said_topic(text: str) -> Optional[str]:
@@ -2067,6 +2097,14 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if _said is not None:
         return _mk("MESSAGE_TIME_QUERY", {"topic": _said, "question": raw}, 0.95,
                    matched_by="memory.when_said", allow_chat_without_evidence=False)
+    # "you remember him, Eli?" straight after ELI named who was playing: a bare pronoun points at
+    # what ELI itself last named, and the answer is what ELI remembers of them, not a guess.
+    if re.match(r"^\W*(?:eli[,!]?\s+)?(?:do\s+you\s+|d'?you\s+|you\s+|can\s+you\s+|still\s+)?"
+                r"(?:remember|recall|recognise|recognize|know|heard\s+of|know\s+of)\s+"
+                r"(?:him|her|them|it|that\s+(?:one|guy|band|song|place|name|person|artist)|this\s+one|that)"
+                r"[\s,]*(?:eli|bud|mate|pal|man)?\W*$", low):
+        return _mk("MEMORY_RECALL", {"query": "", "referent": "last_reply"}, 0.92,
+                   matched_by="memory.remember_that_one", allow_chat_without_evidence=False)
 
     # A question about the live media session reads the active session (NOW_PLAYING), not a guess from
     # history — even when wrapped in a longer sentence ("do you know what i am watching now? and we
@@ -2422,9 +2460,14 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                    entities={"plugin": pid}, task_family="plugin")
 
     # ---- RUNTIME AUDIT ----
+    # "run the audit", "yes start the audit please", "run_audit", "audit yourself": the same audit. Told
+    # to type "run_audit", the user did, and ELI said it was a text token, not a trigger.
     if re.search(
-            r"\b(?:run|do|perform|execute|start|run\s+a|do\s+a|perform\s+a)\s+"
-            r"(?:full\s+)?(?:runtime\s+audit|system\s+audit|health\s+check|diagnostic|diagnostics|audit)\b", low):
+            r"\b(?:run|do|perform|execute|start|begin|launch|kick\s+off|go\s+ahead\s+with|carry\s+out)"
+            r"(?:\s+(?:a|an|the|your|that|this|my|full|quick|minimal|same|another|proper|real))*\s+"
+            r"(?:runtime\s+audit|system\s+audit|health\s+check|diagnostic|diagnostics|audit|self[- ]?check|self[- ]?audit)\b"
+            r"|^\W*(?:please\s+)?(?:run_audit|runtime_audit|self_audit|audit_now|audit)\W*$"
+            r"|\baudit\s+(?:yourself|your\s*self|your\s+(?:own\s+)?(?:code|codebase|runtime|system|pipeline|agents?))\b", low):
         return _mk("RUNTIME_AUDIT", {}, 0.95, matched_by="audit.runtime",
                    need_grounding=True, task_family="grounded_audit")
     if re.search(

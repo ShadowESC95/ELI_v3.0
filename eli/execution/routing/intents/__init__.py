@@ -20,6 +20,7 @@ from eli.execution.routing.intents.app_launch import route_app_launch
 from eli.execution.routing.intents.shell_ops import route_shell_ops
 from eli.execution.routing.intents.capture_input import route_capture_input
 from eli.execution.routing.intents.session_ops import route_session_ops
+from eli.execution.routing.intents.world_models import route_world_models
 
 # Run before the inline code-generation block.
 INTENT_STAGES_EARLY = (
@@ -34,6 +35,7 @@ INTENT_STAGES_TAIL = (
     ("system_settings", route_system_settings),
     ("app_launch", route_app_launch),
     ("shell_ops", route_shell_ops),
+    ("world_models", route_world_models),
     ("capture_input", route_capture_input),
     ("session_ops", route_session_ops),
 )

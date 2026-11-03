@@ -1178,6 +1178,39 @@ class ConversationMixin:
         except Exception:
             return False
 
+    # Surfaces by the session ids they use: ELI VR says "eli-vr-<time>"; the web page and other API
+    # clients are the rest. This window's own sessions are never shown twice.
+    _SURFACE_NAMES = (("eli-vr-", "in VR"), ("web-", "on the web page"))
+
+    def _own_session_ids(self) -> set:
+        own = {"gui-direct", "voice_direct"}
+        own.add(str(getattr(getattr(self, "_cognitive_engine", None), "session_id", "") or ""))
+        return {s for s in own if s}
+
+    def _show_turns_from_other_surfaces(self) -> None:
+        """Turns said to ELI elsewhere since the last look, shown here with where they were said."""
+        import time as _time
+        if getattr(self, "_other_turns_seen", None) is None:
+            self._other_turns_seen = _time.time()
+            return
+        if getattr(self, "_streaming", False):
+            return
+        from eli.memory import get_memory
+        rows = get_memory().get_recent_conversation(limit=40, since=self._other_turns_seen) or []
+        own = self._own_session_ids()
+        newest = self._other_turns_seen
+        for row in rows:
+            when = float(row.get("timestamp") or 0.0)
+            session = str(row.get("session_id") or "")
+            content = " ".join(str(row.get("content") or "").split())
+            if when <= self._other_turns_seen or session in own or not content:
+                continue
+            newest = max(newest, when)
+            where = next((name for prefix, name in self._SURFACE_NAMES if session.startswith(prefix)), "elsewhere")
+            who = "you" if str(row.get("role") or "") == "user" else "ELI"
+            self.chat_response_signal.emit(f"🗨️ {who} ({where}, {_time.strftime('%H:%M', _time.localtime(when))}): {content}")
+        self._other_turns_seen = newest
+
     def _append_chat_response(self, text: str):
         """Handle streamed tokens and complete responses (always on GUI thread)."""
         _ELI_HEADER_COLOR = "#88c0d0"   # nordic blue for ELI's name

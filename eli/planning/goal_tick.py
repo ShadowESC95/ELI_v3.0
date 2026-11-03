@@ -49,6 +49,10 @@ def _emit_governed_proposal(proposal: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sig = inspect.signature(fn)
         kwargs = {k: v for k, v in proposal.items() if k in sig.parameters}
+        # the queue takes the proposal itself as its payload: without it every goal tick failed
+        # ("missing 1 required positional argument: 'payload'") and the mission layer never ran
+        if "payload" in sig.parameters and "payload" not in kwargs:
+            kwargs["payload"] = dict(proposal)
         if kwargs:
             rec = fn(**kwargs)
         else:
