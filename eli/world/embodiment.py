@@ -12,6 +12,8 @@ are we" or "what am I looking at" from what is actually the case.
 
     report(scene)       a client saying what is so now
     live()              the freshest scene, or None once it has gone stale
+    report_body(body)   a client saying, once, what it can draw: the real things ELI may place
+    props()             those things, from the last client that said
     context_block()     the lines for the prompt, or "" when nobody is there
 
 Plain text on purpose: it reads the same to any local model, and asks nothing
@@ -30,8 +32,10 @@ FRESH_SECONDS = 45.0       # a scene older than this is not where anyone is
 SCENE_MAX = 4000           # characters of JSON a report may be
 _TEXT, _LONG = 60, 240
 
+PROPS_MAX = 400            # real things one body may offer
 _lock = threading.Lock()
 _scenes: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_body: Dict[str, Any] = {}       # the last body that said what it can draw
 
 
 def _text(value: Any, limit: int = _TEXT) -> str:
@@ -102,6 +106,35 @@ def report(scene: Any) -> Dict[str, Any]:
     return clean
 
 
+def report_body(body: Any) -> Dict[str, Any]:
+    """Take a client's word for the real things it can draw (chairs, lamps, shelves), each an id,
+    a name and its size in metres [wide, tall, deep]. Kept until another body says otherwise:
+    a thing ELI places stays drawable whether or not the body is there at that moment."""
+    if not isinstance(body, dict):
+        raise ValueError("a body must be an object")
+    props = []
+    for raw in (body.get("props") or [])[:PROPS_MAX]:
+        if not isinstance(raw, dict):
+            continue
+        ident = str(raw.get("id") or "").strip()
+        if not ident or not all(c.isalnum() or c in "_-" for c in ident) or len(ident) > 60:
+            continue
+        size = raw.get("size") if isinstance(raw.get("size"), (list, tuple)) and len(raw.get("size")) == 3 else [1, 1, 1]
+        props.append({"id": ident, "name": _text(raw.get("name") or ident.replace("_", " "), 48),
+                      "size": [round(max(0.01, _number(v, 1.0)), 2) for v in size]})
+    clean = {"surface": _text(body.get("surface") or "spatial_client", 32), "props": props}
+    with _lock:
+        _body.clear()
+        _body.update(clean)
+    return {"surface": clean["surface"], "props": len(props)}
+
+
+def props() -> List[Dict[str, Any]]:
+    """The real things ELI may place, as the last body said: [{"id", "name", "size"}]."""
+    with _lock:
+        return [dict(p) for p in _body.get("props") or []]
+
+
 def live(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
     """The freshest scene any client reported, or None once all have gone stale."""
     now = time.monotonic()
@@ -111,6 +144,11 @@ def live(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
         if not _scenes:
             return None
         return dict(max(_scenes.values(), key=lambda item: item[0])[1])
+
+
+def forget_body() -> None:
+    with _lock:
+        _body.clear()
 
 
 def forget(surface: Optional[str] = None) -> None:

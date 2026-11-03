@@ -250,14 +250,15 @@ def _quoted(words: Sequence[str]) -> str:
 
 def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequence[str] = (),
                  one: bool = False, bounded: bool = True, some: bool = False,
-                 free: bool = False, rooms: Sequence[str] = ()) -> str:
+                 free: bool = False, rooms: Sequence[str] = (), props: Sequence[str] = ()) -> str:
     """The shape of an answer, as a llama.cpp grammar. `ops`: what may be done.
     `targets`: the names of the things there, the only ones that can be moved,
     changed or taken away. `one`: exactly one edit. `some`: at least one, for a
     sentence that asked for something (a small model, left free to, does none).
     `free`: a thing may also be made part by part, and the sky painted.
     `rooms`: the other rooms of the house ELI may put a new thing in or relight,
-    when where is ELI's choice; a room of the house takes only a light."""
+    when where is ELI's choice; a room of the house takes only a light. `props`: the real
+    things the body can draw (a chair, a lamp), which ELI may place by id."""
     def text(limit: int) -> str:
         return '"\\"" char%s "\\""' % ("{1,%d}" % limit if bounded else "+")
 
@@ -285,10 +286,16 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
     ]
     if allowed:
         lines.append("edit ::= " + " | ".join(allowed))
+    real = [p for p in props if re.fullmatch(r"[A-Za-z0-9_-]+", str(p))]
     lines += [
-        "create ::= shaped" + (" | made" if free else ""),
+        "create ::= shaped" + (" | made" if free else "") + (" | furnished" if real else ""),
         'shaped ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"shape\\":" shape ",\\"colour\\":" colour '
-        '",\\"size\\":" number ",\\"at\\":" spot ",\\"glow\\":" number ",\\"meaning\\":" meaning' + where + ' "}"',
+        '",\\"size\\":" number ",\\"at\\":" spot (",\\"height\\":" number)? (",\\"turn\\":" degrees)? '
+        '",\\"glow\\":" number (",\\"art\\":{\\"style\\":" style ",\\"colours\\":[" colour "," colour ("," colour)? ("," colour)? "]}")? '
+        '",\\"meaning\\":" meaning' + where + ' "}"',
+        'furnished ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"prop\\":" prop ",\\"at\\":" spot '
+        '(",\\"height\\":" number)? (",\\"turn\\":" degrees)? (",\\"size\\":" number)? ",\\"meaning\\":" meaning'
+        + where + ' "}"',
         'made ::= "{\\"op\\":\\"create\\",\\"name\\":" name ",\\"parts\\":[" part ("," part)%s "],\\"at\\":" spot '
         '",\\"meaning\\":" meaning' % ("{0,%d}" % (building.MAX_PARTS - 1) if bounded else "*") + where + ' "}"',
         'part ::= "{\\"kind\\":" kind ",\\"pos\\":" vec ",\\"size\\":" vec ",\\"colour\\":" colour '
@@ -299,9 +306,9 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         'vec ::= "[" number "," number "," number "]"',
         'pairs ::= "[" spot ("," spot)* "]"',
         'triples ::= "[" vec ("," vec)* "]"',
-        'move ::= "{\\"op\\":\\"move\\",\\"name\\":" target ",\\"at\\":" spot "}"',
+        'move ::= "{\\"op\\":\\"move\\",\\"name\\":" target ",\\"at\\":" spot (",\\"height\\":" number)? (",\\"turn\\":" degrees)? "}"',
         'change ::= "{\\"op\\":\\"change\\",\\"name\\":" target (",\\"colour\\":" colour)? (",\\"size\\":" number)? '
-        '(",\\"glow\\":" number)? (",\\"shape\\":" shape)? (",\\"meaning\\":" meaning)? "}"',
+        '(",\\"glow\\":" number)? (",\\"shape\\":" shape)? (",\\"turn\\":" degrees)? (",\\"meaning\\":" meaning)? "}"',
         'remove ::= "{\\"op\\":\\"remove\\",\\"name\\":" target "}"',
         'undo ::= "{\\"op\\":\\"undo\\"}"',
         "room ::= " + room_rule,
@@ -313,6 +320,9 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         "meaning ::= " + text(building.MEANING_MAX),
         'char ::= [^"\\\\\\x00-\\x1F]',
         "shape ::= " + _quoted(building.SHAPES),
+        "style ::= " + _quoted(building.ART_STYLES),
+        'degrees ::= [0-9] [0-9]? [0-9]?',
+        "prop ::= " + (_quoted(real) if real else '"\\"none\\""'),
         'colour ::= %s | "\\"#" hex hex hex hex hex hex "\\""' % _quoted(building.COLOURS),
         "hex ::= [0-9a-fA-F]",
         "sky ::= " + _quoted(building.SKIES),
@@ -326,7 +336,7 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
 
 def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Dict[str, Any], room: str,
                  ops: Sequence[str] = ALL_OPS, about: Optional[Dict[str, Any]] = None,
-                 free: bool = False, rooms: Sequence[str] = ()) -> str:
+                 free: bool = False, rooms: Sequence[str] = (), props: Sequence[Dict[str, Any]] = ()) -> str:
     own = room == building.OWN_ROOM
     house = state.get("rooms") or {}
     name = (scene or {}).get("room_name") or ((state.get("rooms") or {}).get(room) or {}).get("name") \
@@ -334,8 +344,10 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
     user = (scene or {}).get("user") or {"pos": [0.0, 1.7, 0.0], "facing": [0.0, 1.0]}
     near = embodiment.near_user(scene)
     things = _standing(state, room)
-    here = [f'- "{t["name"]}": {t["form"]["shape"]}, {t["form"]["colour"]}, size {t["form"]["size"]}, '
-            f'at [{t["form"]["pos"][0]}, {t["form"]["pos"][2]}]' for t in things[:30]]
+    here = [f'- "{t["name"]}": {t["form"].get("prop") or t["form"]["shape"]}, {t["form"]["colour"]}, size {t["form"]["size"]}, '
+            f'at [{t["form"]["pos"][0]}, {t["form"]["pos"][2]}]'
+            + (f', {t["form"]["pos"][1]} m up' if t["form"]["pos"][1] else "")
+            + (f', facing {t["form"]["turn"]}°' if t["form"].get("turn") is not None else "") for t in things[:30]]
     parts = [
         f"You are in ELI VR, in {embodiment.the(name)}" + (", which is your own room." if own else "."),
         "You can change this place yourself. Whatever you put in the edits really happens, "
@@ -379,10 +391,19 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
                 "(see-through), spin (degrees a second). A lathe has a profile of [radius, height] points turned "
                 "round; an extrude an outline of [right, forward] points pulled up; a tube a path of "
                 "[right, up, forward] points; text has text. Up to " + str(building.MAX_PARTS) + " parts.")
+        parts.append("Give height (metres up) to hang or set a thing above the floor: a picture on a wall, a lamp on "
+                     "a table. Give turn (degrees) for which way its front faces: 0 straight ahead, 90 to the right, "
+                     "180 back towards the middle and the user, 270 to the left; with none, a real thing or a "
+                     "painting faces the middle of the room.")
+        parts.append("A painting is yours to paint: the shape painting, with art: a style ("
+                     + ", ".join(building.ART_STYLES) + ") and two to four colours.")
+        if props:
+            parts.append("Real things you can place, each at its real size (give its id as prop; size 1 is as it "
+                         "is): " + "; ".join(f'{p["id"]} ({p["name"]}, {p["size"][1]} m tall)' for p in props) + ".")
     if "change" in ops:
-        parts.append("To change a thing: its name, and only what changes: colour, size, glow, shape.")
+        parts.append("To change a thing: its name, and only what changes: colour, size, glow, shape, turn.")
     if "move" in ops:
-        parts.append("To move a thing: its name, and at [right, forward].")
+        parts.append("To move a thing: its name, and at [right, forward]; height and turn if they change.")
     if "remove" in ops:
         parts.append("To take a thing away: its name.")
     if not own and "room" in ops:
@@ -566,7 +587,8 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
     free = capable()
     # a moment of ELI's own may belong in any room of the house: where it goes is ELI's choice
     rooms = [r for r in (world.get("rooms") or {}) if r != building.OWN_ROOM] if about and not asked else []
-    prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free, rooms)
+    real = embodiment.props()
+    prompt = build_prompt(text if asked else None, scene, world, room, ops, about, free, rooms, real)
     # one edit when the sentence is about one thing: a new one ("a lamp"), or one that is here.
     # Asked for something, or moved by a moment of its own: at least one. Otherwise as it likes.
     one = asked and ((len(ops) == 1 and ops[0] != "create") or (
@@ -574,8 +596,9 @@ def compose(text: Optional[str], scene: Optional[Dict[str, Any]] = None, *,
         and not re.search(r"\b(two|three|four|five|few|several|some|more)\b|\band an?\b", text, re.I)))
     some = asked
     ask = generate or (lambda p: _generate(
-        p, grammar_text(own, ops, names, one=one, some=some, free=free, rooms=rooms),
-        grammar_text(own, ops, names, one=one, some=some, free=free, bounded=False, rooms=rooms)))
+        p, grammar_text(own, ops, names, one=one, some=some, free=free, rooms=rooms, props=[p["id"] for p in real]),
+        grammar_text(own, ops, names, one=one, some=some, free=free, bounded=False, rooms=rooms,
+                     props=[p["id"] for p in real])))
     data: Any = None
     for attempt in (1, 2):                 # a second go if the first is not an answer at all
         try:

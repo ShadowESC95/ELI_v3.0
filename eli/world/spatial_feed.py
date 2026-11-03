@@ -13,6 +13,7 @@ contract, served on the local API server:
     WS   /v1/world/ws         the snapshot again whenever it changes
     POST /v1/world/event      the client reporting back (the user entered a room)
     POST /v1/world/scene      what the user and ELI can see now       (version 2)
+    POST /v1/world/body       the real things the body can draw, for ELI to place (version 2, props)
     POST /v1/world/say        a sentence to ELI from inside the world  (version 2)
     POST /v1/world/edit       the user moving or changing a thing      (version 2)
     POST /v1/world/compose    ELI making something of its own accord   (version 2)
@@ -44,7 +45,7 @@ PROTOCOL_VERSIONS = (1, 2)
 MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
-    2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind"),
+    2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props"),
 }
 # Close codes a client can tell apart.
 CLOSE_UNAUTHORISED = 4401
@@ -305,6 +306,10 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
     class Scene(BaseModel):
         scene: dict
 
+    class Body(BaseModel):
+        surface: str = "spatial_client"
+        props: list = []
+
     class Said(BaseModel):
         text: str
         session_id: str = ""
@@ -362,6 +367,15 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         except ValueError as e:
             raise _problem(e)
         return {"ok": True}
+
+    @router.post("/v1/world/body", dependencies=[Depends(require_act)])
+    def world_body(body: Body):
+        """What a body can draw: the real things (furniture, lamps, books) ELI may place in its rooms."""
+        from eli.world import embodiment
+        try:
+            return embodiment.report_body(body.model_dump())
+        except ValueError as e:
+            raise _problem(e)
 
     @router.post("/v1/world/say")
     def world_say(body: Said, principal: Any = Depends(require_act)):

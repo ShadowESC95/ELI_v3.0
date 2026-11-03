@@ -32,8 +32,10 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(composer, "mindset", lambda state: ["Your latest insight: quiet work goes further."])
     monkeypatch.setattr(composer, "capable", lambda: False)
     embodiment.forget()
+    embodiment.forget_body()
     yield store.load
     embodiment.forget()
+    embodiment.forget_body()
 
 
 def _standing(state, room=building.OWN_ROOM):
@@ -818,3 +820,59 @@ def test_what_is_on_his_mind_comes_from_his_records_and_gaps_stay_gaps(monkeypat
     assert "Your own measures of yourself (0 to 1): focus 0.80, curiosity 0.30" in joined
     assert "insight" not in joined, "no insight on record: nothing is said about one"
 
+
+
+# ── real things, which way things face, and paintings ────────────────────────
+_BODY = {"surface": "spatial_client", "props": [
+    {"id": "ArmChair_01", "name": "arm chair", "size": [0.85, 1.07, 0.77]},
+    {"id": "vintage_oil_lamp", "name": "vintage oil lamp", "size": [0.22, 0.8, 0.22]},
+    {"id": "../../etc", "name": "not a thing"}, {"name": "no id"}]}
+
+
+def test_the_body_says_once_what_real_things_it_can_draw():
+    embodiment.forget_body()
+    told = embodiment.report_body(_BODY)
+    assert told == {"surface": "spatial_client", "props": 2}, "an id that is not a plain name is not kept"
+    assert [p["id"] for p in embodiment.props()] == ["ArmChair_01", "vintage_oil_lamp"]
+    with pytest.raises(ValueError):
+        embodiment.report_body(["not", "a", "body"])
+    embodiment.forget_body()
+
+
+def test_eli_places_a_real_thing_facing_the_middle_unless_told_otherwise(world):
+    embodiment.report_body(_BODY)
+    out = building.apply([{"op": "create", "prop": "arm chair", "at": [3, 0]},
+                          {"op": "create", "furniture": "vintage_oil_lamp", "at": [-2, 2], "height": 0.79, "turn": 90}],
+                         actor="eli", asked=True, summary="a chair and a lamp")
+    assert out["ok"], out
+    here = _standing(world())
+    chair, lamp = building.form_of(here["Arm Chair"].__dict__), building.form_of(here["Vintage Oil Lamp"].__dict__)
+    assert chair["shape"] == building.PROP and chair["prop"] == "ArmChair_01" and chair["turn"] == 270.0, chair
+    assert lamp["prop"] == "vintage_oil_lamp" and lamp["turn"] == 90.0 and lamp["pos"][1] == 0.79
+    assert building.normalise([{"op": "create", "prop": "a sofa it does not have"}])[0][0]["shape"] != building.PROP, \
+        "a thing the body cannot draw is not placed as one"
+
+
+def test_a_painting_is_elis_own_and_can_be_turned_and_undone(world):
+    building.apply([{"op": "create", "name": "Dusk", "art": {"style": "horizon", "colours": ["violet", "amber", "#102040"]},
+                     "at": [0, 8], "height": 1.6}], actor="eli", asked=False, summary="a moment of its own")
+    dusk = building.form_of(_standing(world())["Dusk"].__dict__)
+    assert dusk["shape"] == "painting" and dusk["art"] == {"style": "horizon", "colours": ["#8b6cf0", "#f5b942", "#102040"]}
+    assert dusk["turn"] == 180.0 and dusk["pos"][1] == 1.6, "it faces back into the room"
+    building.apply([{"op": "change", "name": "Dusk", "turn": 200, "art": {"style": "rays", "colours": ["teal", "black"]}}],
+                   actor="eli", asked=True, summary="turn it")
+    changed = building.form_of(_standing(world())["Dusk"].__dict__)
+    assert changed["turn"] == 200.0 and changed["art"]["style"] == "rays"
+    building.apply([{"op": "undo"}], actor="user", asked=True, summary="undo")
+    back = building.form_of(_standing(world())["Dusk"].__dict__)
+    assert back["turn"] == 180.0 and back["art"]["style"] == "horizon", "undone, it is as it was"
+
+
+def test_the_answer_is_held_to_the_real_things_there_are():
+    g = composer.grammar_text(True, props=["ArmChair_01"], free=False)
+    assert "furnished" in g and '"\\"ArmChair_01\\""' in g and "degrees ::=" in g and "style ::=" in g
+    assert "| furnished" not in composer.grammar_text(True), "no catalogue, no real things to place"
+    prompt = composer.build_prompt(None, None, {"rooms": {}, "spaces": {}, "objects": {}}, building.OWN_ROOM,
+                                   composer.ALL_OPS, None, False, (), embodiment.report_body(_BODY) and embodiment.props())
+    assert "ArmChair_01 (arm chair, 1.07 m tall)" in prompt and "A painting is yours to paint" in prompt
+    embodiment.forget_body()

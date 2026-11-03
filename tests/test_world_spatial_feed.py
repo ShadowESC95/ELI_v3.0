@@ -529,3 +529,12 @@ def test_what_is_playing_is_the_newest_and_says_where_when_that_is_all_it_knows(
     ])
     (radio,) = [o for o in shown._results() if o["kind"] == "playing"]
     assert radio["name"] == "Night Ferry" and radio["lines"] == ["on firefox"], "a pause before it does not count"
+
+
+def test_a_body_can_tell_eli_the_real_things_it_draws():
+    from eli.world import embodiment
+    assert "props" in spatial_feed.CAPABILITIES[2]
+    embodiment.forget_body()
+    embodiment.report_body({"props": [{"id": "boombox", "name": "boombox", "size": [0.72, 0.47, 0.19]}]})
+    assert embodiment.props() == [{"id": "boombox", "name": "boombox", "size": [0.72, 0.47, 0.19]}]
+    embodiment.forget_body()

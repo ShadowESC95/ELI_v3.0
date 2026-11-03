@@ -60,8 +60,11 @@ OWN_ROOM_INFO: Dict[str, Any] = {
 
 SHAPES = (
     "orb", "pillar", "block", "slab", "arch", "ring", "crystal", "tree",
-    "lamp", "board", "cone", "stair", "table", "seat", "pool", "beacon",
+    "lamp", "board", "cone", "stair", "table", "seat", "pool", "beacon", "painting",
 )
+PROP = "prop"                        # the shape of a real thing the body has (a chair, a lamp)
+# A painting is ELI's own: a style and the colours it is painted in.
+ART_STYLES = ("rings", "stripes", "waves", "cells", "blooms", "horizon", "rays", "drift")
 SKIES = ("stars", "dawn", "mist", "sunset", "void")
 PAINTED = "painted"                  # a sky that is not one of those: ELI's own colours
 GROUNDS = ("stone", "marble", "wood", "sand", "snow", "moss", "metal", "dark")
@@ -113,7 +116,8 @@ _SHAPE_WORDS = {
     "panel": "board", "pyramid": "cone", "spike": "cone", "steps": "stair",
     "stairs": "stair", "desk": "table", "bench": "table", "chair": "seat", "stool": "seat",
     "pond": "pool", "water": "pool", "fountain": "pool", "tower": "beacon",
-    "spire": "beacon", "obelisk": "beacon",
+    "spire": "beacon", "obelisk": "beacon", "picture": "painting", "canvas": "painting",
+    "artwork": "painting", "art": "painting", "poster": "painting", "mural": "painting",
 }
 _SKY_WORDS = {"night": "stars", "space": "stars", "starry": "stars", "morning": "dawn",
               "sunrise": "dawn", "fog": "mist", "foggy": "mist", "misty": "mist",
@@ -230,6 +234,31 @@ def parts(raw: Any) -> List[Dict[str, Any]]:
     return [p for p in made if p is not None][:MAX_PARTS]
 
 
+def art(raw: Any) -> Optional[Dict[str, Any]]:
+    """A painting's style and colours, put right: a style ELI VR can paint and two to four colours."""
+    if not isinstance(raw, dict):
+        return None
+    style = str(raw.get("style") or "").strip().lower()
+    tints = [c for c in (colour(v) for v in (raw.get("colours") or raw.get("colors") or [])) if c][:4]
+    if style not in ART_STYLES and not tints:
+        return None
+    while len(tints) < 2:
+        tints.append(["#1b2a4a", "#f5b942"][len(tints)])
+    return {"style": style if style in ART_STYLES else ART_STYLES[0], "colours": tints}
+
+
+def prop_of(value: Any) -> Optional[str]:
+    """The id of a real thing the body can draw, from an id or its name; None when it has none such."""
+    from eli.world import embodiment
+    wanted = re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+    if not wanted:
+        return None
+    for prop in embodiment.props():
+        if wanted in (re.sub(r"[^a-z0-9]+", "", prop["id"].lower()), re.sub(r"[^a-z0-9]+", "", prop["name"].lower())):
+            return prop["id"]
+    return None
+
+
 def colour(value: Any) -> Optional[str]:
     """A colour as #rrggbb, from a name or a hex value; None if it is neither."""
     word = str(value or "").strip().lower()
@@ -304,8 +333,11 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
 
         if op in ("create", "change"):
             made = parts(raw.get("parts"))
+            real = prop_of(_first(raw, "prop", "furniture", "model", "object"))
             shape = _choice(_first(raw, "shape", "kind", "type", "form"), SHAPES, _SHAPE_WORDS)
-            if made:
+            if real:
+                edit["prop"], shape = real, PROP        # a real thing the body has
+            elif made:
                 edit["parts"], shape = made, MADE       # anything at all, part by part
             elif shape is None and op == "create":
                 shape = _choice(named, SHAPES, _SHAPE_WORDS) or "orb"
@@ -318,6 +350,11 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
                 edit["size"] = round(_clamp(_number(_first(raw, "size", "scale"), 1.0), MIN_SIZE, MAX_SIZE), 2)
             if raw.get("glow") is not None:
                 edit["glow"] = round(_clamp(_number(raw.get("glow"), 0.0), 0.0, 1.0), 2)
+            painted = art(raw.get("art"))
+            if painted:
+                edit["art"] = painted
+                if "shape" not in edit or edit["shape"] not in (PROP, MADE):
+                    shape = edit["shape"] = "painting"
             meaning = _text(_first(raw, "meaning", "why", "reason", "symbolic_meaning"), MEANING_MAX)
             if meaning:
                 edit["meaning"] = meaning
@@ -327,10 +364,14 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
             spot = _spot(raw)
             if spot is not None:
                 edit["at"] = list(spot)
+            if _first(raw, "turn", "facing", "yaw") is not None:
+                # which way it faces, in degrees round from straight ahead
+                edit["turn"] = round(_number(_first(raw, "turn", "facing", "yaw"), 0.0) % 360.0, 1)
             if _first(raw, "height", "up") is not None:
                 edit["height"] = round(_clamp(_number(_first(raw, "height", "up"), 0.0), 0.0, MAX_HEIGHT), 2)
         if op == "create" and not named:
-            edit["name"] = edit["shape"].title()
+            edit["name"] = (next((p["name"] for p in _props() if p["id"] == edit.get("prop")), "")
+                            or edit["shape"].title()).title()
         if op in ("move", "change", "remove", "restore") and not (target or named):
             refused.append({"index": index, "reason": f"{op} needs the name or id of a thing"})
             continue
@@ -379,6 +420,11 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
     return clean, refused
 
 
+def _props() -> List[Dict[str, Any]]:
+    from eli.world import embodiment
+    return embodiment.props()
+
+
 # ── how a thing looks ────────────────────────────────────────────────────────
 def _ring_spot(object_id: str) -> Tuple[float, float]:
     """A steady place for a thing nobody placed: on a ring round the middle,
@@ -401,8 +447,9 @@ def form_of(obj: Dict[str, Any]) -> Dict[str, Any]:
         pos = [right, 0.0, forward]
     importance = _clamp(_number(obj.get("importance"), 0.5), 0.0, 1.0)
     made = parts(form.get("parts"))
+    real = str(form.get("prop") or "")
     out = {
-        "shape": MADE if made else (form.get("shape") if form.get("shape") in SHAPES else shape),
+        "shape": PROP if real else MADE if made else (form.get("shape") if form.get("shape") in SHAPES else shape),
         "colour": colour(form.get("colour")) or tint,
         "size": round(_clamp(_number(form.get("size"), 0.6 + 0.8 * importance), MIN_SIZE, MAX_SIZE), 2),
         "glow": round(_clamp(_number(form.get("glow"), 0.25), 0.0, 1.0), 2),
@@ -410,6 +457,13 @@ def form_of(obj: Dict[str, Any]) -> Dict[str, Any]:
     }
     if made:
         out["parts"] = made
+    if real:
+        out["prop"] = real
+    if form.get("turn") is not None:
+        out["turn"] = round(_number(form.get("turn"), 0.0) % 360.0, 1)
+    painted = art(form.get("art"))
+    if painted:
+        out["art"] = painted
     return out
 
 
@@ -616,6 +670,12 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
                 "glow": float(edit.get("glow", 0.25)), "pos": [right, float(edit.get("height", 0.0)), forward]}
         if edit.get("parts"):
             form["parts"] = edit["parts"]
+        for key in ("prop", "turn", "art"):
+            if key in edit:
+                form[key] = edit[key]
+        if "turn" not in form and (edit.get("prop") or edit.get("shape") == "painting"):
+            # a chair or a picture nobody turned faces the middle of the room
+            form["turn"] = round(math.degrees(math.atan2(-right, -forward)) % 360.0, 1) if (right or forward) else 180.0
         links = [dict(link) for link in event.payload.get("links") or [] if isinstance(link, dict)]
         state.objects[object_id] = WorldObject(
             object_id=object_id, name=edit["name"], object_type=BUILT, room=room,
@@ -651,6 +711,9 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
               "at": [form["pos"][0], form["pos"][2]], "height": form["pos"][1], "rename": obj.name}
     if form.get("parts"):
         before["parts"] = form["parts"]
+    for key in ("prop", "turn", "art"):
+        if key in form:
+            before[key] = form[key]
     if "at" in edit:
         avoid = event.payload.get("avoid") if actor != "user" else None    # their own hand put it there
         form["pos"][0], form["pos"][2] = _free_spot(
@@ -664,8 +727,16 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
                 form[key] = edit[key]
         if edit.get("parts"):
             form["parts"] = edit["parts"]            # remade, part by part
+            form.pop("prop", None)
+        elif edit.get("prop"):
+            form["prop"] = edit["prop"]              # now a real thing
+            form.pop("parts", None)
         elif edit.get("shape") in SHAPES:
             form.pop("parts", None)                  # back to a plain shape
+            form.pop("prop", None)
+        for key in ("turn", "art"):
+            if key in edit:
+                form[key] = edit[key]
         if edit.get("rename"):
             obj.name = edit["rename"]
         if edit.get("meaning"):
