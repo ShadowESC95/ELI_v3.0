@@ -5911,8 +5911,9 @@ def _action_post_dispatch(
     # that worked is work done, which eases the trouble a failure raised. Talking is not a tool. A
     # failure reaches the world below, where it is logged with what went wrong.
     if isinstance(result, dict) and result.get("ok") is True and str(action or "").upper() != "CHAT":
+        from eli.world.shown import what_came_of
         from eli.world.world_event_bus import fire_tool_result_event
-        fire_tool_result_event(str(action), True)
+        fire_tool_result_event(str(action), True, said=what_came_of(str(action), dict(args or {}), result))
 
     repeat_hint = ""
     # Non-bugs that poisoned the SI failure feed: expected responses (no query typed, plugin not

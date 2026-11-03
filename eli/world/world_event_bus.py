@@ -100,13 +100,16 @@ def fire_confidence_event(
         )
 
 
-def fire_tool_result_event(action: str, ok: bool, source: str = "executor", detail: str = "") -> None:
+def fire_tool_result_event(action: str, ok: bool, source: str = "executor", detail: str = "", said: str = "") -> None:
     """A tool ELI used: work done when it worked (which eases the repair pressure and
-    doubt a failure raised); when it did not, an error that says what went wrong
-    (`detail`), so ELI's world knows its trouble in words."""
+    doubt a failure raised), with what came of it when it was done for the user (`said`:
+    "Searched: ..."); when it did not, an error that says what went wrong (`detail`), so
+    ELI's world knows both in words."""
     name = str(action or "").upper()
     if ok:
-        fire_world_event("task_completed", source, f"{name} worked.", {"action": name})
+        said = " ".join(str(said or "").split())
+        fire_world_event("task_completed", source, f"{name} worked." + (f" {said}" if said else ""),
+                         {"action": name, **({"said": said} if said else {})})
     else:
         said = " ".join(str(detail or "").split())
         fire_world_event("error_detected", source, (f"{name} failed: {said}" if said else f"{name} failed.")[:300],

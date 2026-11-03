@@ -364,8 +364,11 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
     else:
         parts += ["Nobody has asked for anything. This is your room and your time.", *mindset(state)]
         if about:
-            parts.append(f"What has just happened in you ({str(about.get('kind', '')).replace('_', ' ')}): "
-                         f"{str(about.get('text', ''))[:300]}")
+            said = str(about.get("text", ""))[:300]
+            kind = str(about.get("kind", ""))
+            parts.append(f"What you just did for the user: {said}" if kind == "done_for_you" else
+                         f"The day has turned: {said}" if kind == "time_of_day" else
+                         f"What has just happened in you ({kind.replace('_', ' ')}): {said}")
             parts.append("Make of that what you will here: a thing, a change to one, a change to the room.")
             if rooms:
                 parts.append('It need not be here: the whole house is yours. To make a thing in another room, or to '

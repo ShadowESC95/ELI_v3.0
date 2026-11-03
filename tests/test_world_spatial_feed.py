@@ -538,3 +538,25 @@ def test_a_body_can_tell_eli_the_real_things_it_draws():
     embodiment.report_body({"props": [{"id": "boombox", "name": "boombox", "size": [0.72, 0.47, 0.19]}]})
     assert embodiment.props() == [{"id": "boombox", "name": "boombox", "size": [0.72, 0.47, 0.19]}]
     embodiment.forget_body()
+
+
+def test_what_is_coming_up_on_the_agenda_is_in_the_feed(monkeypatch):
+    import time as clock
+    from eli.runtime import agenda
+    from eli.world import shown
+    soon = clock.time() + 3600
+    monkeypatch.setattr("eli.kernel.state.get_active_user_id", lambda *a, **k: "owner")
+    seen = {}
+    def between(since, until, user_id="", **k):
+        seen["user"], seen["span"] = user_id, until - since
+        return [{"start_ts": soon, "title": "**Ferry** to the island", "kind": "event", "has_time": 1}]
+    monkeypatch.setattr(agenda, "between", between)
+    shown.forget()
+    (item,) = shown.coming_up()
+    assert item["what"] == "Ferry to the island" and item["said"].startswith("today") and item["when"] == soon
+    assert seen == {"user": "owner", "span": shown.AHEAD_HOURS * 3600}
+    assert spatial_feed.spatial_state(WORLD, version=2)["coming_up"] == [item]
+    monkeypatch.setattr(agenda, "between", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no agenda")))
+    shown.forget()
+    assert shown.coming_up() == [], "an agenda that cannot be read shows nothing"
+    shown.forget()

@@ -876,3 +876,50 @@ def test_the_answer_is_held_to_the_real_things_there_are():
                                    composer.ALL_OPS, None, False, (), embodiment.report_body(_BODY) and embodiment.props())
     assert "ArmChair_01 (arm chair, 1.07 m tall)" in prompt and "A painting is yours to paint" in prompt
     embodiment.forget_body()
+
+
+def test_what_eli_did_for_the_user_is_a_moment_and_plain_work_is_not(world):
+    from eli.world import urges
+    from eli.world.core.schemas import WorldEvent
+    engine = local_world_bridge._get_engine()
+    engine.ingest_event(WorldEvent("task_completed", "executor", "VOLUME worked.", {"action": "VOLUME"}))
+    engine.ingest_event(WorldEvent("task_completed", "executor", "PLAY_MEDIA worked. Harbour Lights: The Quiet Ferries",
+                                   {"action": "PLAY_MEDIA", "said": "Harbour Lights: The Quiet Ferries"}))
+    assert [(u["kind"], u["text"]) for u in urges.waiting()] == [("done_for_you", "Harbour Lights: The Quiet Ferries")]
+    prompt = composer.build_prompt(None, None, {"rooms": {}, "spaces": {}, "objects": {}}, building.OWN_ROOM,
+                                   composer.ALL_OPS, {"kind": "done_for_you", "text": "Harbour Lights: The Quiet Ferries"})
+    assert "What you just did for the user: Harbour Lights: The Quiet Ferries" in prompt
+    assert "Make of that what you will" in prompt
+
+
+def test_the_turn_of_the_day_is_a_moment_when_nothing_else_is_waiting(world, monkeypatch):
+    from eli.runtime import reflection
+    from eli.world import urges
+    parts = iter(["morning", "morning", "evening", "night"])
+    monkeypatch.setattr(reflection, "part_of_day", lambda ts=None: next(parts))
+    urges._day_turned(1_790_000_000.0)
+    assert urges.waiting() == [], "the first part of the day ELI sees is where it starts, not a turn"
+    urges._day_turned(1_790_000_100.0)
+    assert urges.waiting() == [], "the same part of the day is no turn"
+    urges._day_turned(1_790_040_000.0)
+    (turned,) = urges.waiting()
+    assert turned["kind"] == "time_of_day" and turned["text"].startswith("It is evening now (")
+    from eli.world.core.schemas import WorldEvent
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("reflection", "insight_synthesis", "Quiet evenings are when the user reads most."))
+    urges._day_turned(1_790_060_000.0)
+    assert [u["kind"] for u in urges.waiting()] == ["time_of_day", "insight"], "night does not crowd out what waits"
+
+
+def test_a_tool_that_worked_for_the_user_says_what_came_of_it(monkeypatch):
+    from eli.world import shown, world_event_bus
+    fired = []
+    monkeypatch.setattr(world_event_bus, "fire_world_event", lambda *a: fired.append(a))
+    said = shown.what_came_of("WEB_SEARCH", {"query": "when do the tides turn"},
+                              {"ok": True, "results": [{"title": "Tide times explained", "url": "https://example.org"}]})
+    assert said == "Searched: when do the tides turn: Tide times explained"
+    assert shown.what_came_of("VOLUME", {}, {"ok": True}) == "", "plain work is not something done for the user"
+    world_event_bus.fire_tool_result_event("WEB_SEARCH", True, said=said)
+    world_event_bus.fire_tool_result_event("VOLUME", True)
+    assert fired[0][2] == "WEB_SEARCH worked. " + said and fired[0][3] == {"action": "WEB_SEARCH", "said": said}
+    assert fired[1][2] == "VOLUME worked." and fired[1][3] == {"action": "VOLUME"}

@@ -22,6 +22,7 @@ shown is refreshed at most every half minute.
 
     items()     the things to show, as the world feed carries things
     thoughts()  what is on ELI's mind now, in its records' own words, for a body to let rise from ELI
+    coming_up() what is on the user's agenda in the next day and a half: events, reminders, alarms
     free()      whether ELI is free to make something of its own now (eli/world/urges.py)
 """
 from __future__ import annotations
@@ -169,7 +170,31 @@ def _mind() -> List[Dict[str, str]]:
 
 
 _thoughts_cache: Tuple[float, List[Dict[str, str]]] = (0.0, [])
+_coming_cache: Tuple[float, List[Dict[str, Any]]] = (-REFRESH_SECONDS, [])
+AHEAD_HOURS = 36            # how far ahead the agenda a room shows reaches, as ELI's own prompt does
 _free_cache: Tuple[float, bool] = (-REFRESH_SECONDS, False)
+
+
+def coming_up(now: float | None = None) -> List[Dict[str, Any]]:
+    """What is on the user's agenda soon, earliest first, each {"when": unix time, "said": "today (Mon 5
+    Oct) at 19:30", "what": title, "kind": event | reminder}. From ELI's own agenda, never made up."""
+    global _coming_cache
+    clock = time.monotonic() if now is None else now
+    if clock - _coming_cache[0] < REFRESH_SECONDS:
+        return _coming_cache[1]
+    out: List[Dict[str, Any]] = []
+    try:
+        from eli.kernel.state import get_active_user_id
+        from eli.runtime import agenda
+        start = time.time()
+        for row in agenda.between(start, start + AHEAD_HOURS * 3600, user_id=str(get_active_user_id() or "")):
+            when = float(row.get("start_ts") or 0.0)
+            out.append({"when": when, "said": agenda.describe(when, has_time=bool(row.get("has_time", 1))),
+                        "what": _plain(row.get("title") or ""), "kind": str(row.get("kind") or "event")})
+    except Exception:
+        out = []
+    _coming_cache = (clock, out)
+    return out
 
 
 def thoughts(now: float | None = None) -> List[Dict[str, str]]:
@@ -248,6 +273,16 @@ def _told(action: str, args: Dict[str, Any], result: Dict[str, Any]) -> Tuple[st
     return title or "Something is playing", ([f"on {where}"] if where else [])
 
 
+def what_came_of(action: str, args: Dict[str, Any], result: Dict[str, Any]) -> str:
+    """One line on what ELI did for the user, for its world to know it in words: "Searched: when do
+    the tides turn: Tide times explained". "" for an action that is not one done for the user."""
+    action = str(action or "").upper()
+    if action not in DONE or not isinstance(result, dict):
+        return ""
+    title, lines = _told(action, dict(args or {}), result)
+    return ": ".join(x for x in (title, (lines[0].strip() if lines else "")) if x)[:200]
+
+
 def _results() -> List[Dict[str, Any]]:
     from eli.kernel.state import get_active_user_id
     from eli.runtime.evidence_ledger import execution_outcome, recent_events
@@ -303,7 +338,8 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
 
 
 def forget() -> None:
-    global _cache, _thoughts_cache, _free_cache
+    global _cache, _thoughts_cache, _free_cache, _coming_cache
     _cache = (0.0, [])
     _thoughts_cache = (0.0, [])
+    _coming_cache = (-REFRESH_SECONDS, [])
     _free_cache = (-REFRESH_SECONDS, False)

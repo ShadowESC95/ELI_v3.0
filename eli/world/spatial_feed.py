@@ -201,6 +201,7 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             from eli.world import shown
             message["objects"] = objects + shown.items()
             message["mind"] = shown.thoughts()
+            message["coming_up"] = shown.coming_up()
             # moments of ELI's own waiting to be made into something, and whether ELI is free to:
             # a body may ask ELI to make something of one while someone is there to see it
             message["waiting"] = len([u for u in own.get("urges") or [] if isinstance(u, dict)])
