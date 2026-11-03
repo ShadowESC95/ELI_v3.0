@@ -54,11 +54,11 @@ source tree on 2026-09-25; where something is only true at runtime it is marked 
 | `eli/world` | 2,019 | 26 | World event bus, local world bridge, avatar and ontology |
 | `eli/utils` | 1,979 | 5 | Logging, platform compatibility |
 | `eli/setup` | 1,932 | 9 | Installer, hardware policy, first-run wizard |
-| `eli/licensing` | 1,694 | 11 | Licence activation, machine id, trial and tier gating |
+| `eli/licensing` | 2,170 | 12 | Licence activation, machine id, trial and tier gating. An activated key is also kept in the shared ELI key folder (`~/.config/eli-keys/<product>.key`, `ELI_KEYS_DIR`), which ELI VR reads too, and a key found there is taken up; a key is entered from the bundle chooser or the Bundles menu ("Enter a licence key…") |
 | `eli/system` | 1,400 | 3 | Portable app control, process guard |
 | `eli/contracts` | 788 | 3 | Typed runtime-status contracts |
 | `eli/onboarding` | 709 | 2 | Onboarding interview |
-| `eli/bundles` | 473 | 3 | Bundles: separate ELI applications (ELI Legal, ELI VR) found and opened on ELI v3's core, with its local server for the ones that need it |
+| `eli/bundles` | 645 | 3 | Bundles: separate ELI applications (ELI Legal, ELI VR) found and opened on ELI v3's core, with its local server for the ones that need it (moved to the next free port when another program holds ELI's; the port it serves on is written to `server.json` in ELI v3's data folder for ELI VR) |
 | `eli/editions` | 380 | 33 | Edition packs (base, coding, content, enterprise, healthcare, legal, research, vr) |
 | `eli/cli`, `eli/scripts`, top level | 431 | 6 | Headless REPL, package entry |
 | **total** | **223,220** | **626** | |
@@ -266,8 +266,13 @@ wider `mode_chat_agent_profile()` fan-out. Quick still runs the orchestrator.
   if nothing grounds it. Offline (the default), a question about what does not change (a
   definition, history, who wrote a book) is answered from the model's own knowledge, the prompt
   saying the network is off; only one about what changes after a model is trained (news, prices,
-  results, office-holders, release dates, this year or last: `changes_over_time`) is hedged.
-  Env: `ELI_GROUNDING_ESCALATION`.
+  results, office-holders, release dates, this year or last, "the new one": `changes_over_time`)
+  is hedged. Telling ELI something is not a lookup, but saying what an earlier question meant
+  ("I'm talking about the newest movie", `clarifies_a_question`) is that question again; with a
+  show or film being talked about or playing (`conversation_thread.extract_thread_topic` reads ELI's
+  own "Playing: ..." line, never a placeholder like "something else"), "the new one" of it is looked
+  up, and a search asked for with no subject of its own ("do a web search, you should be smart
+  enough") searches what the talk is about, never the remark. Env: `ELI_GROUNDING_ESCALATION`.
 - **`evidence_ledger.py`, `evidence_arbitration.py`**: what counts as evidence, where it is
   recorded (the ledger also records every executed action), and conflict resolution.
 - **`persistence_gate.py`**: keeps internal report dumps out of memory.

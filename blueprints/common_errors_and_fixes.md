@@ -379,7 +379,8 @@ Or just switch live from the dashboard: **Settings → Model**.
 ---
 
 ## Server won't start / "address already in use"
-**Cause:** a previous instance is still bound to the port.
+**Cause:** a previous instance is still bound to the port. (When the port is held by something
+that is not ELI v3, ELI v2 included, ELI v3 serves on the next free port by itself.)
 **Fix:**
 ```bash
 pkill -f "api/server.py"      # or find it: ss -ltnp | grep 8081
