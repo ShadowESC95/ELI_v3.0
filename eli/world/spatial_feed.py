@@ -14,6 +14,7 @@ contract, served on the local API server:
     POST /v1/world/event      the client reporting back (the user entered a room)
     POST /v1/world/scene      what the user and ELI can see now       (version 2)
     POST /v1/world/body       the real things the body can draw, for ELI to place (version 2, props)
+    GET  /v1/world/picture/N  a picture ELI took or looked at for the user, by its ledger row (version 2, pictures)
     POST /v1/world/say        a sentence to ELI from inside the world  (version 2)
     POST /v1/world/edit       the user moving or changing a thing      (version 2)
     POST /v1/world/compose    ELI making something of its own accord   (version 2)
@@ -45,7 +46,7 @@ PROTOCOL_VERSIONS = (1, 2)
 MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
-    2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props"),
+    2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures"),
 }
 # Close codes a client can tell apart.
 CLOSE_UNAUTHORISED = 4401
@@ -377,6 +378,19 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
             return embodiment.report_body(body.model_dump())
         except ValueError as e:
             raise _problem(e)
+
+    @router.get("/v1/world/picture/{row_id}", dependencies=[Depends(require_read)])
+    def world_picture(row_id: int):
+        """A picture ELI took or looked at for the user: only one its evidence ledger records as such,
+        still on disk, and a picture by its own first bytes. Anything else is not found."""
+        from fastapi.responses import FileResponse
+        from eli.world import shown
+        path = shown.picture(row_id)
+        if not path:
+            raise HTTPException(status_code=404, detail="no such picture")
+        with open(path, "rb") as f:
+            kind = shown.picture_type(f.read(12))
+        return FileResponse(path, media_type=kind, headers={"Cache-Control": "no-store"})
 
     @router.post("/v1/world/say")
     def world_say(body: Said, principal: Any = Depends(require_act)):

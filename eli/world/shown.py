@@ -10,7 +10,8 @@ ELI holds now; on the Evidence Wall, what ELI believes about the user, each with
 when it learned it (a contested belief shows as one); in the Anomaly Room, where
 two things ELI was told disagree, with the question that would settle it. What ELI
 did for the user lately stands there too: what it found (a web search, the news, the
-weather) pinned up on the Evidence Wall, what it wrote in the Workshop, and what is
+weather) pinned up on the Evidence Wall, the pictures it took or looked at beside them
+(served by their ledger row, picture()), what it wrote in the Workshop, and what is
 playing on the Core Room's radio, each with what it says ("lines"). A room shows as
 many as it holds (building.MAX_PER_ROOM), the newest and surest first. They are read
 from ELI's memory, goal store and evidence ledger, never made up, and they are not
@@ -43,10 +44,13 @@ DONE = {
     "CREATE_DOCUMENT": "written", "GENERATE_DOCUMENT": "written", "WRITE_DOCUMENT": "written",
     "CONVERT_DOCUMENT": "written", "CREATE_FILE": "written",
     "PLAY_MEDIA": "playing", "NOW_PLAYING": "playing", "NEXT_MEDIA": "playing", "PREVIOUS_MEDIA": "playing",
+    "SCREENSHOT": "seen", "ANALYZE_IMAGE": "seen", "OCR_IMAGE": "seen",
 }
+# What a picture ELI took or looked at may be served as, read from the file's first bytes.
+PICTURES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"RIFF", "image/webp"))
 STOPPED = ("PAUSE_MEDIA", "STOP_MEDIA")
-ROOM_OF = {"found": "evidence_wall", "written": "workshop", "playing": "core_room"}
-KEPT = {"found": 6, "written": 6, "playing": 1}
+ROOM_OF = {"found": "evidence_wall", "written": "workshop", "playing": "core_room", "seen": "evidence_wall"}
+KEPT = {"found": 6, "written": 6, "playing": 1, "seen": 4}
 LINES = 8                   # what one printed sheet holds
 
 _cache: Tuple[float, List[Dict[str, Any]]] = (0.0, [])
@@ -260,6 +264,10 @@ def _told(action: str, args: Dict[str, Any], result: Dict[str, Any]) -> Tuple[st
     if action == "GET_WEATHER":
         place = _plain(args.get("location") or args.get("place") or args.get("city") or "")
         return (f"Weather: {place}" if place else "The weather"), _text_lines(content)
+    if DONE.get(action) == "seen":
+        named = os.path.basename(str(result.get("path") or args.get("path") or args.get("file") or ""))
+        title = "A screenshot" if action == "SCREENSHOT" else (f"Looked at: {named}" if named else "A picture")
+        return title, _text_lines(content)
     if DONE.get(action) == "written":
         named = result.get("filename") or result.get("path") or result.get("doc_path") or args.get("path") or ""
         title = os.path.basename(str(named)) or _plain(args.get("topic") or "") or "A document"
@@ -281,6 +289,43 @@ def what_came_of(action: str, args: Dict[str, Any], result: Dict[str, Any]) -> s
         return ""
     title, lines = _told(action, dict(args or {}), result)
     return ": ".join(x for x in (title, (lines[0].strip() if lines else "")) if x)[:200]
+
+
+def _picture_file(row: Dict[str, Any]) -> str:
+    """The picture a "seen" ledger row is of, when it is still there and is a picture; else ""."""
+    payload = row.get("payload") or {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    named = str(result.get("path") or args.get("path") or args.get("file") or "").strip()
+    if not named or DONE.get(str(row.get("action") or "").upper()) != "seen":
+        return ""
+    path = os.path.realpath(os.path.expanduser(named))
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return ""
+    return path if picture_type(head) else ""
+
+
+def picture_type(head: bytes) -> str:
+    """The media type of a picture from its first bytes ("" for anything that is not one)."""
+    for magic, kind in PICTURES:
+        if head.startswith(magic) and (kind != "image/webp" or head[8:12] == b"WEBP"):
+            return kind
+    return ""
+
+
+def picture(row_id: Any) -> str:
+    """The file of a picture ELI took or looked at for the owner, by its ledger row, for a body to
+    show; "" unless the ledger records exactly that and the file is still a picture."""
+    from eli.kernel.state import get_active_user_id
+    from eli.runtime.evidence_ledger import recent_events
+    owner = str(get_active_user_id() or "")
+    for row in recent_events(event_type="executor_action", limit=400):
+        if str(row.get("id")) == str(row_id) and str(row.get("user_id") or "") in ("", owner):
+            return _picture_file(row)
+    return ""
 
 
 def _results() -> List[Dict[str, Any]]:
@@ -309,6 +354,9 @@ def _results() -> List[Dict[str, Any]]:
         if kind == "playing":
             seen_music = True
             lines = lines + (["paused"] if stopped_after else [])
+        shows = _picture_file(row) if kind == "seen" else ""
+        if kind == "seen" and not shows:
+            continue                 # a picture that is gone, or never was one, is not shown
         counted[kind] = counted.get(kind, 0) + 1
         key = "playing" if kind == "playing" else f"{kind}_{row.get('id')}"
         out.append({
@@ -317,6 +365,7 @@ def _results() -> List[Dict[str, Any]]:
             "when": float(row.get("timestamp") or 0.0),
             "form": {"shape": "board" if kind != "playing" else "lamp", "colour": "#e8e2d4", "size": 0.6,
                      "glow": 0.4, "pos": _spot(key, 0.9, 2.1)},
+            **({"picture": f"/v1/world/picture/{row.get('id')}"} if shows else {}),
         })
     return out
 

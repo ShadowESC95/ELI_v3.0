@@ -24,10 +24,13 @@ is this here" has a true answer.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from eli.world.building import OWN_ROOM, OWN_ROOM_INFO
 from eli.world.core.schemas import EliWorldState, WorldEvent
+
+log = logging.getLogger(__name__)
 
 KEPT = 12
 TEXT_MAX = 300
@@ -162,7 +165,7 @@ def act_when_free() -> Optional[Dict[str, Any]]:
     try:
         _day_turned()
     except Exception:
-        pass
+        log.debug("the turn of the day was not noticed", exc_info=True)
     try:
         from eli.world import embodiment
         return act(embodiment.live())

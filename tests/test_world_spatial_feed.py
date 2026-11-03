@@ -560,3 +560,41 @@ def test_what_is_coming_up_on_the_agenda_is_in_the_feed(monkeypatch):
     shown.forget()
     assert shown.coming_up() == [], "an agenda that cannot be read shows nothing"
     shown.forget()
+
+
+def test_a_picture_eli_took_is_shown_only_as_the_ledger_records_it(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from eli.runtime import evidence_ledger
+    from eli.world import shown
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+    fake = tmp_path / "notes.png"
+    fake.write_text("not a picture at all")
+    secret = tmp_path / "keys.txt"
+    secret.write_text("never served")
+    monkeypatch.setattr("eli.kernel.state.get_active_user_id", lambda *a, **k: "owner")
+    rows = [
+        {"id": 31, "action": "SCREENSHOT", "user_id": "owner", "timestamp": 3.0,
+         "payload": {"args": {}, "result": {"ok": True, "path": str(shot), "content": "The desktop, two windows open"}}},
+        {"id": 30, "action": "ANALYZE_IMAGE", "user_id": "owner", "timestamp": 2.0,
+         "payload": {"args": {"path": str(fake)}, "result": {"ok": True, "content": "Text"}}},
+        {"id": 29, "action": "SCREENSHOT", "user_id": "guest", "timestamp": 1.0,
+         "payload": {"args": {}, "result": {"ok": True, "path": str(shot)}}},
+        {"id": 28, "action": "WEB_SEARCH", "user_id": "owner", "timestamp": 0.5,
+         "payload": {"args": {"path": str(secret)}, "result": {"ok": True, "query": "x", "results": []}}},
+    ]
+    monkeypatch.setattr(evidence_ledger, "recent_events", lambda **k: rows)
+    seen = [o for o in shown._results() if o["kind"] == "seen"]
+    assert [(o["id"], o["picture"], o["room"]) for o in seen] == [("seen_31", "/v1/world/picture/31", "evidence_wall")], \
+        "a file that is not a picture is not shown"
+    assert seen[0]["name"] == "A screenshot" and seen[0]["lines"] == ["The desktop, two windows open"]
+    assert shown.picture(31) == str(shot.resolve()) and shown.picture(29) == "" and shown.picture(28) == ""
+    app = FastAPI()
+    app.include_router(spatial_feed.build_router(lambda: None, lambda: None, lambda ws: True))
+    client = TestClient(app)
+    got = client.get("/v1/world/picture/31")
+    assert got.status_code == 200 and got.headers["content-type"] == "image/png" and got.content.startswith(b"\x89PNG")
+    for other in (30, 29, 28, 999):
+        assert client.get(f"/v1/world/picture/{other}").status_code == 404, other
+    assert "pictures" in spatial_feed.CAPABILITIES[2]
