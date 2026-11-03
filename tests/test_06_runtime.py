@@ -142,3 +142,13 @@ def test_runtime_stage_packets_loadable():
 
 def test_runtime_stage_packet_store_loadable():
     assert _load("eli.runtime.stage_packet_store") is not None
+
+
+def test_the_self_model_in_every_prompt_does_not_name_elis_room():
+    """Told on every turn "You are presently in your Anomaly Room", ELI opened a reply to a complaint
+    with "I'm in the Anomaly Room, which is where I put myself when ..."."""
+    from eli.runtime.awareness_boot import AwarenessState
+    from eli.world.core.ontology import DEFAULT_ROOMS
+    text = AwarenessState()._live_self_model().lower()
+    assert "presently in your" not in text
+    assert not any(str(room.get("name", "")).lower() in text for room in DEFAULT_ROOMS.values() if room.get("name"))

@@ -1011,9 +1011,10 @@ class GenerationMixin:
                 _ctx_overflow = ("context window" in _emsg.lower()
                                  or "requested tokens" in _emsg.lower())
                 _empty = "empty response" in _emsg.lower()
-                # A KV-slot decode failure ("llama_decode returned 2") near full context is transient and
-                # recoverable — the non-stream retry below clears the cache and decodes fresh — so don't
-                # flip _gguf_available for it either, or one near-ctx turn poisons every later one.
+                # A decode that could not seat its batch ("llama_decode returned 1") near full context is
+                # transient and recoverable (the non-stream retry below clears the cache and decodes fresh),
+                # and one that was aborted ("returned 2": Stop, shutdown) is not a fault of the model at all,
+                # so neither flips _gguf_available, or one turn poisons every later one.
                 _decode_slot = "llama_decode returned" in _emsg.lower()
                 log.debug(f"[COGNITIVE] GGUF streaming failed: {_emsg}")
                 # A context-window overflow is recoverable and doesn't mean the GGUF backend is dead. Don't
@@ -1149,6 +1150,8 @@ class GenerationMixin:
             _again = self._say_in_own_words(user_input, self._what_actually_happened(),
                                             not_this=" ".join(_short["dropped"]), already_said=_short["served"],
                                             reasoning_mode=reasoning_mode)
+            from eli.cognition.self_claims import not_said_yet
+            _again = not_said_yet(_again or "", _short["served"])
             if _again:
                 response = f"{_short['served'].strip()}\n\n{_again}".strip()
         # Anti-echo: never serve ELI's previous reply back to the user. Replies get stored and recalled,

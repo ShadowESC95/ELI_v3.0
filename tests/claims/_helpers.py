@@ -89,8 +89,16 @@ def blueprint_files() -> tuple:
     # NEXT_SESSION.md is the forward-work handoff (future modules), and
     # EXTENDING_ELI.md is a how-to guide with illustrative example paths
     # (e.g. effectors/display_control.py) a user would create themselves.
-    return tuple(sorted(p for p in (REPO / "blueprints").glob("*.md")
-                        if p.name not in _EXAMPLE_DOCS))
+    # Only the markdown git tracks is a blueprint: notes kept in the folder and ignored by git are not
+    # (an old report named a module removed since, and failed this check on the one machine that has it).
+    import subprocess
+    try:
+        listed = subprocess.run(["git", "ls-files", "-z", "--", "blueprints/*.md"], cwd=REPO,
+                                capture_output=True, check=True).stdout.decode("utf-8").split("\0")
+        found = [REPO / name for name in listed if name and (REPO / name).is_file()]
+    except (OSError, subprocess.CalledProcessError):
+        found = list((REPO / "blueprints").glob("*.md"))      # no git here: an unpacked release
+    return tuple(sorted(p for p in found if p.name not in _EXAMPLE_DOCS))
 
 
 _FILE_RE = re.compile(r"`([a-zA-Z0-9_][a-zA-Z0-9_./\-]*\.py)`")

@@ -4583,7 +4583,26 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             shown.append(own_words)
         done = "\n".join(shown)
         tasks = [t for t in (agreed.get("tasks") or []) if str(t or "").strip()]
+        saves = [s for s in (agreed.get("saves") or []) if str(s or "").strip()]
+
+        def _saved(written: str) -> str:
+            # "I'll put the code in /x. Deal?" -- "deal": what was written goes there, through the
+            # file action and its checks. ELI said it had, and nothing was there.
+            lines = []
+            for path in saves:
+                if os.path.exists(os.path.expanduser(path)):
+                    lines.append(f"There is already a file at {path}, so I left it as it is.")
+                    continue
+                ran = execute_action("CREATE_FILE", {"path": path, "content": _pp.what_was_written(written),
+                                                      "verbatim": True})
+                ok = bool((ran or {}).get("ok"))
+                lines.append(f"Saved it to {(ran or {}).get('path') or path}." if ok else
+                             str((ran or {}).get("response") or (ran or {}).get("error") or f"{path} was not written."))
+            return "\n".join(lines)
+
         if not tasks:
+            if saves:
+                done = "\n".join(x for x in (done, _saved(str(agreed.get("written") or ""))) if x)
             if not stream:
                 return {"ok": True, "action": "CHAT", "content": done, "response": done}
 
@@ -4604,9 +4623,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             def _both() -> Generator[Any, None, None]:
                 if done:
                     yield done + "\n\n"
-                yield from inner
+                said_so_far: List[str] = []
+                saved_line = ""
+                for chunk in inner:
+                    if saves and not saved_line and chunk == MAIN_REPLY_DONE_SENTINEL:
+                        saved_line = _saved("".join(said_so_far)) or " "
+                        yield "\n\n" + saved_line
+                    elif isinstance(chunk, str):
+                        said_so_far.append(chunk)
+                    yield chunk
+                if saves and not saved_line:
+                    saved_line = _saved("".join(said_so_far))
+                    yield "\n\n" + saved_line
             return _both()
         reply = _visible_reply_text(inner).strip()
+        if saves:
+            reply = "\n\n".join(x for x in (reply, _saved(reply)) if x)
         whole = "\n\n".join(x for x in (done, reply) if x)
         out = dict(inner) if isinstance(inner, dict) else {"ok": bool(reply), "action": "CHAT"}
         out["content"] = out["response"] = whole
@@ -5977,6 +6009,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             # never from pasted words or a long message (correction_patterns.shortcut_text)
             _forced_control = _route_control_text(_eli_shortcut_text, action) if _eli_shortcut_text else None
             if _forced_control and str(action).upper() != _forced_control:
+                # A request said outright is done, whatever else the message says: "what is wrong
+                # with you?? search for the new movie!" searched, and was not turned into a diagnostic.
+                from eli.runtime.control_contracts import asked_outright as _asked_outright
+                if _asked_outright(user_input, action):
+                    _forced_control = None
+            if _forced_control and str(action).upper() != _forced_control:
                 intent = dict(intent or {})
                 intent["action"] = _forced_control
                 intent["args"] = {}
@@ -6584,6 +6622,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         # Non-quick may synthesise on a compact evidence-only context to avoid prompt overflow, except
                         # the verbatim-always introspection family. The gpu_layers/batch/n_ctx diagnostic subset no
                         # longer forces the raw dump, since quote-exact-from-evidence guards those numbers.
+                        # A diagnostic of ELI's own behaviour is told in words in every mode: in Quick its raw
+                        # packet (JSON) and routing trace reached the person as the answer.
+                        from eli.runtime.control_contracts import EXPLAINED_IN_WORDS, asks_for_raw
+                        _explain_in_words = _action_upper in EXPLAINED_IN_WORDS and not asks_for_raw(user_input)
                         _bypass_persona = bool(
                             kwargs.get("bypass_persona")
                             or intent.get("bypass_persona")
@@ -6592,6 +6634,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 _direct_mode == "quick"
                                 and _action_upper in _deterministic_direct_payload_actions
                                 and not _self_report_depth_followup
+                                and not _explain_in_words
                             )
                         )
                         # Non-quick grounded control actions: synthesise the evidence into a natural answer with one
@@ -6599,8 +6642,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         # That avoids the ~35K-char prompt overflow that produced garbage (the model returning "-").
                         _is_grounded_control_nonquick = (
                             _direct_content
-                            and _action_upper in _deterministic_direct_payload_actions
-                            and _direct_mode != "quick"
+                            and (
+                                (_action_upper in _deterministic_direct_payload_actions and _direct_mode != "quick")
+                                or _explain_in_words
+                            )
                             and not _bypass_persona
                         )
                         if _is_grounded_control_nonquick:
