@@ -21,6 +21,9 @@ from eli.licensing.storage import (
     clear_activation_state,
     load_activation_state,
     save_activation_state,
+    share_key,
+    shared_key,
+    unshare_key,
 )
 from eli.licensing.types import ActivationState, ActivationStatus, MachineBinding
 
@@ -182,6 +185,8 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
             _bind_machine(state, fp, label)
 
     save_activation_state(state)
+    # and where ELI VR, ELI Legal and the other ELI products look for it
+    share_key(product, normalized)
     return state
 
 
@@ -195,6 +200,8 @@ def deactivate_license(*, machine_only: bool = False, product: str = PLATFORM) -
         if state.machines:
             save_activation_state(state)
             return True
+    # gone from this computer for every ELI product, or the next check would take it up again
+    unshare_key(product)
     return clear_activation_state(product)
 
 
@@ -262,6 +269,18 @@ _NOT_BOUND = (
 )
 
 
+def _adopt_shared_key(product: str) -> Optional[ActivationState]:
+    """A key another ELI product kept for `product` (ELI VR's licence screen, ELI Legal), activated
+    here too, so one key entered anywhere covers them all. None when there is none that holds."""
+    key = shared_key(product)
+    if not key:
+        return None
+    try:
+        return activate_license_key(key)
+    except ValueError:
+        return None
+
+
 def validate_activation() -> ActivationStatus:
     required = activation_required()
     env_key = os.environ.get("ELI_LICENSE_KEY", "").strip()
@@ -303,7 +322,7 @@ def validate_activation() -> ActivationStatus:
 
     from eli.licensing.trial import TRIAL_SOURCE, trial_state
 
-    state = load_activation_state()
+    state = load_activation_state() or _adopt_shared_key(PLATFORM)
     if state is None:
         if not required:
             return ActivationStatus(
@@ -462,7 +481,7 @@ def _own_product_status(product: str, *, version: str = "") -> ActivationStatus:
             expires_at=None,
             message="license not required for this build",
         )
-    state = load_activation_state(product)
+    state = load_activation_state(product) or _adopt_shared_key(product)
     if state is None:
         return _inactive(
             required,

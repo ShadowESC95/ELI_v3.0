@@ -42,6 +42,7 @@ def signing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     data_dir = tmp_path / "artifacts"
     data_dir.mkdir()
     monkeypatch.setenv("ELI_LICENSE_DIR", str(lic_dir))
+    monkeypatch.setenv("ELI_KEYS_DIR", str(tmp_path / "eli-keys"))
     # Trial markers are mirrored into the data dir; without this they would land
     # in the developer's real artifacts directory and leak between runs.
     monkeypatch.setenv("ELI_DATA_DIR", str(data_dir))
@@ -157,3 +158,40 @@ def test_dev_checkout_does_not_require_license(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ELI_RETAIL_BUILD", raising=False)
     # Typical pytest/dev environment: no retail flag -> not required unless forced
     assert activation_required() in {True, False}
+
+
+def test_a_key_activated_here_is_kept_for_every_eli_product(signing_keys, tmp_path: Path):
+    """ELI VR read keys from the shared folder and ELI v3 kept its own: a key entered in v3
+    never reached VR, and VR asked for one."""
+    key = issue_license_key(_sample_payload(), private_pem=signing_keys["private"].read_bytes())
+    activate_license_key(key)
+    kept = tmp_path / "eli-keys" / "eli.key"
+    assert kept.read_text(encoding="utf-8").strip() == key
+    assert (kept.stat().st_mode & 0o777) == 0o600, "nobody else on the computer reads it"
+
+
+def test_a_key_another_eli_product_kept_is_taken_up_here(signing_keys, tmp_path: Path, monkeypatch):
+    key = issue_license_key(_sample_payload(), private_pem=signing_keys["private"].read_bytes())
+    (tmp_path / "eli-keys").mkdir()
+    (tmp_path / "eli-keys" / "eli.key").write_text(key + "\n", encoding="utf-8")
+    monkeypatch.setenv("ELI_REQUIRE_LICENSE", "1")
+    assert load_activation_state() is None
+    status = validate_activation()
+    assert status.active is True and status.tier == "pro"
+    assert load_activation_state().license_id == "test-license-001"
+
+
+def test_a_key_in_the_shared_folder_that_does_not_hold_is_not_taken_up(signing_keys, tmp_path: Path, monkeypatch):
+    (tmp_path / "eli-keys").mkdir()
+    (tmp_path / "eli-keys" / "eli.key").write_text("ELIV3-not.a-key\n", encoding="utf-8")
+    monkeypatch.setenv("ELI_REQUIRE_LICENSE", "1")
+    assert validate_activation().active is False and load_activation_state() is None
+
+
+def test_deactivating_takes_the_key_back_from_every_eli_product(signing_keys, tmp_path: Path, monkeypatch):
+    key = issue_license_key(_sample_payload(), private_pem=signing_keys["private"].read_bytes())
+    activate_license_key(key)
+    assert deactivate_license() is True
+    assert not (tmp_path / "eli-keys" / "eli.key").exists()
+    monkeypatch.setenv("ELI_REQUIRE_LICENSE", "1")
+    assert validate_activation().active is False, "not taken up again from the shared folder"

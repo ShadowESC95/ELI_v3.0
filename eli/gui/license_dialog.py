@@ -137,6 +137,35 @@ def _key_dialog(
     return (field.text() or "").strip() or None
 
 
+def enter_licence_key(*, label: str = "") -> Optional[str]:
+    """Ask for a key (for ELI v3, or for one of its packages) and activate it. Returns a line
+    saying what happened, or None when the person cancelled. The key is kept where every ELI
+    product on this computer finds it, so entering it once is enough."""
+    for_what = f" for {label}" if label else ""
+    key = _key_dialog(
+        title="ELI — enter a licence key",
+        heading=f"Enter a licence key{for_what}.",
+        body=(
+            "<p>Paste the key (it starts with <b>ELIV3-</b>). A key for ELI v3 opens every package "
+            "it includes; a package's own key opens that package. Once entered here it is there for "
+            "ELI VR, ELI Legal and the rest on this computer.</p>"
+            f'<p>Purchase: <a href="{PURCHASE_URL}">{PURCHASE_URL}</a><br>'
+            f'Support: <a href="mailto:{PURCHASE_EMAIL}">{PURCHASE_EMAIL}</a></p>'
+        ),
+        buy_label="Buy a licence",
+        cancel_label="Cancel",
+    )
+    if not key:
+        return None
+    from eli.licensing.activation import activate_license_key
+    from eli.licensing.products import product_label
+    try:
+        state = activate_license_key(key)
+    except ValueError as exc:
+        return f"That key was not accepted: {exc}."
+    return f"{product_label(state.product)} licence activated ({state.tier})."
+
+
 def prompt_for_license_key(*, reason: str = "") -> Optional[str]:
     """Ask for a key on a build that requires activation."""
     detail = f"<p>{reason}</p>" if reason else ""

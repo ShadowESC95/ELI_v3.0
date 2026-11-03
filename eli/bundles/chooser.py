@@ -39,12 +39,12 @@ def entries(listed: list[Offer]) -> list[tuple[str, bool, str]]:
         if offer.state == "ready":
             text = offer.label + (f" — {summary}" if summary else "")
         elif offer.state == "needs_key":
-            text = f"{offer.label} — needs a licence key: enter it from ELI v3's Bundles menu"
+            text = f"{offer.label} — needs a licence key: click to enter it"
         elif offer.state == "not_installed":
             text = f"{offer.label} — not installed" + (f": {offer.releases}" if offer.releases else "")
         else:
             text = f"{offer.label} — coming"
-        out.append((text, offer.state == "ready", offer.id))
+        out.append((text, offer.state in ("ready", "needs_key"), offer.id))
     return out
 
 
@@ -83,20 +83,42 @@ def choose(bundles: dict[str, Bundle]) -> str | None:
     except Exception:  # noqa: BLE001 - the licence or edition files unreadable: the installed ones
         log.warning("bundle availability unavailable; listing the installed ones", exc_info=True)
         listed = [Offer(b.id, b.title, "ready", "", b) for b in bundles.values()]
+    states = {offer.id: offer for offer in listed}
+
+    def enter_key(label: str = "") -> None:
+        # a key entered here is activated, and the choice is asked again with what it opened
+        from PySide6.QtWidgets import QMessageBox
+        from eli.gui.license_dialog import enter_licence_key
+        said = enter_licence_key(label=label)
+        if said is None:
+            return
+        QMessageBox.information(dialog, "ELI", said)
+        chosen["again"] = "1"
+        dialog.accept()
+
     for text, can_open, bundle_id in entries(listed):
         button = QPushButton(text)
         bundle = bundles.get(bundle_id)
         if bundle is not None and bundle.icon:
             button.setIcon(QIcon(bundle.icon))
         button.setEnabled(can_open)
-        if can_open:
+        offer = states.get(bundle_id)
+        if offer is not None and offer.state == "needs_key":
+            button.clicked.connect(lambda _c=False, o=offer: enter_key(o.label))
+        elif can_open:
             button.clicked.connect(lambda _c=False, b=bundle_id: pick(b))
         layout.addWidget(button)
+    key_button = QPushButton("Enter a licence key…")
+    key_button.clicked.connect(lambda: enter_key())
+    layout.addWidget(key_button)
     remember = QCheckBox(
         "Always open this (change it in Settings, or start with --choose)"
     )
     layout.addWidget(remember)
-    if dialog.exec() != QDialog.DialogCode.Accepted or "value" not in chosen:
+    accepted = dialog.exec() == QDialog.DialogCode.Accepted
+    if chosen.get("again"):
+        return choose(bundles)
+    if not accepted or "value" not in chosen:
         return None
     if remember.isChecked():
         _remember("eli" if chosen["value"] == "eli" else f"bundle:{chosen['value']}")

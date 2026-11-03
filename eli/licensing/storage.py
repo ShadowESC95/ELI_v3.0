@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -70,3 +71,53 @@ def clear_activation_state(product: str = PLATFORM) -> bool:
         path.unlink()
         return True
     return False
+
+
+# ── The keys every ELI product shares ────────────────────────────────────────
+# One file per product ("eli.key", "vr.key", ...) in one folder every ELI product reads, so a key
+# entered in any of them (ELI v3, ELI VR, ELI Legal) is there for the rest. The same folder and
+# rules as ELI VR's licence check and the ELI SDK.
+
+def shared_keys_dir() -> Path:
+    named = os.environ.get("ELI_KEYS_DIR", "").strip()
+    if named:
+        return Path(named).expanduser()
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", "").strip()
+        return (Path(base) if base else Path.home() / "AppData" / "Roaming") / "ELI Keys"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ELI Keys"
+    config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    return (Path(config) if config else Path.home() / ".config") / "eli-keys"
+
+
+def share_key(product: str, key: str) -> Path | None:
+    """Keep a key where every ELI product finds it. None when the folder cannot be written."""
+    folder = shared_keys_dir()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=f".{product}-", suffix=".key", dir=str(folder))
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(key.strip() + "\n")
+        os.chmod(tmp, 0o600)
+        target = folder / f"{product}.key"
+        os.replace(tmp, target)
+        return target
+    except OSError:
+        return None
+
+
+def unshare_key(product: str) -> None:
+    """Take a product's key out of the shared folder (deactivated on this computer)."""
+    try:
+        (shared_keys_dir() / f"{product}.key").unlink()
+    except OSError:
+        return
+
+
+def shared_key(product: str) -> str:
+    """The key another ELI product kept for `product`, or "" when there is none."""
+    try:
+        return (shared_keys_dir() / f"{product}.key").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""

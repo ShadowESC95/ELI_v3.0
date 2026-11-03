@@ -52,6 +52,7 @@ os.environ["ELI_LEARNING_DIR"] = str(SANDBOX / "training")
 os.environ["ELI_CONFIG_DIR"] = str(SANDBOX / "config")
 os.environ["ELI_GPU_PACK_LOG"] = str(SANDBOX / "gpu-pack.log")   # it would go beside the checkout's runtime/
 os.environ["ELI_VOICE_REFS_DIR"] = str(SANDBOX / "voice_profiles")   # and a cloned voice beside its models/
+os.environ["ELI_KEYS_DIR"] = str(SANDBOX / "eli-keys")   # licence keys every ELI product shares (~/.config/eli-keys)
 
 
 def _fresh_config() -> None:

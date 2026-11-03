@@ -168,12 +168,25 @@ class TabsMixin:
                 action.setEnabled(False)
             action.setToolTip(offer.detail or (offer.bundle.summary if offer.bundle else ""))
             menu.addAction(action)
+        menu.addSeparator()
+        enter = QAction("Enter a licence key…", self)
+        enter.setToolTip("A key for ELI v3 opens every package it includes; it is kept for every ELI product here")
+        enter.triggered.connect(self._enter_licence_key)
+        menu.addAction(enter)
         menu.menuAction().setVisible(bool(menu.actions()))
         if any(o.state == "ready" for o in listed):
             menu.addSeparator()
             ask = QAction("Ask at start-up which to open", self)
             ask.triggered.connect(self._ask_bundle_at_startup)
             menu.addAction(ask)
+
+    def _enter_licence_key(self):
+        from eli.gui.license_dialog import enter_licence_key
+
+        said = enter_licence_key()
+        if said is not None:
+            QMessageBox.information(self, "ELI", said)
+            self._fill_bundles_menu()
 
     def _get_bundle(self, offer):
         """A bundle not installed here: where to download it, or point to a copy already downloaded."""
