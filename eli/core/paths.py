@@ -55,6 +55,12 @@ def _frozen_user_root() -> Path:
     return (base / _APP_NAME).expanduser().resolve()
 
 
+def user_root() -> Path:
+    """v3's own per-user folder, the same for a checkout and an install: where separately
+    installed bundles register themselves and where a running ELI v3 server says its port."""
+    return _frozen_user_root()
+
+
 def _frozen_base() -> Path:
     """Base directory for frozen app resources."""
     if hasattr(sys, '_MEIPASS'):

@@ -241,6 +241,10 @@ def _eli_startup_hooks():
     """Server boot hooks. Install the offline socket guard FIRST so early startup
     egress (e.g. MQTT auto-connect, any raw urlopen) is gated even before the first
     chat request lazily constructs the CognitiveEngine."""
+    port = os.environ.get("ELI_API_PORT", "")
+    if port.isdigit():
+        from eli.runtime.server_util import announce_port
+        announce_port(int(port))
     try:
         from eli.core.netguard import install_socket_guard
         install_socket_guard()
@@ -3772,9 +3776,12 @@ def pwa_sw():
 
 @app.get("/api", tags=["Root"])
 async def api_info():
+    from eli.runtime.self_facts import _version
+    from eli.runtime.server_util import PRODUCT
     return {
         "service": "ELI Cognitive OS Agent",
-        "version": "1.0.0",
+        "product": PRODUCT,           # which ELI this is: ELI v2 answers on the same port
+        "version": _version() or "",
         "ui": "/",
         "documentation": "/docs",
     }

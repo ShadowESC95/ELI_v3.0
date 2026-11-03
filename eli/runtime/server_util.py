@@ -1,12 +1,14 @@
 """Helpers for detecting an existing ELI web server and firewall guidance."""
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import socket
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 log = logging.getLogger(__name__)
@@ -53,6 +55,45 @@ def effective_api_port() -> int:
     return 8081
 
 
+# What this server is, in its /api answer and in the note it leaves of where it serves.
+PRODUCT = "eli_v3"
+
+
+def _port_note() -> Path:
+    from eli.core.paths import user_root
+    return user_root() / "server.json"
+
+
+def announce_port(port: int) -> None:
+    """Say where ELI v3 is serving, in v3's own per-user folder, so a bundle started on its own
+    (ELI VR) finds this ELI rather than whatever else holds the usual port. Taken back at exit."""
+    note = _port_note()
+    try:
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text(json.dumps({"product": PRODUCT, "port": int(port), "pid": os.getpid()}), encoding="utf-8")
+    except OSError:
+        return
+    atexit.register(withdraw_port)
+
+
+def withdraw_port() -> None:
+    """Take back this process's note of where it serves (another process's note is left alone)."""
+    note = _port_note()
+    try:
+        if int(json.loads(note.read_text(encoding="utf-8")).get("pid") or 0) == os.getpid():
+            note.unlink()
+    except (OSError, ValueError):
+        return
+
+
+def free_port_after(port: int) -> int:
+    """The first free port after `port`, for when another program holds ELI's; 0 when none is."""
+    for candidate in range(int(port) + 1, 65536):
+        if not port_in_use(candidate):
+            return candidate
+    return 0
+
+
 def probe_eli_server(port: Optional[int] = None) -> Dict[str, Any]:
     """Best-effort probe of whatever is listening on the ELI API port."""
     port = int(port or effective_api_port())
@@ -73,7 +114,10 @@ def probe_eli_server(port: Optional[int] = None) -> Dict[str, Any]:
 
     health = _http_json(f"http://127.0.0.1:{port}/health")
     api = _http_json(f"http://127.0.0.1:{port}/api")
-    if health is not None or (api and (api.get("service") or api.get("name"))):
+    # Only an ELI v3 server is this ELI. ELI v2 answers on the same port with the same health
+    # check, and taking it for v3 left v3 talking to v2 ("ELI is already running").
+    out["product"] = str((api or {}).get("product") or "")
+    if out["product"] == PRODUCT:
         out["eli_running"] = True
         out["health_ok"] = health is not None
 

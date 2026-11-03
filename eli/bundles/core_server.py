@@ -9,6 +9,7 @@ started here, on this machine only, and stopped again when the bundle closes.
 from __future__ import annotations
 
 import contextlib
+import os
 import logging
 import threading
 import time
@@ -48,16 +49,19 @@ def start() -> tuple[int | None, Any]:
     """Have ELI's local server answering in this process. Gives its port and, when it had to
     be started here, the server, for the caller to stop (`server.should_exit = True`). The port
     is None when it could not be had: the bundle still opens, and says ELI is not there."""
-    from eli.runtime.server_util import effective_api_port, port_in_use
+    from eli.runtime.server_util import effective_api_port, free_port_after, port_in_use
 
     port = effective_api_port()
     if running(port):
         return port, None
     if port_in_use(port):
-        log.warning(
-            "port %s is held by another program; the bundle starts without ELI", port
-        )
-        return None, None
+        # another program (ELI v2 among them) holds it: ELI serves on the next free port, and says so
+        moved = free_port_after(port)
+        log.warning("port %s is held by another program; ELI serves on %s", port, moved or "none")
+        if not moved:
+            return None, None
+        port = moved
+    os.environ["ELI_API_PORT"] = str(port)
     try:
         server = _start(port)
     except Exception:

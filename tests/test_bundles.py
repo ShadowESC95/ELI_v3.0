@@ -1,6 +1,7 @@
 """Bundles: separate ELI applications opened on ELI v3's core in place of its window."""
 
 import json
+import os
 import sys
 import textwrap
 
@@ -290,17 +291,68 @@ def test_a_server_started_for_a_bundle_is_stopped_when_it_closes(monkeypatch):
     assert server.should_exit
 
 
-def test_a_port_held_by_another_program_is_not_taken_for_eli(monkeypatch):
+def test_a_port_held_by_another_program_is_not_taken_for_eli_and_eli_serves_beside_it(monkeypatch):
+    """With ELI v2 open on the usual port, a bundle started from v3 opened without ELI at all."""
     from eli.runtime import server_util
 
     monkeypatch.setattr(server_util, "effective_api_port", lambda: 18999)
-    monkeypatch.setattr(server_util, "port_in_use", lambda port: True)
-    monkeypatch.setattr(core_server, "running", lambda port: False)
-    monkeypatch.setattr(
-        core_server, "_start", lambda port: pytest.fail("the port is not free")
-    )
+    monkeypatch.setattr(server_util, "port_in_use", lambda port: port <= 19001)
+    started = []
+    monkeypatch.setattr(core_server, "running", lambda port: port in started)
+    from types import SimpleNamespace
+    monkeypatch.setattr(core_server, "_start", lambda port: started.append(port) or SimpleNamespace(should_exit=False))
+    monkeypatch.delenv("ELI_API_PORT", raising=False)
     with core_server.serving() as port:
-        assert port is None
+        assert port == 19002 and started == [19002], "the held port is left alone; the next free one is used"
+        assert os.environ["ELI_API_PORT"] == "19002"
+    monkeypatch.setattr(server_util, "port_in_use", lambda port: True)
+    started.clear()
+    with core_server.serving() as port:
+        assert port is None and started == [], "no free port at all: the bundle opens and says ELI is not there"
+
+
+def test_only_a_server_that_says_it_is_eli_v3_is_taken_for_this_eli(monkeypatch):
+    """ELI v2 answers on the same port with the same health check: v3 took it for itself and
+    talked to v2 ("ELI is already running")."""
+    from eli.runtime import server_util
+
+    monkeypatch.setattr(server_util, "port_in_use", lambda port: True)
+    answers = {"/health": {"status": "healthy"},
+               "/api": {"service": "ELI Cognitive OS Agent", "version": "1.0.0"}}
+    monkeypatch.setattr(server_util, "_http_json",
+                        lambda url, headers=None: next((v for k, v in answers.items() if url.endswith(k)), None))
+    seen = server_util.probe_eli_server(18999)
+    assert seen["in_use"] and not seen["eli_running"], "a server that does not say it is ELI v3 is another program"
+    answers["/api"] = {"service": "ELI Cognitive OS Agent", "product": "eli_v2", "version": "2.5.34"}
+    assert not server_util.probe_eli_server(18999)["eli_running"]
+    answers["/api"] = {"service": "ELI Cognitive OS Agent", "product": server_util.PRODUCT, "version": "3.0.145"}
+    assert server_util.probe_eli_server(18999)["eli_running"]
+
+
+def test_a_running_eli_v3_says_where_it_serves_and_takes_it_back(tmp_path, monkeypatch):
+    """ELI VR started on its own looked only at the usual port; with v3 moved off it, VR found
+    nothing (or ELI v2)."""
+    from eli.core import paths
+    from eli.runtime import server_util
+
+    monkeypatch.setattr(paths, "user_root", lambda: tmp_path)
+    server_util.announce_port(19002)
+    note = json.loads((tmp_path / "server.json").read_text(encoding="utf-8"))
+    assert note == {"product": server_util.PRODUCT, "port": 19002, "pid": os.getpid()}
+    server_util.withdraw_port()
+    assert not (tmp_path / "server.json").exists()
+    (tmp_path / "server.json").write_text(json.dumps({"product": "eli_v3", "port": 1, "pid": os.getpid() + 1}))
+    server_util.withdraw_port()
+    assert (tmp_path / "server.json").exists(), "another process's note is left alone"
+
+
+def test_the_api_names_which_eli_it_is():
+    import asyncio
+    from api.server import api_info
+    from eli.runtime import server_util
+
+    info = asyncio.run(api_info())
+    assert info["product"] == server_util.PRODUCT and info["version"]
 
 
 def test_eli_vr_has_an_edition_pack_like_the_others():

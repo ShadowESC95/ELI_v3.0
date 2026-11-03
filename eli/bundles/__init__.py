@@ -130,13 +130,9 @@ def registry_dirs() -> list[Path]:
         out.append(data_dir() / "bundles")
     except Exception:
         log.debug("data_dir unavailable", exc_info=True)
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    out.append(base / "ELI_v3" / "bundles")
+    from eli.core.paths import user_root
+
+    out.append(user_root() / "bundles")
     unique: list[Path] = []
     for p in out:
         if p not in unique:
