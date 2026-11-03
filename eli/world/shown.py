@@ -8,10 +8,14 @@ puts the real thing in each: in the Memory Archive, the memories ELI has formed
 lately, each a light that carries its own words; in the Upgrade Bay, the goals
 ELI holds now; on the Evidence Wall, what ELI believes about the user, each with
 when it learned it (a contested belief shows as one); in the Anomaly Room, where
-two things ELI was told disagree, with the question that would settle it. A room
-shows as many as it holds (building.MAX_PER_ROOM), the newest and surest first. They are read from ELI's memory and goal store, never made up,
-and they are not things ELI built: a body draws them, and may let the user pick
-one up, but moving one changes nothing in ELI.
+two things ELI was told disagree, with the question that would settle it. What ELI
+did for the user lately stands there too: what it found (a web search, the news, the
+weather) pinned up on the Evidence Wall, what it wrote in the Workshop, and what is
+playing on the Core Room's radio, each with what it says ("lines"). A room shows as
+many as it holds (building.MAX_PER_ROOM), the newest and surest first. They are read
+from ELI's memory, goal store and evidence ledger, never made up, and they are not
+things ELI built: a body draws them, and may let the user pick one up, but moving one
+changes nothing in ELI.
 
 Reading ELI's records for every poll of the world would be wasteful, so what is
 shown is refreshed at most every half minute.
@@ -24,11 +28,25 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
+import re
 import time
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
 REFRESH_SECONDS = 30.0
 MEMORIES, GOALS = 16, 8
+# What ELI did for the user, by what came of it, and where in the house it stands.
+DONE = {
+    "WEB_SEARCH": "found", "NEWS_FETCH": "found", "GET_WEATHER": "found",
+    "CREATE_DOCUMENT": "written", "GENERATE_DOCUMENT": "written", "WRITE_DOCUMENT": "written",
+    "CONVERT_DOCUMENT": "written", "CREATE_FILE": "written",
+    "PLAY_MEDIA": "playing", "NOW_PLAYING": "playing", "NEXT_MEDIA": "playing", "PREVIOUS_MEDIA": "playing",
+}
+STOPPED = ("PAUSE_MEDIA", "STOP_MEDIA")
+ROOM_OF = {"found": "evidence_wall", "written": "workshop", "playing": "core_room"}
+KEPT = {"found": 6, "written": 6, "playing": 1}
+LINES = 8                   # what one printed sheet holds
 
 _cache: Tuple[float, List[Dict[str, Any]]] = (0.0, [])
 
@@ -178,6 +196,96 @@ def free(now: float | None = None) -> bool:
     return _free_cache[1]
 
 
+def _plain(text: Any) -> str:
+    """Text as it reads on paper: no markdown, links as their words, one line of spaces."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(text or ""))
+    text = re.sub(r"[*_`#>]+", "", text)
+    return " ".join(text.split())
+
+
+def _text_lines(text: Any) -> List[str]:
+    out = []
+    for line in str(text or "").splitlines():
+        line = _plain(re.sub(r"^\s*(?:[-•*]|\d+[.)])\s+", "", line))
+        if line:
+            out.append(line)
+    return out[:LINES]
+
+
+def _site(url: Any) -> str:
+    host = urlparse(str(url or "")).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _told(action: str, args: Dict[str, Any], result: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """What a sheet or a radio says of one thing ELI did: its title and its lines."""
+    content = result.get("readback") or result.get("content") or result.get("response") or ""
+    if action == "WEB_SEARCH":
+        lines: List[str] = []
+        for found in (result.get("results") or [])[: LINES // 2]:
+            if isinstance(found, dict):
+                lines.append(_plain(found.get("title") or found.get("name") or ""))
+                site = _site(found.get("url") or found.get("href") or found.get("link"))
+                if site:
+                    lines.append(f"    {site}")
+        return f"Searched: {_plain(result.get('query') or args.get('query') or '')}", [l for l in lines if l.strip()]
+    if action == "NEWS_FETCH":
+        topic = _plain(args.get("topic") or "")
+        return (f"The news: {topic}" if topic else "The news"), _text_lines(content)
+    if action == "GET_WEATHER":
+        place = _plain(args.get("location") or args.get("place") or args.get("city") or "")
+        return (f"Weather: {place}" if place else "The weather"), _text_lines(content)
+    if DONE.get(action) == "written":
+        named = result.get("filename") or result.get("path") or result.get("doc_path") or args.get("path") or ""
+        title = os.path.basename(str(named)) or _plain(args.get("topic") or "") or "A document"
+        return title, _text_lines(content)
+    media = result.get("media") if isinstance(result.get("media"), dict) else {}
+    title = _plain(media.get("title") or "")
+    if title:
+        return title, [_plain(x) for x in (media.get("artist"), media.get("album")) if _plain(x)]
+    playing = re.sub(r"^[^:]*playing:\s*", "", _plain(content), flags=re.I)
+    title, _, where = playing.partition(" — ")
+    return title or "Something is playing", ([f"on {where}"] if where else [])
+
+
+def _results() -> List[Dict[str, Any]]:
+    from eli.kernel.state import get_active_user_id
+    from eli.runtime.evidence_ledger import execution_outcome, recent_events
+    owner = str(get_active_user_id() or "")
+    rows = [r for r in recent_events(event_type="executor_action", limit=400)
+            if str(r.get("user_id") or "") in ("", owner)]
+    out: List[Dict[str, Any]] = []
+    counted: Dict[str, int] = {}
+    stopped_after = False            # the newest music action was a pause or a stop
+    seen_music = False
+    for row in rows:                 # newest first
+        action = str(row.get("action") or "").upper()
+        if action in STOPPED and not seen_music:
+            stopped_after = True
+            seen_music = True
+            continue
+        kind = DONE.get(action)
+        payload = row.get("payload") or {}
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        if not kind or counted.get(kind, 0) >= KEPT[kind] or execution_outcome(result) != "ok":
+            continue
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+        title, lines = _told(action, args, result)
+        if kind == "playing":
+            seen_music = True
+            lines = lines + (["paused"] if stopped_after else [])
+        counted[kind] = counted.get(kind, 0) + 1
+        key = "playing" if kind == "playing" else f"{kind}_{row.get('id')}"
+        out.append({
+            "id": key, "name": title[:48], "kind": kind, "room": ROOM_OF[kind], "x": 0.0, "y": 0.0,
+            "importance": 0.6, "meaning": " · ".join(lines)[:200], "lines": lines, "made_by": action.lower(),
+            "when": float(row.get("timestamp") or 0.0),
+            "form": {"shape": "board" if kind != "playing" else "lamp", "colour": "#e8e2d4", "size": 0.6,
+                     "glow": 0.4, "pos": _spot(key, 0.9, 2.1)},
+        })
+    return out
+
+
 def items(now: float | None = None) -> List[Dict[str, Any]]:
     """The records to show. A source that cannot be read shows nothing of its own."""
     global _cache
@@ -185,7 +293,7 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
     if _cache[1] and now - _cache[0] < REFRESH_SECONDS:
         return _cache[1]
     found: List[Dict[str, Any]] = []
-    for source in (_memories, _goals, _claims, _conflicts):
+    for source in (_memories, _goals, _claims, _conflicts, _results):
         try:
             found.extend(source())
         except Exception:

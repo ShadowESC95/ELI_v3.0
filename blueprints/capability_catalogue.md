@@ -457,6 +457,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | `core/schemas.py`, `core/ontology.py` | ~160 | World state schemas (rooms/objects/events/actions/awareness); object templates. |
 | `renderers/pyside6/{world_scene,world_panel}.py` | ~495 | The PySide6 "Eli's World" tab (house/rooms/avatar/objects, live state). |
 | `avatar/*`, `persistence/*`, `world_event_bus.py`, `local_world_bridge.py` | ~700 | Avatar behaviour/locomotion/persona-map; journal/provenance/snapshots/storage; event bus + bridge. |
+| `spatial_feed.py`, `shown.py` | 776 | The world feed ELI VR reads (`/v1/world/*`): rooms, ELI's things, its log and what is on its mind. `shown.items` puts ELI's records in its rooms: memories (Memory Archive), goals (Upgrade Bay), beliefs (Evidence Wall), disagreements (Anomaly Room), and what ELI did for the user, read from the evidence ledger (only what worked, only the owner's): what it found (`found`: search, news, weather) on the Evidence Wall, what it wrote (`written`) in the Workshop, what it is playing (`playing`) in the Core Room, each with its `lines`. |
 
 ## `gui/` (PySide6 desktop) — 27.4k lines
 | Module | LOC | Role |

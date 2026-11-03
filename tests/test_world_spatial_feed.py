@@ -139,6 +139,7 @@ def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
     reads = []
     monkeypatch.setattr(memory_module, "get_memory", lambda: reads.append(1) or Memory())
     monkeypatch.setattr(goal_store, "summarize_goals", lambda: {"titles": ["Learn the filing system"]})
+    monkeypatch.setattr("eli.runtime.evidence_ledger.recent_events", lambda **k: [])   # nothing done for the user
     shown.forget()
     msg = spatial_feed.spatial_state(WORLD, version=2)
     by_kind = {o["kind"]: o for o in msg["objects"]}
@@ -480,3 +481,51 @@ def test_his_mind_can_be_seen_and_chosen_and_a_wrong_name_is_refused(monkeypatch
     assert wrong.status_code == 400 and wrong.json()["detail"]["kind"] == "unknown_model"
     assert chosen == ["A.gguf"] and "mind" in spatial_feed.protocol()["capabilities"]["2"]
 
+
+
+def _done(row_id, action, result, args=None, user="owner", ts=0.0):
+    return {"id": row_id, "action": action, "user_id": user, "timestamp": ts,
+            "payload": {"args": args or {}, "result": dict({"ok": True}, **result)}}
+
+
+def test_what_eli_did_for_the_user_stands_in_its_house_with_what_it_says(monkeypatch):
+    from eli.runtime import evidence_ledger
+    from eli.world import shown
+    monkeypatch.setattr("eli.kernel.state.get_active_user_id", lambda *a, **k: "owner")
+    rows = [  # newest first, as the ledger gives them
+        _done(9, "PAUSE_MEDIA", {}),
+        _done(8, "PLAY_MEDIA", {"media": {"title": "Harbour Lights", "artist": "The Quiet Ferries", "album": "Low Tide"}}),
+        _done(7, "WEB_SEARCH", {"query": "when do the tides turn", "results": [
+            {"title": "**Tide** times explained", "url": "https://www.example.org/tides"},
+            {"title": "Why there are two tides a day", "url": "https://science.example.net/a/b"}]}),
+        _done(6, "CREATE_FILE", {"path": "/tmp/notes/garden_plan.md", "readback": "# Garden plan\n- Basil by the window\n- Tomatoes in May"}),
+        _done(5, "WEB_SEARCH", {"ok": False, "error": "offline"}, {"query": "never shown"}),
+        _done(4, "WEB_SEARCH", {"query": "someone else's search", "results": []}, user="guest"),
+        _done(3, "SET_VOLUME", {}),
+    ]
+    monkeypatch.setattr(evidence_ledger, "recent_events", lambda **k: rows)
+    found = {o["id"]: o for o in shown._results()}
+    assert set(found) == {"playing", "found_7", "written_6"}, "only what worked, for this user, of the kinds shown"
+    search = found["found_7"]
+    assert search["room"] == "evidence_wall" and search["name"] == "Searched: when do the tides turn"
+    assert search["lines"] == ["Tide times explained", "    example.org", "Why there are two tides a day", "    science.example.net"]
+    written = found["written_6"]
+    assert written["room"] == "workshop" and written["name"] == "garden_plan.md"
+    assert written["lines"] == ["Garden plan", "Basil by the window", "Tomatoes in May"]
+    radio = found["playing"]
+    assert radio["room"] == "core_room" and radio["name"] == "Harbour Lights"
+    assert radio["lines"] == ["The Quiet Ferries", "Low Tide", "paused"], "stopped after it started"
+    assert all(o["meaning"] for o in found.values()), "a body that reads only the meaning still has words"
+
+
+def test_what_is_playing_is_the_newest_and_says_where_when_that_is_all_it_knows(monkeypatch):
+    from eli.runtime import evidence_ledger
+    from eli.world import shown
+    monkeypatch.setattr("eli.kernel.state.get_active_user_id", lambda *a, **k: "owner")
+    monkeypatch.setattr(evidence_ledger, "recent_events", lambda **k: [
+        _done(2, "NOW_PLAYING", {"content": "▶ Playing: Night Ferry — firefox"}),
+        _done(1, "PAUSE_MEDIA", {}),
+        _done(0, "PLAY_MEDIA", {"media": {"title": "Older Song"}}),
+    ])
+    (radio,) = [o for o in shown._results() if o["kind"] == "playing"]
+    assert radio["name"] == "Night Ferry" and radio["lines"] == ["on firefox"], "a pause before it does not count"
