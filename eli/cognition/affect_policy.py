@@ -99,19 +99,36 @@ def _recent_failures(user_id: str = "") -> int:
     return n
 
 
-def current_policy(user_id: str = "") -> AffectPolicy:
-    """The behavioural policy implied by the current affect read."""
-    detected, confidence = _read()
+def _state(user_id: str = "") -> tuple[str, float]:
+    """The user's affect as a state (eli/cognition/affect_state), not the last read alone: the
+    label of its valence and the chance that label is meant. ("", 0.0) when nothing is read."""
+    try:
+        from eli.cognition.affect_state import estimate
+        affect = estimate(user_id)
+        return str(affect.label or ""), float(affect.confidence or 0.0)
+    except (ImportError, OSError, ValueError) as failure:
+        log.debug("affect_policy: state unavailable: %s", failure)
+        return "", 0.0
 
+
+def current_policy(user_id: str = "") -> AffectPolicy:
+    """The behavioural policy implied by the user's affect: the state behind the reads, with the
+    last read's own word for which feeling it is."""
+    detected, confidence = _read()
     if detected in _CRISIS:
         # Not ours. Returning neutral keeps this module from quietly substituting a
         # tone tweak for the crisis path.
         return AffectPolicy(detected=detected, confidence=confidence,
                             reason="crisis handling owns this state")
-
-    if confidence < _MIN_CONFIDENCE or detected in ("neutral", ""):
+    label, state_confidence = _state(user_id)
+    if label:
+        # a state stands: its own sureness is the measure, and a read of the other sign is a spike
+        from eli.cognition.emotion_timeline import valence_of
+        if label != "neutral" and valence_of(detected) != label:
+            detected = {"negative": "frustrated", "positive": "happy"}.get(label, detected)
+        confidence = state_confidence if label != "neutral" else min(confidence, state_confidence)
+    if confidence < _MIN_CONFIDENCE or detected in ("neutral", "") or label == "neutral":
         return _NEUTRAL
-
     if detected in _FRUSTRATED:
         run = _recent_failures(user_id)
         return AffectPolicy(

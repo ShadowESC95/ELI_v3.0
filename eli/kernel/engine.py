@@ -3910,18 +3910,27 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 from eli.cognition import epistemics as _epistemics
                 from eli.kernel.request_context import turn_facts_var as _turn_facts
                 # the model's own confidence in the tokens of this reply (gguf_inference._TokenConfidence)
-                _generation = dict(((_turn_facts.get() or {}).get("generation") or {}))
+                _facts = _turn_facts.get() or {}
+                _generation = dict((_facts.get("generation") or {}))
+                # the claims about the user this reply rested on, each with the chance it is right
+                # (eli/memory/claims.chance): the reply is no surer than what it stands on
+                _claims_used = dict(_facts.get("claims_used") or {})
+                _claim_ps = [float(v.get("p") or 0.0) for v in _claims_used.values() if isinstance(v, dict)]
                 probability = _epistemics.assess(
                     _epistemics.ANSWER, score, request_id=request_id, class_="grounded" if grounded else "chat",
                     features={"grounded": bool(grounded), "evidence_used": bool(evidence_used),
                               "mode": str((trace or {}).get("reasoning_mode") or ""),
-                              "agents": len(agents_used or []), "chars": len(str(response or "")),
+                              "agents": len(agents_used or []), "agent_names": [str(a) for a in (agents_used or [])],
+                              "chars": len(str(response or "")),
                               "agreement": getattr(self, "_last_sc_agreement_ratio", None),
                               "entropy": getattr(self, "_last_sc_entropy", None),
                               "grounding": grounding_confidence,
+                              **({"claims_used": len(_claim_ps), "claims_min_p": min(_claim_ps),
+                                  "claims_mean_p": sum(_claim_ps) / len(_claim_ps)} if _claim_ps else {}),
                               **{k: _generation.get(k) for k in (*_epistemics.FEATURES, "tokens", "first_entropy")
                                  if _generation.get(k) is not None}})
                 self._pending_assessment = request_id
+                self._pending_claims = [dict(v, id=k) for k, v in _claims_used.items() if isinstance(v, dict)]
                 # ELI's world hears it: its evidence confidence and uncertainty are the means of these
                 from eli.world.world_event_bus import fire_world_event as _fire_world_event
                 _fire_world_event(
@@ -4423,13 +4432,37 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             except Exception:
                 log.debug("recall outcome not settled", exc_info=True)
         request_id = getattr(self, "_pending_assessment", None)
+        endorsed = is_endorsement(user_input)
         if request_id:
             self._pending_assessment = None
             from eli.cognition import epistemics
             if corrected:
                 epistemics.settle(request_id, False, how="correction")
-            elif is_endorsement(user_input):
+            elif endorsed:
                 epistemics.settle(request_id, True, how="endorsement")
+        # The claims about the user the last reply rested on: an endorsement settles them all right; a
+        # correction settles wrong the ones it speaks of (its words share the claim's), and leaves the
+        # rest open, since a reply corrected on one point was not wrong on every claim it used.
+        claims = getattr(self, "_pending_claims", None)
+        if claims:
+            self._pending_claims = None
+            from eli.cognition import epistemics
+            from eli.cognition.scoring import tokenize
+            from eli.execution.route_contracts import _same_word
+            said = set(tokenize(user_input))
+
+            def _speaks_of(claim: dict) -> bool:
+                words = tokenize(f"{claim.get('relation', '')} {claim.get('value', '')}".replace("_", " "))
+                return any(_same_word(w, s) for w in words for s in said)
+
+            for claim in claims:
+                rid = str(claim.get("request_id") or "")
+                if not rid:
+                    continue
+                if endorsed and not corrected:
+                    epistemics.settle(rid, True, how="endorsement", kind=epistemics.CLAIM)
+                elif corrected and _speaks_of(claim):
+                    epistemics.settle(rid, False, how="correction", kind=epistemics.CLAIM)
 
     def process(self, user_input: str, source: str = "user", stream: bool = False,
                 reasoning_mode: Optional[str] = None, *,

@@ -49,3 +49,25 @@ def test_three_agents_resting_on_one_record_are_one_source(monkeypatch):
     assert amount == pytest.approx(0.2) and sources == pytest.approx(1.0)
     amount, sources = independent_evidence([0.2, 0.2, 0.2], [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
     assert amount == pytest.approx(0.6) and sources == pytest.approx(3.0)
+
+
+def test_an_agents_factor_is_what_became_of_the_replies_it_was_behind(monkeypatch):
+    """Calibration means calibration: once replies with an agent behind them were settled
+    (eli/cognition/epistemics), its factor is its rate of right replies against the whole's, shrunk
+    toward the whole by the usual pseudo-count; an agent no settled reply names keeps the rolling
+    self-consistency factor."""
+    from eli.cognition import agent_bus as bus
+    rows = ([(0.8, 1.0, {"agent_names": ["memory", "reasoning"]})] * 8 + [(0.8, 0.0, {"agent_names": ["reasoning"]})] * 8
+            + [(0.8, 1.0, {"agent_names": ["web"]})] * 2 + [(0.8, 0.0, {"agent_names": ["web"]})] * 6)
+    import eli.cognition.epistemics as ep
+    monkeypatch.setattr(ep, "outcomes", lambda kind, **k: list(rows))
+    monkeypatch.setattr(bus, "_outcome_cache", {"loaded_at": 0.0, "rows": []})
+    memory, reasoning, web = bus._outcome_factor("memory"), bus._outcome_factor("reasoning"), bus._outcome_factor("web")
+    # memory was behind right replies only, web behind mostly wrong ones, reasoning behind half and half:
+    # against a whole that web drags under a half, reasoning stands a little above one
+    assert memory > reasoning > 1.0 > web
+    assert 0.5 <= web and memory <= 1.5
+    assert bus._outcome_factor("vision") is None, "no settled reply names it: the rolling factor stands"
+    monkeypatch.setattr(ep, "outcomes", lambda kind, **k: [])
+    monkeypatch.setattr(bus, "_outcome_cache", {"loaded_at": 0.0, "rows": []})
+    assert bus._outcome_factor("memory") is None

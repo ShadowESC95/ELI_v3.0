@@ -37,7 +37,10 @@ def split_verified_evidence_packet(text: str) -> Tuple[str, str]:
 def _normalize_hit(hit: Dict[str, Any], *, default_source: str) -> Dict[str, Any]:
     text = (hit.get("text") or hit.get("content") or "").strip()
     src = str(hit.get("_source") or default_source or "fts").lower()
-    score = float(hit.get("weight") or hit.get("importance") or hit.get("score") or 0.5)
+    # the recall's own ranking (how readily the row came to mind, eli/memory/policy) before the
+    # stored weight, which only decides what is kept
+    score = float(hit.get("_rank_score") or hit.get("accessibility") or hit.get("weight")
+                  or hit.get("importance") or hit.get("score") or 0.5)
     return {
         "source": "fts5" if src in ("fts", "like") else "vector" if src == "vector" else src,
         "score": score,

@@ -318,10 +318,12 @@ def assess(user_id: str = "", session_id: str = "") -> Dict[str, Any]:
     """Measure the user's current emotional state and whether it is worth raising.
 
     Returns evidence only — no phrasing. Keys:
-      state            'negative' | 'positive' | 'neutral' | ''
+      state            'negative' | 'positive' | 'neutral' | '' — the sign of the latent valence
+                       (eli/cognition/affect_state) when it stands clear of neutral and of its doubt
+      affect           the state itself: valence, arousal, their spread, reads, time constant
       dominant         the most common emotion in the sustained run
       run_length       how many consecutive reads share the state
-      confidence       mean confidence across the run
+      confidence       the chance the state's sign is meant
       transition       {from, to} when the state just changed, else {}
       trigger_action   ELI's action on the turn the state turned (may be '')
       trigger_text     the utterance where it turned (may be '')
@@ -342,43 +344,39 @@ def assess(user_id: str = "", session_id: str = "") -> Dict[str, Any]:
 
     window_h = float(_knob("cog.emotion_window_hours", SUSTAINED_WINDOW_HOURS))
     min_reads = int(_knob("cog.emotion_run_length", SUSTAINED_MIN_READS))
-    min_conf = float(_knob("cog.emotion_confidence_pct", int(MIN_CONFIDENCE * 100))) / 100.0
     rows = recent(limit=SUSTAINED_WINDOW * 2, user_id=user_id, within_hours=window_h)
     if not rows:
         out["reason"] = "no reads in window"
         return out
-
-    window = rows[:SUSTAINED_WINDOW]
-    head_valence = window[0]["valence"]
-
-    # How far back does the current valence run unbroken?
+    # The state behind the reads (eli/cognition/affect_state): the reads are observations of a
+    # valence that moves smoothly and fades when nothing is heard, each weighed by how sure its
+    # reader was. A state is one that stands clear of neutral and of its own uncertainty; the
+    # reads one by one, counted, called a spike a state and a sure read no more than an unsure one.
+    from eli.cognition.affect_state import estimate as _affect
+    affect = _affect(user_id, rows=rows, now=time.time())
+    head_valence = affect.label or "neutral"
+    out["state"] = head_valence
+    out["affect"] = affect.as_dict()
+    out["confidence"] = round(float(affect.confidence), 3)
+    # The reads of the state's sign in a row, newest first: what the run is about and when it began
     run: List[Dict[str, Any]] = []
-    for r in window:
-        if r["valence"] != head_valence:
+    for r in rows[:SUSTAINED_WINDOW]:
+        if head_valence == "neutral" or r["valence"] != head_valence:
             break
         run.append(r)
-
-    out["state"] = head_valence
     out["run_length"] = len(run)
-    confident = [r for r in run if float(r["confidence"] or 0.0) >= min_conf]
-    out["confidence"] = round(
-        sum(float(r["confidence"] or 0.0) for r in run) / len(run), 3) if run else 0.0
-
     counts: Dict[str, int] = {}
     for r in run:
         counts[r["detected"]] = counts.get(r["detected"], 0) + 1
     out["dominant"] = max(counts.items(), key=lambda kv: kv[1])[0] if counts else ""
-
     # The turn the mood changed: first read AFTER the run, plus what ELI did there.
-    if len(rows) > len(run):
+    if run and len(rows) > len(run):
         prior = rows[len(run)]
         if prior["valence"] != head_valence:
             out["transition"] = {"from": prior["valence"], "to": head_valence}
-            edge = run[-1] if run else None
-            if edge is not None:
-                out["trigger_action"] = str(edge["eli_prior_action"] or "")
-                out["trigger_text"] = str(edge["user_text"] or "")[:200]
-
+            edge = run[-1]
+            out["trigger_action"] = str(edge["eli_prior_action"] or "")
+            out["trigger_text"] = str(edge["user_text"] or "")[:200]
     # Unusual FOR THIS USER — not unusual in the abstract.
     base = out["baseline"]
     if base.get("credible"):
@@ -386,20 +384,19 @@ def assess(user_id: str = "", session_id: str = "") -> Dict[str, Any]:
             out["unusual"] = True
         elif head_valence == "positive" and base["positive_share"] < 0.5:
             out["unusual"] = True
-
     # Should ELI raise it? Every gate has to pass.
     if head_valence == "neutral":
-        out["reason"] = "neutral state — nothing to raise"
+        out["reason"] = ("neutral state — nothing to raise" if abs(affect.valence) < 1e-9
+                         else f"valence {affect.valence:+.2f} ± {affect.var_valence ** 0.5:.2f}, confidence "
+                              f"{affect.confidence:.2f} — a spike or a doubt, not a state")
     elif len(run) < min_reads:
         out["reason"] = f"run of {len(run)} < {min_reads} — a spike, not a state"
-    elif len(confident) < min_reads:
-        out["reason"] = f"only {len(confident)} reads above confidence {min_conf:.2f}"
     elif not checkin_allowed(head_valence):
         out["reason"] = "inside check-in cooldown"
     else:
         out["should_checkin"] = True
-        out["reason"] = (f"sustained {head_valence} across {len(run)} reads "
-                         f"(dominant: {out['dominant']})")
+        out["reason"] = (f"sustained {head_valence} across {len(run)} reads, valence "
+                         f"{affect.valence:+.2f} ± {affect.var_valence ** 0.5:.2f} (dominant: {out['dominant']})")
     return out
 
 

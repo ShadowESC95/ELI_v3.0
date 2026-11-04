@@ -42,6 +42,8 @@ five minutes' quiet, in place of fixed steps up and down by event kind.
 |---|---|
 | Per-agent contributions summed; a corroboration bonus when three or more agents contributed | Each result names what it rests on (`_provenance_roots`: memories by their **lineage root**, so a reflection that restates a memory rests on that memory; turns, file paths, addresses; the knowledge graph names the memories it was seeded from). Two results' **dependence** is the share of roots they both rest on, or, where neither names records, the share of words one has in the other. `independent_evidence` gives the amount once shared evidence is counted once (the sum less, per pair, their dependence times the smaller contribution, never below the strongest alone) and the **effective number of sources**, `(Σc)² / Σᵢⱼ ρᵢⱼ cᵢ cⱼ`: three readers of one record are one source. The corroboration bonus needs three or more *independent* sources. The critic says "N sources, M independent". |
 
+| An agent's "calibration" factor was a rolling average of its own self-confidence times evidence density, `0.5 + rolling`, never checked against anything | Each settled reply names the agents behind it. An agent's factor is how often the replies it contributed to proved right against replies as a whole, its rate shrunk toward the whole's by the calibration's pseudo-count, within the old bounds; until a settled reply names it, the rolling factor stands. |
+
 ## 4. How readily a memory comes to mind (`memory/policy.py`, `memory/memory.py`)
 
 The forgetting curve stays: `2^(−t/H)` with the half-life stretched by origin, importance and use says
@@ -72,21 +74,38 @@ declarative memory (Anderson & Schooler, 1991), used as engineering:
 | `memory/document_index.py` | `1/(60 + rank)` from rank 0, unlike the memory reranker's `1/(k + rank + 1)` | The one constant and counting (`reranker.RRF_K`, ranks from one). |
 | `eli/tools/image_engine/image_engine/quality.py` | Exposure `1 − 1.8·|mean − ½|`: a clipped frame kept a tenth of the credit | Factor 2: all black or all white scores 0. |
 
+## 7. The user's affect as a latent state (`cognition/affect_state.py`)
+
+| Was | Is |
+|---|---|
+| Each turn's read (an emotion label with the reader's sureness, the voice's arousal) taken on its own: the last read above a line of 0.55 set the policy; a mood was three reads of one kind in a row; a read under 0.45 was ignored outright | The reads are observations of a state `x = [valence, arousal]` that moves with inertia and fades toward neutral when nothing is heard, `x_t = φ x_{t−1} + w_t`, `φ = e^(−Δt/τ)`, kept by a **Kalman filter** with its uncertainty. A read's value is its label's sign at the reader's sureness `c`, its noise `c(1 − c)` plus a floor measured from this user's reads; a typed turn observes no arousal. The time constant τ and how far the state wanders between reads are **identified from this user's own reads** by the likelihood of the filter's innovations over a grid; a mood that turns is caught by the innovation test (the last two surprises past the chi-square 95 % point raise the state's uncertainty to what they say it moved). A state is meant when it stands clear of neutral (0.45) and of its own doubt (1.28 σ, 90 % one-sided): one read reaches 0.75 σ, three in a row 1.7. |
+| `emotion_timeline.assess`, `affect_policy.current_policy` and the world's social read each read the raw figure | All three read the state: the timeline's assessment carries it (`affect`) and gates a check-in on it, the policy's confidence is the chance the state's sign is meant, the world's nudges use it once it stands. The baseline (what is normal for this user) and the check-in cooldown are as they were. |
+
+## 8. The chance a claim is right (`memory/claims.py`, kind `claim`)
+
+| Was | Is |
+|---|---|
+| A claim's sureness was a Beta posterior (§5) and nothing checked it; every claim reached a reply's evidence at a fixed 0.9 | `claims.chance`: the sureness **calibrated on what became of claims of that origin** that replies rested on, the second kind in `epistemics` with its own ledger events (`claim_assessed`, `claim_outcome`). A claim used by a reply is assessed under the turn's id; the next turn settles it with the reply: an endorsement settles every claim used right, a correction settles wrong only the claim its words speak of, and the user settling a conflict settles the figures of both sides. The Evidence Wall's sheets and `basis()` carry the chance ("chance 0.52 after 12 such claims were checked"). |
+| The reply's chance knew nothing of what it stood on | The claims a reply rested on go into its assessment as features: how many, the least chance among them and the mean, so the fit learns that a reply resting on a doubtful claim is more often wrong. Claim evidence is scored by its chance and marked `disputed` when it is. |
+
 ## Method constants, each stated where it is used
 
 `d = 0.5` (ACT-R decay), MMR `λ = 0.7`, ten reliability bands, five folds, `z = 2.326` (99 %), a
 standard-normal prior on the calibration fit (about 1 for the score's weight, 0 for the token figures and
 the shift), `EDGE = 10⁻³` for a score at exactly 0 or 1, an even chance (`log 0.5`) as the line below which
-a token counts as chosen unsurely. None is a size or a limit; each is a method's usual setting, named and
-documented, and the behaviour it controls is tested.
+a token counts as chosen unsurely; for the affect state a grid of time constants from 5 minutes to 8 hours
+and of wander shares from 0.05 to 1, a prior spread of 1/4 (a label as likely either way), the chi-square
+95 % point over two innovations, 0.45 as the line a state must clear and 1.28 σ (90 % one-sided) as its
+significance. None is a size or a limit; each is a method's usual setting, named and documented, and the
+behaviour it controls is tested.
 
 ## Not done
 
-- A latent valence/arousal state (a Kalman filter over the acoustic and text reads) for the affect
-  stack; the reads are still fused per turn and kept as a timeline.
+- The affect state reads text and voice; a vision read of the user's face would be a third observation
+  of the same state and is not taken.
 - Hardware system identification (a learned map from a configuration to latency, memory and
   throughput); the planner stays measurement-by-simulation, which the audit called the strongest part.
 - Streamed replies are assessed where their meta is published; a reply that never reaches
   `_publish_last_response_meta` is not.
-- Claim-level chances inside one reply (the thoughts' end state) are not attempted; the reply has one
-  chance.
+- A reply's chance is one figure informed by its claims' chances; it is not yet decomposed into a chance
+  per sentence.

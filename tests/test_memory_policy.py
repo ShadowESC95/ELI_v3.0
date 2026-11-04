@@ -183,3 +183,13 @@ def test_how_sure_a_claim_is_from_what_bore_it_out():
     users_word = P.claim_confidence([1.0], contradicting=[0.35])
     inference = P.claim_confidence([0.35], contradicting=[1.0])
     assert users_word > 0.5 > inference, "the user's own word contradicted by an inference stays ahead of it"
+
+
+def test_unified_retrieval_scores_a_hit_by_how_readily_it_came_to_mind_not_its_stored_weight():
+    from eli.memory.unified_retrieval import _normalize_hit
+    ranked = _normalize_hit({"text": "x", "weight": 1.8, "_rank_score": 0.35, "accessibility": 0.4}, default_source="fts")
+    assert ranked["score"] == pytest.approx(0.35)
+    recalled = _normalize_hit({"text": "x", "weight": 1.8, "accessibility": 0.4}, default_source="fts")
+    assert recalled["score"] == pytest.approx(0.4)
+    kept_only = _normalize_hit({"text": "x", "weight": 1.8}, default_source="fts")
+    assert kept_only["score"] == pytest.approx(1.8), "with no recall figure, what there is"

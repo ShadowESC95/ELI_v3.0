@@ -18,8 +18,12 @@ def _tone(monkeypatch, detected, confidence=0.9):
 
 
 def _runs(monkeypatch, n):
+    """n angry reads in a row, minutes apart, as the timeline keeps them."""
+    import time as _t
+    now = _t.time()
     monkeypatch.setattr("eli.cognition.emotion_timeline.recent",
-                        lambda **k: [{"detected": "angry"} for _ in range(n)])
+                        lambda **k: [{"detected": "angry", "valence": "negative", "confidence": 0.9,
+                                      "ts": now - 300.0 * (i + 1), "arousal": None} for i in range(n)])
 
 
 def test_neutral_changes_nothing(monkeypatch):

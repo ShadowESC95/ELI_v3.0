@@ -28,9 +28,36 @@ def _clear():
         p.unlink()
 
 
+# Reads come turns apart, not milliseconds: the state behind them (eli/cognition/affect_state) has
+# inertia, and reads a few milliseconds apart are one moment. The clock below stamps each new read
+# five minutes after the last (a repeated text, the same turn read twice, keeps its moment), starting
+# far enough back that a long baseline still lies inside the assessment's window.
+_CLOCK = {"t": 0.0, "last_text": None}
+_READ_GAP_S = 300.0
+
+
+def _clock_now() -> float:
+    return _CLOCK["t"]
+
+
 @pytest.fixture(autouse=True)
-def clean_slate():
+def clean_slate(monkeypatch):
     _clear()
+    _CLOCK["t"] = time.time() - _READ_GAP_S * 64
+    _CLOCK["last_text"] = None
+    real_record = et.record
+
+    def spaced(detected, *args, **kwargs):
+        text = kwargs.get("user_text", "")
+        if text != _CLOCK["last_text"]:
+            _CLOCK["t"] += _READ_GAP_S
+            _CLOCK["last_text"] = text
+        return real_record(detected, *args, **kwargs)
+
+    # the timeline's clock is this one for the whole test: reads are stamped by it, and the
+    # assessment, the window and the cooldown read "now" from it, as a turn does right after a read
+    monkeypatch.setattr(et.time, "time", _clock_now)
+    monkeypatch.setattr(et, "record", spaced)
     yield
     _clear()
 
@@ -41,7 +68,6 @@ def _seed(emotion, n, *, user_id="u1", confidence=0.8, action="", prefix="turn")
         assert et.record(emotion, expressed="calm", confidence=confidence,
                          source="fused", user_text=f"{prefix}-{emotion}-{i}",
                          user_id=user_id, eli_prior_action=action)
-        time.sleep(0.002)  # keep ts strictly increasing
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────
@@ -94,12 +120,13 @@ def test_valence_classification(emotion, expected):
 
 # ── The check-in gates ────────────────────────────────────────────────────────
 def test_single_spike_does_not_trigger_checkin():
-    """One bad sentence is not a mood — this is the guard against nagging."""
+    """One bad sentence is not a mood — this is the guard against nagging. The state behind the
+    reads stays neutral: one read moves it a little, not clear of neutral."""
     _seed("calm", 4)
     _seed("irritated", 1)
     a = et.assess(user_id="u1")
-    assert a["state"] == "negative"
-    assert a["run_length"] == 1
+    assert a["state"] == "neutral"
+    assert a["affect"]["valence"] < 0 and a["run_length"] == 0
     assert not a["should_checkin"]
     assert "spike" in a["reason"]
 
@@ -239,3 +266,80 @@ def test_disabled_records_nothing_and_asserts_nothing(monkeypatch):
     a = et.assess(user_id="u1")
     assert not a["should_checkin"]
     assert a["reason"] == "disabled"
+
+
+# ── the state behind the reads (eli/cognition/affect_state) ──────────────────────────────────
+# The reads are observations of a valence that moves with inertia and fades when nothing is heard;
+# a Kalman filter keeps it with its uncertainty, and the time constant is this user's own.
+
+def _reads(labels, *, confidence=0.8, gap_s=60.0, now=None, arousal=None):
+    """Reads `gap_s` apart, the last one at `now`, as a turn assesses right after its read."""
+    import time as _t
+    now = now if now is not None else _t.time()
+    return [{"ts": now - gap_s * (len(labels) - 1 - i), "valence": v, "detected": v, "confidence": confidence,
+             "arousal": arousal} for i, v in enumerate(labels)]
+
+
+def test_one_read_is_a_spike_three_are_a_state_and_the_filter_says_how_sure():
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    one = af.estimate(rows=_reads(["negative"], now=now), now=now)
+    three = af.estimate(rows=_reads(["negative"] * 3, now=now), now=now)
+    assert one.label == "neutral" and abs(one.valence) < af.STATE_MIN
+    assert three.label == "negative" and three.valence < -af.STATE_MIN and three.z_valence <= -af.Z_SIG
+    assert three.var_valence < one.var_valence, "more reads, less doubt"
+    assert 0.9 < three.confidence <= 1.0 and three.run_length == 3
+
+
+def test_reads_the_reader_was_unsure_of_move_the_state_less():
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    sure = af.estimate(rows=_reads(["negative"] * 4, confidence=0.9, now=now), now=now)
+    unsure = af.estimate(rows=_reads(["negative"] * 4, confidence=0.3, now=now), now=now)
+    assert sure.valence < unsure.valence < 0 and unsure.label == "neutral"
+
+
+def test_the_state_fades_toward_neutral_when_nothing_is_heard():
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    rows = _reads(["negative"] * 3, gap_s=600.0, now=now)
+    then = af.estimate(rows=rows, now=now)
+    later = af.estimate(rows=rows, now=now + 6 * 3600.0)
+    assert then.label == "negative" and later.label == "neutral" and abs(later.valence) < abs(then.valence)
+    assert later.var_valence > then.var_valence, "doubt grows back while nothing is heard"
+
+
+def test_arousal_is_read_from_the_voice_only_and_missing_reads_are_simply_not_observed():
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    rows = _reads(["positive"] * 3, now=now, arousal=0.8)
+    rows[1]["arousal"] = None                       # a typed turn: no voice, nothing of arousal
+    state = af.estimate(rows=rows, now=now)
+    assert state.arousal > 0.3 and state.var_arousal < af.FLOOR_PRIOR
+    assert af.estimate(rows=_reads(["positive"] * 3, now=now), now=now).arousal == 0.0
+
+
+def test_the_time_constant_and_the_wander_are_this_users_own():
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    turning = af.estimate(rows=_reads(["negative"] * 4 + ["positive"] * 4 + ["negative"] * 4, gap_s=120.0, now=now), now=now)
+    steady = af.estimate(rows=_reads(["negative"] * 12, gap_s=1800.0, now=now), now=now)
+    assert (turning.tau_minutes, turning.q_scale) != (steady.tau_minutes, steady.q_scale)
+    assert turning.tau_minutes <= steady.tau_minutes and steady.q_scale <= turning.q_scale
+    assert af.identify(af.observations(_reads(["negative"] * 2, now=now))) == \
+        (af.TAU_GRID_MINUTES[len(af.TAU_GRID_MINUTES) // 2], af.Q_GRID[len(af.Q_GRID) // 2]), "too few reads to tell"
+
+
+def test_a_mood_that_turns_after_a_long_calm_is_seen_within_a_few_reads():
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    state = af.estimate(rows=_reads(["neutral"] * 22 + ["negative"] * 3, gap_s=300.0, now=now), now=now)
+    assert state.label == "negative" and state.run_length == 3
+
+
+def test_the_assessment_carries_the_state_and_still_gates_a_checkin():
+    _seed("irritated", 3)
+    out = et.assess(user_id="u1")
+    assert out["state"] == "negative" and out["should_checkin"] and out["run_length"] == 3
+    assert out["affect"]["valence"] < 0 and out["affect"]["reads"] == 3 and 0 < out["confidence"] <= 1
+    assert "±" in out["reason"]

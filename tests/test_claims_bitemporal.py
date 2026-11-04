@@ -233,3 +233,71 @@ def test_how_sure_a_claim_is_follows_what_bore_it_out(conn):
     disputed = conn.execute("SELECT confidence FROM memory_claims WHERE status = 'disputed'").fetchone()[0]
     assert standing["contested"] and disputed < 0.5 < standing["confidence"] < 0.75
     assert "contradicted" in claims.describe(standing)
+
+
+# ── the chance a claim is right (eli/memory/claims.chance, kind "claim" in epistemics) ────────────
+@pytest.fixture()
+def ledger(tmp_path, monkeypatch):
+    from eli.runtime import evidence_ledger as led
+    path = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: path)
+    return path
+
+
+def test_the_chance_is_the_sureness_until_claims_of_that_origin_were_checked(conn, ledger):
+    from eli.cognition import epistemics as ep
+    row = claims.current(conn)[0]
+    assert claims.chance(row).p == pytest.approx(row["confidence"]) and claims.chance(row).n == 0
+    # replies rested on inferred claims that the user kept correcting: an inference's chance comes down
+    for i in range(12):
+        ep.assess(ep.CLAIM, 0.6, request_id=ep.claim_request_id(100 + i, f"turn{i}"), class_="inferred")
+        ep.settle(ep.claim_request_id(100 + i, f"turn{i}"), i % 4 == 0, how="correction", kind=ep.CLAIM)
+    inferred = dict(row, origin="inferred", confidence=0.6)
+    prob = claims.chance(inferred)
+    assert prob.n == 12 and prob.p < 0.6 and prob.class_ == "inferred"
+    said = claims.chance(row)
+    assert said.class_ == "" and said.p > prob.p, "no outcomes of the user's own word yet: fitted on the kind, and still ahead"
+    assert "chance" in claims.basis(inferred) and "12 such claims were checked" in claims.basis(inferred)
+    assert ep.outcomes(ep.ANSWER) == [], "a claim's outcome is never an answer's"
+
+
+def test_a_late_report_of_an_earlier_value_is_as_sure_as_its_source(conn):
+    cid = claims.record(conn, "work_schedule", "evenings", valid_from=_d("2026-03-01"), now=_d("2026-07-01"),
+                        origin="document", confidence=0.99)
+    row = next(r for r in claims.history(conn, "work_schedule") if r["id"] == cid)
+    assert row["status"] == "superseded" and row["confidence"] == claims.sureness("document", 1) != 0.99
+
+
+def test_the_user_settling_a_conflict_settles_the_figures_given_for_both_claims(ledger):
+    from eli.cognition import epistemics as ep
+    c = sqlite3.connect(":memory:")
+    first = claims.record(c, "lives_in", "Berlin", origin="user_said")
+    second = claims.record(c, "lives_in", "Lisbon", origin="document")       # disputed: the user's word stands
+    ep.assess(ep.CLAIM, 0.6, request_id=ep.claim_request_id(first, "t1"), class_="user_said")
+    ep.assess(ep.CLAIM, 0.4, request_id=ep.claim_request_id(second, "t1"), class_="document")
+    claims.resolve_conflict(c, "lives_in", "Lisbon")
+    outcomes = {rid: y for rid, y in ((p[0]["request_id"], p[1]["outcome"]) for p in
+                                      ep._ledger().assessment_pairs("claim", since=0, assessed_type="claim_assessed",
+                                                                    outcome_type="claim_outcome"))}
+    assert outcomes[ep.claim_request_id(second, "t1")] == "ok" and outcomes[ep.claim_request_id(first, "t1")] == "failed"
+
+
+def test_a_claim_reaches_the_evidence_scored_by_its_chance_and_assessed_for_the_turn(mem, ledger):
+    from eli.cognition import epistemics as ep
+    from eli.kernel.request_context import request_id_var, turn_facts_var
+    mem.store_memory("I work nights now, the warehouse changed my shift", source="user")
+    t1 = request_id_var.set("turn-9")
+    t2 = turn_facts_var.set({"request_id": "turn-9"})
+    try:
+        from eli.memory.retrieval import _claim_hits
+        hits = _claim_hits(mem, "what shift do i work", None)
+        facts = turn_facts_var.get()
+    finally:
+        request_id_var.reset(t1)
+        turn_facts_var.reset(t2)
+    assert hits and hits[0]["kind"] == "claim" and hits[0]["verification_status"] == "verified"
+    assert hits[0]["score"] == hits[0]["chance"] == pytest.approx(claims.sureness("user_said", 1))
+    used = facts["claims_used"]
+    assert len(used) == 1 and next(iter(used.values()))["request_id"].endswith(":turn-9")
+    assert len(ep._ledger().open_assessments("claim", assessed_type="claim_assessed", outcome_type="claim_outcome",
+                                             subject_prefix="claim:")) == 1

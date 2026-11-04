@@ -438,6 +438,40 @@ def _load_agent_metrics_cached() -> Dict[tuple, Dict[str, float]]:
     return rows
 
 
+_outcome_cache: Dict[str, Any] = {"loaded_at": 0.0, "rows": []}
+
+
+def _outcome_factor(agent: str) -> Optional[float]:
+    """How often the replies this agent contributed to proved right, against replies as a whole
+    (eli/cognition/epistemics: each settled reply names the agents behind it), as a factor on its
+    share: the agent's rate shrunk toward the whole's by as many pseudo-replies as the calibration
+    needs runs, over the whole's rate, within the factor's bounds. None until a reply with this
+    agent behind it was settled, when the rolling factor stands instead."""
+    name = str(agent or "")
+    if not name:
+        return None
+    now = time.time()
+    if now - float(_outcome_cache.get("loaded_at", 0.0)) >= _METRICS_CACHE_TTL_S:
+        try:
+            from eli.cognition.epistemics import ANSWER, outcomes
+            _outcome_cache["rows"] = list(outcomes(ANSWER))
+        except (OSError, ValueError, ImportError) as failure:
+            log.debug("reply outcomes unavailable for the agent factor: %s", failure)
+            _outcome_cache["rows"] = []
+        _outcome_cache["loaded_at"] = now
+    rows = _outcome_cache.get("rows") or []
+    if not rows:
+        return None
+    mine = [y for _s, y, f in rows if name in (f.get("agent_names") or [])]
+    if not mine:
+        return None
+    whole = sum(y for _s, y, _f in rows) / len(rows)
+    if whole <= 0.0:
+        return None
+    rate = (sum(mine) + whole * _CALIBRATION_MIN_RUNS) / (len(mine) + _CALIBRATION_MIN_RUNS)
+    return max(0.5, min(1.5, rate / whole))
+
+
 def _calibration_factor(
     agent: str,
     action: str,
@@ -1790,7 +1824,11 @@ def _aggregate_confidence(
         if density <= 0.0:
             continue
 
-        cal = _calibration_factor(r.agent, intent_action, calibration_rows)
+        # what became of the replies this agent contributed to, when any were settled; until then,
+        # the rolling self-consistency factor
+        cal = _outcome_factor(r.agent)
+        if cal is None:
+            cal = _calibration_factor(r.agent, intent_action, calibration_rows)
 
         stage_score = _stage_score_for_result(r)
         if stage_score is not None and stage_score > 0.0:

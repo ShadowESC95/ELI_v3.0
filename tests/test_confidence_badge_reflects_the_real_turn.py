@@ -111,3 +111,43 @@ def test_the_badge_carries_the_chance_the_reply_is_right_and_the_next_turn_settl
     eng._publish_last_response_meta({"request_id": "req-2"}, action="OPEN_APP", result_action="OPEN_APP",
                                     confidence=0.9, response="opened")
     assert eng._last_request_meta["probability"] is None, "an action's chance of working is the ledger's own"
+
+
+def test_a_reply_is_no_surer_than_the_claims_it_rests_on_and_they_are_settled_with_it(tmp_path, monkeypatch):
+    """The claims about the user a reply used go into its assessment as features (how many, the least
+    and the mean chance), and the next turn settles them: an endorsement settles them all right; a
+    correction settles wrong only the claim its words speak of."""
+    import pytest
+    from eli.cognition import epistemics as ep
+    from eli.kernel.request_context import turn_facts_var
+    from eli.runtime import evidence_ledger as led
+    ledger = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: ledger)
+    eng = CognitiveEngine()
+    used = {"7": {"p": 0.75, "relation": "work_schedule", "value": "nights", "request_id": ep.claim_request_id(7, "req-c")},
+            "8": {"p": 0.6, "relation": "lives_in", "value": "Berlin", "request_id": ep.claim_request_id(8, "req-c")}}
+    for v in used.values():
+        ep.assess(ep.CLAIM, v["p"], request_id=v["request_id"], class_="user_said")
+    seen = {}
+    real_assess = ep.assess
+
+    def spy(kind, score, **kw):
+        if kind == ep.ANSWER:
+            seen["features"] = dict(kw.get("features") or {})
+        return real_assess(kind, score, **kw)
+
+    monkeypatch.setattr(ep, "assess", spy)
+    token = turn_facts_var.set({"request_id": "req-c", "claims_used": used})
+    try:
+        eng._publish_last_response_meta({"request_id": "req-c"}, action="CHAT", result_action="CHAT",
+                                        confidence=0.8, response="you work nights and live in Berlin")
+    finally:
+        turn_facts_var.reset(token)
+    f = seen["features"]
+    assert f["claims_used"] == 2 and f["claims_min_p"] == pytest.approx(0.6) and f["claims_mean_p"] == pytest.approx(0.675)
+    assert [c["id"] for c in eng._pending_claims] == ["7", "8"]
+    eng._settle_recall_outcome("no, I live in Lisbon now", "user")       # a correction about one claim
+    pairs = ep._ledger().assessment_pairs("claim", since=0, assessed_type="claim_assessed", outcome_type="claim_outcome")
+    settled = {p[0]["request_id"]: p[1]["outcome"] for p in pairs}
+    assert settled == {ep.claim_request_id(8, "req-c"): "failed"}, "the schedule claim is left open"
+    assert eng._pending_claims is None

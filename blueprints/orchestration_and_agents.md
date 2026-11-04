@@ -195,7 +195,7 @@ Execution (`AgentBus.dispatch`):
 - **Per-agent hard timeout**: a timeout or exception becomes a failed `AgentResult` and never
   blocks the response.
 - **Aggregation** (`_aggregate_confidence`): per-agent contribution = evidence quality ×
-  evidence density × a calibration learned per (agent, action) × relevance (2026-09-30, ported
+  evidence density × a calibration learned per (agent, action), which since 2026-11-04 is what became of the replies the agent was behind once any were settled (eli/cognition/epistemics), the rolling self-consistency factor until then × relevance (2026-09-30, ported
   from v2: `term_overlap(user_input, representative_text) → relevance_gate()`, gated on ≥40
   chars of text; a fluent, evidence-dense result that's off-topic for what was actually asked
   no longer scores as highly as one that's on-topic — env `ELI_AGENT_BUS_RELEVANCE_GATE` to

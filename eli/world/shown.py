@@ -100,7 +100,7 @@ def _goals() -> List[Dict[str, Any]]:
 
 
 def _claims() -> List[Dict[str, Any]]:
-    from eli.memory.claims import describe
+    from eli.memory.claims import chance, describe
     from eli.memory.memory import get_memory
     from eli.world.building import MAX_PER_ROOM
     rows = [r for r in get_memory().claims_current() or [] if isinstance(r, dict) and str(r.get("value", "")).strip()]
@@ -109,7 +109,11 @@ def _claims() -> List[Dict[str, Any]]:
     for row in rows[:MAX_PER_ROOM]:
         key = f"claim_{row.get('id')}"
         contested = bool(row.get("contested"))
-        sure = max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
+        # the chance the claim is right (its sureness calibrated on what became of such claims), on the sheet
+        try:
+            sure = max(0.0, min(1.0, float(chance(row).p)))
+        except (OSError, ValueError, ImportError):
+            sure = max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
         out.append({
             "id": key, "name": f"{str(row.get('relation', '')).replace('_', ' ')}: {row.get('value')}"[:48],
             "kind": "claim", "room": "evidence_wall", "x": 0.0, "y": 0.0, "importance": sure,

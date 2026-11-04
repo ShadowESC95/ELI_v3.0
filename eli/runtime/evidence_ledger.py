@@ -758,6 +758,23 @@ def assessment_pairs(kind: str, *, since: float, assessed_type: str = "answer_as
              {"outcome": r[3], "payload": _payload(r[4])}) for r in rows]
 
 
+def open_assessments(kind: str, *, assessed_type: str, outcome_type: str, subject_prefix: str,
+                     since: Optional[float] = None, db_path: Optional[str | Path] = None) -> List[str]:
+    """The request ids of figures of this kind whose id starts with `subject_prefix` and that no
+    outcome has settled (for eli/cognition/epistemics.settle_open)."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT a.request_id FROM runtime_events a WHERE a.event_type = ? AND a.action = ? "
+            "AND a.request_id LIKE ? AND COALESCE(a.ts, a.timestamp, 0) >= ? AND NOT EXISTS ("
+            "SELECT 1 FROM runtime_events o WHERE o.request_id = a.request_id AND o.event_type = ? AND o.action = a.action)",
+            (assessed_type, str(kind or "").upper(), str(subject_prefix or "") + "%",
+             float(since if since is not None else 0.0), outcome_type)).fetchall()
+    finally:
+        conn.close()
+    return [str(r[0]) for r in rows if r[0]]
+
+
 def calibration_report(*, days: float = 90.0, db_path: Optional[str | Path] = None) -> Dict[str, Any]:
     """How good the success predictions were: Brier score and predicted-versus-observed by band."""
     since = time.time() - float(days) * 86400.0

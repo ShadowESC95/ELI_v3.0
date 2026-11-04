@@ -45,6 +45,9 @@ log = get_logger(__name__)
 ANSWER = "answer"                 # a reply to the user: right unless the user says otherwise
 ASSESSED = "answer_assessed"      # ledger event: a figure was given
 OUTCOME = "answer_outcome"        # ledger event: what the next turn said of it
+CLAIM = "claim"                   # a claim about the user that a reply rested on (eli/memory/claims.py)
+# each kind's pair of ledger events: the figure given, and what became of it
+EVENTS = {ANSWER: (ASSESSED, OUTCOME), CLAIM: ("claim_assessed", "claim_outcome")}
 DAYS = 90.0                       # how far back outcomes count toward a calibration
 # A score of exactly 0 or 1 has no finite logit; it is read as a thousandth short of the edge.
 EDGE = 1e-3
@@ -214,7 +217,9 @@ def outcomes(kind: str = ANSWER, *, class_: str = "", days: float = DAYS,
              db_path=None) -> List[Tuple[float, float, Dict[str, Any]]]:
     """(score, outcome, features) for every figure of this kind (and class, when given) that the
     next turn settled within `days`."""
-    rows = _ledger().assessment_pairs(kind, since=time.time() - float(days) * 86400.0, db_path=db_path)
+    assessed_type, outcome_type = EVENTS.get(kind, (ASSESSED, OUTCOME))
+    rows = _ledger().assessment_pairs(kind, since=time.time() - float(days) * 86400.0, assessed_type=assessed_type,
+                                      outcome_type=outcome_type, db_path=db_path)
     out = []
     for assessed, outcome in rows:
         payload = assessed.get("payload") or {}
@@ -255,7 +260,7 @@ def assess(kind: str, score: float, *, request_id: str, features: Optional[Dict[
     if request_id:
         try:
             _ledger().record_event(
-                ASSESSED, source="epistemics", action=kind.upper(), subject=str(request_id),
+                EVENTS.get(kind, (ASSESSED, OUTCOME))[0], source="epistemics", action=kind.upper(), subject=str(request_id),
                 payload={"kind": kind, "class": class_, "score": round(float(score), 4), "p": round(prob.p, 4),
                          "n": prob.n, "features": dict(features or {})},
                 confidence=prob.p, reusable=False, request_id=str(request_id),
@@ -271,13 +276,31 @@ def settle(request_id: str, right: bool, *, how: str = "", kind: str = ANSWER, d
         return False
     try:
         _ledger().record_event(
-            OUTCOME, source="epistemics", action=kind.upper(), subject=str(request_id),
+            EVENTS.get(kind, (ASSESSED, OUTCOME))[1], source="epistemics", action=kind.upper(), subject=str(request_id),
             payload={"kind": kind, "how": how}, outcome="ok" if right else "failed",
             reusable=False, request_id=str(request_id), db_path=db_path)
         return True
     except Exception as failure:   # noqa: BLE001 - a ledger that cannot be written leaves the outcome unrecorded
         log.warning("an answer's outcome was not recorded: %s", failure)
         return False
+
+
+def claim_request_id(claim_id: Any, request_id: str) -> str:
+    """The id under which a claim's figure is kept for one turn: the claim's and the turn's."""
+    return f"claim:{int(claim_id)}:{request_id}"
+
+
+def settle_open(kind: str, subject_prefix: str, right: bool, *, how: str = "", db_path=None) -> int:
+    """Settle every figure of this kind whose id starts with `subject_prefix` that nothing has
+    settled yet (a claim's, when the user settles the claim itself). How many were settled."""
+    assessed_type, outcome_type = EVENTS.get(kind, (ASSESSED, OUTCOME))
+    try:
+        open_ids = _ledger().open_assessments(kind, assessed_type=assessed_type, outcome_type=outcome_type,
+                                              subject_prefix=subject_prefix, db_path=db_path)
+    except (OSError, ValueError, AttributeError) as failure:
+        log.debug("open figures unreadable: %s", failure)
+        return 0
+    return sum(1 for rid in open_ids if settle(rid, right, how=how, kind=kind, db_path=db_path))
 
 
 def report(kind: str = ANSWER, *, days: float = DAYS, db_path=None) -> Dict[str, Any]:
@@ -292,6 +315,6 @@ def report(kind: str = ANSWER, *, days: float = DAYS, db_path=None) -> Dict[str,
             "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + FEATURES, weights))}
 
 
-__all__ = ["ANSWER", "ASSESSED", "FEATURES", "OUTCOME", "Probability", "apply", "apply_rows", "assess", "brier",
-           "calibrate", "ece", "entropy", "fit", "fit_rows", "logit", "outcomes", "reliability", "report", "settle",
-           "sigmoid"]
+__all__ = ["ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "OUTCOME", "Probability", "apply", "apply_rows",
+           "assess", "brier", "calibrate", "claim_request_id", "ece", "entropy", "fit", "fit_rows", "logit", "outcomes",
+           "reliability", "report", "settle", "settle_open", "sigmoid"]

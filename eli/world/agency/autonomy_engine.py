@@ -368,6 +368,15 @@ class EliWorldAutonomyEngine:
             detected = str(event.payload.get("detected") or "neutral").lower()
             expressed = str(event.payload.get("expressed") or "neutral").lower()
             conf = float(event.payload.get("confidence") or 0.0)
+            # the state behind the reads (eli/cognition/affect_state) is the measure once it stands;
+            # a single read is a spike until the filter says otherwise
+            try:
+                from eli.cognition.affect_state import estimate as _affect
+                _state = _affect(str(event.payload.get("user_id") or ""))
+                if _state.label in ("negative", "positive"):
+                    conf = max(conf, float(_state.confidence))
+            except (ImportError, OSError, ValueError) as failure:
+                log.debug("affect state unavailable to the world: %s", failure)
             expr = str(event.payload.get("expression") or "")
             if expr:
                 state.avatar.expression = expr

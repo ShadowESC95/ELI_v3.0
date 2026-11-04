@@ -112,6 +112,41 @@ def _archive_hits(mem: Any, query: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _claim_evidence(c: Dict[str, Any]) -> Dict[str, Any]:
+    """A claim as a piece of evidence: scored by the chance it is right (its sureness calibrated on
+    what became of such claims, eli/memory/claims.chance), marked disputed when it is, and assessed
+    for this turn under the turn's request id, so the next turn can settle it (the engine settles
+    the claims a reply rested on with the reply)."""
+    from eli.memory import claims as _claims
+    text = _claims.describe(c)
+    disputed = bool(c.get("contested") or c.get("status") == "disputed")
+    p = float(c.get("confidence") or 0.0)
+    try:
+        p = float(_claims.chance(c).p)
+    except (OSError, ValueError, ImportError) as failure:
+        log.debug("claim chance unavailable: %s", failure)
+    try:
+        from eli.cognition.epistemics import CLAIM, assess, claim_request_id
+        from eli.kernel.request_context import request_id_var, turn_facts_var
+        rid = str(request_id_var.get() or "")
+        facts = turn_facts_var.get()
+        if rid and facts is not None:
+            used = facts.setdefault("claims_used", {})
+            if str(c["id"]) not in used:
+                assess(CLAIM, float(c.get("confidence") or 0.0), request_id=claim_request_id(c["id"], rid),
+                       class_=str(c.get("origin") or ""),
+                       features={"confirmations": int(c.get("confirmations") or 1), "contested": disputed})
+                used[str(c["id"])] = {"p": round(p, 4), "relation": str(c.get("relation") or ""),
+                                      "value": str(c.get("value") or ""), "request_id": claim_request_id(c["id"], rid)}
+    except (OSError, ValueError, ImportError, LookupError) as failure:
+        log.debug("claim not assessed for the turn: %s", failure)
+    return {"id": f"claim:{c['id']}", "text": text, "content": text,
+            "source": "claims", "kind": "claim", "score": p, "importance": p, "chance": p,
+            "timestamp": c["recorded_at"], "event_ts": c["valid_from"] or c["recorded_at"],
+            "origin": str(c.get("origin") or "user_said"),
+            "verification_status": "disputed" if disputed else "verified"}
+
+
 def _claim_hits(mem: Any, query: str, window: Optional[tuple]) -> List[Dict[str, Any]]:
     """Dated claims as evidence: what held during the period asked about, else the standing claims the question touches."""
     try:
@@ -134,10 +169,7 @@ def _claim_hits(mem: Any, query: str, window: Optional[tuple]) -> List[Dict[str,
 
             rows = [c for c in (mem.claims_current() + mem.claims_disputed()) if broad or _fit(c)]
             rows.sort(key=lambda c: (_fit(c), float(c.get("valid_from") or c.get("recorded_at") or 0)), reverse=True)
-        return [{"id": f"claim:{c['id']}", "text": _claims.describe(c), "content": _claims.describe(c),
-                 "source": "claims", "kind": "claim", "score": 0.9, "importance": 0.8,
-                 "timestamp": c["recorded_at"], "event_ts": c["valid_from"] or c["recorded_at"],
-                 "origin": "user_said", "verification_status": "verified"} for c in rows[:8]]
+        return [_claim_evidence(c) for c in rows[:8]]
     except Exception:
         log.debug("claim evidence unavailable", exc_info=True)
         return []

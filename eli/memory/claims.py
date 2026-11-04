@@ -12,6 +12,10 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_claims (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +140,7 @@ def record(conn, relation: str, value: str, *, subject: str = "user", single_val
             "superseded_at, status, source_memory_id, source_text, origin, confidence, last_confirmed, source_roots) "
             "VALUES (?,?,?,1,?,?,?,?,'superseded',?,?,?,?,?,?)",
             (subject, relation, value, vfrom, standing_from, now, now, source_memory_id, str(source_text or "")[:400],
-             origin, float(confidence), now, json.dumps([root] if root is not None else [])))
+             origin, sureness(origin, 1), now, json.dumps([root] if root is not None else [])))
         return int(cursor.lastrowid)
     if (not historical and single_valued and cur and relation not in CHANGES_OFTEN and origin != "user_said"
             and any(o == "user_said" for _c, _v, o, _r, _f in cur)):
@@ -255,10 +259,37 @@ def resolve_conflict(conn, relation: str, value: str, subject: str = "user", now
             n = max(len(json.loads(roots_json or "[]")), 1) + 1
             conn.execute("UPDATE memory_claims SET status = 'current', contested = 0, confidence = ?, origin = 'user_said', "
                          "confirmations = ? WHERE id = ?", (sureness("user_said", n), n, cid))
+            _settle_figures(cid, True)
         else:
             conn.execute("UPDATE memory_claims SET status = 'superseded', valid_to = ?, superseded_at = ?, contested = 0 WHERE id = ?", (now, now, cid))
+            _settle_figures(cid, False)
             n += 1
     return n
+
+
+def _settle_figures(claim_id: int, right: bool) -> int:
+    """The user settled the claim itself: every figure given for it that a reply rested on, and that
+    nothing settled yet, is settled with it (eli/cognition/epistemics, kind "claim")."""
+    try:
+        from eli.cognition.epistemics import CLAIM, settle_open
+        return settle_open(CLAIM, f"claim:{int(claim_id)}:", right, how="conflict_resolved")
+    except (OSError, ValueError, ImportError) as failure:
+        log.debug("claim figures not settled: %s", failure)
+        return 0
+
+
+def chance(claim: Dict[str, Any]):
+    """The chance the claim is right: its sureness calibrated on what became of claims of its
+    origin that replies rested on (eli/cognition/epistemics, kind "claim"); the sureness itself
+    until outcomes say otherwise. A Probability, with `n` the outcomes behind it."""
+    from eli.cognition.epistemics import CLAIM, calibrate
+    try:
+        sure = float(claim.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        sure = 0.0
+    return calibrate(CLAIM, sure, class_=str(claim.get("origin") or ""),
+                     features={"confirmations": int(claim.get("confirmations") or 1),
+                               "contested": bool(claim.get("contested") or claim.get("status") == "disputed")})
 
 
 def describe(claim: Dict[str, Any]) -> str:
@@ -285,7 +316,14 @@ def basis(claim: Dict[str, Any]) -> str:
     how = _ORIGIN_WORDS.get(str(claim.get("origin") or ""), "ELI's inference")
     times = {1: "once", 2: "twice"}.get(n, f"{n} times")
     against = ", contradicted" if claim.get("contested") or claim.get("status") == "disputed" else ""
-    return f"sure {sure:.2f}: {how} {times}{against}"
+    checked = ""
+    try:
+        prob = chance(claim)
+        if prob.n:
+            checked = f"; chance {prob.p:.2f} after {prob.n} such claims were checked"
+    except (OSError, ValueError, ImportError) as failure:   # the ledger unreadable: the sureness stands
+        log.debug("claim chance unavailable: %s", failure)
+    return f"sure {sure:.2f}: {how} {times}{against}{checked}"
 
 
 # ── extraction: a small, exact set of first-person statements ──────────────────────────────────────
