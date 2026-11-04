@@ -111,26 +111,22 @@ def _discover_vl_pairs(models_dir):
 
 
 def _candidate_model_dirs():
-    """Every plausible models directory, strongest signal first. The directory
-    holding the resolved text model is the most reliable indicator of where the
-    user actually keeps GGUFs (layouts vary: ./models, models/gguf/base, etc.)."""
+    """Every folder ELI looks in for models (eli/core/model_folders: its own, the folders of the
+    models the settings name, the folders the user named), the text model's folder first: the most
+    reliable sign of where the user keeps GGUFs (layouts vary: ./models, models/gguf/base, etc.)."""
     dirs = []
-    env = os.getenv("ELI_MODELS_DIR")
-    if env:
-        dirs.append(Path(env).expanduser())
     try:
         from eli.core import config as _c
         mp = _c.get_gguf_model_path()
         if mp:
             dirs.append(Path(mp).expanduser().parent)
-        dirs.append(Path(_c.get_model_dir()))
     except Exception:
         pass
     try:
-        from eli.core.paths import project_root
-        dirs.append(Path(project_root()) / "models")
-    except Exception:
-        pass
+        from eli.core.model_folders import model_folders
+        dirs += model_folders()
+    except (ImportError, OSError, ValueError) as failure:   # the folder list is a convenience; discovery goes on
+        log.debug("model folders unavailable to vision discovery: %s", failure)
     dirs.append(Path("models"))
     seen, out = set(), []
     for d in dirs:
@@ -146,6 +142,18 @@ def _candidate_model_dirs():
 
 
 _discovery_cache = None
+
+
+def rescan() -> None:
+    """Forget the pairs found so far: the folders changed, or a model was added."""
+    global _discovery_cache
+    _discovery_cache = None
+
+
+def discovered_pairs():
+    """[(model, projector, model bytes)] for every vision model with a projector beside it, in
+    every model folder, largest first; for a settings page to offer."""
+    return list(_discovered_pairs())
 
 
 def _discovered_pairs():

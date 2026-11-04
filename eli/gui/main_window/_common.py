@@ -395,7 +395,13 @@ def recommend_model_setup(models, sysinfo, ollama_models=None):
 def discover_gguf_models(base_dirs: Optional[List[Path]] = None) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     seen: set[str] = set()
-    base_dirs = base_dirs or [BUNDLED_MODEL_DIR, CUSTOM_MODELS_DIR]
+    if not base_dirs:
+        base_dirs = [BUNDLED_MODEL_DIR, CUSTOM_MODELS_DIR]
+        try:
+            from eli.core.model_folders import model_folders
+            base_dirs += model_folders()          # the folders the settings name and the user named
+        except (ImportError, OSError, ValueError) as failure:   # ELI's own two folders are still scanned
+            log.debug("model folders unavailable to the GUI scanner: %s", failure)
     for base in base_dirs:
         try:
             base = Path(base).expanduser()

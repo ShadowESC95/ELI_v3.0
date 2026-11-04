@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -93,6 +94,12 @@ def discover_local_image_models() -> List[Path]:
         project_root_path / "models",
         Path.home() / "models",
     ]
+    try:
+        from eli.core.model_folders import model_folders
+        for folder in model_folders():          # the folders the settings name and the user named
+            candidate_roots += [folder / "image", folder / "diffusion", folder / "sd", folder]
+    except Exception:   # noqa: BLE001 - the roots above are still scanned
+        logging.getLogger(__name__).debug("model folders unavailable to image discovery", exc_info=True)
     allowed_suffixes = {".safetensors", ".ckpt"}
     discovered: List[Path] = []
     model_dirs: List[Path] = []

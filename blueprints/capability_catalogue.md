@@ -494,6 +494,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `ble_light.py` | 247 | BLE light control — the GATT writes ELI never had. |
 | `bt_platform.py` | 1335 | Cross-platform Bluetooth radio detection, recovery, and classic discovery. |
 | `codebase_graph.py` | 313 | Codebase self-graph — ELI's live, grounded model of how its OWN code connects. |
+| `core/model_folders.py` | 176 | Where ELI looks for models, in one list every scanner reads: its own folders, the folders of the models the settings name, the loaded model's, and the folders the user names; add, remove, remember the folder of a model chosen by file; `chat_models()` across all of them (see `architecture.md` §4). |
 | `command_splitter.py` | 411 | Split one utterance that chains several commands into its parts; read a message as sentences and tell an instruction from a statement or a question. Holds the one list of verbs a command starts with. |
 | `routing/command_parser.py` | 570 | The command language: a sentence read by its form (verb, object, modifiers, a pronoun for what the last command was about) and carried to the action its frame names, with the catalogue's activation phrases as the vocabulary; a strict pass ahead of the rules for atoms, a lenient pass after them for what no rule took (see `architecture.md` §4). |
 | `conversation_thread.py` | 284 | Conversation thread awareness — topic carryover, proactive grounding, web queries. |

@@ -62,6 +62,12 @@ class ImageMixin:
             self.image_model_combo.setEditText(selected)
         if hasattr(self, "image_model_path_input"):
             self.image_model_path_input.setText(selected)
+        try:
+            from eli.core.model_folders import remember_folder_of
+            remember_folder_of(selected)
+        except (ImportError, OSError, ValueError) as e:
+            log.debug(f"[IMAGE] folder not remembered: {e}", exc_info=True)
+        self.refresh_image_model_sources()
 
     def refresh_image_model_sources(self):
         paths = []
@@ -85,6 +91,20 @@ class ImageMixin:
                 else:
                     self.image_model_combo.setEditText(current)
             self.image_model_combo.blockSignals(False)
+
+        if hasattr(self, "image_model_select"):
+            chosen = (self.image_model_path_input.text().strip() if hasattr(self, "image_model_path_input")
+                      else str(self.image_model_select.currentData() or ""))
+            self.image_model_select.blockSignals(True)
+            self.image_model_select.clear()
+            self.image_model_select.addItem("— none (procedural rendering) —", "")
+            for path in paths:
+                self.image_model_select.addItem(Path(path).name or path, path)
+            if chosen and self.image_model_select.findData(chosen) < 0:
+                self.image_model_select.addItem(Path(chosen).name or chosen, chosen)
+            idx = self.image_model_select.findData(chosen) if chosen else 0
+            self.image_model_select.setCurrentIndex(idx if idx >= 0 else 0)
+            self.image_model_select.blockSignals(False)
 
         if hasattr(self, "image_backend_note"):
             if paths:

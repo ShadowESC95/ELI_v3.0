@@ -658,9 +658,11 @@ the mic works. Plain HTTP stays the primary path (it's what QR scanners open rel
 runs *in addition*, purely for voice.
 
 ### Switching the model from the dashboard
-**Settings → Model** lists every model installed on your computer, with sizes. Pick one and ELI
+**Settings → Model** lists every chat model in your model folders, with sizes. Pick one and ELI
 **hot-swaps** it live — no restart. Only real, installed files show up, so you can't point it at
-something that won't load, and only an **admin** can switch it.
+something that won't load, and only an **admin** can switch it. The dashboard's Voice, Vision and
+Image groups also take the speech-to-text model, the vision model and projector, and the image
+model, and the Model group takes extra **model folders** (separated as PATH is).
 
 ### Two servers, one machine
 Worth knowing: "the server" is really **two** local services. The **web/API server** (port 8081)
@@ -767,8 +769,27 @@ You're not limited to one — download several and switch between them anytime (
 You can also just **drop any `.gguf` file** into the `models/` folder and ELI finds it.
 
 ### Switching models
-In **Settings → Model** (or "Model menu / Auto Detect"), pick the file. ELI sizes it to your
-hardware automatically — you don't tune anything.
+**Settings → Models** is the one place for every model ELI uses:
+
+- **Text** (what ELI thinks with): the Backend picker as before, and under *Custom GGUF* a
+  **Found** list of every chat model in your model folders — pick one and the path fills in.
+  **Browse…** still takes a file from anywhere, and the folder you took it from is remembered, so
+  the models beside it are offered next time. ELI sizes the model to your hardware automatically.
+- **Vision** (describing images and the screen): the vision model and the projector beside it,
+  chosen as one pair, and a smaller pair for quick glances. *Auto* takes the largest and the
+  smallest pair found. **Browse model…** takes a GGUF and finds its mmproj file beside it.
+- **Image generation**: the diffusion model folder or checkpoint, from what was detected or by
+  **Browse…**. The same choice shows in Image Studio.
+- **Voice**: the voice ELI speaks with, applied at once, with **Test** and the voice library
+  (**More voices / accents…**). To make a voice from a recording, use the Runtime page.
+- **Speech to text**: the faster-whisper model. The list marks which are already on this
+  computer; another downloads on first use. It takes effect at the next transcription.
+- **Model folders**: every folder ELI scans — its own, the folders of the models in use, and
+  the ones you add with **Add folder…**. Every list above reads this one list, so a folder added
+  once is seen by all of them. (`ELI_MODEL_DIRS` in the environment names folders too.)
+- **Memory embedder**: shown, not changed here; memory's index is built for it.
+
+Everything but the voice is saved with the **Save** button at the foot of the page.
 
 ### Using Ollama instead (Windows, macOS, Linux)
 🟡 If you already run **Ollama**, ELI can use your Ollama models instead of a GGUF file —
@@ -777,7 +798,7 @@ handy when you've curated models there, or want ELI to share one Ollama install.
 1. Install and start Ollama (`https://ollama.com/download`). On Windows and macOS it starts
    itself; on Linux use `systemctl --user start ollama` (or `ollama serve`).
 2. Pull at least one model, e.g. `ollama pull llama3.2`.
-3. In ELI: **Settings → Model → Backend = Ollama**, then **Refresh Ollama Models** and pick one.
+3. In ELI: **Settings → Models → Backend = Ollama**, then **Refresh Ollama Models** and pick one.
    It's also in the startup model picker and the toolbar dropdown.
 
 **Host and port.** Leave *Host* blank/default for a normal local install. Set it if Ollama runs

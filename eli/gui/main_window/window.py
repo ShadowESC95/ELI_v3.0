@@ -934,7 +934,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
     ]
 
     _SETTINGS_NAV = [
-        ("Model",       "🧠"),
+        ("Models",      "🧠"),
         ("Runtime",     "⚡"),
         ("Generation",  "✨"),
         ("Reasoning",   "🧩"),

@@ -1,6 +1,7 @@
 """Voice asset readiness — catches false positives from OS/espeak voices."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,3 +44,39 @@ def test_whisper_cache_ready_resolves_relative_to_project_root(monkeypatch, tmp_
     model, model_dir, *_ = stt._model_settings()
     assert Path(model_dir).is_absolute()
     assert str(root) in model_dir
+
+
+# ── the speech model is chosen in the settings, listed with what is on this computer ───────────
+def test_the_speech_model_comes_from_the_settings_unless_the_environment_says(monkeypatch, tmp_path):
+    import json
+    from eli.perception import local_whisper_stt as stt
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(settings_file))
+    monkeypatch.delenv("ELI_WHISPER_MODEL", raising=False)
+    monkeypatch.setenv("ELI_WHISPER_MODEL_DIR", str(tmp_path))
+    monkeypatch.setattr(stt, "_gpu_room_for_whisper", lambda *a, **k: False, raising=False)
+    settings_file.write_text(json.dumps({"stt_model": "medium.en"}))
+    assert stt._model_settings()[0] == "medium.en"
+    settings_file.write_text(json.dumps({}))
+    assert stt._model_settings()[0] == "small.en", "ELI's default when nothing is chosen"
+    monkeypatch.setenv("ELI_WHISPER_MODEL", "tiny.en")
+    settings_file.write_text(json.dumps({"stt_model": "medium.en"}))
+    assert stt._model_settings()[0] == "tiny.en", "the environment wins"
+    # reading the setting leaves the launcher's root alone (the loader would drop one outside this install)
+    monkeypatch.setenv("ELI_PROJECT_ROOT", str(tmp_path / "elsewhere"))
+    stt._setting("stt_model")
+    assert os.environ.get("ELI_PROJECT_ROOT") == str(tmp_path / "elsewhere")
+
+
+def test_the_speech_models_offered_are_the_library_s_with_what_is_on_disk_marked(monkeypatch, tmp_path):
+    from eli.perception import local_whisper_stt as stt
+    snap = tmp_path / "models--Systran--faster-whisper-small.en" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    (snap / "model.bin").write_bytes(b"x" * 2048)
+    own = tmp_path / "my-finetune"
+    own.mkdir()
+    (own / "model.bin").write_bytes(b"x")
+    offered = {m["name"]: m["on_disk"] for m in stt.available_models(str(tmp_path))}
+    assert offered.get("small.en") is True
+    assert "medium.en" in offered and offered["medium.en"] is False
+    assert offered.get("my-finetune") is False or "my-finetune" in offered

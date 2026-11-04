@@ -133,6 +133,17 @@ RESPONSE_DELIVERY, S12 LEARNING_STATE_UPDATE. Enable tracing with `ELI_PIPELINE_
   command-language parser's strict pass, the rules (word patterns, inline and in
   `routing/intents/`), the parser's lenient pass, and the chat fallback; beyond it, the engine's
   grammar-held intent model (`cognition/llm_intent.py`).
+- **`core/model_folders.py`**: where ELI looks for models, in one place. Every kind of model
+  (chat, the vision pair, the image checkpoint, the speech model) was found by its own scanner
+  over its own folder list. Now one list — ELI's own folders, the folders of the models the
+  settings name, the folder of the model loaded now, and the folders the user names (the
+  `model_dirs` setting, `ELI_MODEL_DIRS`) — is read by the VR mind panel (`world/mind`), vision
+  discovery (`perception/vision`), the GUI scanner (`gui/main_window/_common`), the API's model
+  list (`/v1/models/installed`) and image-model discovery (`tools/image_engine`); the Settings
+  tab's **Models** page lists it and adds to it, and a model chosen by file from a folder nothing
+  knew makes that folder known. The speech model is a setting too (`stt_model`, read from the
+  settings file; `ELI_WHISPER_MODEL` in the environment still wins), listed from faster-whisper's
+  own model names with what is already on disk marked.
 - **`routing/command_parser.py`**: the command language. A sentence is read by its form (what
   stands in front of it, its verb, its object, its modifiers by preposition) before any pattern
   sees its words. The frames (`FRAMES`) say which verb with which kind of object is which action

@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 import threading
@@ -18,6 +19,50 @@ _CUDA_FAILED = False  # set permanently once CUDA OOM occurs; prevents re-escala
 
 def _env(name, default):
     return (os.environ.get(name, default) or default).strip()
+
+
+# The speech model is chosen in ELI's settings (the Models page, the dashboard); the environment
+# still wins, for a shell that sets it.
+STT_MODEL_SETTING = "stt_model"
+
+
+def _setting(key: str) -> str:
+    """One saved setting, read from the settings file itself. The settings loader also tidies the
+    process environment (it drops an ELI_PROJECT_ROOT that points outside this install), and the
+    whisper folder is anchored to that root as the launcher set it; reading the file leaves it be."""
+    try:
+        import json
+        from eli.core.runtime_settings import _settings_file
+        path = _settings_file()
+        if not path.is_file():
+            return ""
+        return str((json.loads(path.read_text(encoding="utf-8")) or {}).get(key) or "").strip()
+    except (ImportError, OSError, ValueError, TypeError, AttributeError) as failure:   # no settings: the default model
+        logging.getLogger(__name__).debug("settings unreadable for the speech model: %s", failure)
+        return ""
+
+
+def available_models(model_dir: Optional[str] = None) -> list:
+    """The speech models ELI can use, as [{"name", "on_disk"}]: every name faster-whisper knows
+    (its own list, not one kept here), and any model folder found under the whisper directory;
+    `on_disk` says whether the weights are already on this computer (the others download on
+    first use)."""
+    root = Path(_resolve_model_dir(model_dir or _env("ELI_WHISPER_MODEL_DIR", "models/whisper")))
+    names: list = []
+    try:
+        from faster_whisper.utils import _MODELS as known
+        names += list(known)
+    except Exception as failure:   # noqa: BLE001 - without the library, only what is on disk
+        logging.getLogger(__name__).debug("faster-whisper's model list unavailable: %s", failure)
+    if root.is_dir():
+        for hub in sorted(root.glob("models--Systran--faster-whisper-*")):
+            name = hub.name[len("models--Systran--faster-whisper-"):].replace("--", "/")
+            if name and name not in names:
+                names.append(name)
+        for folder in sorted(root.iterdir()):
+            if folder.is_dir() and (folder / "model.bin").is_file() and folder.name not in names:
+                names.append(folder.name)
+    return [{"name": n, "on_disk": _whisper_weights_mb(n, str(root)) > 0} for n in names]
 
 
 def _whisper_hub_dir(model: str) -> str:
@@ -122,7 +167,7 @@ def whisper_cache_ready(
     model: Optional[str] = None,
 ) -> bool:
     """True when the whisper weights are already on disk (no HF download needed)."""
-    model = model or _env("ELI_WHISPER_MODEL", "small.en")
+    model = model or _env("ELI_WHISPER_MODEL", _setting(STT_MODEL_SETTING) or "small.en")
     root = Path(_resolve_model_dir(model_dir or _env("ELI_WHISPER_MODEL_DIR", "models/whisper")))
     direct = root / model
     if direct.exists():
@@ -146,7 +191,7 @@ def resident_footprint_gib() -> float:
     load order. 0.0 if the cache isn't there yet (nothing to reserve for).
     """
     try:
-        model = _env("ELI_WHISPER_MODEL", "small.en")
+        model = _env("ELI_WHISPER_MODEL", _setting(STT_MODEL_SETTING) or "small.en")
         root = Path(_resolve_model_dir(_env("ELI_WHISPER_MODEL_DIR", "models/whisper")))
         from eli.core.mem_units import dir_size_gib
         direct = root / model
@@ -206,7 +251,7 @@ def _model_settings():
     # follows model size, so small.en is the floor. To still recover VRAM for the 7B's GPU layers,
     # keep STT on GPU in int8_float16 rather than a smaller model. ELI_WHISPER_MODEL overrides
     # (base.en/tiny.en faster, medium.en more accurate).
-    model = _env("ELI_WHISPER_MODEL", "small.en")
+    model = _env("ELI_WHISPER_MODEL", _setting(STT_MODEL_SETTING) or "small.en")
     model_dir = _resolve_model_dir(_env("ELI_WHISPER_MODEL_DIR", "models/whisper"))
     # Prefer GPU for speed, get_model() falls back to CPU if CUDA fails. ELI_WHISPER_DEVICE=cpu
     # forces CPU. int8_float16 on GPU: about half the VRAM of float16 at equal WER.
@@ -330,7 +375,7 @@ def preload_model() -> bool:
     second of silence: its working buffers are allocated on the first transcription, and the plan
     keeps only what llama.cpp itself was measured to need free. True when it is on CUDA."""
     try:
-        model = _env("ELI_WHISPER_MODEL", "small.en")
+        model = _env("ELI_WHISPER_MODEL", _setting(STT_MODEL_SETTING) or "small.en")
         _card = _whisper_card() if _MODEL is None else None
         _free_before_load = (_card or {}).get("free_mb")
         get_model()

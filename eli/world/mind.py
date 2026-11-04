@@ -33,72 +33,12 @@ class MindError(RuntimeError):
         self.detail = detail or kind
 
 
-def _named_folders() -> List[Path]:
-    """Folders the user has pointed ELI at: where the models its settings name are kept (a person
-    who keeps their models together is offered all of them once one is chosen), and the folders
-    named outright in ELI_MODEL_DIRS or the `model_dirs` setting (separated as PATH is)."""
-    out: List[Path] = []
-    try:
-        from eli.core.runtime_settings import load_settings
-        settings = load_settings() or {}
-    except Exception:
-        settings = {}
-    for key in ("model_path", "custom_model_path", "gguf_model_path"):
-        value = str(settings.get(key) or "").strip()
-        if value:
-            try:
-                out.append(Path(value).expanduser().resolve().parent)
-            except OSError:
-                continue
-    named = os.environ.get("ELI_MODEL_DIRS") or str(settings.get("model_dirs") or "")
-    for raw in str(named).split(os.pathsep):
-        if raw.strip():
-            out.append(Path(raw.strip()).expanduser())
-    return [p for p in out if p.is_dir()]
-
-
 def _found() -> Dict[str, Path]:
-    """Every chat model ELI can see, by the name it is shown under. Two files
-    with one name are told apart by the folder they are in."""
-    from eli.core.hardware_profile import discover_models
-
-    # where ELI keeps models: beside the code, where the user said, and in ELI's data; then the
-    # folders of the models the user has chosen before, and any they named (ELI VR showed one
-    # model to choose from while the user's others sat in another folder)
-    folders: List[Optional[Path]] = [None]
-    try:
-        from eli.core.paths import data_dir, models_dir
-        folders += [models_dir(), data_dir() / "models"]
-    except Exception:
-        pass
-    current = _resolved()
-    if current is not None:
-        folders.append(current.parent)
-    folders += _named_folders()
-    paths: List[Path] = []
-    seen_folders: List[Path] = []
-    for folder in folders:
-        if folder is not None:
-            if folder in seen_folders:
-                continue
-            seen_folders.append(folder)
-        try:
-            for model in discover_models(folder):
-                path = Path(model["path"])
-                if path not in paths:
-                    paths.append(path)
-        except Exception:
-            continue
-    current = _resolved()
-    if current is not None and current not in paths:
-        paths.append(current)           # one chosen from elsewhere on the disk is still ELI's
-    out: Dict[str, Path] = {}
-    for path in sorted(paths, key=lambda p: p.name.lower()):
-        name = path.name
-        if name in out:
-            name = f"{path.name} ({path.parent.name})"
-        out[name] = path
-    return out
+    """Every chat model ELI can see, by the name it is shown under: the one list of model folders
+    (eli/core/model_folders: ELI's own, the folders of the models the settings name, the folders the
+    user named), and the model loaded now wherever it is."""
+    from eli.core.model_folders import chat_models
+    return chat_models(current=_resolved())
 
 
 def _resolved() -> Optional[Path]:

@@ -3366,8 +3366,16 @@ _SETTINGS_SCHEMA = {
     "model_thinking":         ("bool", "Generation", "Deep thinking (reasoning models)", "Higher quality, slower"),
     "auto_speak":             ("bool", "Voice",      "Speak replies aloud", ""),
     "tts_voice":              ("str",  "Voice",      "Voice", "Local Piper voice"),
+    "stt_model":              ("str",  "Voice",      "Speech-to-text model",
+                               "A faster-whisper model name (small.en, medium.en, large-v3, …); one not on "
+                               "this computer downloads on first use. ELI_WHISPER_MODEL in the environment wins."),
     "mic_enabled":            ("bool", "Voice",      "Microphone / wake word", ""),
     "vision_enabled":         ("bool", "Vision",     "Local vision", "Describe images & screen"),
+    "vision_model_path":      ("str",  "Vision",     "Vision model", "A vision GGUF; empty = the largest pair found"),
+    "vision_mmproj_path":     ("str",  "Vision",     "Vision projector", "Its mmproj file; empty = the one beside the model"),
+    "image_model_path":       ("str",  "Image",      "Image model", "A diffusion model folder or checkpoint; empty = procedural"),
+    "model_dirs":             ("str",  "Model",      "Model folders",
+                               "Folders ELI scans for models besides its own, separated as PATH is"),
     "ambient_vision_enabled": ("bool", "Vision",     "Ambient screen glances", "Periodic awareness"),
     "ambient_vision_interval":("int",  "Vision",     "Glance interval (s)", "", 30, 1800, 30),
     "searxng_url":            ("str",  "Network",    "SearXNG URL", "Optional self-hosted search"),
@@ -4649,18 +4657,16 @@ def set_settings(req: SettingsUpdate, principal: Principal = Depends(require_adm
 
 
 def _list_chat_models() -> list:
-    """Chat-capable GGUFs under models/ (excludes vision/projector/embedding files)."""
-    import glob
+    """Chat-capable GGUFs in every model folder (eli/core/model_folders; projectors, embedders and
+    draft heads left out by their metadata), the loaded one included wherever it is."""
+    from eli.core.model_folders import chat_models
     out = []
-    for g in sorted(glob.glob("models/**/*.gguf", recursive=True)):
-        base = os.path.basename(g).lower()
-        if any(x in base for x in ("mmproj", "embed", "nomic", "clip", "moondream", "vision")):
-            continue
+    for name, path in chat_models().items():
         try:
-            gb = round(os.path.getsize(g) / 1e9, 1)
+            gb = round(os.path.getsize(path) / 1e9, 1)
         except OSError:
             continue
-        out.append({"path": g, "name": os.path.basename(g), "size_gb": gb})
+        out.append({"path": str(path), "name": name, "size_gb": gb})
     return out
 
 

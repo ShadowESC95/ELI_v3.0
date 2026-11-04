@@ -177,8 +177,10 @@ class SettingsModelMixin:
 
     def _build_settings_model_page(self) -> QWidget:
         page, vbox = self._settings_page(
-            "Model",
-            "Choose and configure the AI backend ELI uses for inference."
+            "Models",
+            "Which models ELI thinks, sees, draws, speaks and listens with. Everything found in your "
+            "model folders is offered: add a folder once and every list sees it. The voice applies at "
+            "once; the rest with Save."
         )
 
         # Provider card
@@ -212,8 +214,13 @@ class SettingsModelMixin:
         self.bundled_model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         form2.addRow(self._field_label("Model"), self.bundled_model_combo)
 
-        # Custom card
+        # Custom card: every chat model found in the model folders, then the path it stands for
         form3 = self._section_card(vbox, "CUSTOM GGUF")
+        self.custom_model_combo = QComboBox()
+        self.custom_model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.custom_model_combo.setToolTip("Every chat model in your model folders. Choosing one fills the path below.")
+        self.custom_model_combo.activated.connect(self._custom_model_chosen)
+        form3.addRow(self._field_label("Found"), self.custom_model_combo)
         self.model_path_input = QLineEdit()
         self.model_path_input.setText(DEFAULT_MODEL_PATH)
         form3.addRow(self._field_label("File path"), self.model_path_input)
@@ -232,8 +239,354 @@ class SettingsModelMixin:
         refresh_ollama_btn.clicked.connect(self.refresh_ollama_models)
         form4.addRow("", refresh_ollama_btn)
 
+        # Vision: a model and the projector beside it, the pair chosen as one
+        form5 = self._section_card(vbox, "VISION — DESCRIBING IMAGES AND THE SCREEN")
+        self.vision_pair_combo = QComboBox()
+        self.vision_pair_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.vision_pair_combo.activated.connect(lambda _i: self._vision_pair_chosen(fast=False))
+        form5.addRow(self._field_label("Model"), self.vision_pair_combo)
+        self.vision_fast_pair_combo = QComboBox()
+        self.vision_fast_pair_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.vision_fast_pair_combo.activated.connect(lambda _i: self._vision_pair_chosen(fast=True))
+        form5.addRow(self._field_label("Quick glance"), self.vision_fast_pair_combo)
+        vision_btns = QHBoxLayout()
+        vision_btns.setSpacing(8)
+        browse_vision_btn = QPushButton("Browse model…")
+        browse_vision_btn.clicked.connect(lambda: self.browse_vision_model(fast=False))
+        vision_btns.addWidget(browse_vision_btn)
+        browse_fast_btn = QPushButton("Browse quick-glance model…")
+        browse_fast_btn.clicked.connect(lambda: self.browse_vision_model(fast=True))
+        vision_btns.addWidget(browse_fast_btn)
+        vision_btns.addStretch()
+        form5.addRow("", vision_btns)
+        self.vision_note = QLabel("")
+        self.vision_note.setWordWrap(True)
+        self.vision_note.setStyleSheet("color:#606880;font-size:11px;")
+        form5.addRow("", self.vision_note)
+        self._vision_pick = ("", "")
+        self._vision_fast_pick = ("", "")
+
+        # Image generation: the same setting the Image Studio and the Identity page use
+        form6 = self._section_card(vbox, "IMAGE GENERATION")
+        self.image_model_select = QComboBox()
+        self.image_model_select.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.image_model_select.activated.connect(self._image_model_selected)
+        form6.addRow(self._field_label("Model"), self.image_model_select)
+        image_btns = QHBoxLayout()
+        image_btns.setSpacing(8)
+        image_browse_btn = QPushButton("Browse…")
+        image_browse_btn.clicked.connect(self.browse_image_model_path)
+        image_btns.addWidget(image_browse_btn)
+        image_detect_btn = QPushButton("Detect")
+        image_detect_btn.clicked.connect(self.refresh_image_model_sources)
+        image_btns.addWidget(image_detect_btn)
+        image_btns.addStretch()
+        form6.addRow("", image_btns)
+
+        # Voice: the same voice list as the Runtime page, applied at once
+        form7 = self._section_card(vbox, "VOICE")
+        self.models_voice_combo = QComboBox()
+        self.models_voice_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.models_voice_combo.activated.connect(
+            lambda _i: self._choose_voice(self.models_voice_combo.currentData() or self.models_voice_combo.currentText()))
+        form7.addRow(self._field_label("Voice"), self.models_voice_combo)
+        voice_btns = QHBoxLayout()
+        voice_btns.setSpacing(8)
+        voice_test_btn = QPushButton("▶ Test")
+        voice_test_btn.clicked.connect(
+            lambda: self.test_voice(self.models_voice_combo.currentData() or self.models_voice_combo.currentText()))
+        voice_btns.addWidget(voice_test_btn)
+        voice_more_btn = QPushButton("＋ More voices / accents…")
+        voice_more_btn.clicked.connect(self.open_voice_library)
+        voice_btns.addWidget(voice_more_btn)
+        voice_btns.addStretch()
+        form7.addRow("", voice_btns)
+        voice_note = QLabel("To make a voice from a recording of someone, use the Runtime page.")
+        voice_note.setStyleSheet("color:#606880;font-size:11px;")
+        form7.addRow("", voice_note)
+
+        # Speech to text
+        form8 = self._section_card(vbox, "SPEECH TO TEXT")
+        self.stt_model_combo = QComboBox()
+        self.stt_model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        form8.addRow(self._field_label("Model"), self.stt_model_combo)
+        stt_note = QLabel("Takes effect at the next transcription. A model not on this computer downloads "
+                          "on first use. ELI_WHISPER_MODEL in the environment overrides this.")
+        stt_note.setWordWrap(True)
+        stt_note.setStyleSheet("color:#606880;font-size:11px;")
+        form8.addRow("", stt_note)
+
+        # Model folders: the one list every scanner reads
+        form9 = self._section_card(vbox, "MODEL FOLDERS")
+        self.model_folders_list = QListWidget()
+        self.model_folders_list.setMaximumHeight(120)
+        form9.addRow(self._field_label("Scanned"), self.model_folders_list)
+        folder_btns = QHBoxLayout()
+        folder_btns.setSpacing(8)
+        add_folder_btn = QPushButton("Add folder…")
+        add_folder_btn.clicked.connect(self.add_model_folder_dialog)
+        folder_btns.addWidget(add_folder_btn)
+        remove_folder_btn = QPushButton("Remove")
+        remove_folder_btn.clicked.connect(self.remove_selected_model_folder)
+        folder_btns.addWidget(remove_folder_btn)
+        rescan_btn = QPushButton("Rescan")
+        rescan_btn.clicked.connect(self.refresh_model_choices)
+        folder_btns.addWidget(rescan_btn)
+        folder_btns.addStretch()
+        form9.addRow("", folder_btns)
+
+        # Memory embedder: shown, not changed here (memory's index is built for it)
+        form10 = self._section_card(vbox, "MEMORY EMBEDDER")
+        self.embedder_label = QLabel("")
+        self.embedder_label.setWordWrap(True)
+        self.embedder_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form10.addRow(self._field_label("Model"), self.embedder_label)
+        embed_note = QLabel("Memory's index is built for this embedder. To use another, set ELI_EMBED_MODEL_PATH "
+                            "and rebuild the index (Advanced → Rebuild FAISS).")
+        embed_note.setWordWrap(True)
+        embed_note.setStyleSheet("color:#606880;font-size:11px;")
+        form10.addRow("", embed_note)
+
         vbox.addStretch()
+        self.refresh_model_choices()
         return page
+
+    # ── the Models page's choices ─────────────────────────────────────────────────────────────
+    def refresh_model_choices(self):
+        """Fill every list on the Models page from the model folders, keeping what is chosen."""
+        self._refresh_custom_model_combo()
+        self._refresh_vision_combos()
+        self.refresh_image_model_sources()
+        self._reload_voice_selectors()
+        self._refresh_stt_models()
+        self._refresh_model_folders_list()
+        try:
+            from eli.memory.vector_store import resolve_embedder_path
+            self.embedder_label.setText(resolve_embedder_path())
+        except Exception as ex:
+            log.debug(f"[GUI] embedder path unavailable: {ex}", exc_info=True)
+            self.embedder_label.setText("not found")
+
+    def _refresh_custom_model_combo(self):
+        combo = getattr(self, "custom_model_combo", None)
+        if combo is None:
+            return
+        try:
+            from eli.core.model_folders import chat_models
+            found = chat_models()
+        except Exception as ex:
+            log.debug(f"[GUI] chat model scan failed: {ex}", exc_info=True)
+            found = {}
+        current = self.model_path_input.text().strip() if hasattr(self, "model_path_input") else ""
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("— choose a model —", "")
+        for name, path in found.items():
+            try:
+                from eli.core.gguf_sizes import model_bytes
+                from eli.core.mem_units import bytes_to_gib
+                label = f"{name}  ({bytes_to_gib(model_bytes(path)):.2f} GB)"
+            except Exception:
+                label = name
+            combo.addItem(label, str(path))
+        idx = combo.findData(current) if current else -1
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _custom_model_chosen(self, _index: int):
+        path = str(self.custom_model_combo.currentData() or "")
+        if not path:
+            return
+        self.model_path_input.setText(path)
+        idx = self.provider_combo.findData("custom_gguf")
+        if idx >= 0:
+            self.provider_combo.setCurrentIndex(idx)
+
+    def _vision_pairs(self):
+        try:
+            from eli.perception.vision import discovered_pairs, rescan
+            rescan()
+            return list(discovered_pairs())
+        except Exception as ex:
+            log.debug(f"[GUI] vision pair scan failed: {ex}", exc_info=True)
+            return []
+
+    def _refresh_vision_combos(self):
+        pairs = self._vision_pairs()
+        from eli.core.mem_units import bytes_to_gib
+        for combo, auto_label, pick in (
+                (getattr(self, "vision_pair_combo", None), "Auto — the largest pair found", self._vision_pick),
+                (getattr(self, "vision_fast_pair_combo", None), "Auto — the smallest pair found", self._vision_fast_pick)):
+            if combo is None:
+                continue
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(auto_label, ("", ""))
+            for base, proj, size in pairs:
+                combo.addItem(f"{Path(base).name} + {Path(proj).name}  ({bytes_to_gib(size):.2f} GB)",
+                              (str(base), str(proj)))
+            if pick and pick[0]:
+                idx = next((i for i in range(combo.count()) if (combo.itemData(i) or ("", ""))[0] == pick[0]), -1)
+                if idx < 0:
+                    combo.addItem(f"{Path(pick[0]).name}" + (f" + {Path(pick[1]).name}" if pick[1] else "  (no projector)"), pick)
+                    idx = combo.count() - 1
+                combo.setCurrentIndex(idx)
+            else:
+                combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        if hasattr(self, "vision_note"):
+            self.vision_note.setText(
+                f"{len(pairs)} vision model(s) with a projector found in the model folders." if pairs else
+                "No vision model with a projector found. A vision GGUF needs its mmproj file beside it; "
+                "put both in a model folder, or add their folder below.")
+
+    def _vision_pair_chosen(self, *, fast: bool):
+        combo = self.vision_fast_pair_combo if fast else self.vision_pair_combo
+        pick = tuple(combo.currentData() or ("", ""))
+        if fast:
+            self._vision_fast_pick = pick
+        else:
+            self._vision_pick = pick
+
+    def browse_vision_model(self, *, fast: bool = False):
+        """A vision GGUF chosen by file; the projector found beside it comes with it, and its folder
+        joins the model folders."""
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a vision model", "", "GGUF Files (*.gguf);;All Files (*)")
+        if not path:
+            return
+        proj = ""
+        try:
+            from eli.perception.vision import _discover_vl_pairs
+            for base, projector, _size in _discover_vl_pairs(Path(path).parent):
+                if Path(base).resolve() == Path(path).resolve():
+                    proj = str(projector)
+                    break
+        except (ImportError, OSError, ValueError) as ex:
+            log.debug(f"[GUI] projector lookup failed: {ex}", exc_info=True)
+        pick = (path, proj)
+        if fast:
+            self._vision_fast_pick = pick
+        else:
+            self._vision_pick = pick
+        try:
+            from eli.core.model_folders import remember_folder_of
+            remember_folder_of(path)
+        except (ImportError, OSError, ValueError) as ex:
+            log.debug(f"[GUI] folder not remembered: {ex}", exc_info=True)
+        self._refresh_vision_combos()
+        if not proj:
+            self.vision_note.setText(f"No projector (mmproj) found beside {Path(path).name}; vision needs one to run.")
+
+    def _image_model_selected(self, _index: int):
+        path = str(self.image_model_select.currentData() or "")
+        if hasattr(self, "image_model_path_input"):
+            self.image_model_path_input.setText(path)
+        if hasattr(self, "image_model_combo"):
+            idx = self.image_model_combo.findData(path)
+            if idx >= 0:
+                self.image_model_combo.setCurrentIndex(idx)
+            else:
+                self.image_model_combo.setEditText(path)
+
+    def _refresh_stt_models(self):
+        combo = getattr(self, "stt_model_combo", None)
+        if combo is None:
+            return
+        try:
+            from eli.perception.local_whisper_stt import available_models
+            models = available_models()
+        except Exception as ex:
+            log.debug(f"[GUI] speech model list failed: {ex}", exc_info=True)
+            models = []
+        current = combo.currentData() or getattr(self, "_stt_model_saved", "")
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("— ELI's default —", "")
+        for m in models:
+            combo.addItem(f"{m['name']}   ({'on this computer' if m.get('on_disk') else 'downloads on first use'})",
+                          m["name"])
+        idx = combo.findData(current) if current else -1
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _refresh_model_folders_list(self):
+        widget = getattr(self, "model_folders_list", None)
+        if widget is None:
+            return
+        widget.clear()
+        try:
+            from eli.core.model_folders import ENV, model_folders, named_model_folders
+            import os as _os
+            env_named = {str(Path(p).expanduser()) for p in (_os.environ.get(ENV) or "").split(_os.pathsep) if p.strip()}
+            named = {str(p) for p in named_model_folders()}
+            for folder in model_folders():
+                text = str(folder)
+                if text in env_named:
+                    text += "   (named by the environment)"
+                elif text in named:
+                    text += "   (named by you)"
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, str(folder))
+                widget.addItem(item)
+        except (ImportError, OSError, ValueError) as ex:
+            log.debug(f"[GUI] model folders list failed: {ex}", exc_info=True)
+
+    def add_model_folder_dialog(self):
+        folder = QFileDialog.getExistingDirectory(self, "Add a model folder", str(Path.home()))
+        if not folder:
+            return
+        try:
+            from eli.core.model_folders import add_model_folder
+            added = add_model_folder(folder)
+        except Exception as ex:
+            QMessageBox.warning(self, "Model folders", f"Could not add the folder:\n{ex}")
+            return
+        self.status_signal.emit(f"Model folder {'added' if added else 'already listed'}: {folder}")
+        self.refresh_model_choices()
+
+    def remove_selected_model_folder(self):
+        item = self.model_folders_list.currentItem()
+        if item is None:
+            return
+        folder = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        try:
+            from eli.core.model_folders import remove_model_folder
+            removed = remove_model_folder(folder)
+        except Exception as ex:
+            QMessageBox.warning(self, "Model folders", f"Could not remove the folder:\n{ex}")
+            return
+        if not removed:
+            QMessageBox.information(self, "Model folders",
+                                    "Only a folder you named here can be removed. ELI's own folders, the folders of "
+                                    "the models in use, and folders named by ELI_MODEL_DIRS stay.")
+        self.refresh_model_choices()
+
+    def _choose_voice(self, voice_id: str):
+        """Make this ELI's voice now (saved as the Runtime page's selector saves it)."""
+        try:
+            from eli.perception.tts_router import resolve_voice_id, set_active_voice
+            set_active_voice(resolve_voice_id(str(voice_id or "")) or str(voice_id or ""))
+            self._reload_voice_selectors()
+        except (ImportError, OSError, ValueError, RuntimeError) as ex:
+            log.debug(f"[TTS] voice choice failed: {ex}", exc_info=True)
+
+    def test_voice(self, voice_id: str):
+        try:
+            from eli.perception.tts_router import speak
+            speak("ELI voice test. Systems operational.", voice_name=str(voice_id or ""))
+        except (ImportError, OSError, RuntimeError, ValueError) as e:
+            log.debug(f"[TTS] Test error: {e}")
+
+    def open_voice_library(self):
+        """The upstream voice library; every voice list is filled again when it closes."""
+        try:
+            from eli.gui.widgets.voice_downloader import VoiceDownloadDialog
+            dlg = VoiceDownloadDialog(self)
+            dlg.voices_changed.connect(self._reload_voice_selectors)
+            dlg.exec()
+        except Exception as e:
+            log.debug(f"[TTS] voice library dialog failed: {e}", exc_info=True)
+            QMessageBox.warning(self, "Voice library", f"Could not open the voice library:\n{e}")
 
     def _reload_voice_selectors(self):
         """Repopulate every voice dropdown after the library installs a new voice,
@@ -248,7 +601,8 @@ class SettingsModelMixin:
             log.debug(f"[GUI] voice reload failed: {ex}", exc_info=True)
             return
         for combo in (getattr(self, "voice_combo", None),
-                      getattr(self, "_voice_selector", None)):
+                      getattr(self, "_voice_selector", None),
+                      getattr(self, "models_voice_combo", None)):
             if combo is None:
                 continue
             try:
@@ -413,12 +767,7 @@ class SettingsModelMixin:
                 "QPushButton:hover { background:#254a30; }"
             )
             def _test_voice():
-                try:
-                    from eli.perception.tts_router import speak
-                    _vid = self._voice_selector.currentData() or self._voice_selector.currentText()
-                    speak("ELI voice test. Systems operational.", voice_name=str(_vid))
-                except Exception as e:
-                    log.debug(f"[TTS] Test error: {e}")
+                self.test_voice(self._voice_selector.currentData() or self._voice_selector.currentText())
             _test_btn.clicked.connect(_test_voice)
             tts_form.addRow(_test_btn)
 
@@ -435,18 +784,7 @@ class SettingsModelMixin:
                 "Browse and download additional Piper voices — more English accents, "
                 "other languages, and the ideal base voices for the character presets.")
 
-            def _open_voice_library():
-                try:
-                    from eli.gui.widgets.voice_downloader import VoiceDownloadDialog
-                    dlg = VoiceDownloadDialog(self)
-                    dlg.voices_changed.connect(self._reload_voice_selectors)
-                    dlg.exec()
-                except Exception as e:
-                    log.debug(f"[TTS] voice library dialog failed: {e}", exc_info=True)
-                    QMessageBox.warning(self, "Voice library",
-                                        f"Could not open the voice library:\n{e}")
-
-            _get_btn.clicked.connect(_open_voice_library)
+            _get_btn.clicked.connect(self.open_voice_library)
             tts_form.addRow(_get_btn)
 
             # Create-your-own-voice — drop in a recording (wav/mp3/mp4) and ELI builds
@@ -2154,6 +2492,7 @@ class SettingsModelMixin:
             if idx >= 0:
                 self.provider_combo.setCurrentIndex(idx)
             self.model_path_input.setText(file_path)
+            self._remember_model_folder(file_path)
 
     def unload_model(self):
         self.get_active_backend().unload()
@@ -2172,6 +2511,17 @@ class SettingsModelMixin:
             if idx >= 0:
                 self.provider_combo.setCurrentIndex(idx)
             self.model_path_input.setText(file_path)
+            self._remember_model_folder(file_path)
+
+    def _remember_model_folder(self, model_path: str):
+        """A model chosen from a folder ELI did not know: the folder joins the model folders, so the
+        models beside it are offered next time, and every list is filled again."""
+        try:
+            from eli.core.model_folders import remember_folder_of
+            if remember_folder_of(model_path):
+                self.refresh_model_choices()
+        except (ImportError, OSError, ValueError) as ex:
+            log.debug(f"[GUI] model folder not remembered: {ex}", exc_info=True)
 
     def load_settings(self):
         """Load settings via runtime_settings (single canonical source)."""
@@ -2229,6 +2579,17 @@ class SettingsModelMixin:
             self.ollama_model_combo.setEditText(s.get("ollama_model", ""))
         except Exception as e:
             print(f"⚠️ Failed to apply provider/path settings to widgets: {e}")
+        # The Models page: vision pairs, the speech model, the chat model list
+        try:
+            self._vision_pick = (str(s.get("vision_model_path") or ""), str(s.get("vision_mmproj_path") or ""))
+            self._vision_fast_pick = (str(s.get("vision_fast_model_path") or ""),
+                                      str(s.get("vision_fast_mmproj_path") or ""))
+            self._stt_model_saved = str(s.get("stt_model") or "")
+            self._refresh_vision_combos()
+            self._refresh_stt_models()
+            self._refresh_custom_model_combo()
+        except Exception as e:
+            log.debug(f"[GUI] Models page settings not applied: {e}", exc_info=True)
 
         # Mic device selection
         try:
@@ -2434,6 +2795,11 @@ class SettingsModelMixin:
             "image_profile_notes": self.image_profile_notes_input.toPlainText().strip(),
             "image_backend": self.image_backend_default_combo.currentText().strip(),
             "image_model_path": self.image_model_path_input.text().strip() or self._selected_image_model_path(),
+            "vision_model_path": str(getattr(self, "_vision_pick", ("", ""))[0] or ""),
+            "vision_mmproj_path": str(getattr(self, "_vision_pick", ("", ""))[1] or ""),
+            "vision_fast_model_path": str(getattr(self, "_vision_fast_pick", ("", ""))[0] or ""),
+            "vision_fast_mmproj_path": str(getattr(self, "_vision_fast_pick", ("", ""))[1] or ""),
+            "stt_model": str(self.stt_model_combo.currentData() or "") if hasattr(self, "stt_model_combo") else "",
             "image_device": self.image_device_default_combo.currentText().strip(),
             "image_quality_preset": self.image_quality_default_combo.currentText().strip(),
             "image_steps": int(self.image_steps_default_input.value()),
