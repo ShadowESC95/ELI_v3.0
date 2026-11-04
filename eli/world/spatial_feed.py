@@ -22,6 +22,7 @@ contract, served on the local API server:
     POST /v1/world/undo       taking back the last change              (version 2)
     GET  /v1/world/mind       which model is ELI's mind, and which could be (version 2)
     POST /v1/world/mind       choosing one                              (version 2)
+    POST /v1/world/played     the body saying how a game ELI set went   (version 2, games)
 
 A body consumes ELI's state; it is never ELI's thinking. The same ELI can have
 several bodies without a second mind.
@@ -48,7 +49,7 @@ MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
     2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures",
-        "models"),
+        "models", "games"),
 }
 # Close codes a client can tell apart.
 CLOSE_UNAUTHORISED = 4401
@@ -161,6 +162,12 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             from eli.world import building
             item["form"] = building.form_of(obj)
             item["made_by"] = str(obj.get("created_by", ""))
+            meta = obj.get("metadata") if isinstance(obj.get("metadata"), dict) else {}
+            if isinstance(meta.get("piece"), dict):
+                item["piece"] = dict(meta["piece"])        # its part in a game (eli/world/games.py)
+            if obj.get("object_type") == building.GAME and isinstance(meta.get("game"), dict):
+                item["game"] = dict(meta["game"])          # the rules, for the body to run
+                item["status"] = str(meta.get("status") or "set")
         objects.append(item)
 
     events = state.get("events") or []
@@ -278,15 +285,20 @@ def record_client_event(event_type: str, summary: str = "",
 
 
 def say(text: str, chat: Optional[Callable[[str], str]] = None) -> Dict[str, Any]:
-    """One sentence to ELI from inside the world. If it asks for the place to
-    be changed, ELI changes it and says so; otherwise it is an ordinary turn of
+    """One sentence to ELI from inside the world. If it asks for a game, ELI sets one; if it asks
+    for the place to be changed, ELI changes it and says so; otherwise it is an ordinary turn of
     conversation, with where ELI is in mind (see eli/world/embodiment.py)."""
-    from eli.world import composer, embodiment
+    from eli.world import composer, embodiment, games
     text = str(text or "").strip()[:_SAY_MAX]
     if not text:
         raise ValueError("nothing was said")
+    scene = embodiment.live()
+    if games.wants_stop(text) and games.current((scene or {}).get("room", "")):
+        return games.stop((scene or {}).get("room", ""), said=text)
+    if games.wants_game(text):
+        return games.compose(text, scene)
     if composer.wants_building(text):
-        return composer.compose(text, embodiment.live())
+        return composer.compose(text, scene)
     if chat is None:
         raise RuntimeError("conversation is not available on this server")
     return {"kind": "chat", "text": str(chat(text) or "").strip(), "results": [], "refused": []}
@@ -328,6 +340,10 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
 
     class Mind(BaseModel):
         model: str
+
+    class Played(BaseModel):
+        game: str
+        result: dict = {}
 
     def _problem(failure: Exception) -> HTTPException:
         """A failure a client can tell from the others: a kind and a sentence."""
@@ -433,6 +449,15 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
             # a moment of ELI's own that is waiting comes first; with none, what is on ELI's mind
             return urges.act(embodiment.live()) or composer.compose(None, embodiment.live())
         except Exception as e:  # noqa: BLE001
+            raise _problem(e)
+
+    @router.post("/v1/world/played", dependencies=[Depends(require_act)])
+    def world_played(body: Played):
+        """The body saying how a game ELI set went: the score is kept, the pieces leave, ELI remembers."""
+        from eli.world import games
+        try:
+            return games.played(body.game, body.result)
+        except ValueError as e:
             raise _problem(e)
 
     @router.post("/v1/world/undo", dependencies=[Depends(require_act)])

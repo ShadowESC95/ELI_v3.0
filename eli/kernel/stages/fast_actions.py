@@ -109,6 +109,7 @@ _DIRECT_FINAL_ACTIONS = frozenset({
     "KEYBOARD", "MOUSE_CONTROL", "SCREENSHOT",
     "SPEAK", "DICTATE", "TRANSCRIBE",
     "NEWS_FETCH", "WEB_SEARCH", "WEB_FETCH", "GET_WEATHER", "IMPORT_MODEL", "FETCH_MODEL", "VERSION_CHANGES",
+    "PLAY_GAME", "STOP_GAME",
     "GET_TIME", "GET_DATE", "TIME", "DATE",
     "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS",
     "RUNTIME_STATUS", "REASONING_MODE_STATUS", "MEMORY_STATUS", "COGNITION_STATUS",
@@ -275,6 +276,10 @@ _DIRECT_RESULT_ACTIONS = frozenset({
     "REMOVE_EVENT",
     # RESUME_TASK builds its own message about how stale the task is
     "RESUME_TASK",
+    # ELI's world: a model brought in is told with what came in and its measured size; a game set or
+    # stopped is told in the words the world gave; the version record says only what was seen here
+    # (reworded, it grew invented diffs). None of these is for a model to retell.
+    "IMPORT_MODEL", "FETCH_MODEL", "PLAY_GAME", "STOP_GAME", "VERSION_CHANGES",
 })
 
 

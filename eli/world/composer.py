@@ -386,6 +386,7 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
             kind = str(about.get("kind", ""))
             parts.append(f"What you just did for the user: {said}" if kind == "done_for_you" else
                          f"The day has turned: {said}" if kind == "time_of_day" else
+                         f"A game you made up and played together: {said}" if kind == "play" else
                          f"What has just happened in you ({kind.replace('_', ' ')}): {said}")
             parts.append("Make of that what you will here: a thing, a change to one, a change to the room.")
             if rooms:

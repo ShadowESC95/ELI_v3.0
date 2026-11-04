@@ -89,8 +89,8 @@ def test_every_recalled_memory_says_when_it_is_from(monkeypatch):
                     {"id": "kg:context", "ts": 0, "text": "[Lisbon] (place)"}]
     monkeypatch.setattr(memory_mod, "get_memory", lambda *a, **k: _Mem())
     out = execute("MEMORY_RECALL", {"query": "lisbon"})["content"]
-    assert "[Mon 28 Sep 21:15" in out and "i am collecting a friend in lisbon" in out
-    assert "[Lisbon] (place)" in out and "[] [Lisbon]" not in out
+    assert "Mon 28 Sep 21:15" in out and "you said “i am collecting a friend in lisbon”" in out
+    assert "Lisbon (place)" in out and "you said “(place)”" not in out and "[] [Lisbon]" not in out
 
 
 @pytest.mark.parametrize("text", [

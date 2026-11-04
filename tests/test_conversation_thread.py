@@ -63,11 +63,14 @@ def test_proactive_web_season_reviews_followup():
 @patch("eli.core.config.network_allowed", lambda: True)
 def test_router_web_query_uses_thread_context():
     set_route_context(thread_topic="Blue Harbor Season Two")
-    r = route("wanna do a web search and get some reviews for season 3")
-    assert r["action"] == "WEB_SEARCH"
-    q = (r.get("args") or {}).get("query", "")
-    assert "blue harbor" in q.lower()
-    assert "season 3" in q.lower()
+    try:
+        r = route("wanna do a web search and get some reviews for season 3")
+        assert r["action"] == "WEB_SEARCH"
+        q = (r.get("args") or {}).get("query", "")
+        assert "blue harbor" in q.lower()
+        assert "season 3" in q.lower()
+    finally:
+        set_route_context(thread_topic="")     # the topic is this turn's: left set, a bare "do a search" later searched it
 
 
 def test_extract_search_subject_mid_sentence():

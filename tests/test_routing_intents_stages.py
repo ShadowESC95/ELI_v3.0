@@ -14,11 +14,13 @@ def test_stage_order_is_the_legacy_order():
         "self_report",
         "runtime_voice",
         "input_agents",
+        "world_games",
         # tail group — after it
         "documents",
         "system_settings",
         "app_launch",
         "shell_ops",
+        "world_models",
         "capture_input",
         "session_ops",
     ]
@@ -51,6 +53,8 @@ def test_stages_pass_by_returning_none():
     ("system_settings", "open settings", "OPEN_SYSTEM_SETTINGS"),
     ("app_launch", "open spotify", "OPEN_APP"),
     ("shell_ops", "grep foo bar.txt", "SHELL_EXEC"),
+    ("world_games", "set up a catch game in your room", "PLAY_GAME"),
+    ("world_models", "fetch a model of a pine tree", "FETCH_MODEL"),
     ("capture_input", "note: buy milk", "WRITE_NOTE"),
     ("session_ops", "help", "HELP"),
 ])

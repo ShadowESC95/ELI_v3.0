@@ -201,6 +201,8 @@ _add("System status & info", "WEB_SEARCH", "Web search (Net-gated)", "“search 
 _add("System status & info", "VERSION_CHANGES", "Which version ELI is, when it was first seen here and the versions before it; no invented diffs", "“notice any updates to your code?”", "“what version are you”", "“check the diff pre and post install”")
 _add("ELI's world", "IMPORT_MODEL", "Bring a 3D model file on this computer (.gltf/.glb) into ELI's rooms", "“import the model at ~/things/lamp.glb”")
 _add("ELI's world", "FETCH_MODEL", "Fetch a CC0 model of a thing from Poly Haven for ELI's rooms (Net-gated)", "“fetch a model of a pine tree”", "“get a rocking chair model”")
+_add("ELI's world", "PLAY_GAME", "Make up a small game to play in ELI VR (targets, catch, sort, order, hide) where you stand, from the room, ELI's memories and how you did last time; the score is journalled and remembered", "“let's play a game in VR”", "“set up a catch game”", "“challenge me”")
+_add("ELI's world", "STOP_GAME", "Stop the game ELI set", "“stop the game”", "“I give up”")
 _add("System status & info", "WEB_FETCH", "Read a linked web page and answer about it (Net-gated)", "“https://example.com/post what do you think?”", "“summarise this https://example.com/article”")
 _add("System status & info", "MESSAGE_TIME_QUERY", "Time-of-a-message query", "“when did I say that”")
 _add("System status & info", "CHECK_CHRONAL_ALIGNMENT", "Playful date/time sanity check", "“check chronal alignment”")

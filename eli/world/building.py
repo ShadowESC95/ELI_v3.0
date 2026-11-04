@@ -44,6 +44,7 @@ from eli.world.core.schemas import (
 
 EVENT_TYPE = "world_edit"
 BUILT = "built"                      # object_type of a thing made this way
+GAME = "game"                        # object_type of a game ELI set (eli/world/games.py): its rules ride in metadata
 
 # The one room that is ELI's to shape whole. The nine rooms of the house keep
 # their own sky, ground and air; ELI may put things in them and give each a
@@ -60,7 +61,7 @@ OWN_ROOM_INFO: Dict[str, Any] = {
 
 SHAPES = (
     "orb", "pillar", "block", "slab", "arch", "ring", "crystal", "tree",
-    "lamp", "board", "cone", "stair", "table", "seat", "pool", "beacon", "painting",
+    "lamp", "board", "cone", "stair", "table", "seat", "pool", "beacon", "painting", "mat",
 )
 PROP = "prop"                        # the shape of a real thing the body has (a chair, a lamp)
 # A painting is ELI's own: a style and the colours it is painted in.
@@ -93,6 +94,7 @@ MAX_HEIGHT = 6.0
 MIN_SIZE, MAX_SIZE = 0.1, 4.0
 MAX_EDITS = 12         # in one batch
 MAX_PER_ROOM = 60      # things standing in one room
+STANDING_ROOM = 2.4    # the room a person needs round them, to stand and to see a thing
 NAME_MAX, MEANING_MAX, NOTE_MAX = 48, 160, 400
 
 _OPS = {
@@ -118,6 +120,7 @@ _SHAPE_WORDS = {
     "pond": "pool", "water": "pool", "fountain": "pool", "tower": "beacon",
     "spire": "beacon", "obelisk": "beacon", "picture": "painting", "canvas": "painting",
     "artwork": "painting", "art": "painting", "poster": "painting", "mural": "painting",
+    "rug": "mat", "disc": "mat", "circle": "mat", "carpet": "mat",
 }
 _SKY_WORDS = {"night": "stars", "space": "stars", "starry": "stars", "morning": "dawn",
               "sunrise": "dawn", "fog": "mist", "foggy": "mist", "misty": "mist",
@@ -326,8 +329,8 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
 
         target = _text(_first(raw, "id", "object_id"), 80)
         named = _text(_first(raw, "name", "target", "object", "title"), NAME_MAX)
-        if target:
-            edit["id"] = target
+        if target and (op != "create" or re.fullmatch(r"[a-z0-9_]+", target)):
+            edit["id"] = target          # a new thing may be given its id, so others can be made part of it
         if named:
             edit["name"] = named
 
@@ -363,6 +366,13 @@ def normalise(edits: Any, default_room: str = OWN_ROOM) -> Tuple[List[Dict[str, 
                 edit["meaning"] = meaning
             if op == "change" and raw.get("rename"):
                 edit["rename"] = _text(raw.get("rename"), NAME_MAX)
+            # a piece of a game, and a game itself (eli/world/games.py): carried, judged as any creation
+            mark = raw.get("piece")
+            if op == "create" and isinstance(mark, dict) and _text(mark.get("game"), 80):
+                edit["piece"] = {"game": _text(mark.get("game"), 80), "role": _text(mark.get("role"), 16) or "piece",
+                                 "tag": _text(mark.get("tag"), 12), "index": int(_number(mark.get("index"), 0))}
+            if op == "create" and isinstance(raw.get("game"), dict):
+                edit["game"] = dict(raw["game"])
         if op in ("create", "move", "change"):
             spot = _spot(raw)
             if spot is not None:
@@ -560,7 +570,7 @@ def _free_spot(state: EliWorldState, room: str, near: Tuple[float, float], size:
     taken = [(form_of(o.__dict__)["pos"], form_of(o.__dict__)["size"])
              for o in _standing(state, room) if o.object_id != ignore]
     if isinstance(avoid, (list, tuple)) and len(avoid) == 2:
-        taken.append(([float(avoid[0]), 0.0, float(avoid[1])], 2.4))      # room to stand and to see it
+        taken.append(([float(avoid[0]), 0.0, float(avoid[1])], STANDING_ROOM))   # room to stand and to see it
 
     def clear(spot: Tuple[float, float]) -> bool:
         return all(math.hypot(spot[0] - pos[0], spot[1] - pos[2]) >= 0.5 * (size + other) + 0.25
@@ -676,7 +686,7 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
         while name.lower() in taken:
             name, count = f"{edit['name']} {count}", count + 1
         edit["name"] = name
-        object_id = _new_id(state, name)
+        object_id = edit["id"] if edit.get("id") and edit["id"] not in state.objects else _new_id(state, name)
         form = {"shape": edit.get("shape", "orb"), "colour": edit.get("colour", "#9fd8ff"), "size": size,
                 "glow": float(edit.get("glow", 0.25)), "pos": [right, float(edit.get("height", 0.0)), forward]}
         if edit.get("parts"):
@@ -688,10 +698,15 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
             # a chair or a picture nobody turned faces the middle of the room
             form["turn"] = round(math.degrees(math.atan2(-right, -forward)) % 360.0, 1) if (right or forward) else 180.0
         links = [dict(link) for link in event.payload.get("links") or [] if isinstance(link, dict)]
+        metadata: Dict[str, Any] = {"form": form}
+        if edit.get("piece"):
+            metadata["piece"] = dict(edit["piece"])
+        if edit.get("game"):
+            metadata["game"], metadata["status"] = dict(edit["game"]), "set"
         state.objects[object_id] = WorldObject(
-            object_id=object_id, name=edit["name"], object_type=BUILT, room=room,
+            object_id=object_id, name=edit["name"], object_type=GAME if edit.get("game") else BUILT, room=room,
             symbolic_meaning=str(edit.get("meaning", "")), created_by=actor,
-            reason=str(event.summary)[:200], metadata={"form": form}, links=links,
+            reason=str(event.summary)[:200], metadata=metadata, links=links,
         )
         return {"op": op, "ok": True, "id": object_id, "name": edit["name"], "room": room,
                 "inverse": {"op": "remove", "id": object_id, "room": room}}
@@ -710,7 +725,7 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
     form = form_of(obj.__dict__)
 
     if op == "remove":
-        if obj.object_type != BUILT:
+        if obj.object_type not in (BUILT, GAME):
             return {"op": op, "ok": False, "name": obj.name,
                     "reason": "that one belongs to the world itself, not to the building"}
         obj.retired = True
@@ -779,10 +794,11 @@ def _expand_undo(state: EliWorldState, edits: List[Dict[str, Any]]) -> List[Dict
 def apply(edits: Any, *, actor: str = "eli", summary: str = "", asked: bool = False,
           default_room: str = OWN_ROOM, near: Optional[Tuple[float, float]] = None,
           avoid: Optional[Tuple[float, float]] = None, links: Optional[List[Dict[str, Any]]] = None,
-          source: str = "world_building") -> Dict[str, Any]:
+          source: str = "world_building", final: bool = False) -> Dict[str, Any]:
     """Check a batch of edits, put it through the world, and say what happened
     to each. Nothing is half applied in secret: every edit comes back as done,
-    or refused with the reason."""
+    or refused with the reason. `final`: a batch that is not to be taken back by
+    an undo (a game being set, or cleared away when it is over)."""
     from eli.world.agency.autonomy_engine import INGEST_LOCK
     from eli.world.local_world_bridge import _get_engine, append_event
 
@@ -795,6 +811,8 @@ def apply(edits: Any, *, actor: str = "eli", summary: str = "", asked: bool = Fa
         if not clean:
             return {"ok": False, "results": [], "refused": refused + [{"index": 0, "reason": "nothing to undo"}]}
         payload: Dict[str, Any] = {"edits": clean, "actor": actor, "asked": bool(asked), "is_undo": is_undo}
+        if final:
+            payload["undone"] = True        # nothing to take back: an undo passes over it
         if near is not None:
             payload["near"] = [round(float(near[0]), 2), round(float(near[1]), 2)]
         if avoid is not None:

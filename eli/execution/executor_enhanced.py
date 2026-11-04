@@ -2642,6 +2642,7 @@ SUPPORTED_ACTIONS = [
     'WEB_SEARCH',
     'WEB_FETCH',  # a linked page read and answered from
     'IMPORT_MODEL', 'FETCH_MODEL',  # a real thing brought in for ELI's rooms
+    'PLAY_GAME', 'STOP_GAME',  # a small game ELI makes up for its rooms, and the end of one
     'VERSION_CHANGES',  # which ELI this is and when it was first seen here
     'WRITE_NOTE',
 ]

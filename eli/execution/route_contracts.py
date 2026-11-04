@@ -223,9 +223,15 @@ def fits(text: Any, intent: Any) -> bool:
         message along as an argument is therefore held to the first test only.)
 
     A reading action changes nothing, so it only has to be asked for: "i know what day it is" holds
-    the words of a date question, and answering it with the date is not a reply."""
+    the words of a date question, and answering it with the date is not a reply.
+
+    Some actions are asked for in a remark by nature: a game is given up with "I give up", and
+    proposed with "let's play". A rule that knows that says so (meta "spoken_as_remark") and its
+    own vocabulary is the whole test."""
     from eli.runtime.command_splitter import instruction, says_rather_than_asks, sentences, starts_with_command
     if not isinstance(intent, dict):
+        return True
+    if (intent.get("meta") or {}).get("spoken_as_remark"):
         return True
     if not changes_something(intent.get("action")):
         return not (str(intent.get("action") or "") not in ("", "CHAT") and says_rather_than_asks(str(text or "")))

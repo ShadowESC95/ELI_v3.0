@@ -21,12 +21,14 @@ from eli.execution.routing.intents.shell_ops import route_shell_ops
 from eli.execution.routing.intents.capture_input import route_capture_input
 from eli.execution.routing.intents.session_ops import route_session_ops
 from eli.execution.routing.intents.world_models import route_world_models
+from eli.execution.routing.intents.world_games import route_world_games
 
 # Run before the inline code-generation block.
 INTENT_STAGES_EARLY = (
     ("self_report", route_self_report),
     ("runtime_voice", route_runtime_voice),
     ("input_agents", route_input_agents),
+    ("world_games", route_world_games),     # a game on, or asked for: before the chat guards take "I give up"
 )
 
 # Run after it, immediately before route()'s CHAT fallback.

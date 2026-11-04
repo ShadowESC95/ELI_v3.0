@@ -45,6 +45,7 @@ MOMENTS = {
     "upgrade_candidate": "ambition",
     "belief_changed": "belief",
     "error_detected": "trouble",
+    "game_played": "play",           # a game ELI made up, played together (eli/world/games.py)
 }
 DONE_FOR_YOU = "done_for_you"        # a tool that worked, when what came of it was for the user
 TIME_OF_DAY = "time_of_day"

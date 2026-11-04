@@ -36,7 +36,7 @@ A client that never says hello is a version 1 client and gets exactly what versi
 | Version | Carries |
 |---|---|
 | 1 | Room, avatar, awareness, objects; the client's room events |
-| 2 | All of 1, and how each object looks and where it stands, ELI's own room and every room of the house ELI has relit, what ELI last did and why; the scene; sentences; building; undo |
+| 2 | All of 1, and how each object looks and where it stands, ELI's own room and every room of the house ELI has relit, what ELI last did and why; the scene; sentences; building; undo; the real things the body draws and ELI's own models; games |
 
 ## Routes
 
@@ -55,6 +55,7 @@ All on the local server, behind its own token and role checks. Loopback callers 
 | `POST /v1/world/undo` | Take back the last change made by building | 2 |
 | `GET /v1/world/mind` | Which model is loaded, which would be used, which ones ELI has | 2 |
 | `POST /v1/world/mind` | Choose ELI's model (admin) | 2 |
+| `POST /v1/world/played` | The body saying how a game ELI set went (capability `games`) | 2 |
 
 A failure on the version 2 routes carries a kind a client can act on:
 `{"detail": {"kind": "model_unavailable", "detail": "..."}}`. Kinds: `bad_request` (400),
@@ -176,6 +177,43 @@ as `task_completed` (which eases repair pressure and doubt), a failure as `error
 went wrong. A chat reply is not a tool.
 
 `POST /v1/world/compose` answers the oldest urge, or with none, asks ELI from its mindset alone.
+
+## Games (`eli/world/games.py`)
+
+A game is things ELI made with rules attached. "Let's play a game", "set up a catch game", "hide
+something for me to find" on `/v1/world/say` (or `PLAY_GAME` from the desktop, when the sentence
+names the rooms or a body is present) has `games.compose(text, scene)` ask the model once, held by a
+grammar to one game: a name, a kind, a goal, one to four kinds of piece (a shape or a real thing,
+colour, size, glow, tag), for sorting a mat per tag, a count, seconds, a pace, for targets a motion,
+and the lines ELI says at the start, a hit, a miss and the end. The prompt carries the room, where
+the user stands, what is on ELI's mind (`composer.mindset`) and how the last five games went. A kind
+the user named holds the grammar to it.
+
+- **Five mechanics**: `targets` (pieces come up one after another; hit them), `catch` (they come
+  down; catch them), `sort` (pieces of two or more tags onto the mat with their tag), `order` (the
+  lights flash in a sequence; repeat it), `hide` (one piece hidden each round; find it).
+- **Set in the room as things.** `games.layout` puts each piece where it starts (targets and catches
+  round the user inside the room, a sorting row before the user with the mats to either side, an
+  arc of lights, a hidden piece away from the user), and the game goes through `building.apply` as
+  creates: the game itself as an object of type `game` with the rules in its metadata (`game`,
+  `status`), each piece a built thing with `piece` (game, role, tag, index) in its metadata. Every
+  one is a world action judged by the policy. The batches are `final`: an undo passes over them.
+  The feed carries `game` and `status` on the game object and `piece` on each piece.
+- **The body runs it** (ELI VR's `eli_play.gd`): motion, hits, catches, drops, the sequence, the
+  gaze; how many are up at once, how fast they move and how long each stays follow from count,
+  seconds and pace and the room, not from a table.
+- **How it went** comes back on `POST /v1/world/played` (score, misses, rounds, seconds,
+  abandoned). `games.played` keeps the result on the game object (status `done`), retires the
+  pieces and the game through the policy and then drops the pieces from the state (a game's pieces
+  are not kept; the last forty finished games are), writes the game in the journal, stores a
+  memory, and fires `game_played`, which `urges` keeps as a moment of kind `play`. `games.record`
+  lists the finished games newest first, and `best_so_far` says whether a score beat every earlier
+  one of its kind; the answer tells the body so.
+- **Stopping.** "Stop the game" with a body present marks the game `stopping`, and the body posts
+  how far it got; with none, it is finished here as abandoned. A new game set in a room gives the
+  old one up the same way.
+- **Limits of the protocol**: four kinds of piece, twenty-four pieces, ten seconds to ten minutes,
+  as many pieces as the room has room for.
 
 ## ELI's records in the rooms (`eli/world/shown.py`)
 

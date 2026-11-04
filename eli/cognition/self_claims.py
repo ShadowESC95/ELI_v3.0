@@ -792,6 +792,16 @@ class _Check:
             return "rests on a claim that was dropped"
         return ""
 
+    def drop(self, unit: str) -> None:
+        """A unit dropped before it was fed (a patch presented from a reply): a "Done." held back
+        before it was the report of that, and goes with it."""
+        self.dropped.append(unit.strip())
+        if self._lead is not None:
+            self.dropped.append(self._lead)
+            self._lead = None
+            self.claimed_acting = True
+        self._last_dropped = True
+
     def feed(self, unit: str) -> List[str]:
         """The text to serve now for this unit: nothing, the unit, or a held heading and the unit."""
         out = self._feed(unit)
@@ -991,7 +1001,7 @@ def _checked(chunks: Iterable[str], check: _Check):
                 before = buf[:fence]
                 recent = (recent + before)[-600:]
                 if _INVENTED_PATCH.search(recent) and not _patch_backed(check):
-                    check.dropped.append(before.strip())
+                    check.drop(before)
                     skip_code = True
                     yield from check.close()
                 else:
@@ -1005,7 +1015,7 @@ def _checked(chunks: Iterable[str], check: _Check):
             buf = rest
             recent = (recent + unit)[-600:]
             if _INVENTED_PATCH.search(unit) and not _patch_backed(check):
-                check.dropped.append(unit.strip())        # "Here is the patch for ...": not served
+                check.drop(unit)                          # "Here is the patch for ...": not served
                 continue
             yield from check.feed(unit)
     if buf:

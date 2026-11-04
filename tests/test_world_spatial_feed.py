@@ -348,6 +348,24 @@ def test_socket_sends_on_connect_then_only_on_change(monkeypatch):
     assert [f[0] for f in fired] == ["vr_room_entered"]
 
 
+def test_played_route_hands_the_result_to_the_games(monkeypatch):
+    client, _ = _client(monkeypatch)
+    from eli.world import games
+    got = []
+    monkeypatch.setattr(games, "played", lambda game, result: got.append((game, result)) or {
+        "ok": True, "text": "", "result": result, "best": False})
+    r = client.post("/v1/world/played", json={"game": "game_x", "result": {"score": 3}})
+    assert r.status_code == 200 and r.json()["ok"] and got == [("game_x", {"score": 3})]
+
+    def none(game, result):
+        raise ValueError("there is no game 'nope'")
+
+    monkeypatch.setattr(games, "played", none)
+    gone = client.post("/v1/world/played", json={"game": "nope"})
+    assert gone.status_code == 400 and gone.json()["detail"]["kind"] == "bad_request"
+    assert "games" in spatial_feed.CAPABILITIES[2]
+
+
 def test_socket_is_refused_when_the_gate_says_no(monkeypatch):
     client, _ = _client(monkeypatch, ws_allowed=False)
     from starlette.websockets import WebSocketDisconnect

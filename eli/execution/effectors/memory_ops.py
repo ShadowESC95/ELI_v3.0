@@ -570,6 +570,9 @@ def _plain_hit(text: str) -> str:
     if m:
         stamp = m.group("stamp").strip()
         said = " ".join(m.group("said").split())
+        if not re.search(r"\d{1,2}:\d{2}|\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b",
+                         stamp):
+            return f"{stamp} {said}"            # a thing in brackets ("[Lisbon] (place)"), not a time
         if ", " in stamp:
             day, ago = stamp.split(", ", 1)
             stamp = f"{day} ({ago})"

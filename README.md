@@ -110,7 +110,7 @@ of any kind. It's model-, user-, and hardware-agnostic by design.
 Beyond answering questions, it acts on your machine, remembers you across sessions, reports its own
 state from real runtime evidence rather than guessing, and can even read its own source, write and
 repair code, and fine-tune on your conversation history so it gets better at serving *you*.
-**243 capabilities** sit behind a single typed or spoken interface.
+**245 capabilities** sit behind a single typed or spoken interface.
 
 And because the model is *yours* and swappable, ELI's ceiling isn't fixed — it rises with the
 open-model frontier and the hardware you give it. The quality is a dial you control, not a
@@ -155,7 +155,7 @@ day to day:
 Asking *"what can you do?"* lists the full surface.
 
 <details>
-<summary><b>Full capability breadth — 243 capabilities across 17 areas</b></summary>
+<summary><b>Full capability breadth — 245 capabilities across 17 areas</b></summary>
 
 | Area | What's in it |
 |---|---|
