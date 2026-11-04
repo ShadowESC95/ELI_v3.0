@@ -81,7 +81,9 @@ def test_programs_drawing_on_a_card_are_listed_with_their_card(monkeypatch):
       <process_info><pid>4242</pid><type>C</type><process_name>/usr/local/lib/ollama/llama-server</process_name><used_memory>5146 MiB</used_memory></process_info>
     </processes></gpu></nvidia_smi_log>"""
     _smi(monkeypatch, report)
-    holders = {h["pid"]: h for h in hp.vram_holders()}
+    # ELI itself is left out by pid: on a Windows runner the test process was pid 5200 once, and the
+    # headset's entry vanished with it, so ELI's own pid is given as one the report does not hold
+    holders = {h["pid"]: h for h in hp.vram_holders(exclude_pid=1)}
     assert holders[5200]["mb"] == 1500.0 and holders[5200]["gpus"] == {0: 1500.0} and holders[5200]["type"] == "G"
     assert holders[4242]["gpus"] == {1: 5146.0} and holders[4242]["service"] == "ollama.service"
     assert holders[5100]["name"] == "monado-service"
