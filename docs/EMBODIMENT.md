@@ -76,6 +76,21 @@ nothing.
 
 Plain text on purpose: it reads the same to any model.
 
+### The headset and the cards
+
+ELI VR and the runtime driving the headset draw on the same card ELI loads its model onto, and take
+more as they go (a room's textures, the desktop's layer, the compositor's swapchains). A plan made
+from what was free before they started left them nothing: the first reply failed inside CUDA and
+took ELI with it. So, while a body is in the rooms, what its programs hold on each card is measured
+(`eli/core/load_plan.py`, `note_xr_footprint`, no more often than a scene stays fresh) and the most
+seen on each card is kept in `runtime/gpu_xr.json`; a plan made while a body is here or on its way
+(`eli/bundles.body_expected`) leaves that much free on the card, less what they hold already, and
+says so in its notes. Started as a bundle from ELI v3, the chat model is loaded only once ELI VR is
+in the room, so the plan sees what the headset holds; and right after any load one full batch is
+run through the model, so its own working buffers are at their size before anyone else takes the
+card. Nothing about the headset's size is assumed: until it has been measured on a machine, nothing
+is kept, and the warm-up alone protects ELI's own buffers.
+
 ## Building (`eli/world/building.py`, `eli/world/composer.py`)
 
 ELI can put things in its rooms, move and change them, take them away, and, in the one room that is
@@ -131,9 +146,11 @@ may carry `"room"`: the grammar holds a room of the house to a light.
 
 No model is assumed. `status()` says whether a model is in memory, which one (or which would be
 used if none is), whether anybody chose it or it is only the one used last, and which models ELI
-has, by `hardware_profile.discover_models` over ELI's models folders. `choose(name)` loads one the
-way ELI's own settings do (`runtime_settings.apply_runtime_settings`), so it is the same choice ELI's
-window makes. Names go over the wire, never paths.
+has, by `hardware_profile.discover_models` over ELI's models folders, the folders of the models its
+settings name (a person who keeps their models together is offered all of them once one is chosen)
+and any folder named in `ELI_MODEL_DIRS` or the `model_dirs` setting (separated as PATH is).
+`choose(name)` loads one the way ELI's own settings do (`runtime_settings.apply_runtime_settings`),
+so it is the same choice ELI's window makes. Names go over the wire, never paths.
 
 Opened from ELI's window, a bundle that needs the server is served by that window's own process
 (`eli.bundles.spawn` starts the server there, on loopback, and stops it when the bundle closes). So
@@ -243,4 +260,6 @@ rise from ELI, and may ask `POST /v1/world/compose` while someone is there to se
   world (the user answers it in conversation).
 - Pictures of ELI's own (a sky or a surface from the image engine) are not wired in.
 - The scene is held in the server process. A turn taken in another process does not see it.
+- The first session on a machine has no measurement of the headset's footprint yet: ELI's own
+  buffers hold, but the headset can still run short on the card until the next start.
 - One world, one user: a second person's client would report into the same scene.

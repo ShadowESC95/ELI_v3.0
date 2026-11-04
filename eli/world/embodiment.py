@@ -164,7 +164,18 @@ def report(scene: Any) -> Dict[str, Any]:
     with _lock:
         _scenes[clean["surface"]] = (time.monotonic(), clean)
         _came(clean)
+    _measure_headset()
     return clean
+
+
+def _measure_headset() -> None:
+    """What the headset's programs hold on the cards, kept for the next model load
+    (eli/core/load_plan.py); no more often than a scene stays fresh."""
+    try:
+        from eli.core import load_plan
+        load_plan.note_xr_footprint()
+    except (OSError, ImportError):
+        log.debug("the headset's footprint was not measured", exc_info=True)
 
 
 def report_body(body: Any) -> Dict[str, Any]:

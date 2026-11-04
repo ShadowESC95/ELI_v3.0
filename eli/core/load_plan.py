@@ -332,6 +332,156 @@ def note_headroom() -> None:
                 log.debug("headroom not recorded", exc_info=True)
 
 
+# ── a headset on the cards: what its programs hold, kept free for them ──────────────────────────
+#
+# ELI VR and the runtime that drives the headset (Monado, WiVRn, SteamVR...) draw on the same card
+# llama.cpp loads onto, and take more as they go: a room's textures, the desktop's layer, the
+# compositor's swapchains. A plan made from what was free before they started left them nothing:
+# the first reply then failed inside CUDA and took ELI with it. So what they hold on each card is
+# measured while a body is in ELI's rooms, the most seen is kept, and a plan made while a body is
+# here or on its way leaves that much free on the card. Nothing about their size is assumed: 0 is
+# kept until they have been measured on this machine.
+
+# Programs that draw a headset's view, and ELI VR itself. Named so what they hold can be told
+# apart from a browser's or a game's; a name says nothing about size.
+XR_PROGRAMS = ("monado", "wivrn", "vrcompositor", "vrserver", "vrmonitor", "vrstartup", "steamvr", "alvr",
+               "wayvr", "envision", "godot", "eli_vr", "eli-vr", "eli vr", "elivr")
+
+_xr_lock = threading.Lock()
+_xr_sampled_at = 0.0
+
+
+def _xr_file() -> Path:
+    from eli.core.paths import data_dir
+    return Path(data_dir()) / "runtime" / "gpu_xr.json"
+
+
+def _xr_table() -> Dict[str, Any]:
+    import json
+    try:
+        return json.loads(_xr_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def is_xr_program(name: str) -> bool:
+    low = str(name or "").lower()
+    return any(tag in low for tag in XR_PROGRAMS)
+
+
+def _smi_cards() -> List[Dict[str, Any]]:
+    from eli.core.hardware_profile import _nvidia_cards
+    return _nvidia_cards() or []
+
+
+def _smi_key(card: Dict[str, Any], cards: Sequence[Dict[str, Any]]) -> str:
+    """A card's identity across runs: its name and size, and its place among the cards like it."""
+    alike = [c for c in cards if str(c.get("name")) == str(card.get("name"))]
+    place = next((k for k, c in enumerate(alike) if int(c["index"]) == int(card["index"])), 0)
+    return f"{card.get('name')}|{int(float(card.get('total_mb') or 0))}|{place}"
+
+
+def smi_index(dev: Device, cards: Optional[Sequence[Dict[str, Any]]] = None) -> Optional[int]:
+    """Which nvidia-smi card a llama.cpp device is: the one with its name, by place among the cards
+    like it (CUDA and nvidia-smi both number cards of one kind by bus). None for a card nvidia-smi
+    does not list (another vendor)."""
+    cards = _smi_cards() if cards is None else cards
+    alike_smi = [int(c["index"]) for c in cards if str(c.get("name")) == dev.description]
+    alike_dev = [d for d in devices() if d.description == dev.description] if alike_smi else []
+    place = next((k for k, d in enumerate(alike_dev) if d.index == dev.index), None)
+    if place is not None and place < len(alike_smi):
+        return alike_smi[place]
+    # an NVIDIA card whose name nvidia-smi spells differently: by position; another vendor's: none
+    if not alike_smi and dev.name.upper().startswith("CUDA") and dev.index < len(cards):
+        return int(dev.index)
+    return None
+
+
+def xr_footprint_now() -> Dict[int, float]:
+    """MiB a headset's programs hold on each card now, by nvidia-smi index."""
+    from eli.core.hardware_profile import vram_holders
+    out: Dict[int, float] = {}
+    for h in vram_holders():
+        if not is_xr_program(h.get("name")):
+            continue
+        for index, mb in (h.get("gpus") or {}).items():
+            out[int(index)] = out.get(int(index), 0.0) + float(mb or 0.0)
+    return out
+
+
+def body_wanted() -> bool:
+    """Whether a headset is here or on its way: a body is in ELI's rooms (eli/world/embodiment.py),
+    or ELI started a bundle that brings one (eli/bundles)."""
+    try:
+        from eli.world import embodiment
+        if embodiment.present():
+            return True
+    except ImportError:
+        log.debug("embodiment not asked", exc_info=True)
+    try:
+        from eli import bundles
+        return bool(bundles.body_expected())
+    except ImportError:
+        return False
+
+
+def note_xr_footprint(force: bool = False) -> Dict[str, float]:
+    """Measure what a headset's programs hold on each card and keep the most seen on each, for the
+    next plan. Sampled no more often than a scene stays fresh (embodiment.FRESH_SECONDS) unless
+    forced. Returns the peaks kept, by card."""
+    global _xr_sampled_at
+    import json
+    import time as _time
+    with _xr_lock:
+        try:
+            from eli.world.embodiment import FRESH_SECONDS as interval
+        except Exception:
+            interval = 0.0
+        now = _time.monotonic()
+        if not force and now - _xr_sampled_at < interval:
+            return {}
+        _xr_sampled_at = now
+        cards = _smi_cards()
+        held = xr_footprint_now() if cards else {}
+        if not held:
+            return {}
+        table = _xr_table()
+        changed = False
+        for card in cards:
+            mb = float(held.get(int(card["index"]), 0.0))
+            key = _smi_key(card, cards)
+            if mb > float((table.get(key) or {}).get("mb") or 0.0):
+                table[key] = {"mb": round(mb, 1), "when": _time.time()}
+                changed = True
+        if changed:
+            try:
+                path = _xr_file()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(table, indent=1), encoding="utf-8")
+                tmp.replace(path)
+            except OSError:
+                log.debug("the headset's footprint was not recorded", exc_info=True)
+        return {k: float(v.get("mb") or 0.0) for k, v in table.items()}
+
+
+def xr_reserve_mb(dev: Device) -> float:
+    """MiB to leave free on this card for a headset's programs: the most they were measured holding
+    on it, less what they hold now, while a body is here or on its way. 0 with no body, and 0 until
+    they have been measured on this card."""
+    if not body_wanted():
+        return 0.0
+    cards = _smi_cards()
+    index = smi_index(dev, cards)
+    card = next((c for c in cards if int(c["index"]) == index), None) if index is not None else None
+    if card is None:
+        return 0.0
+    peak = float((_xr_table().get(_smi_key(card, cards)) or {}).get("mb") or 0.0)
+    if peak <= 0.0:
+        return 0.0
+    return max(0.0, peak - float(xr_footprint_now().get(int(index), 0.0)))
+
+
 # ── measuring a configuration ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -618,6 +768,7 @@ class _Search:
             chosen = {self.main_gpu}
         self.usable = [chosen is None or d.index in chosen for d in devs]
         self.free = [float(d.free_mb) for d in devs]
+        self.xr = [xr_reserve_mb(d) for d in devs]          # kept free for a headset's programs
         self.fixed = _parse_list(req.tensor_split) if str(req.tensor_split or "").strip() else None
         self.ram_mb = float(cpu_ram_budget_mb(float(detect_hardware().available_ram_gb)))
         self.notes: List[str] = []
@@ -682,8 +833,10 @@ class _Search:
                       {d.index: compute for d in self.devs}, 0.0, bool(kv[0]))
 
     def room(self, costs: _Costs, batch: int) -> List[float]:
-        """MiB each card can give this load: free now, less its headroom (headroom_mb)."""
-        return [max(0.0, self.free[d] - headroom_mb(dev, self.req.model_path, batch, costs.compute_mb.get(d, 0.0)))
+        """MiB each card can give this load: free now, less its headroom (headroom_mb) and what a
+        headset's programs will yet take on it (xr_reserve_mb)."""
+        return [max(0.0, self.free[d] - headroom_mb(dev, self.req.model_path, batch, costs.compute_mb.get(d, 0.0))
+                    - self.xr[d])
                 for d, dev in enumerate(self.devs)]
 
     def counts_for(self, costs: _Costs, ctx: int, layers: int, batch: int) -> Optional[List[int]]:
@@ -774,6 +927,10 @@ def plan(req: Request) -> Optional[Plan]:
     if not devs or (req.n_gpu_layers is not None and int(req.n_gpu_layers) == 0):
         return _cpu_plan(req, weights, kv0, threads, devs)
     s = _Search(req, devs, weights, measure=simulation_supported())
+    kept = [f"{s.xr[i]:.0f} MB on {d.name}" for i, d in enumerate(devs) if s.xr[i] > 0]
+    if kept:
+        s.notes.append("keeps " + ", ".join(kept) + " free for the headset's runtime, the most it was "
+                       "measured holding there")
     if not any(s.usable):
         return _cpu_plan(req, weights, kv0, threads, devs)
     ctx = int(req.n_ctx or 0) or _auto_ctx(req.model_path, devs, s)

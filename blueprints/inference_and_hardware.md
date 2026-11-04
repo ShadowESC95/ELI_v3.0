@@ -134,6 +134,25 @@ hiccup: `GPU_STATUS` (`executor_enhanced.py`), `self_status.py`,
 (ctranslate2/faster-whisper has no ROCm backend, so AMD/Intel correctly
 stay on CPU there — that was correct-by-design, not a bug).
 
+## Load planner (`core/load_plan.py`)
+
+What a model loads with on this machine now, measured rather than estimated: every configuration
+the planner considers (context, batch, GPU layers, the share per card, KV type, experts kept in
+RAM) is simulated by llama.cpp's own load on every GPU it sees, and the one chosen is the most of
+what was asked that fits the memory free now. Two things are kept across runs, both measured:
+
+- **Headroom** (`runtime/gpu_headroom.json`): what llama.cpp took on each card after a load, over
+  its first calls, remembered per card and model so the next plan leaves it free. Until a card has
+  been measured, llama.cpp's own compute-buffer figure is kept free.
+- **The headset's room** (`runtime/gpu_xr.json`): what a headset's programs (ELI VR, Monado,
+  WiVRn, SteamVR and the like, `XR_PROGRAMS`) hold on each card while a body is in ELI's rooms,
+  the most seen per card. A plan made while a body is here or on its way (`eli/bundles.body_expected`)
+  leaves that much free on the card, less what they hold already. Started as a bundle from ELI v3,
+  the chat model loads only once ELI VR is in the room (`api/server.py`'s preload waits), and right
+  after any load one full batch is run through the model so its working buffers are at their size
+  before anyone else takes the card. Without this, the first reply with a headset on failed inside
+  CUDA and took ELI with it.
+
 ## GPU pack (`packaging/pyinstaller/eli_gpu_pack.py`, `core/gpu_pack_runtime.py`)
 
 Portable/AppImage builds download a CUDA or Vulkan build of `llama-cpp-python`

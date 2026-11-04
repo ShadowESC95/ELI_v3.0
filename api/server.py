@@ -290,6 +290,13 @@ def _eli_startup_hooks():
             try:
                 from eli.cognition import gguf_inference as _gi
                 if not _gi.is_loaded():
+                    # ELI VR on its way: its runtime takes the card as it starts, so the model is
+                    # planned once it is in the room, from what is free then (eli/bundles).
+                    from eli.bundles import body_expected, wait_for_body
+                    if body_expected():
+                        _log.info("[SERVER] a body is on its way; the chat model loads once it is in the room")
+                        wait_for_body()
+                if not _gi.is_loaded():
                     _gi.load_model()
                     _log.info("[SERVER] chat model preloaded — first request will be fast")
             except Exception as _e:

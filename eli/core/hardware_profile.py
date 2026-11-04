@@ -1223,37 +1223,76 @@ def _service_of(pid: int) -> str:
     return ""
 
 
-def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Processes holding GPU memory, largest first: {pid, name, mb, service}.
+def _nvidia_processes() -> List[Dict[str, Any]]:
+    """Every process on every NVIDIA card as nvidia-smi lists them, drawing and computing alike:
+    [{pid, name, mb, type, gpu}], `gpu` the card's nvidia-smi index. The full report (-q -x) names
+    the programs drawing on a card (a headset's runtime, a game, a browser) that the compute list
+    leaves out; where the report cannot be had, the compute list is read instead."""
+    import xml.etree.ElementTree as ET
+    smi = nvidia_smi_path()
+    if not smi:
+        return []
+    out: List[Dict[str, Any]] = []
+    try:
+        proc = subprocess.run([smi, "-q", "-x"], timeout=6, capture_output=True, text=True, check=False,
+                              env=_external_tool_env())
+        text = (proc.stdout or "") if proc.returncode == 0 else ""
+        if text.lstrip().startswith("<"):
+            for index, gpu in enumerate(ET.fromstring(text).findall("gpu")):
+                for info in gpu.findall("./processes/process_info"):
+                    pid = (info.findtext("pid") or "").strip()
+                    if not pid.isdigit():
+                        continue
+                    used = (info.findtext("used_memory") or "").strip().split()
+                    try:
+                        mb: Optional[float] = float(used[0]) if used else None
+                    except ValueError:
+                        mb = None                      # "N/A": the driver does not say (Windows)
+                    cmd = (info.findtext("process_name") or "").strip()
+                    out.append({"pid": int(pid), "name": Path(cmd.split(" ")[0]).name or cmd, "mb": mb,
+                                "type": (info.findtext("type") or "").strip(), "gpu": index})
+            return out
+    except (OSError, subprocess.SubprocessError, ET.ParseError, ValueError):
+        log.debug("nvidia-smi report unavailable", exc_info=True)
+    try:
+        proc = subprocess.run(
+            [smi, "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
+            timeout=6, capture_output=True, text=True, check=False, env=_external_tool_env())
+        for line in (proc.stdout or "").splitlines() if proc.returncode == 0 else []:
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) < 3 or not parts[0].isdigit():
+                continue
+            cmd = ",".join(parts[1:-1]).strip()
+            try:
+                mb = float(parts[-1])
+            except ValueError:
+                mb = None
+            out.append({"pid": int(parts[0]), "name": Path(cmd.split(" ")[0]).name or cmd, "mb": mb,
+                        "type": "C", "gpu": None})
+    except (OSError, subprocess.SubprocessError, ValueError):
+        log.debug("nvidia-smi process list unavailable", exc_info=True)
+    return out
 
-    NVIDIA on any OS through nvidia-smi's compute list; AMD on Linux through the kernel's
-    per-process ROCm counters (/sys/class/kfd/kfd/proc/<pid>/vram_*). Not covered: Intel and
-    Apple GPUs and AMD on Windows. mb is None where the driver does not say (Windows display
-    driver mode). This process is left out.
+
+def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Processes holding GPU memory, largest first: {pid, name, mb, service, gpus, type}.
+
+    NVIDIA on any OS through nvidia-smi (its full report names the programs drawing on a card as
+    well as the ones computing on it); AMD on Linux through the kernel's per-process ROCm counters
+    (/sys/class/kfd/kfd/proc/<pid>/vram_*). Not covered: Intel and Apple GPUs and AMD on Windows.
+    mb is None where the driver does not say (Windows display driver mode). `gpus` is what the
+    process holds on each card, by nvidia-smi index, where the tool says. This process is left out.
     """
     own = os.getpid() if exclude_pid is None else int(exclude_pid)
     found: Dict[int, Dict[str, Any]] = {}
-    smi = nvidia_smi_path()
-    if smi:
-        try:
-            proc = subprocess.run(
-                [smi, "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
-                timeout=6, capture_output=True, text=True, check=False, env=_external_tool_env())
-            for line in (proc.stdout or "").splitlines() if proc.returncode == 0 else []:
-                parts = [x.strip() for x in line.split(",")]
-                if len(parts) < 3 or not parts[0].isdigit():
-                    continue
-                cmd = ",".join(parts[1:-1]).strip()
-                try:
-                    mb: Optional[float] = float(parts[-1])
-                except ValueError:
-                    mb = None
-                pid = int(parts[0])
-                entry = found.setdefault(pid, {"pid": pid, "name": Path(cmd.split(" ")[0]).name or cmd, "mb": None})
-                if mb is not None:
-                    entry["mb"] = (entry["mb"] or 0.0) + mb
-        except Exception:
-            log.debug("nvidia-smi process list unavailable", exc_info=True)
+    for p in _nvidia_processes():
+        pid = int(p["pid"])
+        entry = found.setdefault(pid, {"pid": pid, "name": p["name"], "mb": None, "gpus": {},
+                                       "type": str(p.get("type") or "")})
+        if p.get("mb") is not None:
+            entry["mb"] = (entry["mb"] or 0.0) + float(p["mb"])
+            if p.get("gpu") is not None:
+                entry["gpus"][int(p["gpu"])] = entry["gpus"].get(int(p["gpu"]), 0.0) + float(p["mb"])
     kfd = Path("/sys/class/kfd/kfd/proc")
     if kfd.is_dir():
         for pdir in kfd.iterdir():
@@ -1264,7 +1303,7 @@ def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
             except Exception:
                 continue
             if used > 0:
-                found.setdefault(pid, {"pid": pid, "name": name, "mb": used / 1_048_576})
+                found.setdefault(pid, {"pid": pid, "name": name, "mb": used / 1_048_576, "gpus": {}, "type": "C"})
     holders = [h for pid, h in found.items() if pid != own]
     for h in holders:
         h["service"] = _service_of(h["pid"])

@@ -609,6 +609,26 @@ def test_a_model_that_is_not_there_or_does_not_load_is_told_apart(minds):
     assert failure.value.kind == "model_unavailable" and failure.value.detail == "not enough memory"
 
 
+def test_the_models_beside_the_chosen_one_and_in_named_folders_are_offered_too(minds, tmp_path, monkeypatch):
+    """ELI VR offered one model to choose from (the one in ELI's own folder) while the user's others
+    sat in the folder they keep them in: the folder of the model the settings name, and any folder
+    the user names outright, are looked in as well."""
+    from eli.world import mind
+    import eli.core.hardware_profile as hardware
+    kept = tmp_path / "kept"
+    named = tmp_path / "named"
+    for folder, name in ((kept, "Chosen.gguf"), (kept, "Spare.gguf"), (named, "Other.gguf")):
+        folder.mkdir(exist_ok=True)
+        (folder / name).write_bytes(b"x")
+    monkeypatch.setattr(hardware, "discover_models", lambda folder=None, **kw: [
+        {"path": str(f)} for f in sorted(Path(folder).glob("*.gguf"))] if folder else [])
+    import eli.core.runtime_settings as runtime_settings
+    monkeypatch.setattr(runtime_settings, "load_settings", lambda *a, **k: {"model_path": str(kept / "Chosen.gguf")})
+    monkeypatch.setenv("ELI_MODEL_DIRS", str(named))
+    names = [m["name"] for m in mind.status()["models"]]
+    assert {"Chosen.gguf", "Spare.gguf", "Other.gguf"} <= set(names)
+
+
 # ── anything at all ──────────────────────────────────────────────────────────
 def test_a_thing_can_be_made_part_by_part_from_no_list_at_all(world):
     out = building.apply([{

@@ -912,6 +912,31 @@ def _build_with_plan(plan, req, model_path):
     raise RuntimeError("unreachable")
 
 
+def _warm_up(llm, plan) -> bool:
+    """One full batch through the model right after the load, so llama.cpp's working buffers on the
+    cards are at their size before anyone else takes the card. They grow on the first call otherwise:
+    with a headset's runtime started after the load, that call failed inside CUDA and took ELI with
+    it. What the batch took is measured here (load_plan.note_headroom) rather than on the first reply.
+    True when it ran; nothing on the processor-only path, where there is no card to keep."""
+    try:
+        if plan is None or plan.cpu_only or int(plan.n_gpu_layers or 0) == 0 or not plan.devices:
+            return False
+        n = int(getattr(llm, "n_batch", 0) or plan.n_batch or 0)
+        if n <= 0:
+            return False
+        tokens = list(llm.tokenize(("a " * n).encode("utf-8"), add_bos=True))[:n]
+        if not tokens:
+            return False
+        llm.eval(tokens)
+        llm.reset()
+        from eli.core import load_plan
+        load_plan.note_headroom()
+        return True
+    except Exception:
+        log.debug("[LOAD_PLAN] the warm-up batch did not run", exc_info=True)
+        return False
+
+
 def _note_headroom() -> None:
     """After a generation call: what each card gave up since the load (eli/core/load_plan.py)."""
     try:
@@ -1055,6 +1080,7 @@ def _load_model_now(request=None):
         load_plan.watch_headroom(plan)       # what llama.cpp takes on each card from here is measured
     except Exception:
         log.debug("[LOAD_PLAN] headroom watch not started", exc_info=True)
+    _warm_up(llm, plan)                      # its buffers at size now, not on the first reply
 
     _kv_loaded = None
     try:

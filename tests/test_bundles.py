@@ -434,3 +434,42 @@ def test_the_menu_and_the_start_up_choice_say_what_each_bundle_needs(isolated, m
     menu = {a.text() for a in window._bundles_menu.actions()}
     assert "Open ELI VR in its own window" in menu and "Get ELI VR…" not in menu
     assert {b: c for _t, c, b in entries(bundles.offers())}["vr"] is True
+
+
+def test_a_bundle_that_brings_a_body_is_expected_until_it_closes(isolated, monkeypatch):
+    """ELI VR draws on the card the model loads onto: while it is on its way the model load waits for
+    it (api/server.py) and the plan keeps its room (eli/core/load_plan.py)."""
+    program = isolated / "eli-vr"
+    program.write_text("#!/bin/sh\nexit 0\n")
+    registry = isolated / "registry"
+    registry.mkdir()
+    (registry / "vr.json").write_text(json.dumps({"id": "vr", "edition": "vr", "command": [str(program)], "needs": ["server"]}))
+    (registry / "rooms.json").write_text(json.dumps({"id": "rooms", "command": [str(program)], "brings": ["body"]}))
+    (registry / "plain.json").write_text(json.dumps({"id": "plain", "command": [str(program)]}))
+    _served_on(monkeypatch, 18999)
+    seen = []
+    monkeypatch.setattr(bundles.subprocess, "call", lambda cmd, env=None: seen.append(bundles.body_expected()) or 0)
+    assert not bundles.body_expected()
+    assert bundles.launch("vr") == 0 and bundles.launch("rooms") == 0 and bundles.launch("plain") == 0
+    assert seen == [True, True, False]
+    assert not bundles.body_expected(), "the expectation goes with the bundle"
+
+
+def test_the_model_waits_for_a_body_on_its_way_and_not_for_one_that_is_not(monkeypatch):
+    from eli.world import embodiment
+    monkeypatch.setattr(embodiment, "present", lambda: [])
+    assert bundles.wait_for_body() is False, "nothing expected: nothing to wait for"
+    with bundles._bodies_lock:
+        bundles._bodies_expected.add("vr")
+    try:
+        ticks = []
+
+        def _present():
+            ticks.append(1)
+            return [{"surface": "eli_vr"}] if len(ticks) >= 3 else []
+
+        monkeypatch.setattr(embodiment, "present", _present)
+        assert bundles.wait_for_body(poll_seconds=0.0) is True and len(ticks) == 3
+    finally:
+        with bundles._bodies_lock:
+            bundles._bodies_expected.discard("vr")

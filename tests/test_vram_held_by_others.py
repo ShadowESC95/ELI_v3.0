@@ -68,3 +68,22 @@ def test_the_reinstall_question_says_the_pack_already_works(monkeypatch):
     assert "installed and was verified" in text and "does not change" in text
     assert "1039 MB of this card's 8192 MB is free" in text and "ollama.service" in text
     assert "downloaded again only when an ELI update" in startup._install_question("CUDA", reinstall=False)
+
+
+def test_programs_drawing_on_a_card_are_listed_with_their_card(monkeypatch):
+    """The compute list leaves out what draws on a card: a headset's runtime and ELI VR itself, which
+    took the card after the model loaded (2026-11-04). nvidia-smi's full report has them, per card."""
+    report = """<?xml version="1.0" ?><nvidia_smi_log><gpu id="00000000:01:00.0"><processes>
+      <process_info><pid>5100</pid><type>G</type><process_name>/usr/bin/monado-service</process_name><used_memory>612 MiB</used_memory></process_info>
+      <process_info><pid>5200</pid><type>G</type><process_name>/tmp/.mount_ELI_VR/godot</process_name><used_memory>1480 MiB</used_memory></process_info>
+      <process_info><pid>5200</pid><type>C</type><process_name>/tmp/.mount_ELI_VR/godot</process_name><used_memory>20 MiB</used_memory></process_info>
+    </processes></gpu><gpu id="00000000:03:00.0"><processes>
+      <process_info><pid>4242</pid><type>C</type><process_name>/usr/local/lib/ollama/llama-server</process_name><used_memory>5146 MiB</used_memory></process_info>
+    </processes></gpu></nvidia_smi_log>"""
+    _smi(monkeypatch, report)
+    holders = {h["pid"]: h for h in hp.vram_holders()}
+    assert holders[5200]["mb"] == 1500.0 and holders[5200]["gpus"] == {0: 1500.0} and holders[5200]["type"] == "G"
+    assert holders[4242]["gpus"] == {1: 5146.0} and holders[4242]["service"] == "ollama.service"
+    assert holders[5100]["name"] == "monado-service"
+    from eli.core import load_plan
+    assert [load_plan.is_xr_program(h["name"]) for h in (holders[5100], holders[5200], holders[4242])] == [True, True, False]

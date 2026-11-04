@@ -38,6 +38,8 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -326,6 +328,52 @@ def _needs_server(bundle: Bundle) -> bool:
     return "server" in (bundle.extra.get("needs") or ())
 
 
+# A bundle that gives ELI a body (ELI VR) draws on the same GPU ELI loads its model onto, and
+# takes more as it goes. While one is on its way, a model load waits for it to be in the room
+# (api/server.py's preload) and the plan keeps the card room it was measured needing
+# (eli/core/load_plan.py). The expectation lasts as long as the bundle runs.
+_bodies_lock = threading.Lock()
+_bodies_expected: set[str] = set()
+
+
+def brings_body(bundle: Bundle) -> bool:
+    """Whether this bundle gives ELI a body: it says so ("brings": ["body"]), or it is ELI VR."""
+    return "body" in (bundle.extra.get("brings") or ()) or bundle.edition == "vr" or bundle.id == "vr"
+
+
+@contextlib.contextmanager
+def _expecting(bundle: Bundle) -> Iterator[None]:
+    if not brings_body(bundle):
+        yield
+        return
+    with _bodies_lock:
+        _bodies_expected.add(bundle.id)
+    try:
+        yield
+    finally:
+        with _bodies_lock:
+            _bodies_expected.discard(bundle.id)
+
+
+def body_expected() -> bool:
+    """Whether a bundle that brings a body is running or starting."""
+    with _bodies_lock:
+        return bool(_bodies_expected)
+
+
+def wait_for_body(poll_seconds: float = 0.25) -> bool:
+    """Block while a body is on its way and not yet in ELI's rooms. True when one is here now,
+    False when none is expected any more."""
+    from eli.world import embodiment
+
+    while True:
+        if embodiment.present():
+            return True
+        if not body_expected():
+            return False
+        time.sleep(poll_seconds)
+
+
 @contextlib.contextmanager
 def _core(bundle: Bundle) -> Iterator[int | None]:
     """What the bundle asked of ELI's core, for as long as it runs: the port of ELI's local
@@ -353,7 +401,8 @@ def launch(bundle_id: str, argv: list[str] | None = None) -> int:
         print(f"{bundle.title} cannot start: {why}", file=sys.stderr)
         return 3
     log.info("starting bundle %s (%s) from %s", bundle.id, bundle.kind, bundle.origin)
-    with _core(bundle) as port:
+    # expected before the server starts: its model preload looks for the body
+    with _expecting(bundle), _core(bundle) as port:
         if bundle.kind == "external":
             command = [*bundle.command, *(argv or [])]
             if port is None:
@@ -392,14 +441,18 @@ def spawn(bundle_id: str) -> subprocess.Popen:
         command = [sys.executable, "--bundle", bundle.id]
     else:
         command = [sys.executable, "-m", "eli", "--bundle", bundle.id]
+    if brings_body(bundle):
+        with _bodies_lock:
+            _bodies_expected.add(bundle.id)
     process = subprocess.Popen(command, env=env, start_new_session=True)
-    if server is not None:
-        # a server started for this bundle goes when the bundle does
+    if server is not None or brings_body(bundle):
+        # a server started for this bundle goes when the bundle does, and so does the body it brought
         def _stop_when_closed() -> None:
             process.wait()
-            server.should_exit = True
-
-        import threading
+            if server is not None:
+                server.should_exit = True
+            with _bodies_lock:
+                _bodies_expected.discard(bundle.id)
 
         threading.Thread(target=_stop_when_closed, name="eli-bundle-watch", daemon=True).start()
     return process
@@ -409,9 +462,12 @@ __all__ = [
     "CONTRACT",
     "GROUP",
     "Bundle",
+    "body_expected",
+    "brings_body",
     "discover",
     "entitled",
     "launch",
     "registry_dirs",
     "spawn",
+    "wait_for_body",
 ]

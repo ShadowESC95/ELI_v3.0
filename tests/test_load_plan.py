@@ -267,3 +267,85 @@ def test_the_operators_own_figure_wins(machine, monkeypatch):
 def test_minus_one_is_every_layer_as_in_llamacpp(machine):
     """llama.cpp's own value for every layer; "99" stood for it and fell short on models of more blocks."""
     assert load_plan.plan(_req(n_gpu_layers=-1)).n_gpu_layers == BLOCKS + 1
+
+
+# ── a headset on the cards ───────────────────────────────────────────────────
+# ELI VR and the runtime driving the headset draw on the card the model loads onto, and take more
+# as they go. A plan made from what was free before they started left them nothing: the first
+# reply failed inside CUDA and took ELI with it (ELI VR 0.9.13 on v3.0.150, two RTX 2060 SUPER).
+
+def _headset(monkeypatch, tmp_path, *, smi_cards, held, wanted=True):
+    """nvidia-smi's cards and what the headset's programs hold on each; a body wanted or not."""
+    monkeypatch.setattr(load_plan, "_xr_file", lambda: tmp_path / "gpu_xr.json")
+    monkeypatch.setattr(load_plan, "_smi_cards", lambda: smi_cards)
+    monkeypatch.setattr(load_plan, "xr_footprint_now", lambda: dict(held))
+    monkeypatch.setattr(load_plan, "body_wanted", lambda: wanted)
+
+
+_SMI_CARDS = [{"index": 0, "name": "Card 0", "total_mb": 4096}, {"index": 1, "name": "Card 1", "total_mb": 4096}]
+
+
+def test_what_the_headsets_programs_hold_is_measured_and_the_most_seen_is_kept(machine, monkeypatch, tmp_path):
+    held = {0: 900.0}
+    _headset(monkeypatch, tmp_path, smi_cards=_SMI_CARDS, held=held)
+    assert load_plan.note_xr_footprint(force=True) == {"Card 0|4096|0": 900.0}
+    held[0] = 1500.0                                      # a fuller room, the desktop's layer
+    load_plan.note_xr_footprint(force=True)
+    held[0] = 1100.0                                      # back in a lighter room
+    assert load_plan.note_xr_footprint(force=True)["Card 0|4096|0"] == 1500.0
+    # while a body is here the card keeps what the headset will yet take: its peak, less what it holds now
+    assert load_plan.xr_reserve_mb(_cards()[0]) == pytest.approx(400.0)
+    assert load_plan.xr_reserve_mb(_cards()[1]) == 0.0    # nothing of the headset's is drawn on this card
+    held[0] = 0.0                                         # on its way and not yet started: the whole peak
+    assert load_plan.xr_reserve_mb(_cards()[0]) == pytest.approx(1500.0)
+
+
+def test_nothing_is_kept_for_a_headset_that_is_not_here_or_coming(machine, monkeypatch, tmp_path):
+    _headset(monkeypatch, tmp_path, smi_cards=_SMI_CARDS, held={0: 1500.0}, wanted=False)
+    load_plan.note_xr_footprint(force=True)
+    assert load_plan.xr_reserve_mb(_cards()[0]) == 0.0
+    assert not any("headset" in n for n in load_plan.plan(_req()).notes)
+
+
+def test_the_plan_leaves_the_headset_its_room_on_the_card_it_draws_on(machine, monkeypatch):
+    monkeypatch.setattr(load_plan, "xr_reserve_mb", lambda dev: 700.0 if dev.index == 0 else 0.0)
+    p = load_plan.plan(_req())
+    assert p.use_mb[0] <= machine["free"][0] - 700.0 - COMPUTE_MB_PER_512 * p.n_batch / 512 + 1e-6
+    assert p.tensor_split[0] < p.tensor_split[1], "the other card carries more of the model"
+    assert any(n.startswith("keeps 700 MB on CUDA0 free for the headset's runtime") for n in p.notes)
+
+
+def test_a_llamacpp_device_is_matched_to_its_nvidia_smi_card_by_name_and_place(machine, monkeypatch):
+    assert [load_plan.smi_index(d, _SMI_CARDS) for d in _cards()] == [0, 1]
+    # two cards alike: by place among them, so the second CUDA device is the second such card
+    alike = [{"index": 0, "name": "Card 0", "total_mb": 4096}, {"index": 1, "name": "Card 0", "total_mb": 4096}]
+    monkeypatch.setattr(load_plan, "devices", lambda: [Device(0, "CUDA0", "Card 0", 2000, 4096, False),
+                                                       Device(1, "CUDA1", "Card 0", 2000, 4096, False)])
+    assert [load_plan.smi_index(d, alike) for d in load_plan.devices()] == [0, 1]
+    # a card nvidia-smi does not list (another vendor) has no place in its list
+    assert load_plan.smi_index(Device(0, "Vulkan0", "AMD Radeon", 2000, 4096, False), _SMI_CARDS) is None
+
+
+def test_the_warm_up_batch_runs_on_the_cards_and_not_on_the_processor(machine):
+    from eli.cognition import gguf_inference as gi
+
+    class FakeLlm:
+        n_batch = 64
+
+        def __init__(self):
+            self.calls = []
+
+        def tokenize(self, text, add_bos=True):
+            return list(range(len(text.split())))
+
+        def eval(self, tokens):
+            self.calls.append(("eval", len(tokens)))
+
+        def reset(self):
+            self.calls.append(("reset",))
+
+    llm = FakeLlm()
+    assert gi._warm_up(llm, load_plan.plan(_req(n_batch=64))) is True
+    assert llm.calls == [("eval", 64), ("reset",)], "one full batch, then the cache cleared"
+    spare = FakeLlm()
+    assert gi._warm_up(spare, load_plan.on_processor(_req())) is False and spare.calls == []
