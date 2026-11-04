@@ -494,7 +494,8 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `ble_light.py` | 247 | BLE light control — the GATT writes ELI never had. |
 | `bt_platform.py` | 1335 | Cross-platform Bluetooth radio detection, recovery, and classic discovery. |
 | `codebase_graph.py` | 313 | Codebase self-graph — ELI's live, grounded model of how its OWN code connects. |
-| `command_splitter.py` | 209 | Split one utterance that chains several commands into its parts; read a message as sentences and tell an instruction from a statement or a question. Holds the one list of verbs a command starts with. |
+| `command_splitter.py` | 411 | Split one utterance that chains several commands into its parts; read a message as sentences and tell an instruction from a statement or a question. Holds the one list of verbs a command starts with. |
+| `routing/command_parser.py` | 570 | The command language: a sentence read by its form (verb, object, modifiers, a pronoun for what the last command was about) and carried to the action its frame names, with the catalogue's activation phrases as the vocabulary; a strict pass ahead of the rules for atoms, a lenient pass after them for what no rule took (see `architecture.md` §4). |
 | `conversation_thread.py` | 284 | Conversation thread awareness — topic carryover, proactive grounding, web queries. |
 | `desktop_launchers.py` | 718 | Redistribution-safe desktop / Start Menu launchers. |
 | `deterministic_failure_patches.py` | 108 | Rule-based code patches for recurring executor failures without LLM guessing. |
@@ -580,7 +581,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `portable_intent_contract.py` | 750 | Portable intent rules; hard-blocks document, code and analysis prompts from `PLAY_MEDIA`. The one reading of an "open ..." target that is a website (`web_open_target`) and of the window a command names (`window_target`). |
 | `route_authority.py` | 46 | Thread-local record of which layer decided a route, and the internal prompt prefixes that must never be routed as user text. |
 | `route_contracts.py` | 224 | Small predicates that classify a request for the router; whether an action changes anything (`changes_something`) and whether a sentence tells ELI to do what was matched in it (`fits`). |
-| `router_enhanced.py` | 7022 | The router: `route(text)` regex-first priority pipeline with LLM-intent fallback (see `architecture.md` §4). |
+| `router_enhanced.py` | 7511 | The router: `route(text)` priority pipeline of prepasses, the command parser's strict pass, the word-pattern rules, the parser's lenient pass and the chat fallback, with the engine's grammar-held intent model beyond it (see `architecture.md` §4). |
 | `shell_gate.py` | 110 | Centralised shell-command safety gate. |
 
 ## `core/`

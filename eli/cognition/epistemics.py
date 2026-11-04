@@ -12,10 +12,13 @@ what happened. This is where that check lives, so a figure ELI gives for an answ
     Probability          a calibrated chance with its basis: the kind of outcome it is about,
                          the raw score it came from, the features behind it, how many outcomes
                          the calibration rests on and how far it has been from the truth
-    calibrate(kind, score, class_)   the chance for a raw score of this kind, from the outcomes
-                         recorded so far: Platt scaling (a logistic fit on the score's logit) with
-                         a prior that the score already is the chance, so with nothing recorded
-                         the chance is the score, and it moves only as outcomes say it should
+    calibrate(kind, score, class_, features)   the chance for a raw score of this kind, from the
+                         outcomes recorded so far: a logistic fit on the score's logit and on the
+                         model's own confidence in the tokens of the reply (FEATURES, from
+                         gguf_inference._TokenConfidence), with a prior that the score already is
+                         the chance and the other figures count for nothing, so with nothing
+                         recorded the chance is the score, and each figure weighs only what the
+                         outcomes have shown it to tell
     assess(kind, score, features, request_id)   make and record a Probability for a turn
     settle(request_id, right, how)   record what happened to it
     report(kind, days)   Brier score, expected calibration error and reliability by band
@@ -47,9 +50,16 @@ DAYS = 90.0                       # how far back outcomes count toward a calibra
 EDGE = 1e-3
 # Reliability is read in ten equal bands of the chance, the usual way (Naeini et al., 2015).
 BANDS = 10
-# The prior on the fit: the slope's departure from one and the shift are each standard normal, so
-# the fit stays at "the score is the chance" until outcomes outweigh one observation's worth of doubt.
+# The prior on the fit: the score's weight about one, every other weight and the shift about zero,
+# each standard normal, so the fit stays at "the score is the chance" until outcomes outweigh one
+# observation's worth of doubt, and a figure that has not told right from wrong weighs nothing.
 PRIOR_SD = 1.0
+# The model's own confidence in the tokens of the reply (eli/cognition/gguf_inference.py,
+# _TokenConfidence), read beside the score: the mean and least log-probability of the chosen
+# tokens, the mean entropy of the distributions they came from, and the share chosen at under an
+# even chance. A reply the model was unsure of token by token is more often wrong, whatever its
+# figure. Missing from an outcome, a figure counts as 0, the prior's own value.
+FEATURES = ("mean_logprob", "min_logprob", "mean_entropy", "low_share")
 
 
 @dataclass
@@ -62,13 +72,15 @@ class Probability:
     features: Dict[str, Any] = field(default_factory=dict)
     n: int = 0                                # outcomes the calibration rests on
     ece: Optional[float] = None               # its expected calibration error on them, when any
-    slope: float = 1.0                        # the fit: p = sigmoid(slope * logit(score) + shift)
+    slope: float = 1.0                        # the fit: p = sigmoid(slope * logit(score) + weights · features + shift)
     shift: float = 0.0
+    weights: Dict[str, float] = field(default_factory=dict)   # what each of FEATURES weighs in the fit
 
     def as_dict(self) -> Dict[str, Any]:
         return {"p": round(self.p, 4), "kind": self.kind, "class": self.class_, "score": round(self.score, 4),
                 "n": self.n, "ece": None if self.ece is None else round(self.ece, 4),
-                "slope": round(self.slope, 4), "shift": round(self.shift, 4), "features": dict(self.features)}
+                "slope": round(self.slope, 4), "shift": round(self.shift, 4),
+                "weights": {k: round(v, 4) for k, v in self.weights.items()}, "features": dict(self.features)}
 
 
 # ── the scoring rules ─────────────────────────────────────────────────────────────────────────────
@@ -135,40 +147,56 @@ def entropy(counts: Iterable[int]) -> float:
 
 # ── the fit ───────────────────────────────────────────────────────────────────────────────────────
 
-def fit(pairs: Sequence[Tuple[float, float]], *, prior_sd: float = PRIOR_SD, steps: int = 25) -> Tuple[float, float]:
-    """Platt scaling with a prior: (slope, shift) that most probably gave these (score, outcome) pairs,
-    where the chance is sigmoid(slope * logit(score) + shift). Newton's method on the penalised
-    log-loss; with no pairs it is (1, 0), the score itself."""
-    a, b = 1.0, 0.0
-    if not pairs:
-        return a, b
-    xs = [logit(float(s)) for s, _ in pairs]
-    ys = [1.0 if float(y) >= 0.5 else 0.0 for _, y in pairs]
+def _row(score: float, features: Optional[Dict[str, Any]]) -> List[float]:
+    """The fit's inputs for one reply: the score's logit, then each of FEATURES (0 when not known)."""
+    out = [logit(float(score))]
+    for key in FEATURES:
+        try:
+            out.append(float((features or {}).get(key) or 0.0))
+        except (TypeError, ValueError):
+            out.append(0.0)
+    return out
+
+
+def fit_rows(rows: Sequence[Tuple[float, float, Optional[Dict[str, Any]]]], *, prior_sd: float = PRIOR_SD,
+             steps: int = 25) -> Tuple[List[float], float]:
+    """The weights and shift that most probably gave these (score, outcome, features) rows, where the
+    chance is sigmoid(weights · [logit(score), *FEATURES] + shift): Newton's method on the penalised
+    log-loss, the prior standard normal about 1 for the score's weight and about 0 for every other
+    weight and the shift. With no rows, ([1, 0, ...], 0): the score itself."""
+    prior = [1.0] + [0.0] * len(FEATURES)
+    if not rows:
+        return prior, 0.0
+    import numpy as np
+    X = np.array([_row(s, f) + [1.0] for s, _, f in rows], dtype=float)
+    Y = np.array([1.0 if float(y) >= 0.5 else 0.0 for _, y, _ in rows], dtype=float)
+    mu = np.array(prior + [0.0], dtype=float)
+    theta = mu.copy()
     tau = 1.0 / (prior_sd * prior_sd)
     for _ in range(steps):
-        ga = tau * (a - 1.0)
-        gb = tau * b
-        haa = tau
-        hab = 0.0
-        hbb = tau
-        for x, y in zip(xs, ys):
-            p = sigmoid(a * x + b)
-            w = p * (1.0 - p)
-            ga += (p - y) * x
-            gb += (p - y)
-            haa += w * x * x
-            hab += w * x
-            hbb += w
-        det = haa * hbb - hab * hab
-        if det <= 0:
+        p = 1.0 / (1.0 + np.exp(-(X @ theta)))
+        gradient = X.T @ (p - Y) + tau * (theta - mu)
+        hessian = (X * (p * (1.0 - p))[:, None]).T @ X + tau * np.eye(len(theta))
+        try:
+            step = np.linalg.solve(hessian, gradient)
+        except np.linalg.LinAlgError:
             break
-        da = (hbb * ga - hab * gb) / det
-        db = (haa * gb - hab * ga) / det
-        a -= da
-        b -= db
-        if abs(da) < 1e-9 and abs(db) < 1e-9:
+        theta = theta - step
+        if float(np.max(np.abs(step))) < 1e-9:
             break
-    return a, b
+    return [float(v) for v in theta[:-1]], float(theta[-1])
+
+
+def fit(pairs: Sequence[Tuple[float, float]], *, prior_sd: float = PRIOR_SD, steps: int = 25) -> Tuple[float, float]:
+    """Platt scaling with a prior, on the score alone: (slope, shift) for sigmoid(slope * logit(score)
+    + shift). The same fit as fit_rows with no features; (1, 0) with no pairs."""
+    weights, shift = fit_rows([(s, y, None) for s, y in pairs], prior_sd=prior_sd, steps=steps)
+    return weights[0], shift
+
+
+def apply_rows(score: float, features: Optional[Dict[str, Any]], weights: Sequence[float], shift: float) -> float:
+    x = _row(score, features)
+    return sigmoid(sum(float(w) * v for w, v in zip(weights, x)) + shift)
 
 
 def apply(score: float, slope: float, shift: float) -> float:
@@ -213,11 +241,11 @@ def calibrate(kind: str, score: float, *, class_: str = "", features: Optional[D
     except Exception as failure:   # noqa: BLE001 - the ledger unreadable: the score stands as the chance
         log.debug("outcomes unavailable: %s", failure)
         pairs, fitted_for = [], ""
-    scored = [(s, y) for s, y, _ in pairs]
-    slope, shift = fit(scored)
-    error = ece([(apply(s, slope, shift), y) for s, y in scored]) if scored else None
-    return Probability(p=apply(score, slope, shift), kind=kind, score=score, class_=fitted_for,
-                       features=dict(features or {}), n=len(scored), ece=error, slope=slope, shift=shift)
+    weights, shift = fit_rows(pairs)
+    error = ece([(apply_rows(s, f, weights, shift), y) for s, y, f in pairs]) if pairs else None
+    return Probability(p=apply_rows(score, features, weights, shift), kind=kind, score=score, class_=fitted_for,
+                       features=dict(features or {}), n=len(pairs), ece=error, slope=weights[0], shift=shift,
+                       weights=dict(zip(("score",) + FEATURES, weights)))
 
 
 def assess(kind: str, score: float, *, request_id: str, features: Optional[Dict[str, Any]] = None,
@@ -255,13 +283,15 @@ def settle(request_id: str, right: bool, *, how: str = "", kind: str = ANSWER, d
 def report(kind: str = ANSWER, *, days: float = DAYS, db_path=None) -> Dict[str, Any]:
     """How good the figures of this kind have been: count, Brier score, calibration error, the
     reliability by band, and the fit now in force."""
-    pairs = [(s, y) for s, y, _ in outcomes(kind, days=days, db_path=db_path)]
-    slope, shift = fit(pairs)
-    calibrated = [(apply(s, slope, shift), y) for s, y in pairs]
+    rows = outcomes(kind, days=days, db_path=db_path)
+    pairs = [(s, y) for s, y, _ in rows]
+    weights, shift = fit_rows(rows)
+    calibrated = [(apply_rows(s, f, weights, shift), y) for s, y, f in rows]
     return {"kind": kind, "n": len(pairs), "brier": brier(pairs), "brier_calibrated": brier(calibrated),
             "ece": ece(pairs), "ece_calibrated": ece(calibrated), "bands": reliability(pairs),
-            "slope": slope, "shift": shift}
+            "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + FEATURES, weights))}
 
 
-__all__ = ["ANSWER", "ASSESSED", "OUTCOME", "Probability", "apply", "assess", "brier", "calibrate", "ece",
-           "entropy", "fit", "logit", "outcomes", "reliability", "report", "settle", "sigmoid"]
+__all__ = ["ANSWER", "ASSESSED", "FEATURES", "OUTCOME", "Probability", "apply", "apply_rows", "assess", "brier",
+           "calibrate", "ece", "entropy", "fit", "fit_rows", "logit", "outcomes", "reliability", "report", "settle",
+           "sigmoid"]

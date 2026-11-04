@@ -128,9 +128,31 @@ RESPONSE_DELIVERY, S12 LEARNING_STATE_UPDATE. Enable tracing with `ELI_PIPELINE_
 
 ## 4. Routing layer (`eli/execution`)
 
-- **`router_enhanced.py`**: `route(text) -> {action, args, confidence, meta}`. A regex-first
-  priority pipeline of ordered prepasses (realtime web lookup, media, file and PDF, memory,
-  control), then a core router, with an LLM intent fallback (`cognition/llm_intent.py`).
+- **`router_enhanced.py`**: `route(text) -> {action, args, confidence, meta}`. A priority
+  pipeline of ordered prepasses (realtime web lookup, media, file and PDF, memory, control), the
+  command-language parser's strict pass, the rules (word patterns, inline and in
+  `routing/intents/`), the parser's lenient pass, and the chat fallback; beyond it, the engine's
+  grammar-held intent model (`cognition/llm_intent.py`).
+- **`routing/command_parser.py`**: the command language. A sentence is read by its form (what
+  stands in front of it, its verb, its object, its modifiers by preposition) before any pattern
+  sees its words. The frames (`FRAMES`) say which verb with which kind of object is which action
+  and how the parts become the action's arguments, in the shape the executor already takes; the
+  verbs are the ones the capability catalogue's activation phrases start with, with what else is
+  said for them (`SAID_FOR`: "fire up", "put on", "jot down"); a catalogue phrase with nothing
+  variable in it ("show my habits") is a literal and names its action outright, when it names it
+  in the action's own words. The atoms are readers that already existed: a web address and a
+  path (`routing/_helpers`), a known site (`app_aliases`), a streaming service (`media_runtime`),
+  a time of day (`runtime/agenda`); the number words of a duration are read here ("twenty five
+  minutes", "an hour and a half"). A pronoun ("close it", "open it again") is what the last
+  command was about, which the engine puts on the turn's facts. The strict pass, ahead of the
+  rules, takes only commands whose object is an atom (an address, a path, a duration, a time of
+  day, a browser, the IDE, a pronoun with a referent) and is held to change nothing the rules
+  already route (the catalogue's own phrases and the eval corpus are the yardstick, in
+  `tests/test_command_parser.py`); the lenient pass, after them, takes what no rule did, and for
+  an app or a track puts the command to the rules in the catalogue's words first ("fire up
+  spotify" as "open spotify"), so the rules keep their knowledge of objects. What is not read:
+  a chain is divided first by `command_splitter`; a question or a statement is not a command;
+  shell commands, deletions and changes to who the user is are explicit-only.
 - **`execution_planner.py`**: typed `ExecutionPlan` and `RouteDecision` artifacts.
 - **`route_contracts.py`, `operator_policy.py`, `shell_gate.py`**: what may be routed and
   executed.

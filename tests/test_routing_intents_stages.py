@@ -11,6 +11,7 @@ def test_stage_order_is_the_legacy_order():
 
     assert [name for name, _ in INTENT_STAGES] == [
         # early group — before the inline code-generation block
+        "command_parser",          # the command language's strict pass: atoms only, ahead of the rules
         "self_report",
         "runtime_voice",
         "input_agents",
@@ -23,6 +24,7 @@ def test_stage_order_is_the_legacy_order():
         "world_models",
         "capture_input",
         "session_ops",
+        "command_parser_tail",     # its lenient pass: what no rule took, before the chat fallback
     ]
 
 

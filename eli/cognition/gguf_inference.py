@@ -81,7 +81,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, Dict, Any, Generator, Union
 
-from llama_cpp import Llama, LlamaGrammar
+from llama_cpp import Llama, LlamaGrammar, LogitsProcessorList
 
 
 def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
@@ -1507,6 +1507,68 @@ def _runaway_stop(llm):
     return stop
 
 
+class _TokenConfidence:
+    """How sure the model was of each token it chose, read as it goes. A logits processor sees a
+    step's logits before sampling (the model's own distribution, before temperature) and, at the
+    next step, which token was chosen, so each token's log-probability is settled one step later,
+    with the entropy of the distribution it was drawn from. For user-facing generations only, and
+    never for one held to a grammar (there the grammar chooses, not the model). The summary goes to
+    the turn's facts and from there to the calibration of the reply's chance of being right
+    (eli/cognition/epistemics.py). A log-softmax over the vocabulary a token: well under a
+    millisecond beside a decode step."""
+
+    def __init__(self) -> None:
+        self.logprobs: List[float] = []
+        self.entropies: List[float] = []
+        self._last = None                      # the previous step's log-softmax
+
+    def __call__(self, input_ids, scores):
+        import numpy as np
+        if self._last is not None and len(input_ids):
+            chosen = int(input_ids[-1])
+            if 0 <= chosen < len(self._last):
+                self.logprobs.append(float(self._last[chosen]))
+        logits = np.asarray(scores, dtype=np.float32)
+        top = float(np.max(logits))
+        log_norm = top + float(np.log(np.sum(np.exp(logits - top))))
+        logp = logits - log_norm
+        p = np.exp(logp)
+        self.entropies.append(float(-np.sum(p * logp)))
+        self._last = logp
+        return scores
+
+    def summary(self) -> Dict[str, float]:
+        """The mean and the least log-probability of the chosen tokens, the share chosen at under an
+        even chance, the mean entropy of the distributions they came from and the first step's, and
+        how many tokens; {} when none was settled."""
+        from math import log
+        n = len(self.logprobs)
+        if not n:
+            return {}
+        drawn_from = self.entropies[:n]
+        return {"tokens": n,
+                "mean_logprob": sum(self.logprobs) / n,
+                "min_logprob": min(self.logprobs),
+                "low_share": sum(1 for lp in self.logprobs if lp < log(0.5)) / n,
+                "mean_entropy": sum(drawn_from) / n,
+                "first_entropy": drawn_from[0]}
+
+
+def _note_token_confidence(recorder) -> None:
+    """The generation's token figures onto the turn's facts: the last call's, with how many calls
+    the turn made (a mode of several passes serves its last)."""
+    if recorder is None:
+        return
+    summary = recorder.summary()
+    if not summary:
+        return
+    from eli.kernel.request_context import turn_facts_var
+    facts = turn_facts_var.get()
+    if facts is not None:
+        summary["calls"] = int((facts.get("generation") or {}).get("calls") or 0) + 1
+        facts["generation"] = summary
+
+
 def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, top_k, repeat_penalty, stop, stream, grammar):
     """
     Invoke llama.cpp safely:
@@ -1556,6 +1618,12 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
         _sc.append(_runaway_stop(llm))
     if _sc is not None:
         extra["stopping_criteria"] = _sc
+    # how sure the model is of what it says, for the reply's own calibration (a grammar-held call
+    # is the grammar's choice, not the model's; background work is nobody's reply)
+    _confidence = None
+    if not bg and grammar is None:
+        _confidence = _TokenConfidence()
+        extra["logits_processor"] = LogitsProcessorList([_confidence])
 
     _fg_started = [0.0]   # set while this call counts as a user-facing generation in progress
 
@@ -1637,13 +1705,14 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
                             yield item
                     finally:
                         _safe_release()
+                        _note_token_confidence(_confidence)
 
                 return _locked_stream()
 
             _acquire_lock_fg_priority()
             try:
                 _resume()
-                return llm(
+                _result = llm(
                     full_prompt,
                     temperature=temperature,
                     max_tokens=attempt_max,
@@ -1657,6 +1726,8 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
                 )
             finally:
                 _safe_release()
+            _note_token_confidence(_confidence)
+            return _result
         except Exception as e:
             last_exc = e
             msg = str(e).lower()

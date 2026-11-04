@@ -3908,6 +3908,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if score is not None and request_id and str(result_action or "CHAT") == "CHAT":
             try:
                 from eli.cognition import epistemics as _epistemics
+                from eli.kernel.request_context import turn_facts_var as _turn_facts
+                # the model's own confidence in the tokens of this reply (gguf_inference._TokenConfidence)
+                _generation = dict(((_turn_facts.get() or {}).get("generation") or {}))
                 probability = _epistemics.assess(
                     _epistemics.ANSWER, score, request_id=request_id, class_="grounded" if grounded else "chat",
                     features={"grounded": bool(grounded), "evidence_used": bool(evidence_used),
@@ -3915,7 +3918,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                               "agents": len(agents_used or []), "chars": len(str(response or "")),
                               "agreement": getattr(self, "_last_sc_agreement_ratio", None),
                               "entropy": getattr(self, "_last_sc_entropy", None),
-                              "grounding": grounding_confidence})
+                              "grounding": grounding_confidence,
+                              **{k: _generation.get(k) for k in (*_epistemics.FEATURES, "tokens", "first_entropy")
+                                 if _generation.get(k) is not None}})
                 self._pending_assessment = request_id
                 # ELI's world hears it: its evidence confidence and uncertainty are the means of these
                 from eli.world.world_event_bus import fire_world_event as _fire_world_event
@@ -4455,6 +4460,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "t0": time.perf_counter(),
             "user_input": user_input,
             "autonomous": _is_autonomous_source(source),
+            # what the last command was about, for a pronoun in this one (routing/command_parser)
+            "last_command": dict(getattr(self, "_last_command_action", None) or {}),
         }
         if not facts["autonomous"]:
             try:

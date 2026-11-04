@@ -164,3 +164,55 @@ def test_the_next_turn_says_whether_the_last_answer_was_right():
         assert is_endorsement(said) and not is_answer_correction(said), said
     for said in ("no, that's not true", "yes", "ok", "what about the other one", "right, so what is the capital"):
         assert not is_endorsement(said), said
+
+
+# ── the model's own confidence in the tokens of a reply, read beside the score ──────────────────
+# gguf_inference records, for each user-facing generation, how sure the model was of the tokens it
+# chose (epistemics.FEATURES); the fit weighs each figure by what the outcomes have shown it to tell.
+
+def test_with_no_features_the_fit_is_the_score_alone():
+    weights, shift = ep.fit_rows([])
+    assert weights == [1.0] + [0.0] * len(ep.FEATURES) and shift == 0.0
+    assert ep.apply_rows(0.7, None, weights, shift) == pytest.approx(0.7)
+    assert ep.apply_rows(0.7, {"mean_logprob": -2.0}, weights, shift) == pytest.approx(0.7)
+
+
+def test_a_token_figure_that_tells_right_from_wrong_gains_weight(db):
+    # the same score every time; the replies the model was unsure of token by token proved wrong
+    for i in range(16):
+        sure = i % 2 == 0
+        ep.assess("answer", 0.8, request_id=f"tok{i}", features={"mean_logprob": -0.3 if sure else -2.5},
+                  db_path=db)
+        ep.settle(f"tok{i}", right=sure, db_path=db)
+    sure = ep.calibrate("answer", 0.8, features={"mean_logprob": -0.3}, db_path=db)
+    unsure = ep.calibrate("answer", 0.8, features={"mean_logprob": -2.5}, db_path=db)
+    assert sure.p > 0.8 > unsure.p and unsure.p < 0.5
+    assert sure.weights["mean_logprob"] > 0.5
+    assert ep.report("answer", db_path=db)["weights"]["mean_logprob"] == pytest.approx(sure.weights["mean_logprob"])
+
+
+def test_a_token_figure_that_tells_nothing_keeps_no_weight(db):
+    for i in range(16):
+        ep.assess("answer", 0.8, request_id=f"same{i}", features={"mean_entropy": 1.0 + (i % 3) * 0.1}, db_path=db)
+        ep.settle(f"same{i}", right=i % 4 != 0, db_path=db)
+    p = ep.calibrate("answer", 0.8, features={"mean_entropy": 1.1}, db_path=db)
+    assert abs(p.weights["mean_entropy"]) < 0.5
+    assert abs(p.weights["min_logprob"]) < 1e-6 and abs(p.weights["low_share"]) < 1e-6, "never seen: the prior's zero"
+
+
+def test_the_token_recorder_settles_each_chosen_token_one_step_later():
+    import math
+    import numpy as np
+    from eli.cognition.gguf_inference import _TokenConfidence
+    rec = _TokenConfidence()
+    logits = np.array([2.0, 1.0, 0.0, -1.0], dtype=np.float32)
+    rec(np.array([5]), logits)                       # step 1: the prompt's last token in, nothing settled
+    assert rec.logprobs == [] and len(rec.entropies) == 1
+    rec(np.array([5, 1]), logits)                    # step 2: token 1 was chosen from step 1's distribution
+    lse = math.log(sum(math.exp(v) for v in logits))
+    assert rec.logprobs == [pytest.approx(1.0 - lse)]
+    rec(np.array([5, 1, 0]), logits)                 # step 3: token 0, the likeliest
+    s = rec.summary()
+    assert s["tokens"] == 2 and s["min_logprob"] == pytest.approx(1.0 - lse) and s["max_logprob" if False else "mean_logprob"] < 0
+    assert s["low_share"] == 0.5 and s["first_entropy"] == pytest.approx(s["mean_entropy"])
+    assert _TokenConfidence().summary() == {}
