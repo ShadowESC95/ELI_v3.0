@@ -194,6 +194,7 @@ class ReasoningModesMixin:
         # directly rather than spending a wasted extra "select" generation on a single answer.
         # No agreement signal is possible with one sample, so leave it unset.
         self._last_sc_agreement_ratio = None
+        self._last_sc_entropy = None
         if len(samples) <= 1:
             return _strip_reasoning_scaffold(samples[0]) if samples else ""
 
@@ -946,6 +947,7 @@ class ReasoningModesMixin:
         valid = [s for s in samples if s and len(str(s).strip()) >= 2]
         if len(valid) < 3:
             self._last_sc_agreement_ratio = None
+            self._last_sc_entropy = None
             return None
         norms = [_norm(s) for s in valid]
         counts = Counter(n for n in norms if n)
@@ -954,6 +956,10 @@ class ReasoningModesMixin:
             return None
         top_norm, top_count = counts.most_common(1)[0]
         self._last_sc_agreement_ratio = top_count / len(valid)
+        # a 3-2 split and five different answers both leave the winner with a minority: the
+        # entropy of the vote tells them apart, and goes to the calibration with the share
+        from eli.cognition.epistemics import entropy as _entropy
+        self._last_sc_entropy = _entropy(counts.values())
         # Strict majority, and the agreed answer is short enough that exact-match is a real
         # signal (a fact/value), not coincidental overlap of long prose.
         if top_count > len(valid) / 2 and len(top_norm) <= 400:

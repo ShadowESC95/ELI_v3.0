@@ -306,7 +306,7 @@ The thinking layer: agents, orchestration, inference, persona, reasoning, govern
 | `orchestrator.py` | 1325 | Gradient 12-stage pipeline (all CHAT modes): planner → `retrieve_for_turn()` → `dispatch_specialists()` → heuristic rerank → context assembly. Composes the specialist bus; no longer Quick-only bypass. |
 | `learning_coordinator.py` | 86 | Stage 12 `finalize_turn()` — store assistant turn, publish meta, `_learn_from_result()`. |
 | `hyde.py` | 69 | Hypothetical-document-embedding query expansion. |
-| `reranker.py` | 176 | Candidate reranking (token overlap + source priority). |
+| `reranker.py` | 180 | Candidate reranking (token overlap, source priority, and how readily a memory comes to mind when the recall worked it out). |
 | `introspection_agent.py` | 164 | Wraps introspection for the bus (pipeline/memory/runtime/audit). |
 | `llm_intent.py` | 343 | LLM intent parsing fallback (GGUF, cached). |
 
@@ -544,6 +544,7 @@ Every remaining module under `eli/`, with its line count and a one-line role (th
 | `agent_spec.py` | 436 | A real specification for a custom agent — objective, prompt, triggers, measures. |
 | `agent_trust.py` | 262 | Trust for custom agent code — provenance, not just a hash in a dict. |
 | `belief.py` | 239 | Belief revision — what ELI holds, how strongly, and what it takes to change it. |
+| `epistemics.py` | 300 | What ELI's figures mean and whether they are borne out: the chance a reply is right, calibrated on what later turns said of such figures; Brier, ECE, reliability; the entropy of a vote. |
 | `chat_grounding_gate.py` | 157 | Fail-closed CHAT gate — skip LLM when user-fact grounding is required but absent. |
 | `context_budget.py` | 130 | Sizing and trimming the memory block that goes into a prompt. |
 | `correction_patterns.py` | 248 | Shared patterns for user correction / dispute turns. |

@@ -10,7 +10,7 @@ subsystem, and OS control. All local, no APIs, no third-party accounts.
 |---|---|---|
 | `mic_resolver.py` | ~580 | **cross-platform mic auto-resolve** — ranked PortAudio candidates, isolated live probes, Linux `PULSE_SOURCE` pin |
 | `audio_stt.py` | ~1.6k | STT + mic capture + ducking + adaptive pause + wake/voice capture |
-| `wakeword.py` | ~450 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head) |
+| `wakeword.py` | ~450 | **self-trained, music-robust wake-word detector** (openWakeWord features + custom head; white, pink and brown noise beds; the threshold from out-of-fold scores) |
 | `voice_profile.py` | ~420 | **prosody + labelled-emotion** (tone/question detection) |
 | `tts_router.py` | 1312 | Piper/pyttsx3/espeak router + `char:`/`clone:`/`natural:` voice resolution; `neural_fallback_state()` makes a neural→Piper fallback observable |
 | `voice_fx.py` | 252 | **voice styles** (calm / robotic / energetic / synthetic / refined) — base voice + ffmpeg effect chain; user preset store |
@@ -170,7 +170,10 @@ tone/emotion and question-vs-statement:
   voiced ratio, speaking rate, and a **terminal-pitch slope** (`analyze_prosody`).
 - **Question vs statement** (working): rising terminal pitch ⇒ question
   (`question_or_statement`).
-- **Labelled emotion**: `add_labelled_sample` + a nearest-centroid classifier
+- **Labelled emotion**: `add_labelled_sample` + a Gaussian-per-class classifier (each emotion
+  its own spread per feature, shrunk toward the whole set's; Mahalanobis distance; a posterior over
+  the classes as the confidence; a clip further from every class than the chi-square 99 % quantile
+  is no emotion rather than the least unlike one; see `blueprints/epistemic_dynamics.md`), formerly a nearest-centroid classifier
   (`train_emotion_classifier`) over neutral/happy/angry/excited/sad — robust for the
   small data a quick enrollment yields, upgradeable to a NN without touching callers.
 - **`classify_tone`** returns emotion + confidence, arousal, and the question/statement

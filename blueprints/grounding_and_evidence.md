@@ -90,6 +90,16 @@ A persistent SQLite ledger of evidence events: `record_event`, `recent_events`,
 `artifact_snapshot`. Gives ELI a durable, queryable record of what actually
 happened.
 
+### `cognition/epistemics.py`
+A chance that means something. The reply's own figure is an index; the chance that the reply is
+right is that figure calibrated on what earlier turns said of such figures (Platt scaling with a
+prior toward "the score is the chance", so with nothing recorded the chance is the score). Figures
+are put in the ledger when the turn meta is published (`answer_assessed`) and settled by the next
+turn (`answer_outcome`: a correction → wrong, an endorsement → right). Brier score, expected
+calibration error and reliability by band have one owner here; the ledger's tool-prediction report
+uses them. The world's evidence confidence and uncertainty are the running means of the sitting's
+chances. See `blueprints/epistemic_dynamics.md`.
+
 ### `runtime/evidence_arbitration.py` (193 lines)
 `EvidenceItem` + `arbitrate_evidence(limit)` + `build_evidence_context_text` —
 scores and merges competing evidence into a single context block. Pairs with the

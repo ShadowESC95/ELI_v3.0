@@ -7,7 +7,7 @@ import time
 import hashlib
 import hmac
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 def _default_db_path() -> Path:
@@ -729,6 +729,35 @@ def unreliable_actions(*, min_runs: int = 5, below: float = 0.8, limit: int = 5,
     return sorted(out, key=lambda r: r["p"])[:limit]
 
 
+def assessment_pairs(kind: str, *, since: float, assessed_type: str = "answer_assessed",
+                     outcome_type: str = "answer_outcome",
+                     db_path: Optional[str | Path] = None) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Each figure given for a turn (an `assessed_type` event of this kind) with the outcome the next
+    turn recorded for it (an `outcome_type` event with the same request id), newest first, since
+    `since`. A figure nothing has settled yet is left out. For eli/cognition/epistemics.py."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT a.payload_json, COALESCE(a.ts, a.timestamp, 0), a.request_id, o.outcome, o.payload_json "
+            "FROM runtime_events a JOIN runtime_events o ON o.request_id = a.request_id "
+            "AND o.event_type = ? AND o.action = a.action AND o.request_id <> '' "
+            "WHERE a.event_type = ? AND a.action = ? AND COALESCE(a.ts, a.timestamp, 0) >= ? "
+            "ORDER BY a.id DESC",
+            (outcome_type, assessed_type, str(kind or "").upper(), float(since))).fetchall()
+    finally:
+        conn.close()
+
+    def _payload(raw: Any) -> Dict[str, Any]:
+        try:
+            value = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except Exception:
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    return [({"payload": _payload(r[0]), "timestamp": r[1], "request_id": r[2]},
+             {"outcome": r[3], "payload": _payload(r[4])}) for r in rows]
+
+
 def calibration_report(*, days: float = 90.0, db_path: Optional[str | Path] = None) -> Dict[str, Any]:
     """How good the success predictions were: Brier score and predicted-versus-observed by band."""
     since = time.time() - float(days) * 86400.0
@@ -747,13 +776,9 @@ def calibration_report(*, days: float = 90.0, db_path: Optional[str | Path] = No
         except Exception:
             continue
     if not pairs:
-        return {"n": 0, "brier": None, "bands": []}
-    bands = []
-    for lo, hi in ((0.0, 0.5), (0.5, 0.8), (0.8, 0.95), (0.95, 1.01)):
-        sel = [(p, y) for p, y in pairs if lo <= p < hi]
-        if sel:
-            bands.append({"range": f"{lo:.2f}-{min(hi, 1.0):.2f}", "n": len(sel),
-                          "predicted": round(sum(p for p, _ in sel) / len(sel), 3),
-                          "observed": round(sum(y for _, y in sel) / len(sel), 3)})
-    return {"n": len(pairs), "brier": round(sum((p - y) ** 2 for p, y in pairs) / len(pairs), 4), "bands": bands}
+        return {"n": 0, "brier": None, "ece": None, "bands": []}
+    from eli.cognition.epistemics import brier, ece, reliability   # one owner of the scoring rules
+    edges = (0.0, 0.5, 0.8, 0.95, 1.01)
+    return {"n": len(pairs), "brier": round(brier(pairs), 4), "ece": round(ece(pairs, edges), 4),
+            "bands": reliability(pairs, edges)}
 

@@ -374,13 +374,6 @@ def _smi_cards() -> List[Dict[str, Any]]:
     return _nvidia_cards() or []
 
 
-def _smi_key(card: Dict[str, Any], cards: Sequence[Dict[str, Any]]) -> str:
-    """A card's identity across runs: its name and size, and its place among the cards like it."""
-    alike = [c for c in cards if str(c.get("name")) == str(card.get("name"))]
-    place = next((k for k, c in enumerate(alike) if int(c["index"]) == int(card["index"])), 0)
-    return f"{card.get('name')}|{int(float(card.get('total_mb') or 0))}|{place}"
-
-
 def smi_index(dev: Device, cards: Optional[Sequence[Dict[str, Any]]] = None) -> Optional[int]:
     """Which nvidia-smi card a llama.cpp device is: the one with its name, by place among the cards
     like it (CUDA and nvidia-smi both number cards of one kind by bus). None for a card nvidia-smi
@@ -447,9 +440,14 @@ def note_xr_footprint(force: bool = False) -> Dict[str, float]:
             return {}
         table = _xr_table()
         changed = False
-        for card in cards:
-            mb = float(held.get(int(card["index"]), 0.0))
-            key = _smi_key(card, cards)
+        # kept by the card as the headroom table knows it, the llama.cpp device matched to its
+        # nvidia-smi card (smi_index); a card llama.cpp cannot load onto is not planned for
+        for dev in devices():
+            index = smi_index(dev, cards)
+            if index is None:
+                continue
+            mb = float(held.get(int(index), 0.0))
+            key = _card(dev)
             if mb > float((table.get(key) or {}).get("mb") or 0.0):
                 table[key] = {"mb": round(mb, 1), "when": _time.time()}
                 changed = True
@@ -471,13 +469,11 @@ def xr_reserve_mb(dev: Device) -> float:
     they have been measured on this card."""
     if not body_wanted():
         return 0.0
-    cards = _smi_cards()
-    index = smi_index(dev, cards)
-    card = next((c for c in cards if int(c["index"]) == index), None) if index is not None else None
-    if card is None:
-        return 0.0
-    peak = float((_xr_table().get(_smi_key(card, cards)) or {}).get("mb") or 0.0)
+    peak = float((_xr_table().get(_card(dev)) or {}).get("mb") or 0.0)
     if peak <= 0.0:
+        return 0.0
+    index = smi_index(dev, _smi_cards())
+    if index is None:
         return 0.0
     return max(0.0, peak - float(xr_footprint_now().get(int(index), 0.0)))
 

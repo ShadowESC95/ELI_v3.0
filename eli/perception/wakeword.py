@@ -287,13 +287,23 @@ def _noise_beds() -> List[np.ndarray]:
                     log.debug("suppressed exception", exc_info=True)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-    # synthetic noise (always available)
+    # synthetic noise (always available): white, pink (power falling as 1/f, shaped in the
+    # spectrum) and brown (1/f², the running sum of white noise; what used to be called pink here)
     rng = np.random.default_rng(0)
     white = rng.standard_normal(SR * 4).astype(np.float32) * 0.3
-    pink = np.cumsum(rng.standard_normal(SR * 4)).astype(np.float32)
+    spectrum = np.fft.rfft(rng.standard_normal(SR * 4))
+    freqs = np.fft.rfftfreq(SR * 4, 1.0 / SR)
+    spectrum[1:] /= np.sqrt(freqs[1:])
+    spectrum[0] = 0.0
+    pink = np.fft.irfft(spectrum, n=SR * 4).astype(np.float32)
     pink = (pink - pink.mean()) / (np.std(pink) + 1e-9) * 0.3
-    beds.extend([white, pink])
+    brown = np.cumsum(rng.standard_normal(SR * 4)).astype(np.float32)
+    brown = (brown - brown.mean()) / (np.std(brown) + 1e-9) * 0.3
+    beds.extend([white, pink, brown])
     return beds
+
+
+FOLDS = 5   # the threshold is set on out-of-fold scores: five folds, the usual choice
 
 
 def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.85, 1.0, 1.15),
@@ -356,21 +366,37 @@ def train_model(phrases: Optional[List[str]] = None, *, per_voice_speeds=(0.85, 
 
     Xt = torch.tensor(flat, dtype=torch.float32)
     yt = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
-    head = _build_head(flat.shape[1])
-    opt = torch.optim.Adam(head.parameters(), lr=1e-3, weight_decay=1e-4)
-    lossf = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([len(neg) / max(1, len(pos))]))
-    head.train()
-    for _ in range(epochs):
-        opt.zero_grad()
-        out = head(Xt)
-        loss = lossf(out, yt)
-        loss.backward()
-        opt.step()
-    head.eval()
-    with torch.no_grad():
-        scores = torch.sigmoid(head(Xt)).numpy().ravel()
-    # threshold = midpoint between the positive 5th-pct and negative 95th-pct,
-    # clamped — favours precision so music doesn't false-fire.
+    pos_weight = torch.tensor([len(neg) / max(1, len(pos))])
+
+    def _fit(rows: np.ndarray):
+        head = _build_head(flat.shape[1])
+        opt = torch.optim.Adam(head.parameters(), lr=1e-3, weight_decay=1e-4)
+        lossf = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        head.train()
+        for _ in range(epochs):
+            opt.zero_grad()
+            loss = lossf(head(Xt[rows]), yt[rows])
+            loss.backward()
+            opt.step()
+        head.eval()
+        return head
+
+    # The threshold is chosen on scores from heads that never saw the clip they score (five-fold,
+    # the usual way), not on the training fit, which is optimistic about both sides; then one head
+    # is trained on everything.
+    held = np.zeros(len(y), dtype=np.float32)
+    fold_of = np.arange(len(y)) % FOLDS
+    for k in range(FOLDS):
+        test_rows = np.where(fold_of == k)[0]
+        train_rows = np.where(fold_of != k)[0]
+        if len(test_rows) == 0 or len(train_rows) == 0:
+            continue
+        with torch.no_grad():
+            held[test_rows] = torch.sigmoid(_fit(train_rows)(Xt[test_rows])).numpy().ravel()
+    head = _fit(np.arange(len(y)))
+    scores = held
+    # threshold = midpoint between the positive 5th-pct and negative 95th-pct of the held-out
+    # scores, clamped — favours precision so music doesn't false-fire.
     p_lo = float(np.percentile(scores[y == 1], 5))
     n_hi = float(np.percentile(scores[y == 0], 95))
     thr = float(min(0.9, max(0.5, (p_lo + n_hi) / 2)))

@@ -199,9 +199,15 @@ Execution (`AgentBus.dispatch`):
   from v2: `term_overlap(user_input, representative_text) → relevance_gate()`, gated on ≥40
   chars of text; a fluent, evidence-dense result that's off-topic for what was actually asked
   no longer scores as highly as one that's on-topic — env `ELI_AGENT_BUS_RELEVANCE_GATE` to
-  disable); a single-agent cap; an empty-bus ceiling; a corroboration bonus when several agents
-  contribute. `CriticAgent`'s corroboration score gets the same relevance discount: two sources
-  can agree strongly with each other while both being off-topic.
+  disable); a single-agent cap; an empty-bus ceiling. Shared evidence is counted once: each result
+  names what it rests on (memories by their lineage root, turns, paths, addresses; the knowledge
+  graph the memories it was seeded from), two results' dependence is the share of roots they share
+  (or of words, where neither names records), and `independent_evidence` gives the amount with the
+  shared part counted once and the effective number of sources, `(Σc)² / Σ ρᵢⱼ cᵢ cⱼ`. The
+  corroboration bonus needs three or more independent sources, not three agents. `CriticAgent`'s
+  corroboration score gets the same relevance discount and says how many of its sources are
+  independent: two sources can agree strongly with each other while both being off-topic, or while
+  both reading one record.
 
 ### When each runs
 

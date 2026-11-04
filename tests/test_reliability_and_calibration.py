@@ -100,3 +100,67 @@ def test_exact_codes_are_looked_up_as_written(tmp_path, monkeypatch):
     res = retrieve_for_turn(mem, "which fact mentions ORCHID-7319", use_cache=False, rerank=False)
     assert res.searched["semantic"] + res.searched["exact"] >= 1
     assert "orchid-7319" in " ".join(str(h.get("text") or "") for h in res.semantic_hits).lower()
+
+
+# ── a figure that means something: calibrated chances (eli/cognition/epistemics.py) ────────────
+# The scores ELI gives a reply are engineering indices, not chances of being right. A chance is what
+# they become once they are checked against what the next turn said: of the answers given "0.9",
+# what share proved right. With nothing recorded the chance is the score; it moves as outcomes say.
+
+from eli.cognition import epistemics as ep
+
+
+def _settled(db, *, score, right, n, prefix, class_=""):
+    for i in range(n):
+        ep.assess("answer", score, request_id=f"{prefix}{i}", class_=class_, db_path=db)
+        ep.settle(f"{prefix}{i}", right=right(i), db_path=db)
+
+
+def test_with_nothing_recorded_the_chance_is_the_score(db):
+    p = ep.calibrate("answer", 0.8, db_path=db)
+    assert p.p == pytest.approx(0.8) and p.n == 0 and p.ece is None and (p.slope, p.shift) == (1.0, 0.0)
+
+
+def test_scores_that_prove_too_sure_are_brought_down_and_the_error_measured(db):
+    _settled(db, score=0.9, right=lambda i: i % 2 == 0, n=12, prefix="r")     # "0.9" right half the time
+    p = ep.calibrate("answer", 0.9, db_path=db)
+    assert p.n == 12 and 0.45 < p.p < 0.75
+    rep = ep.report("answer", db_path=db)
+    assert rep["n"] == 12 and rep["ece_calibrated"] < rep["ece"] and rep["brier_calibrated"] < rep["brier"]
+    assert rep["bands"][0]["predicted"] == 0.9 and rep["bands"][0]["observed"] == 0.5
+
+
+def test_scores_that_prove_right_are_left_about_where_they_are(db):
+    _settled(db, score=0.8, right=lambda i: i != 0, n=10, prefix="a")           # "0.8" right nine times in ten
+    assert abs(ep.calibrate("answer", 0.8, db_path=db).p - 0.8) < 0.1
+
+
+def test_a_class_with_outcomes_of_its_own_is_fitted_on_them_else_on_the_kind(db):
+    _settled(db, score=0.9, right=lambda i: True, n=8, prefix="g", class_="grounded")
+    _settled(db, score=0.9, right=lambda i: False, n=8, prefix="c", class_="chat")
+    assert ep.calibrate("answer", 0.9, class_="grounded", db_path=db).p > 0.8
+    assert ep.calibrate("answer", 0.9, class_="chat", db_path=db).p < 0.6
+    whole = ep.calibrate("answer", 0.9, class_="other", db_path=db)
+    assert whole.class_ == "" and whole.n == 16, "a class with no outcomes yet falls back to the kind"
+
+
+def test_a_figure_nothing_settled_yet_does_not_count(db):
+    ep.assess("answer", 0.7, request_id="open", db_path=db)
+    assert ep.calibrate("answer", 0.7, db_path=db).n == 0
+
+
+def test_the_scoring_rules_and_the_entropy_of_a_vote():
+    assert ep.brier([(1.0, 1.0), (0.0, 0.0)]) == 0.0 and ep.brier([(1.0, 0.0)]) == 1.0
+    assert ep.ece([(0.9, 1.0)] * 9 + [(0.9, 0.0)]) == pytest.approx(0.0, abs=1e-9)   # 0.9 given, 0.9 right
+    assert ep.ece([(0.9, 0.0)] * 10) == pytest.approx(0.9, abs=1e-9)
+    assert ep.entropy([5]) == 0.0 and ep.entropy([1, 1, 1, 1, 1]) == pytest.approx(1.0)
+    assert 0.0 < ep.entropy([3, 2]) < ep.entropy([2, 2, 1]) < 1.0
+    assert ep.fit([]) == (1.0, 0.0)
+
+
+def test_the_next_turn_says_whether_the_last_answer_was_right():
+    from eli.cognition.correction_patterns import is_answer_correction, is_endorsement
+    for said in ("thanks", "Thanks, now search for the other one", "perfect", "yes that's right", "spot on", "ok great"):
+        assert is_endorsement(said) and not is_answer_correction(said), said
+    for said in ("no, that's not true", "yes", "ok", "what about the other one", "right, so what is the capital"):
+        assert not is_endorsement(said), said

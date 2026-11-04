@@ -640,11 +640,13 @@ class DocumentIndex:
                         f"SELECT p.id FROM passages p WHERE ({like}) AND p.doc_id IN ({marks}) LIMIT ?",
                         (*[f"%{t}%" for t in terms], limit * 6))]
             cosine = self._closest(query, terms, visible, limit * 6, both=not strict)
+            # reciprocal rank fusion as the memory reranker does it: the same k, ranks counted from one
+            from eli.cognition.reranker import RRF_K
             fused: Dict[int, float] = {}
             for rank, pid in enumerate(worded):
-                fused[pid] = fused.get(pid, 0.0) + 1.0 / (60 + rank)
+                fused[pid] = fused.get(pid, 0.0) + 1.0 / (RRF_K + rank + 1)
             for rank, pid in enumerate(sorted(cosine, key=cosine.get, reverse=True)):
-                fused[pid] = fused.get(pid, 0.0) + 1.0 / (60 + rank)
+                fused[pid] = fused.get(pid, 0.0) + 1.0 / (RRF_K + rank + 1)
             # Next to nothing matched inside the named documents: the question is about the
             # document as a whole ("what is this?"), so show how it opens.
             if doc_ids is not None and len(fused) < 2:

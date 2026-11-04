@@ -2539,15 +2539,21 @@ class Memory(metaclass=_MemoryMeta):
                     return 0.15
                 return 0.0
             from eli.cognition.scoring import recency_score as _rs, fuse_memory_score as _fuse
-            out.sort(
-                key=lambda x: _fuse(
-                    x.get("importance", 0.5) or 0.5,
-                    x.get("weight", 1.0) or 1.0,
-                    _rs(_ts_float(x), now=sort_now, window_days=30),
-                    pref_boost=_pref_boost(x),
-                ),
-                reverse=True,
-            )
+            # How readily each comes to mind (eli/memory/policy.py): its faded uses, the curve's own
+            # factors, and its share against the look-alikes in this set. Known for stored rows only.
+            _how_readily = self._accessibility(conn, out, cols, sort_now)
+            for _row in out:
+                if _row.get("id") in _how_readily:
+                    _row["accessibility"] = _how_readily[_row["id"]]
+            for _row in out:
+                _row["_rank_score"] = _fuse(
+                    _row.get("importance", 0.5) or 0.5,
+                    _row.get("weight", 1.0) or 1.0,
+                    _rs(_ts_float(_row), now=sort_now, window_days=30),
+                    pref_boost=_pref_boost(_row),
+                    accessibility=_row.get("accessibility"),
+                )
+            out.sort(key=lambda x: x["_rank_score"], reverse=True)
 
             def _postmerge_noise(hit):
                 _tags = str(hit.get('tags', '') or '').lower()
@@ -2762,12 +2768,54 @@ class Memory(metaclass=_MemoryMeta):
 
                     out = [h for h in out if _hit_has_tag(h)]
 
-            # Enforce the caller's limit on the final merged list.
+            # Complementary, not five ways of saying one thing: within the caller's limit the later
+            # places go by rank less likeness to what is already chosen (scoring.mmr_select).
             # conversation_turns fallback uses max(3, limit-len) which can push
             # total above `limit` when the initial result set is small.
-            return out[:limit]
+            from eli.cognition.scoring import mmr_select as _mmr
+            return _mmr(out, limit, score=lambda r: r.get("_rank_score"))
         finally:
             conn.close()
+
+    def _accessibility(self, conn, rows, cols, now: float) -> Dict[int, float]:
+        """How readily each stored row among `rows` comes to mind, 0..1 (eli/memory/policy.py): its
+        activation from its uses and the curve's own factors, less the competition of the look-alikes
+        in this set, read off the set itself. {} when the rows carry no policy columns yet."""
+        import sqlite3 as _sqlite3
+        from eli.cognition.scoring import jaccard as _jaccard, tokenize as _tokenize
+        from eli.memory import policy as _policy
+        ids = sorted({int(r["id"]) for r in rows if str(r.get("id", "")).isdigit()})
+        if not ids or "seen_count" not in cols:
+            return {}
+        marks = ",".join("?" * len(ids))
+        try:
+            fetched = conn.execute(
+                f"SELECT id, COALESCE(timestamp, ts, 0), COALESCE(event_ts, 0), COALESCE(last_seen, 0), "
+                f"COALESCE(last_recalled, 0), COALESCE(seen_count, 1), COALESCE(recall_count, 0), "
+                f"COALESCE(importance, 0.5), COALESCE(origin, ''), COALESCE(text, content, '') "
+                f"FROM memories WHERE id IN ({marks})", ids).fetchall()
+        except _sqlite3.Error:
+            log.debug("[MEMORY] accessibility not read", exc_info=True)
+            return {}
+        def _seconds(value) -> float:
+            # a timestamp that is not a number (an old row's text date) is unknown, as the recall's
+            # own recency reads it
+            try:
+                return float(value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        order, acts, words = [], [], []
+        for mid, ts, event_ts, last_seen, last_recalled, seen, recalls, importance, origin, text in fetched:
+            order.append(int(mid))
+            ts, event_ts, last_seen, last_recalled = (_seconds(v) for v in (ts, event_ts, last_seen, last_recalled))
+            acts.append(_policy.activation(now, event_ts or ts, last_seen or ts, last_recalled, seen, recalls,
+                                           importance, origin))
+            words.append(set(_tokenize(text)))
+        likeness = [[_jaccard(words[i], words[j]) if i != j else 0.0 for j in range(len(order))]
+                    for i in range(len(order))]
+        chances = _policy.retrievable(_policy.compete(acts, likeness))
+        return {mid: round(float(c), 4) for mid, c in zip(order, chances)}
 
     def search_memory(self, query, limit=10, include_conversations=True, user_id=None, session_id=None):
         _q_lower = query.lower() if query else ""

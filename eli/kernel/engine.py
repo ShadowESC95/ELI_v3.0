@@ -3899,8 +3899,38 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             score = None
 
+        # The figure is the loop's own index of the reply's quality. The chance that the reply is
+        # right is that figure calibrated on what earlier turns said of such figures
+        # (eli/cognition/epistemics.py); the next turn settles this one (_settle_recall_outcome). Only
+        # a reply is assessed this way: an action's chance of working is the ledger's (predict_success).
+        probability = None
+        request_id = str((trace or {}).get("request_id") or "")
+        if score is not None and request_id and str(result_action or "CHAT") == "CHAT":
+            try:
+                from eli.cognition import epistemics as _epistemics
+                probability = _epistemics.assess(
+                    _epistemics.ANSWER, score, request_id=request_id, class_="grounded" if grounded else "chat",
+                    features={"grounded": bool(grounded), "evidence_used": bool(evidence_used),
+                              "mode": str((trace or {}).get("reasoning_mode") or ""),
+                              "agents": len(agents_used or []), "chars": len(str(response or "")),
+                              "agreement": getattr(self, "_last_sc_agreement_ratio", None),
+                              "entropy": getattr(self, "_last_sc_entropy", None),
+                              "grounding": grounding_confidence})
+                self._pending_assessment = request_id
+                # ELI's world hears it: its evidence confidence and uncertainty are the means of these
+                from eli.world.world_event_bus import fire_world_event as _fire_world_event
+                _fire_world_event(
+                    "answer_assessed", "epistemics",
+                    f"Reply assessed: {probability.p:.2f} chance of being right"
+                    + (f" ({probability.n} outcomes behind it)" if probability.n else " (no outcomes yet: the figure itself)"),
+                    {"p": round(float(probability.p), 4), "n": int(probability.n), "class": probability.class_})
+            except Exception as failure:  # noqa: BLE001 - the figure stands unassessed, and the trace says so
+                (trace or {})["probability_error"] = str(failure)
+
         if not confidence_label:
-            if score is None:
+            if probability is not None:
+                confidence_label = _confidence_label(probability.p)
+            elif score is None:
                 confidence_label = "unmeasured"
             else:
                 confidence_label = _confidence_label(score)
@@ -3929,6 +3959,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "action": intent_action or result_action or "CHAT",
             "confidence": score,
             "confidence_label": confidence_label,
+            # the chance the reply is right, and what that chance rests on
+            "probability": None if probability is None else round(float(probability.p), 4),
+            "calibration": None if probability is None else {
+                "n": int(probability.n), "ece": probability.ece, "class": probability.class_,
+                "slope": round(probability.slope, 4), "shift": round(probability.shift, 4)},
             "agents_used": list(agents_used if agents_used is not None else ((trace or {}).get("agents_used") or [])),
             "plan": (trace or {}).get("orchestrator_plan") or "none",
             "evidence_used": bool(evidence_used),
@@ -4368,16 +4403,28 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
 
     def _settle_recall_outcome(self, user_input: str, source: str) -> None:
-        """The memories behind the previous answer were used if this turn does not correct it."""
-        ids = getattr(self, "_pending_recall_ids", None)
-        if not ids or _is_autonomous_source(source):
+        """What this turn says of the last answer. The memories behind it were used if this turn does
+        not correct it; its figure (eli/cognition/epistemics.py) is settled wrong by a correction and
+        right by an endorsement, and left unsettled by anything else."""
+        if _is_autonomous_source(source):
             return
-        self._pending_recall_ids = None
-        try:
-            from eli.cognition.correction_patterns import is_answer_correction
-            self.memory.record_recall_outcome(ids, helped=not is_answer_correction(user_input))
-        except Exception:
-            log.debug("recall outcome not settled", exc_info=True)
+        from eli.cognition.correction_patterns import is_answer_correction, is_endorsement
+        corrected = is_answer_correction(user_input)
+        ids = getattr(self, "_pending_recall_ids", None)
+        if ids:
+            self._pending_recall_ids = None
+            try:
+                self.memory.record_recall_outcome(ids, helped=not corrected)
+            except Exception:
+                log.debug("recall outcome not settled", exc_info=True)
+        request_id = getattr(self, "_pending_assessment", None)
+        if request_id:
+            self._pending_assessment = None
+            from eli.cognition import epistemics
+            if corrected:
+                epistemics.settle(request_id, False, how="correction")
+            elif is_endorsement(user_input):
+                epistemics.settle(request_id, True, how="endorsement")
 
     def process(self, user_input: str, source: str = "user", stream: bool = False,
                 reasoning_mode: Optional[str] = None, *,

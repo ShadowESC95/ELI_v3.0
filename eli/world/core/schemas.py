@@ -42,7 +42,8 @@ class AwarenessState:
     curiosity: float = 0.5
     repair_pressure: float = 0.0
     memory_confidence: float = 0.7
-    evidence_confidence: float = 0.7
+    evidence_confidence: float = 0.7      # the mean calibrated chance its replies were right this sitting
+    answers: int = 0                      # how many replies that mean rests on (eli/cognition/epistemics.py)
     tool_activity: float = 0.0
     reflection_depth: float = 0.0
     autonomy_pressure: float = 0.0

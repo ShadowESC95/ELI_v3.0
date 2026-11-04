@@ -252,6 +252,76 @@ def _evidence_density(data: Dict[str, Any]) -> float:
     return float(1.0 - math.exp(-total / float(_DENSITY_SCALE)))
 
 
+def _lineage_root(memory_id: Any) -> str:
+    """A memory by the record it derives from (eli/memory/memory.py, memory_lineage): a reflection that
+    restates a memory rests on that memory, not on itself."""
+    try:
+        from eli.memory.memory import get_memory
+        return f"id:{get_memory().lineage_root(int(memory_id))}"
+    except Exception:  # noqa: BLE001 - no lineage to be had: the id itself is the root
+        return f"id:{memory_id}"
+
+
+def _provenance_roots(data: Dict[str, Any]) -> set:
+    """What a result rests on, by identity: memories (by their lineage root), turns, file paths,
+    addresses. Results that share a root read the same record, however differently they put it."""
+    roots: set = set()
+    if not isinstance(data, dict):
+        return roots
+    for key in (*_EVIDENCE_KEYS, "conv_hits", "seeded_from"):
+        for hit in data.get(key) or []:
+            if isinstance(hit, dict):
+                memory_id = hit.get("memory_id", hit.get("id"))
+                if memory_id not in (None, ""):
+                    roots.add(_lineage_root(memory_id) if str(memory_id).isdigit() else f"id:{memory_id}")
+                for field in ("turn_id", "path", "file", "url", "source_url"):
+                    value = hit.get(field)
+                    if value not in (None, ""):
+                        roots.add(f"{field}:{value}")
+            elif key == "seeded_from" and isinstance(hit, (int, str)) and str(hit):
+                roots.add(_lineage_root(hit) if str(hit).isdigit() else f"id:{hit}")
+    for field in ("path", "url"):
+        value = data.get(field)
+        if value:
+            roots.add(f"{field}:{value}")
+    return roots
+
+
+def _dependence(roots_a: set, roots_b: set, text_a: str, text_b: str) -> float:
+    """How far two results are one source, 0..1: the share of the records they both rest on, or,
+    when neither names its records, the share of one's words found in the other. Three agents that
+    read one memory are one source; two that say the same thing in other words nearly so."""
+    if roots_a and roots_b:
+        return len(roots_a & roots_b) / len(roots_a | roots_b)
+    if roots_a or roots_b:
+        return 0.0
+    if len(text_a) >= _RELEVANCE_MIN_TEXT_CHARS and len(text_b) >= _RELEVANCE_MIN_TEXT_CHARS:
+        return max(term_overlap(text_a, text_b), term_overlap(text_b, text_a))
+    return 0.0
+
+
+def independent_evidence(contributions: List[float], dependence: List[List[float]]) -> Tuple[float, float]:
+    """What several contributions amount to once shared evidence is counted once, and how many
+    independent sources they are. The total is the sum less, for each pair, their dependence times
+    the smaller of the two (never below the strongest alone); the count is the effective number of
+    sources, (sum c)^2 / sum_ij rho_ij c_i c_j, which is n for n independent ones and 1 for n copies."""
+    n = len(contributions)
+    if n == 0:
+        return 0.0, 0.0
+    total = sum(contributions)
+    shared = 0.0
+    weighted = 0.0
+    for i in range(n):
+        for j in range(n):
+            rho = 1.0 if i == j else max(0.0, min(1.0, float(dependence[i][j])))
+            weighted += rho * contributions[i] * contributions[j]
+            if i < j:
+                shared += rho * min(contributions[i], contributions[j])
+    amount = max(max(contributions), total - shared)
+    count = (total * total / weighted) if weighted > 0 else 0.0
+    return amount, count
+
+
 def _stage_score_for_result(r: "AgentResult") -> Optional[float]:
     """Bridge agent result to evidence_arbitration scoring helpers when applicable.
 
@@ -1697,6 +1767,8 @@ def _aggregate_confidence(
     grounding = 0.0
     grounded_signal = 0.0
     contributors = 0
+    # each contribution with what it rests on, so shared evidence is counted once below
+    given: List[Tuple[float, set, str]] = []
 
     calibration_rows = _load_agent_metrics_cached()
 
@@ -1737,14 +1809,24 @@ def _aggregate_confidence(
         if contribution <= 0.0:
             continue
 
-        score += contribution
-        grounding += contribution
-        grounded_signal += contribution * 0.5
+        given.append((contribution, _provenance_roots(r.data or {}), _representative_text(r.data or {})))
         contributors += 1
 
-    # Cross-agent corroboration bonus: scales with total signal so three
-    # agents with weak evidence don't beat one with strong evidence.
-    if contributors >= 3 and grounded_signal > 0.0:
+    # Shared evidence counted once: three agents that read the same memory, or say the same thing,
+    # are one source, not three (independent_evidence). What is left is the grounding.
+    if given:
+        dependence = [[_dependence(a[1], b[1], a[2], b[2]) if i != j else 1.0 for j, b in enumerate(given)]
+                      for i, a in enumerate(given)]
+        amount, sources = independent_evidence([c for c, _, _ in given], dependence)
+        score += amount
+        grounding += amount
+        grounded_signal += amount * 0.5
+    else:
+        sources = 0.0
+
+    # Corroboration: a bonus only when three or more INDEPENDENT sources agree, scaled with the
+    # signal so three agents with weak evidence don't beat one with strong evidence.
+    if sources >= 3.0 and grounded_signal > 0.0:
         bonus = min(0.10, grounded_signal * 0.20)
         score += bonus
         grounding += bonus
@@ -3168,11 +3250,14 @@ class KnowledgeGraphAgent(_BaseAgent):
                 _mem = _up.get("memory") or {}
                 _hits = (_mem.get("results") or _mem.get("conv_hits") or [])
                 _terms = []
+                _seeded = []
                 for _h in _hits[:3]:
                     if isinstance(_h, dict):
                         _t = (_h.get("text") or _h.get("content") or "").strip()
                         if _t:
                             _terms.append(_t[:80])
+                        if _h.get("id") not in (None, ""):
+                            _seeded.append(_h.get("id"))
                 if _terms:
                     _query = (user_input + " " + " ".join(_terms))[:600]
             except Exception:
@@ -3229,7 +3314,8 @@ class KnowledgeGraphAgent(_BaseAgent):
                 ok=True,
                 confidence=confidence,
                 data={"memory_context": kg_block, "kg_stats": stats,
-                      "multihop_chains": multihop[:8]},
+                      "multihop_chains": multihop[:8],
+                      "seeded_from": _seeded},      # the records it rests on: one source with memory
                 elapsed_ms=elapsed,
             )
         except Exception as e:
@@ -3275,6 +3361,13 @@ class CriticAgent(_BaseAgent):
             agreement = round(sum(sims) / max(1, len(sims)), 3)
             contradiction = agreement < 0.08
             srcs = ", ".join(sorted(contribs))
+            # how many sources these really are, once the ones resting on the same records are one
+            names = list(contribs)
+            roots = {name: _provenance_roots(up.get(name) or {}) for name in names}
+            dependence = [[_dependence(roots[a], roots[b], contribs[a], contribs[b]) if a != b else 1.0
+                           for b in names] for a in names]
+            _, independent = independent_evidence([1.0] * len(names), dependence)
+            independent = int(round(independent))
             if contradiction:
                 conf = 0.25
                 note = (f"Verification: {len(contribs)} sources ({srcs}) show little "
@@ -3291,10 +3384,11 @@ class CriticAgent(_BaseAgent):
                         relevance = relevance_gate(avg_q_overlap)
                 conf = round(min(0.9, (0.4 + agreement) * relevance), 3)
                 _tail = f", query relevance {round(relevance, 2)})." if relevance < 1.0 else ")."
-                note = f"Verification: {len(contribs)} sources ({srcs}) corroborate (agreement {agreement}{_tail}"
+                note = (f"Verification: {len(contribs)} sources ({srcs}), {independent} independent, "
+                        f"corroborate (agreement {agreement}{_tail}")
             return AgentResult(
                 agent=self.name, ok=True, confidence=conf,
-                data={"content": note, "sources": sorted(contribs),
+                data={"content": note, "sources": sorted(contribs), "independent": independent,
                       "agreement": agreement, "contradiction": contradiction},
                 elapsed_ms=(time.perf_counter() - t0) * 1000,
             )

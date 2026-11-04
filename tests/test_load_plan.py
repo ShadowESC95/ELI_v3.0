@@ -288,11 +288,11 @@ _SMI_CARDS = [{"index": 0, "name": "Card 0", "total_mb": 4096}, {"index": 1, "na
 def test_what_the_headsets_programs_hold_is_measured_and_the_most_seen_is_kept(machine, monkeypatch, tmp_path):
     held = {0: 900.0}
     _headset(monkeypatch, tmp_path, smi_cards=_SMI_CARDS, held=held)
-    assert load_plan.note_xr_footprint(force=True) == {"Card 0|4096|0": 900.0}
+    assert load_plan.note_xr_footprint(force=True) == {"Card 0|4096": 900.0}, "kept by the card as the headroom table knows it"
     held[0] = 1500.0                                      # a fuller room, the desktop's layer
     load_plan.note_xr_footprint(force=True)
     held[0] = 1100.0                                      # back in a lighter room
-    assert load_plan.note_xr_footprint(force=True)["Card 0|4096|0"] == 1500.0
+    assert load_plan.note_xr_footprint(force=True)["Card 0|4096"] == 1500.0
     # while a body is here the card keeps what the headset will yet take: its peak, less what it holds now
     assert load_plan.xr_reserve_mb(_cards()[0]) == pytest.approx(400.0)
     assert load_plan.xr_reserve_mb(_cards()[1]) == 0.0    # nothing of the headset's is drawn on this card

@@ -146,11 +146,16 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
         # query — real lexical overlap, or at least a retrieval channel hit — not just that it
         # is generally salient.
         relevance_gate = _relevance_gate(overlap, strong_signal=_window_sourced, weak_signal=bool(rrf or channels))
-        quality = (
-            importance * _W_IMPORTANCE
-            + min(weight, 2.0) / 2.0 * _W_WEIGHT
-            + recency * _W_RECENCY
-        )
+        accessibility = c.get("accessibility")
+        if accessibility is not None:
+            # how readily it comes to mind (eli/memory/policy.py) carries strength and recency both
+            quality = importance * _W_IMPORTANCE + _as_float(accessibility, 0.0) * (_W_WEIGHT + _W_RECENCY)
+        else:
+            quality = (
+                importance * _W_IMPORTANCE
+                + min(weight, 2.0) / 2.0 * _W_WEIGHT
+                + recency * _W_RECENCY
+            )
         score = overlap * _W_OVERLAP + relevance_gate * quality + source_bonus
 
         # Retrieval agreement: rrf_score already says how highly each retriever ranked this and

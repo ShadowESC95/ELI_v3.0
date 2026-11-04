@@ -46,6 +46,14 @@ def term_overlap(query: str, text: str) -> float:
     return len(q & set(tokenize(text))) / len(q)
 
 
+def jaccard(a_tokens, b_tokens) -> float:
+    """How alike two token sets are, 0..1: the share of their content words they have in common."""
+    a, b = set(a_tokens or ()), set(b_tokens or ())
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
 def recency_score(ts: float, now: Optional[float] = None,
                   window_days: float = 30.0) -> float:
     """Linear-decay recency in 0..1 over `window_days` (1.0 = now, 0.0 = at/past the window).
@@ -78,11 +86,19 @@ RERANK_W_RECENCY = 0.10
 
 
 def fuse_memory_score(importance: float, weight: float, recency: float,
-                      pref_boost: float = 0.0) -> float:
+                      pref_boost: float = 0.0, accessibility: Optional[float] = None) -> float:
     """Blend a memory row's importance, decay-weight and recency (each ~0..1)
     into one ranking score, plus an optional preference/identity boost. The
-    canonical recall-rerank fusion — see the MEM_FUSION_W_* weights above."""
+    canonical recall-rerank fusion — see the MEM_FUSION_W_* weights above.
+
+    `accessibility` (0..1, eli/memory/policy.retrievable: how readily the row comes to mind, from
+    its faded uses and its share against look-alikes) carries both the row's strength and its
+    recency, so when it is known it takes the place of weight and recency together."""
     try:
+        if accessibility is not None:
+            return (float(importance or 0.0) * MEM_FUSION_W_IMPORTANCE
+                    + float(accessibility) * (MEM_FUSION_W_WEIGHT + MEM_FUSION_W_RECENCY)
+                    + float(pref_boost or 0.0))
         return (
             float(importance or 0.0) * MEM_FUSION_W_IMPORTANCE
             + float(weight or 0.0) * MEM_FUSION_W_WEIGHT
@@ -91,6 +107,45 @@ def fuse_memory_score(importance: float, weight: float, recency: float,
         )
     except Exception:
         return 0.0
+
+
+# Maximal marginal relevance (Carbonell & Goldstein, 1998): the share of the choice that goes to
+# relevance, the rest to being unlike what is already chosen. Relevance-leaning, the usual setting:
+# likeness only breaks near-ties, so five ways of saying one thing do not fill the context.
+MMR_LAMBDA = 0.7
+
+
+def mmr_select(items: list, limit: int, *, text=None, score=None, lam: float = MMR_LAMBDA) -> list:
+    """Maximal marginal relevance over an already ranked list. The first keeps its place; each
+    next place goes to the item with the most relevance less its likeness to the items already
+    chosen (the share of content words in common), weighted lam : 1 - lam. Relevance is the item's
+    own ranking score as a share of the best (`score`), so items that scored alike are told apart
+    by what they add; with no scores, its rank (1 - rank/n). Nothing is dropped: the same items,
+    reordered so look-alikes fall back, cut to `limit`."""
+    items = list(items or [])
+    n = len(items)
+    if n <= 1 or limit <= 0:
+        return items[:limit] if limit > 0 else []
+    if text is None:
+        def text(row):
+            return str((row or {}).get("text") or (row or {}).get("content") or "") if isinstance(row, dict) else str(row)
+    words = [set(tokenize(text(row))) for row in items]
+    given = [score(row) for row in items] if score is not None else []
+    if given and all(isinstance(v, (int, float)) for v in given) and max(given) > 0:
+        relevance = [max(0.0, float(v)) / float(max(given)) for v in given]
+    else:
+        relevance = [1.0 - i / n for i in range(n)]
+    chosen = [0]
+    left = list(range(1, n))
+    while left and len(chosen) < n:
+        best, best_value = None, None
+        for i in left:
+            value = lam * relevance[i] - (1.0 - lam) * max(jaccard(words[i], words[j]) for j in chosen)
+            if best_value is None or value > best_value:
+                best, best_value = i, value
+        chosen.append(best)
+        left.remove(best)
+    return [items[i] for i in chosen][:limit]
 
 
 # Overlap floor for "genuinely about the query" vs. "merely vouched for." Shared by the
@@ -128,9 +183,9 @@ def conf_from_count(n: int, *, base: float = 0.3, step: float = 0.04,
 
 
 __all__ = [
-    "STOPWORDS", "tokenize", "term_overlap", "recency_score",
+    "STOPWORDS", "tokenize", "term_overlap", "jaccard", "recency_score",
     "relevance_gate", "RELEVANCE_OVERLAP_FLOOR",
     "conf_from_flag", "conf_from_count",
     "fuse_memory_score", "MEM_FUSION_W_IMPORTANCE", "MEM_FUSION_W_WEIGHT",
-    "MEM_FUSION_W_RECENCY",
+    "MEM_FUSION_W_RECENCY", "mmr_select", "MMR_LAMBDA",
 ]

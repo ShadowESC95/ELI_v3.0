@@ -629,6 +629,23 @@ def test_the_models_beside_the_chosen_one_and_in_named_folders_are_offered_too(m
     assert {"Chosen.gguf", "Spare.gguf", "Other.gguf"} <= set(names)
 
 
+def test_how_sure_eli_is_of_what_it_says_is_the_mean_chance_its_replies_were_right():
+    """The rooms' Measures console and the world panel show evidence confidence and uncertainty:
+    the means of the calibrated chances of this sitting's replies, not steps up and down by event."""
+    from eli.world.agency.autonomy_engine import EliWorldAutonomyEngine
+    from eli.world.core.schemas import EliWorldState, WorldEvent
+    engine = EliWorldAutonomyEngine.__new__(EliWorldAutonomyEngine)
+    state = EliWorldState()
+    for p in (0.9, 0.5, 0.7):
+        engine._update_awareness_from_event(state, WorldEvent("answer_assessed", "epistemics", "assessed", {"p": p}))
+    a = state.awareness
+    assert a.answers == 3 and a.evidence_confidence == pytest.approx(0.7) and a.uncertainty == pytest.approx(0.3)
+    # a sitting that went quiet starts the mean over with its next reply
+    a.timestamp -= 3600.0
+    engine._update_awareness_from_event(state, WorldEvent("answer_assessed", "epistemics", "assessed", {"p": 0.2}))
+    assert a.answers == 1 and a.evidence_confidence == pytest.approx(0.2) and a.uncertainty == pytest.approx(0.8)
+
+
 # ── anything at all ──────────────────────────────────────────────────────────
 def test_a_thing_can_be_made_part_by_part_from_no_list_at_all(world):
     out = building.apply([{

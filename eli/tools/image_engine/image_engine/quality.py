@@ -57,8 +57,9 @@ def score_image(path: str | Path) -> dict[str, Any]:
     contrast = float(np.std(gray) * 2.2)
     saturation = float(np.mean(np.max(arr, axis=2) - np.min(arr, axis=2)) * 1.8)
 
-    # Exposure penalizes severely under/overexposed images.
-    exposure = float(1.0 - abs(np.mean(gray) - 0.50) * 1.8)
+    # Exposure penalizes severely under/overexposed images: mid-grey scores 1, all black or all
+    # white 0 (at 1.8 a clipped frame still had a tenth of the credit).
+    exposure = float(1.0 - abs(np.mean(gray) - 0.50) * 2.0)
 
     # Entropy-like spread.
     hist, _ = np.histogram(gray, bins=64, range=(0.0, 1.0), density=True)

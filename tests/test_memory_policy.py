@@ -116,3 +116,70 @@ def test_a_merge_keeps_the_first_date_and_counts_every_sighting():
     assert m["seen_count"] == 4
     assert m["importance"] == 0.9
     assert m["recall_count"] == 3 and m["last_recalled"] == 250.0
+
+
+# ── how readily a memory comes to mind ───────────────────────────────────────────────────────────
+# The forgetting curve says how long a row is kept; these say how readily it is recalled, after
+# ACT-R: faded uses summed, and a share among look-alikes.
+
+import math
+
+import pytest
+
+DAY = 86400.0
+
+
+def test_a_use_just_now_comes_to_mind_more_readily_than_one_last_month():
+    assert P.base_activation(1, 1.0, [1.0]) > P.base_activation(1, 30.0, [30.0])
+
+
+def test_many_uses_spread_over_months_outweigh_one_use_yesterday():
+    spread = P.base_activation(10, 300.0, [20.0])       # ten uses over ten months, the last three weeks ago
+    once = P.base_activation(1, 1.0, [1.0])
+    assert spread > once
+
+
+def test_uses_whose_times_are_not_kept_still_count_and_count_less_the_older_they_are():
+    with_rest = P.base_activation(5, 100.0, [2.0])
+    assert with_rest > P.base_activation(1, 100.0, [2.0])
+    assert with_rest < P.base_activation(5, 100.0, [2.0, 3.0, 4.0, 5.0, 6.0]), "known recent uses beat uses spread over the lifetime"
+    assert P.base_activation(0, 10.0, []) == -math.inf
+
+
+def test_the_curves_own_factors_carry_over_as_log_terms():
+    now = 1_000_000.0
+    said = P.activation(now, now - 5 * DAY, now - DAY, 0, 1, 0, 0.5, P.ORIGIN_USER)
+    seen = P.activation(now, now - 5 * DAY, now - DAY, 0, 1, 0, 0.5, P.ORIGIN_TELEMETRY)
+    important = P.activation(now, now - 5 * DAY, now - DAY, 0, 1, 0, 0.95, P.ORIGIN_USER)
+    assert said > seen and important > said
+    assert said - seen == pytest.approx(math.log(1.0 / 0.15))
+
+
+def test_look_alikes_compete_and_the_stronger_one_comes_first():
+    acts = [2.0, 2.0, 0.5]
+    same = [[0, 1, 0], [1, 0, 0], [0, 0, 0]]          # the first two say the same thing
+    shared = P.compete(acts, same)
+    assert shared[0] == pytest.approx(2.0 - math.log(2.0)) and shared[2] == 0.5, "an equal look-alike halves the share; the unlike one is untouched"
+    stronger = P.compete([3.0, 2.0], [[0, 1], [1, 0]])
+    assert stronger[0] > stronger[1] and stronger[0] - 3.0 > stronger[1] - 2.0, "the stronger loses less"
+    assert P.compete([2.0, -math.inf], [[0, 1], [1, 0]]) == [2.0, -math.inf]
+
+
+def test_how_alike_two_memories_are():
+    from eli.cognition.scoring import jaccard
+    assert jaccard({"john", "works", "microsoft"}, {"john", "works", "anthropic"}) == pytest.approx(0.5)
+    assert jaccard({"a"}, set()) == 0.0 and jaccard({"x", "y"}, {"x", "y"}) == 1.0
+
+
+def test_the_chance_of_coming_to_mind_is_read_off_the_set():
+    chances = P.retrievable([3.0, 1.0, -1.0])
+    assert chances[0] > chances[1] > chances[2] and chances[1] == pytest.approx(0.5)
+    assert P.retrievable([1.0, 1.0]) == [0.5, 0.5] and P.retrievable([-math.inf]) == [0.0]
+
+
+def test_how_sure_a_claim_is_from_what_bore_it_out():
+    one, two, five = P.claim_confidence([1.0]), P.claim_confidence([1.0, 1.0]), P.claim_confidence([1.0] * 5)
+    assert (round(one, 2), round(two, 2), round(five, 2)) == (0.67, 0.75, 0.86) and five < 1.0
+    users_word = P.claim_confidence([1.0], contradicting=[0.35])
+    inference = P.claim_confidence([0.35], contradicting=[1.0])
+    assert users_word > 0.5 > inference, "the user's own word contradicted by an inference stays ahead of it"

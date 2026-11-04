@@ -300,6 +300,7 @@ class EliWorldAutonomyEngine:
             a.autonomy_pressure = max(0.0, a.autonomy_pressure - 0.15 * _df)
             a.reflection_depth = max(0.0, a.reflection_depth - 0.15 * _df)
             a.tool_activity = max(0.0, a.tool_activity - 0.20 * _df)
+            a.answers = 0       # a fresh sitting: how sure ELI is of what it says starts over with its next reply
 
         # Exponential approach helper. Replaces hard linear accumulation (new = prev + inc) with new
         # = prev + inc * (1 - prev), so increments slow as values near 1.0 and don't saturate after
@@ -355,6 +356,14 @@ class EliWorldAutonomyEngine:
             total = int(event.payload.get("total_stages", 1))
             if total > 1:
                 a.curiosity = _ease_up(a.curiosity, 0.10)
+        elif et == "answer_assessed":
+            # The calibrated chance that the last reply was right (eli/cognition/epistemics.py). How
+            # sure ELI is of what it says is the running mean of those chances over this sitting, and
+            # its uncertainty the mean of their complements: measured, not stepped up and down by event.
+            p = max(0.0, min(1.0, float(event.payload.get("p", a.evidence_confidence))))
+            a.answers = max(0, int(getattr(a, "answers", 0))) + 1
+            a.evidence_confidence = a.evidence_confidence + (p - a.evidence_confidence) / a.answers
+            a.uncertainty = a.uncertainty + ((1.0 - p) - a.uncertainty) / a.answers
         elif et == "social_context":
             detected = str(event.payload.get("detected") or "neutral").lower()
             expressed = str(event.payload.get("expressed") or "neutral").lower()

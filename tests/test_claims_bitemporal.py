@@ -216,3 +216,20 @@ def test_history_is_read_in_order_and_answers_the_question(mem):
 def test_a_message_said_in_passing_becomes_a_claim(mem):
     mem.add_conversation_turn("user", "just saying hello, MBW is on in the background")
     assert [c["value"] for c in mem.claims_current() if c["relation"] == "watching"] == ["MBW"]
+
+
+def test_how_sure_a_claim_is_follows_what_bore_it_out(conn):
+    """One statement of the user's: 0.67; each confirmation from another root raises it, never to 1;
+    a contradiction pulls both sides back, and the user's own word stays ahead of what was observed."""
+    [c] = claims.current(conn)
+    assert c["confidence"] == pytest.approx(0.6667, abs=1e-3)
+    claims.record(conn, "work_schedule", "nights", now=_d("2026-07-01"), root_id=11)
+    claims.record(conn, "work_schedule", "nights", now=_d("2026-07-02"), root_id=12)
+    [c] = claims.current(conn)
+    assert c["confirmations"] == 2 and c["confidence"] == pytest.approx(0.75, abs=1e-3)
+    assert "sure 0.75: you said so twice" in claims.describe(c)
+    claims.record(conn, "work_schedule", "days", now=_d("2026-07-03"), origin="observed")
+    [standing] = claims.current(conn)
+    disputed = conn.execute("SELECT confidence FROM memory_claims WHERE status = 'disputed'").fetchone()[0]
+    assert standing["contested"] and disputed < 0.5 < standing["confidence"] < 0.75
+    assert "contradicted" in claims.describe(standing)

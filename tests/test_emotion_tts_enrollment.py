@@ -117,3 +117,17 @@ def test_classify_tone_uses_trained_emotion_model(tmp_path, monkeypatch):
     assert read.get("ok") is True
     assert read.get("emotion_model") is True
     assert read.get("emotion") in vp.EMOTIONS
+
+
+def test_a_clip_unlike_every_learned_emotion_is_no_emotion_and_a_near_one_is_its_class(tmp_path, monkeypatch):
+    uid = "test-user-openset"
+    _patch_voice_dirs(tmp_path, monkeypatch, uid)
+    for label, f0 in (("neutral", 180.0), ("happy", 220.0), ("angry", 130.0)):
+        vp.add_labelled_sample(_tone_clip(f0), 16000, label, user_id=uid)
+        vp.add_labelled_sample(_tone_clip(f0 + 5.0), 16000, label, user_id=uid)
+    assert vp.train_emotion_classifier(uid).get("ok") is True
+    near = vp._classify_emotion(vp.analyze_prosody(_tone_clip(222.0), 16000), uid)
+    assert near[0] == "happy" and near[1] > 0.5
+    t = np.arange(8000, dtype=np.float32) / 16000
+    loud = (0.95 * np.sin(2 * np.pi * 300.0 * t) * 32767).astype(np.int16)    # nothing like the clips learned
+    assert vp._classify_emotion(vp.analyze_prosody(loud, 16000), uid) == ("neutral", 0.0)

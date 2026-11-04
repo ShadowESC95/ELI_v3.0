@@ -152,6 +152,24 @@ def is_answer_correction(text: str) -> bool:
                 or is_biographical_dispute(s) or FACT_CORRECTION_RE.search(s))
 
 
+# The user saying the last answer was right: thanks, or plain agreement, at the start of their next
+# message. Read at the start only, so "thanks, now search for X" counts and a long message that
+# happens to contain "right" is read for what it is. What is NOT here on purpose: "ok"/"yes" alone,
+# which answer a question as often as they endorse an answer (eli/runtime/grounded_remediation.py).
+ENDORSEMENT_WORDS = (
+    r"thanks|thank you|thankyou|ta|cheers|great|perfect|brilliant|excellent|spot on|exactly|"
+    r"that's right|that is right|correct|that's it|that's the one|nice one|lovely|good answer|well done|"
+    r"got it|cool|nice|yes,?\s+(?:that's|that is)\s+(?:right|it|correct)"
+)
+ENDORSEMENT_RE = re.compile(rf"^\s*(?:ok(?:ay)?[,.!\s]+)?(?:{ENDORSEMENT_WORDS})\b", re.IGNORECASE)
+
+
+def is_endorsement(text: str) -> bool:
+    """True when the message opens by saying the previous answer was right."""
+    s = str(text or "").strip()
+    return bool(s) and bool(ENDORSEMENT_RE.match(s)) and not is_answer_correction(s)
+
+
 def is_correction_query(text: str) -> bool:
     s = str(text or "")
     if is_news_fetch_complaint(s):

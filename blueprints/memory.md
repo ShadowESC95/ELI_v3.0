@@ -87,6 +87,15 @@ Columns added to `memories`: `event_ts`, `seen_count`, `last_seen`, `last_recall
   and increments `corrected_count`. A wrong memory that keeps being retrieved cannot make itself
   stronger. `recall_count` now means answers a memory helped with, and only that protects a row
   from archiving.
+- **How readily it comes to mind.** Keeping and recalling are two things. The forgetting curve says
+  how long a row is kept; how readily it is recalled follows ACT-R: a base-level activation summed
+  over the row's uses, each fading as a power of its age (`base_activation`, `d = 0.5`, the uses whose
+  times are not kept spread over the row's lifetime), plus the curve's own factors as log terms
+  (`activation`), less the competition of look-alikes in the candidate set (`compete`: a look-alike
+  as strong halves the share), read off as a chance of coming to mind among them (`retrievable`).
+  `Memory._accessibility` works it out in one query by id; the recall ranking and the reranker use it
+  in place of strength and recency together, and `scoring.mmr_select` keeps the final list from being
+  five ways of saying one thing. See `blueprints/epistemic_dynamics.md`.
 - **What enters durable memory.** `persistence_gate.should_store_memory_text` rejects filler and
   reactions ("haha", "lol that is funny", "hello there"), text under four words, questions, and ELI's
   own internal output. Conversation turns are still logged in full; only durable memory is filtered.
@@ -102,7 +111,11 @@ claim, and the same value again confirms instead of duplicating. `Memory.claims_
 `claims_during(start, end)`, `claims_known_at(when)` and `claim_history(relation)` answer "what is true
 now", "what held in spring" and "what did you believe on 1 March". Retrieval adds the relevant claims
 to the evidence (a period question gets what held then), and deleting the source memory withdraws its
-claims. Extraction is a small exact set of patterns, not a model call.
+claims. Extraction is a small exact set of patterns, not a model call. How sure ELI is of a claim is a
+Beta posterior over its confirmations, each weighted as belief revision weighs provenance
+(`sureness`, `policy.claim_confidence`): one statement of the user's 0.67, two 0.75, five 0.86, never
+1; a contradiction pulls both sides back and the user's word stays ahead of an inference. `describe()`
+ends with the basis ("sure 0.75: you said so twice; contradicted"), which the Evidence Wall shows.
 
 What the user is doing now is a claim too: `watching`, `playing`, `reading` and `listening_to`, from
 "I'm watching X", "still watching X", "I've been playing X" or "X is on in the background". They are
@@ -262,9 +275,12 @@ The primitive `retrieve_for_turn()` builds on:
    match every row tagged `memory_recall` or `working_memory`, whatever it said.
 2. **Noise filtering** (`memory_exclusion_sql` in `core/self_provenance.py`): ELI's own
    bookkeeping kinds and sources never resurface as recalled user memories.
-3. **Importance-weighted ordering** via `COALESCE(importance, 0.5)`.
-4. **Reinforcement.** A recalled row gets `last_recalled` and `recall_count` updated and its
-   weight reset to 1.0; the recall is written to `recall_log` with its `memory_id`.
+3. **Ordering** by importance and how readily each row comes to mind (its activation and share
+   against look-alikes, `_accessibility`; see the storage policy above), with the final places chosen
+   by maximal marginal relevance so near-paraphrases fall back.
+4. **Exposure.** A recalled row gets `exposure_count` updated and the recall is written to
+   `recall_log` with its `memory_id`; strength is reinforced only when the answer the row went into is
+   not corrected (`record_recall_outcome`).
 
 Column detection (`_memory_table_columns`) guards against schema drift between versions.
 

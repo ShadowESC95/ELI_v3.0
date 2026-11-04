@@ -66,8 +66,12 @@ def _augment_with_memory(cand: Candidate, bug_memory: Optional[BugMemory]) -> No
 
 
 def _select_ucb(nodes: List[Candidate], visits: Dict[int, int], total: int,
-                target: float, c: float) -> Optional[Candidate]:
-    """UCB1 selection over expandable nodes (imperfect, has feedback to act on)."""
+                target: float, c: float, rewards: Optional[Dict[int, List[float]]] = None) -> Optional[Candidate]:
+    """UCB1 selection over expandable nodes (imperfect, has feedback to act on).
+
+    The value of a node is the mean of what came of it: its own score, then the score of each
+    refinement made from it (UCT, as in Monte Carlo tree search), so a node whose refinements keep
+    failing is passed over for one whose refinements improve, however the two scored themselves."""
     expandable = [n for n in nodes if n.score < target and n.feedback]
     if not expandable:
         # fall back to refining the best imperfect node even without explicit feedback
@@ -77,7 +81,9 @@ def _select_ucb(nodes: List[Candidate], visits: Dict[int, int], total: int,
     best, best_ucb = None, -1.0
     for n in expandable:
         ni = max(1, visits.get(n.id, 1))
-        ucb = n.score + c * math.sqrt(math.log(max(2, total)) / ni)
+        seen = (rewards or {}).get(n.id) or [n.score]
+        mean = sum(seen) / len(seen)
+        ucb = mean + c * math.sqrt(math.log(max(2, total)) / ni)
         if ucb > best_ucb:
             best, best_ucb = n, ucb
     return best
@@ -108,6 +114,7 @@ def tree_search(
     deadline = deadline if deadline is not None else Deadline(time_budget_s, label="tree_search")
     nodes: List[Candidate] = []
     visits: Dict[int, int] = {}
+    rewards: Dict[int, List[float]] = {}      # what came of each node: its score, then its refinements'
     trace: List[Dict] = []
 
     def _record_success(parent: Candidate, child: Candidate) -> None:
@@ -139,6 +146,7 @@ def tree_search(
         _augment_with_memory(cand, bug_memory)
         nodes.append(cand)
         visits[cand.id] = 1
+        rewards[cand.id] = [cand.score]
         trace.append({"step": f"root#{i}", **cand.summary()})
         if cand.score >= target_score:
             return SearchResult(cand, nodes, trace, 0, time.time() - t0, solved=True)
@@ -157,7 +165,7 @@ def tree_search(
         if deadline.check(f"refine#{it}"):
             break
         total = sum(visits.values())
-        parent = _select_ucb(nodes, visits, total, target_score, explore_c)
+        parent = _select_ucb(nodes, visits, total, target_score, explore_c, rewards)
         if parent is None:
             break
         visits[parent.id] = visits.get(parent.id, 1) + 1
@@ -171,6 +179,8 @@ def tree_search(
         _record_success(parent, child)
         nodes.append(child)
         visits[child.id] = 1
+        rewards[child.id] = [child.score]
+        rewards.setdefault(parent.id, [parent.score]).append(child.score)   # what trying from it yielded
         trace.append({"step": f"refine#{it}<-{parent.id}", **child.summary()})
         if child.score >= target_score:
             return SearchResult(child, nodes, trace, iterations, time.time() - t0, solved=True)

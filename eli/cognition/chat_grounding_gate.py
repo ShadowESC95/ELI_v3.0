@@ -22,11 +22,15 @@ _FAIL_CLOSED_ENABLED = os.environ.get("ELI_CHAT_FAIL_CLOSED", "1").strip().lower
 
 _GROUNDING_FLOOR = float(os.environ.get("ELI_CHAT_GROUNDING_FLOOR", "0.35") or "0.35")
 
+from eli.cognition.correction_patterns import ENDORSEMENT_WORDS as _ENDORSEMENT_WORDS
+
+# A greeting, a closer that endorses the last answer (the one list of those words), or a filler.
 _PHATIC_RE = re.compile(
     r"^\s*(?:"
     r"hi\b|hey\b|hello\b|yo\b|sup\b|what(?:'?s| is) up\b|how(?:'?s| is) it going\b|"
-    r"good (?:morning|afternoon|evening|night)\b|thanks\b|thank you\b|cheers\b|"
-    r"ok(?:ay)?\b|got it\b|cool\b|nice\b|lol\b|haha\b"
+    r"good (?:morning|afternoon|evening|night)\b|"
+    rf"(?:{_ENDORSEMENT_WORDS})\b|"
+    r"ok(?:ay)?\b|lol\b|haha\b"
     r")[\s!?.]*$",
     re.I,
 )

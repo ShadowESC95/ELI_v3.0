@@ -24,6 +24,7 @@ Scaffolded for later (clear extension points, marked TODO):
 """
 from __future__ import annotations
 import json
+import math
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
@@ -280,11 +281,23 @@ def train_emotion_classifier(user_id: str | None = None) -> Dict[str, Any]:
     mu = X.mean(axis=0)
     sd = X.std(axis=0) + 1e-6
     Xn = (X - mu) / sd
-    centroids = {lab: Xn[[i for i, l in enumerate(labels) if l == lab]].mean(axis=0).tolist()
-                 for lab in uniq}
+    dim = Xn.shape[1]
+    centroids: Dict[str, list] = {}
+    spread: Dict[str, list] = {}
+    prior: Dict[str, float] = {}
+    for lab in uniq:
+        rows = Xn[[i for i, l in enumerate(labels) if l == lab]]
+        centroids[lab] = rows.mean(axis=0).tolist()
+        # each class's own variance per feature, shrunk toward the whole set's (which is 1 after
+        # normalisation) by as many pseudo-samples as there are features: a class of one or two
+        # clips does not get a spread of nought, a class of many keeps its own shape
+        own = rows.var(axis=0) if len(rows) > 1 else np.zeros(dim, dtype=np.float32)
+        n = float(len(rows))
+        spread[lab] = ((n * own + dim * np.ones(dim, dtype=np.float32)) / (n + dim)).tolist()
+        prior[lab] = n / float(len(labels))
     _emotion_model_path(uid).write_text(json.dumps({
         "norm_mean": mu.tolist(), "norm_std": sd.tolist(),
-        "centroids": centroids, "labels": uniq,
+        "centroids": centroids, "spread": spread, "prior": prior, "dim": int(dim), "labels": uniq,
         "samples": len(vecs), "counts": labelled_counts(uid),
     }, indent=2))
     return {"ok": True, "labels": uniq, "samples": len(vecs)}
@@ -298,7 +311,20 @@ def _load_emotion_model(user_id: str | None = None) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _chi_square_quantile(dim: int, z: float = 2.326) -> float:
+    """The value a chi-square variable with `dim` degrees of freedom stays under with the chance
+    the standard-normal quantile `z` stands for (2.326: 99 in 100), by Wilson and Hilferty's
+    approximation. The limit past which a clip is unlike every learned emotion."""
+    k = float(max(1, dim))
+    return k * (1.0 - 2.0 / (9.0 * k) + z * math.sqrt(2.0 / (9.0 * k))) ** 3
+
+
 def _classify_emotion(prosody: Dict[str, Any], user_id: str | None = None) -> Tuple[str, float]:
+    """The learned emotion the clip most probably is, and how probably. Each emotion is a Gaussian
+    with its own spread per feature (Mahalanobis distance, not plain Euclidean); the confidence is
+    the posterior share of the best, with the classes' sizes as the prior. A clip that is far from
+    every learned emotion is none of them: ("neutral", 0.0), rather than the least unlike one.
+    Models trained before spreads were kept are read as spherical (spread 1), as they were."""
     m = _load_emotion_model(user_id)
     if not m or not prosody.get("ok"):
         return ("neutral", 0.0)
@@ -306,14 +332,22 @@ def _classify_emotion(prosody: Dict[str, Any], user_id: str | None = None) -> Tu
         mu = np.array(m["norm_mean"], dtype=np.float32)
         sd = np.array(m["norm_std"], dtype=np.float32)
         v = (_feature_vector(prosody) - mu) / sd
-        dists = {lab: float(np.linalg.norm(v - np.array(c, dtype=np.float32)))
-                 for lab, c in m["centroids"].items()}
-        order = sorted(dists.items(), key=lambda kv: kv[1])
-        best, d0 = order[0]
-        d1 = order[1][1] if len(order) > 1 else d0 + 1.0
-        # confidence from the margin to the runner-up (closer + clearer ⇒ higher)
-        conf = float(max(0.0, min(1.0, (d1 - d0) / (d1 + 1e-6))))
-        return (best, conf)
+        spreads = m.get("spread") or {}
+        priors = m.get("prior") or {}
+        squared = {}
+        for lab, c in m["centroids"].items():
+            diff = v - np.array(c, dtype=np.float32)
+            var = np.array(spreads.get(lab) or np.ones(len(diff)), dtype=np.float32) + 1e-6
+            squared[lab] = float(np.sum(diff * diff / var))
+        if min(squared.values()) > _chi_square_quantile(int(m.get("dim") or len(v))):
+            return ("neutral", 0.0)            # unlike everything learned: no label is better than a wrong one
+        # posterior over the classes: likelihood e^(-d²/2) times the class prior, normalised
+        logs = {lab: -0.5 * d2 + math.log(max(float(priors.get(lab) or 1.0), 1e-9)) for lab, d2 in squared.items()}
+        top = max(logs.values())
+        weights = {lab: math.exp(x - top) for lab, x in logs.items()}
+        total = sum(weights.values()) or 1.0
+        best = max(weights, key=weights.get)
+        return (best, float(weights[best] / total))
     except Exception:
         return ("neutral", 0.0)
 

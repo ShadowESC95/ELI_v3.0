@@ -183,7 +183,9 @@ Nothing here has a clock of its own, and nothing chooses for ELI.
   unless a model is already in memory and `affect_policy.should_defer_proactive` does not ask ELI to
   hold back; the loop has already checked that nobody is mid-request.
 - `composer.compose(None, scene, about=urge)` gives ELI `mindset()`: its persona text, cached
-  insight, goal titles, recent semantic memories, tone and awareness values, each line present only
+  insight, goal titles, recent semantic memories, tone and awareness values (evidence confidence and
+  uncertainty are the running means of the sitting's calibrated chances that ELI's replies were right,
+  and their complements: `eli/cognition/epistemics.py`), each line present only
   if the record is. Then the moment. All ops are open and the edits may be empty.
 - What ELI makes carries `links` to the moment, a `reason` that begins "Because:", and a journal
   entry. With no meaning of ELI's own, the moment's words are the meaning. Where it goes is ELI's

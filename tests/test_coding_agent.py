@@ -183,3 +183,16 @@ def test_agent_repairs_via_search_and_records_fix():
         assert "a + b" in r.code and "a - b" not in r.code
         assert r.score >= 0.95
         assert bm.stats()["total_fixes"] >= 1   # the repair was remembered
+
+
+def test_search_prefers_the_node_whose_refinements_improve():
+    """UCT: a node's value is what trying from it yielded, not the score it gave itself."""
+    from eli.coding.search import _select_ucb
+    a = Candidate(code="a", language="python")
+    b = Candidate(code="b", language="python")
+    a.score = b.score = 0.6
+    a.feedback = b.feedback = "fails"
+    rewards = {a.id: [0.6, 0.2, 0.1], b.id: [0.6, 0.7, 0.8]}     # from a it got worse; from b, better
+    visits = {a.id: 3, b.id: 3}
+    assert _select_ucb([a, b], visits, 6, 0.95, 0.0, rewards) is b
+    assert _select_ucb([a, b], visits, 6, 0.95, 0.0) is a, "with nothing tried yet the scores alone decide"

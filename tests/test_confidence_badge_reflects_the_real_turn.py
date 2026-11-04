@@ -89,3 +89,25 @@ def test_a_streamed_phatic_reply_uses_its_own_response_score_not_the_agent_aggre
     }
     agg = meta.get("aggregated_confidence") or meta.get("confidence")
     assert agg == 0.79, "0.0 is falsy, so the real per-turn score must win, not stay 0.00"
+
+
+def test_the_badge_carries_the_chance_the_reply_is_right_and_the_next_turn_settles_it(tmp_path, monkeypatch):
+    """The figure is the loop's own index; the chance beside it is that figure calibrated on what
+    earlier turns said of such figures, and "thanks" on the next turn settles this one as right."""
+    import pytest
+    from eli.cognition import epistemics as ep
+    from eli.runtime import evidence_ledger as led
+    ledger = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: ledger)
+    eng = CognitiveEngine()
+    eng._publish_last_response_meta({"request_id": "req-1"}, action="CHAT", result_action="CHAT",
+                                    confidence=0.8, response="the kettle takes ninety seconds")
+    meta = eng._last_request_meta
+    assert meta["probability"] == pytest.approx(0.8) and meta["calibration"]["n"] == 0
+    assert meta["confidence_label"] == "high" and eng._pending_assessment == "req-1"
+    eng._settle_recall_outcome("thanks, perfect", "user")
+    assert [(s, y) for s, y, _ in ep.outcomes(db_path=ledger)] == [(0.8, 1.0)]
+    assert eng._pending_assessment is None
+    eng._publish_last_response_meta({"request_id": "req-2"}, action="OPEN_APP", result_action="OPEN_APP",
+                                    confidence=0.9, response="opened")
+    assert eng._last_request_meta["probability"] is None, "an action's chance of working is the ledger's own"

@@ -281,3 +281,31 @@ def test_only_what_the_user_said_becomes_graph_facts(mem, monkeypatch):
     mem.store_memory("Physicists prefer the light-cone gauge for this.", source="tool", kind="pdf:x:chunk:1")
     mem.store_memory("You said you prefer tea.", source="assistant")
     assert seen == ["I prefer tea in the morning"]
+
+
+# ── how readily a memory comes to mind (eli/memory/policy.py, read by the recall) ───────────────
+
+def test_a_memory_used_over_months_comes_to_mind_before_one_said_once(mem):
+    a = mem.store_memory("The greenhouse thermostat is set to nineteen degrees")
+    b = mem.store_memory("The greenhouse thermostat was set to nineteen degrees once")
+    now = time.time()
+    c = sqlite3.connect(mem.db_path)
+    # a: first said 200 days ago, seen 8 times, used in 3 answers, last three weeks ago; b: said yesterday
+    c.execute("UPDATE memories SET event_ts=?, ts=?, timestamp=?, last_seen=?, seen_count=8, last_recalled=?, "
+              "recall_count=3 WHERE id=?", (now - 200 * DAY, now - 200 * DAY, now - 200 * DAY, now - 21 * DAY,
+                                           now - 21 * DAY, a["id"]))
+    c.execute("UPDATE memories SET event_ts=?, ts=?, timestamp=?, last_seen=? WHERE id=?",
+              (now - DAY, now - DAY, now - DAY, now - DAY, b["id"]))
+    c.commit()
+    c.close()
+    hits = mem.recall_memory("greenhouse thermostat", limit=5)
+    assert [h["id"] for h in hits[:2]] == [a["id"], b["id"]]
+    assert hits[0]["accessibility"] > hits[1]["accessibility"]
+
+
+def test_the_last_places_go_to_what_is_not_already_said(mem):
+    for colour in ("red", "red today", "red again"):
+        mem.store_memory(f"The kettle in the workshop is {colour}")
+    other = mem.store_memory("The workshop kettle boils in ninety seconds")
+    hits = mem.recall_memory("workshop kettle", limit=2)
+    assert len(hits) == 2 and other["id"] in [h["id"] for h in hits], "three ways of saying one thing do not fill the places"
