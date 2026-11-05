@@ -93,7 +93,7 @@ _BY_MESSAGE: Tuple[Tuple[str, str], ...] = (
      r"\brefused: .*permission\b|\bread-only file system\b", PERMISSION),
     (r"\bno module named\b|\bnot installed\b|\bcommand not found\b|"
      r"\bno such binary\b|\bmissing dependency\b", DEPENDENCY),
-    (r"\bno such file\b|\bdoes not exist\b|\bnot found on disk\b|"
+    (r"\bno such file\b|\bdoes not exist\b|\bnot found on disk\b|\bnot found\b|\bno such (?:app|window|device|folder|directory)\b|"
      r"\bmodel file missing\b|\bno player could handle\b", MISSING),
     (r"\bdatabase is locked\b|\bdeadlock\b|\brace condition\b|"
      r"\balready in use\b|\bresource temporarily unavailable\b", CONCURRENCY),

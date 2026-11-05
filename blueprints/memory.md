@@ -147,6 +147,25 @@ ignoring filler words, newest first.
   archive, which is searched only when live evidence is thin and its hits are labelled. The
   diagnostics block states that scope, so "nothing stored" is only claimed for what was searched.
 
+### Surprise, use and interest reach a memory's importance
+
+- **Surprise** (`salience.py`): a correction of a reply or a claim, an action predicted to work that
+  failed (or the other way about) and a mood that turned are prediction errors. The memories about the
+  subject move `α · error · (1 − importance)` toward one, `α = 0.25` (Rescorla–Wagner), the error being
+  the chance that was given for what did not happen (`Memory.raise_importance`). Each surprise is a
+  thought in the Anomaly Room and an event the world hears (its curiosity, `eli/cognition/curiosity.py`).
+- **Use**: the daily upkeep's `promote` step above.
+- **Interest** (`interest.py`): the user's focus is measured as recall is, each topic of their own
+  turns with the base-level activation `ln Σⱼ tⱼ^(−0.5)` over its mentions; a topic's share of the
+  total (`e^A` over the sum) is how much of their attention it holds. A new memory takes `0.20 · share`
+  of its topics into its importance; the recall's preference boost (0.15) is given whole to what the
+  user stated about themselves and `0.15 · share` to anything else; the proactive daemon's "focus
+  areas" are these topics with their shares.
+- **Shown memories are figures**: each memory shown to a reply is assessed (kind `recall`, settled by
+  the next turn with the reply) and is a thought in the Memory Archive saying why it came to mind; the
+  chance a memory is of use, fitted on those outcomes, orders the shown memories once outcomes exist
+  (`eli/cognition/reranker.py`, `epistemic_dynamics.md` §4).
+
 ### Daily upkeep
 
 `Memory.run_upkeep()` runs at most once a day (`upkeep_due()`), started asynchronously at
@@ -159,10 +178,16 @@ engine start and after responses (`upkeep_async()`), and skipped under `ELI_TEST
 1b. **claims**: read the whole conversation again for claims, oldest first, once per extraction
    version (`claims.EXTRACT_VERSION`); a version not yet read makes upkeep due on the next start;
 2. **consolidate**: merge exact duplicates and rebuild `memories_fts`;
+2a. **promote**: what the outcomes said of a memory settles into its importance (`promote_used`): a
+   memory that went into answers nobody corrected stands at least at its share of helpful uses,
+   `(helped + 1)/(helped + corrected + 2)`; one corrected more often than it helped stands no higher
+   than that share. Pure arithmetic on `recall_count` and `corrected_count`, so a missed day costs
+   nothing; the pass is a thought (`eli/cognition/thoughts.py`) when anything moved;
 3. **decay**: recompute `weight` with the policy strength (idempotent: a pure function of age,
    importance and use, so a missed run cannot leave a row over-weighted);
 4. **archive**: move faded derived rows to `memories_archive` (`search_archive`,
-   `restore_from_archive` bring them back);
+   `restore_from_archive` bring them back); each row let go is a thought with its reason ("faded,
+   unused and derived") and its strength as its chance, so "why did you drop that" has an answer;
 5. **identity**: merge legacy user ids into one stable owner id (`owner_id`, kept in
    `memory_meta`); only UUID-shaped legacy ids are merged;
 6. **learning**: remove repeated identical belief revisions, cap corroboration at the number of

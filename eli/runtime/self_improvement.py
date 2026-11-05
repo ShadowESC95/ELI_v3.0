@@ -768,6 +768,16 @@ class SelfImprovementEngine:
                 self.log_improvement(imp["category"], imp["description"], area=imp.get("area", "runtime"))
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
+            try:
+                from eli.cognition.thoughts import record as _thought
+                _thought("diagnosis", str(imp.get("description") or "")[:140],
+                         why=[f"a {imp.get('category', 'stability')} failure in {imp.get('area', 'runtime')}",
+                              f"its severity is {imp.get('severity', 'unknown')}"],
+                         decision="proposed", reason="it recurred and is worth a fix" if imp.get("severity") in ("bug", "unknown")
+                         else "it is the environment's, not a defect",
+                         subject=str(imp.get("area") or ""), ref=f"diagnosis:{str(imp.get('description') or '')[:80]}")
+            except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                log.debug("diagnosis thought not kept", exc_info=True)
 
         # Frontier self-repair: when there are NEW (un-investigated) failures and the model
         # is resident, route them through the coding agent (decompose→solve→VERIFY) and
@@ -866,6 +876,14 @@ class SelfImprovementEngine:
         parts = [f"Fix the bug that causes this failure: {err[:500]}"]
         if cmd:
             parts.append(f"Triggered by command: {cmd[:150]}")
+            # what the record says of this action: how it has fared here, the causes, what worked instead
+            try:
+                from eli.runtime.action_outcomes import report as _outcomes
+                told = _outcomes(action=cmd.split()[0] if cmd.split() else cmd).get("lines") or []
+                if told:
+                    parts.append("What ELI's own record says of this action: " + " ".join(told))
+            except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                log.debug("action record unavailable to the fix task", exc_info=True)
         if ui:
             parts.append(f"User input: {ui[:150]}")
         if file_content:
@@ -1457,6 +1475,34 @@ class SelfImprovementEngine:
         finally:
             conn.close()
         result["status"] = status
+        # The proposal as a figure (eli/cognition/epistemics, kind proposal: the chance a candidate with
+        # this verdict is adopted and holds, fitted on what became of earlier ones) and a thought in
+        # the Upgrade Bay; a rejected or regressing candidate is settled wrong at once, the rest when
+        # it is adopted, rolled back or promoted.
+        try:
+            from eli.cognition import epistemics as _ep
+            from eli.cognition.thoughts import record as _thought
+            verdict = str(result.get("verdict") or "")
+            recurrence = 0
+            try:
+                recurrence = int(str(patch.get("failure_ref") or "").count("×"))
+            except (TypeError, ValueError):
+                recurrence = 0
+            prob = _ep.assess(_ep.PROPOSAL, 0.5, request_id=f"proposal:{result['candidate_id']}", class_=verdict,
+                              features={"recurrence": recurrence})
+            _thought("proposal", f"a fix for {str(patch.get('file') or '?')}: {str(patch.get('description') or hypothesis or '')[:120]}",
+                     why=[f"tried on a copy of the tree: {verdict}", f"hypothesis: {hypothesis[:120]}" if hypothesis else "no hypothesis given"],
+                     chance=float(prob.p), decision="proposed" if status != "rejected" else "dropped",
+                     reason={"fixed": "it fixed what failed and broke nothing", "regression": "it broke something",
+                             "rejected": str(result.get("reason") or "rejected"), "unchanged": "it changed nothing",
+                             "inconclusive": "its tests could not run"}.get(verdict, verdict),
+                     subject=str(patch.get("file") or ""), ref=f"proposal:{result['candidate_id']}")
+            if status == "rejected":
+                _ep.settle(f"proposal:{result['candidate_id']}", False, how=verdict, kind=_ep.PROPOSAL)
+                from eli.cognition.thoughts import settle as _settle_thought
+                _settle_thought(f"proposal:{result['candidate_id']}", "rejected", how=verdict)
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("proposal not assessed", exc_info=True)
         return result
 
     def adopt_candidate(self, candidate_id: int) -> dict:
@@ -1480,6 +1526,7 @@ class SelfImprovementEngine:
             status = "probationary"
         else:
             status = "adopted" if res.get("applied") else "rolled_back"
+        self._settle_proposal(candidate_id, status)
         conn = self.memory._get_connection()
         try:
             conn.execute(
@@ -1587,6 +1634,20 @@ class SelfImprovementEngine:
             conn.commit()
         finally:
             conn.close()
+        self._settle_proposal(candidate_id, status)
+
+    @staticmethod
+    def _settle_proposal(candidate_id: int, status: str) -> None:
+        """What became of a proposal: adopted (and held through probation) is right, rolled back is wrong."""
+        if status not in ("adopted", "rolled_back"):
+            return
+        try:
+            from eli.cognition import epistemics as _ep, thoughts as _th
+            right = status == "adopted"
+            _ep.settle(f"proposal:{int(candidate_id)}", right, how=status, kind=_ep.PROPOSAL)
+            _th.settle(f"proposal:{int(candidate_id)}", "right" if right else "wrong", how=status)
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("proposal not settled", exc_info=True)
 
     def _check_probationary_patches(self) -> None:
         """Re-check every probationary patch's watched actions against its pre-adoption

@@ -12,6 +12,8 @@ are we" or "what am I looking at" from what is actually the case.
 
     report(scene)       a client saying what is so now
     live()              the freshest scene, or None once it has gone stale
+    held()              the record in the user's hand, if they picked one of ELI's up
+    held_record(held)   what is on record behind it: a thought, a belief, a memory, a finding
     report_body(body)   a client saying, once, what it can draw: the real things ELI may place
     props()             those things, from the last client that said
     context_block()     the lines for the prompt, or "" when nobody is there
@@ -33,6 +35,7 @@ from eli.utils.log import get_logger
 FRESH_SECONDS = 45.0       # a scene older than this is not where anyone is
 SCENE_MAX = 4000           # characters of JSON a report may be
 _TEXT, _LONG = 60, 240
+HELD_LINES = 8             # what a held sheet says, line by line, as a body reports it
 
 log = get_logger(__name__)
 PROPS_MAX = 400            # real things one body may offer
@@ -87,6 +90,12 @@ def _clean(scene: Dict[str, Any]) -> Dict[str, Any]:
         "pos": _triple(eli.get("pos")),
         "distance": round(max(0.0, _number(eli.get("distance"))), 1),
     }
+    # a record of ELI's the user has picked up (a thought sheet, a belief, a memory, a finding)
+    holding = scene.get("holding") if isinstance(scene.get("holding"), dict) else None
+    if holding and _text(holding.get("id"), 80):
+        out["holding"] = {"id": _text(holding.get("id"), 80), "kind": _text(holding.get("kind"), 24),
+                          "name": _text(holding.get("name"), 80),
+                          "lines": [_text(line, 160) for line in (holding.get("lines") or [])[:HELD_LINES] if _text(line, 160)]}
     things = []
     for thing in (scene.get("things") or [])[:12]:
         if isinstance(thing, dict) and _text(thing.get("name")):
@@ -241,6 +250,72 @@ def forget(surface: Optional[str] = None) -> None:
             _went(surface)
 
 
+def held(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
+    """The record in the user's hand ({"id", "kind", "name", "lines"}), or None."""
+    scene = live(max_age)
+    return dict(scene["holding"]) if scene and scene.get("holding") else None
+
+
+def held_record(holding: Dict[str, Any]) -> List[str]:
+    """What is on record behind a held sheet, as lines: a thought with why it came up, how sure ELI
+    was, what it decided and what became of it; a belief with its basis and chance; a memory with
+    when it was kept, how often it helped and was corrected; a finding with what it found. Only what
+    the record holds; nothing filled in."""
+    ident = str((holding or {}).get("id") or "")
+    kind, _, tail = ident.partition("_")
+    lines: List[str] = []
+    try:
+        if kind == "thought" and tail.isdigit():
+            from eli.cognition.thoughts import by_id
+            thought = by_id(int(tail))
+            if thought:
+                lines.append(f"A {thought['kind']} thought you had: {thought['what']}")
+                if thought.get("why"):
+                    lines.append("It came up because " + "; ".join(str(w) for w in thought["why"][:3]) + ".")
+                if thought.get("decision"):
+                    lines.append(f"You decided: {thought['decision']}"
+                                 + (f", because {thought['reason']}" if thought.get("reason") else "") + ".")
+                if thought.get("chance") is not None:
+                    lines.append(f"How sure you were: {float(thought['chance']):.0%}.")
+                lines.append(("What became of it: it proved " + str(thought.get("outcome"))
+                              + (f" ({thought['how']})" if thought.get("how") else "") + ".")
+                             if thought.get("outcome") else "What became of it is not settled yet.")
+                lines.append("When: " + time.strftime("%a %d %b %Y %H:%M", time.localtime(float(thought.get("ts") or 0.0))) + ".")
+        elif kind == "claim" and tail.isdigit():
+            from eli.memory import claims as _claims
+            from eli.memory.memory import get_memory
+            row = next((r for r in get_memory().claims_current() or [] if str(r.get("id")) == tail), None)
+            if row:
+                lines.append("A belief of yours about the user: " + _claims.describe(row) + ".")
+                lines.append("Its basis: " + _claims.basis(row) + ".")
+                try:
+                    lines.append(f"The chance it is right, as you measure it: {float(_claims.chance(row).p):.0%}.")
+                except (OSError, ValueError, ImportError, AttributeError) as failure:
+                    log.debug("a held claim's chance was not read: %s", failure)
+                if row.get("contested"):
+                    lines.append("Something else you were told disputes it.")
+        elif kind == "memory" and tail.isdigit():
+            from eli.memory.memory import get_memory
+            facts = get_memory().memory_facts(int(tail))
+            if facts:
+                lines.append("A memory of yours: " + str(facts.get("text") or ""))
+                if facts.get("when"):
+                    lines.append("Kept on " + time.strftime("%a %d %b %Y %H:%M", time.localtime(float(facts["when"])))
+                                 + (f", from {facts['source']}" if facts.get("source") else "") + ".")
+                lines.append(f"How much it matters to you: {float(facts.get('importance') or 0.0):.0%}; it helped "
+                             f"{int(facts.get('helped') or 0)} answer{'s' if int(facts.get('helped') or 0) != 1 else ''} and "
+                             f"was corrected {int(facts.get('corrected') or 0)} time{'s' if int(facts.get('corrected') or 0) != 1 else ''}.")
+        elif kind in ("found", "written", "seen") and tail.isdigit():
+            from eli.world import shown
+            record = next((r for r in shown.items() if r.get("id") == ident), None)
+            if record:
+                lines.append(f"What you {'found' if kind == 'found' else 'wrote' if kind == 'written' else 'saw'} for the user: {record['name']}.")
+                lines.extend(str(line) for line in record.get("lines") or [])
+    except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError) as failure:
+        log.debug("the held record was not read: %s", failure)
+    return lines[:HELD_LINES + 2]
+
+
 def near_user(scene: Optional[Dict[str, Any]], ahead: float = 2.2) -> Tuple[float, float]:
     """A spot on the floor a little in front of the user: where a new thing
     goes when nobody said where. [right, forward] from the middle of the room."""
@@ -277,6 +352,14 @@ def context_block(max_age: float = FRESH_SECONDS) -> str:
         lines.append("They are looking at you.")
     elif looking["name"]:
         lines.append(f"They are looking at: {looking['name']}.")
+    holding = scene.get("holding")
+    if holding:
+        what = f"a {holding['kind']} sheet of yours" if holding.get("kind") else "a sheet of yours"
+        lines.append(f"In their hand: {what}, \"{holding['name']}\"." + (" It reads: " + " / ".join(holding["lines"]) if holding.get("lines") else ""))
+        for line in held_record(holding):
+            lines.append("  " + line)
+        lines.append("If they ask about what they are holding, answer from that record: why it came up, how sure you "
+                     "were, what you decided, what became of it. What the record does not hold, say you do not have.")
     if scene["things"]:
         listed = ", ".join(f"{t['name']} ({t['kind']}, {t['distance']:.1f} m)" if t["kind"] else t["name"]
                            for t in scene["things"][:8])

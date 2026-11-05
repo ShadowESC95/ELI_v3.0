@@ -372,6 +372,26 @@ topic, not only reminders.
 ### 🔧 Asking ELI about itself (honest introspection)
 - "what are you running on?" (model, context, GPU) · "how does your memory work?"
 - "what do you know about me?" · "what updates have you made recently?" · "status"
+- "what has worked lately?" · "which of your commands keep failing?" → ELI's own record of its
+  runs: how often each action worked here, why it failed, and what worked instead. When an
+  action fails, ELI says what failed and why; if something else has worked for the same thing
+  before, it tries that at once and tells you, or offers it.
+- Every silent decision ELI makes (a memory it recalled, a belief it used, how it read your
+  sentence, something it made in its house, a fix it proposed, a memory it let go, a note it wrote)
+  is kept with its reasons, how sure ELI was, and what came of it. In ELI VR they appear on the
+  screens of the room they belong to and hang as sheets there (the Evidence Wall, the Debug
+  Basement, the Upgrade Bay, the Core, the Memory Archive, the Anomaly Room); pick a sheet up and
+  ask "why did you think that?", "how sure were you?", "is this still right?": ELI answers from
+  that record, and says what the record does not hold.
+
+### 🎯 Playing with ELI in its rooms (ELI VR)
+- "let's play a game", "set up a catch game", "hide something for me to find": a game is set the
+  moment you ask, from how you did last time (a step harder after a good game, kinder after a bad
+  one); ELI's own name and lines for it follow when its mind has them.
+- "set up the range", "give me a gun": a table of guns beside you and targets ahead; a target
+  scores by the ring it is hit in. "stop the game" ends one; "how did I do" has a true answer.
+- Of its own accord ELI builds, paints, relights, and now writes notes of its own, pinned on the
+  Evidence Wall; the moments it acts on include what surprised it and what it let go.
 
 ### 👁️ Eye control (gaze)
 - "calibrate gaze", then "enable gaze". With it on, ELI clicks **where you're looking** when you

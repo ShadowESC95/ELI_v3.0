@@ -121,6 +121,11 @@ def current_policy(user_id: str = "") -> AffectPolicy:
         return AffectPolicy(detected=detected, confidence=confidence,
                             reason="crisis handling owns this state")
     label, state_confidence = _state(user_id)
+    # a state stands when it is sure: a signed state of its own, or a neutral one the filter is
+    # confident of; a neutral state that is not sure (reads faded, or too few) leaves the read as
+    # the measure, so a confident read is not vetoed by what the state has not yet settled
+    if label == "neutral" and state_confidence < _MIN_CONFIDENCE:
+        label = ""
     if label:
         # a state stands: its own sureness is the measure, and a read of the other sign is a spike
         from eli.cognition.emotion_timeline import valence_of

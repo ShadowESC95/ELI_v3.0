@@ -347,10 +347,23 @@ class ProactiveDaemon:
                 w = w.strip('.,!?;:\'"()[]{}')
                 if len(w) > 4 and w not in self._STOPWORDS and w.isalpha():
                     word_counts[w] = word_counts.get(w, 0) + 1
-        top = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        top = [(w, c) for w, c in top if c >= 3]
-        if top:
+        # The user's focus is measured as memory is (eli/memory/interest.py): each topic's base-level
+        # activation over their own mentions, so ten mentions over months and one yesterday are told
+        # apart; the share is of their whole attention. The counts stand in only when it cannot be read.
+        try:
+            from eli.memory.interest import focus as _focus
+            _ranked = [(w, s) for w, s in _focus(5) if s > 0.0]
+        except Exception:
+            _SWLOG.debug("interest unreadable", exc_info=True)
+            _ranked = []
+        if _ranked:
+            top = _ranked
+            topics = ", ".join(f"{w} ({s:.0%} of your attention)" for w, s in top)
+        else:
+            top = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            top = [(w, c) for w, c in top if c >= 3]
             topics = ", ".join(f"{w} (×{c})" for w, c in top)
+        if top:
             patterns.append({
                 "type": "topic_focus",
                 "topics": [w for w, _ in top],

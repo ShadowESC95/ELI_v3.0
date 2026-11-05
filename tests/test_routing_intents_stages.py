@@ -12,6 +12,7 @@ def test_stage_order_is_the_legacy_order():
     assert [name for name, _ in INTENT_STAGES] == [
         # early group — before the inline code-generation block
         "command_parser",          # the command language's strict pass: atoms only, ahead of the rules
+        "world_held",              # a question about the sheet of ELI's in the user's hand: conversation, from its record
         "self_report",
         "runtime_voice",
         "input_agents",

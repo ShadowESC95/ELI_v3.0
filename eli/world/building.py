@@ -38,9 +38,12 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from eli.utils.log import get_logger
 from eli.world.core.schemas import (
     EliWorldState, WorldAction, WorldActionType, WorldEvent, WorldObject,
 )
+
+log = get_logger(__name__)
 
 EVENT_TYPE = "world_edit"
 BUILT = "built"                      # object_type of a thing made this way
@@ -62,6 +65,7 @@ OWN_ROOM_INFO: Dict[str, Any] = {
 SHAPES = (
     "orb", "pillar", "block", "slab", "arch", "ring", "crystal", "tree",
     "lamp", "board", "cone", "stair", "table", "seat", "pool", "beacon", "painting", "mat",
+    "target", "arm",                 # a ringed target on its stand, and a gun of the range (eli/world/games.py)
 )
 PROP = "prop"                        # the shape of a real thing the body has (a chair, a lamp)
 # A painting is ELI's own: a style and the colours it is painted in.
@@ -121,6 +125,7 @@ _SHAPE_WORDS = {
     "spire": "beacon", "obelisk": "beacon", "picture": "painting", "canvas": "painting",
     "artwork": "painting", "art": "painting", "poster": "painting", "mural": "painting",
     "rug": "mat", "disc": "mat", "circle": "mat", "carpet": "mat",
+    "bullseye": "target", "gun": "arm", "weapon": "arm", "pistol": "arm", "rifle": "arm", "blaster": "arm",
 }
 _SKY_WORDS = {"night": "stars", "space": "stars", "starry": "stars", "morning": "dawn",
               "sunrise": "dawn", "fog": "mist", "foggy": "mist", "misty": "mist",
@@ -633,6 +638,21 @@ def apply_action(state: EliWorldState, action: WorldAction, event: WorldEvent) -
                 earlier.payload["undone"] = True
 
 
+def _pin_note(text: str, event: WorldEvent, actor: str) -> None:
+    """A note written in the rooms is a thought of ELI's (kind note, on the Evidence Wall), so a body
+    hangs it up where the user can pick it up and ask about it; the moment it came of is its reason."""
+    try:
+        from eli.cognition.thoughts import record
+        links = [link for link in event.payload.get("links") or [] if isinstance(link, dict)]
+        why = [str(link.get("text") or "")[:200] for link in links if link.get("text")] \
+            or ([str(event.summary)[:200]] if event.summary else [])
+        record("note", text, why=why, decision="pinned",
+               reason="ELI wrote it of its own accord" if actor == "eli" else "the user asked for it",
+               subject=str((links[0].get("text") if links else "") or "")[:120], ref=f"note:{event.timestamp}")
+    except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+        log.debug("a note was not kept as a thought", exc_info=True)
+
+
 def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) -> Dict[str, Any]:
     op, room = edit["op"], str(edit.get("room") or OWN_ROOM)
     actor = str(event.payload.get("actor") or "eli")
@@ -640,7 +660,8 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
     if op == "note":
         from eli.world.persistence.journal import append_journal_entry
         append_journal_entry(title="A note from the rooms", body=edit["text"], source="eli_world_building")
-        return {"op": op, "ok": True}
+        _pin_note(edit["text"], event, actor)
+        return {"op": op, "ok": True, "name": "A note"}
 
     if op == "room":
         if room != OWN_ROOM:
@@ -678,8 +699,13 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
                 edit["name"] = brought["name"]
         size = float(edit.get("size", 1.0))
         near = tuple(edit["at"]) if "at" in edit else tuple(event.payload.get("near") or (0.0, 2.5))
-        right, forward = _free_spot(state, room, (float(near[0]), float(near[1])), size,
-                                    avoid=event.payload.get("avoid"))
+        if edit.get("piece"):
+            # a piece of a game stands where the game laid it out (guns along a table, pieces in a
+            # row), not where the nearest free spot is
+            right, forward = round(float(near[0]), 2), round(float(near[1]), 2)
+        else:
+            right, forward = _free_spot(state, room, (float(near[0]), float(near[1])), size,
+                                        avoid=event.payload.get("avoid"))
         # two things in a room do not share a name: the second is "Lantern 2"
         taken = {o.name.lower() for o in _standing(state, room)}
         name, count = edit["name"], 2
@@ -822,6 +848,20 @@ def apply(edits: Any, *, actor: str = "eli", summary: str = "", asked: bool = Fa
         state = append_event(EVENT_TYPE, source, str(summary)[:200], payload)
     event = (state.get("events") or [{}])[-1]
     results = list((event.get("payload") or {}).get("results") or [])
+    if is_undo:
+        # what was taken back was made of a moment of ELI's own: the figure given for that act is
+        # settled wrong (eli/world/urges.undone), by the links the earlier event carried
+        try:
+            undid = {e.get("undoes") for e in clean if e.get("undoes")}
+            refs = []
+            for earlier in state.get("events") or []:
+                if earlier.get("timestamp") in undid:
+                    refs += [l.get("ref") for l in (earlier.get("payload") or {}).get("links") or [] if isinstance(l, dict)]
+            if refs and any(r.get("ok") for r in results):
+                from eli.world.urges import undone
+                undone(refs)
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("undone acts not settled", exc_info=True)
     done = {r["index"] for r in results}
     for index in range(len(clean)):
         if index not in done:       # the policy did not let it through

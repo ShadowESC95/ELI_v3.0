@@ -138,6 +138,15 @@ def _claim_evidence(c: Dict[str, Any]) -> Dict[str, Any]:
                        features={"confirmations": int(c.get("confirmations") or 1), "contested": disputed})
                 used[str(c["id"])] = {"p": round(p, 4), "relation": str(c.get("relation") or ""),
                                       "value": str(c.get("value") or ""), "request_id": claim_request_id(c["id"], rid)}
+                # the claim the reply will rest on, as a thought on the Evidence Wall, settled with the reply
+                try:
+                    from eli.cognition.thoughts import record as _thought
+                    _thought("claim", f"{str(c.get('relation') or '').replace('_', ' ')}: {c.get('value')}",
+                             why=[_claims.basis(c)], chance=p, decision="shown",
+                             reason="the question touches it" + (", though it is disputed" if disputed else ""),
+                             subject=str(c.get("value") or ""), request_id=rid, ref=claim_request_id(c["id"], rid))
+                except (OSError, ValueError, ImportError) as thought_failure:
+                    log.debug("claim thought not kept: %s", thought_failure)
     except (OSError, ValueError, ImportError, LookupError) as failure:
         log.debug("claim not assessed for the turn: %s", failure)
     return {"id": f"claim:{c['id']}", "text": text, "content": text,

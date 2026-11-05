@@ -1,4 +1,14 @@
 from __future__ import annotations
+
+def _catalogue_literal(text: str):
+    """The route for a sentence that is, word for word, a catalogue phrase naming an action with nothing
+    variable in it (routing/command_parser.literals), or None."""
+    try:
+        from eli.execution.routing.command_parser import _literal
+        return _literal(str(text or ""))
+    except Exception:
+        return None
+
 def _eli_phase10_blocks_media_intent(text: str) -> bool:
     """
     Hard block document/code/analysis prompts from PLAY_MEDIA.
@@ -526,6 +536,10 @@ def try_route(text: str) -> Optional[dict]:
                 "confidence": 0.98,
                 "meta": {"matched_by": "portable_intent_contract.open_browser"},
             }
+        elif _catalogue_literal(norm) is not None:
+            # "start a pomodoro", "start the audit": a phrase the catalogue gives an action of its own
+            # is that action, not an app by that name (routing/command_parser.literals)
+            return _catalogue_literal(norm)
         elif _looks_like_app_target(target):
             return {
                 "action": "OPEN_APP",

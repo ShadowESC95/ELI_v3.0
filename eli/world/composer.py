@@ -19,6 +19,10 @@ A small model still mishears, so the plain cases are not left to it:
   - a sentence about a thing that is there cannot make a new one, and a thing
     the user asked to have taken away is taken away.
 
+Unasked, ELI may also write a note of its own (op note): it goes in its journal and
+is pinned on the Evidence Wall as a thought of kind note, where the user can pick
+it up and ask ELI about it.
+
 What comes back is put right and applied by eli/world/building.py. Whatever
 could not be done is said, and if nothing changed ELI says that, whatever the
 model claimed.
@@ -50,7 +54,17 @@ from eli.world import building, embodiment
 
 SAY_MAX = 400
 MAX_TOKENS = 700
-ALL_OPS = ("create", "move", "change", "remove", "room", "undo")
+ALL_OPS = ("create", "move", "change", "remove", "room", "note", "undo")
+# What a moment of ELI's own is to ELI, in the prompt, by its kind (eli/world/urges.py).
+_MOMENT_WORDS = {
+    "done_for_you": "What you just did for the user: {}",
+    "time_of_day": "The day has turned: {}",
+    "play": "A game you made up and played together: {}",
+    "surprise": "Something did not fit what you believed: {}",
+    "conflict": "Two things you were told disagree: {}",
+    "memory": "A memory you let go, and why: {}",
+    "recall": "A memory you brought to mind that proved wrong: {}",
+}
 
 # Words that make a sentence about the place and not about anything else. A
 # cheap test on purpose: it only decides which of two paths a sentence takes.
@@ -220,9 +234,10 @@ def plan(text: Optional[str], things: List[Dict[str, Any]], own: bool) -> Tuple[
     the room only when it is about the light."""
     if not text:
         ops = [op for op in ALL_OPS if op != "undo"]
-        return tuple(op for op in ops if things or op in ("create", "room"))
+        return tuple(op for op in ops if things or op in ("create", "room", "note"))
     about_room = _ROOM.search(text) if own else _LIGHT.search(text)
-    ops = [op for op in ALL_OPS if op != "undo" and (op != "room" or own or about_room)]
+    # a note is ELI's own to write, unasked; asked for a thing, ELI makes the thing
+    ops = [op for op in ALL_OPS if op not in ("undo", "note") and (op != "room" or own or about_room)]
     if not things:
         ops = [op for op in ops if op in ("create", "room")]
     if _A_NEW.search(text):
@@ -274,7 +289,7 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         return '"\\"" char%s "\\""' % ("{1,%d}" % limit if bounded else "+")
 
     safe = [t for t in targets if t and re.fullmatch(r"[^\"\\\x00-\x1f]+", t)]
-    allowed = [op for op in ops if safe or op in ("create", "room", "undo")]
+    allowed = [op for op in ops if safe or op in ("create", "room", "undo", "note")]
     elsewhere = [r for r in rooms if re.fullmatch(r"[a-z0-9_]+", str(r))]
     where = ' (",\\"room\\":" place)?' if elsewhere else ""
     own_room = ('"{\\"op\\":\\"room\\"" (",\\"sky\\":" sky)? (",\\"ground\\":" ground)? '
@@ -328,6 +343,8 @@ def grammar_text(own: bool = True, ops: Sequence[str] = ALL_OPS, targets: Sequen
         '(",\\"glow\\":" number)? (",\\"shape\\":" shape)? (",\\"turn\\":" degrees)? (",\\"meaning\\":" meaning)? "}"',
         'remove ::= "{\\"op\\":\\"remove\\",\\"name\\":" target "}"',
         'undo ::= "{\\"op\\":\\"undo\\"}"',
+        'note ::= "{\\"op\\":\\"note\\",\\"text\\":" words "}"',
+        "words ::= " + text(building.NOTE_MAX),
         "room ::= " + room_rule,
         "target ::= " + (_quoted(safe) if safe else "name"),
         'spot ::= "[" number "," number "]"',
@@ -384,11 +401,9 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
         if about:
             said = str(about.get("text", ""))[:300]
             kind = str(about.get("kind", ""))
-            parts.append(f"What you just did for the user: {said}" if kind == "done_for_you" else
-                         f"The day has turned: {said}" if kind == "time_of_day" else
-                         f"A game you made up and played together: {said}" if kind == "play" else
-                         f"What has just happened in you ({kind.replace('_', ' ')}): {said}")
-            parts.append("Make of that what you will here: a thing, a change to one, a change to the room.")
+            parts.append(_MOMENT_WORDS.get(kind, "What has just happened in you ({kind}): {{}}".format(kind=kind.replace('_', ' ')))
+                         .format(said))
+            parts.append("Make of that what you will here: a thing, a change to one, a change to the room, or a note.")
             if rooms:
                 parts.append('It need not be here: the whole house is yours. To make a thing in another room, or to '
                              'change the light of one, give it "room":')
@@ -432,6 +447,10 @@ def build_prompt(text: Optional[str], scene: Optional[Dict[str, Any]], state: Di
         parts.append("To move a thing: its name, and at [right, forward]; height and turn if they change.")
     if "remove" in ops:
         parts.append("To take a thing away: its name.")
+    if "note" in ops:
+        parts.append("To write a note of your own: note, with text (a sentence or three, in your own words: what you "
+                     "make of this moment, or what you want kept of it). It is pinned on the Evidence Wall, where "
+                     "the user can pick it up and ask you about it.")
     if not own and "room" in ops:
         look = building.look_of(house, room)
         parts.append(f"This room keeps its own sky, ground and air. To change the colour of its lights "

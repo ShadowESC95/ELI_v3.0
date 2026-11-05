@@ -356,6 +356,16 @@ def _names_an_act_under_way(sentence: str) -> bool:
 # last 48 hours with stricter temporal weighting", "enable verbose logging in the config".
 # Saying it cannot read what it can. Told "I don't have a live feed", the next message read the feed in
 # a quarter of a second.
+# "I have no record of that session", "the logs from that day do not exist in this runtime", "not in my
+# active context": a reply denying the record of a period whose record the turn has in hand (the
+# orchestrator put the period log in front of the model and said so, _period_found).
+_DENIES_THE_RECORD = re.compile(
+    r"\bi\s+(?:do\s+not|don['’]t|have\s+no|can['’]?t|cannot|am\s+unable\s+to)\s+(?:have\s+|see\s+|find\s+|recall\s+|access\s+|retrieve\s+)?"
+    r"(?:any\s+|the\s+|a\s+|those\s+|that\s+)?(?:records?|logs?|memor(?:y|ies)|history|transcripts?|timestamps?|conversation)\b"
+    r"|\b(?:there\s+(?:is|are)\s+)?no\s+(?:records?|logs?|history|transcripts?|memor(?:y|ies))\s+(?:of|from|for|about)\b"
+    r"|\b(?:records?|logs?|history|transcripts?)\b[^.!?\n]{0,40}\b(?:do(?:es)?\s+not|don['’]t|doesn['’]t)\s+exist\b"
+    r"|\bnot\s+(?:in|within|part\s+of)\s+(?:my|this|the)\s+(?:active\s+|current\s+)?(?:context|memory|session|window|runtime)\b",
+    re.I)
 _DENIES_A_READ = re.compile(
     r"\bi\s+(?:do\s+not|don['’]t|can\s*not|can['’]t|have\s+no)\b[^.!?\n]{0,40}"
     r"\b(?:(?:live\s+)?feed\s+of|live\s+feed|your\s+screen|file\s*system|your\s+files|"
@@ -672,6 +682,7 @@ class _Check:
         self._skip_section = False
         self._live = _live_facts()
         self.unrecorded_days: List[str] = []
+        self.denied_record = False     # a sentence denied the record of a period that is in hand
         self._line_open = False  # served text since the last newline
         self.dropped: List[str] = []
         self.kept_words = 0
@@ -723,6 +734,9 @@ class _Check:
             return "reads its own instructions back"
         if _DENIES_A_READ.search(s):
             return "says it cannot read something it can"
+        if self._facts.get("_period_found") and _DENIES_THE_RECORD.search(s):
+            self.denied_record = True
+            return "says it has no record of that period, and the record of it is in hand"
         if self._period_window:
             named = days_named(s, self._period_window)
             missing = [d for d in named if d not in self._period_days]
@@ -885,6 +899,11 @@ class _Check:
         left, a line saying causes were left out when several were, otherwise nothing."""
         if not self.dropped:
             return ""
+        if self.denied_record:
+            # the record it denied, served in its place: the period log's own lines
+            lines = self._facts.get("_period_lines") or []
+            if lines:
+                return ("\n\n" if self.kept_words else "") + "What I have for that period:\n" + "\n".join(f"- {x}" for x in lines)
         if self.claimed_acting:
             # Said plainly when the user asked ELI to do something and was told it had happened.
             # Not under a reply to a greeting or a question: "how are you doing this evening?" got

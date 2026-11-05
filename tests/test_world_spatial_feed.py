@@ -140,6 +140,7 @@ def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
     monkeypatch.setattr(memory_module, "get_memory", lambda: reads.append(1) or Memory())
     monkeypatch.setattr(goal_store, "summarize_goals", lambda: {"titles": ["Learn the filing system"]})
     monkeypatch.setattr("eli.runtime.evidence_ledger.recent_events", lambda **k: [])   # nothing done for the user
+    monkeypatch.setattr(shown, "_thought_notes", lambda: [])                            # and no thought sheets
     shown.forget()
     msg = spatial_feed.spatial_state(WORLD, version=2)
     by_kind = {o["kind"]: o for o in msg["objects"]}
@@ -618,3 +619,33 @@ def test_a_picture_eli_took_is_shown_only_as_the_ledger_records_it(monkeypatch, 
     for other in (30, 29, 28, 999):
         assert client.get(f"/v1/world/picture/{other}").status_code == 404, other
     assert "pictures" in spatial_feed.CAPABILITIES[2]
+
+
+def test_elis_thoughts_hang_as_sheets_in_the_rooms_they_belong_to(monkeypatch, tmp_path):
+    from eli.cognition import thoughts as th
+    from eli.world import shown
+    monkeypatch.setattr(th, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")
+    for source in ("_memories", "_goals", "_claims", "_conflicts", "_results"):
+        monkeypatch.setattr(shown, source, lambda: [])
+    for n in range(8):
+        th.record("route", f"read sentence {n} as a command", chance=0.5 + n * 0.05, decision="held", now=1_790_000_000.0 + n)
+    cid = th.record("claim", "you live in Harbour Town", chance=0.9, decision="held", reason="confirmed twice", why=["said twice"],
+                    ref="claim:1", now=1_790_001_000.0)
+    th.settle("claim:1", "right", how="it stood")
+    th.record("note", "Look before saying where things are.", decision="pinned", reason="ELI wrote it of its own accord",
+              now=1_790_002_000.0)
+    shown.forget()
+    sheets = [o for o in shown.items() if o["kind"] == "thought"]
+    core = [o for o in sheets if o["room"] == "core_room"]
+    assert len(core) == shown.NOTES_PER_ROOM and core[0]["name"] == "route: read sentence 7 as a command", "the newest six"
+    wall = {o["id"]: o for o in sheets if o["room"] == "evidence_wall"}
+    sheet = wall[f"thought_{cid}"]
+    assert sheet["lines"][:4] == ["you live in Harbour Town", "held: confirmed twice", "chance 90% · proved right (it stood)", "because said twice"]
+    assert sheet["lines"][4].endswith(":36") or sheet["lines"][4], "and when it was had"
+    assert sheet["thought"] == {"kind": "claim", "chance": 0.9, "decision": "held", "status": "settled", "outcome": "right"}
+    assert sheet["form"]["colour"] == shown.THOUGHT_COLOURS["claim"] and sheet["form"]["shape"] == "board" and sheet["importance"] == 0.9
+    assert sheet["meaning"].startswith("You live in Harbour Town. Held because confirmed twice.")
+    note = [o for o in wall.values() if o["thought"]["kind"] == "note"][0]
+    assert note["name"] == "note: Look before saying where things are." and note["form"]["colour"] == shown.THOUGHT_COLOURS["note"]
+    assert spatial_feed.spatial_state(WORLD, version=2)["objects"][-1]["kind"] == "thought"
+    shown.forget()

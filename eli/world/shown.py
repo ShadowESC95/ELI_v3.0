@@ -12,9 +12,14 @@ two things ELI was told disagree, with the question that would settle it. What E
 did for the user lately stands there too: what it found (a web search, the news, the
 weather) pinned up on the Evidence Wall, the pictures it took or looked at beside them
 (served by their ledger row, picture()), what it wrote in the Workshop, and what is
-playing on the Core Room's radio, each with what it says ("lines"). A room shows as
-many as it holds (building.MAX_PER_ROOM), the newest and surest first. They are read
-from ELI's memory, goal store and evidence ledger, never made up, and they are not
+playing on the Core Room's radio, each with what it says ("lines"). ELI's thoughts
+lately (eli/cognition/thoughts.py: what it recalled, believed, read a sentence as, made,
+tried, proposed, let go, and the notes it wrote) hang as sheets in the rooms they belong
+to, the newest NOTES_PER_ROOM of each room, each written with the thought, what ELI
+decided and why, its chance and what became of it: the user may pick one up and ask ELI
+about it (eli/world/embodiment.py, held_record). A room shows as many records as it
+holds (building.MAX_PER_ROOM), the newest and surest first. They are read from ELI's
+memory, goal store, evidence ledger and thoughts, never made up, and they are not
 things ELI built: a body draws them, and may let the user pick one up, but moving one
 changes nothing in ELI.
 
@@ -25,6 +30,8 @@ shown is refreshed at most every half minute.
     thoughts()  what is on ELI's mind now, in its records' own words, for a body to let rise from ELI
     coming_up() what is on the user's agenda in the next day and a half: events, reminders, alarms
     free()      whether ELI is free to make something of its own now (eli/world/urges.py)
+    kept()      the thoughts ELI has had lately, with why, how sure, what was decided and what became
+                of them (eli/cognition/thoughts.py), for the rooms' screens
 """
 from __future__ import annotations
 
@@ -52,6 +59,11 @@ STOPPED = ("PAUSE_MEDIA", "STOP_MEDIA")
 ROOM_OF = {"found": "evidence_wall", "written": "workshop", "playing": "core_room", "seen": "evidence_wall"}
 KEPT = {"found": 6, "written": 6, "playing": 1, "seen": 4}
 LINES = 8                   # what one printed sheet holds
+NOTES_PER_ROOM = 6          # thought sheets a room hangs up: the newest of those that belong there
+# A thought sheet's paper by the thought's kind, as the rooms' screens colour the kinds.
+THOUGHT_COLOURS = {"action": "#ffb347", "surprise": "#ffb347", "conflict": "#ffb347", "act": "#8fe8a8",
+                   "recall": "#b9a4ff", "memory": "#b9a4ff", "claim": "#d9e4f2", "route": "#d9e4f2",
+                   "proposal": "#d9e4f2", "diagnosis": "#d9e4f2", "note": "#f5e6c8"}
 
 _cache: Tuple[float, List[Dict[str, Any]]] = (0.0, [])
 
@@ -178,6 +190,8 @@ def _mind() -> List[Dict[str, str]]:
 
 
 _thoughts_cache: Tuple[float, List[Dict[str, str]]] = (0.0, [])
+_kept_cache: Tuple[float, List[Dict[str, Any]]] = (-REFRESH_SECONDS, [])
+THOUGHTS = 60               # the latest thoughts a body is handed, across the rooms
 _coming_cache: Tuple[float, List[Dict[str, Any]]] = (-REFRESH_SECONDS, [])
 AHEAD_HOURS = 36            # how far ahead the agenda a room shows reaches, as ELI's own prompt does
 _free_cache: Tuple[float, bool] = (-REFRESH_SECONDS, False)
@@ -213,6 +227,29 @@ def thoughts(now: float | None = None) -> List[Dict[str, str]]:
         return _thoughts_cache[1]
     _thoughts_cache = (now, _mind())
     return _thoughts_cache[1]
+
+
+def kept(now: float | None = None, *, room: str = "", kinds: List[str] | None = None, limit: int = THOUGHTS) -> List[Dict[str, Any]]:
+    """The thoughts ELI has had lately (eli/cognition/thoughts.py), each with why, its chance, what was
+    decided and what became of it, for the rooms' screens; refreshed as often as the records. With a
+    room or kinds, only those, read fresh."""
+    global _kept_cache
+    clock = time.monotonic() if now is None else now
+    if room or kinds:
+        try:
+            from eli.cognition.thoughts import for_feed
+            out = [t for t in for_feed(limit) if (not room or t["room"] == room) and (not kinds or t["kind"] in kinds)]
+        except Exception:
+            out = []
+        return out
+    if clock - _kept_cache[0] < REFRESH_SECONDS:
+        return _kept_cache[1]
+    try:
+        from eli.cognition.thoughts import for_feed
+        _kept_cache = (clock, for_feed(limit))
+    except Exception:
+        _kept_cache = (clock, [])
+    return _kept_cache[1]
 
 
 def free(now: float | None = None) -> bool:
@@ -374,6 +411,64 @@ def _results() -> List[Dict[str, Any]]:
     return out
 
 
+def thought_lines(thought: Dict[str, Any]) -> List[str]:
+    """What a thought's sheet says, line by line: the thought, what ELI decided and why, its chance
+    and what became of it, what brought it up, and when it was had."""
+    lines = [_plain(thought.get("what") or "")]
+    decision = str(thought.get("decision") or "").strip()
+    reason = str(thought.get("reason") or "").strip()
+    if decision:
+        lines.append(decision + (f": {reason}" if reason else ""))
+    tail = []
+    if thought.get("chance") is not None:
+        try:
+            tail.append(f"chance {float(thought['chance']):.0%}")
+        except (TypeError, ValueError):
+            pass
+    outcome = str(thought.get("outcome") or "").strip()
+    if outcome:
+        how = str(thought.get("how") or "").strip()
+        tail.append(f"proved {outcome}" + (f" ({how})" if how else ""))
+    if tail:
+        lines.append(" · ".join(tail))
+    why = [str(w).strip() for w in (thought.get("why") or []) if str(w).strip()]
+    if why:
+        lines.append("because " + "; ".join(why[:3]))
+    try:
+        lines.append(time.strftime("%a %d %b %H:%M", time.localtime(float(thought.get("ts") or 0.0))))
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
+    return [line for line in lines if line][:LINES]
+
+
+def _thought_notes() -> List[Dict[str, Any]]:
+    """ELI's thoughts lately as sheets in the rooms they belong to, the newest NOTES_PER_ROOM of
+    each room, each with its lines and the thought's own measures (kind, chance, decision, status,
+    outcome) for a body that draws them by kind."""
+    from eli.cognition.thoughts import recent, room_of
+    counted: Dict[str, int] = {}
+    out: List[Dict[str, Any]] = []
+    for thought in recent(THOUGHTS):
+        kind = str(thought.get("kind") or "")
+        room = str(thought.get("room") or room_of(kind))
+        if counted.get(room, 0) >= NOTES_PER_ROOM:
+            continue
+        counted[room] = counted.get(room, 0) + 1
+        key = f"thought_{thought['id']}"
+        chance = thought.get("chance")
+        sure = max(0.0, min(1.0, float(chance))) if chance is not None else 0.5
+        out.append({
+            "id": key, "name": f"{kind}: {_plain(thought.get('what') or '')}"[:48], "kind": "thought", "room": room,
+            "x": 0.0, "y": 0.0, "importance": sure, "meaning": str(thought.get("words") or "")[:200],
+            "lines": thought_lines(thought), "made_by": "thoughts", "when": float(thought.get("ts") or 0.0),
+            "thought": {"kind": kind, "chance": chance, "decision": str(thought.get("decision") or ""),
+                        "status": str(thought.get("status") or ""), "outcome": str(thought.get("outcome") or "")},
+            "form": {"shape": "board", "colour": THOUGHT_COLOURS.get(kind, "#d9e4f2"), "size": 0.6,
+                     "glow": round(0.3 + 0.6 * sure, 2), "pos": _spot(key, 0.9, 2.1)},
+        })
+    return out
+
+
 def items(now: float | None = None) -> List[Dict[str, Any]]:
     """The records to show. A source that cannot be read shows nothing of its own."""
     global _cache
@@ -381,7 +476,7 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
     if _cache[1] and now - _cache[0] < REFRESH_SECONDS:
         return _cache[1]
     found: List[Dict[str, Any]] = []
-    for source in (_memories, _goals, _claims, _conflicts, _results):
+    for source in (_memories, _goals, _claims, _conflicts, _results, _thought_notes):
         try:
             found.extend(source())
         except Exception:
@@ -391,8 +486,9 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
 
 
 def forget() -> None:
-    global _cache, _thoughts_cache, _free_cache, _coming_cache
+    global _cache, _thoughts_cache, _free_cache, _coming_cache, _kept_cache
     _cache = (0.0, [])
     _thoughts_cache = (0.0, [])
     _coming_cache = (-REFRESH_SECONDS, [])
     _free_cache = (-REFRESH_SECONDS, False)
+    _kept_cache = (-REFRESH_SECONDS, [])

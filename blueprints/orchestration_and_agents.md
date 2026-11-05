@@ -184,6 +184,14 @@ completeness test that fails if a routable action lands in neither set nor the e
 
 `SpecAgent` instances (user-defined specifications) and custom agents register on top of these.
 
+The memory agent's context under a figure of 0.5 was dropped outright. The line stands, but it is
+asked of the outcomes first (`_memory_context_stands`, `epistemics.worse_below` on the `memory_conf`
+figure every reply's assessment carries): shown that replies with memory context at such a figure
+proved as right as those above the line, the context is kept; shown nothing, or that they proved worse,
+it is dropped as before. The engine's bus fast path (its aggregate line of 0.7) and the chat grounding
+floor (0.35) are asked the same way (`epistemic_dynamics.md` §12). The orchestrator assesses each memory
+it shows a reply (`_assess_recalls`, kind `recall`) and records why it came to mind as a thought.
+
 Execution (`AgentBus.dispatch`):
 
 - **Selective fan-out**: tiny filler chat → `{memory, orchestrator}`; non-chat →

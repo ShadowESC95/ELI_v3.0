@@ -2211,18 +2211,41 @@ def _record_tool_execution(action: str, args: Any, result: Any) -> None:
     outcome = execution_outcome(result)
     predicted = predict_success(action)
     text = ""
+    cause = ""
+    verified = None
     if isinstance(result, dict):
         text = str(result.get("response") or result.get("content") or result.get("message") or "")
+        verified = result.get("verified")
+        if outcome in ("failed", "no_effect"):
+            try:
+                from eli.runtime.action_outcomes import cause_of
+                cause = cause_of(result, action)
+            except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                log.debug("cause not classified", exc_info=True)
     record_event(
         "tool_execution",
         source="executor",
         action=action,
         subject=",".join(sorted(str(k) for k in (args or {}))) if isinstance(args, dict) else "",
         content=text[:200],
-        payload={"ok": outcome == "ok", **({"predicted": predicted} if predicted is not None else {})},
+        payload={"ok": outcome == "ok", **({"predicted": predicted} if predicted is not None else {}),
+                 **({"cause": cause} if cause else {}), **({"verified": bool(verified)} if verified is not None else {})},
         outcome=outcome,
         severity="warning" if outcome == "failed" else "info",
     )
+    # a prediction that missed by more than an even chance is a surprise: the memories about the
+    # target matter more for it (eli/memory/salience.py)
+    if predicted is not None and outcome in ("ok", "failed") and abs(float(predicted) - (1.0 if outcome == "ok" else 0.0)) > 0.5:
+        try:
+            from eli.memory.salience import note_surprise
+            from eli.runtime.action_outcomes import subject_of
+            _about = subject_of(action, args if isinstance(args, dict) else {})
+            note_surprise("action", abs(float(predicted) - (1.0 if outcome == "ok" else 0.0)),
+                          subjects=[_about] if _about else [], why=f"{action.replace('_', ' ').lower()}"
+                          f"{(' for ' + _about) if _about else ''} was expected to {'fail' if outcome == 'ok' else 'work'} "
+                          f"({float(predicted):.0%}) and {'worked' if outcome == 'ok' else 'failed'}")
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("action surprise not noted", exc_info=True)
     if outcome in ("ok", "failed"):
         try:
             from eli.runtime.lessons import observe_action
@@ -5827,6 +5850,57 @@ _INDEXED_AFTER = frozenset((
 _DOCUMENT_PATH_KEYS = ("path", "file", "output", "output_path", "saved_to", "pdf_path")
 
 
+# Remediation's own confirm/cancel actions are terminal honest outcomes, never failures to learn from.
+_REMEDIATION_ACTIONS = frozenset(("CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION"))
+
+
+def _outcome_facts(action: str, result: "Dict[str, Any]") -> "Dict[str, Any]":
+    """The cause of a failed run and whether a run was checked, for the record it is learned from."""
+    if not isinstance(result, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    if result.get("verified") is not None:
+        out["verified"] = bool(result.get("verified"))
+    if not result.get("ok", True) or result.get("effect") is False or result.get("played") is False:
+        try:
+            from eli.runtime.action_outcomes import cause_of
+            out["cause"] = cause_of(result, action)
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("cause not classified", exc_info=True)
+    return out
+
+
+def _checked_result(action: str, args: "Optional[Dict[str, Any]]", result: "Dict[str, Any]",
+                    started: float) -> "Dict[str, Any]":
+    """A result that says it worked, checked against the world where that can be seen
+    (runtime/action_outcomes.verify): a run that writes a file that is not there did not work, and
+    says so; a search that brought nothing back had no effect. Both are recorded as such, so no reply
+    and no reliability figure rests on a success that was only claimed. What cannot be seen is left
+    as reported, marked unchecked."""
+    if not isinstance(result, dict) or not result.get("ok", False):
+        return result
+    try:
+        from eli.runtime.action_outcomes import verify
+        verified, how = verify(action, args, result, started=started)
+    except Exception:
+        log.debug("result not checked", exc_info=True)
+        return result
+    if verified is None:
+        return result
+    result["verified"] = bool(verified)
+    result["verified_how"] = how
+    if verified:
+        return result
+    if "came back" in how:
+        result["effect"] = False
+    else:
+        result["claimed"] = str(result.get("response") or result.get("content") or "")[:300]
+        result["ok"] = False
+        result["error"] = f"did not take effect: {how}"
+        result["content"] = result["response"] = f"⚡ That did not take effect: {how}."
+    return result
+
+
 def _action_post_dispatch(
     action: str,
     args: "Optional[Dict[str, Any]]",
@@ -5862,7 +5936,8 @@ def _action_post_dispatch(
                 or ""
             ),
             content=str((result or {}).get("content") or (result or {}).get("response") or (result or {}).get("error") or ""),
-            payload={"args": args or {}, "result": result or {}},
+            payload={"args": args or {}, "result": result or {},
+                     **(_outcome_facts(action, result))},
             severity="error" if execution_outcome(result) == "failed" else "info",
             outcome=execution_outcome(result),
             reusable=True,
@@ -5919,6 +5994,7 @@ def _action_post_dispatch(
         fire_tool_result_event(str(action), True, said=what_came_of(str(action), dict(args or {}), result))
 
     repeat_hint = ""
+    _remediation_actions = _REMEDIATION_ACTIONS
     # Non-bugs that poisoned the SI failure feed: expected responses (no query typed, plugin not
     # configured, action outside this build). They must not enter the failure-cluster pipeline the
     # SelfImprovementEngine acts on.
@@ -5939,10 +6015,6 @@ def _action_post_dispatch(
         # Grounded-remediation exit-20 ("No grounded install candidate found") is
         # an honest terminal outcome, not a retryable failure. Don't log it as a
         # failure and don't append the "attempt N" hint.
-        _remediation_actions = frozenset((
-            "CONFIRM_PENDING_REMEDIATION",
-            "CANCEL_PENDING_REMEDIATION",
-        ))
         if isinstance(result, dict) and not bool(result.get("ok", True)):
             import json as _json
 
@@ -6008,26 +6080,73 @@ def _action_post_dispatch(
     except Exception:
         repeat_hint = ""
 
+    # What ELI has learned of such failures (runtime/action_outcomes): the cause, how this has fared
+    # here, and what worked instead. An alternative proven on this very target, safe to run unasked and
+    # likelier than another go is tried now, and the reply says so; otherwise the reply says what has
+    # worked. Either way the failure is a thought, in the Debug Basement, with its reasons.
+    advice_words = ""
+    if isinstance(result, dict) and not bool(result.get("ok", True)) and str(action or "").upper() not in _remediation_actions:
+        try:
+            from eli.runtime import action_outcomes as _ao
+            _ao.forget()
+            _advice = _ao.advice(str(action or "").upper(), args or {}, result)
+            advice_words = _ao.said(_advice)
+            _attempt = _advice.get("attempt")
+            _instead = execute(_attempt["action"], _attempt["args"]) if _attempt else None
+            _worked = isinstance(_instead, dict) and bool(_instead.get("ok"))
+            try:
+                from eli.cognition.thoughts import record as _thought
+                from eli.kernel import request_context as _rc_t
+                _rid = str(_rc_t.request_id_var.get() or "")
+                _thought("action", f"{_ao.plain(action)}{(' for ' + _advice['subject']) if _advice.get('subject') else ''} failed",
+                         why=[_advice["cause_words"], f"failed {_advice['failed_lately']} of its last {_advice['runs_lately']} runs here"
+                              if _advice["runs_lately"] > 1 else "its first run here lately"],
+                         chance=float(_advice["chance"]["p"]),
+                         decision="tried" if _attempt and _worked else ("declined" if _attempt else ("advised" if _advice["alternatives"] else "told")),
+                         reason=(f"{_ao.plain(_attempt['action'])} had worked instead for this target" if _attempt else
+                                 (f"{_ao.plain(_advice['alternatives'][0]['action'])} has worked instead" if _advice["alternatives"]
+                                  else "nothing has worked instead yet")),
+                         subject=str(_advice.get("subject") or ""), request_id=_rid,
+                         ref=f"action:{_rid}:{str(action or '').upper()}", user_id=str(_rc_t.user_id_var.get() or ""))
+            except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                log.debug("action thought not kept", exc_info=True)
+            if _worked:
+                _instead = dict(_instead)
+                _instead["instead_of"] = {"action": str(action or "").upper(), "error": str(result.get("error") or ""),
+                                          "cause": _advice["cause"]}
+                _note = (f"{_ao.plain(action)} did not work ({_advice['cause_words']}); "
+                         f"{_ao.plain(_attempt['action'])} worked instead. ")
+                _instead["response"] = _note + str(_instead.get("response") or _instead.get("content") or "")
+                _instead["content"] = _instead["response"]
+                return _instead
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("learned alternatives skipped", exc_info=True)
+
+    # a result that asks the user something (a clarifying question, a request for input) is the whole
+    # reply: what has worked lately does not belong under a question
+    if isinstance(result, dict) and (result.get("asks_user") or result.get("needs_input") or result.get("awaiting")):
+        advice_words = ""
+        repeat_hint = ""
+
+    def _with_notes(text: str) -> str:
+        return "\n\n".join(t for t in (str(text or "").strip(), advice_words, repeat_hint) if t).strip()
+
     try:
         from eli.runtime import grounded_remediation as _gr
     except Exception:
-        if repeat_hint and isinstance(result, dict):
-            existing = str(result.get("content") or result.get("response") or result.get("error") or "").strip()
-            combined = (existing + "\n\n" + repeat_hint).strip()
+        if (repeat_hint or advice_words) and isinstance(result, dict):
+            combined = _with_notes(result.get("content") or result.get("response") or result.get("error") or "")
             result["content"] = combined
             result["response"] = combined
         return result
     try:
         _offer = _gr.capture_executor_failure(action, args or {}, result)
         if _offer:
-            if repeat_hint:
-                _offer = f"{_offer}\n\n{repeat_hint}"
-            return _gr.as_executor_result(_offer, ok=False)
+            return _gr.as_executor_result(_with_notes(_offer), ok=False)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    if repeat_hint and isinstance(result, dict):
-        existing = str(result.get("content") or result.get("response") or result.get("error") or "").strip()
-        combined = (existing + "\n\n" + repeat_hint).strip()
+    if (repeat_hint or advice_words) and isinstance(result, dict):
+        combined = _with_notes(result.get("content") or result.get("response") or result.get("error") or "")
         result["content"] = combined
         result["response"] = combined
     return result
@@ -6299,6 +6418,15 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
         )
         if _active_user:
             summary += f" You're {_active_user}."
+        # how its actions have fared here lately, from the record, the ones with failures first
+        try:
+            from eli.runtime.action_outcomes import report as _outcomes_report
+            _rep = _outcomes_report(limit=3)
+            if any(r["n"] > r["ok"] for r in _rep["actions"]):
+                summary += " " + " ".join(_rep["lines"][:3])
+            ev["actions"] = _rep["actions"]
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("action outcomes unavailable to the self report", exc_info=True)
         # content/response are user-facing — use the plain summary, never raw JSON.
         # Structured data stays in report + evidence for grounding/introspection.
         return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep,
@@ -6350,7 +6478,21 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     if a == 'EXPLAIN_FAILURE_LOG':
         from eli.runtime.gguf_runtime_report import format_failure_log_report
         _lim = int((args or {}).get("limit") or 50)
+        # What has worked and what has not, by action and target, with the causes and what worked
+        # instead (runtime/action_outcomes): ELI's own record of its abilities, in words, ahead of the
+        # raw failure log. Asked what works, that is the answer; asked for the log, it comes first.
+        try:
+            from eli.runtime.action_outcomes import report as _outcomes_report
+            _told = _outcomes_report()["words"]
+        except Exception:
+            log.debug("action outcomes unavailable", exc_info=True)
+            _told = ""
+        if str((args or {}).get("scope") or "") == "outcomes":
+            txt = _told or "No action has run here lately, so there is nothing to say about what works."
+            return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
         txt = format_failure_log_report(limit=_lim, last_only=False)
+        if _told:
+            txt = _told + "\n\n" + txt
         return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
     if a == 'EXPLAIN_LAST_FAILURE':
         from eli.runtime.gguf_runtime_report import format_failure_log_report
@@ -6396,8 +6538,10 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     if isinstance(args, dict):
         merged.update(args)
     merged.update(kwargs or {})
+    _started = time.time()
     res = _execute_impl(action=str(a), args=merged)
     __eli_ret = _normalize_result(res)
+    __eli_ret = _checked_result(str(a), merged, __eli_ret, _started)
     try:
         _record_tool_execution(str(a), merged, __eli_ret)
     except Exception:

@@ -191,6 +191,17 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
         return _mk("SELF_UPDATE", {}, 0.99, matched_by="router.self_update", allow_chat_without_evidence=False)
 
 
+    # What has worked and what keeps failing, from ELI's own record of its runs (runtime/action_outcomes):
+    # "what has worked lately", "which of your commands keep failing", "what are you unreliable at".
+    if (_pm_asks_something(low)
+            and re.search(r"\b(?:work(?:ed|s|ing)?|fail(?:ed|s|ing)?|failures?|unreliable|reliable|reliability|succeed(?:ed|s)?|"
+                          r"broken|go(?:es|ing)?\s+wrong|went\s+wrong)\b", low)
+            and re.search(r"\b(?:your|you|eli'?s?)\b.{0,40}\b(?:actions?|commands?|tools?|abilit(?:y|ies)|capabilit(?:y|ies)|"
+                          r"skills?|functions?|features?)\b|\b(?:actions?|commands?|tools?|capabilit(?:y|ies))\b.{0,30}\b(?:of\s+yours|you\s+(?:have|run|ran|use|tried))\b", low)
+            and not re.search(r"\b(?:last|previous|that|this)\s+(?:response|reply|answer|turn)\b|\bhow\s+do\s+(?:you|your)\b", low)):
+        return _mk("EXPLAIN_FAILURE_LOG", {"scope": "outcomes", "question": raw}, 0.96,
+                   matched_by="router.what_has_worked", need_grounding=True, allow_chat_without_evidence=False)
+
     if re.search(r"\b(confidence in (?:your|my) last response|which agents contributed|what agents contributed|last response trace|previous response trace|last turn trace)\b", low):
         return _mk("EXPLAIN_LAST_RESPONSE", {}, 0.99, matched_by="router.explain_last_response", allow_chat_without_evidence=False)
 

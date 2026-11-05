@@ -31,6 +31,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(local_world_bridge, "load_persona_text", lambda: "")
     monkeypatch.setattr(composer, "mindset", lambda state: ["Your latest insight: quiet work goes further."])
     monkeypatch.setattr(composer, "capable", lambda: False)
+    import eli.cognition.thoughts as thoughts_module
+    monkeypatch.setattr(thoughts_module, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")   # no thought of the real ELI's is a moment here
     embodiment.forget()
     embodiment.forget_body()
     yield store.load
@@ -341,9 +343,9 @@ def test_of_his_own_accord_nothing_is_chosen_for_him(world):
     # and ELI may make nothing at all
     out = composer.compose(None, None, generate=lambda p: {"say": "", "edits": []})
     assert out["results"] == [] and out["text"] == "" and set(_standing(world())) == {"Still Water"}
-    assert composer.plan(None, [], True) == ("create", "room")
+    assert composer.plan(None, [], True) == ("create", "room", "note")
     assert composer.plan(None, [{"name": "Still Water", "form": {"shape": "pool"}}], True) == (
-        "create", "move", "change", "remove", "room"), "unasked, every kind of change is open to ELI"
+        "create", "move", "change", "remove", "room", "note"), "unasked, every kind of change is open to ELI, and a note"
 
 
 def test_if_it_did_not_happen_he_does_not_say_it_did(world):
@@ -380,10 +382,10 @@ def test_the_answer_is_held_to_an_exact_shape_that_llama_cpp_accepts():
     assert text.startswith('root ::= "{" ws "\\"say\\":" ws say')
     for shape in building.SHAPES:
         assert f'"\\"{shape}\\""' in text
-    assert "edit ::= create | move | change | remove | room | undo" in text
+    assert "edit ::= create | move | change | remove | room | note | undo" in text
     assert 'target ::= "\\"Lantern\\"" | "\\"Quiet Stone\\""' in text, "only what is there can be moved or changed"
     empty = composer.grammar_text(own=True)
-    assert "edit ::= create | room | undo" in empty, "with nothing there, nothing can be moved or taken away"
+    assert "edit ::= create | room | note | undo" in empty, "with nothing there, nothing can be moved or taken away"
     house = composer.grammar_text(own=False)
     assert "room" in house.split("edit ::=")[1].split("\n")[0]
     room_rule = [line for line in house.splitlines() if line.startswith("room ::=")][0]
@@ -960,3 +962,118 @@ def test_a_tool_that_worked_for_the_user_says_what_came_of_it(monkeypatch):
     world_event_bus.fire_tool_result_event("VOLUME", True)
     assert fired[0][2] == "WEB_SEARCH worked. " + said and fired[0][3] == {"action": "WEB_SEARCH", "said": said}
     assert fired[1][2] == "VOLUME worked." and fired[1][3] == {"action": "VOLUME"}
+
+
+# ── what ELI makes of a moment is a figure, settled by what becomes of it ────────────────────────
+def test_what_eli_makes_of_a_moment_is_a_figure_settled_when_taken_back_or_stood(world, monkeypatch, tmp_path):
+    import time as _time
+    from eli.cognition import epistemics as ep, thoughts as th
+    from eli.runtime import evidence_ledger as led
+    from eli.world import urges
+    from eli.world.core.schemas import WorldEvent
+    path = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: path)
+    monkeypatch.setattr(th, "_default_db_path", lambda: path)
+    ep.forget_fits()
+
+    def model(prompt):
+        return {"say": "A lamp for the quiet.", "edits": [{"op": "create", "name": "Quiet Lamp", "shape": "pool", "meaning": ""}]}
+
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("reflection", "insight_synthesis", "Quiet work goes further than loud work."))
+    out = urges.act(None, generate=model)
+    assert out["results"][0]["ok"] and "Quiet Lamp" in _standing(world())
+    assert ep.outcomes(ep.ACT) == [], "open until it is taken back or stands"
+    kept = th.recent(5, kinds=["act"])[0]
+    assert kept["decision"] == "taken" and kept["what"] == "made Quiet Lamp" and kept["status"] == "open"
+    undo = building.apply([{"op": "undo"}], actor="user", asked=True, source="spatial_client")
+    assert undo["ok"] and "Quiet Lamp" not in _standing(world())
+    rows = ep.outcomes(ep.ACT)
+    assert len(rows) == 1 and rows[0][1] == 0.0, "taken back: the act was wrong"
+    assert th.recent(5, kinds=["act"])[0]["outcome"] == "undone"
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("reflection", "insight_synthesis", "A second thought with words enough in it."))
+    assert urges.act(None, generate=model)["results"][0]["ok"]
+    assert urges._settle_stood(now=_time.time() + urges.STOOD_SECONDS + 1) == 1, "nobody took it back for a day: it stood"
+    assert sorted(y for _s, y, _f in ep.outcomes(ep.ACT)) == [0.0, 1.0]
+    assert th.recent(5, kinds=["act"])[0]["outcome"] == "stood"
+
+
+def test_a_kind_of_moment_that_keeps_being_taken_back_is_let_go_and_curiosity_orders_the_rest(world, monkeypatch, tmp_path):
+    from eli.cognition import epistemics as ep, thoughts as th
+    from eli.runtime import evidence_ledger as led
+    from eli.world import urges
+    from eli.world.core.schemas import WorldEvent
+    path = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: path)
+    monkeypatch.setattr(th, "_default_db_path", lambda: path)
+    ep.forget_fits()
+    original = ep.base_rate
+    monkeypatch.setattr(ep, "base_rate", lambda kind, *, class_="", **k: (0.2, 6) if class_ == "insight" else (0.6, 12))
+    asked = []
+
+    def model(prompt):
+        asked.append(prompt)
+        return {"say": "", "edits": [{"op": "create", "name": "Thing", "shape": "pool", "meaning": ""}]}
+
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("reflection", "insight_synthesis", "Quiet work goes further than loud work."))
+    assert urges.act(None, generate=model) is None and asked == [] and urges.waiting() == []
+    kept = th.recent(5, kinds=["act"])[0]
+    assert kept["decision"] == "declined" and "kept being taken back" in kept["reason"]
+    # with the rates even again, the moment ELI is most curious about is the one it acts on
+    monkeypatch.setattr(ep, "base_rate", original)
+    th.record("surprise", "the filing system was not where ELI believed", chance=0.9, subject="filing system")
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("reflection", "insight_synthesis", "Quiet work goes further than loud work."))
+    local_world_bridge._get_engine().ingest_event(
+        WorldEvent("reflection", "insight_synthesis", "The filing system is worth a second look."))
+    assert [u["text"][:5] for u in urges.waiting() if u["source"] != "thoughts"] == ["Quiet", "The f"]
+    out = urges.act(None, generate=model)
+    assert out["about"]["text"].startswith("The filing system"), "curiosity, not age, chooses the moment"
+
+
+def test_a_thought_of_elis_is_a_moment_it_may_act_on_and_a_note_it_writes_is_pinned(world, monkeypatch, tmp_path):
+    from eli.cognition import epistemics as ep, thoughts as th
+    from eli.runtime import evidence_ledger as led
+    from eli.world import urges
+    path = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: path)
+    monkeypatch.setattr(th, "_default_db_path", lambda: path)
+    ep.forget_fits()
+    th.record("surprise", "the filing system was not where ELI believed", why=["a claim did not fit"], chance=0.8,
+              decision="raised", subject="filing system")
+    th.record("memory", "an old note about the garden path", decision="dropped", reason="it never went into an answer")
+    th.record("memory", "a memory that is kept and matters", decision="kept")
+    th.record("recall", "you keep your invoices by year", chance=0.6, decision="shown", ref="recall:r1:5")
+    th.settle("recall:r1:5", "wrong", how="the user corrected it")
+    th.record("route", "read 'open the garden file' as a command", chance=0.9, decision="held")
+    pending = urges.waiting()
+    kinds = {(u["kind"], u["source"]) for u in pending}
+    assert {("surprise", "thoughts"), ("memory", "thoughts"), ("recall", "thoughts")} <= kinds
+    assert not any("kept and matters" in u["text"] or "garden file" in u["text"] for u in pending), "only the moments among the thoughts"
+    assert all(u["ref"].startswith("thought:") and u["thought"] for u in pending if u["source"] == "thoughts")
+
+    def model(prompt):
+        model.prompts.append(prompt)
+        return {"say": "", "edits": [{"op": "note", "text": "The filing system is not where I thought. I will look before I say."}]}
+    model.prompts = []
+    out = urges.act(None, generate=model)
+    assert out["about"]["kind"] == "surprise", "curiosity chooses the moment: the surprise comes first"
+    assert out["results"][0]["ok"] and out["results"][0]["name"] == "A note"
+    assert "Something did not fit what you believed: " in model.prompts[0] and "To write a note of your own" in model.prompts[0]
+    assert ", or a note." in model.prompts[0]
+    note = th.recent(5, kinds=["note"])[0]
+    assert note["what"] == "The filing system is not where I thought. I will look before I say."
+    assert note["decision"] == "pinned" and note["room"] == "evidence_wall" and note["reason"] == "ELI wrote it of its own accord"
+    assert note["why"] and note["why"][0].startswith("The filing system was not where ELI believed")
+    assert th.recent(5, kinds=["act"])[0]["what"] == "made A note"
+    assert not any(u["kind"] == "surprise" for u in urges.waiting()), "acted on once"
+    assert world().spaces["own_room"]["acted_thoughts"], "the thought is marked acted on"
+    assert "A note" in str(world().events[-1].payload.get("results"))
+    # asked for a thing, ELI makes the thing: no note is on offer
+    things = []
+    asked = composer.build_prompt("build me a lamp", None, {"rooms": {}, "spaces": {}, "objects": {}}, building.OWN_ROOM,
+                                  composer.plan("build me a lamp", things, True))
+    assert "To write a note of your own" not in asked and "note" not in composer.plan("build me a lamp", things, True)
+    assert "note" in composer.plan(None, things, True) and "note" in composer.grammar_text(True, composer.plan(None, things, True))

@@ -129,9 +129,47 @@ def _fuse() -> Tuple[str, str, float]:
     elif t_emo:
         detected, conf = t_emo, t_conf
     else:
-        return ("neutral", "neutral", 0.0)
+        # Nothing read this turn: the state behind the reads (eli/cognition/affect_state) still stands,
+        # and a mood does not end because one sentence carried no sign of it. Its sign is the read,
+        # at the chance the state is meant.
+        detected, conf = _standing_read()
+        if not detected:
+            return ("neutral", "neutral", 0.0)
     expressed = _RESPONSE_POLICY.get(detected, "neutral")
     return (expressed, detected, conf)
+
+
+# The affect state's sign as an emotion the response policy knows: a standing negative state is met
+# as irritation is (calm), a positive one as happiness is.
+_STATE_AS_EMOTION = {"negative": "irritated", "positive": "happy"}
+# current_tone() is read several times in one turn (the directive, the voice, the face, the world);
+# the state behind the reads is read once per turn (keyed by the turn's request id), not once per
+# call. Outside a turn (no request id) every call reads afresh, so nothing stale is ever served.
+_standing_cache: Tuple[str, Tuple[Optional[str], float]] = ("", (None, 0.0))
+
+
+def _standing_read() -> Tuple[Optional[str], float]:
+    """(emotion, confidence) from the affect state when it stands clear of neutral; (None, 0) otherwise."""
+    global _standing_cache
+    try:
+        from eli.kernel import request_context as _rc
+        turn = str(_rc.request_id_var.get() or "")
+    except (ImportError, AttributeError, LookupError):
+        turn = ""
+    if turn and _standing_cache[0] == turn:
+        return _standing_cache[1]
+    try:
+        from eli.cognition.affect_state import estimate
+        state = estimate()
+    except (OSError, ValueError, TypeError, ImportError, AttributeError) as failure:
+        log.debug("affect state unavailable to the tone: %s", failure)
+        read: Tuple[Optional[str], float] = (None, 0.0)
+    else:
+        emotion = _STATE_AS_EMOTION.get(str(getattr(state, "label", "") or ""))
+        read = (emotion, float(getattr(state, "confidence", 0.0) or 0.0)) if emotion else (None, 0.0)
+    if turn:
+        _standing_cache = (turn, read)
+    return read
 
 
 # ── Last-user-text side channel (set by the engine each turn) ─────────────────

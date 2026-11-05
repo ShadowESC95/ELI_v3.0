@@ -44,6 +44,8 @@ class AwarenessState:
     memory_confidence: float = 0.7
     evidence_confidence: float = 0.7      # the mean calibrated chance its replies were right this sitting
     answers: int = 0                      # how many replies that mean rests on (eli/cognition/epistemics.py)
+    tools: int = 0                        # how many tool runs this sitting's repair pressure rests on
+    surprises: int = 0                    # how many surprises this sitting's curiosity rests on (eli/cognition/curiosity.py)
     tool_activity: float = 0.0
     reflection_depth: float = 0.0
     autonomy_pressure: float = 0.0

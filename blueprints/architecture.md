@@ -144,6 +144,14 @@ RESPONSE_DELIVERY, S12 LEARNING_STATE_UPDATE. Enable tracing with `ELI_PIPELINE_
   knew makes that folder known. The speech model is a setting too (`stt_model`, read from the
   settings file; `ELI_WHISPER_MODEL` in the environment still wins), listed from faster-whisper's
   own model names with what is already on disk marked.
+- **The learning loop** (`runtime/action_outcomes.py`, `cognition/thoughts.py`, `memory/salience.py`,
+  `memory/interest.py`, `cognition/curiosity.py`; `blueprints/epistemic_dynamics.md` §9–§13): every run
+  is checked where its effect can be seen, classed by its cause and target, and read back as the chance
+  it works here and what worked instead, which ELI tries or advises; every silent decision (a memory
+  recalled, a claim used, a route, an act, a failure, a proposal, a memory let go) is one thought with
+  its reasons and chance, settled by what became of it and shown in the world's rooms; surprise raises
+  the importance of what it was about and is what ELI is curious about; the user's interest is measured
+  as memory is; and the three reply gates ask the settled outcomes before holding a reply to their line. In ELI's world the loop reaches the rooms (2026-11-05): thoughts hang as sheets the user can pick up and ask about (`world/shown.py`, `world/embodiment.py` `held_record`, `routing/intents/world_held.py`), thoughts are moments ELI acts on and may write a note of (`world/urges.py`, `world/composer.py`), and games are set at once by rules and the record with ELI's words following (`world/games.py`).
 - **`routing/command_parser.py`**: the command language. A sentence is read by its form (what
   stands in front of it, its verb, its object, its modifiers by preposition) before any pattern
   sees its words. The frames (`FRAMES`) say which verb with which kind of object is which action

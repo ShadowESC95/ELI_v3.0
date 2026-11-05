@@ -153,7 +153,7 @@ def extract_search_subject(raw: str) -> str:
     if not s or _AGAIN_RE.match(s):
         return ""
     patterns = (
-        r"search\s+the\s+web(?:\s+and)?\s*(.+)$",
+        r"search\s+the\s+web(?:\s+and)?\s*(?:(?:for|about|on)\s+)?(.+)$",
         r"(?:do|run|try|make)\s+(?:a|another|one\s+more)\s+(?:quick\s+|web\s+|proper\s+)?search\s+(?:on|for|about)\s+(.+)$",
         r"\bsearch\s+(?:on|about)\s+(.+)$",
         r"(?:search\s+(?:the\s+)?(?:web|online|internet)\s+(?:for\s+)?(.+))$",

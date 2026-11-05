@@ -1229,6 +1229,13 @@ class AgentOrchestrator:
                 if str(h.get("id", "")).isdigit() and int(h["id"]) > 0][:5]
         except Exception:
             log.debug("recalled ids not recorded", exc_info=True)
+        # Each memory shown to the reply: the chance it is of use, fitted on what became of memories
+        # shown before (eli/cognition/epistemics, kind recall), and a thought of why it came to mind;
+        # the next turn settles both with the reply.
+        try:
+            _assess_recalls(user_input, wm.merged_hits)
+        except (OSError, ValueError, TypeError, ImportError, LookupError, AttributeError):
+            log.debug("recalls not assessed", exc_info=True)
         try:
             _agg = getattr(wm.bus_result, "aggregated_confidence", None)
             # With no agent run (quick mode) the bus aggregate is a constant, not a measure of
@@ -1296,6 +1303,10 @@ class AgentOrchestrator:
                     from eli.kernel.request_context import note_turn_fact as _note_period
                     _note_period("_period_days", sorted(_days))
                     _note_period("_period_window", (float(_stats["since"]), float(_stats["until"])))
+                    # the record of the period is in hand: a reply that denies having one is held to it
+                    # (eli/cognition/self_claims), and these lines are served in its place
+                    _note_period("_period_found", bool(_days))
+                    _note_period("_period_lines", [ln for ln in str(_period).splitlines()[1:] if ln.strip()][:8])
         except Exception as _pl_err:
             log.debug(f"[ORCHESTRATOR] period log skipped: {_pl_err}")
         try:
@@ -1455,3 +1466,44 @@ class AgentOrchestrator:
         }
 
 
+def _assess_recalls(user_input: str, hits: Any, limit: int = 5) -> None:
+    """The memories a reply is shown, each assessed: its ranking score calibrated on what became of
+    memories shown before, with how readily it came to mind, its importance, how much of the question it
+    holds and whether more than one retriever found it (eli/cognition/epistemics, kind recall), under
+    `recall:<turn>:<memory>`, so the next turn settles them with the reply; and a thought of each, in
+    the Memory Archive, saying why it came to mind."""
+    from eli.cognition import epistemics as _ep
+    from eli.cognition.scoring import term_overlap
+    from eli.cognition.thoughts import record as _thought
+    from eli.kernel.request_context import request_id_var, session_id_var, user_id_var
+    rid = str(request_id_var.get() or "")
+    if not rid:
+        return
+    shown = [h for h in (hits or []) if isinstance(h, dict) and str(h.get("id", "")).isdigit() and int(h["id"]) > 0][:limit]
+    if not shown:
+        return
+    items, notes = [], []
+    for h in shown:
+        text = " ".join(str(h.get("text") or h.get("content") or "").split())
+        raw = h.get("recall_chance", h.get("rerank_score", h.get("_rank_score", h.get("score", 0.5))))
+        try:
+            score = min(1.0 - 1e-3, max(1e-3, float(raw or 0.5)))
+        except (TypeError, ValueError):
+            score = 0.5
+        overlap = term_overlap(user_input, text)
+        features = {"accessibility": float(h.get("accessibility") or 0.0), "importance": float(h.get("importance") or 0.5),
+                    "overlap": round(overlap, 4), "agreement": 1.0 if len(h.get("_channels") or []) > 1 else 0.0}
+        items.append((f"recall:{rid}:{int(h['id'])}", score, features))
+        why = [f"it holds {overlap:.0%} of the question's words"]
+        if h.get("accessibility") is not None:
+            why.append(f"it came to mind at {float(h['accessibility']):.0%} among the candidates")
+        why.append(f"importance {float(h.get('importance') or 0.5):.2f}")
+        if features["agreement"]:
+            why.append("found by keyword and by meaning both")
+        notes.append((text, why))
+    probs = _ep.assess_many(_ep.RECALL, items, session_id=str(session_id_var.get() or ""),
+                            user_id=str(user_id_var.get() or ""))
+    for (ref, _score, _features), (text, why), prob in zip(items, notes, probs):
+        _thought("recall", text[:140], why=why, chance=float(prob.p), decision="shown",
+                 reason="among the readiest to mind for this question", subject=str(user_input or "")[:120],
+                 request_id=rid, ref=ref, user_id=str(user_id_var.get() or ""))

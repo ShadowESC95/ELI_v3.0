@@ -169,9 +169,31 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
         row = dict(c)
         row["rerank_score"] = round(score, 6)
         row["rerank_rank"] = idx
+        # what the learned ranking reads (eli/cognition/epistemics, kind recall)
+        row["_overlap"] = round(overlap, 4)
+        row["_agreement"] = 1.0 if len(channels) > 1 else 0.0
         out.append(row)
 
+    # The heuristic score is an index. Once the outcomes have said which shown memories went into
+    # answers nobody corrected, the chance a memory is of use, fitted on that (epistemics.weights_for:
+    # the score's logit with how readily it came to mind, its importance, how much of the question it
+    # holds and whether more than one retriever found it), decides the order; until then the index does.
+    try:
+        from eli.cognition.epistemics import RECALL, apply_rows, weights_for
+        fit = weights_for(RECALL)
+    except Exception:  # noqa: BLE001 - no outcomes to be had: the index orders
+        fit = {"n": 0}
+    if fit.get("n"):
+        for row in out:
+            row["recall_chance"] = round(apply_rows(
+                min(1.0 - 1e-3, max(1e-3, _as_float(row.get("rerank_score"), 0.0))),
+                {"accessibility": _as_float(row.get("accessibility"), 0.0),
+                 "importance": _as_float(row.get("importance", 0.5), 0.5),
+                 "overlap": row["_overlap"], "agreement": row["_agreement"]},
+                fit["weights"], fit["shift"], fit["names"]), 6)
+
     out.sort(key=lambda x: (
+        _as_float(x.get("recall_chance", x.get("rerank_score", 0.0)), 0.0),
         _as_float(x.get("rerank_score", 0.0), 0.0),
         _as_float(x.get("importance", 0.0), 0.0),
         _as_float(x.get("weight", 0.0), 0.0),

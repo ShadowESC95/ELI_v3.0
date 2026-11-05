@@ -759,20 +759,57 @@ def assessment_pairs(kind: str, *, since: float, assessed_type: str = "answer_as
 
 
 def open_assessments(kind: str, *, assessed_type: str, outcome_type: str, subject_prefix: str,
-                     since: Optional[float] = None, db_path: Optional[str | Path] = None) -> List[str]:
+                     since: Optional[float] = None, until: Optional[float] = None,
+                     db_path: Optional[str | Path] = None) -> List[str]:
     """The request ids of figures of this kind whose id starts with `subject_prefix` and that no
-    outcome has settled (for eli/cognition/epistemics.settle_open)."""
+    outcome has settled (for eli/cognition/epistemics.settle_open); with `until`, only figures given
+    before that time."""
     conn = _connect(db_path)
     try:
         rows = conn.execute(
             "SELECT a.request_id FROM runtime_events a WHERE a.event_type = ? AND a.action = ? "
-            "AND a.request_id LIKE ? AND COALESCE(a.ts, a.timestamp, 0) >= ? AND NOT EXISTS ("
+            "AND a.request_id LIKE ? AND COALESCE(a.ts, a.timestamp, 0) >= ? AND COALESCE(a.ts, a.timestamp, 0) < ? "
+            "AND NOT EXISTS ("
             "SELECT 1 FROM runtime_events o WHERE o.request_id = a.request_id AND o.event_type = ? AND o.action = a.action)",
             (assessed_type, str(kind or "").upper(), str(subject_prefix or "") + "%",
-             float(since if since is not None else 0.0), outcome_type)).fetchall()
+             float(since if since is not None else 0.0), float(until if until is not None else 1e18),
+             outcome_type)).fetchall()
     finally:
         conn.close()
     return [str(r[0]) for r in rows if r[0]]
+
+
+def executor_runs(*, since: float, action: str = "", limit: int = 4000,
+                  db_path: Optional[str | Path] = None) -> List[Dict[str, Any]]:
+    """Every execution the executor recorded since `since` (its executor_action rows), oldest first,
+    each with what it ran, what it was about, how it came out and its payload (the arguments and the
+    result as recorded, with what the run was checked against when it was). For
+    eli/runtime/action_outcomes.py, which learns from them."""
+    conn = _connect(db_path)
+    try:
+        sql = ("SELECT id, COALESCE(ts, timestamp, 0), action, subject, outcome, payload_json, session_id, user_id, "
+               "content FROM runtime_events WHERE event_type = 'executor_action' AND COALESCE(ts, timestamp, 0) >= ?")
+        params: List[Any] = [float(since)]
+        if action:
+            sql += " AND action = ?"
+            params.append(str(action).upper())
+        rows = conn.execute(sql + " ORDER BY COALESCE(ts, timestamp, 0) ASC, id ASC LIMIT ?",
+                            (*params, int(limit))).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row[5]) if row[5] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        out.append({"id": int(row[0]), "ts": float(row[1] or 0.0), "action": str(row[2] or "").upper(),
+                    "subject": str(row[3] or ""), "outcome": str(row[4] or ""),
+                    "payload": payload if isinstance(payload, dict) else {}, "session_id": str(row[6] or ""),
+                    "user_id": str(row[7] or ""), "content": str(row[8] or "")})
+    return out
 
 
 def calibration_report(*, days: float = 90.0, db_path: Optional[str | Path] = None) -> Dict[str, Any]:

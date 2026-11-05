@@ -173,6 +173,22 @@ class _MemoryModule(type(_this_module)):
 _this_module.__class__ = _MemoryModule
 
 
+# What the user's own statements of preference and identity add to a memory's rank, and the most any
+# other memory gets, by the share of the user's attention its topics hold.
+PREF_BOOST = 0.15
+# What a new memory's importance takes from the user's interest in its topics: the weight the score
+# gives a self-statement, at a full share of their attention.
+INTEREST_WEIGHT = 0.20
+
+
+def _active_user_id() -> str:
+    try:
+        from eli.kernel.state import get_active_user_id
+        return str(get_active_user_id() or "")
+    except Exception:
+        return ""
+
+
 def get_memory(db_path: Union[str, Path, None] = None) -> "Memory":
     """
     Get or create a Memory instance for the USER DB by default.
@@ -2104,6 +2120,13 @@ class Memory(metaclass=_MemoryMeta):
         # Auto-score importance when not explicitly provided
         if importance is None:
             importance = self._score_importance(t, tags, source, kind)
+            # a memory about what the user talks about most matters more: the share of their attention
+            # its topics hold (eli/memory/interest.py), at the weight the score gives a self-statement
+            try:
+                from eli.memory.interest import share as _interest_share
+                importance = min(1.0, float(importance) + INTEREST_WEIGHT * _interest_share(t, _active_user_id()))
+            except (sqlite3.Error, OSError, ValueError, TypeError, ImportError):
+                log.debug("interest not read for the new memory", exc_info=True)
 
         try:
             from eli.runtime.memory_provenance import resolve_write_provenance
@@ -2528,16 +2551,29 @@ class Memory(metaclass=_MemoryMeta):
                     return float(raw)
                 except (ValueError, TypeError):
                     return 0.0
+            try:
+                from eli.memory.interest import share as _interest_share
+                _who = _active_user_id()
+            except Exception:
+                _interest_share, _who = None, ""
+
             def _pref_boost(x) -> float:
+                # what the user stated about themselves keeps the full boost; anything else is
+                # boosted by the share of the user's attention its topics hold (eli/memory/interest.py)
                 _t = str(x.get("tags", "") or "").lower()
                 _k = str(x.get("kind", "") or "").lower()
                 if _k in ("preference", "identity", "fact"):
-                    return 0.15
+                    return PREF_BOOST
                 if any(_w in _t for _w in (
                         "preference", "identity", "project", "interest",
                         "current_work", "active_project")):
-                    return 0.15
-                return 0.0
+                    return PREF_BOOST
+                if _interest_share is None:
+                    return 0.0
+                try:
+                    return PREF_BOOST * float(_interest_share(str(x.get("text") or x.get("content") or ""), _who))
+                except Exception:
+                    return 0.0
             from eli.cognition.scoring import recency_score as _rs, fuse_memory_score as _fuse
             # How readily each comes to mind (eli/memory/policy.py): its faded uses, the curve's own
             # factors, and its share against the look-alikes in this set. Known for stored rows only.
@@ -3104,6 +3140,70 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
+    def raise_importance(self, ids, gain: float, *, reason: str = "") -> int:
+        """A surprise about these memories (eli/memory/salience.py): each one's importance moves `gain` of
+        the way from where it is to one, never past it. How many rows moved."""
+        ids = sorted({int(i) for i in (ids or []) if str(i).lstrip("-").isdigit() and int(i) > 0})
+        gain = max(0.0, min(1.0, float(gain or 0.0)))
+        if not ids or gain <= 0.0:
+            return 0
+        conn = self._get_connection()
+        try:
+            marks = ",".join("?" * len(ids))
+            cur = conn.execute(
+                f"UPDATE memories SET importance = MIN(1.0, COALESCE(importance, 0.5) + (1.0 - COALESCE(importance, 0.5)) * ?) "
+                f"WHERE id IN ({marks})", [gain] + ids)
+            conn.commit()
+            log.debug("[MEMORY] importance raised on %d rows (%s)", cur.rowcount or 0, reason)
+            return int(cur.rowcount or 0)
+        except Exception:
+            log.debug("importance not raised", exc_info=True)
+            return 0
+        finally:
+            conn.close()
+
+    def promote_used(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Upkeep: what the outcomes said of a memory settles into its importance. A memory that went
+        into answers nobody corrected (record_recall_outcome) stands at least as high as its share of
+        helpful uses, the mean of a Beta(1, 1) over helped against corrected; one corrected more often
+        than it helped stands no higher than that share. Pure arithmetic on the counts, so a missed
+        day costs nothing. {"promoted", "demoted"}; a thought of the pass is kept when anything moved."""
+        out: Dict[str, Any] = {"promoted": 0, "demoted": 0, "dry_run": bool(dry_run)}
+        conn = self._get_connection()
+        try:
+            cols = _memory_table_columns(conn, "memories")
+            if "recall_count" not in cols or "corrected_count" not in cols:
+                return out
+            rows = conn.execute(
+                "SELECT id, COALESCE(importance, 0.5), COALESCE(recall_count, 0), COALESCE(corrected_count, 0) "
+                "FROM memories WHERE COALESCE(recall_count, 0) > 0 OR COALESCE(corrected_count, 0) > 0").fetchall()
+            up, down = [], []
+            for mid, importance, helped, corrected in rows:
+                share = (float(helped) + 1.0) / (float(helped) + float(corrected) + 2.0)
+                if helped > corrected and share > float(importance) + 1e-9:
+                    up.append((share, int(mid)))
+                elif corrected > helped and share < float(importance) - 1e-9:
+                    down.append((share, int(mid)))
+            out["promoted"], out["demoted"] = len(up), len(down)
+            if dry_run or not (up or down):
+                return out
+            conn.executemany("UPDATE memories SET importance = ? WHERE id = ?", up + down)
+            conn.commit()
+        except Exception as e:
+            log.debug(f"[MEMORY] promote_used failed: {e}")
+            out["error"] = str(e)
+            return out
+        finally:
+            conn.close()
+        try:
+            from eli.cognition.thoughts import record as _thought
+            _thought("memory", f"{out['promoted']} memories that helped answers matter more, {out['demoted']} that were "
+                     f"corrected matter less", why=["the day's upkeep read what became of the answers they went into"],
+                     decision="raised" if out["promoted"] else "kept", reason="their share of helpful uses")
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            log.debug("upkeep thought not kept", exc_info=True)
+        return out
+
     def archive_faded(self, dry_run: bool = False) -> Dict[str, Any]:
         """Move faded, unused, derived rows to memories_archive. Nothing the user said moves."""
         from eli.memory import policy as _policy
@@ -3138,6 +3238,17 @@ class Memory(metaclass=_MemoryMeta):
             self._remove_rows(conn, doomed)
             _fts_rebuild(conn)
             conn.commit()
+            # each one let go is a decision with a reason, kept where "why did you drop that" is answered
+            try:
+                from eli.cognition.thoughts import record as _thought
+                for d, r in zip(doomed, [r for r in rows if _policy.should_archive(
+                        r[8] or _policy.classify_origin(r[3], r[4], r[2], r[1]), r[5], r[6], r[7])]):
+                    _thought("memory", f"let go: {d['text'][:120]}", why=[f"its strength had faded to {float(r[5]):.2f}",
+                             "it never went into an answer", "it was not something you said"],
+                             chance=float(r[5]), decision="dropped", reason="faded, unused and derived; it is in the "
+                             "archive, searched when live evidence is thin", ref=f"memory:{d['id']}", now=now)
+            except (sqlite3.Error, OSError, ValueError, TypeError, ImportError):
+                log.debug("archive thoughts not kept", exc_info=True)
             return out
         except Exception as e:
             log.debug(f"[MEMORY] archive_faded failed: {e}")
@@ -3524,6 +3635,39 @@ class Memory(metaclass=_MemoryMeta):
         from eli.memory import claims as _c
         return self._claims_query(_c.history, relation)
 
+    def memory_facts(self, memory_id: int) -> Dict[str, Any]:
+        """What is on record for one memory, for ELI to answer from when the user holds it in its
+        rooms (eli/world/embodiment.held_record): its text, when it was kept and from where, how much
+        it matters, how often it helped an answer and how often it was corrected. {} when there is no
+        such memory."""
+        if not str(memory_id).lstrip("-").isdigit() or int(memory_id) <= 0:
+            return {}
+        conn = self._get_connection()
+        try:
+            cols = _memory_table_columns(conn, "memories")
+            wanted = ["COALESCE(text, content, '')", "COALESCE(timestamp, ts, 0)", "COALESCE(source, '')",
+                      "COALESCE(importance, 0.5)",
+                      "COALESCE(recall_count, 0)" if "recall_count" in cols else "0",
+                      "COALESCE(corrected_count, 0)" if "corrected_count" in cols else "0",
+                      "COALESCE(origin, '')" if "origin" in cols else "''",
+                      "COALESCE(kind, '')" if "kind" in cols else "''"]
+            row = conn.execute(f"SELECT {', '.join(wanted)} FROM memories WHERE id = ?", (int(memory_id),)).fetchone()
+        except Exception:
+            log.debug("memory facts not read", exc_info=True)
+            return {}
+        finally:
+            conn.close()
+        if not row:
+            return {}
+        text, when, source, importance, helped, corrected, origin, kind = row
+        try:
+            when = float(when or 0.0)
+        except (TypeError, ValueError):
+            when = 0.0
+        return {"id": int(memory_id), "text": " ".join(str(text or "").split()), "when": when, "source": str(source or ""),
+                "importance": float(importance or 0.0), "helped": int(helped or 0), "corrected": int(corrected or 0),
+                "origin": str(origin or ""), "kind": str(kind or "")}
+
     def record_recall_outcome(self, ids, helped: bool) -> int:
         """Reinforce memories that went into an answer nobody corrected; weaken ones that did not.
 
@@ -3893,6 +4037,7 @@ class Memory(metaclass=_MemoryMeta):
             ("rekey", lambda: self.rekey_text_keys(dry_run=dry_run)),
             ("claims", lambda: self.backfill_claims(dry_run=dry_run)),
             ("consolidate", lambda: self.consolidate_memories(dry_run=dry_run)),
+            ("promote", lambda: self.promote_used(dry_run=dry_run)),
             ("decay", lambda: {"updated": self.apply_weight_decay()} if not dry_run else {}),
             ("archive", lambda: self.archive_faded(dry_run=dry_run)),
             ("identity", lambda: self.merge_user_ids() if not dry_run else {}),

@@ -439,6 +439,24 @@ def _load_agent_metrics_cached() -> Dict[tuple, Dict[str, float]]:
 
 
 _outcome_cache: Dict[str, Any] = {"loaded_at": 0.0, "rows": []}
+# Memory context under this figure was dropped. A line, not a measure: it holds until the outcomes
+# say whether replies that used memory context under it proved worse (epistemics.worse_below).
+_MEMORY_CONTEXT_LINE = 0.50
+
+
+def _memory_context_stands(confidence: float) -> bool:
+    """Whether memory context at this figure is kept for the reply. Above the line, always. Below it,
+    only when settled replies that used memory context at such a figure proved no worse than those
+    above the line; with no evidence either way, the line holds as it did."""
+    if confidence >= _MEMORY_CONTEXT_LINE:
+        return True
+    try:
+        from eli.cognition.epistemics import ANSWER, worse_below
+        verdict = worse_below(ANSWER, "memory_conf", _MEMORY_CONTEXT_LINE, class_="")
+    except (OSError, ValueError, ImportError) as failure:
+        log.debug("memory context evidence unavailable: %s", failure)
+        verdict = None
+    return verdict is False
 
 
 def _outcome_factor(agent: str) -> Optional[float]:
@@ -2264,10 +2282,19 @@ class AgentBus:
             if r.agent == "memory" and r.ok:
                 raw_ctx = r.data.get("memory_context", "")
                 if raw_ctx:
-                    if r.confidence < 0.50:
-                        memory_context = ""
-                    else:
-                        memory_context = raw_ctx
+                    # Memory context under an even figure was dropped outright. The line stands until
+                    # the settled replies say otherwise (eli/cognition/epistemics.worse_below): shown that
+                    # replies with memory context at this figure proved as right as those above the
+                    # line, the context is kept; shown they proved worse, it is dropped. The reply's
+                    # assessment records whether memory context was used and at what figure, which is
+                    # what the test reads.
+                    memory_context = raw_ctx if _memory_context_stands(float(r.confidence or 0.0)) else ""
+                    try:
+                        from eli.kernel.request_context import note_turn_fact
+                        note_turn_fact("memory_ctx", bool(memory_context))
+                        note_turn_fact("memory_conf", round(float(r.confidence or 0.0), 4))
+                    except (ImportError, LookupError, TypeError):
+                        log.debug("memory context facts not noted", exc_info=True)
                 break
         for r in results:
             if r.agent == "knowledge_graph" and r.ok and not r.data.get("skipped"):

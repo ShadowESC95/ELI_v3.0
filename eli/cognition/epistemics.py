@@ -21,10 +21,25 @@ what happened. This is where that check lives, so a figure ELI gives for an answ
                          outcomes have shown it to tell
     assess(kind, score, features, request_id)   make and record a Probability for a turn
     settle(request_id, right, how)   record what happened to it
+    assess_many(kind, items, request_id)   the same for several figures of one turn, fitted once
+    settle_open(kind, prefix, right)   settle every open figure under an id prefix
+    base_rate(kind, class_)   the share of figures of a kind that proved right (Beta(1,1))
+    worse_below(kind, feature, value)   whether replies below a level of one of their figures
+                         proved right less often than those at or above it: what a gate asks
+                         before it holds a reply to a line nothing has checked
+    weights_for(kind, class_)   the fit in force, for a ranking to apply by itself
     report(kind, days)   Brier score, expected calibration error and reliability by band
     brier(pairs), ece(pairs), reliability(pairs, edges)   the scoring rules, one owner
     entropy(counts)      the normalised entropy of a vote (self-consistency keeps it with the
                          winner's share: a 3-2 split and five different answers are not alike)
+
+Kinds, each with its own ledger events and the features its fit reads (FEATURES_BY_KIND):
+    answer    a reply (the token figures)            settled by the next turn
+    claim     a claim about the user a reply used    settled with the reply, or by the user
+    recall    a memory shown to a reply              settled with the reply: used, or corrected
+    route     the action a sentence was read as      settled by what ran and what the next turn said
+    act       something ELI made of its own accord   settled when it stands, is undone, or is refused
+    proposal  a fix ELI proposed for itself          settled when it is adopted or rolled back
 
 Outcomes are kept in the evidence ledger (eli/runtime/evidence_ledger.py), the tamper-evident
 record of what ELI did: an `answer_assessed` row when the figure is given, an `answer_outcome`
@@ -46,8 +61,14 @@ ANSWER = "answer"                 # a reply to the user: right unless the user s
 ASSESSED = "answer_assessed"      # ledger event: a figure was given
 OUTCOME = "answer_outcome"        # ledger event: what the next turn said of it
 CLAIM = "claim"                   # a claim about the user that a reply rested on (eli/memory/claims.py)
+RECALL = "recall"                 # a memory shown to a reply (eli/cognition/orchestrator.py, reranker.py)
+ROUTE = "route"                   # the action a sentence was read as (eli/kernel/engine.py)
+ACT = "act"                       # something ELI made of its own accord (eli/world/urges.py)
+PROPOSAL = "proposal"             # a fix ELI proposed for itself (eli/runtime/self_improvement.py)
 # each kind's pair of ledger events: the figure given, and what became of it
-EVENTS = {ANSWER: (ASSESSED, OUTCOME), CLAIM: ("claim_assessed", "claim_outcome")}
+EVENTS = {ANSWER: (ASSESSED, OUTCOME), CLAIM: ("claim_assessed", "claim_outcome"),
+          RECALL: ("recall_assessed", "recall_outcome"), ROUTE: ("route_assessed", "route_outcome"),
+          ACT: ("act_assessed", "act_outcome"), PROPOSAL: ("proposal_assessed", "proposal_outcome")}
 DAYS = 90.0                       # how far back outcomes count toward a calibration
 # A score of exactly 0 or 1 has no finite logit; it is read as a thousandth short of the edge.
 EDGE = 1e-3
@@ -63,6 +84,26 @@ PRIOR_SD = 1.0
 # even chance. A reply the model was unsure of token by token is more often wrong, whatever its
 # figure. Missing from an outcome, a figure counts as 0, the prior's own value.
 FEATURES = ("mean_logprob", "min_logprob", "mean_entropy", "low_share")
+# What each kind's fit reads beside its score. A reply: the token figures. A claim: how many times it was
+# confirmed and whether it is contested. A recalled memory: how readily it came to mind, its importance,
+# how much of the question it holds, and whether more than one retriever found it. A route: how far down
+# the stages it was read (a rule first, the parser's tail last) and whether the parser agreed. An act:
+# how long the user had been quiet. A proposal: how often the failure it answers had recurred.
+FEATURES_BY_KIND = {
+    ANSWER: FEATURES,
+    CLAIM: ("confirmations", "contested"),
+    RECALL: ("accessibility", "importance", "overlap", "agreement"),
+    ROUTE: ("stage_rank", "parser_agrees"),
+    ACT: ("quiet_minutes",),
+    PROPOSAL: ("recurrence",),
+}
+# A gate holds a reply to a line only once the outcomes have shown replies below it to be worse, at the
+# usual 90 % one-sided significance (z = 1.282, the same point the affect state uses), with at least this
+# many settled figures on each side of the line: fewer tell nothing either way.
+Z_SIG = 1.282
+MIN_EACH_SIDE = 5
+# A fit is kept this long before the outcomes are read again: a turn assesses several figures of a kind.
+FIT_SECONDS = 30.0
 
 
 @dataclass
@@ -77,7 +118,7 @@ class Probability:
     ece: Optional[float] = None               # its expected calibration error on them, when any
     slope: float = 1.0                        # the fit: p = sigmoid(slope * logit(score) + weights · features + shift)
     shift: float = 0.0
-    weights: Dict[str, float] = field(default_factory=dict)   # what each of FEATURES weighs in the fit
+    weights: Dict[str, float] = field(default_factory=dict)   # what the score and each feature weighs in the fit
 
     def as_dict(self) -> Dict[str, Any]:
         return {"p": round(self.p, 4), "kind": self.kind, "class": self.class_, "score": round(self.score, 4),
@@ -150,10 +191,11 @@ def entropy(counts: Iterable[int]) -> float:
 
 # ── the fit ───────────────────────────────────────────────────────────────────────────────────────
 
-def _row(score: float, features: Optional[Dict[str, Any]]) -> List[float]:
-    """The fit's inputs for one reply: the score's logit, then each of FEATURES (0 when not known)."""
+def _row(score: float, features: Optional[Dict[str, Any]], names: Sequence[str] = FEATURES) -> List[float]:
+    """The fit's inputs for one figure: the score's logit, then each named feature (0 when not known; a
+    boolean as 1 or 0)."""
     out = [logit(float(score))]
-    for key in FEATURES:
+    for key in names:
         try:
             out.append(float((features or {}).get(key) or 0.0))
         except (TypeError, ValueError):
@@ -162,16 +204,16 @@ def _row(score: float, features: Optional[Dict[str, Any]]) -> List[float]:
 
 
 def fit_rows(rows: Sequence[Tuple[float, float, Optional[Dict[str, Any]]]], *, prior_sd: float = PRIOR_SD,
-             steps: int = 25) -> Tuple[List[float], float]:
+             steps: int = 25, names: Sequence[str] = FEATURES) -> Tuple[List[float], float]:
     """The weights and shift that most probably gave these (score, outcome, features) rows, where the
-    chance is sigmoid(weights · [logit(score), *FEATURES] + shift): Newton's method on the penalised
+    chance is sigmoid(weights · [logit(score), *names] + shift): Newton's method on the penalised
     log-loss, the prior standard normal about 1 for the score's weight and about 0 for every other
     weight and the shift. With no rows, ([1, 0, ...], 0): the score itself."""
-    prior = [1.0] + [0.0] * len(FEATURES)
+    prior = [1.0] + [0.0] * len(names)
     if not rows:
         return prior, 0.0
     import numpy as np
-    X = np.array([_row(s, f) + [1.0] for s, _, f in rows], dtype=float)
+    X = np.array([_row(s, f, names) + [1.0] for s, _, f in rows], dtype=float)
     Y = np.array([1.0 if float(y) >= 0.5 else 0.0 for _, y, _ in rows], dtype=float)
     mu = np.array(prior + [0.0], dtype=float)
     theta = mu.copy()
@@ -197,9 +239,15 @@ def fit(pairs: Sequence[Tuple[float, float]], *, prior_sd: float = PRIOR_SD, ste
     return weights[0], shift
 
 
-def apply_rows(score: float, features: Optional[Dict[str, Any]], weights: Sequence[float], shift: float) -> float:
-    x = _row(score, features)
+def apply_rows(score: float, features: Optional[Dict[str, Any]], weights: Sequence[float], shift: float,
+               names: Sequence[str] = FEATURES) -> float:
+    x = _row(score, features, names)
     return sigmoid(sum(float(w) * v for w, v in zip(weights, x)) + shift)
+
+
+def features_of(kind: str) -> Tuple[str, ...]:
+    """The features a kind's fit reads (FEATURES_BY_KIND; a kind not listed reads the reply's)."""
+    return tuple(FEATURES_BY_KIND.get(kind, FEATURES))
 
 
 def apply(score: float, slope: float, shift: float) -> float:
@@ -233,11 +281,22 @@ def outcomes(kind: str = ANSWER, *, class_: str = "", days: float = DAYS,
     return out
 
 
-def calibrate(kind: str, score: float, *, class_: str = "", features: Optional[Dict[str, Any]] = None,
-              days: float = DAYS, db_path=None) -> Probability:
-    """The chance for a raw score of this kind: fitted on the outcomes of its class when that class
-    has any, else of the kind as a whole; the score itself until outcomes say otherwise."""
-    score = float(score)
+_fits: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Any]]] = {}
+
+
+def _fit_for(kind: str, class_: str, days: float, db_path) -> Dict[str, Any]:
+    """The fit in force for a kind (and class): fitted on the outcomes of the class when it has any,
+    else of the kind as a whole; the score itself until outcomes say otherwise. Kept FIT_SECONDS."""
+    try:
+        where = str(db_path) if db_path else str(_ledger()._default_db_path())
+    except Exception:  # noqa: BLE001 - the ledger's own path unknown: the fit is kept by kind alone
+        where = str(db_path or "")
+    key = (str(kind), str(class_ or ""), where)
+    now = time.time()
+    kept = _fits.get(key)
+    if kept and now - kept[0] < FIT_SECONDS:
+        return kept[1]
+    names = features_of(kind)
     try:
         pairs = outcomes(kind, class_=class_, days=days, db_path=db_path) if class_ else []
         fitted_for = class_ if pairs else ""
@@ -246,11 +305,47 @@ def calibrate(kind: str, score: float, *, class_: str = "", features: Optional[D
     except Exception as failure:   # noqa: BLE001 - the ledger unreadable: the score stands as the chance
         log.debug("outcomes unavailable: %s", failure)
         pairs, fitted_for = [], ""
-    weights, shift = fit_rows(pairs)
-    error = ece([(apply_rows(s, f, weights, shift), y) for s, y, f in pairs]) if pairs else None
-    return Probability(p=apply_rows(score, features, weights, shift), kind=kind, score=score, class_=fitted_for,
-                       features=dict(features or {}), n=len(pairs), ece=error, slope=weights[0], shift=shift,
-                       weights=dict(zip(("score",) + FEATURES, weights)))
+    weights, shift = fit_rows(pairs, names=names)
+    error = ece([(apply_rows(s, f, weights, shift, names), y) for s, y, f in pairs]) if pairs else None
+    fit = {"weights": weights, "shift": shift, "names": names, "n": len(pairs), "ece": error, "class": fitted_for}
+    _fits[key] = (now, fit)
+    return fit
+
+
+def forget_fits() -> None:
+    """Drop the kept fits, so the next figure reads the outcomes again (an outcome was just settled)."""
+    _fits.clear()
+
+
+def calibrate(kind: str, score: float, *, class_: str = "", features: Optional[Dict[str, Any]] = None,
+              days: float = DAYS, db_path=None) -> Probability:
+    """The chance for a raw score of this kind: fitted on the outcomes of its class when that class
+    has any, else of the kind as a whole; the score itself until outcomes say otherwise."""
+    score = float(score)
+    fit = _fit_for(kind, class_, days, db_path)
+    weights, shift, names = fit["weights"], fit["shift"], fit["names"]
+    return Probability(p=apply_rows(score, features, weights, shift, names), kind=kind, score=score,
+                       class_=fit["class"], features=dict(features or {}), n=fit["n"], ece=fit["ece"],
+                       slope=weights[0], shift=shift, weights=dict(zip(("score",) + tuple(names), weights)))
+
+
+def weights_for(kind: str, *, class_: str = "", days: float = DAYS, db_path=None) -> Dict[str, Any]:
+    """The fit in force for a kind, for a ranking that applies it to many figures itself:
+    {"weights", "shift", "names", "n", "ece", "class"}; with n == 0 the score is the chance."""
+    return dict(_fit_for(kind, class_, days, db_path))
+
+
+def _record_figure(kind: str, prob: Probability, request_id: str, class_: str, features: Optional[Dict[str, Any]],
+                   session_id: str, user_id: str, db_path) -> None:
+    try:
+        _ledger().record_event(
+            EVENTS.get(kind, (ASSESSED, OUTCOME))[0], source="epistemics", action=kind.upper(), subject=str(request_id),
+            payload={"kind": kind, "class": class_, "score": round(float(prob.score), 4), "p": round(prob.p, 4),
+                     "n": prob.n, "features": dict(features or {})},
+            confidence=prob.p, reusable=False, request_id=str(request_id),
+            session_id=session_id, user_id=user_id, db_path=db_path)
+    except Exception as failure:   # noqa: BLE001 - a ledger that cannot be written leaves the figure unrecorded
+        log.warning("a figure of kind %s was not recorded: %s", kind, failure)
 
 
 def assess(kind: str, score: float, *, request_id: str, features: Optional[Dict[str, Any]] = None,
@@ -258,16 +353,21 @@ def assess(kind: str, score: float, *, request_id: str, features: Optional[Dict[
     """Make the Probability for this turn and put it in the ledger, so the next turn can settle it."""
     prob = calibrate(kind, score, class_=class_, features=features, db_path=db_path)
     if request_id:
-        try:
-            _ledger().record_event(
-                EVENTS.get(kind, (ASSESSED, OUTCOME))[0], source="epistemics", action=kind.upper(), subject=str(request_id),
-                payload={"kind": kind, "class": class_, "score": round(float(score), 4), "p": round(prob.p, 4),
-                         "n": prob.n, "features": dict(features or {})},
-                confidence=prob.p, reusable=False, request_id=str(request_id),
-                session_id=session_id, user_id=user_id, db_path=db_path)
-        except Exception as failure:   # noqa: BLE001 - a ledger that cannot be written leaves the figure unrecorded
-            log.warning("an answer's figure was not recorded: %s", failure)
+        _record_figure(kind, prob, request_id, class_, features, session_id, user_id, db_path)
     return prob
+
+
+def assess_many(kind: str, items: Sequence[Tuple[str, float, Optional[Dict[str, Any]]]], *, class_: str = "",
+                session_id: str = "", user_id: str = "", db_path=None) -> List[Probability]:
+    """Several figures of one kind for one turn, each (request_id, score, features), fitted once and
+    each put in the ledger under its own id (the memories a reply was shown, the claims it used)."""
+    out: List[Probability] = []
+    for request_id, score, features in items:
+        prob = calibrate(kind, score, class_=class_, features=features, db_path=db_path)
+        if request_id:
+            _record_figure(kind, prob, str(request_id), class_, features, session_id, user_id, db_path)
+        out.append(prob)
+    return out
 
 
 def settle(request_id: str, right: bool, *, how: str = "", kind: str = ANSWER, db_path=None) -> bool:
@@ -279,6 +379,7 @@ def settle(request_id: str, right: bool, *, how: str = "", kind: str = ANSWER, d
             EVENTS.get(kind, (ASSESSED, OUTCOME))[1], source="epistemics", action=kind.upper(), subject=str(request_id),
             payload={"kind": kind, "how": how}, outcome="ok" if right else "failed",
             reusable=False, request_id=str(request_id), db_path=db_path)
+        forget_fits()
         return True
     except Exception as failure:   # noqa: BLE001 - a ledger that cannot be written leaves the outcome unrecorded
         log.warning("an answer's outcome was not recorded: %s", failure)
@@ -290,13 +391,15 @@ def claim_request_id(claim_id: Any, request_id: str) -> str:
     return f"claim:{int(claim_id)}:{request_id}"
 
 
-def settle_open(kind: str, subject_prefix: str, right: bool, *, how: str = "", db_path=None) -> int:
+def settle_open(kind: str, subject_prefix: str, right: bool, *, how: str = "", before: Optional[float] = None,
+                db_path=None) -> int:
     """Settle every figure of this kind whose id starts with `subject_prefix` that nothing has
-    settled yet (a claim's, when the user settles the claim itself). How many were settled."""
+    settled yet (a claim's, when the user settles the claim itself; with `before`, only figures given
+    before that time: an act nobody undid in a day stood). How many were settled."""
     assessed_type, outcome_type = EVENTS.get(kind, (ASSESSED, OUTCOME))
     try:
         open_ids = _ledger().open_assessments(kind, assessed_type=assessed_type, outcome_type=outcome_type,
-                                              subject_prefix=subject_prefix, db_path=db_path)
+                                              subject_prefix=subject_prefix, until=before, db_path=db_path)
     except (OSError, ValueError, AttributeError) as failure:
         log.debug("open figures unreadable: %s", failure)
         return 0
@@ -306,15 +409,58 @@ def settle_open(kind: str, subject_prefix: str, right: bool, *, how: str = "", d
 def report(kind: str = ANSWER, *, days: float = DAYS, db_path=None) -> Dict[str, Any]:
     """How good the figures of this kind have been: count, Brier score, calibration error, the
     reliability by band, and the fit now in force."""
+    names = features_of(kind)
     rows = outcomes(kind, days=days, db_path=db_path)
     pairs = [(s, y) for s, y, _ in rows]
-    weights, shift = fit_rows(rows)
-    calibrated = [(apply_rows(s, f, weights, shift), y) for s, y, f in rows]
+    weights, shift = fit_rows(rows, names=names)
+    calibrated = [(apply_rows(s, f, weights, shift, names), y) for s, y, f in rows]
     return {"kind": kind, "n": len(pairs), "brier": brier(pairs), "brier_calibrated": brier(calibrated),
             "ece": ece(pairs), "ece_calibrated": ece(calibrated), "bands": reliability(pairs),
-            "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + FEATURES, weights))}
+            "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + tuple(names), weights))}
 
 
-__all__ = ["ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "OUTCOME", "Probability", "apply", "apply_rows",
-           "assess", "brier", "calibrate", "claim_request_id", "ece", "entropy", "fit", "fit_rows", "logit", "outcomes",
-           "reliability", "report", "settle", "settle_open", "sigmoid"]
+def base_rate(kind: str = ANSWER, *, class_: str = "", where: Optional[Dict[str, Any]] = None,
+              days: float = DAYS, db_path=None) -> Tuple[float, int]:
+    """The share of figures of this kind (of this class; with `where`, those whose features equal the
+    given values) that proved right, as the mean of a Beta(1, 1) posterior, and how many were settled.
+    With none, (0.5, 0): an even chance and nothing behind it."""
+    rows = outcomes(kind, class_=class_, days=days, db_path=db_path)
+    if where:
+        rows = [r for r in rows if all((r[2] or {}).get(k) == v for k, v in where.items())]
+    n = len(rows)
+    return ((sum(y for _s, y, _f in rows) + 1.0) / (n + 2.0), n)
+
+
+def worse_below(kind: str, feature: str, value: float, *, class_: str = "", min_each: int = MIN_EACH_SIDE,
+                days: float = DAYS, db_path=None) -> Optional[bool]:
+    """Whether the figures of this kind whose `feature` was below `value` proved right less often than
+    those at or above it: a one-sided two-proportion test at Z_SIG. None until each side has `min_each`
+    settled figures: a line nothing has checked holds as it is. `feature` may be "score", the figure
+    itself. What a gate asks before holding a reply to a line: with no evidence the gate stands as it
+    was; shown that replies below the line do as well, it opens; shown that they do worse, it holds."""
+    rows = outcomes(kind, class_=class_, days=days, db_path=db_path)
+    below: List[float] = []
+    above: List[float] = []
+    for score, y, features in rows:
+        raw = score if feature == "score" else (features or {}).get(feature)
+        if raw is None or isinstance(raw, bool):
+            if raw is None:
+                continue
+        try:
+            x = float(raw)
+        except (TypeError, ValueError):
+            continue
+        (below if x < float(value) else above).append(float(y))
+    if len(below) < int(min_each) or len(above) < int(min_each):
+        return None
+    p_b, p_a = sum(below) / len(below), sum(above) / len(above)
+    pooled = (sum(below) + sum(above)) / (len(below) + len(above))
+    spread = math.sqrt(max(EDGE, pooled * (1.0 - pooled)) * (1.0 / len(below) + 1.0 / len(above)))
+    return (p_a - p_b) / spread >= Z_SIG
+
+
+__all__ = ["ACT", "ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "FEATURES_BY_KIND", "MIN_EACH_SIDE", "OUTCOME",
+           "PROPOSAL", "Probability", "RECALL", "ROUTE", "Z_SIG", "apply", "apply_rows", "assess", "assess_many",
+           "base_rate", "brier", "calibrate", "claim_request_id", "ece", "entropy", "features_of", "fit", "fit_rows",
+           "forget_fits", "logit", "outcomes", "reliability", "report", "settle", "settle_open", "sigmoid",
+           "weights_for", "worse_below"]

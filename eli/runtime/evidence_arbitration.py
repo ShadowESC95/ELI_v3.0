@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 
 class EvidenceState:
     """What is known about a piece of evidence. "Nothing found" is only a claim when the search really ran."""
@@ -116,7 +120,18 @@ def _score_tool_result(rec: Any) -> EvidenceItem:
 
     # None (missing) and False (failure) both land on the lower score --
     # unverified isn't trustworthy just because it isn't a known failure.
+    # A result that reports success is trusted by the action's own measured reliability (the chance
+    # such a run works, from its runs here: evidence_ledger.predict_success), once there is history;
+    # the fixed figure stands only until then.
     score = 0.86 if (ok is not None and bool(ok)) else 0.30
+    if ok is not None and bool(ok) and action:
+        try:
+            from eli.runtime.evidence_ledger import predict_success
+            measured = predict_success(action)
+            if measured is not None:
+                score = float(measured)
+        except (OSError, ValueError, ImportError) as failure:   # no history to be read: the fixed figure stands
+            log.debug("reliability unavailable for the tool result: %s", failure)
     if status in {"approved", "applied", "executed"}:
         score += 0.05
     if status in {"error", "blocked"}:

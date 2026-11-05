@@ -119,6 +119,49 @@ Background cognition + goal/queue machinery:
 
 The substrate behind ELI's emergent self-state (autonomy pressure, awareness,
 "anomaly room" — intended behaviour, see memory `eli-emergent-voice`):
+- **Thoughts in the feed** (2026-11-04): the world feed carries ELI's thoughts lately
+  (`eli/cognition/thoughts.py`: what it recalled, believed, read a sentence as, made, tried and
+  proposed, each with why, how sure, what it decided and what became of it), under `thoughts` with
+  the capability `thoughts`, and `GET /v1/world/thoughts?room=&kinds=` serves them by room; a body
+  shows them on the screens of the room they belong to (`shown.kept`, read as often as the other
+  records).
+- **Acts as figures** (`urges.py`): the moment ELI acts on is the one it is most curious about
+  (`eli/cognition/curiosity.py`), not the oldest; an act that made something is a figure (kind `act`)
+  settled wrong when the user takes it back (`building.apply` undo → `urges.undone`) and right when it
+  stood a day; a kind of moment whose acts keep being taken back is let go of, and the thought says so.
+- **Moments from thoughts, and notes** (2026-11-05, `urges.thought_moments`): ELI's thoughts of the last
+  day that are moments too (a surprise, a conflict, a proposal, a diagnosis, a memory let go, a recall
+  that proved wrong) join the event moments in `waiting()`, each acted on once (`acted_thoughts` in the
+  own-room space). Unasked, the composer offers op `note` (`composer.ALL_OPS`, grammar rule `note`): the
+  text goes in the journal and `building._pin_note` keeps it as a thought of kind `note` (room
+  evidence_wall), so a body hangs it up.
+- **Thought sheets** (`shown._thought_notes`): the newest `NOTES_PER_ROOM` (6) thoughts of each room are
+  records of kind `thought` in the feed, with `lines` (`shown.thought_lines`: the thought, decision and
+  reason, chance and outcome, why, when), the thought's own measures under `thought`, and a paper colour
+  by kind (`THOUGHT_COLOURS`). ELI VR pins them in six rooms and lets the user pick one up.
+- **A record in the hand** (`embodiment.held`, `held_record`): a scene may carry `holding` ({id, kind,
+  name, lines}); the prompt then says what is in the user's hand and what is on record behind it (a
+  thought by `thoughts.by_id`: why, decision, chance, outcome, when; a belief: `claims.describe`, `basis`,
+  calibrated chance, contested; a memory: `Memory.memory_facts`, when kept, importance, helped and corrected
+  counts; a finding: its lines), with the instruction to answer from that record and say what it does not
+  hold. `routing/intents/world_held.route_world_held` (before `self_report`) keeps a question about the
+  held sheet in conversation (`router.held_note_chat`).
+- **Games set at once; the range** (`games.py`): a game is no longer the model's layout. `quick` builds the
+  spec by rules (`rules_for`: `FIRST` for the first of a kind, then a step `STEP` harder when the last of
+  that kind went two in three or better, kinder at one in three or worse, from the last game's own count
+  and pace; the shape the user named; the room's light as colour), `compose` sets it immediately, and
+  ELI's words (`words_prompt`, `words_grammar`: say, name, goal, four lines) come from the model in a
+  background thread (`words_after`) and are put on the game object (`apply_words`), or at once from a
+  `generate` a caller brings; with no mind loaded there are no words. Kind `range`: `ARMS` (pistol, rifle,
+  shotgun: shots; bolt: a flying bolt; beam: a held beam; rail: a charged shot through everything on its
+  line, each with its own measures), `RINGS` (3, 2, 1) by how far from a target's middle a line passes,
+  layout with the gun table a step ahead-right and targets further ahead turned to face the user; pieces
+  keep their laid-out spot (`building._carry_out` skips `_free_spot` for pieces); the result carries
+  `hits`, `shots` and each arm's part. `_kind_for`: the kind named, the last kind when asked "again", else
+  the least played. `building.SHAPES` gained `target` and `arm`.
+- **Awareness measured** (`agency/autonomy_engine.py`): evidence confidence and uncertainty are the
+  sitting's mean reply chances; repair pressure is the share of the sitting's tool runs that failed;
+  curiosity is the mean size of the sitting's surprises. The rest still ease by event.
 - `agency/autonomy_engine.py` — `EliWorldAutonomyEngine`: ingests world events,
   maintains awareness/autonomy state. `_apply_action` handles `CREATE_OBJECT` and
   (2026-09-30, ported from v2) `RETIRE_OBJECT` — previously declared in the schema

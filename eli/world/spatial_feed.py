@@ -20,6 +20,7 @@ contract, served on the local API server:
     POST /v1/world/edit       the user moving or changing a thing      (version 2)
     POST /v1/world/compose    ELI making something of its own accord   (version 2)
     POST /v1/world/undo       taking back the last change              (version 2)
+    GET  /v1/world/thoughts   ELI's thoughts lately: why, how sure, what it decided, what became of them (version 2, thoughts)
     GET  /v1/world/mind       which model is ELI's mind, and which could be (version 2)
     POST /v1/world/mind       choosing one                              (version 2)
     POST /v1/world/played     the body saying how a game ELI set went   (version 2, games)
@@ -49,7 +50,7 @@ MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
     2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures",
-        "models", "games"),
+        "models", "games", "thoughts"),
 }
 # Close codes a client can tell apart.
 CLOSE_UNAUTHORISED = 4401
@@ -219,6 +220,9 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             # a body may ask ELI to make something of one while someone is there to see it
             message["waiting"] = len([u for u in own.get("urges") or [] if isinstance(u, dict)])
             message["free"] = shown.free()
+            # ELI's thoughts lately, each with why it had it, how sure it was, what it decided and what
+            # became of it, by the room they belong in (eli/cognition/thoughts.py)
+            message["thoughts"] = shown.kept()
         except Exception:
             pass
     return message
@@ -466,6 +470,16 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         from eli.world import building
         return building.apply([{"op": "undo"}], actor="user", asked=True, source="spatial_client",
                               summary="The user asked for the last change to be taken back")
+
+    @router.get("/v1/world/thoughts", dependencies=[Depends(require_read)])
+    def world_thoughts(room: str = "", kinds: str = "", limit: int = 40):
+        """ELI's thoughts lately: what it recalled, believed, read a sentence as, made, tried and proposed,
+        each with why, how sure, what it decided and what became of it. `room` keeps it to one room of
+        the house, `kinds` to a comma-separated list of kinds."""
+        from eli.world import shown
+        wanted = [k.strip() for k in str(kinds or "").split(",") if k.strip()]
+        return {"thoughts": shown.kept(room=room, kinds=wanted or None, limit=max(1, min(int(limit), shown.THOUGHTS)))
+                if (room or wanted) else shown.kept()[:max(1, min(int(limit), shown.THOUGHTS))]}
 
     @router.get("/v1/world/mind", dependencies=[Depends(require_read)])
     def world_mind():

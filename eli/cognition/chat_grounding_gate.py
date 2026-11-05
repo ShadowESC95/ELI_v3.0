@@ -92,6 +92,20 @@ def count_verified_memory_lines(memory_context: str) -> int:
     return len(lines)
 
 
+def _floor_stands() -> bool:
+    """The grounding floor is a line, not a measure. It holds until the settled replies say that
+    replies grounded under it proved no worse than those above it (eli/cognition/epistemics.worse_below,
+    on the `grounding` figure every reply's assessment carries); shown that, the hedge gives way to
+    the reply. Shown nothing, or shown they do worse, it holds as it did."""
+    try:
+        from eli.cognition.epistemics import ANSWER, worse_below
+        verdict = worse_below(ANSWER, "grounding", _GROUNDING_FLOOR)
+    except (OSError, ValueError, ImportError) as failure:
+        log.debug("grounding evidence unavailable: %s", failure)
+        verdict = None
+    return verdict is not False
+
+
 def fail_closed_response(
     user_input: str,
     *,
@@ -120,7 +134,7 @@ def fail_closed_response(
             )
         return None
 
-    low_grounding = gnd < _GROUNDING_FLOOR and agg < _GROUNDING_FLOOR
+    low_grounding = gnd < _GROUNDING_FLOOR and agg < _GROUNDING_FLOOR and _floor_stands()
     if verified_lines == 0 and low_grounding:
         return (
             "I don't have that in verified memory, and the grounding score is too low "

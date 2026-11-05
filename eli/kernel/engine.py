@@ -2231,6 +2231,24 @@ def _said_about_the_user(text: str) -> bool:
     return you > me
 
 
+# The bus fast path took a bus answer at an aggregate of 0.7 or more. A line, not a measure: it holds
+# until the settled replies say whether bus answers under it proved worse (epistemics.worse_below on
+# the `aggregated` figure every reply's assessment carries); shown they do as well, it opens.
+_FAST_PATH_LINE = 0.7
+
+
+def _fast_path_stands(aggregated: float) -> bool:
+    if float(aggregated or 0.0) >= _FAST_PATH_LINE:
+        return True
+    try:
+        from eli.cognition.epistemics import ANSWER, worse_below
+        verdict = worse_below(ANSWER, "aggregated", _FAST_PATH_LINE, class_="grounded")
+    except (OSError, ValueError, ImportError) as failure:
+        log.debug("fast-path evidence unavailable: %s", failure)
+        verdict = None
+    return verdict is False
+
+
 class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, ReasoningModesMixin, RetrievalMixin, MemoryCommitMixin):
     def __init__(
         self,
@@ -3925,11 +3943,21 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                               "agreement": getattr(self, "_last_sc_agreement_ratio", None),
                               "entropy": getattr(self, "_last_sc_entropy", None),
                               "grounding": grounding_confidence,
+                              # the path the reply took and the figures the gates read, so the gates'
+                              # lines can be checked against what became of replies under them
+                              "reply_path": str(_facts.get("reply_path") or "synthesis"),
+                              "bus_fast": str(_facts.get("reply_path") or "") == "bus_fast",
+                              "aggregated": _facts.get("bus_aggregated"),
+                              "memory_ctx": bool(_facts.get("memory_ctx")),
+                              "memory_conf": _facts.get("memory_conf"),
+                              "via": str(_facts.get("via") or ""),
                               **({"claims_used": len(_claim_ps), "claims_min_p": min(_claim_ps),
                                   "claims_mean_p": sum(_claim_ps) / len(_claim_ps)} if _claim_ps else {}),
                               **{k: _generation.get(k) for k in (*_epistemics.FEATURES, "tokens", "first_entropy")
                                  if _generation.get(k) is not None}})
                 self._pending_assessment = request_id
+                self._pending_assessment_p = float(probability.p)
+                self._pending_user_input = str(user_input or "")
                 self._pending_claims = [dict(v, id=k) for k, v in _claims_used.items() if isinstance(v, dict)]
                 # ELI's world hears it: its evidence confidence and uncertainty are the means of these
                 from eli.world.world_event_bus import fire_world_event as _fire_world_event
@@ -4433,20 +4461,54 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 log.debug("recall outcome not settled", exc_info=True)
         request_id = getattr(self, "_pending_assessment", None)
         endorsed = is_endorsement(user_input)
+        from eli.cognition import epistemics, thoughts
         if request_id:
             self._pending_assessment = None
-            from eli.cognition import epistemics
+            how = "correction" if corrected else ("endorsement" if endorsed else "")
             if corrected:
                 epistemics.settle(request_id, False, how="correction")
             elif endorsed:
                 epistemics.settle(request_id, True, how="endorsement")
+            # The memories shown to that reply (kind recall, eli/cognition/orchestrator.py) and their
+            # thoughts go with it: used, or corrected.
+            if how:
+                epistemics.settle_open(epistemics.RECALL, f"recall:{request_id}:", not corrected, how=how)
+                thoughts.settle_prefix(f"recall:{request_id}:", "wrong" if corrected else "right", how=how)
+            # A correction is a surprise: what the reply was about matters more for it
+            # (eli/memory/salience.py), by the chance that was given for the reply.
+            if corrected:
+                try:
+                    from eli.cognition.scoring import tokenize as _tok
+                    from eli.memory.salience import note_surprise
+                    _asked = str(getattr(self, "_pending_user_input", "") or "")
+                    note_surprise("answer", float(getattr(self, "_pending_assessment_p", 0.5) or 0.5),
+                                  subjects=_tok(_asked)[:3], why=f"you corrected the reply to: {_asked[:80]}",
+                                  user_id=str(getattr(self, "user_id", "") or ""))
+                except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                    log.debug("correction surprise not noted", exc_info=True)
+        # The route the last sentence was read as (kind route, _assess_route): a correction, a
+        # complaint about ELI or a redo settles it wrong; any other next turn is the user moving on,
+        # which settles it right. A misroute draws a complaint; a right route draws the next request.
+        route = getattr(self, "_pending_route", None)
+        if route:
+            self._pending_route = None
+            try:
+                from eli.cognition.correction_patterns import is_continuity_complaint
+                from eli.cognition.self_claims import complains_about_eli
+                from eli.runtime.action_commitment import is_redo_directive
+                wrong = bool(corrected or is_continuity_complaint(user_input) or is_redo_directive(user_input)
+                             or complains_about_eli(user_input))
+                how = "correction" if wrong else "moved on"
+                epistemics.settle(f"route:{route[0]}", not wrong, how=how, kind=epistemics.ROUTE)
+                thoughts.settle(f"route:{route[0]}", "wrong" if wrong else "right", how=how)
+            except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                log.debug("route not settled", exc_info=True)
         # The claims about the user the last reply rested on: an endorsement settles them all right; a
         # correction settles wrong the ones it speaks of (its words share the claim's), and leaves the
         # rest open, since a reply corrected on one point was not wrong on every claim it used.
         claims = getattr(self, "_pending_claims", None)
         if claims:
             self._pending_claims = None
-            from eli.cognition import epistemics
             from eli.cognition.scoring import tokenize
             from eli.execution.route_contracts import _same_word
             said = set(tokenize(user_input))
@@ -4461,8 +4523,58 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     continue
                 if endorsed and not corrected:
                     epistemics.settle(rid, True, how="endorsement", kind=epistemics.CLAIM)
+                    thoughts.settle(rid, "right", how="endorsement")
                 elif corrected and _speaks_of(claim):
                     epistemics.settle(rid, False, how="correction", kind=epistemics.CLAIM)
+                    thoughts.settle(rid, "wrong", how="correction")
+                    # a claim the user corrected is a surprise about what it was about
+                    try:
+                        from eli.memory.salience import note_surprise
+                        note_surprise("claim", float(claim.get("p") or 0.5), subjects=[str(claim.get("value") or "")],
+                                      why=f"you corrected {str(claim.get('relation') or '').replace('_', ' ')}: "
+                                          f"{claim.get('value')}", user_id=str(getattr(self, "user_id", "") or ""))
+                    except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                        log.debug("claim surprise not noted", exc_info=True)
+
+    def _assess_route(self, intent: Dict[str, Any], user_input: str) -> None:
+        """The route this sentence was read as, assessed: its own figure calibrated on what became of
+        such routes (eli/cognition/epistemics, kind route; the class is the stage that read it: a rule,
+        the parser, the resolver, the chat fallback), with whether the command parser read it the same
+        way. The next user turn settles it (_settle_recall_outcome), and a thought of it is kept."""
+        try:
+            from eli.cognition import epistemics as _ep
+            from eli.cognition.thoughts import record as _thought
+            rid = str(_request_context.request_id_var.get() or "")
+            if not rid or not isinstance(intent, dict):
+                return
+            action = str(intent.get("action") or "CHAT").upper()
+            via = str((intent.get("meta") or {}).get("matched_by") or "unknown")
+            stage = re.split(r"[.>]", via, 1)[0] or "unknown"
+            rank = {"parser": 2, "llm_intent": 3, "fallback": 4, "phatic": 1}.get(stage, 1)
+            agrees = None
+            try:
+                from eli.execution.routing.command_parser import route_command
+                low = str(user_input or "").lower()
+                parsed = route_command(user_input, user_input, low, low, strict=False)
+                agrees = (str((parsed or {}).get("action") or "").upper() == action) if parsed else None
+            except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+                log.debug("parser reading unavailable", exc_info=True)
+            score = float(intent.get("confidence") or 0.5)
+            prob = _ep.assess(_ep.ROUTE, score, request_id=f"route:{rid}", class_=stage,
+                              features={"stage_rank": rank, "parser_agrees": 1.0 if agrees else 0.0,
+                                        "action": action, "via": via},
+                              session_id=str(_request_context.session_id_var.get() or ""),
+                              user_id=str(_request_context.user_id_var.get() or ""))
+            self._pending_route = (rid, action)
+            _thought("route", f"read as {action.replace('_', ' ').lower()}",
+                     why=[f"matched by {via}", f"figure {score:.2f}",
+                          "the parser agrees" if agrees else ("the parser read it otherwise" if agrees is False
+                                                               else "the parser had no reading")],
+                     chance=float(prob.p), decision="taken", reason=f"the first stage to read it ({stage})",
+                     subject=str(user_input or "")[:120], request_id=rid, ref=f"route:{rid}",
+                     user_id=str(_request_context.user_id_var.get() or ""))
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("route not assessed", exc_info=True)
 
     def process(self, user_input: str, source: str = "user", stream: bool = False,
                 reasoning_mode: Optional[str] = None, *,
@@ -5911,6 +6023,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         _pipe_matched_s1 = str((intent.get("meta") or {}).get("matched_by") or "unknown")[:50]
         log.debug(f"[PIPELINE] Stage 1: Intent → {_pipe_action_s1} (conf={_pipe_conf_s1:.2f} via={_pipe_matched_s1})")
         _request_context.note_turn_fact("via", _pipe_matched_s1)
+        if not _is_autonomous_source(source):
+            self._assess_route(intent, user_input)
 
         _agreed = ((intent.get("args") or {}).get("agreed")
                    if _pipe_matched_s1 in ("pending_proposal.confirm", "message.instructions_and_talk") else None)
@@ -7245,19 +7359,20 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # contributed real evidence). Pure route-match with no agent grounding (grounding=0)
         # should not short-circuit synthesis even if aggregate looks "high" due to base weight.
         _bus_grounding_ok = float(getattr(bus_result, "grounding_confidence", 0.0) or 0.0) > 0.05
+        _bus_aggregated = float(getattr(bus_result, "aggregated_confidence", 0.0) or 0.0) if bus_result is not None else 0.0
+        _request_context.note_turn_fact("bus_aggregated", round(_bus_aggregated, 4))
         # Self-contained file/doc actions read real files and carry their own existence guards. They
         # must be executed, not LLM-synthesised from the prompt (which fabricates summaries of files it
         # never read). They're deferred from the parallel bus (LLM_ACTIONS) so bus confidence is low;
-        # execute them here regardless of the 0.7 grounded fast-path gate.
+        # execute them here regardless of the grounded fast-path line.
         _FILE_SELF_CONTAINED_ACTIONS = {
             "SUMMARIZE_FILE", "CONVERT_DOCUMENT", "ANALYZE_PDF", "ANALYZE_CSV",
             "ANALYZE_PDF_FOLDER", "GENERATE_DOCUMENT", "CREATE_DOCUMENT", "DOC_GENERATE",
         }
         _is_file_self_contained = str(action or "").upper() in _FILE_SELF_CONTAINED_ACTIONS
-        if bus_result is not None and (
-            (bus_result.aggregated_confidence >= 0.7 and _bus_grounding_ok)
-            or _is_file_self_contained
-        ):
+        _fast = bus_result is not None and _bus_grounding_ok and _fast_path_stands(_bus_aggregated)
+        if bus_result is not None and (_fast or _is_file_self_contained):
+            _request_context.note_turn_fact("reply_path", "bus_fast")
             evidence_parts: List[str] = []
             _action_result = None
             _action_content = ""

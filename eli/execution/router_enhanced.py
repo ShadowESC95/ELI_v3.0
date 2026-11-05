@@ -3299,7 +3299,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         r"\b(?:(?:set|create)\s+(?:an?\s+)?)?(?:alarm|reminder)\s+(?:for\s+)?(\d{1,2}[:.]\d{2})\b",
         low)
     if m:
-        alarm_time = m.group(1).replace(".", ":")
+        # "7:30pm" is 19:30: the clock reader keeps the am or pm the rule's own pattern passes over
+        from eli.execution.routing.command_parser import clock_time
+        alarm_time = clock_time(low) or m.group(1).replace(".", ":")
         return _mk("SET_ALARM", {"time": alarm_time}, 0.98,
                    matched_by="timer.set_alarm", entities={"time": alarm_time})
 

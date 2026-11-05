@@ -301,6 +301,8 @@ class EliWorldAutonomyEngine:
             a.reflection_depth = max(0.0, a.reflection_depth - 0.15 * _df)
             a.tool_activity = max(0.0, a.tool_activity - 0.20 * _df)
             a.answers = 0       # a fresh sitting: how sure ELI is of what it says starts over with its next reply
+            a.tools = 0         # and so does the share of its tools that failed
+            a.surprises = 0     # and what has surprised it
 
         # Exponential approach helper. Replaces hard linear accumulation (new = prev + inc) with new
         # = prev + inc * (1 - prev), so increments slow as values near 1.0 and don't saturate after
@@ -329,12 +331,22 @@ class EliWorldAutonomyEngine:
             a.focus = _ease_up(a.focus, 0.15)
         elif et == "reflection":
             a.reflection_depth = _ease_up(a.reflection_depth, 0.35)
-            a.curiosity = _ease_up(a.curiosity, 0.1)
             a.autonomy_pressure = _ease_up(a.autonomy_pressure, 0.1)
+        elif et == "surprise":
+            # Curiosity is what has surprised ELI (eli/cognition/curiosity.py): the running mean of
+            # the sitting's surprises' sizes, measured, in place of a tenth per reflection. Each
+            # surprise is a prediction that missed (eli/memory/salience.py), by how far.
+            size = max(0.0, min(1.0, float(event.payload.get("magnitude") or 0.0)))
+            a.surprises = max(0, int(getattr(a, "surprises", 0))) + 1
+            a.curiosity = a.curiosity + (size - a.curiosity) / a.surprises
+            a.uncertainty = _ease_up(a.uncertainty, 0.10 * size)
         elif et in {"error_detected", "runtime_fault"}:
-            # Cap single-event spike via ease_up — burst of errors can no longer
-            # saturate repair_pressure and lock ELI into permanent concern posture.
-            a.repair_pressure = _ease_up(a.repair_pressure, 0.2)
+            # Repair pressure is the share of this sitting's tool runs that failed, a running mean
+            # over the runs (the executor fires one event per run, worked or failed), measured as the
+            # evidence confidence is: a burst of failures cannot saturate it, and one failure in
+            # twenty runs is a twentieth, not a step. A fault with no run behind it counts as a run.
+            a.tools = max(0, int(getattr(a, "tools", 0))) + 1
+            a.repair_pressure = a.repair_pressure + (1.0 - a.repair_pressure) / a.tools
             a.uncertainty = _ease_up(a.uncertainty, 0.15)
         elif et in {"improvement_proposal", "upgrade_candidate"}:
             a.autonomy_pressure = _ease_up(a.autonomy_pressure, 0.35)
@@ -343,7 +355,9 @@ class EliWorldAutonomyEngine:
             a.repair_pressure = _ease_down(a.repair_pressure, 0.15)
             a.uncertainty = _ease_down(a.uncertainty, 0.05)
         elif et in {"task_completed", "repair_completed"}:
-            a.repair_pressure = _ease_down(a.repair_pressure, 0.3)
+            # a tool that worked is one more run that did not fail: the share comes down by its count
+            a.tools = max(0, int(getattr(a, "tools", 0))) + 1
+            a.repair_pressure = a.repair_pressure + (0.0 - a.repair_pressure) / a.tools
             a.tool_activity = _ease_down(a.tool_activity, 0.2)
             a.uncertainty = _ease_down(a.uncertainty, 0.15)
             a.evidence_confidence = _ease_up(a.evidence_confidence, 0.15)  # was 0.1
@@ -353,9 +367,6 @@ class EliWorldAutonomyEngine:
             a.focus = _ease_up(a.focus, 0.30)
             a.reflection_depth = _ease_up(a.reflection_depth, 0.20)
             a.tool_activity = _ease_up(a.tool_activity, 0.25)
-            total = int(event.payload.get("total_stages", 1))
-            if total > 1:
-                a.curiosity = _ease_up(a.curiosity, 0.10)
         elif et == "answer_assessed":
             # The calibrated chance that the last reply was right (eli/cognition/epistemics.py). How
             # sure ELI is of what it says is the running mean of those chances over this sitting, and

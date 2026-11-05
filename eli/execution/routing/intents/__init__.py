@@ -22,6 +22,7 @@ from eli.execution.routing.intents.capture_input import route_capture_input
 from eli.execution.routing.intents.session_ops import route_session_ops
 from eli.execution.routing.intents.world_models import route_world_models
 from eli.execution.routing.intents.world_games import route_world_games
+from eli.execution.routing.intents.world_held import route_world_held
 from eli.execution.routing.command_parser import route_command_strict, route_command_tail
 
 # Run before the inline code-generation block.
@@ -30,6 +31,7 @@ INTENT_STAGES_EARLY = (
     # takes only commands whose object is an atom (an address, a path, a duration, a time of day,
     # what the last command was about); everything else waits for the rules.
     ("command_parser", route_command_strict),
+    ("world_held", route_world_held),       # a question about the sheet in the user's hand: conversation, from its record
     ("self_report", route_self_report),
     ("runtime_voice", route_runtime_voice),
     ("input_agents", route_input_agents),
