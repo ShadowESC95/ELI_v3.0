@@ -578,6 +578,27 @@ def is_consent(text: str) -> bool:
     return not rest.strip()
 
 
+_DECLINE_CUE = _re.compile(
+    r"\b(?:no|nah|nope|not now|not today|not really|no thanks?|no thank you|don'?t|do not|leave it|skip it|"
+    r"forget it|never ?mind|maybe later|another time|pass|i'?m (?:good|fine|ok|okay|alright)|not interested)\b", _re.I)
+_DECLINE_WORDS = _re.compile(
+    r"\b(?:no|nah|nope|not|now|today|really|thanks?|thank|you|don'?t|do|it|that|this|those|them|leave|skip|forget|"
+    r"never|mind|maybe|later|another|time|pass|i'?m|im|i|good|fine|ok|okay|alright|interested|eli|please|for|me|"
+    r"just|right|man|mate|bud|pal|dude|cheers|though|but|ta)\b", _re.I)
+
+
+def is_decline(text: str) -> bool:
+    """The message turns down what was offered and asks for nothing new: "no thanks", "nah, not now",
+    "leave it", "maybe later", "I'm good". The counterpart of is_consent, built the same way: a cue,
+    and nothing left once the words of a refusal are taken out; a short answer, not a question."""
+    low = _re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not is_short_answer(low) or not _DECLINE_CUE.search(low) or is_consent(low):
+        return False
+    rest = _re.sub(r"[\d\-–,.!&/+]+", " ", _DECLINE_WORDS.sub(" ", low))
+    rest = _re.sub(r"['’][a-z]{0,2}\b", " ", rest)
+    return not rest.strip()
+
+
 def chosen_numbers(text: str) -> Optional[set]:
     """The list numbers a reply picks ("1-3", "2 and 3", "the second one"); None when it picks none."""
     low = str(text or "").lower()

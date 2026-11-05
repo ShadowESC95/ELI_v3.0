@@ -56,11 +56,12 @@ ROOM_OF = {
     "surprise": "anomaly_room", "conflict": "anomaly_room",
     "action": "debug_basement",
     "route": "core_room", "act": "core_room",
-    "proposal": "upgrade_bay", "diagnosis": "upgrade_bay",
+    "proposal": "upgrade_bay", "diagnosis": "upgrade_bay", "adjustment": "upgrade_bay",
+    "initiative": "core_room",
     "note": "evidence_wall",
 }
 DECISIONS = ("shown", "held", "kept", "raised", "dropped", "taken", "declined", "tried", "advised", "told",
-             "proposed", "adopted", "pinned")
+             "proposed", "adopted", "pinned", "adjusted", "offered")
 OUTCOMES = ("right", "wrong", "done", "undone", "dropped", "stood", "rejected")
 
 _SCHEMA = """
@@ -299,6 +300,34 @@ def by_id(thought_id: Any, *, db_path=None) -> Optional[Dict[str, Any]]:
     return _as_dict(row) if row else None
 
 
+def by_refs(refs: Iterable[str], *, db_path=None) -> Dict[str, Dict[str, Any]]:
+    """The newest thought for each of these refs, keyed by ref; refs with none are left out. One
+    query, for a reader that holds many figures' ids (eli/cognition/scoreboard.py quoting what a part
+    did when it was wrong)."""
+    wanted = sorted({str(r) for r in (refs or []) if str(r or "")})
+    if not wanted:
+        return {}
+    try:
+        conn = _connect(db_path)
+    except (sqlite3.Error, OSError) as failure:
+        log.debug("thoughts unreadable: %s", failure)
+        return {}
+    found: Dict[str, Dict[str, Any]] = {}
+    try:
+        # one parameter however many refs: SQLite's own JSON reader unpacks the list
+        rows = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM thoughts WHERE ref IN (SELECT value FROM json_each(?)) "
+                            "ORDER BY ts ASC, id ASC", (json.dumps(wanted),)).fetchall()
+        for row in rows:
+            thought = _as_dict(row)
+            found[str(thought.get("ref") or "")] = thought
+    except sqlite3.Error as failure:
+        log.debug("thoughts unreadable: %s", failure)
+        return found
+    finally:
+        conn.close()
+    return found
+
+
 def words(thought: Dict[str, Any]) -> str:
     """One line in words: what, what was decided and why, how sure, and what became of it."""
     what = str(thought.get("what") or "").strip()
@@ -344,5 +373,5 @@ def for_feed(limit: int = 40, *, user_id: str = "", db_path=None) -> List[Dict[s
     return out
 
 
-__all__ = ["DAYS", "DECISIONS", "OUTCOMES", "ROOM_OF", "by_id", "for_feed", "recent", "record", "room_of", "settle",
-           "settle_prefix", "words"]
+__all__ = ["DAYS", "DECISIONS", "OUTCOMES", "ROOM_OF", "by_id", "by_refs", "for_feed", "recent", "record", "room_of",
+           "settle", "settle_prefix", "words"]

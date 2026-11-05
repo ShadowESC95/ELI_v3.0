@@ -24,6 +24,12 @@ what happened. This is where that check lives, so a figure ELI gives for an answ
     assess_many(kind, items, request_id)   the same for several figures of one turn, fitted once
     settle_open(kind, prefix, right)   settle every open figure under an id prefix
     base_rate(kind, class_)   the share of figures of a kind that proved right (Beta(1,1))
+    settled(kind, class_)     every settled figure of a kind with when it was given and how it was
+                         settled: what the scoreboard (eli/cognition/scoreboard.py) ranks the parts
+                         of ELI by
+    shortfall(k, n, k_ref, n_ref)   how far one share right falls short of another, in standard
+                         errors: the one two-proportion statistic the gates, the scoreboard and the
+                         adjustments all judge by
     worse_below(kind, feature, value)   whether replies below a level of one of their figures
                          proved right less often than those at or above it: what a gate asks
                          before it holds a reply to a line nothing has checked
@@ -40,6 +46,9 @@ Kinds, each with its own ledger events and the features its fit reads (FEATURES_
     route     the action a sentence was read as      settled by what ran and what the next turn said
     act       something ELI made of its own accord   settled when it stands, is undone, or is refused
     proposal  a fix ELI proposed for itself          settled when it is adopted or rolled back
+    initiative  an offer ELI made unasked            settled by the user's answer: taken up or turned down
+    adjustment  a change ELI made to itself because  settled by the part's outcomes after it against
+                a part of it was doing worse         those before it: kept, or reverted
 
 Outcomes are kept in the evidence ledger (eli/runtime/evidence_ledger.py), the tamper-evident
 record of what ELI did: an `answer_assessed` row when the figure is given, an `answer_outcome`
@@ -65,10 +74,14 @@ RECALL = "recall"                 # a memory shown to a reply (eli/cognition/orc
 ROUTE = "route"                   # the action a sentence was read as (eli/kernel/engine.py)
 ACT = "act"                       # something ELI made of its own accord (eli/world/urges.py)
 PROPOSAL = "proposal"             # a fix ELI proposed for itself (eli/runtime/self_improvement.py)
+INITIATIVE = "initiative"         # an offer ELI made unasked (eli/planning/initiatives.py)
+ADJUSTMENT = "adjustment"         # a change ELI made to itself (eli/cognition/adjustments.py)
 # each kind's pair of ledger events: the figure given, and what became of it
 EVENTS = {ANSWER: (ASSESSED, OUTCOME), CLAIM: ("claim_assessed", "claim_outcome"),
           RECALL: ("recall_assessed", "recall_outcome"), ROUTE: ("route_assessed", "route_outcome"),
-          ACT: ("act_assessed", "act_outcome"), PROPOSAL: ("proposal_assessed", "proposal_outcome")}
+          ACT: ("act_assessed", "act_outcome"), PROPOSAL: ("proposal_assessed", "proposal_outcome"),
+          INITIATIVE: ("initiative_assessed", "initiative_outcome"),
+          ADJUSTMENT: ("adjustment_assessed", "adjustment_outcome")}
 DAYS = 90.0                       # how far back outcomes count toward a calibration
 # A score of exactly 0 or 1 has no finite logit; it is read as a thousandth short of the edge.
 EDGE = 1e-3
@@ -88,7 +101,9 @@ FEATURES = ("mean_logprob", "min_logprob", "mean_entropy", "low_share")
 # confirmed and whether it is contested. A recalled memory: how readily it came to mind, its importance,
 # how much of the question it holds, and whether more than one retriever found it. A route: how far down
 # the stages it was read (a rule first, the parser's tail last) and whether the parser agreed. An act:
-# how long the user had been quiet. A proposal: how often the failure it answers had recurred.
+# how long the user had been quiet. A proposal: how often the failure it answers had recurred. An
+# initiative: how long the user had been quiet when it was made. An adjustment: how strong the evidence
+# against the part was when the change was made, in standard errors.
 FEATURES_BY_KIND = {
     ANSWER: FEATURES,
     CLAIM: ("confirmations", "contested"),
@@ -96,6 +111,8 @@ FEATURES_BY_KIND = {
     ROUTE: ("stage_rank", "parser_agrees"),
     ACT: ("quiet_minutes",),
     PROPOSAL: ("recurrence",),
+    INITIATIVE: ("quiet_minutes",),
+    ADJUSTMENT: ("evidence_z",),
 }
 # A gate holds a reply to a line only once the outcomes have shown replies below it to be worse, at the
 # usual 90 % one-sided significance (z = 1.282, the same point the affect state uses), with at least this
@@ -261,24 +278,35 @@ def _ledger():
     return evidence_ledger
 
 
-def outcomes(kind: str = ANSWER, *, class_: str = "", days: float = DAYS,
-             db_path=None) -> List[Tuple[float, float, Dict[str, Any]]]:
-    """(score, outcome, features) for every figure of this kind (and class, when given) that the
-    next turn settled within `days`."""
+def settled(kind: str = ANSWER, *, class_: str = "", days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
+    """Every figure of this kind (and class, when given) that something settled within `days`, newest
+    first: {"score", "y" (1.0 right, 0.0 wrong), "features", "class", "ts" (when it was given),
+    "request_id", "how" (what settled it)}."""
     assessed_type, outcome_type = EVENTS.get(kind, (ASSESSED, OUTCOME))
     rows = _ledger().assessment_pairs(kind, since=time.time() - float(days) * 86400.0, assessed_type=assessed_type,
                                       outcome_type=outcome_type, db_path=db_path)
-    out = []
+    out: List[Dict[str, Any]] = []
     for assessed, outcome in rows:
         payload = assessed.get("payload") or {}
         if class_ and str(payload.get("class") or "") != class_:
             continue
         try:
             score = float(payload.get("score"))
+            ts = float(assessed.get("timestamp") or 0.0)
         except (TypeError, ValueError):
             continue
-        out.append((score, 1.0 if outcome.get("outcome") == "ok" else 0.0, dict(payload.get("features") or {})))
+        out.append({"score": score, "y": 1.0 if outcome.get("outcome") == "ok" else 0.0,
+                    "features": dict(payload.get("features") or {}), "class": str(payload.get("class") or ""),
+                    "ts": ts, "request_id": str(assessed.get("request_id") or ""),
+                    "how": str((outcome.get("payload") or {}).get("how") or "")})
     return out
+
+
+def outcomes(kind: str = ANSWER, *, class_: str = "", days: float = DAYS,
+             db_path=None) -> List[Tuple[float, float, Dict[str, Any]]]:
+    """(score, outcome, features) for every figure of this kind (and class, when given) that the
+    next turn settled within `days`."""
+    return [(r["score"], r["y"], r["features"]) for r in settled(kind, class_=class_, days=days, db_path=db_path)]
 
 
 _fits: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Any]]] = {}
@@ -431,6 +459,18 @@ def base_rate(kind: str = ANSWER, *, class_: str = "", where: Optional[Dict[str,
     return ((sum(y for _s, y, _f in rows) + 1.0) / (n + 2.0), n)
 
 
+def shortfall(k: float, n: float, k_ref: float, n_ref: float) -> float:
+    """How far the share right of one group (k of n) falls short of another's (k_ref of n_ref), in
+    standard errors of their difference: the one-sided two-proportion statistic with the pooled share.
+    Positive when the first proved right less often; 0.0 when either group is empty. Judged against
+    Z_SIG with MIN_EACH_SIDE in each group, it is the project's one test of "does worse"."""
+    if n <= 0 or n_ref <= 0:
+        return 0.0
+    pooled = (float(k) + float(k_ref)) / (float(n) + float(n_ref))
+    spread = math.sqrt(max(EDGE, pooled * (1.0 - pooled)) * (1.0 / float(n) + 1.0 / float(n_ref)))
+    return (float(k_ref) / float(n_ref) - float(k) / float(n)) / spread
+
+
 def worse_below(kind: str, feature: str, value: float, *, class_: str = "", min_each: int = MIN_EACH_SIDE,
                 days: float = DAYS, db_path=None) -> Optional[bool]:
     """Whether the figures of this kind whose `feature` was below `value` proved right less often than
@@ -453,14 +493,11 @@ def worse_below(kind: str, feature: str, value: float, *, class_: str = "", min_
         (below if x < float(value) else above).append(float(y))
     if len(below) < int(min_each) or len(above) < int(min_each):
         return None
-    p_b, p_a = sum(below) / len(below), sum(above) / len(above)
-    pooled = (sum(below) + sum(above)) / (len(below) + len(above))
-    spread = math.sqrt(max(EDGE, pooled * (1.0 - pooled)) * (1.0 / len(below) + 1.0 / len(above)))
-    return (p_a - p_b) / spread >= Z_SIG
+    return shortfall(sum(below), len(below), sum(above), len(above)) >= Z_SIG
 
 
-__all__ = ["ACT", "ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "FEATURES_BY_KIND", "MIN_EACH_SIDE", "OUTCOME",
-           "PROPOSAL", "Probability", "RECALL", "ROUTE", "Z_SIG", "apply", "apply_rows", "assess", "assess_many",
-           "base_rate", "brier", "calibrate", "claim_request_id", "ece", "entropy", "features_of", "fit", "fit_rows",
-           "forget_fits", "logit", "outcomes", "reliability", "report", "settle", "settle_open", "sigmoid",
-           "weights_for", "worse_below"]
+__all__ = ["ACT", "ADJUSTMENT", "ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "FEATURES_BY_KIND", "INITIATIVE",
+           "MIN_EACH_SIDE", "OUTCOME", "PROPOSAL", "Probability", "RECALL", "ROUTE", "Z_SIG", "apply", "apply_rows",
+           "assess", "assess_many", "base_rate", "brier", "calibrate", "claim_request_id", "ece", "entropy",
+           "features_of", "fit", "fit_rows", "forget_fits", "logit", "outcomes", "reliability", "report", "settle",
+           "settle_open", "settled", "shortfall", "sigmoid", "weights_for", "worse_below"]
