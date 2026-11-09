@@ -143,11 +143,47 @@ def test_a_repair_step_the_shell_gate_refuses_is_reported_and_never_run(monkeypa
     assert "Not run:" in out and "Blocked dangerous command" in out and "Repair failed." in out
 
 
-def test_a_repair_step_outside_the_users_allowed_commands_is_not_run(monkeypatch):
+@pytest.mark.parametrize("allowed", [None, "brew"])
+def test_the_commands_the_owner_said_yes_to_run_without_full_control(allowed, monkeypatch):
+    """His yes to the repair he was shown is the approval for exactly those commands (shell_gate's
+    `approved`), with Full Control off and whatever ELI_ALLOWED_CMDS lists. A confirmed install was
+    refused by the gate's only-reads rule, so no repair ELI offered could ever run."""
     monkeypatch.setattr("eli.execution.shell_gate._full_control", lambda: False)
     monkeypatch.setattr("eli.execution.effectors._base._full_control", lambda: False)
-    monkeypatch.setenv("ELI_ALLOWED_CMDS", "brew")
-    ran = _confirmed_plan(monkeypatch, ["flatpak install -y a.player", "brew install a-player"])
+    if allowed is None:
+        monkeypatch.delenv("ELI_ALLOWED_CMDS", raising=False)
+    else:
+        monkeypatch.setenv("ELI_ALLOWED_CMDS", allowed)
+    steps = ["flatpak install -y a.player", "sudo apt-get install -y a-player", "brew install a-player"]
+    ran = _confirmed_plan(monkeypatch, steps)
     out = gr.execute_pending_plan()
-    assert ran == ["brew install a-player"]
-    assert "ELI_ALLOWED_CMDS" in out
+    assert ran == steps, out
+    assert "Not run:" not in out
+
+
+def test_a_yes_never_stands_for_a_destructive_or_file_writing_step(monkeypatch):
+    monkeypatch.setattr("eli.execution.shell_gate._full_control", lambda: False)
+    monkeypatch.delenv("ELI_ALLOWED_CMDS", raising=False)
+    ran = _confirmed_plan(monkeypatch, ["rm -rf /usr/share/a-player", "echo x > ~/.profile", "flatpak install -y a.player"])
+    out = gr.execute_pending_plan()
+    assert ran == ["flatpak install -y a.player"]
+    assert out.count("Not run:") == 2
+
+
+def test_an_offer_whose_yes_runs_it_shows_the_exact_commands_first(monkeypatch):
+    """A media-tool install runs on the yes to its offer, so the offer itself shows what will run:
+    the yes is to those commands, as it is to a previewed plan's."""
+    diag = {"ok": False, "domain": "media_tool", "subject": "a-player", "operation": "install",
+            "reason_code": "NOT_INSTALLED", "repairable": True, "evidence": ["a-player -> not found"],
+            "repair_options": [{"command": "sudo apt-get install -y a-player", "label": "Install a-player",
+                                "source": "apt"}]}
+    try:
+        offer = gr.offer_for_result(diag)
+        assert "sudo apt-get install -y a-player" in offer
+        assert offer.rstrip().endswith("Would you like me to download/install it?")
+        app = dict(diag, domain="application", subject="an-editor",
+                   repair_options=[{"command": "flatpak install -y an.editor", "source": "flatpak"}])
+        assert "flatpak install -y an.editor" not in gr.offer_for_result(app), \
+            "a plan that is previewed before it runs shows its commands in the preview"
+    finally:
+        gr.clear_pending()

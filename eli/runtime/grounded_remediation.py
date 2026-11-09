@@ -189,21 +189,15 @@ def _run(cmd: str, timeout: int = 30) -> dict:
         "err": (proc.stderr or "").strip(),
     }
 
-def _refused(cmd: str) -> str:
-    """Why a repair command may not run, or "": the one shell gate (eli/execution/shell_gate,
-    with ELI Full Control lifting its floor), then the user's own allowlist of programs
-    (ELI_ALLOWED_CMDS, read as it stands now), as every other command ELI runs is held to."""
+def _refused(cmd: str, approved: str | None = None) -> str:
+    """Why a repair command may not run, or "": the one shell gate (eli/execution/shell_gate).
+    `approved` is the exact step the owner said yes to (shown in the preview, or in an offer whose
+    yes runs it), so his yes stands for that one command in place of Full Control and
+    ELI_ALLOWED_CMDS; the gate's destructive patterns and file writes are refused all the same."""
     from eli.execution.shell_gate import check_command
-    gate = check_command(cmd)
+    gate = check_command(cmd, approved=approved)
     if gate is not None:
         return str(gate.get("response") or gate.get("content") or gate.get("error") or "refused by the shell gate")
-    try:
-        program = (shlex.split(str(cmd)) or [""])[0]
-    except ValueError:
-        program = (str(cmd).split() or [""])[0]
-    from eli.execution.effectors._base import _allow_or_block
-    if program and not _allow_or_block(program):
-        return f"{program} is not among the commands allowed to run here (ELI_ALLOWED_CMDS)"
     return ""
 
 
@@ -1233,9 +1227,7 @@ def render_repair_preview(plan: dict) -> str:
     ]
     for step in plan.get("steps", []):
         lines.append(f"- {step}")
-    lines.extend(["", "Exact command(s):"])
-    for cmd in plan.get("commands", []):
-        lines.append(cmd)
+    lines.extend([""] + _command_lines(plan))
     lines.extend([
         "",
         f"Source: {plan.get('source', 'unknown')}",
@@ -1254,12 +1246,26 @@ def render_repair_preview(plan: dict) -> str:
     ])
     return "\n".join(lines)
 
+def _runs_on_first_yes(plan: dict | None) -> bool:
+    """Whether the yes to this plan's offer runs it, with no preview between: a media-tool install,
+    whose offer already asked to install it (a second preview was narrated instead of run)."""
+    return str((plan or {}).get("domain") or "").lower() == "media_tool"
+
+
+def _command_lines(plan: dict) -> list[str]:
+    """The exact commands a plan runs, as the owner is shown them before his yes."""
+    return ["Exact command(s):"] + [str(cmd) for cmd in plan.get("commands", [])]
+
+
 def offer_for_result(result: dict) -> str:
     msg = render_failure_message(result)
     plan = build_repair_plan(result)
     if plan:
         set_pending_for_test(plan, result, stage="offered")
-        return msg + "\n\nWould you like me to download/install it?"
+        # The yes to an offer that runs on its first yes is the approval of these exact commands
+        # (execute_pending_plan), so the offer shows them; every other plan shows them in its preview.
+        shown = ("\n\n" + "\n".join(_command_lines(plan))) if _runs_on_first_yes(plan) else ""
+        return msg + shown + "\n\nWould you like me to download/install it?"
     # A name that is no application and no package may be a site ("open nasa").
     subject = str(result.get("subject") or "").strip()
     if (result.get("domain") == "application" and result.get("reason_code") == "NOT_INSTALLED"
@@ -1344,10 +1350,12 @@ def execute_pending_plan() -> str:
     set_busy(True)
     try:
         for cmd in plan.get("commands", []):
-            # A step the shell gate refuses is reported as refused and never run.
-            why = _refused(cmd)
+            # A step the shell gate refuses is reported as refused and never run. Every step here is
+            # one the owner was shown and said yes to (_runs_on_first_yes / the preview).
+            why = _refused(cmd, approved=cmd)
             if why:
-                runs.append({"cmd": cmd, "rc": 1, "out": "", "err": f"Not run: {why}", "handoff": "refused",
+                runs.append({"cmd": cmd, "rc": 1, "out": "",
+                             "err": why if why.startswith("Not run") else f"Not run: {why}", "handoff": "refused",
                              "blocked": True})
                 continue
             if _needs_privileged_terminal(cmd):
@@ -1438,7 +1446,7 @@ def handle_confirmation(text: str) -> str | None:
     if YES_RE.match(text or ""):
         if pending["stage"] == "offered":
             plan = pending["plan"]
-            if str(plan.get("domain") or "").lower() == "media_tool":
+            if _runs_on_first_yes(plan):
                 return execute_pending_plan()
             with _LOCK:
                 pending["stage"] = "previewed"
@@ -1617,7 +1625,7 @@ def try_handle_query(text: str) -> str | None:
             # Media-tool installs already asked "download/install it?", so the first yes must run
             # apt/pip, not a second preview the 3B narrates instead of executing ("I'll confirm the
             # repair..." while mpv never installed).
-            if str(plan.get("domain") or "").lower() == "media_tool":
+            if _runs_on_first_yes(plan):
                 return execute_pending_plan()
             with _LOCK:
                 pending["stage"] = "previewed"
@@ -1693,7 +1701,6 @@ def try_handle_query(text: str) -> str | None:
         plan = build_repair_plan(last)
         if not plan:
             return render_failure_message(last)
-        set_pending_for_test(plan, last, stage="offered")
-        return render_failure_message(last) + "\n\nWould you like me to download/install it?"
+        return offer_for_result(last)
 
     return None
