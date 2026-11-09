@@ -116,3 +116,78 @@ def test_fix_file_keeps_a_fix_that_imports_cleanly(workspace, monkeypatch):
 
     assert r.get("ok") is True
     assert f.read_text().strip() == good_fix.strip()
+
+
+# ── a file is fixed whole or not at all ──────────────────────────────────────
+def _home_elsewhere(monkeypatch, tmp_path):
+    # ~/eli/... is read as an old layout of the project; a worktree under ~/eli must not be.
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+
+
+def test_fix_file_leaves_a_file_the_model_cannot_hold_unchanged(workspace, monkeypatch, tmp_path):
+    """The model used to get the first 24,000/30,000 characters and its answer was saved over the
+    whole file, so everything past that was cut off."""
+    _home_elsewhere(monkeypatch, tmp_path)
+    import eli.coding.agent as ca
+    from eli.cognition import context_budget, gguf_inference
+    from eli.execution import executor_enhanced as EX
+
+    def _never(*a, **k):
+        raise AssertionError("no model call for a file that cannot fit")
+
+    monkeypatch.setattr(ca, "solve", _never)
+    monkeypatch.setattr(gguf_inference, "chat_completion", _never)
+    monkeypatch.setattr(gguf_inference, "context_window", lambda: 4096)
+    monkeypatch.setattr(context_budget, "chars_per_token", lambda: 4.0)
+    original = "".join(f"echo line {i}\n" for i in range(4000))     # ~52 KB
+    f = workspace / "long.sh"
+    f.write_text(original)
+    r = EX.execute("FIX_FILE", {"path": str(f), "_no_background": True})
+    assert r.get("ok") is False
+    assert r.get("error") == "file_larger_than_model_window"
+    assert f.read_text() == original
+
+
+def test_fix_file_gives_the_model_the_whole_file(workspace, monkeypatch, tmp_path):
+    _home_elsewhere(monkeypatch, tmp_path)
+    import eli.coding.agent as ca
+    from eli.cognition import context_budget, gguf_inference
+    from eli.execution import executor_enhanced as EX
+    import eli.runtime.self_improvement as si
+
+    seen = {}
+    original = "".join(f"VALUE_{i} = {i}\n" for i in range(3000)) + "def tail_marker():\n    return 1\n"
+
+    def _solve(task, **kw):
+        seen["task"] = task
+        return {"code": original + "\n# fixed\n", "score": 0.9, "solved": True}
+
+    monkeypatch.setattr(ca, "solve", _solve)
+    monkeypatch.setattr(gguf_inference, "context_window", lambda: 1_000_000)
+    monkeypatch.setattr(context_budget, "chars_per_token", lambda: 4.0)
+    monkeypatch.setattr(si, "_dotted_module_for_path", lambda p: None)
+    f = workspace / "big.py"
+    f.write_text(original)
+    r = EX.execute("FIX_FILE", {"path": str(f), "_no_background": True})
+    assert len(original) > 30000
+    assert "def tail_marker" in seen["task"]
+    assert r.get("ok") is True
+    assert f.read_text().startswith(original)
+
+
+def test_fix_file_never_saves_the_model_failure_as_the_file(workspace, monkeypatch, tmp_path):
+    """With no model the chat fallback answered "The model is not loaded yet..." and that sentence
+    was written over a shell script, which has no parse check to stop it."""
+    _home_elsewhere(monkeypatch, tmp_path)
+    from eli.cognition import gguf_inference
+    from eli.execution import executor_enhanced as EX
+    from eli.execution.effectors import coding
+
+    monkeypatch.setattr(gguf_inference, "load_model", lambda *a, **k: None)
+    monkeypatch.setattr(coding, "chat", lambda *a, **k: {"ok": False, "error": "model_not_loaded",
+                                                         "content": "The model is not loaded yet."})
+    f = workspace / "job.sh"
+    f.write_text("echo start\n")
+    r = EX.execute("FIX_FILE", {"path": str(f), "_no_background": True})
+    assert r.get("ok") is False
+    assert f.read_text() == "echo start\n"

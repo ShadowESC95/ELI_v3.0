@@ -51,6 +51,29 @@ _EXTENSION_LANGUAGE = {ext: shown for shown, ext in reversed(list(_LANGUAGES.val
 _EXTENSION_LANGUAGE[".bash"] = "Bash"
 
 
+def whole_file_room(text: str, instructions_chars: int) -> dict:
+    """Whether a whole-file rewrite of `text` fits the loaded model: the model reads the file and the
+    instructions, then writes the file back, so the window must hold about twice the file. Sized
+    by the model's own window and characters per token, measured on its tokenizer. FIX_FILE sent the
+    first 24,000 or 30,000 characters and saved the answer over the whole file, so a longer file
+    lost everything past what the model saw. {"fits", "window", "file_tokens", "needed",
+    "reply_tokens"}; an unknown window (no model loaded) is not judged here."""
+    try:
+        from eli.cognition.context_budget import chars_per_token
+        from eli.cognition.gguf_inference import context_window
+        window = int(context_window() or 0)
+        per_token = float(chars_per_token()) or 1.0
+    except Exception:
+        log.debug("model window unknown", exc_info=True)
+        window, per_token = 0, 1.0
+    file_tokens = int(len(text) / per_token) + 1
+    asked_tokens = file_tokens + int(max(0, instructions_chars) / per_token) + 1
+    needed = asked_tokens + file_tokens
+    reply = (window - asked_tokens) if window else asked_tokens
+    return {"fits": not window or needed <= window, "window": window, "file_tokens": file_tokens,
+            "needed": needed, "reply_tokens": max(1, reply)}
+
+
 def script_language(description: str) -> tuple:
     """(name, name in a prompt, file ending) of the language a request names, Python when it names
     none. The language is read the way the router's contract reads it: as what the script is
@@ -807,10 +830,22 @@ def _h_fix_file(a, args):
         f"- Output must be valid {lang} that parses cleanly\n\n"
         f"File path: {pp}{err_block}\n\n"
         "=== ORIGINAL FILE CONTENT BEGINS ===\n"
-        f"{original[:30000]}\n"
+        f"{original}\n"
         "=== ORIGINAL FILE CONTENT ENDS ===\n\n"
         f"Output the fixed {lang} file content now (raw code only):"
     )
+
+    # The model reads all of the file and writes all of it back: if that does not fit its window it
+    # sees part of the file, and saving its answer would cut the rest off. Then nothing is changed.
+    _room = whole_file_room(original, len(base_fix_prompt) - len(original))
+    if not _room["fits"]:
+        msg = (f"I left {pp} unchanged: it is about {_room['file_tokens']:,} tokens, a whole-file fix reads it "
+               f"and writes it back (about {_room['needed']:,} tokens with the instructions), and the loaded "
+               f"model's window holds {_room['window']:,}. Saving a fix of only the part it could see would "
+               f"cut off the rest of the file.")
+        return {"ok": False, "action": a, "error": "file_larger_than_model_window", "content": msg,
+                "response": msg, "path": str(pp), "file_tokens": _room["file_tokens"],
+                "window": _room["window"]}
 
     fixed_code = ""
     ff_reject_reason = None
@@ -836,7 +871,7 @@ def _h_fix_file(a, args):
                 )
             _fix_task += (
                 (f" Reported error: {extra_error}." if extra_error else "")
-                + f"\n\n--- FILE: {pp.name} ---\n{original[:24000]}"
+                + f"\n\n--- FILE: {pp.name} ---\n{original}"
             )
             # Full verified pass: beam search, repair iterations, self-critique. Quality over latency by
             # choice, don't cut beam or iterations to save time.
@@ -877,7 +912,7 @@ def _h_fix_file(a, args):
                         "Output ONLY the corrected file content — no fences, no prose. "
                         "Use only library APIs that actually exist."
                     ),
-                    max_tokens=8000,
+                    max_tokens=_room["reply_tokens"],
                     temperature=0.15,
                     top_p=0.85,
                 )
@@ -889,6 +924,11 @@ def _h_fix_file(a, args):
             log.debug(f"[FIX_FILE] GGUF path failed: {_ff_e}, falling back to chat")
         if not _candidate:
             chat_result = chat(_ff_prompt, skip_router=True)
+            if not chat_result.get("ok", True):
+                # "The model is not loaded yet..." is the reason it failed, not code: it was saved
+                # over a .sh file, which has no parse check to catch it.
+                ff_reject_reason = str(chat_result.get("error") or chat_result.get("content") or "the model did not answer")
+                continue
             raw = (chat_result.get("content") or "").strip()
             cand = _re_ff.sub(r"^```[a-z]*\n?", "", raw, flags=_re_ff.MULTILINE)
             cand = _re_ff.sub(r"\n?```$", "", cand.strip(), flags=_re_ff.MULTILINE).strip()
