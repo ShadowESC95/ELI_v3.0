@@ -819,17 +819,15 @@ _SAFE_FAST_APP_TARGETS = {
 
 _SAFE_FAST_CLOSE_TARGETS = _SAFE_FAST_APP_TARGETS | {"tab", "window"}
 
-_VOLUME_PERCENT_RE = re.compile(
-    r"^(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?$"
-)
-
-
 def _is_volume_percent_command(text: str) -> bool:
+    """A volume set to a level ("volume 40", "set the volume to forty percent"), read by the one
+    volume grammar (command_parser.volume_said); this module kept its own pattern of it."""
     t = _collapse_repeated_phrase(text)
     if not t:
         return False
-    m = _VOLUME_PERCENT_RE.fullmatch(t.replace(" percent", "%").replace(" per cent", "%"))
-    return bool(m and 0 <= int(m.group(1)) <= 100)
+    from eli.execution.routing.command_parser import volume_said
+    said = volume_said(t)
+    return bool(said and (said.get("args") or {}).get("mode") == "absolute")
 
 
 def _is_safe_direct(text: str) -> bool:

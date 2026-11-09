@@ -99,27 +99,19 @@ class ConversationMixin:
                 "previous song":  ("PREVIOUS_MEDIA", {}),
                 "previous track": ("PREVIOUS_MEDIA", {}),
                 "back":           ("PREVIOUS_MEDIA", {}),
-                "volume up":      ("VOLUME", {"direction": "up",   "delta": 15}),
-                "volume down":    ("VOLUME", {"direction": "down", "delta": 15}),
-                "louder":         ("VOLUME", {"direction": "up",   "delta": 15}),
-                "quieter":        ("VOLUME", {"direction": "down", "delta": 15}),
                 "mute":           ("VOLUME", {"direction": "mute"}),
                 "unmute":         ("VOLUME", {"direction": "unmute"}),
             }
             _vt_lower = _voice_text.lower().strip()
-            import re as _re_vol
-            _vol_pct = _re_vol.fullmatch(
-                r"(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?",
-                _vt_lower.replace(" percent", "%").replace(" per cent", "%"),
-            )
-            if _vol_pct:
-                _pct = max(0, min(100, int(_vol_pct.group(1))))
-                _route = {
-                    "action": "VOLUME",
-                    "args": {"level": _pct, "percent": _pct, "mode": "absolute"},
-                    "confidence": 0.999,
-                    "meta": {"matched_by": "gui.instant_dispatch.volume_absolute"},
-                }
+            # The volume has one grammar (command_parser.volume_said): a level, a direction with or
+            # without a step, or a reading. This copy stepped by a fixed 15 and read only "volume N".
+            from eli.execution.routing.command_parser import volume_said as _volume_said
+            _vol_route = _volume_said(_voice_text)
+            if _vol_route:
+                # (the level branch this replaced set the route but not _action/_args, so "volume 40"
+                # said by voice fell over below)
+                _route = _vol_route
+                _action, _args = "VOLUME", dict(_vol_route.get("args") or {})
             elif _vt_lower in _INSTANT_DISPATCH:
                 _action, _args = _INSTANT_DISPATCH[_vt_lower]
                 _route = {"action": _action, "args": _args,

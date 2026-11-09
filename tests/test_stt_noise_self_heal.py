@@ -170,3 +170,28 @@ def test_a_voice_command_said_during_a_reply_is_sent_after_it(monkeypatch):
     win._turn_running = False
     win._drain_waiting()                      # what the reply's 'Turn ended' runs
     assert started == [("one more", True)] and win._waiting_messages == []
+
+
+@pytest.mark.parametrize("said,expect", [
+    ("volume up", {"direction": "up"}),
+    ("volume down by 5", {"direction": "down", "delta": 5}),
+    ("louder", {"direction": "up"}),
+    ("volume 40", {"level": 40, "percent": 40, "mode": "absolute", "direction": "set"}),
+])
+def test_a_spoken_volume_command_is_read_by_the_one_volume_grammar(said, expect, monkeypatch):
+    """The window's voice path kept its own volume table, stepping by a fixed 15 whatever was said,
+    and its "volume N" branch never set the action, so a spoken level fell over; voice input kept a
+    third pattern of its own. Both read command_parser.volume_said."""
+    from eli.gui.main_window._mixins.conversation import ConversationMixin as _Window
+    import eli.execution.executor_enhanced as ex
+    from eli.perception.audio_stt import _is_volume_percent_command
+    ran = []
+    monkeypatch.setattr(ex, "execute_action", lambda action, args=None: ran.append((action, dict(args or {})))
+                        or {"ok": True, "content": "done"})
+    monkeypatch.setattr("eli.runtime.orchestrator_audit_ledger.record_direct_action", lambda **k: None)
+
+    class _W(_Window):
+        pass
+    _W()._on_stt_transcript(said)
+    assert ran == [("VOLUME", expect)]
+    assert _is_volume_percent_command(said) is (expect.get("mode") == "absolute")
