@@ -262,3 +262,34 @@ def test_search_returns_only_the_searching_user_s_entries(monkeypatch):
     vs._meta.append({"text": "an entry from before entries had users", "memory_id": 3})
     vs._index.add(np.ones((1, EMBED_DIM), dtype="float32"))
     assert sorted(h["memory_id"] for h in vs.search("bike lock", top_k=5, min_ratio=0)) == [1, 3]
+
+
+def test_the_model_lock_is_always_taken_before_the_embedders_own(monkeypatch):
+    """embed_text and close took the embedder's lock first and the model lock second, while the
+    loader asked for the embedder holding the model lock: two threads could each hold one and wait
+    for the other. One order everywhere: the model lock, then the embedder's."""
+    import contextlib
+    import eli.memory.vector_store as V
+    order = []
+
+    @contextlib.contextmanager
+    def _model_lock(*, foreground):
+        order.append("model")
+        yield
+
+    class _EmbedLock:
+        def __enter__(self):
+            order.append("embedder")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(V, "hold_llama_lock", _model_lock)
+    vs = _bare_store()
+    vs._embed_lock = _EmbedLock()
+    vs._embedder = type("E", (), {"embed": lambda self, t: [1.0], "_llm": None})()
+    vs._init_embedder = lambda: None
+    for call in (lambda: vs.embed_text("x"), vs.ready, vs.close):
+        order.clear()
+        call()
+        assert order == ["model", "embedder"], order

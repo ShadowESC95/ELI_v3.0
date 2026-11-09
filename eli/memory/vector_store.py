@@ -393,8 +393,10 @@ class VectorStore:
 
     def ready(self) -> bool:
         """Load the embedder now if it is not: the model loader asks before the language model is
-        planned, so the embedder's place is taken first."""
-        with self._embed_lock:
+        planned, so the embedder's place is taken first. The model lock is taken before the
+        embedder's own, as everywhere (one lock order: a thread holding the model lock that asked
+        for the embedder's waited on one holding the embedder's that waited for the model)."""
+        with hold_llama_lock(foreground=False), self._embed_lock:
             return self._get_embedder() is not None
 
     def close(self) -> None:
@@ -402,7 +404,7 @@ class VectorStore:
         store and leave it in place: the next embed (a late memory, a search, the document indexer)
         read freed native memory and the process died with a segmentation fault. Keyword search
         still works without it."""
-        with self._embed_lock, hold_llama_lock(foreground=False):
+        with hold_llama_lock(foreground=False), self._embed_lock:
             embedder, self._embedder, self._closed = self._embedder, None, True
             close = getattr(getattr(embedder, "_llm", None), "close", None)
             if callable(close):
@@ -533,7 +535,7 @@ class VectorStore:
         if self._embedder is None:
             return None
         from eli.kernel.request_context import in_user_turn
-        with self._embed_lock, hold_llama_lock(foreground=in_user_turn()):
+        with hold_llama_lock(foreground=in_user_turn()), self._embed_lock:
             if self._embedder is None:        # closed while this call waited
                 return None
             try:
