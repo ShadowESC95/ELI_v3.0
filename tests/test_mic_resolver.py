@@ -266,3 +266,17 @@ def test_explicit_override_records_device_name(monkeypatch):
     c = mr.resolve_capture()
     assert c.device_index == 7
     assert c.device_name == "Mock USB Mic"
+
+
+def test_a_changed_mic_choice_is_resolved_again(monkeypatch):
+    """The result was cached for the process: a mic chosen afterwards kept the old device."""
+    monkeypatch.setattr(mr, "_candidates", lambda: [(1, None, "x", "mic-x")])
+    monkeypatch.setattr(mr, "_probe", lambda *a, **k: True)
+    monkeypatch.setattr(mr, "_device_name_at", lambda idx: f"mic-{idx}")
+    assert mr.resolve_capture().device_index == 1
+    monkeypatch.setenv("ELI_MIC_DEVICE_INDEX", "4")
+    assert mr.resolve_capture().device_index == 4, "the new choice reused the old device"
+    monkeypatch.setenv("ELI_MIC_DEVICE_INDEX", "5")
+    assert mr.resolve_capture().device_index == 5
+    monkeypatch.delenv("ELI_MIC_DEVICE_INDEX")
+    assert mr.resolve_capture().device_index == 1

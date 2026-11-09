@@ -29,7 +29,7 @@ built-in/webcam/virtual routes; the OS default breaks ties but does not override
 a better-ranked live device. Linux additionally tries Pulse/PipeWire sources
 (``PULSE_SOURCE`` pin) after direct hardware when the ``pulse`` wrapper is needed.
 
-Result is cached for the process. Honors ``ELI_MIC_DEVICE_INDEX`` (explicit
+Result is cached while the mic choice stays the same. Honors ``ELI_MIC_DEVICE_INDEX`` (explicit
 override, no probing) and ``ELI_MIC_AUTORESOLVE=0`` (disable, use OS default).
 """
 from __future__ import annotations
@@ -71,6 +71,15 @@ class CaptureChoice:
 
 
 _CACHED: Optional[CaptureChoice] = None
+# The mic choice the cached result was resolved for: the variables that pick a capture device.
+# Cached for the process alone, a mic chosen afterwards (another device index, another Pulse source,
+# autoresolve switched) kept getting the device resolved before it.
+_CHOICE_VARS = ("ELI_MIC_DEVICE_INDEX", "ELI_MIC_PULSE_SOURCE", "ELI_MIC_AUTORESOLVE", "PULSE_SOURCE")
+_CACHED_FOR: Optional[Tuple[str, ...]] = None
+
+
+def _mic_choice() -> Tuple[str, ...]:
+    return tuple(os.environ.get(name, "").strip() for name in _CHOICE_VARS)
 
 
 @contextlib.contextmanager
@@ -451,10 +460,13 @@ def _candidates() -> List[Tuple[Optional[int], Optional[str], str, Optional[str]
 
 
 def resolve_capture(force: bool = False) -> CaptureChoice:
-    """Resolve a working capture device, probing candidates as needed (cached)."""
-    global _CACHED
-    if _CACHED is not None and not force:
+    """Resolve a working capture device, probing candidates as needed: cached for as long as the
+    mic choice (the ELI_MIC_* and PULSE_SOURCE variables) stays the same."""
+    global _CACHED, _CACHED_FOR
+    choice_now = _mic_choice()
+    if _CACHED is not None and not force and _CACHED_FOR == choice_now:
         return _CACHED
+    _CACHED_FOR = choice_now
 
     explicit_pulse = os.environ.get("ELI_MIC_PULSE_SOURCE", "").strip()
     if explicit_pulse:
