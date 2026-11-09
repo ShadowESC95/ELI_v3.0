@@ -127,3 +127,21 @@ def test_a_goal_waiting_for_the_users_yes_is_listed_when_asked_for_proposals(tmp
     text = out["content"]
     assert "[waiting for your yes] Tidy the notes folder — move old notes" in text, text
     assert text.count("Tidy the notes folder") == 1, "a waiting goal is listed once"
+
+
+def test_a_yes_to_listed_goal_proposals_confirms_them_through_the_one_consent_reader(tmp_path, monkeypatch):
+    """GET_PROPOSALS listed the goals waiting for a yes, but kept nothing open: a yes to the list was
+    read as a new message. The listing keeps them open, and the yes is read by the one consent
+    reader (pending_proposal.goals_agreed), which the engine turns into confirm_goal_proposal."""
+    from eli.execution import executor_enhanced as ex
+    from eli.planning import goal_store
+    from eli.runtime import pending_proposal as pp
+    _queue_and_goals(tmp_path, monkeypatch)
+    monkeypatch.setattr(pp, "_path", lambda: tmp_path / "pending_proposal.json")
+    goal_store.update_goal("g1", lambda g: setattr(g, "autonomy_mode", "proposal_only"))
+    goal_tick.governed_goal_tick(now=10_000.0)
+    out = ex.execute("GET_PROPOSALS", {})
+    (waiting,) = out["waiting_goal_proposals"]
+    agreed = pp.goals_agreed("yes please")
+    assert [g["proposal_id"] for g in agreed] == [waiting["proposal_id"]]
+    assert pp.goals_agreed("what is the weather") == []

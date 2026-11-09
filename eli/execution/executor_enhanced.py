@@ -5191,6 +5191,16 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
             else:
                 msg = ("No active proposals right now — I form them from your recurring "
                        "behaviour, recurring errors, and my own code health as signals build up.")
+            # The goals waiting for the user's yes are kept open, so a yes to the list (or "the second
+            # one") confirms them through the one consent reader (pending_proposal.goals_agreed, read
+            # by the engine), which runs goal_tick.confirm_goal_proposal. Listed, they were not: a yes
+            # was read as a new message.
+            if waiting:
+                try:
+                    from eli.runtime.pending_proposal import offer_goal_proposals
+                    offer_goal_proposals(waiting)
+                except Exception:
+                    log.debug("waiting goal proposals not kept open", exc_info=True)
             return {"ok": True, "action": a, "content": msg, "response": msg,
                     "proposal_count": len(lines), "waiting_goal_proposals": waiting,
                     "evidence_source": "proposals_runtime"}
