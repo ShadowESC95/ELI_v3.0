@@ -195,3 +195,41 @@ def test_deactivating_takes_the_key_back_from_every_eli_product(signing_keys, tm
     assert not (tmp_path / "eli-keys" / "eli.key").exists()
     monkeypatch.setenv("ELI_REQUIRE_LICENSE", "1")
     assert validate_activation().active is False, "not taken up again from the shared folder"
+
+
+# ── developer switches are not read in a build that is sold ─────────────────────
+def _sold(monkeypatch: pytest.MonkeyPatch, how: str) -> None:
+    if how == "frozen":
+        monkeypatch.setattr("eli.core.paths.is_frozen", lambda: True)
+    else:
+        monkeypatch.setenv("ELI_RETAIL_BUILD", "1")
+
+
+@pytest.mark.parametrize("how", ["frozen", "retail"])
+def test_the_bypass_does_not_open_a_sold_build(signing_keys, monkeypatch: pytest.MonkeyPatch, how):
+    """One exported ELI_LICENSE_BYPASS ran a retail build with no licence and no trial."""
+    monkeypatch.setenv("ELI_LICENSE_BYPASS", "1")
+    _sold(monkeypatch, how)
+    assert activation_required() is True
+    status = validate_activation()
+    assert status.required is True and status.active is False
+
+
+def test_the_bypass_still_works_when_working_from_source(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ELI_LICENSE_BYPASS", "1")
+    monkeypatch.setenv("ELI_REQUIRE_LICENSE", "1")
+    monkeypatch.delenv("ELI_RETAIL_BUILD", raising=False)
+    assert activation_required() is False
+
+
+@pytest.mark.parametrize("how", ["frozen", "retail"])
+def test_a_sold_build_checks_keys_against_its_own_public_key_only(signing_keys, monkeypatch: pytest.MonkeyPatch, how):
+    """ELI_LICENSE_PUBLIC_KEY pointed at a key pair of one's own made ELI accept self-signed keys."""
+    from eli.licensing import signature
+
+    key = issue_license_key(_sample_payload(), private_pem=signing_keys["private"].read_bytes())
+    assert parse_license_key(key).license_id == "test-license-001"   # from source: the substitute is used
+    _sold(monkeypatch, how)
+    assert signature.public_key_path() == signature._PUBLIC_KEY_FILE
+    with pytest.raises(ValueError, match="signature is invalid"):
+        parse_license_key(key)

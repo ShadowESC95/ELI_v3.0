@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import platform
 import subprocess
 import sys
@@ -128,10 +127,18 @@ def os_install_id() -> str:
     return value or _persisted_install_id()
 
 
+def _machine_id_override() -> str:
+    """ELI_MACHINE_ID, read only when working from source: in a sold build every new value
+    would be a new machine, and so a fresh trial."""
+    from eli.licensing.activation import developer_override
+
+    return developer_override("ELI_MACHINE_ID")
+
+
 @lru_cache(maxsize=1)
 def machine_fingerprint() -> str:
     """Stable, privacy-conscious machine fingerprint (SHA-256 hex)."""
-    override = os.environ.get("ELI_MACHINE_ID", "").strip()
+    override = _machine_id_override()
     parts = [
         _V2_PREFIX,
         platform.system(),
@@ -174,7 +181,7 @@ def legacy_machine_fingerprints() -> tuple[str, ...]:
     ``getnode()`` was build-dependent, every plausible NIC value is replayed so
     a bundle-created binding is recognised by a checkout and vice versa.
     """
-    override = os.environ.get("ELI_MACHINE_ID", "").strip()
+    override = _machine_id_override()
     machine_id_file = _read_machine_id_file()
     out: list[str] = []
     for node in _nic_nodes():

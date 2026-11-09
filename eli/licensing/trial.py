@@ -61,8 +61,11 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def trial_duration_days() -> int:
-    """Trial length from tier policy, defaulting to 7 days."""
-    override = os.environ.get("ELI_TRIAL_DAYS", "").strip()
+    """Trial length from tier policy, defaulting to 7 days. ELI_TRIAL_DAYS sets it only when
+    working from source (eli.licensing.activation.developer_override)."""
+    from eli.licensing.activation import developer_override
+
+    override = developer_override("ELI_TRIAL_DAYS")
     if override:
         try:
             n = int(override)

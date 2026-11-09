@@ -245,10 +245,20 @@ def test_a_stored_key_from_another_licence_is_refused(keys):
     assert not status.active and "does not belong" in status.message
 
 
-def test_an_activation_made_before_keys_were_kept_is_still_honoured(keys):
-    activate_license_key(_key(keys, "eli"))
+def test_an_activation_without_its_key_holds_only_once_the_key_is_found(keys, tmp_path, monkeypatch):
+    """Nothing in activation.json is signed, so with its key gone there is nothing to read the
+    grant from: the key kept for every ELI product is taken up, and with none it is asked for."""
+    from eli.licensing.storage import unshare_key
+
+    monkeypatch.setenv("ELI_KEYS_DIR", str(tmp_path / "eli-keys"))
+    key = _key(keys, "eli")
+    activate_license_key(key)
     _edit_state("eli", license_key="")
-    assert validate_activation().active
+    assert validate_activation().active and load_activation_state().license_key == key
+    _edit_state("eli", license_key="")
+    unshare_key("eli")
+    status = validate_activation()
+    assert not status.active and "no license key" in status.message
 
 
 def test_a_file_for_another_product_is_not_read_as_this_one(keys):

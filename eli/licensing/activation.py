@@ -53,19 +53,54 @@ def _payload_expired(expires_at: str | None) -> bool:
     return datetime.now(timezone.utc) > dt
 
 
-def activation_required() -> bool:
-    if os.environ.get("ELI_LICENSE_BYPASS", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return False
-    if os.environ.get("ELI_REQUIRE_LICENSE", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return True
-    if os.environ.get("ELI_RETAIL_BUILD", "").strip().lower() in {"1", "true", "yes", "on"}:
+_ON = {"1", "true", "yes", "on"}
+
+
+def _env_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _ON
+
+
+def _marked_retail() -> bool:
+    if _env_on("ELI_RETAIL_BUILD"):
         return True
     try:
         from eli.core.runtime_settings import load_settings
-        if load_settings().get("retail_build") is True:
-            return True
+        return load_settings().get("retail_build") is True
     except Exception:
         log.debug("suppressed exception", exc_info=True)
+        return False
+
+
+def _sold_build() -> bool:
+    """A packaged (frozen) build, or one marked retail: a build someone pays for."""
+    try:
+        from eli.core.paths import is_frozen
+        if is_frozen():
+            return True
+    except Exception:
+        log.debug("could not tell whether this build is packaged; treating it as one", exc_info=True)
+        return True
+    return _marked_retail()
+
+
+def developer_override(name: str) -> str:
+    """The value of a developer switch, or "" in a build that is sold.
+
+    ELI_LICENSE_BYPASS, ELI_LICENSE_PUBLIC_KEY, ELI_TRIAL_DAYS and ELI_MACHINE_ID are for
+    working on ELI from its source. In a sold build each of them would open a paid product
+    with one exported variable: no licence at all, a key signed by a key of one's own, a trial
+    of any length, or a fresh trial for every new value. There they are not read.
+    """
+    if _sold_build():
+        return ""
+    return os.environ.get(name, "").strip()
+
+
+def activation_required() -> bool:
+    if developer_override("ELI_LICENSE_BYPASS").lower() in _ON:
+        return False
+    if _env_on("ELI_REQUIRE_LICENSE") or _marked_retail():
+        return True
     try:
         from eli.core.paths import is_frozen, _is_dev_mode
 
@@ -148,10 +183,12 @@ def activate_license_key(key: str, *, force_rebind: bool = False) -> ActivationS
         existing = None
     elif existing and existing.license_id and existing.license_id != payload.license_id:
         # A purchased key always supersedes this install's trial — requiring
-        # --force there would strand every customer who buys during a trial.
+        # --force there would strand every customer who buys during a trial. An
+        # activation with no key kept cannot be checked, so it holds nothing a key
+        # could take away either.
         from eli.licensing.trial import TRIAL_SOURCE
 
-        if existing.source == TRIAL_SOURCE:
+        if existing.source == TRIAL_SOURCE or not existing.license_key:
             existing = None
         else:
             raise ValueError(
@@ -268,6 +305,11 @@ _NOT_BOUND = (
     "(re-bind it with: eli --activate-key YOUR-KEY --force)"
 )
 
+_NO_KEY_KEPT = (
+    "this activation has no license key kept with it, so it cannot be checked; "
+    "enter the license key again (eli --activate-key YOUR-KEY)"
+)
+
 
 def _adopt_shared_key(product: str) -> Optional[ActivationState]:
     """A key another ELI product kept for `product` (ELI VR's licence screen, ELI Legal), activated
@@ -345,16 +387,24 @@ def validate_activation() -> ActivationStatus:
             trial=trial_state(),
         )
 
+    from eli.licensing.trial import load_trial_record
+
+    rec = load_trial_record()
+    if rec is not None and rec.license_id and state.license_id == rec.license_id:
+        # This install's trial, whatever activation.json now says its source is: the file
+        # is plain JSON, and relabelling it must not turn the trial into a licence.
+        state.source = TRIAL_SOURCE
+
     if state.source == TRIAL_SOURCE:
         # For trials the signed marker decides, not activation.json: that file is
         # plain JSON a user can edit, so trusting its expires_at would let anyone
         # extend their own trial indefinitely.
-        from eli.licensing.trial import load_trial_record
-
         ts = trial_state()
-        rec = load_trial_record()
         if rec is not None and rec.license_id and rec.license_id != state.license_id:
             ts = "expired"  # state does not belong to this install's trial
+        elif rec is not None and rec.license_id == state.license_id:
+            state.tier = "trial"
+            state.expires_at = rec.expires_at
         if ts != "active":
             return ActivationStatus(
                 active=False,
@@ -368,12 +418,21 @@ def validate_activation() -> ActivationStatus:
                 trial=ts,
             )
 
-    if state.source != TRIAL_SOURCE and state.license_key:
+    if state.source != TRIAL_SOURCE and not state.license_key:
+        # Nothing in activation.json is signed, so with no key there is nothing to read the
+        # tier, seats or end date from (deleting the key and the end date from a trial's file
+        # made it a permanent licence). A key kept in the shared folder is taken up; otherwise
+        # the key is asked for again. No trial is offered over it, so the launch gate asks for
+        # the key rather than starting one.
+        adopted = _adopt_shared_key(PLATFORM)
+        if adopted is None or not adopted.license_key:
+            return _inactive(required, _NO_KEY_KEPT, state)
+        state = adopted
+
+    if state.source != TRIAL_SOURCE:
         problem = _verify_stored_key(state) or _platform_major_problem(state.major_version)
         if problem:
             return _inactive(required, problem, state, trial=trial_state())
-    # An activation without a stored key predates keys being kept. It is honoured
-    # as it always was, so nobody who activated earlier is locked out by an update.
 
     if _payload_expired(state.expires_at):
         is_trial = state.source == TRIAL_SOURCE
@@ -422,7 +481,7 @@ def _included_with_platform(product: str, version: str) -> Optional[ActivationSt
     key = (platform.state.license_key if platform.state is not None else "") \
         or os.environ.get("ELI_LICENSE_KEY", "").strip()
     if not key:
-        return None   # a trial, or an activation from before keys were kept: nothing to read
+        return None   # a trial: no key to read
     try:
         payload = require_product(parse_license_key(key), PLATFORM)
     except Exception:

@@ -29,7 +29,12 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def public_key_path() -> Path:
-    override = __import__("os").environ.get("ELI_LICENSE_PUBLIC_KEY")
+    """The key every licence is checked against. A substitute (ELI_LICENSE_PUBLIC_KEY, for the
+    developer walkthrough with a key pair of one's own) is read only when working from source:
+    in a sold build it would make ELI accept keys anyone can sign."""
+    from eli.licensing.activation import developer_override
+
+    override = developer_override("ELI_LICENSE_PUBLIC_KEY")
     if override:
         return Path(override).expanduser().resolve()
     return _PUBLIC_KEY_FILE

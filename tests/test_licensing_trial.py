@@ -144,10 +144,13 @@ def test_legacy_binding_is_migrated_not_rejected(retail_env, signing):
     if not legacy:
         pytest.skip("no legacy fingerprint derivable on this host")
 
+    from eli.licensing.signature import parse_license_key
+
+    key = _paid_key(signing, tier="pro", seats=1)
     state = ActivationState(
         version=1,
         activated_at="2026-07-01T00:00:00+00:00",
-        license_id="paid-legacy",
+        license_id=parse_license_key(key).license_id,
         tier="pro",
         seats=1,
         expires_at=None,
@@ -156,6 +159,7 @@ def test_legacy_binding_is_migrated_not_rejected(retail_env, signing):
             MachineBinding(id_hash=legacy[0], label="old-host", bound_at="2026-07-01T00:00:00+00:00")
         ],
         source="offline",
+        license_key=key,
     )
     save_activation_state(state)
 
@@ -366,6 +370,84 @@ def test_force_rebind_repairs_a_one_seat_stale_binding(retail_env, signing):
     assert validate_activation().active is True
 
 
+# ── activation.json is not signed: what it says is not a licence ────────────
+
+def _rewrite_activation(**changes) -> None:
+    path = activation_state_path()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for name, value in changes.items():
+        if value is _DROP:
+            raw.pop(name, None)
+        else:
+            raw[name] = value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize("source", ["offline", _DROP], ids=["relabelled", "source-removed"])
+def test_relabelling_the_trial_in_the_activation_file_keeps_it_the_trial(retail_env, monkeypatch, source):
+    """Changing "source" from "trial" and clearing the end date made a trial a permanent licence."""
+    monkeypatch.setenv("ELI_KEYS_DIR", str(retail_env["tmp"] / "eli-keys"))
+    T.grant_trial()
+    _rewrite_activation(source=source, expires_at=None, tier="enterprise")
+    status = validate_activation()
+    assert (status.tier, status.trial) == ("trial", "active")
+    assert status.expires_at == T.load_trial_record().expires_at
+    _backdate_trial()
+    assert validate_activation().active is False
+
+
+def _keyless_activation(license_id: str = "made-by-hand") -> None:
+    from eli.licensing.machine_id import machine_fingerprint, machine_label
+
+    save_activation_state(ActivationState(
+        license_id=license_id, tier="enterprise", seats=9, source="offline",
+        activated_at="2026-09-01T00:00:00+00:00",
+        machines=[MachineBinding(id_hash=machine_fingerprint(), label=machine_label(),
+                                 bound_at="2026-09-01T00:00:00+00:00")]))
+
+
+def test_an_activation_with_no_key_is_not_a_licence(retail_env, monkeypatch):
+    from eli.licensing.activation import LicenseRequiredError
+    from eli.licensing.launch_gate import ensure_license_or_exit
+
+    monkeypatch.setenv("ELI_KEYS_DIR", str(retail_env["tmp"] / "eli-keys"))
+    _keyless_activation()
+    status = validate_activation()
+    assert status.required and not status.active
+    assert "no license key" in status.message
+    assert status.trial is None, "the key is asked for, not a trial started over it"
+    with pytest.raises(LicenseRequiredError, match="license key"):
+        ensure_license_or_exit(allow_gui_prompt=False)
+
+
+def test_entering_the_key_replaces_an_activation_that_has_none(retail_env, signing, monkeypatch):
+    monkeypatch.setenv("ELI_KEYS_DIR", str(retail_env["tmp"] / "eli-keys"))
+    _keyless_activation()
+    state = activate_license_key(_paid_key(signing))   # no --force
+    assert state.license_key and validate_activation().active is True
+
+
+@pytest.mark.parametrize("how", ["frozen", "retail"])
+def test_a_sold_build_ignores_the_trial_length_and_machine_switches(retail_env, monkeypatch, how):
+    """ELI_TRIAL_DAYS gave a trial of any length, and each new ELI_MACHINE_ID a fresh one."""
+    from eli.licensing.machine_id import machine_fingerprint
+
+    days, fp = T.trial_duration_days(), machine_fingerprint()
+    monkeypatch.setenv("ELI_TRIAL_DAYS", str(days * 50))
+    monkeypatch.setenv("ELI_MACHINE_ID", "another-computer")
+    _clear_caches()
+    assert T.trial_duration_days() == days * 50 and machine_fingerprint() != fp   # from source
+    if how == "frozen":
+        monkeypatch.setattr("eli.core.paths.is_frozen", lambda: True)
+    else:
+        monkeypatch.setenv("ELI_RETAIL_BUILD", "1")
+    _clear_caches()
+    assert T.trial_duration_days() == days and machine_fingerprint() == fp
+
+
 # ── Entry-point wiring ─────────────────────────────────────────────────────
 
 def test_license_flags_are_handled_before_any_gate(retail_env, signing, capsys):
@@ -442,3 +524,50 @@ def test_gui_prompt_does_not_require_a_tty(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     assert launch_gate.gui_prompt_available() is False
+
+
+_SERVE = """
+import importlib.util, sys, types
+spec = importlib.util.spec_from_file_location("eli_entry", sys.argv[1])
+entry = importlib.util.module_from_spec(spec); spec.loader.exec_module(entry)
+sys.frozen = True
+served = []
+api = types.ModuleType("api"); api.__path__ = []
+server = types.ModuleType("api.server"); server.main = lambda: served.append(1) or 0
+sys.modules.update({"api": api, "api.server": server})
+print("RESULT", entry._serve(), len(served))
+"""
+
+
+@pytest.mark.parametrize("trial,expect", [("revoked", (1, 0)), ("available", (0, 1))])
+def test_the_frozen_server_is_behind_the_licence_gate(retail_env, trial, expect):
+    """`ELI --server` (and the "ELI Server" menu entry) served the whole engine with no licence."""
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "ELI_NO_GUI_PROMPT": "1",
+           "ELI_KEYS_DIR": str(retail_env["tmp"] / "eli-keys"),
+           "XDG_DATA_HOME": str(retail_env["tmp"] / "xdg")}
+    env.pop("ELI_REQUIRE_LICENSE", None)    # frozen alone has to be enough
+    if trial == "revoked":
+        env["ELI_TRIAL_DISABLED"] = "1"
+    entry = Path("packaging/pyinstaller/eli_entry.py").resolve()
+    out = subprocess.run([sys.executable, "-c", _SERVE, str(entry)], env=env, stdin=subprocess.DEVNULL,
+                         capture_output=True, text=True, timeout=120)
+    result = [line for line in out.stdout.splitlines() if line.startswith("RESULT")]
+    assert result, out.stderr[-1500:]
+    assert tuple(int(x) for x in result[-1].split()[1:]) == expect, out.stderr[-1500:]
+
+
+def test_the_mcp_server_is_behind_the_licence_gate(retail_env, monkeypatch):
+    import sys
+
+    served = []
+    monkeypatch.setenv("ELI_TRIAL_DISABLED", "1")
+    monkeypatch.setenv("ELI_KEYS_DIR", str(retail_env["tmp"] / "eli-keys"))
+    monkeypatch.setattr("eli.integrations.mcp.server.main", lambda: served.append(1) or 0)
+    monkeypatch.setattr(sys, "argv", ["eli", "--mcp-server"])
+    from eli.__main__ import main
+
+    assert main() == 1 and not served

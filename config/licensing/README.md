@@ -41,9 +41,9 @@ python3 -m eli.licensing.cli deactivate --product legal   # a bundle's licence
 |---|---|
 | `ELI_REQUIRE_LICENSE=1` | Force activation even in source checkout |
 | `ELI_RETAIL_BUILD=1` | Retail installer — activation required |
-| `ELI_LICENSE_BYPASS=1` | Skip activation checks (dev only) |
+| `ELI_LICENSE_BYPASS=1` | Skip activation checks — source checkout only; not read in a packaged build or one marked retail |
 | `ELI_LICENSE_KEY` | Ephemeral key for CI/automation (not persisted) |
-| `ELI_LICENSE_PUBLIC_KEY` | Override path to `product_signing.pub` |
+| `ELI_LICENSE_PUBLIC_KEY` | Override path to `product_signing.pub` — source checkout only; not read in a packaged build or one marked retail |
 | `ELI_LICENSE_SIGNING_KEY` | Private PEM path (issuer scripts only) |
 
 ## Issuing keys (author only)
