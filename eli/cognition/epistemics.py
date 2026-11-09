@@ -423,6 +423,38 @@ def report(kind: str = ANSWER, *, days: float = DAYS, db_path=None) -> Dict[str,
             "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + tuple(names), weights))}
 
 
+# What each kind's figures are of, for the record a reply about ELI's own accuracy is given.
+_KIND_WORDS = {ANSWER: "replies to you", ROUTE: "readings of what a sentence asked for",
+               RECALL: "memories shown to a reply", CLAIM: "claims about you a reply rested on",
+               ACT: "things ELI did of its own accord", PROPOSAL: "fixes ELI proposed for itself"}
+
+
+def measured_lines(*, days: float = DAYS, db_path=None) -> List[str]:
+    """ELI's measured accuracy, one line per kind that has settled figures: how many were settled, the
+    share that proved right, and how far the figures given were from what became of them (calibration
+    error). For a reply asked about ELI's own accuracy: measured here, and the claim check holds
+    figures to what the record says (eli/cognition/self_claims)."""
+    lines: List[str] = []
+    for kind, words in _KIND_WORDS.items():
+        try:
+            rep = report(kind, days=days, db_path=db_path)
+            rows = outcomes(kind, days=days, db_path=db_path)
+        except (OSError, ValueError, AttributeError) as failure:
+            log.debug("measured accuracy unreadable for %s: %s", kind, failure)
+            continue
+        n = int(rep.get("n") or 0)
+        if not n:
+            continue
+        right = sum(1 for _s, y, _f in rows if y) / n
+        line = f"- {words}: {n} settled in the last {int(days)} days, {right:.0%} proved right"
+        if rep.get("ece") is not None:
+            line += f"; the chances given were off by {float(rep['ece']):.2f} on average (calibration error)"
+        lines.append(line)
+    if lines:
+        lines.insert(0, "Measured accuracy (settled outcomes in the evidence ledger, not estimates):")
+    return lines
+
+
 def base_rate(kind: str = ANSWER, *, class_: str = "", where: Optional[Dict[str, Any]] = None,
               days: float = DAYS, db_path=None) -> Tuple[float, int]:
     """The share of figures of this kind (of this class; with `where`, those whose features equal the
@@ -486,5 +518,5 @@ __all__ = ["ACT", "ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "FEATURES
            "NON_INFERIORITY_MARGIN", "OUTCOME",
            "PROPOSAL", "Probability", "RECALL", "ROUTE", "Z_SIG", "apply", "apply_rows", "assess", "assess_many",
            "base_rate", "brier", "calibrate", "claim_request_id", "ece", "entropy", "features_of", "fit", "fit_rows",
-           "forget_fits", "logit", "outcomes", "reliability", "report", "settle", "settle_open", "sigmoid",
+           "forget_fits", "logit", "measured_lines", "outcomes", "reliability", "report", "settle", "settle_open", "sigmoid",
            "weights_for", "worse_below"]

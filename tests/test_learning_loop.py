@@ -378,3 +378,13 @@ def test_repair_pressure_and_curiosity_are_measured_over_the_sitting():
     before = state.awareness.curiosity
     engine._update_awareness_from_event(state, WorldEvent(event_type="reflection", source="reflection_engine", summary="r"))
     assert state.awareness.curiosity == before, "a reflection is not a surprise"
+
+
+def test_measured_accuracy_is_one_line_per_kind_with_settled_figures(db):
+    assert ep.measured_lines(db_path=db) == [], "nothing settled: nothing claimed"
+    for i in range(10):
+        ep.assess(ep.ANSWER, 0.8, request_id=f"m{i}", db_path=db)
+        ep.settle(f"m{i}", i < 7, db_path=db)
+    lines = ep.measured_lines(db_path=db)
+    assert len(lines) == 2 and "replies to you: 10 settled" in lines[1] and "70% proved right" in lines[1]
+    assert "calibration error" in lines[1]

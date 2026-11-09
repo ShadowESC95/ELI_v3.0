@@ -759,6 +759,10 @@ class AgentOrchestrator:
                 return None
             _text = str(_esc.get("response") or _esc.get("content") or "").strip()
             if _text:
+                _held = self._held_to_the_record(_text, wm, grounded=True)
+                if _held != _text:
+                    _text = _held
+                    _esc = {**_esc, "response": _text, "content": _text}
                 try:
                     self.engine._store_assistant_turn(_text)
                 except Exception:
@@ -781,6 +785,46 @@ class AgentOrchestrator:
         except Exception as _esc_err:
             log.debug(f"[ORCHESTRATOR] grounding escalation skipped: {_esc_err}")
             return None
+
+    def _add_own_record(self, wm, user_input: str, *, period: str = "", live: str = "") -> bool:
+        """A message about ELI's own behaviour (self_claims.about_eli: its wording, or what ELI just
+        did) brings the record into the context: what the pipeline wrote of recent turns, and ELI's
+        measured accuracy (epistemics.measured_lines), so "how accurate are you?" is answered from
+        figures that were measured and the claim check lets them through. True when it was added."""
+        from eli.cognition import self_claims as _self_claims
+        from eli.cognition.epistemics import measured_lines
+        mem = getattr(self.engine, "memory", None)
+        uid = str(getattr(self.engine, "user_id", "") or "")
+        if not _self_claims.about_eli(user_input, mem=mem, user_id=uid):
+            return False
+        rows = list(_self_claims.turn_record_lines(mem, user_id=uid) or [])
+        measured = measured_lines()
+        if not rows and not measured:
+            return False
+        block = "\n\n".join(b for b in (_self_claims.record_block(rows), "\n".join(measured)) if b)
+        wm.assembled_context = (block + "\n\n" + str(wm.assembled_context or "").strip()).strip()
+        # What the reply is checked against: the pipeline's rows, the measured figures and the period
+        # log, never ELI's own earlier prose.
+        from eli.kernel.request_context import note_turn_fact as _note_record
+        _note_record("_record_lines", rows + measured)
+        _note_record("_record", "\n".join(rows + measured) + "\n" + period + "\n" + live)
+        return True
+
+    def _held_to_the_record(self, text: str, wm, *, grounded: bool = False) -> str:
+        """A reply about to be shown, through the claim gate (output_governor.govern_output) against
+        the context it was made from: the one-shot reply and the escalation's answer went out
+        unchecked, so a claim the record does not bear reached the screen there."""
+        if not str(text or "").strip():
+            return text
+        try:
+            from eli.cognition.output_governor import govern_output
+            evidence = "\n\n".join(str(x) for x in (getattr(wm, "assembled_context", ""),
+                                                     getattr(wm, "situation_brief", ""),
+                                                     getattr(wm, "persona_handoff", "")) if x)
+            return govern_output(str(text), is_grounded=grounded, evidence=evidence) or text
+        except Exception:
+            log.warning("[ORCHESTRATOR] the reply could not be held to the record", exc_info=True)
+            return text
 
     def run(self, user_input: Optional[str] = None, *, stream: bool = False,
             reasoning_mode: Optional[str] = None, **kwargs) -> Any:
@@ -1328,18 +1372,7 @@ class AgentOrchestrator:
         # Asked about its own behaviour, ELI gets what the pipeline recorded doing; routing and
         # escalation never reach the model, so without this any account is invented.
         try:
-            from eli.cognition import self_claims as _self_claims
-            if _self_claims.asks_about_own_behaviour(user_input):
-                _rows = _self_claims.turn_record_lines(
-                    getattr(self.engine, "memory", None), user_id=str(getattr(self.engine, "user_id", "") or ""))
-                if _rows:
-                    wm.assembled_context = (_self_claims.record_block(_rows) + "\n\n"
-                                            + str(wm.assembled_context or "").strip()).strip()
-                    # What the reply is checked against: the pipeline's rows and the period log,
-                    # never ELI's own earlier prose.
-                    from eli.kernel.request_context import note_turn_fact as _note_record
-                    _note_record("_record_lines", _rows)
-                    _note_record("_record", "\n".join(_rows) + "\n" + str(_period or "") + "\n" + str(_live or ""))
+            self._add_own_record(wm, user_input, period=str(_period or ""), live=str(_live or ""))
         except Exception as _tr_err:
             log.debug(f"[ORCHESTRATOR] turn record skipped: {_tr_err}")
         try:
@@ -1450,6 +1483,7 @@ class AgentOrchestrator:
             wm,
             reasoning_mode=reasoning_mode,
         )
+        response = self._held_to_the_record(response, wm)
         wm.final_response = response
 
         _eli_orch_complete_final_stage(
