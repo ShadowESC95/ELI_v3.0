@@ -237,3 +237,28 @@ def test_the_windows_uninstaller_removes_v3s_shortcuts_by_what_they_run(monkeypa
     assert launcher.name in text and dl._share_dirname() in text
     assert re.search(r"CreateShortcut\([^)]*\)\.TargetPath", text), "the shortcut's target is not read"
     assert not re.search(r"Remove-Item[^\r\n]*\.lnk", text), "a shortcut is removed by its name"
+
+
+def test_mac_shortcuts_carry_the_products_name_and_only_its_own_old_ones_go(tmp_path, monkeypatch):
+    """'ELI Server (Web App)', 'ELI Setup' and 'ELI Uninstall' were the same names in v2 and v3: the
+    product started last owned them, and 'ELI Uninstall' could run the other one's uninstaller."""
+    home = tmp_path / "home"
+    apps = home / "Applications"
+    apps.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(dl, "product_line", lambda: "v3")
+    monkeypatch.setattr(dl, "sys", type("S", (), {"platform": "darwin", "frozen": False})())
+    runner = home / ".local" / "bin" / "eli-v3-run"
+    monkeypatch.setattr(dl, "_eli_run_path", lambda: runner)
+    monkeypatch.setattr(dl, "write_install_root", lambda root: None)
+    (apps / "ELI Uninstall.command").write_text(f'#!/bin/bash\nexec "{runner}" uninstall\n')
+    others = f'#!/bin/bash\nexec "{home}/.local/bin/eli-v2-run" setup\n'
+    (apps / "ELI Setup.command").write_text(others)
+    root = tmp_path / "ELI_v3"
+    (root / "eli").mkdir(parents=True)
+    written = {p.name for p in dl._write_macos_commands(root)}
+    assert written == {"ELI v3.0.command", "ELI v3.0 Server (Web App).command", "ELI v3.0 Setup.command",
+                       "Uninstall ELI v3.0.command"}
+    assert not (apps / "ELI Uninstall.command").exists(), "this product's old shared shortcut is gone"
+    assert (apps / "ELI Setup.command").read_text() == others, "another product's is left as it is"
+    assert f'"{runner}" uninstall' in (apps / "Uninstall ELI v3.0.command").read_text()

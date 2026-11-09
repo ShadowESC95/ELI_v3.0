@@ -29,7 +29,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -581,19 +581,40 @@ def _write_linux_desktop(root: Path, *, force: bool = False) -> list[Path]:
     return written
 
 
+# The shortcuts this product makes (macOS .command files, Windows Start Menu entries), by action.
+# Every name carries the product's own name (ELI v3.0, ELI v2.0): they were "ELI Server (Web App)",
+# "ELI Setup" and "ELI Uninstall" for every product, so whichever started last owned them and
+# "ELI Uninstall" could run another product's uninstaller.
+def _shortcut_labels(actions) -> Dict[str, str]:
+    name = _display_name()
+    labels = {"gui": name, "serve": f"{name} Server (Web App)", "setup": f"{name} Setup",
+              "uninstall": f"Uninstall {name}"}
+    return {action: labels[action] for action in actions}
+
+
+# The names every product used to share, by action: removed only where they lead to this product.
+_LEGACY_LABELS = {"serve": "ELI Server (Web App)", "setup": "ELI Setup", "uninstall": "ELI Uninstall"}
+
+
+def _drop_legacy_macos(apps: Path, eli_run: Path) -> None:
+    for label in _LEGACY_LABELS.values():
+        old = apps / f"{label}.command"
+        try:
+            if old.is_file() and f'"{eli_run}"' in old.read_text(encoding="utf-8", errors="replace"):
+                old.unlink()
+        except OSError:
+            log.debug("an old shared shortcut could not be checked or removed: %s", old, exc_info=True)
+
+
 def _write_macos_commands(root: Path) -> list[Path]:
     eli_run = _write_eli_run()
     write_install_root(root)
     apps = Path.home() / "Applications"
     apps.mkdir(parents=True, exist_ok=True)
-    name = _display_name()
     written: list[Path] = []
-    mapping = {
-        f"{name}.command": "gui",
-        "ELI Server (Web App).command": "serve",
-        "ELI Setup.command": "setup",
-        "ELI Uninstall.command": "uninstall",
-    }
+    mapping = {f"{label}.command": action
+               for action, label in _shortcut_labels(("gui", "serve", "setup", "uninstall")).items()}
+    _drop_legacy_macos(apps, eli_run)
     for fname, action in mapping.items():
         dest = apps / fname
         dest.write_text(
@@ -618,7 +639,13 @@ def _write_windows_shortcuts(root: Path) -> list[Path]:
     programs = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     programs.mkdir(parents=True, exist_ok=True)
     shell = win32com.client.Dispatch("WScript.Shell")
-    name = _display_name()
+    for label in _LEGACY_LABELS.values():
+        old = programs / f"{label}.lnk"
+        try:
+            if old.is_file() and Path(shell.CreateShortcut(str(old)).TargetPath) == Path(eli_run):
+                old.unlink()
+        except Exception:
+            log.debug("an old shared shortcut could not be checked or removed: %s", old, exc_info=True)
     icon = None
     for rel in ("packaging/desktop/Eli_Icon.ico", "packaging/desktop/Eli_Icon.png"):
         cand = root / rel
@@ -626,11 +653,7 @@ def _write_windows_shortcuts(root: Path) -> list[Path]:
             icon = str(cand)
             break
     written: list[Path] = []
-    for label, action in (
-        (name, "gui"),
-        ("ELI Server (Web App)", "serve"),
-        ("ELI Uninstall", "uninstall"),
-    ):
+    for action, label in _shortcut_labels(("gui", "serve", "uninstall")).items():
         path = programs / f"{label}.lnk"
         sc = shell.CreateShortcut(str(path))
         sc.TargetPath = str(eli_run)
@@ -649,13 +672,17 @@ def _write_windows_shortcuts_ps(root: Path, eli_run: Path) -> list[Path]:
     import subprocess
     programs = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     programs.mkdir(parents=True, exist_ok=True)
-    name = _display_name()
+    for label in _LEGACY_LABELS.values():
+        old = programs / f"{label}.lnk"
+        if old.is_file():
+            # removed only when it leads to this product's own runner
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                 f'$s = (New-Object -ComObject WScript.Shell).CreateShortcut("{old}"); '
+                 f'if ($s.TargetPath -eq "{eli_run}") {{ Remove-Item -LiteralPath "{old}" }}'],
+                capture_output=True, check=False)
     written: list[Path] = []
-    for label, action in (
-        (name, "gui"),
-        ("ELI Server (Web App)", "serve"),
-        ("ELI Uninstall", "uninstall"),
-    ):
+    for action, label in _shortcut_labels(("gui", "serve", "uninstall")).items():
         path = programs / f"{label}.lnk"
         wd = str(stable_user_root())
         ps = (
