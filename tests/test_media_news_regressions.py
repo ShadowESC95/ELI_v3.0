@@ -815,10 +815,14 @@ def test_gguf_stream_keeps_global_llm_lock_during_iteration():
         grammar=None,
     )
 
-    assert observed == []
+    # The decode runs on a thread of its own that holds the lock from the first piece to the last
+    # (gguf_inference._decode_on_own_thread): the reader's thread never holds it, so a reader on
+    # another thread for each piece cannot leave it held.
     assert [chunk["choices"][0]["text"] for chunk in stream] == ["ok"]
     assert observed == [True]
     assert owns_lock() is False
+    assert gguf_inference._LLM_CALL_LOCK.acquire(blocking=False)
+    gguf_inference._LLM_CALL_LOCK.release()
 
 
 def test_live_media_question_routes_to_now_playing_even_when_wrapped():

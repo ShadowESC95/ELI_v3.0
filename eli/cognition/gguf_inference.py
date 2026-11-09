@@ -77,7 +77,7 @@ _SWLOG = _swlog_logging.getLogger(__name__)
 
 from collections import OrderedDict
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Optional, Dict, Any, Generator, Union
 
@@ -1069,10 +1069,8 @@ def _load_model_now(request=None):
     # The embedder takes its place before the language model is planned, so the plan sees what it
     # holds on a card (vector_store.embedder_placement): loaded after it, the embedder took the sliver
     # the plan had left and the next reply aborted.
-    from eli.memory.vector_store import get_vector_store
-    _store = get_vector_store()
-    if _store is not None:
-        _store.ready()
+    if not _native_lock_held_here():
+        _place_embedder()
 
     from eli.cognition.model_load_diagnostics import (
         ModelLoadError as _ModelLoadError,
@@ -1204,6 +1202,17 @@ def _load_model_now(request=None):
     _write_shared_runtime_snapshot(payload)
     _install_llama_abort_callback(llm)
     return llm
+
+
+def _place_embedder() -> None:
+    """The memory embedder in its place (vector_store.ready()), never while this thread holds the
+    model lock: ready() takes the embedder's own lock, and an embedding takes that lock and then the
+    model lock. A reload that held the model lock and waited for the embedder's met an embedding
+    that held the embedder's and waited for the model's, and both stopped for good."""
+    from eli.memory.vector_store import get_vector_store
+    _store = get_vector_store()
+    if _store is not None:
+        _store.ready()
 
 
 def _format_prompt(system: Optional[str], user: str, *, think: Optional[bool] = None) -> str:
@@ -1465,6 +1474,8 @@ def _resume_from_saved_state(llm, full_prompt: str, *, create: bool) -> str:
             return ""
         if not create:
             return ""
+        if _USER_CANCEL.is_set() or (_SHUTDOWN.is_set() and not getattr(_bg_tls, "allow_during_shutdown", False)):
+            return ""           # a stopped call reads nothing: the call itself stops at once
         # Read the fixed part alone. An attention cache that already holds it is cut back to it
         # instead; a running state cannot be cut back and is read again.
         held = list(llm._input_ids[: llm.n_tokens]) if llm.n_tokens else []
@@ -1494,7 +1505,12 @@ def _resume_from_saved_state(llm, full_prompt: str, *, create: bool) -> str:
         import weakref
         _SAVED_STATES[key] = {"llm": weakref.ref(llm), "tokens": prefix, "state": state}
         return "saved"
-    except Exception:
+    except Exception as exc:
+        if _decode_error_code(exc) == "2":
+            # Aborted, by Stop, shutdown or a turn taking the model: nothing is wrong with the state
+            # or the cache. Cleared here and swallowed, the call read the whole prompt again into
+            # the same abort; the call's own retry decides (stopped: it stops; else as it was).
+            raise
         _SWLOG.debug("saved model state not used", exc_info=True)
         try:
             llm.reset()
@@ -1689,13 +1705,11 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
                 _FG_PRIORITY.clear()
 
     def _safe_release():
-        # Release the call lock, tolerating "already released". A reload/abort race can release it
-        # out from under this call, and the second release() used to kill the reply mid-stream.
-        # Swallow exactly that case.
-        try:
-            _LLM_CALL_LOCK.release()
-        except RuntimeError:
-            _SWLOG.debug("suppressed exception", exc_info=True)
+        # Released by the thread that took it (a streamed decode runs on a thread of its own,
+        # _decode_on_own_thread). A release from any other thread is a bug, and it says so: this
+        # used to swallow it and leave the lock held by a thread that had moved on, so every later
+        # model call waited for good.
+        _LLM_CALL_LOCK.release()
         if _fg_started[0]:
             try:
                 from eli.cognition.inference_broker import foreground_call_finished
@@ -1725,32 +1739,51 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
     for _ in range(4):
         try:
             if stream:
-                _acquire_lock_fg_priority()
-                try:
-                    _resume()
-                    response = llm(
-                        full_prompt,
-                        temperature=temperature,
-                        max_tokens=attempt_max,
-                        top_p=top_p,
-                        top_k=top_k,
-                        repeat_penalty=repeat_penalty,
-                        stop=stop,
-                        stream=True,
-                        grammar=grammar,
-                        **extra,
-                    )
-                except Exception:
+                _consumer_gone = threading.Event()
+                _stream_extra = dict(extra)
+                if _sc is not None:
+                    # the decode stops at the next token once whoever reads the stream has gone
+                    _stream_extra["stopping_criteria"] = type(_sc)(
+                        list(_sc) + [lambda _ids, _logits: _consumer_gone.is_set()])
+
+                def _open_stream(_max=attempt_max, _prompt=full_prompt, _kw=_stream_extra):
+                    _acquire_lock_fg_priority()
+                    try:
+                        _resume()
+                        return llm(
+                            _prompt,
+                            temperature=temperature,
+                            max_tokens=_max,
+                            top_p=top_p,
+                            top_k=top_k,
+                            repeat_penalty=repeat_penalty,
+                            stop=stop,
+                            stream=True,
+                            grammar=grammar,
+                            **_kw,
+                        )
+                    except BaseException:
+                        _safe_release()
+                        raise
+
+                def _stream_done():
                     _safe_release()
-                    raise
+                    _note_token_confidence(_confidence)
+
+                if not _native_lock_held_here():
+                    return _decode_on_own_thread(_open_stream, _stream_done, _consumer_gone)
+                # This thread already holds the model (a caller inside a model call of its own): a
+                # thread of the stream's own would wait for it for good. The lock is taken again here
+                # and given back by the reader, which is this same thread.
+                response = _open_stream()
 
                 def _locked_stream():
                     try:
                         for item in response:
                             yield item
                     finally:
-                        _safe_release()
-                        _note_token_confidence(_confidence)
+                        _consumer_gone.set()
+                        _stream_done()
 
                 return _locked_stream()
 
@@ -1776,13 +1809,13 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
         except Exception as e:
             last_exc = e
             msg = str(e).lower()
-            _code = re.search(r"llama_decode returned (-?\d+)", msg)
+            _code = _decode_error_code(e)
             # 2 is llama.cpp's "aborted": ELI's own abort callback stopped the decode (Stop, shutdown,
             # or a turn taking the model from a background call). Nothing is wrong with the cache. Read
             # as a full cache, the background call cleared it and the saved model state the turn was
             # about to reuse, then retried into the same abort, three times over. The background
             # caller tries again after the turn (chat_completion); a stopped turn stops.
-            if _code and _code.group(1) == "2":
+            if _code == "2":
                 if getattr(_bg_tls, "cut_short", False) or _USER_CANCEL.is_set() or _SHUTDOWN.is_set():
                     raise
                 log.debug("[GGUF] decode aborted with nothing asking it to stop; trying again as it was")
@@ -1792,7 +1825,7 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
             # returned ZERO tokens (and poisoned _gguf_available). Clear the cache, drop the reusable
             # states so the retry doesn't reload one that re-fills it, decode fresh, and give the
             # generation real headroom. Recovery only -- the fast path is untouched.
-            _kv_slot = bool(_code) or ("kv" in msg and "slot" in msg)
+            _kv_slot = _code is not None or ("kv" in msg and "slot" in msg)
             if "exceed context window" in msg or "requested tokens" in msg or _kv_slot:
                 if _kv_slot:
                     _drop_saved_states_for(llm)
@@ -1829,6 +1862,99 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
     if last_exc:
         raise last_exc
     raise RuntimeError("GGUF invocation failed")
+
+
+def _decode_error_code(exc: BaseException) -> Optional[str]:
+    """llama.cpp's code in a failed decode ("llama_decode returned 2"), or None for another error.
+    2 is "aborted": ELI's own abort callback stopped it (Stop, shutdown, a turn taking the model)."""
+    m = re.search(r"llama_decode returned (-?\d+)", str(exc).lower())
+    return m.group(1) if m else None
+
+
+def _native_lock_held_here() -> bool:
+    """Whether this thread holds the model lock already (it is re-entrant, so a call inside a
+    call takes it again)."""
+    owned = getattr(_LLM_CALL_LOCK, "_is_owned", None)
+    try:
+        return bool(owned()) if callable(owned) else False
+    except Exception:
+        return False
+
+
+# The end of a stream decoded on its own thread, with whether a turn cut a background call short.
+_STREAM_END = object()
+
+
+def _decode_on_own_thread(open_stream, done, consumer_gone: threading.Event):
+    """A streamed generation decoded on one thread of its own, which holds the model lock from the
+    first token to the last and hands the pieces over through a queue; the reader only reads it.
+
+    The model lock is owned by a thread. Held across every piece handed to the reader, it was taken
+    on the thread that asked for the first piece and given back on whichever thread asked for the
+    last: a web server asks for each piece from a pool thread, the release failed, and the lock
+    stayed held by a pool thread for good, so every later model call (a reply, an embedding, an
+    unload) waited forever. That thread could also run another model call while this one decoded.
+
+    The decode runs in the caller's context and with its thread's flags (background, job), so
+    turn facts, the saved-state prefix and the foreground-priority abort work as on the caller's
+    thread. An error starting the decode (taking the lock, the saved state, the call itself) is
+    raised here, where the caller's retries handle it; one during the decode reaches the reader.
+    A reader that stops early (closes the stream) stops the decode at the next token."""
+    import queue as _queue
+    pieces: "_queue.Queue" = _queue.Queue()
+    started: "_queue.Queue" = _queue.Queue(maxsize=1)
+    flags = {name: getattr(_bg_tls, name, False) for name in ("background", "job", "allow_during_shutdown")}
+
+    def _produce():
+        for name, value in flags.items():
+            setattr(_bg_tls, name, value)
+        _bg_tls.cut_short = False
+        try:
+            response = open_stream()
+        except BaseException as exc:          # the lock is already given back (open_stream)
+            started.put(exc)
+            return
+        started.put(None)
+        try:
+            for item in response:
+                pieces.put((True, item))
+                if consumer_gone.is_set():
+                    break
+        except BaseException as exc:
+            pieces.put((False, exc))
+        finally:
+            try:
+                _close = getattr(response, "close", None)
+                if callable(_close):
+                    _close()
+            except Exception:
+                _SWLOG.debug("closing the finished stream failed", exc_info=True)
+            try:
+                done()
+            finally:
+                pieces.put((False, (_STREAM_END, bool(getattr(_bg_tls, "cut_short", False)))))
+
+    threading.Thread(target=copy_context().run, args=(_produce,), name="eli-decode", daemon=True).start()
+    failure = started.get()
+    if failure is not None:
+        raise failure
+
+    def _read():
+        try:
+            while True:
+                ok, item = pieces.get()
+                if ok:
+                    yield item
+                elif isinstance(item, tuple) and item and item[0] is _STREAM_END:
+                    if item[1]:
+                        _bg_tls.cut_short = True
+                    return
+                else:
+                    raise item
+        finally:
+            consumer_gone.set()
+
+    return _read()
 
 
 def _estimate_prompt_tokens(llm, text: str) -> int:
@@ -2506,6 +2632,9 @@ def reload_model(*, await_completion: bool = True) -> Dict[str, Any]:
         except Exception:
             log.debug("[GGUF] reload env sync skipped", exc_info=True)
 
+        # The embedder is placed first, outside the model lock (_place_embedder): the load below
+        # runs inside it and so leaves the embedder as it is.
+        _place_embedder()
         with _LLM_CALL_LOCK:
             unload_model()
             llm = load_model(force_reload=True)

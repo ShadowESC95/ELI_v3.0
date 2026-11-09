@@ -178,3 +178,26 @@ def test_the_resolver_keeps_its_action_list_in_the_fixed_part(monkeypatch):
     llm_intent.parse_with_llm("could you sort my downloads by date")
     assert "ACTIONS (choose exactly one, or CHAT)" in seen["system"] and "EXAMPLES" in seen["system"]
     assert seen["prompt"] == 'USER: "could you sort my downloads by date"\nJSON:'
+
+
+def test_an_aborted_read_of_the_fixed_part_is_handed_on_as_it_is(monkeypatch):
+    """Stop or a turn taking the model aborts the read: the cache was cleared, a traceback printed and
+    the call read the whole prompt again into the same abort. The abort now goes to the call's own
+    retry, which stops a stopped call and tries an unasked-for abort again as it was."""
+    llm = _Llm()
+    resets = []
+    monkeypatch.setattr(llm, "reset", lambda: resets.append(1))
+    monkeypatch.setattr(llm, "eval", lambda tokens: (_ for _ in ()).throw(RuntimeError("llama_decode returned 2")))
+    with pytest.raises(RuntimeError, match="returned 2"):
+        _ready(llm, SYSTEM, "a")
+    assert len(resets) == 1, "only the reset before reading the fixed part; none after the abort"
+
+
+def test_a_stopped_call_does_not_read_the_fixed_part_at_all(monkeypatch):
+    llm = _Llm()
+    gi.request_cancel_generation()
+    try:
+        assert _ready(llm, SYSTEM, "a")[0] == ""
+        assert llm.read == []
+    finally:
+        gi.clear_cancel_generation()
