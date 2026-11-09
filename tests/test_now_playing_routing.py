@@ -43,8 +43,8 @@ def test_now_playing_prefers_live_playerctl(monkeypatch):
     monkeypatch.setattr(em, "_get_active_player", lambda *a, **k: "spotify")
     monkeypatch.setattr(
         em, "_spotify_live_meta",
-        lambda player="spotify": ("▶ Playing", "OTB ORTIZ", "Real One"),
+        lambda player="spotify": ("▶ Playing", "Quiet Machine", "Harbour Streets"),
     )
     out = em.now_playing()
-    assert "OTB ORTIZ — Real One" in out["content"]
+    assert "Quiet Machine — Harbour Streets" in out["content"]
     assert "liked songs (playlist)" not in out["content"]

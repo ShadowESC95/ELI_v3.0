@@ -80,10 +80,10 @@ def test_deepen_query_routes_to_topic_news():
 
 
 # A briefing keeps its stories open (executor `listed` / `follow_up`, runtime.pending_proposal),
-# and the router reads the next message against them. These are the session of 2026-10-14.
-TENNIS = "Saudi tennis 'slam' with Alcaraz, Djokovic postponed amid Houthi attacks"
-POPE = "The Pope was diagnosed with lung cancer and is recovering after surgery"
-TRANSFORMER = "Transformer trained in 1.5 hours beats larger models"
+# and the router reads the next message against them. The stories and replies are invented.
+REGATTA = "Coastal regatta 'grand race' postponed after storm warnings"
+MUSEUM = "Museum reopens its glass gallery after a year of repairs"
+SMALL_MODEL = "Small model trained in 1.5 hours beats larger models"
 
 
 @pytest.fixture()
@@ -91,11 +91,11 @@ def briefing_open(tmp_path, monkeypatch):
     from eli.runtime import pending_proposal as pp
     monkeypatch.setattr(pp, "_path", lambda: tmp_path / "pending_proposal.json")
     pp.set_pending_proposal(
-        "", question="How might the delay of the Saudi tennis tournament impact global sports scheduling?",
+        "", question="How might the regatta delay affect the rest of the sailing season?",
         listed={"action": "NEWS_FETCH",
-                "items": [{"title": TENNIS, "ref": "https://example.org/tennis"},
-                          {"title": POPE, "ref": "https://example.org/pope"},
-                          {"title": TRANSFORMER, "ref": "https://example.org/ai"}],
+                "items": [{"title": REGATTA, "ref": "https://example.org/regatta"},
+                          {"title": MUSEUM, "ref": "https://example.org/museum"},
+                          {"title": SMALL_MODEL, "ref": "https://example.org/ai"}],
                 "follow_up": {"action": "NEWS_FETCH", "arg": "topic",
                               "args": {"mode": "fetch_and_show", "sources": ["all"]}}},
         from_reply=True)
@@ -103,9 +103,9 @@ def briefing_open(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("said", [
-    "I don't know, how?",              # answering ELI's own question
-    "That christianity is dieing",     # an opinion on a story
-    "You just keep refetching the fucking news and not actually responding to me",
+    "No idea, how?",                   # answering ELI's own question
+    "That kite festivals are fading",  # an opinion on a story
+    "You just keep fetching the news again and not actually answering me",
 ])
 def test_a_reply_to_a_briefing_is_not_a_new_news_fetch(briefing_open, said):
     r = route(said)
@@ -114,10 +114,10 @@ def test_a_reply_to_a_briefing_is_not_a_new_news_fetch(briefing_open, said):
 
 
 @pytest.mark.parametrize("said,topic", [
-    ("go deeper into the transformer trained in 1.5 hours please", TRANSFORMER),
-    ("tell me more about the tennis story", TENNIS),
-    ("the second one", POPE),
-    ("the tennis one", TENNIS),
+    ("go deeper into the small model trained in 1.5 hours please", SMALL_MODEL),
+    ("tell me more about the regatta story", REGATTA),
+    ("the second one", MUSEUM),
+    ("the regatta one", REGATTA),
     ("go deeper into Hubble", "Hubble"),   # a subject the briefing did not list
 ])
 def test_going_further_into_a_briefing_fetches_that_story(briefing_open, said, topic):
@@ -357,7 +357,7 @@ def test_stt_background_chat_is_ignored_without_wake_word():
     from eli.perception.audio_stt import VoiceGate
 
     gate = VoiceGate()
-    state, command, wake = gate.classify("is lorikeets mean smaller we get it it's like i'm being punished for clarity")
+    state, command, wake = gate.classify("the blue kettle was on the step and then the bus went past the bakery again")
     assert state == "ignore_unarmed"
     assert command is None
     assert wake is None
