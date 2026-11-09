@@ -294,6 +294,30 @@ def test_a_launcher_starts_a_working_environment_and_explains_a_broken_one(insta
     assert "Traceback" not in said and "ModuleNotFoundError" not in said
 
 
+@pytest.mark.skipif(not POSIX, reason="the shell launchers")
+def test_eli_sh_starts_eli_with_this_checkouts_environment(tmp_path):
+    """./eli.sh, and the eli-v3 command that runs it, stopped at "eli_env_ready: command not
+    found" before ELI started: it called the check without loading the script that defines it."""
+    import shutil
+
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(ROOT / "eli.sh", tmp_path / "eli.sh")
+    shutil.copy(ROOT / "scripts" / "eli_isolate_env.sh", tmp_path / "scripts" / "eli_isolate_env.sh")
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _fake_tool(venv_bin / "python", 'if [ "$1" = "-c" ]; then exit 0; fi\n'
+                                    'echo "ran $*"\n'
+                                    'echo "root=$ELI_PROJECT_ROOT path=$PYTHONPATH data=$ELI_DATA_DIR"')
+    other = "/another/eli/checkout"
+    out = subprocess.run(["bash", str(tmp_path / "eli.sh"), "--help"], capture_output=True, text=True,
+                         env=dict(os.environ, PYTHONPATH=other, ELI_PROJECT_ROOT=other,
+                                  ELI_DATA_DIR=other + "/artifacts"), timeout=60)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "ran -m eli --help" in out.stdout
+    assert "root=%s path=%s data=%s/artifacts" % (tmp_path, tmp_path, tmp_path) in out.stdout, \
+        "another checkout's folders or packages reached this one"
+
+
 @pytest.mark.parametrize("script", ["eli.sh", "scripts/eli_launch.sh", "scripts/eli_serve.sh",
                                     "scripts/eli_startup.sh", "scripts/run_eli_repo_venv.sh"])
 def test_every_shell_launcher_checks_the_environment_before_starting(script):

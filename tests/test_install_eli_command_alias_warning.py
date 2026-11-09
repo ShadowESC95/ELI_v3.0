@@ -53,3 +53,47 @@ def test_no_warning_when_alias_already_points_at_the_fresh_install(tmp_path):
         cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
     )
     assert "alias eli-v3=" not in cp.stderr
+
+
+# ── which names this version takes ─────────────────────────────────────────────
+FIX = ROOT / "scripts" / "fix_eli_shell_env.sh"
+
+
+def _home(tmp_path):
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    env = dict(os.environ, HOME=str(home), ELI_BIN_DIR=str(home / ".local" / "bin"))
+    return home, env
+
+
+def test_the_shell_fix_installs_this_versions_commands_and_never_takes_another_products(tmp_path):
+    """Run by install.sh --yes, it force-installed the generic `eli` over whichever ELI product
+    owned it, and deleted every `export ELI_PROJECT_ROOT=` line, another version's included."""
+    home, env = _home(tmp_path)
+    bin_dir = home / ".local" / "bin"
+    others = "#!/bin/sh\n# another ELI product's command\nexec /opt/another-eli/run \"$@\"\n"
+    (bin_dir / "eli").write_text(others, encoding="utf-8")
+    (home / ".bashrc").write_text("export ELI_PROJECT_ROOT=/opt/another-eli\n"
+                                  f"export ELI_PROJECT_ROOT={ROOT}\n", encoding="utf-8")
+    cp = subprocess.run(["bash", str(FIX), "--yes"], cwd=str(ROOT), env=env,
+                        capture_output=True, text=True, timeout=60)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert (bin_dir / "eli").read_text(encoding="utf-8") == others
+    for name in ("eli-v3", "eli3"):
+        assert f'APP_ROOT="{ROOT}"' in (bin_dir / name).read_text(encoding="utf-8")
+    rc = (home / ".bashrc").read_text(encoding="utf-8")
+    assert "export ELI_PROJECT_ROOT=/opt/another-eli" in rc
+    assert f"export ELI_PROJECT_ROOT={ROOT}\n" not in rc
+
+
+def test_a_command_that_is_not_eli_v3s_is_replaced_only_with_force(tmp_path):
+    home, env = _home(tmp_path)
+    target = home / ".local" / "bin" / "eli-v3"
+    target.write_text("#!/bin/sh\necho a different program\n", encoding="utf-8")
+    run = lambda *a: subprocess.run(["bash", str(SCRIPT), *a], cwd=str(ROOT), env=env,  # noqa: E731
+                                    capture_output=True, text=True, timeout=30)
+    assert run().returncode == 1 and "a different program" in target.read_text(encoding="utf-8")
+    assert run("--force").returncode == 0
+    # ELI v3's own command, written before, is brought up to date without --force
+    assert run().returncode == 0 and f'APP_ROOT="{ROOT}"' in target.read_text(encoding="utf-8")
+

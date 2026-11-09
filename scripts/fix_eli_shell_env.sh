@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Point the shell `eli` command at THIS checkout and clear stale ELI_* exports.
+# Point this version's shell commands (eli-v3, eli3) at THIS checkout and clear its stale exports.
 #
 # Fixes the common ghost-machine failure mode: a bash alias or exported
 # ELI_PROJECT_ROOT from ELI v2 / another folder makes v3 write into the wrong
@@ -29,12 +29,15 @@ done
 
 echo "[fix-shell] checkout: $ROOT"
 
-# 1) Install ~/.local/bin/eli → this checkout's eli.sh (clears stale env inside).
-INSTALL_ARGS=(--force --name eli)
-bash "$ROOT/scripts/install_eli_command.sh" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
-
-# 2) Optional second name so v2 and v3 can coexist.
-bash "$ROOT/scripts/install_eli_command.sh" --force --name eli3
+# 1) This version's own commands, ~/.local/bin/eli-v3 and eli3 -> this checkout's eli.sh. Never the
+#    generic `eli`, which another ELI product may own. A command at either name that is not ELI v3's
+#    is left alone unless you pass --force.
+INSTALL_ARGS=()
+[ "$FORCE" -eq 1 ] && INSTALL_ARGS+=(--force)
+for _name in eli-v3 eli3; do
+  bash "$ROOT/scripts/install_eli_command.sh" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} --name "$_name" \
+    || echo "[fix-shell] $_name was not installed (see above)" >&2
+done
 
 # 3) Patch shell rc files — aliases beat PATH, so an old alias must go.
 _patch_rc() {
@@ -42,14 +45,15 @@ _patch_rc() {
   [ -f "$rc" ] || return 0
   local tmp
   tmp="$(mktemp)"
-  # Drop previous managed block and bare alias eli / export ELI_PROJECT_ROOT lines.
+  # Drop the previous managed block and this checkout's bare alias eli / export ELI_PROJECT_ROOT lines.
   awk -v b="$MARK_BEGIN" -v e="$MARK_END" -v root="$ROOT" '
     $0 == b { skip=1; next }
     $0 == e { skip=0; next }
     skip { next }
-    # a bare alias eli= line is removed only when it points at this checkout (another ELI version keeps its own)
+    # a bare alias eli= or export ELI_PROJECT_ROOT= line is removed only when it points at this
+    # checkout (another ELI version keeps its own)
     /^[[:space:]]*alias[[:space:]]+eli=/ && index($0, root) { next }
-    /^[[:space:]]*export[[:space:]]+ELI_PROJECT_ROOT=/ { next }
+    /^[[:space:]]*export[[:space:]]+ELI_PROJECT_ROOT=/ && index($0, root) { next }
     { print }
   ' "$rc" > "$tmp"
   mv "$tmp" "$rc"

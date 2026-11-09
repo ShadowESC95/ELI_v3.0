@@ -4,12 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/.venv"
-export ELI_PROJECT_ROOT="$SCRIPT_DIR"
-export ELI_DATA_DIR="${ELI_DATA_DIR:-$SCRIPT_DIR/artifacts}"
-export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$SCRIPT_DIR/config}"
-export ELI_MODELS_DIR="${ELI_MODELS_DIR:-$SCRIPT_DIR/models}"
-export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$SCRIPT_DIR/cache}"
-export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+# This checkout's folders and environment, set where every launcher sets them.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/scripts/eli_isolate_env.sh"
+eli_isolate_env "$SCRIPT_DIR"
 
 if [ ! -d "$VENV" ]; then
     echo "[ELI] Virtual environment not found. Run ./scripts/eli_setup.sh or bash install.sh first."

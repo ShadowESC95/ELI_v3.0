@@ -61,8 +61,11 @@ esac
 mkdir -p "$BIN_DIR"
 TARGET="$BIN_DIR/$NAME"
 
-if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then
-  echo "[install-command] target already exists: $TARGET" >&2
+# A command ELI v3 wrote there before is brought up to date. Anything else at that name belongs to
+# another ELI product or another program, and is replaced only when asked to with --force.
+# (The same test of what is v3's as scripts/eli_uninstall.sh.)
+if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ] && ! { [ -f "$TARGET" ] && grep -q -E 'ELI_v3|ELI v3|X-ELI-Version=3\.' "$TARGET"; }; then
+  echo "[install-command] $TARGET is already there and is not ELI v3's; left as it is." >&2
   echo "[install-command] rerun with --force to replace it." >&2
   exit 1
 fi
