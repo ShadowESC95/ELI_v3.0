@@ -169,8 +169,11 @@ def test_forget_takes_the_words_out_of_every_store_that_copied_them(mem, monkeyp
                     holding.append(f"{table}.{col}")
     finally:
         c.close()
-    # the audit chain commits to each row's content: it keeps them and says so
-    assert holding == ["runtime_events.content"] and report["audit_log_kept"] >= 1, holding
+    # the audit rows that quoted it have their words taken out, and the chain records that and holds
+    assert holding == [] and report["audit_log"] >= 1 and report["audit_log_kept"] == 0, holding
+    from eli.runtime import evidence_ledger
+    check = evidence_ledger.verify_chain(db_path=mem.db_path)
+    assert check["ok"] and check["redacted"] == report["audit_log"], check
 
 
 def test_the_forget_reply_says_what_was_kept_apart_from_what_went(monkeypatch):

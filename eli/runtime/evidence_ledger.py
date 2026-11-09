@@ -170,6 +170,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("prev_sig", "TEXT"),
         ("chain_sig", "TEXT"),
         ("keyed", "INTEGER DEFAULT 0"),
+        # When the row's words were taken out on the user's request (redact): its chain_sig stays.
+        ("redacted_at", "REAL"),
     ]:
         if name not in existing:
             conn.execute(f"ALTER TABLE runtime_events ADD COLUMN {name} {decl}")
@@ -259,37 +261,69 @@ def record_event(
                 conn.commit()
                 return int(existing[0])
 
-        # Chain link: this row commits to the previous row's chain_sig (genesis if first).
-        last = conn.execute(
-            "SELECT chain_sig FROM runtime_events WHERE chain_sig IS NOT NULL "
-            "ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        prev_sig = (last[0] if last and last[0] else _GENESIS)
-        ordered = (now, v_event, v_source, v_action, v_subject, v_content, v_payload,
-                   v_severity, v_outcome, confidence, v_reusable, v_session, v_user,
-                   v_request, sig)
-        key = _audit_key()
-        chain_sig = _chain_signature(prev_sig, ordered, key)
-        keyed = 1 if key else 0
-
-        cur = conn.execute(
-            """
-            INSERT INTO runtime_events (
-                ts, timestamp, event_type, source, action, subject, content,
-                payload_json, severity, outcome, confidence, reusable,
-                session_id, user_id, request_id, signature, prev_sig, chain_sig, keyed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                now, now, v_event, v_source, v_action, v_subject, v_content,
-                v_payload, v_severity, v_outcome, confidence, v_reusable,
-                v_session, v_user, v_request, sig, prev_sig, chain_sig, keyed,
-            ),
-        )
+        rowid = _append_chained(conn, (now, v_event, v_source, v_action, v_subject, v_content, v_payload,
+                                       v_severity, v_outcome, confidence, v_reusable, v_session, v_user,
+                                       v_request, sig))
         conn.commit()
-        return int(cur.lastrowid or 0)
+        return rowid
     finally:
         conn.close()
+
+
+def _append_chained(conn: sqlite3.Connection, ordered: tuple) -> int:
+    """Insert one row, linked to the previous chained row (genesis if first), inside the caller's write
+    transaction. `ordered` is (ts, event_type, source, action, subject, content, payload_json, severity,
+    outcome, confidence, reusable, session_id, user_id, request_id, signature), as stored."""
+    last = conn.execute(
+        "SELECT chain_sig FROM runtime_events WHERE chain_sig IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    prev_sig = (last[0] if last and last[0] else _GENESIS)
+    key = _audit_key()
+    chain_sig = _chain_signature(prev_sig, ordered, key)
+    keyed = 1 if key else 0
+    cur = conn.execute(
+        """
+        INSERT INTO runtime_events (
+            ts, timestamp, event_type, source, action, subject, content,
+            payload_json, severity, outcome, confidence, reusable,
+            session_id, user_id, request_id, signature, prev_sig, chain_sig, keyed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (ordered[0],) + tuple(ordered) + (prev_sig, chain_sig, keyed),
+    )
+    return int(cur.lastrowid or 0)
+
+
+REDACTION_EVENT = "redaction"
+
+
+def redact(conn: sqlite3.Connection, ids, *, why: str = "forgotten at the user's request") -> int:
+    """Take the words out of these audit rows (subject, content, payload) on the user's request, inside
+    the caller's write transaction, and say so in the chain: one chained "redaction" row lists each
+    redacted row's (id, chain_sig), so verify_chain still checks every link and accepts a blanked row
+    only as that row. Rows written before the chain existed are blanked with nothing to vouch for them.
+    Returns how many rows were redacted."""
+    ensure_schema(conn)
+    wanted = sorted({int(i) for i in (ids or []) if str(i).lstrip("-").isdigit()})
+    if not wanted:
+        return 0
+    marks = ",".join("?" * len(wanted))
+    rows = conn.execute(f"SELECT id, chain_sig FROM runtime_events WHERE id IN ({marks}) AND redacted_at IS NULL "
+                        f"AND event_type != ?", (*wanted, REDACTION_EVENT)).fetchall()
+    if not rows:
+        return 0
+    now = time.time()
+    # the update first: it takes the write lock, so no other writer links a row in between
+    conn.execute(f"UPDATE runtime_events SET subject = '', content = '', payload_json = '{{}}', redacted_at = ? "
+                 f"WHERE id IN ({','.join('?' * len(rows))})", (now, *[r[0] for r in rows]))
+    vouched = [[int(r[0]), str(r[1])] for r in rows if r[1]]
+    if vouched:
+        content = _norm(f"{len(vouched)} audit row(s) had their words taken out: {why}", 4000)
+        payload = _json({"redacted": vouched})[:30000]
+        _append_chained(conn, (now, REDACTION_EVENT, "memory.forget", "", "", content, payload, "info", "ok",
+                               None, 0, "", "", "", _signature([REDACTION_EVENT, content, payload, now])))
+    return len(rows)
 
 
 def recent_events(
@@ -402,7 +436,7 @@ def verify_chain(db_path: Optional[str | Path] = None) -> Dict[str, Any]:
     chain_sig. Any edited field, deleted row, or reordering makes a recomputed
     signature mismatch or breaks the prev_sig linkage — reported as the first break.
 
-    Returns ``{ok, checked, chained, legacy, keyed, first_break}``. ``keyed`` is True when
+    Returns ``{ok, checked, chained, legacy, redacted, keyed, first_break}``. ``keyed`` is True when
     the chain is HMAC-protected (a local forger without the key can't produce a clean
     chain). Once HMAC starts, a later UNkeyed row is treated as a downgrade attempt."""
     conn = _connect(db_path)
@@ -410,15 +444,27 @@ def verify_chain(db_path: Optional[str | Path] = None) -> Dict[str, Any]:
         rows = conn.execute(
             "SELECT id, ts, event_type, source, action, subject, content, payload_json, "
             "severity, outcome, confidence, reusable, session_id, user_id, request_id, "
-            "signature, prev_sig, chain_sig, keyed FROM runtime_events ORDER BY id ASC"
+            "signature, prev_sig, chain_sig, keyed, redacted_at FROM runtime_events ORDER BY id ASC"
         ).fetchall()
     finally:
         conn.close()
+
+    # A row whose words were taken out (redact) is vouched for by a later chained redaction row that
+    # names it with its chain_sig; that row is itself checked below like every other.
+    vouched: Dict[int, tuple] = {}
+    for r in rows:
+        if r[2] == REDACTION_EVENT and r[17] is not None:
+            try:
+                for rid, sig in (json.loads(r[7] or "{}").get("redacted") or []):
+                    vouched[int(rid)] = (str(sig), int(r[0]))
+            except (ValueError, TypeError):
+                continue
 
     key = _audit_key()
     checked = 0
     chained = 0
     legacy = 0
+    redacted = 0
     keyed_seen = False
     prev_chain = _GENESIS
     first_break: Optional[Dict[str, Any]] = None
@@ -444,9 +490,20 @@ def verify_chain(db_path: Optional[str | Path] = None) -> Dict[str, Any]:
         if row_keyed and key is None:
             first_break = {"id": rid, "reason": "HMAC key unavailable — cannot verify a keyed row"}
             break
-        # 2) Integrity: recompute this row's chain_sig from its stored fields (+ key if keyed).
+        # 2) Integrity: recompute this row's chain_sig from its stored fields (+ key if keyed). A
+        # redacted row cannot be recomputed; it stands when a later redaction row vouches for it.
         ordered = (r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10],
                    r[11], r[12], r[13], r[14], r[15])
+        if r[19] is not None:
+            sig_and_by = vouched.get(int(rid))
+            if not sig_and_by or sig_and_by[0] != str(stored_chain) or sig_and_by[1] <= int(rid):
+                first_break = {"id": rid, "reason": "words taken out with no redaction record for this row"}
+                break
+            redacted += 1
+            chained += 1
+            keyed_seen = keyed_seen or row_keyed
+            prev_chain = stored_chain
+            continue
         recomputed = _chain_signature(stored_prev, ordered, key if row_keyed else None)
         if recomputed != str(stored_chain):
             first_break = {"id": rid, "reason": "content tampered (a field was edited "
@@ -461,6 +518,7 @@ def verify_chain(db_path: Optional[str | Path] = None) -> Dict[str, Any]:
         "checked": checked,
         "chained": chained,
         "legacy": legacy,
+        "redacted": redacted,
         "keyed": keyed_seen,
         "first_break": first_break,
     }

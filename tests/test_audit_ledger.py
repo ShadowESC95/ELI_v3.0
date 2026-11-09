@@ -132,3 +132,31 @@ def test_chain_links_each_row_to_previous(ledger_db):
     assert rows[0][0] == L._GENESIS
     for i in range(1, len(rows)):
         assert rows[i][0] == rows[i - 1][1]  # prev_sig == previous chain_sig
+
+
+def test_a_row_redacted_on_request_keeps_the_chain_whole_and_an_edit_still_breaks_it(ledger_db):
+    """Forgetting a memory left its words in the audit log: blanking them broke the chain. A redaction
+    the chain itself records keeps it verifiable; an edit nothing vouches for is still caught."""
+    import sqlite3
+    a = L.record_event("executor_action", source="t", action="WRITE_NOTE", content="buy the blue paint", db_path=ledger_db)
+    b = L.record_event("executor_action", source="t", action="TIME", content="12:00", db_path=ledger_db)
+    conn = sqlite3.connect(str(ledger_db))
+    try:
+        assert L.redact(conn, [a]) == 1
+        conn.commit()
+        assert conn.execute("SELECT content, payload_json, redacted_at IS NOT NULL FROM runtime_events WHERE id = ?",
+                            (a,)).fetchone() == ("", "{}", 1)
+    finally:
+        conn.close()
+    v = L.verify_chain(db_path=ledger_db)
+    assert v["ok"] and v["redacted"] == 1 and v["checked"] == 3, v
+    L.record_event("executor_action", source="t", action="TIME", content="12:05", db_path=ledger_db)
+    assert L.verify_chain(db_path=ledger_db)["ok"], "the chain goes on after a redaction"
+    conn = sqlite3.connect(str(ledger_db))
+    try:   # blanking a row by hand, with no redaction record for it, is tampering
+        conn.execute("UPDATE runtime_events SET content = '', redacted_at = 1 WHERE id = ?", (b,))
+        conn.commit()
+    finally:
+        conn.close()
+    v = L.verify_chain(db_path=ledger_db)
+    assert not v["ok"] and v["first_break"]["id"] == b

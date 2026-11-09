@@ -3493,7 +3493,7 @@ class Memory(metaclass=_MemoryMeta):
         (the audit chain cannot be edited without breaking it)."""
         report: Dict[str, int] = {k: 0 for k in (
             "memories", "derived", "claims", "recall_log", "semantic", "summaries", "profile", "stances", "graph",
-            "turns", "patterns", "replay", "conversations", "thoughts", "vectors", "audit_log_kept")}
+            "turns", "patterns", "replay", "conversations", "thoughts", "vectors", "audit_log", "audit_log_kept")}
         wanted = sorted({int(i) for i in (ids or []) if str(i).isdigit()})
         if not wanted:
             return report
@@ -3669,10 +3669,25 @@ class Memory(metaclass=_MemoryMeta):
                     conn.execute("DELETE FROM thoughts WHERE id = ?", (rid,))
                     report["thoughts"] += 1
         if has("runtime_events"):
-            # the audit chain commits to each row's content: editing one breaks the chain, so these
-            # stay and are reported, not hidden
-            report["audit_log_kept"] += sum(1 for (content,) in conn.execute(
-                "SELECT COALESCE(content, '') FROM runtime_events WHERE COALESCE(content, '') != ''") if derived(content))
+            # The audit chain commits to each row's words, so they are taken out by the ledger's own
+            # redaction, which the chain records and verify_chain accepts; a row it could not redact
+            # stays, and is reported, not hidden.
+            from eli.runtime import evidence_ledger as _ledger
+            _ledger.ensure_schema(conn)
+            # its words or what it was about; a payload (a whole result) only when it holds the memory
+            quoting = [rid for rid, content, subject, payload in conn.execute(
+                "SELECT id, COALESCE(content, ''), COALESCE(subject, ''), COALESCE(payload_json, '') "
+                "FROM runtime_events WHERE redacted_at IS NULL AND COALESCE(event_type, '') != ?",
+                (_ledger.REDACTION_EVENT,))
+                if derived(content) or derived(subject) or needle in _policy.normalise_text(payload)]
+            if quoting:
+                try:
+                    taken = _ledger.redact(conn, quoting)
+                except Exception:
+                    log.warning("audit rows quoting a forgotten memory could not be redacted", exc_info=True)
+                    taken = 0
+                report["audit_log"] += taken
+                report["audit_log_kept"] += len(quoting) - taken
         if has("kg_relations") and has("kg_entities") and ts:
             from eli.memory.knowledge_graph import read_triples
             ends = set()
