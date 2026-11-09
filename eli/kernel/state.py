@@ -303,10 +303,10 @@ def set_communication_style(style: str, user_id: str | None = None) -> str:
     if not _is_active_user(user_id):
         return s
     try:
-        from eli.core.runtime_settings import load_settings, save_settings
-        st = load_settings() or {}
-        st["communication_style"] = s
-        save_settings(st)
+        from eli.core.runtime_settings import save_settings
+        # only the key changed: a whole load_settings() view handed back wrote every default and
+        # every one-session environment override into the file as if chosen
+        save_settings({"communication_style": s})
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     try:

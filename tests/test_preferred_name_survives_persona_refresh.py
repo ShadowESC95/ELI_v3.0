@@ -106,3 +106,19 @@ def test_the_profile_is_written_only_when_something_in_it_changed(tmp_path, monk
         assert state.get_user_name() == "Robin", "a name is never taken from an identity line"
     finally:
         state.set_user_name(before)
+
+
+def test_a_chosen_style_writes_only_that_setting(monkeypatch):
+    """The whole load_settings() view went back to save_settings: every default and this session's
+    environment overrides were written into the file as if chosen."""
+    from eli.kernel import state
+    import eli.core.runtime_settings as rs
+    saved = []
+    monkeypatch.setattr(state, "load_user_profile", lambda user_id=None: {})
+    monkeypatch.setattr(state, "save_user_profile", lambda profile, user_id=None: profile)
+    monkeypatch.setattr(state, "_is_active_user", lambda user_id=None: True)
+    monkeypatch.setattr(rs, "load_settings", lambda *a, **k: {"theme": "a-default", "n_ctx": 12288})
+    monkeypatch.setattr(rs, "save_settings", lambda delta: saved.append(dict(delta)))
+    monkeypatch.setattr("eli.cognition.persona_updater.update_persona_overlay", lambda *a, **k: None)
+    assert state.set_communication_style("short and plain") == "short and plain"
+    assert saved == [{"communication_style": "short and plain"}]

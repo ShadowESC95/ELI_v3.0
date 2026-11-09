@@ -83,3 +83,50 @@ def test_the_window_keeps_its_console_log_once_its_folders_are_set(monkeypatch, 
     with pytest.raises(_Stop):
         app.main()
     assert order == ["licence", "console", "bootstrap"]
+
+
+def test_a_returning_launch_writes_nothing_and_setup_writes_only_what_it_chose(monkeypatch, tmp_path):
+    """The whole settings view was handed back to save_settings: every default and every one-session
+    environment override (ELI_N_CTX, ELI_MODEL_PATH...) went into the file as if chosen."""
+    import sys
+    model = tmp_path / "models" / "a-model.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"GGUF")
+    saved = []
+
+    class _Stop(BaseException):
+        pass
+
+    def _stop(*a, **k):
+        raise _Stop()
+
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "venv" / "bin" / "python"))   # pins no root
+    monkeypatch.setattr("eli.licensing.launch_gate.ensure_license_or_exit", lambda **k: None)
+    monkeypatch.setattr("eli.utils.log.keep_console_log", lambda *a, **k: None)
+    monkeypatch.setattr("eli.core.init_data.bootstrap_once", lambda: None)
+    monkeypatch.setattr("eli.core.init_data.store_blocker", lambda: None)
+    monkeypatch.setattr("eli.bundles.chooser.target_at_startup", lambda argv: None)
+    monkeypatch.setattr("eli.core.gpu_pack_runtime.try_activate_gpu_pack", lambda **k: None)
+    monkeypatch.setattr("eli.cognition.gguf_inference.load_request", _stop)
+    view = {"model_path": str(model), "first_run_complete": True, "show_startup_model_picker": False,
+            "n_ctx": 12288, "theme": "a-default", "ram_budget_percent": 61}
+    monkeypatch.setattr(app, "_load_config", lambda: dict(view))
+    monkeypatch.setattr(app, "save_settings", lambda c: saved.append(dict(c)))
+    monkeypatch.setattr(app, "MODELS_DIR", model.parent)
+    tuned = {"n_ctx": 4096, "n_gpu_layers": 0, "n_threads": 2, "batch_size": 64, "max_tokens": -1,
+             "temperature": 0.7, "use_mmap": True, "use_mlock": False, "cache_type_k": "f16", "cache_type_v": "f16"}
+    monkeypatch.setattr(app, "_auto_tune", lambda p: dict(tuned))
+    monkeypatch.setattr(sys, "argv", ["eli-gui"])
+    with pytest.raises(_Stop):
+        app.main()
+    assert saved == [], "a returning launch chose nothing"
+    monkeypatch.setattr(sys, "argv", ["eli-gui", "--setup"])
+    monkeypatch.setattr(app, "_print_header", lambda: None)
+    monkeypatch.setattr(app, "_pick_model", lambda models: model)
+    monkeypatch.setattr(app, "_confirm_params", lambda m, p: p)
+    with pytest.raises(_Stop):
+        app.main()
+    assert len(saved) == 1
+    assert set(saved[0]) == set(tuned) | {"model_path", "bundled_model_path", "custom_model_path",
+                                         "gguf_model_path", "first_run_complete"}
+    assert saved[0]["n_ctx"] == 4096 and "theme" not in saved[0] and "ram_budget_percent" not in saved[0]

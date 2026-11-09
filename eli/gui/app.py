@@ -134,10 +134,14 @@ def _load_config() -> dict:
         return {}
 
 
-def _save_config(cfg: dict):
+def _save_config(changes: dict):
+    """Save only the keys this launch chose (no legacy names). The whole _load_config() view handed
+    back wrote every default and every one-session environment override (ELI_N_CTX,
+    ELI_MODEL_PATH...) into the file as if they had been chosen."""
+    changes = dict(changes)
     for legacy_key in ("gpu_layers", "cpu_threads", "n_batch", "context_size"):
-        cfg.pop(legacy_key, None)
-    save_settings(cfg)
+        changes.pop(legacy_key, None)
+    save_settings(changes)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -293,14 +297,18 @@ def main():
         params     = _auto_tune(model_path)
         params     = _confirm_params(model_path, params)
 
-    # Persist: update model paths + params, mark first run complete
-    cfg.update(params)
-    cfg["model_path"]          = str(model_path)
-    cfg["bundled_model_path"]  = str(model_path)
-    cfg["custom_model_path"]   = str(model_path)
-    cfg["gguf_model_path"]     = str(model_path)
-    cfg["first_run_complete"]  = True
-    _save_config(cfg)
+    # Persist what the setup chose: the model's paths and params, and that the first run is done. A
+    # returning launch chose nothing: its params are the saved values (or this session's environment
+    # overrides) and the file keeps what it had.
+    if not silent:
+        chosen = dict(params)
+        chosen["model_path"]          = str(model_path)
+        chosen["bundled_model_path"]  = str(model_path)
+        chosen["custom_model_path"]   = str(model_path)
+        chosen["gguf_model_path"]     = str(model_path)
+        chosen["first_run_complete"]  = True
+        cfg.update(chosen)
+        _save_config(chosen)
 
     # The same load the window and the server make: the plan for this machine now, the saved
     # values as the request (gguf_inference.load_model writes what loaded to runtime_snapshot.json).
