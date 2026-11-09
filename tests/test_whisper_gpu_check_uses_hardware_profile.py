@@ -125,3 +125,59 @@ def test_the_hints_are_the_apps_the_person_has_named(monkeypatch):
     monkeypatch.setattr(stt, "_HINTS", [])
     stt._gather_hints()
     assert stt._HINTS == ["computer", "Spotify"], "only an app named whole, not a word of it or inside a word"
+
+
+# ── a load that cannot happen is reported, not left "loading" ────────────────
+
+def _reset_model_state(monkeypatch):
+    monkeypatch.setattr(stt, "_MODEL", None)
+    monkeypatch.setattr(stt, "_MODEL_KEY", None)
+    monkeypatch.setattr(stt, "_MODEL_LOADING", False)
+    monkeypatch.setattr(stt, "_LOAD_ERROR", "", raising=False)
+
+
+def test_an_offline_install_without_the_model_fails_each_time_at_once(tmp_path, monkeypatch):
+    """The import and the offline-cache check sat before the try that resets the flags: after one
+    failure whisper read as "loading" for good and every later utterance waited five minutes."""
+    import pytest
+    _reset_model_state(monkeypatch)
+    monkeypatch.setattr(stt, "_model_settings", lambda: ("small.en", str(tmp_path), "cpu", "int8", True))
+    monkeypatch.setattr(stt, "whisper_cache_ready", lambda *_a, **_k: False)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            stt.get_model()
+        assert stt._MODEL_LOADING is False, "whisper is left 'loading' after a load that failed"
+    assert "not installed locally" in stt._LOAD_ERROR
+
+
+def test_a_live_recording_is_handed_over_from_memory(monkeypatch):
+    """Each utterance was written to a temporary WAV and reopened by name while open, which Windows
+    refuses: voice input there returned "" for every utterance. The samples are in memory already."""
+    import numpy as np
+    import tempfile
+    _reset_model_state(monkeypatch)
+    seen = {}
+
+    class _Model:
+        def transcribe(self, audio, **kw):
+            seen["audio"] = audio
+            return iter([type("S", (), {"text": " Pause."})()]), None
+
+    class _AudioData:                        # what speech_recognition hands over
+        def get_raw_data(self, convert_rate=None, convert_width=None):
+            assert convert_rate == 16000 and convert_width == 2
+            return np.full(1600, 2000, dtype="<i2").tobytes()
+
+        def get_wav_data(self, convert_rate=None, convert_width=None):
+            return b"RIFF" + self.get_raw_data(convert_rate, convert_width)
+
+    def _no_temp_files(*_a, **_k):
+        raise PermissionError("a temporary file cannot be reopened by name while open (Windows)")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", _no_temp_files)
+    monkeypatch.setattr(stt, "get_model", lambda: _Model())
+    monkeypatch.setattr(stt, "_HINTS_STARTED", True)
+    assert stt.transcribe_speech_recognition_audio(_AudioData()) == "pause."
+    audio = seen["audio"]
+    assert isinstance(audio, np.ndarray) and audio.dtype == np.float32 and len(audio) == 1600
+    assert abs(float(audio.mean()) - 2000 / 32768) < 1e-6

@@ -1,6 +1,5 @@
 import logging
 import os
-import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -15,6 +14,7 @@ _MODEL_LOCK = threading.Lock()
 _MODEL_LOADING = False   # True while a download/load is in progress
 _MODEL_READY = threading.Event()  # set once the model is loaded successfully
 _CUDA_FAILED = False  # set permanently once CUDA OOM occurs; prevents re-escalation
+_LOAD_ERROR = ""     # why the last load failed ("" once one works), for whisper_status
 
 
 def _env(name, default):
@@ -218,6 +218,7 @@ def whisper_status() -> dict:
             "cache_ready": whisper_cache_ready(model_dir, model),
             "loaded": _MODEL is not None,
             "loading": _MODEL_LOADING,
+            "load_error": _LOAD_ERROR,
             "cuda_failed": _CUDA_FAILED,
             "gpu_total_mb": int((_whisper_card() or {}).get("total_mb") or 0),
         }
@@ -294,7 +295,7 @@ def _model_settings():
 
 
 def get_model():
-    global _MODEL, _MODEL_KEY, _MODEL_LOADING, _CUDA_FAILED
+    global _MODEL, _MODEL_KEY, _MODEL_LOADING, _CUDA_FAILED, _LOAD_ERROR
 
     model, model_dir, device, compute_type, local_only = _model_settings()
     key = (model, model_dir, device, compute_type, local_only)
@@ -304,18 +305,18 @@ def get_model():
         return _MODEL
 
     with _MODEL_LOCK:
-        # Re-check after acquiring lock (another thread may have loaded it)
+        # Re-check after acquiring lock (another thread may have loaded it). A load runs whole under
+        # this lock, so a second caller waits here and then finds the model, or loads it itself.
         if _MODEL is not None and _MODEL_KEY == key:
             return _MODEL
 
-        # Another thread is currently downloading — wait for it
-        if _MODEL_LOADING:
-            pass  # fall through; will wait on _MODEL_READY below
-
-        else:
-            _MODEL_LOADING = True
-            _MODEL_READY.clear()
-
+        _MODEL_LOADING = True
+        _MODEL_READY.clear()
+        # Everything that can fail is inside the try, so the flags are reset whatever happens: the
+        # import and the offline-cache check used to sit before it, and after one such failure every
+        # later transcription waited five minutes on a load that was never running, with whisper
+        # reported as "loading" for good.
+        try:
             from faster_whisper import WhisperModel
 
             if local_only and not whisper_cache_ready(model_dir, model):
@@ -326,47 +327,54 @@ def get_model():
                 f"device={device!r} compute={compute_type!r} "
                 f"download_root={model_dir!r} local_only={local_only}",
             )
-
             try:
-                try:
+                _MODEL = WhisperModel(
+                    model,
+                    device=device,
+                    compute_type=compute_type,
+                    download_root=model_dir,
+                    local_files_only=local_only,
+                )
+                log.debug(f"[LOCAL_STT] faster-whisper ready on {device}")
+            except Exception as _stt_dev_err:
+                # GPU load failed/OOM'd — fall back to CPU and remember, so
+                # the rest of the session stays on CPU (no repeated OOMs).
+                if str(device).lower() == "cuda":
+                    _CUDA_FAILED = True
+                    log.debug(
+                        f"[LOCAL_STT] CUDA load failed "
+                        f"({type(_stt_dev_err).__name__}: {_stt_dev_err}); "
+                        f"falling back to CPU")
+                    device, compute_type = "cpu", "int8"
+                    key = (model, model_dir, device, compute_type, local_only)
                     _MODEL = WhisperModel(
-                        model,
-                        device=device,
-                        compute_type=compute_type,
-                        download_root=model_dir,
-                        local_files_only=local_only,
+                        model, device="cpu", compute_type="int8",
+                        download_root=model_dir, local_files_only=local_only,
                     )
-                    log.debug(f"[LOCAL_STT] faster-whisper ready on {device}")
-                except Exception as _stt_dev_err:
-                    # GPU load failed/OOM'd — fall back to CPU and remember, so
-                    # the rest of the session stays on CPU (no repeated OOMs).
-                    if str(device).lower() == "cuda":
-                        _CUDA_FAILED = True
-                        log.debug(
-                            f"[LOCAL_STT] CUDA load failed "
-                            f"({type(_stt_dev_err).__name__}: {_stt_dev_err}); "
-                            f"falling back to CPU")
-                        device, compute_type = "cpu", "int8"
-                        key = (model, model_dir, device, compute_type, local_only)
-                        _MODEL = WhisperModel(
-                            model, device="cpu", compute_type="int8",
-                            download_root=model_dir, local_files_only=local_only,
-                        )
-                        log.debug("[LOCAL_STT] faster-whisper ready on cpu (fallback)")
-                    else:
-                        raise
-                _MODEL_KEY = key
-            finally:
-                _MODEL_LOADING = False
-                _MODEL_READY.set()  # unblock any waiters even on failure
+                    log.debug("[LOCAL_STT] faster-whisper ready on cpu (fallback)")
+                else:
+                    raise
+            _MODEL_KEY = key
+            _LOAD_ERROR = ""
+        except Exception as exc:
+            _note_load_error(exc)
+            raise
+        finally:
+            _MODEL_LOADING = False
+            _MODEL_READY.set()  # unblock any waiters even on failure
 
-            return _MODEL
+        return _MODEL
 
-    # We didn't win the load race — wait for the loader to finish then return
-    _MODEL_READY.wait(timeout=300)
-    if _MODEL is None:
-        raise RuntimeError("[LOCAL_STT] model failed to load in background thread")
-    return _MODEL
+
+def _note_load_error(exc: BaseException) -> None:
+    """Keep why whisper could not load, for whisper_status (Settings shows it), and say it once in
+    the log at warning: each later utterance tries again and fails the same way, and those stay at
+    debug. A different reason is said again."""
+    global _LOAD_ERROR
+    why = str(exc) or type(exc).__name__
+    if why != _LOAD_ERROR:
+        log.warning("[LOCAL_STT] speech recognition cannot load: %s", why)
+    _LOAD_ERROR = why
 
 
 def preload_model() -> bool:
@@ -481,10 +489,11 @@ def heard_clearly(text: str) -> bool:
     return not (_LAST_HEARD["doubtful"] and " ".join(str(text or "").lower().split()) == _LAST_HEARD["text"])
 
 
-def _do_transcribe(model, wav_path: str, language: str | None) -> str:
+def _do_transcribe(model, audio, language: str | None) -> str:
+    """`audio`: 16 kHz mono float32 samples, or the path of a recording (read into samples here)."""
     hints = _hint_words()
     segments, _info = model.transcribe(
-        _audio_for_whisper(wav_path),
+        audio if _is_samples(audio) else _audio_for_whisper(audio),
         language=language,
         hotwords=hints or None,
         # beam_size=5 (faster-whisper's default) restores sentence punctuation
@@ -522,11 +531,15 @@ def _reload_model_on_cpu() -> None:
     _MODEL_KEY = (model_name, model_dir, "cpu", "int8", local_only)
 
 
-def _transcribe_path_with_fallback(wav_path: str, language: str | None) -> str:
-    """Transcribe a file path, retrying once on CPU if CUDA runs out of VRAM."""
+def _is_samples(audio) -> bool:
+    return hasattr(audio, "dtype") and hasattr(audio, "shape")
+
+
+def _transcribe_with_fallback(audio, language: str | None) -> str:
+    """Transcribe samples or a file path, retrying once on CPU if CUDA runs out of VRAM."""
     model = get_model()
     try:
-        return _do_transcribe(model, wav_path, language)
+        return _do_transcribe(model, audio, language)
     except RuntimeError as exc:
         _exc_str = str(exc).lower()
         _is_vram_failure = (
@@ -545,20 +558,27 @@ def _transcribe_path_with_fallback(wav_path: str, language: str | None) -> str:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         _reload_model_on_cpu()
-        return _do_transcribe(_MODEL, wav_path, language)
+        return _do_transcribe(_MODEL, audio, language)
+
+
+def speech_recognition_samples(audio):
+    """A speech_recognition AudioData as 16 kHz mono float32 samples, straight from memory. The
+    utterance was written to a temporary WAV that was then reopened by name while still open, which
+    Windows does not allow: every utterance came back empty there, and each one went to disk."""
+    import numpy as np
+    from eli.perception.audio_samples import SPEECH_RATE
+    raw = audio.get_raw_data(convert_rate=SPEECH_RATE, convert_width=2)
+    if not raw:
+        return None
+    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
 def transcribe_speech_recognition_audio(audio):
-    wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
-    if not wav_bytes:
+    samples = speech_recognition_samples(audio)
+    if samples is None or not len(samples):
         return ""
-
     language = _env("ELI_WHISPER_LANGUAGE", "en") or None
-
-    with tempfile.NamedTemporaryFile(prefix="eli_stt_", suffix=".wav", delete=True) as tmp:
-        tmp.write(wav_bytes)
-        tmp.flush()
-        return _transcribe_path_with_fallback(tmp.name, language)
+    return _transcribe_with_fallback(samples, language)
 
 
 def transcribe_file(path: str, language: str | None = None) -> str:
@@ -566,4 +586,4 @@ def transcribe_file(path: str, language: str | None = None) -> str:
     PyAV by faster-whisper). Powers the browser-voice endpoint; nothing leaves
     the box. Mirrors the CUDA→CPU VRAM fallback of the live-mic path."""
     lang = language or (_env("ELI_WHISPER_LANGUAGE", "en") or None)
-    return _transcribe_path_with_fallback(str(path), lang)
+    return _transcribe_with_fallback(str(path), lang)
