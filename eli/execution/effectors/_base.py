@@ -191,13 +191,22 @@ def _run_argv(argv, timeout=30):
 _security_manager = None
 
 
+# What a SecurityManager reads when it is made. The one kept here is made again when any of these
+# changes: it read ELI_ALLOWED_CMDS once, so a command allowed (or taken off the list) while ELI ran
+# was judged by the list as it stood at the first command.
+_SECURITY_INPUTS = ("ELI_ALLOWED_CMDS", "ELI_ALLOW_ROOTS", "ELI_ALLOWED_APPS", "ELI_ROOT")
+_security_inputs_seen = None
+
+
 def _get_security_manager():
-    """Return the module-level SecurityManager singleton (imported lazily)."""
-    global _security_manager
-    if _security_manager is None:
+    """The SecurityManager for the allowlists as they are now (imported lazily)."""
+    global _security_manager, _security_inputs_seen
+    now = tuple(os.environ.get(name, "") for name in _SECURITY_INPUTS)
+    if _security_manager is None or now != _security_inputs_seen:
         try:
             from eli.runtime.security import SecurityManager
             _security_manager = SecurityManager()
+            _security_inputs_seen = now
         except Exception:
             _security_manager = None  # degrade gracefully if unavailable
     return _security_manager

@@ -148,3 +148,15 @@ def test_scan_top_level_symbols_flags_syntax_error(tmp_path):
     from pathlib import Path
     issues = ex._scan_top_level_symbols(Path("bad.py"), "def broken(:\n  pass")
     assert any(i["type"] == "syntax_error" for i in issues)
+
+
+def test_the_command_allowlist_is_read_as_it_is_now(no_full_control, monkeypatch):
+    """The SecurityManager kept for effectors read ELI_ALLOWED_CMDS once: a command allowed later
+    stayed blocked, and one taken off the list stayed allowed."""
+    monkeypatch.setattr(gate, "_security_manager", None)
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo")
+    assert gate._get_security_manager().is_command_allowed("printf") is False
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo,printf")
+    assert gate._get_security_manager().is_command_allowed("printf") is True
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo")
+    assert gate._get_security_manager().is_command_allowed("printf") is False
