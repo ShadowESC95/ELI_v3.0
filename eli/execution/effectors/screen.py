@@ -12,6 +12,27 @@ def _execute_impl(*a, **k):
     return _f(*a, **k)
 
 
+def _capture_failure(result) -> tuple:
+    """(why, attempts) of a failed screen capture. The capture says what it tried and what each way
+    did (`attempts`), and that is the cause told: "the portal did not answer in 25 s" is the reason,
+    where a fixed "install scrot or maim" was given even with those tools present."""
+    result = result if isinstance(result, dict) else {}
+    attempts = list(result.get("attempts") or [])
+
+    def told(step) -> str:
+        if isinstance(step, dict):
+            how = str(step.get("method") or step.get("way") or step.get("tool") or step.get("name") or "").strip()
+            what = str(step.get("outcome") or step.get("error") or step.get("result") or step.get("why")
+                       or step.get("detail") or "").strip()
+            return f"{how}: {what}" if how and what else (how or what)
+        return str(step or "").strip()
+
+    said = [t for t in (told(step) for step in attempts) if t]
+    if said:
+        return "; ".join(said), attempts
+    return str(result.get("error") or "no picture of the screen came back"), attempts
+
+
 def _h_ambient_vision(a, args):
     _av_enabled = args.get("enabled")
     if _av_enabled is None:
@@ -62,8 +83,8 @@ def _h_screen_read_analyze(a, args):
         ss_result = take_screenshot(region=str(args.get("area") or args.get("region") or "full"), keep=False)
         ss_path = ss_result.get("path") or ss_result.get("file") or ""
         if not ss_result.get("ok") or not ss_path or not Path(ss_path).exists():
-            why = str(ss_result.get("error") or "no picture of the screen came back")
-            return {"ok": False, "action": a, "error": why,
+            why, attempts = _capture_failure(ss_result)
+            return {"ok": False, "action": a, "error": why, "attempts": attempts,
                     "content": f"I couldn't see the screen: {why}", "response": f"I couldn't see the screen: {why}"}
         _sra_prompt = build_screen_analysis_prompt(
             user_q,
@@ -128,7 +149,12 @@ def _h_screenshot(a, args):
     try:
         from eli.perception.os_controller import take_screenshot
         region = (args.get("region") or "full").strip()
-        return take_screenshot(region=region)
+        result = take_screenshot(region=region)
+        if isinstance(result, dict) and not result.get("ok"):
+            why, attempts = _capture_failure(result)
+            msg = f"Screenshot failed: {why}"
+            return {**result, "action": a, "error": why, "attempts": attempts, "content": msg, "response": msg}
+        return result
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
