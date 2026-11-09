@@ -6038,10 +6038,15 @@ def _action_post_dispatch(
             # Failures live in one store, the agent/self-improvement DB (agent.sqlite3) next to
             # improvements and code_patches. Dual-writing to the user DB split the log; the
             # Self-Improve panel reads only the agent store.
+            # The one record of an action failure, keyed by the component: the action and the names of
+            # its arguments, never their values (a note's text or a search is the person's own words).
+            # What it was run with stays in the context, where self-repair rebuilds the run from it.
+            _record_key = (f"{str(action or '').upper()} ("
+                           + ", ".join(sorted(str(k) for k in (args or {}) if not str(k).startswith("_"))) + ")")
             try:
                 from eli.memory import get_agent_memory as _get_agent_memory
                 _get_agent_memory().log_failure(
-                    signature_input,
+                    _record_key,
                     error=err_text,
                     confidence=0.0,
                     context={"action": action, "args": args or {}, "result": result},

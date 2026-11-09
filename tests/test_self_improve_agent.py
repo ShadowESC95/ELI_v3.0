@@ -368,3 +368,25 @@ def test_a_closed_self_repair_goal_is_not_reopened(contained):
     assert goals[gid].status == "done" and goals[gid].title == "Self-repair: done already"
     new_gid = "selfrepair_" + hashlib.sha1(new_label.encode()).hexdigest()[:12]
     assert goals[new_gid].status == "active" and made == 1
+
+
+def test_an_action_that_fails_is_recorded_once_by_its_component_never_by_my_words(monkeypatch):
+    """Every action failure went on the failure record twice: by the executor (the action and its
+    arguments) and by the engine (the person's own sentence), which doubled every recurrence count
+    and put their words where self-repair reads. One record, keyed by the action and its argument
+    names; a low-confidence reading is keyed by the router stage, not the sentence."""
+    import inspect
+    from eli.execution import executor_enhanced as EX
+    from eli.kernel import engine as E
+    logged = []
+
+    class _Mem:
+        def log_failure(self, key, error="", **kw):
+            logged.append((key, error, kw.get("context")))
+    monkeypatch.setattr("eli.memory.get_agent_memory", lambda: _Mem())
+    EX._action_post_dispatch("WRITE_NOTE", {"text": "the plumber comes on thursday", "title": "home"},
+                             {"ok": False, "error": "disk is read-only"})
+    assert [k for k, _e, _c in logged] == ["WRITE_NOTE (text, title)"]
+    assert "plumber" not in logged[0][0] and logged[0][2]["args"]["text"], "the run is kept for repair, not as the key"
+    src = inspect.getsource(E.CognitiveEngine._process_impl)
+    assert "log_failure(\n                    user_input" not in src and "log_failure(user_input" not in src

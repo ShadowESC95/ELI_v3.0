@@ -6340,13 +6340,19 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         trace = self._next_trace(user_input, intent, reasoning_mode)
 
         if intent.get("confidence", 0) < 0.5:
+            # keyed by the component that read the message (the router stage and what it read it as),
+            # never by the person's own words
             try:
                 si = get_self_improvement()
+                _route_meta = dict(intent.get("meta") or {})
+                _read_as = str(intent.get("action") or "CHAT").upper()
+                _stage = str(_route_meta.get("matched_by") or "unknown")
                 si.memory.log_failure(
-                    user_input,
+                    f"ROUTER {_read_as} via {_stage}",
                     error="Low confidence",
                     confidence=intent.get("confidence", 0),
-                    context={"intent": intent},
+                    context={"action": _read_as, "matched_by": _stage,
+                             "confidence": intent.get("confidence", 0), "component": "router"},
                 )
             except Exception as e:
                 log.debug(f"[SELF] Failed to log: {e}")
@@ -8413,17 +8419,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # An action that asks the user for a detail has not failed. Logged as a failure and
         # re-planned, "When is it?" was replaced by whatever a second model call came up with.
         if not result.get("ok", False) and not _asks_the_user(result):
-            try:
-                si = get_self_improvement()
-                si.memory.log_failure(
-                    user_input,
-                    error=result.get("error", "Unknown error"),
-                    confidence=intent.get("confidence", 0),
-                    context={"intent": intent, "result": result},
-                )
-            except Exception as e:
-                log.debug(f"[SELF] Failed to log: {e}")
-
+            # The failure is on record once, by the executor (_action_post_dispatch), keyed by the
+            # action and its arguments. A second row here was keyed by the person's own sentence,
+            # doubled every recurrence count and put their words where self-repair reads.
             # ── Tool-failure reflection: attempt a re-plan (max 2 retries) ──
             result = self._eli_tool_failure_replan(user_input, action, args, result)
             # ── End tool-failure reflection ───────────────────────────────
