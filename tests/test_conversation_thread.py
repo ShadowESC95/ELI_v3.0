@@ -114,3 +114,22 @@ def test_a_search_asked_for_with_no_subject_looks_up_what_the_talk_is_about():
 def test_a_placeholder_is_never_taken_for_a_title():
     from eli.runtime.conversation_thread import extract_thread_topic
     assert extract_thread_topic([{"role": "assistant", "content": "Are you watching something else on that tab?"}]) == ""
+
+
+def test_a_turns_thread_topic_ends_with_the_turn(monkeypatch):
+    """The topic was a process-wide value the engine set each turn and never cleared: a bare
+    'do a search' in a later turn, or another user's, searched an earlier reply's subject."""
+    from eli.kernel.engine import CognitiveEngine
+    from eli.runtime.conversation_thread import get_route_thread_topic
+    eng = CognitiveEngine()
+    seen = []
+
+    def _turn(user_input, **k):
+        seen.append(get_route_thread_topic())
+        set_route_context(thread_topic="harbour tide tables")
+        return {"ok": True, "content": "ok"}
+
+    monkeypatch.setattr(eng, "_process_impl", _turn)
+    eng.process("tell me about the harbour")
+    eng.process("do a search")
+    assert seen == ["", ""] and get_route_thread_topic() == ""

@@ -5945,6 +5945,13 @@ def _action_post_dispatch(
             _turn.setdefault("action_results", []).append({
                 "action": str(action or "").upper(), "ok": _outcome_of(result) == "ok",
                 "said": str(_res.get("response") or _res.get("content") or _res.get("error") or "")})
+            # What the run resolved its target to (the folder found for "my project folder", the app
+            # it opened): the engine keeps it with the last command, so "list it" means that place.
+            if _outcome_of(result) == "ok":
+                from eli.execution.route_contracts import TARGET_ARGS as _TARGETS
+                _resolved = {k: _res[k] for k in _TARGETS if isinstance(_res.get(k), str) and _res[k].strip()}
+                if _resolved:
+                    _turn["acted_on"] = {"action": str(action or "").upper(), "args": _resolved}
             if isinstance(result, dict) and result.get("listed") and result.get("follow_up"):
                 _turn["listed"] = {"action": str(action or "").upper(),
                                    "items": list(result["listed"]),

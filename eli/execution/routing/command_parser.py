@@ -186,12 +186,14 @@ def what_was_played(query: str) -> str:
 
 
 def last_object() -> str:
-    """What the last command was about: the app, address, path or query in its arguments."""
-    args = _last_command().get("args") or {}
-    for key in ("name", "target", "url", "path", "query"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip() and not _PRONOUN.match(value.strip()):
-            return value.strip()
+    """What the last command was about: what the executor resolved its target to (`acted_on`: the
+    folder it found, the app it opened), else the app, address, path or query in its arguments."""
+    last = _last_command()
+    for args in (last.get("acted_on") or {}, last.get("args") or {}):
+        for key in ("name", "target", "url", "path", "query"):
+            value = args.get(key)
+            if isinstance(value, str) and value.strip() and not _PRONOUN.match(value.strip()):
+                return value.strip()
     return ""
 
 

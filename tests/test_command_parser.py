@@ -314,3 +314,43 @@ def test_this_folder_and_these_files_are_read_from_what_was_just_listed(tmp_path
                 assert (got["action"], got["args"].get(key)) == (action, str(folder)), (said, got)
         finally:
             turn_facts_var.reset(token)
+
+
+def test_it_is_the_place_the_executor_found_and_a_recall_does_not_replace_it(tmp_path, monkeypatch):
+    """The last command kept the words it was asked with ("my project folder"), not the folder the
+    executor found, so "list it" next had nothing to list; a memory recall in between replaced it."""
+    import eli.kernel.request_context as rc
+    from eli.execution.executor_enhanced import execute
+    from eli.execution.routing.command_parser import place_referred_to
+    from eli.kernel.engine import CognitiveEngine
+    import pathlib
+    import eli.execution.effectors.file_ops as file_ops
+
+    class _Elsewhere(type(pathlib.Path())):      # this machine keeps its checkouts under ~/eli, which
+        @classmethod                              # LIST_DIR reads as ELI's own legacy folder
+        def home(cls):
+            return tmp_path / "home"
+    monkeypatch.setattr(file_ops, "Path", _Elsewhere)
+    eng = CognitiveEngine()
+    found = tmp_path / "projects" / "garden-planner"
+    found.mkdir(parents=True)
+    said = []
+
+    def _first_turn(user_input, **k):
+        eng._last_command_action = {"action": "LIST_DIR", "args": {"path": "my project folder"}, "ts": time.time(),
+                                    "request_id": rc.turn_facts_var.get()["request_id"]}
+        return execute("LIST_DIR", {"path": str(found)})     # what the executor resolved it to
+
+    def _next_turn(user_input, **k):
+        said.append(place_referred_to("it"))
+        return {"ok": True, "content": "ok"}
+
+    monkeypatch.setattr(eng, "_process_impl", _first_turn)
+    eng.process("list my project folder")
+    assert eng._last_command_action["acted_on"] == {"path": str(found)}
+    monkeypatch.setattr(eng, "_process_impl", _next_turn)
+    eng.process("list it")
+    assert said == [str(found)]
+    assert not CognitiveEngine._kept_as_last_command("MEMORY_RECALL")
+    assert not CognitiveEngine._kept_as_last_command("CHAT")
+    assert CognitiveEngine._kept_as_last_command("OPEN_FILE_SYSTEM")

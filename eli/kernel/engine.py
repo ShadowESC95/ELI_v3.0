@@ -4750,6 +4750,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if inspect.isgenerator(result):
             return self._context_bound_stream(result, ctx, facts)
         result = _plain_artifact_reply(result)
+        ctx.run(self._remember_what_it_acted_on, facts)
         ctx.run(self._finalize_turn_backstop, facts, _visible_reply_text(result), result)
         ok, outcome = _audit_result_outcome(result)
         self._commit_turn_audit(ctx, facts, ok=ok, outcome=outcome, result=result)
@@ -4777,6 +4778,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     except StopIteration:
                         joined = "".join(text).strip()
                         outcome = (bool(joined), "ok" if joined else "empty_reply")
+                        ctx.run(self._remember_what_it_acted_on, facts)
                         ctx.run(self._finalize_turn_backstop, facts, joined, None)
                         return
                     if isinstance(piece, str) and piece != MAIN_REPLY_DONE_SENTINEL:
@@ -4829,6 +4831,33 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
     # Turns that answered from conversation rather than running an action: these
     # get the chat path's episodic-memory and task-event capture.
     _CHAT_LIKE_ACTIONS = ("CHAT", "UNKNOWN", "DETERMINISTIC_INTROSPECTION")
+
+    @classmethod
+    def _kept_as_last_command(cls, action: Any) -> bool:
+        """Whether a routed action becomes the last command ("do it again", "list it"). Talk is not
+        one, nor an answer from what ELI keeps of the user (a recall, the profile): it acts on
+        nothing, and "list it" after "what did I say about the garden" still means the folder the
+        command before it opened."""
+        name = str(action or "").upper()
+        return name not in ("CHAT", "NOOP", "UNKNOWN", "") and name not in cls._MEMORY_EVIDENCE_ACTIONS
+
+    def _remember_what_it_acted_on(self, facts: Dict[str, Any]) -> None:
+        """The last command keeps what the executor resolved its target to (`acted_on`, noted by the
+        executor: the folder found for "my project folder", the app it opened), so a pronoun in the
+        next command ("list it", "open that") means that place and not the words it was asked with.
+        Runs as the turn (ctx.run), when the turn ends. Never raises."""
+        try:
+            acted = facts.get("acted_on")
+            if not isinstance(acted, dict) or not acted.get("args"):
+                return
+            last = dict(getattr(self, "_last_command_action", None) or {})
+            if (not last or str(last.get("request_id") or "") != str(facts.get("request_id") or "")
+                    or str(last.get("action") or "").upper() != str(acted.get("action") or "").upper()):
+                return
+            last["acted_on"] = dict(acted["args"])
+            self._last_command_action = last
+        except Exception:
+            log.debug("what the last command acted on was not kept", exc_info=True)
 
     def _finalize_turn_backstop(self, facts: Dict[str, Any], reply: str, result: Any) -> None:
         """Stage 12 for every exit. _process_impl has ~80 exits and only some
@@ -6417,11 +6446,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # actually doing X" directive can re-run it (ELI_REDO_DIRECTIVE_V1). A message carrying a
         # self-harm signal is never one: its turn is CHAT whatever it was routed as.
         try:
-            if not _crisis and str(action).upper() not in ("CHAT", "NOOP", "UNKNOWN", ""):
+            if not _crisis and self._kept_as_last_command(action):
                 self._last_command_action = {
                     "action": action, "args": dict(args or {}), "input": user_input,
                     # Stamped so "do it again" only re-runs something recent: CHAT never overwrites this.
                     "ts": time.time(),
+                    "request_id": str((_request_context.turn_facts_var.get() or {}).get("request_id") or ""),
                 }
         except Exception:
             log.debug("suppressed exception", exc_info=True)

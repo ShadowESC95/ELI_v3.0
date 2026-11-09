@@ -6,6 +6,7 @@ expects grounded facts.
 """
 from __future__ import annotations
 
+import contextvars
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,8 +14,11 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-# Set by the engine immediately before routing so the web prepass can expand queries.
-_route_ctx: Dict[str, str] = {"thread_topic": ""}
+# Set by the engine immediately before routing so the web prepass can expand queries. It is the
+# turn's: each turn runs in a context of its own (CognitiveEngine.process), so the topic ends with
+# the turn. A process-wide dict kept the last turn's topic for every later one, another user's
+# included: a bare "do a search" searched whatever an earlier reply had been about.
+_thread_topic_var: "contextvars.ContextVar[str]" = contextvars.ContextVar("eli_thread_topic", default="")
 
 _ENTERTAINMENT_RE = re.compile(
     r"\b(?:the\s+)?(?:game\s+of\s+thrones|last\s+of\s+us|marvel|mcu|star\s+wars|"
@@ -70,11 +74,11 @@ _STOP = frozenset({
 
 
 def set_route_context(*, thread_topic: str = "") -> None:
-    _route_ctx["thread_topic"] = str(thread_topic or "").strip()
+    _thread_topic_var.set(str(thread_topic or "").strip())
 
 
 def get_route_thread_topic() -> str:
-    return str(_route_ctx.get("thread_topic") or "").strip()
+    return str(_thread_topic_var.get() or "").strip()
 
 
 def recent_turns_from_context(context: Any) -> List[Dict[str, str]]:
