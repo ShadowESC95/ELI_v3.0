@@ -109,3 +109,16 @@ def test_sanitizer_preserves_dry_tone():
     result = sanitize_assistant_text(text)
     assert "Incorrect" in result
     assert "42" in result
+
+
+def test_the_persona_and_the_live_lines_give_one_stance_on_elis_world():
+    """The persona, in every prompt, called the rooms a metaphor and a UI feature not to be taken as
+    real, while the live lines from ELI VR say it is a real 3D place: asked about a past visit, ELI
+    said it had no body and the recorded visits were the user testing input routing."""
+    import inspect
+    from eli.world import embodiment
+    persona = (Path(__file__).parents[1] / "eli" / "cognition" / "persona.txt").read_text(encoding="utf-8")
+    assert "real 3D place" in inspect.getsource(embodiment.context_block)
+    assert "real 3D place" in persona and "body of light" in persona
+    assert "metaphor/visualisation" not in persona and "pretend it's literally real" not in persona
+    assert "on record" in persona, "the visits the memory holds are the ones to answer from"
