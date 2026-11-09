@@ -39,3 +39,15 @@ def test_blueprint_module_reference_importable(ref):
     # Either the ref is a module, or it's `module.symbol` whose module resolves.
     ok = _resolves(ref) or ("." in ref and _resolves(ref.rsplit(".", 1)[0]))
     assert ok, f"blueprints reference an unresolvable module/symbol: {ref}"
+
+
+def test_a_per_user_folder_the_blueprints_name_is_this_versions_own():
+    """The uninstall guide told a v3 user to delete ~/.local/share/ELI_v2, another product's
+    memories, and left v3's own data in place."""
+    import re
+    from eli.core import paths
+
+    shapes = re.compile(r"(?:\.local/share/|LOCALAPPDATA%?\\|Application Support/)(ELI_v\d+)")
+    wrong = [f"{p.name}: {m.group(0)}" for p in H.blueprint_files()
+             for m in shapes.finditer(p.read_text(encoding="utf-8")) if m.group(1) != paths._APP_NAME]
+    assert not wrong, wrong
