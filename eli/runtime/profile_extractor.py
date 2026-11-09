@@ -48,6 +48,34 @@ def _table_exists(cur: sqlite3.Cursor, table: str) -> bool:
     )
 
 
+def pattern_owner(user_id: Any = None) -> str:
+    """The user key profile rows are written and read under: "" for the machine's owner, else the
+    API member's id. With no id given, the user of the turn running in this context."""
+    try:
+        from eli.kernel.state import member_user_id
+        return member_user_id(user_id)
+    except Exception:
+        log.debug("pattern owner unavailable; the owner's", exc_info=True)
+        return ""
+
+
+def _ensure_user_column(cur: sqlite3.Cursor) -> None:
+    """Whose fact a row is: "" (NULL on rows written before it was kept) for the machine's owner, an
+    API member's id for theirs (kernel.state.member_user_id). One pooled table let a member's
+    "my name is ..." challenge the owner's name, and put the owner's profile in members' prompts.
+    Other stores create user_patterns too, so the writers check for it as well."""
+    try:
+        if "user_id" not in {r[1] for r in cur.execute("PRAGMA table_info(user_patterns)")}:
+            cur.execute("ALTER TABLE user_patterns ADD COLUMN user_id TEXT")
+    except sqlite3.OperationalError:
+        log.debug("user_patterns has no user column", exc_info=True)
+
+
+# The semantic tier keeps the owner's rows under "default", as it always has.
+def _semantic_user(who: str) -> str:
+    return who or "default"
+
+
 def ensure_profile_tables(db_path: Path | None = None) -> None:
     db = db_path or _user_db()
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +101,7 @@ def ensure_profile_tables(db_path: Path | None = None) -> None:
         cur.execute("ALTER TABLE user_patterns ADD COLUMN claim_id INTEGER")
     except sqlite3.OperationalError:
         pass
+    _ensure_user_column(cur)
 
     # The semantic tier: durable user facts. Four readers depend on it (recall injects these first
     # on identity questions with a +0.5 boost, two status surfaces count them). Nothing wrote it:
@@ -234,37 +263,46 @@ def reconcile_single_valued_patterns(cur: sqlite3.Cursor) -> int:
     ensure_profile_tables().
     """
     removed = 0
-    for ptype in sorted(_SINGLE_VALUED_PATTERNS):
-        try:
-            rows = cur.execute(
-                """
-                SELECT rowid, pattern_data FROM user_patterns
-                 WHERE lower(COALESCE(pattern_type,'')) = lower(?)
-                 ORDER BY COALESCE(timestamp, ts, 0) DESC, rowid DESC
-                """,
-                (ptype,),
-            ).fetchall()
-        except Exception:
-            log.debug("reconcile: could not read %s", ptype, exc_info=True)
-            continue
-        if len(rows) < 2:
-            continue
-        keep_value = rows[0][1]
-        stale = [r[0] for r in rows[1:]]
-        stale_values = [r[1] for r in rows[1:]]
-        try:
-            cur.executemany(
-                "DELETE FROM user_patterns WHERE rowid = ?", [(r,) for r in stale]
-            )
-            _supersede_single_valued(cur, ptype, keep_value)
-            _scrub_onboarding_snapshot(cur, stale_values)
-            removed += len(stale)
-            log.info(
-                "profile: %s had %d competing values; kept the newest (%s)",
-                ptype, len(rows), str(keep_value)[:80],
-            )
-        except Exception:
-            log.debug("reconcile: could not collapse %s", ptype, exc_info=True)
+    _ensure_user_column(cur)
+    try:
+        owners = [str(r[0] or "") for r in cur.execute(
+            "SELECT DISTINCT COALESCE(user_id, '') FROM user_patterns").fetchall()]
+    except Exception:
+        owners = [""]
+    for who in owners or [""]:
+        for ptype in sorted(_SINGLE_VALUED_PATTERNS):
+            try:
+                rows = cur.execute(
+                    """
+                    SELECT rowid, pattern_data FROM user_patterns
+                     WHERE lower(COALESCE(pattern_type,'')) = lower(?)
+                       AND COALESCE(user_id, '') = ?
+                     ORDER BY COALESCE(timestamp, ts, 0) DESC, rowid DESC
+                    """,
+                    (ptype, who),
+                ).fetchall()
+            except Exception:
+                log.debug("reconcile: could not read %s", ptype, exc_info=True)
+                continue
+            if len(rows) < 2:
+                continue
+            keep_value = rows[0][1]
+            stale = [r[0] for r in rows[1:]]
+            stale_values = [r[1] for r in rows[1:]]
+            try:
+                cur.executemany(
+                    "DELETE FROM user_patterns WHERE rowid = ?", [(r,) for r in stale]
+                )
+                _supersede_single_valued(cur, ptype, keep_value, who=who)
+                if not who:
+                    _scrub_onboarding_snapshot(cur, stale_values)
+                removed += len(stale)
+                log.info(
+                    "profile: %s had %d competing values; kept the newest (%s)",
+                    ptype, len(rows), str(keep_value)[:80],
+                )
+            except Exception:
+                log.debug("reconcile: could not collapse %s", ptype, exc_info=True)
     return removed
 
 
@@ -291,7 +329,7 @@ def backfill_semantic_from_patterns(cur: sqlite3.Cursor) -> int:
         if existing and int(existing[0] or 0) > 0:
             return 0
         rows = cur.execute(
-            "SELECT pattern_type, pattern_data, COALESCE(ts, timestamp, 0) "
+            "SELECT pattern_type, pattern_data, COALESCE(ts, timestamp, 0), COALESCE(user_id, '') "
             "FROM user_patterns ORDER BY COALESCE(ts, timestamp, 0) ASC"
         ).fetchall()
     except Exception:
@@ -299,10 +337,10 @@ def backfill_semantic_from_patterns(cur: sqlite3.Cursor) -> int:
         return 0
 
     promoted = 0
-    for ptype, pdata, ts_value in rows:
+    for ptype, pdata, ts_value, who in rows:
         try:
             if _promote_to_semantic(cur, str(ptype or ""), str(pdata or ""),
-                                    float(ts_value or time.time())):
+                                    float(ts_value or time.time()), who=str(who or "")):
                 promoted += 1
         except Exception:
             log.debug("profile_extractor: semantic backfill row failed", exc_info=True)
@@ -331,7 +369,9 @@ _SINGLE_VALUED_PATTERNS = frozenset({
 
 def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
                             pattern_data: str,
-                            provenance: str = "user_passing") -> bool:
+                            provenance: str = "user_passing",
+                            said_at: float | None = None,
+                            who: str = "") -> bool:
     """Weigh a replacement for a single-valued key, and retire the old value only
     if it actually loses.
 
@@ -341,10 +381,14 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
     outright and reaffirmed a dozen times, silently and with no record.
 
     Now the standing value is weighed against the new one (see
-    `eli.cognition.belief`). Returns True when the replacement should proceed.
-    False means the standing value held and the CALLER MUST NOT INSERT — an
-    unweighed insert would leave both values present, which is worse than either
-    outcome.
+    `eli.cognition.belief`), each as of when it was said: `said_at` is the new
+    statement's own time (a replayed old turn is weighed as old, not as said now),
+    and a statement older than the value it would replace cannot correct it.
+    Returns True when the replacement should proceed. False means the standing
+    value held and the CALLER MUST NOT INSERT — an unweighed insert would leave
+    both values present, which is worse than either outcome. Only `who`'s rows
+    (pattern_owner) are weighed or retired: one user's statement never touches
+    another's facts.
 
     Retiring still DELETES rather than flagging, for the original reason: several
     consumers read these rows and a 'superseded' column each would have to honour
@@ -353,6 +397,7 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
     it used to hold and why that changed.
     """
     now = time.time()
+    said = float(said_at) if said_at else now
     try:
         from eli.cognition.belief import (
             Belief, HOLD, assess_claim,
@@ -366,14 +411,21 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
             "  FROM user_patterns "
             " WHERE lower(COALESCE(pattern_type,'')) = lower(?) "
             "   AND lower(COALESCE(pattern_data,'')) <> lower(?) "
+            "   AND COALESCE(user_id, '') = ? "
             " ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT 1",
-            (pattern_type, pattern_data),
+            (pattern_type, pattern_data, who),
         ).fetchone()
         if row:
+            standing_seen = float(row[3] or now)
+            if said < standing_seen:
+                # An earlier statement cannot correct a later one: replaying history at boot used
+                # to set the name, role or style back to whatever the oldest window said.
+                log.debug("profile_extractor: keeping %s=%r, said after %r", pattern_type, row[0], pattern_data)
+                return False
             standing = Belief(statement=row[0], corroboration=int(row[1] or 1),
-                              provenance=row[2], last_seen=float(row[3] or now))
+                              provenance=row[2], last_seen=standing_seen)
             challenger = Belief(statement=pattern_data, corroboration=1,
-                                provenance=provenance, last_seen=now)
+                                provenance=provenance, last_seen=said)
             verdict = assess_claim(standing, challenger, now)
             # Refuse only on HOLD. A QUESTION means the evidence doesn't settle it, and on a single-valued
             # key something has to be stored. Deferring to the newer statement when nothing distinguishes
@@ -401,8 +453,9 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
             DELETE FROM user_patterns
              WHERE lower(COALESCE(pattern_type,'')) = lower(?)
                AND lower(COALESCE(pattern_data,'')) <> lower(?)
+               AND COALESCE(user_id, '') = ?
             """,
-            (pattern_type, pattern_data),
+            (pattern_type, pattern_data, who),
         )
     except Exception:
         log.debug("could not retire earlier %s rows", pattern_type, exc_info=True)
@@ -412,8 +465,9 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
         cur.execute(
             "DELETE FROM semantic "
             " WHERE ',' || lower(COALESCE(tags,'')) || ',' LIKE ? "
-            "   AND lower(COALESCE(fact,'')) <> lower(?)",
-            (f"%,{pattern_type.lower()},%", pattern_data),
+            "   AND lower(COALESCE(fact,'')) <> lower(?) "
+            "   AND COALESCE(NULLIF(user_id, ''), 'default') = ?",
+            (f"%,{pattern_type.lower()},%", split_evidence(pattern_data)[0], _semantic_user(who)),
         )
     except Exception:
         log.debug("could not retire earlier semantic %s rows", pattern_type, exc_info=True)
@@ -421,7 +475,7 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
 
 
 def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data: str,
-                          provenance: str, now: float) -> None:
+                          provenance: str, now: float, who: str = "") -> None:
     """Give this user_patterns row a real entry in the bitemporal claims spine
     (eli.memory.claims) instead of being a disconnected free-text duplicate.
     pattern_type/pattern_data are already relation/value-shaped — this is a
@@ -442,11 +496,25 @@ def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data:
             cur.execute(
                 "UPDATE user_patterns SET claim_id = ? "
                 " WHERE lower(COALESCE(pattern_type, '')) = lower(?) "
-                "   AND lower(COALESCE(pattern_data, '')) = lower(?)",
-                (claim_id, pattern_type, pattern_data),
+                "   AND lower(COALESCE(pattern_data, '')) = lower(?) "
+                "   AND COALESCE(user_id, '') = ?",
+                (claim_id, pattern_type, pattern_data, who),
             )
     except Exception:
         log.debug("could not link user_pattern to a claim", exc_info=True)
+
+
+def _same_fact_row(cur: sqlite3.Cursor, pattern_type: str, pattern_data: str, who: str) -> str | None:
+    """The stored row this statement says again, if any: the same label of the same kind, whatever
+    words it was said in. A row's data is its label plus the user's quote (_evidence), so comparing
+    whole strings counted every rephrasing as a rival fact and corroboration never built."""
+    label = split_evidence(pattern_data)[0].lower()
+    for (data,) in cur.execute(
+            "SELECT pattern_data FROM user_patterns WHERE lower(COALESCE(pattern_type, '')) = lower(?) "
+            "AND COALESCE(user_id, '') = ?", (pattern_type, who)).fetchall():
+        if split_evidence(str(data or ""))[0].lower() == label:
+            return str(data or "")
+    return None
 
 
 def _insert_user_pattern(
@@ -455,56 +523,51 @@ def _insert_user_pattern(
     pattern_data: str,
     ts_value: float | None = None,
     provenance: str = "user_passing",
+    user_id: Any = None,
 ) -> bool:
+    """Store one fact about a user. `ts_value` is when it was said; `user_id` whose it is (the
+    turn's user when not given, pattern_owner). Returns True when a new row was written."""
     pattern_type = _clean(pattern_type, 120)
     pattern_data = _clean(pattern_data, 900)
     now = float(ts_value or time.time())
+    who = pattern_owner(user_id)
 
     if not pattern_type or not pattern_data:
         return False
 
-    if pattern_type.lower() in _SINGLE_VALUED_PATTERNS:
+    _ensure_user_column(cur)
+    same = _same_fact_row(cur, pattern_type, pattern_data, who)
+    if same is None and pattern_type.lower() in _SINGLE_VALUED_PATTERNS:
         # A refusal means the standing value won. Inserting anyway would leave
         # both values present on a key that is single-valued by definition.
         if not _supersede_single_valued(cur, pattern_type, pattern_data,
-                                        provenance=provenance):
+                                        provenance=provenance, said_at=now, who=who):
             return False
 
-    exists = cur.execute(
-        """
-        SELECT 1 FROM user_patterns
-        WHERE lower(COALESCE(pattern_type, '')) = lower(?)
-          AND lower(COALESCE(pattern_data, '')) = lower(?)
-        LIMIT 1
-        """,
-        (pattern_type, pattern_data),
-    ).fetchone()
-
-    if exists:
+    if same is not None:
         # Reaffirmation refreshes recency and corroborates once per day of use, not once per extraction
-        # pass (which counted one fact 19,219 times). Provenance only goes up.
+        # pass (which counted one fact 19,219 times). Provenance only goes up, and recency never goes
+        # back: an old statement replayed (the boot backfill) leaves a newer time standing.
+        _match = ("WHERE lower(COALESCE(pattern_type, '')) = lower(?) "
+                  "AND lower(COALESCE(pattern_data, '')) = lower(?) AND COALESCE(user_id, '') = ?")
+        _key = (pattern_type, same, who)
         try:
             cur.execute(
                 """
                 UPDATE user_patterns
                    SET corroboration = COALESCE(corroboration, 1)
                          + (date(COALESCE(ts, 0), 'unixepoch', 'localtime') < date(?, 'unixepoch', 'localtime')),
-                       timestamp = ?, ts = ?
-                WHERE lower(COALESCE(pattern_type, '')) = lower(?)
-                  AND lower(COALESCE(pattern_data, '')) = lower(?)
-                """,
-                (now, now, now, pattern_type, pattern_data),
+                       timestamp = MAX(COALESCE(timestamp, 0), ?), ts = MAX(COALESCE(ts, 0), ?)
+                """ + _match,
+                (now, now, now, *_key),
             )
         except Exception:
             # Pre-migration database without the column — recency alone.
             try:
                 cur.execute(
-                    """
-                    UPDATE user_patterns SET timestamp = ?, ts = ?
-                    WHERE lower(COALESCE(pattern_type, '')) = lower(?)
-                      AND lower(COALESCE(pattern_data, '')) = lower(?)
-                    """,
-                    (now, now, pattern_type, pattern_data),
+                    "UPDATE user_patterns SET timestamp = MAX(COALESCE(timestamp, 0), ?), "
+                    "ts = MAX(COALESCE(ts, 0), ?) " + _match,
+                    (now, now, *_key),
                 )
             except Exception:
                 log.debug("could not refresh %s", pattern_type, exc_info=True)
@@ -514,33 +577,25 @@ def _insert_user_pattern(
             # a Python dict, not a SQL table, so it can't be one UPDATE. (It used to compare the new weight
             # against itself via `(SELECT ?)`, always False, so provenance was never upgraded here.
             # belief.py's corroborate() had the correct comparison and this mirrors it.)
-            existing_row = cur.execute(
-                "SELECT provenance FROM user_patterns "
-                " WHERE lower(COALESCE(pattern_type,'')) = lower(?) "
-                "   AND lower(COALESCE(pattern_data,'')) = lower(?) "
-                " LIMIT 1",
-                (pattern_type, pattern_data),
-            ).fetchone()
+            existing_row = cur.execute("SELECT provenance FROM user_patterns " + _match + " LIMIT 1",
+                                       _key).fetchone()
             existing_provenance = (existing_row or (None,))[0]
             if (PROVENANCE_WEIGHT.get(provenance, 0.0)
                     > PROVENANCE_WEIGHT.get(existing_provenance, 0.0)):
-                cur.execute(
-                    "UPDATE user_patterns SET provenance = ? "
-                    " WHERE lower(COALESCE(pattern_type,'')) = lower(?) "
-                    "   AND lower(COALESCE(pattern_data,'')) = lower(?)",
-                    (provenance, pattern_type, pattern_data),
-                )
+                cur.execute("UPDATE user_patterns SET provenance = ? " + _match, (provenance, *_key))
         except Exception:
             log.debug("could not upgrade provenance", exc_info=True)
-        _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now)
+        if same.lower() != pattern_data.lower():
+            _promote_to_semantic(cur, pattern_type, pattern_data, now, who=who)   # the new words are evidence
+        _link_pattern_to_claim(cur, pattern_type, same, provenance, now, who=who)
         return False
 
     try:
         cur.execute(
             "INSERT INTO user_patterns(pattern_type, pattern_data, timestamp, ts, "
-            "                          corroboration, provenance) "
-            "VALUES (?, ?, ?, ?, 1, ?)",
-            (pattern_type, pattern_data, now, now, provenance),
+            "                          corroboration, provenance, user_id) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (pattern_type, pattern_data, now, now, provenance, who or None),
         )
     except Exception:
         # Pre-migration database without the belief columns.
@@ -556,8 +611,8 @@ def _insert_user_pattern(
 
     # Must run on BOTH insert paths. An earlier cut returned straight after the
     # new insert and skipped it, so nothing reached the semantic tier at all.
-    _promote_to_semantic(cur, pattern_type, pattern_data, now)
-    _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now)
+    _promote_to_semantic(cur, pattern_type, pattern_data, now, who=who)
+    _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now, who=who)
     return True
 
 
@@ -588,13 +643,15 @@ def _promote_to_semantic(
     pattern_type: str,
     pattern_data: str,
     ts_value: float,
+    who: str = "",
 ) -> bool:
-    """Record a newly-learned durable user fact in the semantic tier.
+    """Record a newly-learned durable user fact in the semantic tier, under its user (`who`,
+    pattern_owner: the owner's rows keep the tier's "default").
 
-    Called only when _insert_user_pattern actually inserted (it returns False for
-    a reaffirmation), so this inherits that dedupe rather than repeating it — and
-    it checks the semantic table too, since the two can diverge on an existing
-    install whose user_patterns predate this tier being written at all.
+    Called when _insert_user_pattern inserted a row or the user said a stored fact again in other
+    words, so this inherits that dedupe rather than repeating it — and it checks the semantic table
+    too, since the two can diverge on an existing install whose user_patterns predate this tier
+    being written at all.
     """
     ptype = (pattern_type or "").strip().lower()
     if not ptype.startswith(_SEMANTIC_PATTERN_PREFIXES):
@@ -604,22 +661,25 @@ def _promote_to_semantic(
     fact = _clean(pattern_data, 900)
     if not fact:
         return False
+    owner = _semantic_user(who)
     try:
         if not _table_exists(cur, "semantic"):
             return False
         # One row per fact; each new utterance of it is evidence on that row, not a new fact.
         label, quote = split_evidence(fact)
         row = cur.execute(
-            "SELECT id, evidence FROM semantic WHERE lower(COALESCE(fact,'')) = lower(?) LIMIT 1", (label,),
+            "SELECT id, evidence FROM semantic WHERE lower(COALESCE(fact,'')) = lower(?) "
+            "AND COALESCE(NULLIF(user_id, ''), 'default') = ? LIMIT 1", (label, owner),
         ).fetchone()
         if row:
-            cur.execute("UPDATE semantic SET evidence_count = COALESCE(evidence_count, 1) + ?, last_seen = ?, evidence = ? "
-                        "WHERE id = ?", (1 if quote else 0, float(ts_value), add_evidence(row[1], quote), row[0]))
+            cur.execute("UPDATE semantic SET evidence_count = COALESCE(evidence_count, 1) + ?, "
+                        "last_seen = MAX(COALESCE(last_seen, 0), ?), evidence = ? WHERE id = ?",
+                        (1 if quote else 0, float(ts_value), add_evidence(row[1], quote), row[0]))
             return False
         cur.execute(
             "INSERT INTO semantic (user_id, fact, tags, confidence, created_at, evidence_count, last_seen, evidence) "
             "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-            ("default", label, f"semantic,user_fact,{ptype}", 0.8, float(ts_value), float(ts_value),
+            (owner, label, f"semantic,user_fact,{ptype}", 0.8, float(ts_value), float(ts_value),
              add_evidence(None, quote)),
         )
         return True
@@ -688,16 +748,19 @@ def extract_patterns_from_text(text: Any) -> list[tuple[str, str]]:
     _pref(out, raw, low, r"\bin depth\b|\bin-depth\b|\bdetailed\b|\bmeticulous\b|\bthorough\b", "preference.detail",
           "User prefers in-depth, meticulous, thorough responses.")
 
-    _pref(out, raw, low, r"\bno vague descriptions\b|\bno vague\b|\bnot vague\b", "preference.style",
+    # Each of these is its own facet of how the user wants answers, not a value of the one answer
+    # style they chose (preference.style, single-valued, set by the onboarding interview): written
+    # there, a passing "that was generic" replaced the style the user had picked.
+    _pref(out, raw, low, r"\bno vague descriptions\b|\bno vague\b|\bnot vague\b", "preference.concreteness",
           "User dislikes vague descriptions and wants concrete detail.")
 
-    _pref(out, raw, low, r"\bno bias\b|\bwithout bias\b|\bno bullshit\b|\bbullshit-free\b", "preference.style",
+    _pref(out, raw, low, r"\bno bias\b|\bwithout bias\b|\bno bullshit\b|\bbullshit-free\b", "preference.directness",
           "User prefers direct, low-bias, bullshit-free analysis.")
 
-    _pref(out, raw, low, r"\bbrutally honest\b|\bchallenge\b|\bcorrect me\b|\btell me.*wrong\b", "preference.style",
+    _pref(out, raw, low, r"\bbrutally honest\b|\bchallenge\b|\bcorrect me\b|\btell me.*wrong\b", "preference.challenge",
           "User wants assumptions challenged and errors corrected directly.")
 
-    _pref(out, raw, low, r"\bgeneric\b|\brepetitive\b|\bshallow\b|\bunhelpful\b|\bfiller\b|\bhr[- ]?speak\b|\bcustomer[- ]?service\b", "preference.style",
+    _pref(out, raw, low, r"\bgeneric\b|\brepetitive\b|\bshallow\b|\bunhelpful\b|\bfiller\b|\bhr[- ]?speak\b|\bcustomer[- ]?service\b", "preference.originality",
           "User rejects generic, repetitive, shallow, customer-service style responses.")
 
     _pref(out, raw, low, r"\bstubs?\b|\btemplates?\b|\bplaceholder\b|\bboilerplate\b", "preference.output_quality",
@@ -775,11 +838,29 @@ def extract_patterns_from_text(text: Any) -> list[tuple[str, str]]:
     return deduped
 
 
+# How each of extract_patterns_from_text's facts came to be known (eli.cognition.belief's provenance
+# weights). Its identity, role, interest, field and "remember that I ..." rules match only the user
+# saying it of themselves outright; the rest are a keyword seen in passing. Every writer used to
+# store "user_passing", so nothing ever outweighed anything and the weighing could never hold a value.
+_STATED_OUTRIGHT = frozenset({
+    "identity.name", "identity.preferred_name", "identity.nickname", "identity.role",
+    "interest.explicit", "research.field", "user.explicit_note",
+})
+
+
+def provenance_of(pattern_type: str) -> str:
+    """The provenance of a fact extract_patterns_from_text found."""
+    return "user_explicit" if str(pattern_type or "").lower() in _STATED_OUTRIGHT else "observed"
+
+
 def write_patterns_from_turn(
     user_text: Any,
     db_path: Path | None = None,
     ts_value: float | None = None,
+    user_id: Any = None,
 ) -> int:
+    """The facts in one message of the user's, stored as theirs (`user_id`, else the user of the turn
+    running in this context) and as of when it was said (`ts_value`)."""
     ensure_profile_tables(db_path)
 
     db = db_path or _user_db()
@@ -793,7 +874,8 @@ def write_patterns_from_turn(
 
     inserted = 0
     for ptype, pdata in patterns:
-        if _insert_user_pattern(cur, ptype, pdata, ts_value=ts_value):
+        if _insert_user_pattern(cur, ptype, pdata, ts_value=ts_value,
+                                provenance=provenance_of(ptype), user_id=user_id):
             inserted += 1
 
     con.commit()
@@ -802,54 +884,78 @@ def write_patterns_from_turn(
 
 
 def backfill_user_patterns(db_path: Path | None = None, limit: int = 2500) -> dict[str, Any]:
+    """Run the per-turn extractor over what was said before it existed, once.
+
+    Each user turn and each user/identity memory is replayed one time ever: `pattern_backfill_log`
+    keeps how far each source has been read (oldest first, `limit` rows per call, so a long history
+    is covered over a few starts), and the live path covers everything said since. It used to replay
+    the OLDEST 2500 rows on every start, which set reaffirmed facts' times back to the replayed
+    turn's and let old statements, weighed as if said that minute, reset the name, role or style.
+    A replayed statement keeps its own time and its own user, so it can neither outweigh nor
+    overwrite what was said after it."""
     ensure_profile_tables(db_path)
 
     db = db_path or _user_db()
     con = sqlite3.connect(str(db))
     con.row_factory = sqlite3.Row
     cur = con.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS pattern_backfill_log (source TEXT PRIMARY KEY, upto REAL)")
+
+    def _upto(source: str) -> float:
+        row = cur.execute("SELECT upto FROM pattern_backfill_log WHERE source = ?", (source,)).fetchone()
+        return float(row[0] or 0.0) if row else 0.0
+
+    def _mark(source: str, upto: float) -> None:
+        cur.execute("INSERT INTO pattern_backfill_log(source, upto) VALUES (?, ?) "
+                    "ON CONFLICT(source) DO UPDATE SET upto = MAX(upto, excluded.upto)", (source, upto))
 
     scanned = 0
     inserted = 0
 
+    def _replay(rows: list, source: str, text_of) -> None:
+        nonlocal scanned, inserted
+        upto = _upto(source)
+        for r in rows:
+            scanned += 1
+            said_at = float(r["at"] or 0.0) or time.time()
+            for ptype, pdata in extract_patterns_from_text(text_of(r)):
+                if _insert_user_pattern(cur, ptype, pdata, ts_value=said_at, provenance=provenance_of(ptype),
+                                        user_id=str(r["who"] or "")):
+                    inserted += 1
+            upto = max(upto, float(r["at"] or 0.0))
+        if rows:
+            _mark(source, upto)
+
     if _table_exists(cur, "conversation_turns"):
         rows = cur.execute(
             """
-            SELECT id, role, content, ts, timestamp
+            SELECT content, user_id AS who, COALESCE(ts, timestamp, 0) AS at
             FROM conversation_turns
-            WHERE lower(COALESCE(role, '')) = 'user'
+            WHERE lower(COALESCE(role, '')) = 'user' AND COALESCE(ts, timestamp, 0) > ?
             ORDER BY COALESCE(ts, timestamp, 0) ASC
             LIMIT ?
             """,
-            (int(limit),),
+            (_upto("conversation_turns"), int(limit)),
         ).fetchall()
-
-        for r in rows:
-            scanned += 1
-            for ptype, pdata in extract_patterns_from_text(r["content"]):
-                if _insert_user_pattern(cur, ptype, pdata, ts_value=r["ts"] or r["timestamp"] or time.time()):
-                    inserted += 1
+        _replay(rows, "conversation_turns", lambda r: r["content"])
 
     if _table_exists(cur, "memories"):
+        cols = {r[1] for r in cur.execute("PRAGMA table_info(memories)")}
+        who = "user_id" if "user_id" in cols else "NULL"
         rows = cur.execute(
-            """
-            SELECT id, text, value, content, tags, kind, source, ts, timestamp
+            f"""
+            SELECT text, value, content, {who} AS who, COALESCE(ts, timestamp, 0) AS at
             FROM memories
-            WHERE lower(COALESCE(source, '')) = 'user'
+            WHERE (lower(COALESCE(source, '')) = 'user'
                OR lower(COALESCE(tags, '')) LIKE '%identity%'
-               OR lower(COALESCE(tags, '')) LIKE '%user%'
+               OR lower(COALESCE(tags, '')) LIKE '%user%')
+              AND COALESCE(ts, timestamp, 0) > ?
             ORDER BY COALESCE(ts, timestamp, 0) ASC
             LIMIT ?
             """,
-            (int(limit),),
+            (_upto("memories"), int(limit)),
         ).fetchall()
-
-        for r in rows:
-            scanned += 1
-            text = r["text"] or r["value"] or r["content"] or ""
-            for ptype, pdata in extract_patterns_from_text(text):
-                if _insert_user_pattern(cur, ptype, pdata, ts_value=r["ts"] or r["timestamp"] or time.time()):
-                    inserted += 1
+        _replay(rows, "memories", lambda r: r["text"] or r["value"] or r["content"] or "")
 
     con.commit()
 
@@ -977,9 +1083,17 @@ _SUMMARY_SECTION_RE = re.compile(
 # A durable fact line -> the pattern type it becomes. First match wins, so specific verbs come
 # before general ones. Every prefix here is one _promote_to_semantic accepts, so a fact captured
 # tonight is in the semantic tier and the knowledge graph by morning.
+#
+# A summary line is the model's account of the conversation, not the user's own words, so it never
+# lands in a single-valued key (_route_facts_to_patterns): the user's name and role come from what
+# they say of themselves (extract_patterns_from_text). The name and work routes take the user as the
+# subject ("the user is called ..."): typed by "is called" / "is a" alone, "their cat is called X"
+# and "the user is a keen cyclist" replaced the user's stored name and role.
+_USER_AS_SUBJECT = r"\b(?:the\s+)?user(?:'s|’s)?\s+"
 _FACT_ROUTES: tuple[tuple[str, str], ...] = (
-    (r"\b(?:is called|goes by|name is|prefers to be called)\b", "identity.name"),
-    (r"\b(?:works as|is an? |their role|job title|employed as)\b", "identity.role"),
+    (_USER_AS_SUBJECT + r"(?:(?:full\s+|preferred\s+)?name\s+is|is\s+called|goes\s+by|prefers\s+to\s+be\s+called)\b",
+     "identity.name_mention"),
+    (_USER_AS_SUBJECT + r"(?:works\s+as|is\s+employed\s+as|role\s+is|job\s+(?:title\s+)?is)\b", "identity.work"),
     (r"\b(?:lives in|based in|is from|located in|timezone)\b", "identity.location"),
     (r"\b(?:studies|researches|research(?:es|ing)?|specialis|specializ|"
      r"phd|thesis|dissertation|field is)\b", "research.field"),
@@ -1114,7 +1228,7 @@ def _fact_pattern_type(line: str) -> str:
     return "identity.fact"
 
 
-def _route_facts_to_patterns(cur: "sqlite3.Cursor", facts_text: str) -> int:
+def _route_facts_to_patterns(cur: "sqlite3.Cursor", facts_text: str, user_id: Any = None) -> int:
     """Write each durable fact the model found as its own accumulating pattern.
 
     This is the width of the funnel. The regex extractor upstream recognises about
@@ -1148,8 +1262,12 @@ def _route_facts_to_patterns(cur: "sqlite3.Cursor", facts_text: str) -> int:
         if key in seen:
             continue
         seen.add(key)
+        ptype = _fact_pattern_type(line)
+        if ptype in _SINGLE_VALUED_PATTERNS:
+            ptype = "identity.fact"
         try:
-            if _insert_user_pattern(cur, _fact_pattern_type(line), line):
+            # the model's reading of the conversation: weighed below anything the user said outright
+            if _insert_user_pattern(cur, ptype, line, provenance="inferred", user_id=user_id):
                 written += 1
         except Exception:
             log.debug("profile_extractor: fact insert failed", exc_info=True)
@@ -1165,7 +1283,8 @@ def _summary_section_meaningful(s: str) -> bool:
     )
 
 
-def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text: str = "") -> None:
+def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text: str = "",
+                              user_id: Any = None) -> None:
     """Route the DYNAMIC 'CURRENT WORK' / 'USER PREFERENCES' the model inferred from the
     REAL conversation into fresh user_patterns — the replacement for the removed hard-coded
     project facts. Re-derived every session, so the proactive 'active_project' signal tracks
@@ -1186,27 +1305,31 @@ def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text
     if _summary_section_meaningful(work):
         # Keep only the LATEST dynamic project signal — purge the frozen canned ones
         # (incl. legacy 'project.eli*' rows) so the daemon never reads a stale fact.
+        who = pattern_owner(user_id)
         try:
             cur.execute(
                 "DELETE FROM user_patterns "
-                "WHERE pattern_type = 'project.current' OR pattern_type LIKE 'project.eli%'"
+                "WHERE (pattern_type = 'project.current' OR pattern_type LIKE 'project.eli%') "
+                "AND COALESCE(user_id, '') = ?", (who,)
             )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        _insert_user_pattern(cur, "project.current", work)
+        _insert_user_pattern(cur, "project.current", work, provenance="inferred", user_id=who)
     if _summary_section_meaningful(prefs):
+        who = pattern_owner(user_id)
         try:
-            cur.execute("DELETE FROM user_patterns WHERE pattern_type = 'preference.session'")
+            cur.execute("DELETE FROM user_patterns WHERE pattern_type = 'preference.session' "
+                        "AND COALESCE(user_id, '') = ?", (who,))
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        _insert_user_pattern(cur, "preference.session", prefs)
+        _insert_user_pattern(cur, "preference.session", prefs, provenance="inferred", user_id=who)
 
     # Durable facts accumulate. CURRENT_WORK and USER_PREFERENCES above are both
     # single-slot by design — they answer "what now?" and are rewritten each
     # session — which is exactly why they could never widen the funnel.
     facts = sections.get("USER_FACTS", "")
     if facts:
-        n = _route_facts_to_patterns(cur, facts)
+        n = _route_facts_to_patterns(cur, facts, user_id=user_id)
         if n:
             log.debug("profile_extractor: %d durable user fact(s) captured", n)
 
@@ -1382,7 +1505,8 @@ def write_llm_session_summary(
             try:
                 _route_summary_to_profile(
                     cur, llm_summary,
-                    user_text=" ".join(str(r["content"] or "") for r in rows if str(r["role"]).lower() == "user"))
+                    user_text=" ".join(str(r["content"] or "") for r in rows if str(r["role"]).lower() == "user"),
+                    user_id=uid if uid != "unknown" else None)
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
         else:

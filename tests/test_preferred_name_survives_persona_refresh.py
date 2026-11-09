@@ -62,3 +62,47 @@ def test_correcting_the_name_supersedes_not_accumulates(db):
     ).fetchall()
     assert len(rows) == 1
     assert "James" in rows[0][0]
+
+
+# ── what the persona overlay carries, and how often it is rewritten ──────────
+
+def test_the_overlay_never_carries_the_owners_complaints_word_for_word():
+    """'Investigate failure: <the owner's sentence> -> anomaly (rejected): ...' rows and the raw
+    failure errors were rendered into the persona loaded into every prompt."""
+    from eli.cognition import persona_updater as pu
+    said = "why do you keep opening the wrong tide chart"
+    improvements = [{"description": f"Investigate failure: {said} -> anomaly (rejected): misroute", "category": "runtime"},
+                    {"description": "Anomaly read on a reply", "category": "anomaly"},
+                    {"description": "Cache the station list instead of fetching it each time", "category": "runtime"}]
+    failures = [{"user_input": said, "error": f"anomaly (rejected): {said}", "command": "", "occurrence_count": 1},
+                {"user_input": said, "error": "no player for that site", "command": "MEDIA_CONTROL pause",
+                 "occurrence_count": 3}]
+    shown = "\n".join(pu._improvement_lines(improvements) + pu._failure_lines(failures))
+    assert said not in shown and "anomaly" not in shown.lower()
+    assert "Cache the station list" in shown and "MEDIA_CONTROL failed 3x" in shown
+
+
+def test_the_profile_is_written_only_when_something_in_it_changed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from eli.cognition import persona_updater as pu
+    from eli.kernel import state
+    db = tmp_path / "user.sqlite3"
+    ensure_profile_tables(db)
+    con = sqlite3.connect(str(db))
+    _insert_user_pattern(con.cursor(), "preference.detail", "User prefers in-depth answers.")
+    _insert_user_pattern(con.cursor(), "identity.fact", "Their cat is called Biscuit.")
+    con.commit()
+    con.close()
+    before = state.get_user_name()
+    state.set_user_name("Robin")
+    writes = []
+    real = state.update_user_profile
+    monkeypatch.setattr(state, "update_user_profile", lambda u=None, **k: writes.append(dict(u or {})) or real(u, **k))
+    try:
+        mem = SimpleNamespace(db_path=str(db))
+        assert pu.update_user_profile_overlay(mem)["updated"] == ["preferences"]
+        assert pu.update_user_profile_overlay(mem)["updated"] == [], "the same data is not written again"
+        assert len(writes) == 1 and "name" not in writes[0]
+        assert state.get_user_name() == "Robin", "a name is never taken from an identity line"
+    finally:
+        state.set_user_name(before)

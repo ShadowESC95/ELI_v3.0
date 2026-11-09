@@ -99,8 +99,52 @@ def set_active_user_id(user_id: str) -> str:
     return uid
 
 
+def _scoped_user_id(user_id: str | None = None) -> str:
+    """Whose profile a read or write is about: the id given; with none, the user of the turn running
+    in this context when that is an API member (member_user_id); otherwise the active user. A bare
+    call inside a member's turn used to read the active user's name and profile, so the member was
+    told the owner's name as their own."""
+    if str(user_id or "").strip():
+        return _safe_user_id(user_id)
+    return _safe_user_id(member_user_id() or None)
+
+
+def _is_active_user(user_id: str | None = None) -> bool:
+    """Whether a profile write is the active user's: only theirs is mirrored into the one world
+    model and settings.json, which the desktop shows."""
+    return _scoped_user_id(user_id) == _safe_user_id(None)
+
+
+def member_user_id(user_id: str | None = None) -> str:
+    """"" when a record is the machine owner's, else the API member's id; with no id given, the user
+    of the turn running in this context. Stores shared by the owner and members key their rows by
+    this, so the owner's existing rows (written before they carried a user) stay the owner's. The
+    rule is the memory policy's (eli.memory.policy.owner_key: only an RBAC member other than the
+    active user is kept apart; "default", "anon" and the like are the owner)."""
+    try:
+        from eli.memory.policy import owner_key
+    except ImportError:
+        owner_key = None
+    if owner_key is not None:
+        return owner_key(user_id if str(user_id or "").strip() else None)
+    # A memory policy without that rule: an id the API gives a caller that named nobody is the owner.
+    from eli.kernel.request_context import user_scope
+    uid = user_scope(user_id)
+    if not uid:
+        return ""
+    owners = {_safe_user_id(None)}
+    try:
+        from eli.core.paths import adopt_legacy_file
+        uid_file = adopt_legacy_file(Path(get_paths().config_dir) / "user_id", "~/.eli_user_id")
+        if uid_file.exists():
+            owners.add(_safe_user_id(uid_file.read_text(encoding="utf-8", errors="replace").strip() or None))
+    except Exception:
+        log.debug("install id unavailable", exc_info=True)
+    return "" if _safe_user_id(uid) in owners else uid
+
+
 def _user_runtime_dir(user_id: str | None = None) -> Path:
-    p = _runtime_dir() / "users" / _safe_user_id(user_id)
+    p = _runtime_dir() / "users" / _scoped_user_id(user_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -141,6 +185,8 @@ def set_user_name(name: str, user_id: str | None = None) -> str:
         profile.pop("name", None)
 
     save_user_profile(profile, user_id)
+    if not _is_active_user(user_id):
+        return n
     sync_identity_to_world_model(user_id=user_id)
 
     # Keep settings.json["user_name"] in sync so the GUI always reflects the
@@ -193,7 +239,8 @@ def update_user_profile(update: Dict[str, Any] | None = None, user_id: str | Non
             profile.pop("aliases", None)
 
     save_user_profile(profile, user_id)
-    sync_identity_to_world_model(user_id=user_id)
+    if _is_active_user(user_id):
+        sync_identity_to_world_model(user_id=user_id)
     return profile
 
 
@@ -253,6 +300,8 @@ def set_communication_style(style: str, user_id: str | None = None) -> str:
     else:
         profile.pop("communication_style", None)
     save_user_profile(profile, user_id)
+    if not _is_active_user(user_id):
+        return s
     try:
         from eli.core.runtime_settings import load_settings, save_settings
         st = load_settings() or {}
@@ -284,7 +333,7 @@ def sync_identity_to_world_model(user_id: str | None = None) -> None:
     try:
         from eli.kernel.world_model import get_world_model, save_world_model
         wm = get_world_model()
-        uid = _safe_user_id(user_id)
+        uid = _scoped_user_id(user_id)
         n = get_user_name("", user_id=uid).strip()
         wm.identity.user_id = uid
         wm.identity.preferred_name = n

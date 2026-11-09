@@ -47,8 +47,11 @@ def _patterns(cur):
 # ── classification ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("line,expected", [
-    ("User is called Alex by close colleagues", "identity.name"),
-    ("User works as an independent physicist", "identity.role"),
+    ("User is called Alex by close colleagues", "identity.name_mention"),
+    ("User works as an independent physicist", "identity.work"),
+    # "is called" / "is a" of something else, or of the user, is not their name or job
+    ("Their cat is called Biscuit", "identity.fact"),
+    ("The user is a keen cyclist", "identity.fact"),
     ("User lives in Dublin", "identity.location"),
     ("User researches entropy and coherence fields", "research.field"),
     ("User is building a solar-to-hydrogen prototype", "project.named"),
@@ -78,10 +81,23 @@ def test_every_route_target_reaches_the_semantic_tier():
 def test_fact_types_are_not_single_valued():
     """Single-slot types are superseded on write. Facts must accumulate, or this
     change reproduces the exact bug it exists to fix."""
-    accumulating = [t for _p, t in PE._FACT_ROUTES if t not in ("identity.name", "identity.role")]
-    for t in accumulating:
+    for _p, t in PE._FACT_ROUTES:
         assert t not in PE._SINGLE_VALUED_PATTERNS, t
     assert "identity.fact" not in PE._SINGLE_VALUED_PATTERNS
+
+
+def test_a_summary_line_never_replaces_the_name_or_role_the_user_gave(cur):
+    """A summary line is the model's account of the conversation. 'their cat is called X' was typed
+    as the user's name and 'is a keen cyclist' as their role, and each deleted the stored one."""
+    PE._insert_user_pattern(cur, "identity.name", "User's name is Robin.", provenance="user_explicit")
+    PE._insert_user_pattern(cur, "identity.role", "User is a surveyor.", provenance="user_explicit")
+    PE._route_facts_to_patterns(cur, "- Their cat is called Biscuit\n- The user is a keen cyclist\n"
+                                     "- The user's name is Biscuit\n")
+    rows = dict(cur.execute("SELECT pattern_type, pattern_data FROM user_patterns "
+                            "WHERE pattern_type IN ('identity.name', 'identity.role')").fetchall())
+    assert rows == {"identity.name": "User's name is Robin.", "identity.role": "User is a surveyor."}
+    kept = [d for t, d in _patterns(cur) if t not in PE._SINGLE_VALUED_PATTERNS]
+    assert any("Biscuit" in d for d in kept) and any("cyclist" in d for d in kept)
 
 
 # ── routing ──────────────────────────────────────────────────────────────────

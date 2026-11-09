@@ -25,9 +25,9 @@ def db(tmp_path, monkeypatch):
     return p
 
 
-def _seed(db, ptype, data):
+def _seed(db, ptype, data, user_id=None):
     con = sqlite3.connect(str(db)); cur = con.cursor()
-    _insert_user_pattern(cur, ptype, data); con.commit(); con.close()
+    _insert_user_pattern(cur, ptype, data, **({"user_id": user_id} if user_id else {})); con.commit(); con.close()
 
 
 def test_blank_slate_brief_is_onboarding_nudge(db):
@@ -110,9 +110,46 @@ def test_onboarding_skip_clears(db):
     iv.clear_onboarding_state()
 
 
-def test_user_model_row_is_user_scoped(db):
-    _seed(db, "identity.role", "User is a physicist.")
+@pytest.fixture
+def members(monkeypatch):
+    """API members, as the memory policy knows them (eli/memory/policy.rbac_members)."""
+    monkeypatch.setattr("eli.memory.policy.rbac_members", lambda: frozenset({"alice", "member-b"}), raising=False)
+
+
+def test_user_model_row_is_user_scoped(db, members):
+    _seed(db, "identity.role", "User is a physicist.", user_id="alice")
     um.synthesize_user_model(user_id="alice", db_path=db, broker=None)
     # the synthesized ROW for alice exists; bob has no row of his own
     assert um._read_row("alice", db_path=db) is not None
     assert um._read_row("bob", db_path=db) is None
+
+
+def test_each_user_model_is_built_from_that_users_own_facts(db, members):
+    """user_patterns was one pooled table: an API member's facts went into the owner's model and the
+    owner's into the member's brief."""
+    _seed(db, "identity.role", "User is a surveyor.")                       # the owner's
+    _seed(db, "identity.role", "User is a beekeeper.", user_id="member-b")  # a member's
+    assert "surveyor" in um.get_user_brief(db_path=db) and "beekeeper" not in um.get_user_brief(db_path=db)
+    member = um.get_user_brief(user_id="member-b", db_path=db)
+    assert "beekeeper" in member and "surveyor" not in member
+    # a member's single-valued fact did not retire the owner's
+    con = sqlite3.connect(str(db))
+    assert con.execute("SELECT COUNT(*) FROM user_patterns WHERE pattern_type='identity.role'").fetchone()[0] == 2
+    con.close()
+
+
+def test_the_brief_inside_a_members_turn_is_the_members(db, members):
+    from eli.kernel import request_context as rc
+    _seed(db, "identity.role", "User is a surveyor.")
+    _seed(db, "identity.role", "User is a beekeeper.", user_id="member-b")
+    token = rc.user_id_var.set("member-b")
+    try:
+        assert "beekeeper" in um.get_user_brief(db_path=db) and "surveyor" not in um.get_user_brief(db_path=db)
+    finally:
+        rc.user_id_var.reset(token)
+    # an API caller that named no user is the owner
+    token = rc.user_id_var.set("default")
+    try:
+        assert "surveyor" in um.get_user_brief(db_path=db)
+    finally:
+        rc.user_id_var.reset(token)

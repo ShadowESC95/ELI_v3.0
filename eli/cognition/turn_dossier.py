@@ -208,6 +208,16 @@ def assemble_turn_dossier(
         reasoning_mode=str(reasoning_mode or "quick"),
     )
     phatic = dossier.query_class == "PHATIC"
+    # Whose turn this is. The user's own records (name, profile, user model) are read as theirs:
+    # read with no id they were the active user's whoever was talking, so an API member was shown
+    # the owner's name as "verified". `who` is the id the turn's rows are stored under (its
+    # conversation, its emotion reads); `scope` is whose records those are (None: the owner's).
+    who = str(user_id or getattr(engine, "user_id", "") or "")
+    try:
+        from eli.kernel.state import member_user_id
+        scope = member_user_id(who) or None
+    except Exception:
+        scope = None
 
     # Identity + user brief (always)
     try:
@@ -216,8 +226,8 @@ def assemble_turn_dossier(
             asks_about_stored_personal_context,
             strip_recalled_projects_from_profile_text,
         )
-        name = (get_user_name() or "").strip()
-        profile = (get_user_profile_text() or "").strip()
+        name = (get_user_name(user_id=scope) or "").strip()
+        profile = (get_user_profile_text(user_id=scope) or "").strip()
         if name:
             dossier.identity_block = f"[USER IDENTITY — verified]\nName: {name}"
             dossier.provenance.append("kernel.state")
@@ -238,7 +248,7 @@ def assemble_turn_dossier(
             asks_about_stored_personal_context,
             strip_focus_lines_from_brief,
         )
-        brief = (get_user_brief() or "").strip()
+        brief = (get_user_brief(user_id=scope) or "").strip()
         if brief and not asks_about_stored_personal_context(dossier.query):
             # Unrelated turns must not see "Currently focused on: collect Sam…"
             # — that is what made ELI volunteer stale travel plans mid-argument.
@@ -273,7 +283,6 @@ def assemble_turn_dossier(
         try:
             from eli.core.cognition_tunables import snapshot as _cog_snapshot
             from eli.memory.document_index import describe_named, recent_user_messages, with_what_it_refers_to
-            who = user_id or getattr(engine, "user_id", "") or ""
             said = with_what_it_refers_to(dossier.query, recent_user_messages(mem, who) if mem is not None else ())
             listing = describe_named(said, int(_cog_snapshot().get("cog.named_paths_chars", 0)))
             if listing:
@@ -299,7 +308,7 @@ def assemble_turn_dossier(
             result = retrieve_for_turn(
                 mem,
                 dossier.query,
-                user_id=user_id or getattr(engine, "user_id", "") or "",
+                user_id=who,
                 session_id=session_id or getattr(engine, "session_id", "") or "",
                 enable_hop2=not phatic,
                 rerank=True,
@@ -360,7 +369,7 @@ def assemble_turn_dossier(
 
     try:
         from eli.cognition.emotion_timeline import trend_line
-        trend = (trend_line(limit=4) or "").strip()
+        trend = (trend_line(user_id=who, limit=4) or "").strip()
         if trend:
             dossier.emotion_trend = f"[EMOTION TREND — recent register]\n{trend[:400]}"
             dossier.provenance.append("emotion_timeline")

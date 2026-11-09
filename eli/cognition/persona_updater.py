@@ -44,6 +44,11 @@ _USER_PROFILE_LOCK: threading.Lock = threading.Lock()
 # time-based; this skips the overlay write, KG sync, user-model refresh and profile rewrite when the
 # inputs haven't changed.
 _LAST_OVERLAY_SIG: Optional[str] = None
+# Overlay sections whose lines change with nearly every turn or daemon tick; not part of the signature.
+_CHURNING_SECTIONS = frozenset({
+    "Recent Failure Patterns (Auto-Updated)", "Reflection / Observations (Auto-Updated)",
+    "Runtime Patterns (Auto-Updated)",
+})
 
 
 def _safe_call(obj: Any, name: str, *args, **kwargs):
@@ -328,6 +333,37 @@ def _get_session_narrative(memory: Any, limit: int = 3) -> List[str]:
         return []
 
 
+def _improvement_lines(rows: Any, limit: int = 8) -> List[str]:
+    """What ELI changed or plans to change about itself. A failure under investigation is not one:
+    those rows ("Investigate failure: <the user's own sentence> -> anomaly ...") put the owner's
+    complaints, word for word, into ELI's persona, and an anomaly row is a reading, not a change."""
+    kept = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        desc = _clean(row.get("description"))
+        kind = f"{row.get('category') or ''} {row.get('area') or ''}".lower()
+        if not desc or "anomaly" in kind or re.match(r"(?i)investigate failure\b", desc) or re.search(
+                r"(?i)\banomaly\s*\(", desc):
+            continue
+        kept.append(row)
+    return _top_lines(kept, "description", limit=limit)
+
+
+def _failure_lines(rows: Any, limit: int = 5) -> List[str]:
+    """Which commands have been failing and how often, as counts: never the user's words or the raw
+    error text, which carried their sentences into the persona."""
+    counts: Dict[str, int] = {}
+    for row in rows or []:
+        if not isinstance(row, dict) or str(row.get("error") or "").lower().startswith("anomaly"):
+            continue
+        command = _clean(row.get("command")).split(" ")[0].upper() or "A COMMAND"
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,40}", command):
+            command = "A COMMAND"
+        counts[command] = counts.get(command, 0) + int(row.get("occurrence_count") or 1)
+    return [f"{name} failed {n}x recently" for name, n in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
+
+
 def _runtime_pattern_lines(limit: int = 8) -> List[str]:
     try:
         from eli.runtime.evidence_ledger import repeated_event_signals
@@ -428,12 +464,8 @@ def update_persona_overlay(memory: Any = None) -> Dict[str, Any]:
             _top_lines(observations, "observation", limit=8)
         ),
         "Runtime Patterns (Auto-Updated)": _dedup_lines(_runtime_pattern_lines(limit=8)),
-        "Self Improvement (Auto-Updated)": _dedup_lines(
-            _top_lines(improvements, "description", limit=8)
-        ),
-        "Recent Failure Patterns (Auto-Updated)": _dedup_lines(
-            _top_lines(failures, "error", limit=5)
-        ),
+        "Self Improvement (Auto-Updated)": _dedup_lines(_improvement_lines(improvements, limit=8)),
+        "Recent Failure Patterns (Auto-Updated)": _dedup_lines(_failure_lines(failures, limit=5)),
         "Processed Memory Themes (Auto-Updated)": reflection_themes,
     }
 
@@ -452,7 +484,11 @@ def update_persona_overlay(memory: Any = None) -> Dict[str, Any]:
     global _LAST_OVERLAY_SIG
     try:
         import hashlib as _hashlib
-        _sig_parts = [f"{t}={'|'.join(map(str, ls or []))}" for t, ls in sorted(sections.items())]
+        # Signed on what it says that lasts: failure counts, observations and runtime events change on
+        # nearly every turn, and signing them rewrote the overlay, the KG and the profile with the same
+        # data every couple of minutes. They are written with the next real change.
+        _sig_parts = [f"{t}={'|'.join(map(str, ls or []))}" for t, ls in sorted(sections.items())
+                      if t not in _CHURNING_SECTIONS]
         _patterns = _read_user_patterns(memory) or {}
         _sig_parts += [f"{k}={'|'.join(sorted(map(str, _patterns.get(k) or [])))}"
                        for k in sorted(_patterns)]
@@ -507,14 +543,25 @@ def _read_user_patterns(memory: Any) -> Dict[str, List[str]]:
                 return {}
         con = _sqlite3.connect(str(db_path))
         try:
-            rows = con.execute(
-                """
-                SELECT pattern_type, pattern_data, COALESCE(timestamp, ts)
-                FROM user_patterns
-                WHERE length(COALESCE(pattern_data,'')) > 10
-                ORDER BY COALESCE(timestamp, ts, id) DESC
-                """
-            ).fetchall()
+            # the owner's own rows: an API member's facts are theirs (profile_extractor.pattern_owner)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT pattern_type, pattern_data, COALESCE(timestamp, ts)
+                    FROM user_patterns
+                    WHERE length(COALESCE(pattern_data,'')) > 10 AND COALESCE(user_id, '') = ''
+                    ORDER BY COALESCE(timestamp, ts, id) DESC
+                    """
+                ).fetchall()
+            except _sqlite3.OperationalError:          # rows from before they carried a user
+                rows = con.execute(
+                    """
+                    SELECT pattern_type, pattern_data, COALESCE(timestamp, ts)
+                    FROM user_patterns
+                    WHERE length(COALESCE(pattern_data,'')) > 10
+                    ORDER BY COALESCE(timestamp, ts, id) DESC
+                    """
+                ).fetchall()
         finally:
             con.close()
         import time as _time
@@ -553,34 +600,6 @@ def _read_user_patterns(memory: Any) -> Dict[str, List[str]]:
     except Exception as e:
         log.debug("_read_user_patterns error: %s", e)
         return {}
-
-
-def _extract_name_from_identity_item(text: str) -> str:
-    """
-    Extract a bare personal name from identity pattern strings like:
-      "User's name is alex."
-      "User's preferred name is Alex."
-      "The user's name is alex."
-    Returns the candidate name, or "" if nothing found.
-    """
-    import re as _re
-    m = _re.search(
-        r"(?:name is|preferred name is|called|known as)\s+([A-Za-z][A-Za-z' -]{1,29})\b",
-        text,
-        _re.I,
-    )
-    if not m:
-        return ""
-    candidate = m.group(1).strip(" .,;")
-    # Reject obvious non-names
-    if candidate.lower() in {
-        "unknown", "none", "the", "a", "an", "no", "not", "asking", "user",
-        "screenshot", "name", "unnamed", "anonymous", "guest", "admin",
-        "root", "system", "default", "test", "sample", "example",
-        "placeholder", "null", "undefined",
-    }:
-        return ""
-    return candidate
 
 
 def _populate_kg_from_user_patterns(memory: Any) -> None:
@@ -692,16 +711,11 @@ def update_user_profile_overlay(memory: Any = None) -> Dict[str, Any]:
         _USER_PROFILE_LAST_RUN = now
 
     try:
-        from eli.kernel.state import load_user_profile, update_user_profile, get_user_name, set_user_name
+        from eli.kernel.state import load_user_profile, update_user_profile
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
     updates: Dict[str, Any] = {}
-
-    # Authoritative name from user_profile.json always wins
-    name = get_user_name().strip()
-    if name:
-        updates["name"] = name
 
     if memory is not None:
         patterns = _read_user_patterns(memory)
@@ -721,23 +735,21 @@ def update_user_profile_overlay(memory: Any = None) -> Dict[str, Any]:
         if research_lines:
             updates["research"] = research_lines[:3]
 
-        # Identity signals: extract name from identity.name patterns if profile lacks it,
-        # and write it back via set_user_name() so it persists for future sessions.
+        # The name is never recovered from the patterns here: the profile's name is the one the user
+        # gave (set where they said it). Taken from any identity line ("their cat is called X") it
+        # replaced the user's own name.
         for item in patterns.get("identity", []):
-            if "name" not in updates:
-                # Recover name from "User's name is X." / "preferred name is X." patterns
-                recovered = _extract_name_from_identity_item(item)
-                if recovered:
-                    try:
-                        set_user_name(recovered)  # write to user_profile.json
-                        log.info("persona_updater: recovered name %r from user_patterns", recovered)
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                    updates["name"] = recovered
             if "nickname" in item.lower() or "nick" in item.lower() or "alias" in item.lower():
                 if "nickname" not in updates:
                     updates["nickname"] = item
 
+    # Only what changed is written: every refresh used to save and sync the same data (its name
+    # included) every couple of minutes.
+    try:
+        current = load_user_profile() or {}
+    except Exception:
+        current = {}
+    updates = {k: v for k, v in updates.items() if current.get(k) != v}
     if updates:
         try:
             update_user_profile(updates)

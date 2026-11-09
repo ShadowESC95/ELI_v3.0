@@ -44,6 +44,11 @@ in_followthrough_var: ContextVar[Optional[bool]] = ContextVar("eli_in_followthro
 # task as its message.
 agreed_task_var: ContextVar[Optional[dict]] = ContextVar("eli_agreed_task", default=None)
 orchestrator_active_var: ContextVar[Optional[bool]] = ContextVar("eli_orchestrator_active", default=None)
+# The safety steering for this turn's reply when its message carries a self-harm signal
+# (eli.core.crisis_guard). Per turn: on the shared engine, another session's next turn reset it.
+# A sub-turn (multi-question split, followthrough) runs in a copy of its parent's context, so it
+# is steered as its parent is.
+crisis_steering_var: ContextVar[Optional[str]] = ContextVar("eli_crisis_steering", default=None)
 in_orchestrator_var: ContextVar[Optional[bool]] = ContextVar("eli_in_orchestrator", default=None)
 # What this turn actually did (its trace, bus result, published meta), collected
 # as the turn runs so process() can write the audit row from the turn's own data
@@ -53,6 +58,22 @@ turn_facts_var: ContextVar[Optional[dict]] = ContextVar("eli_turn_facts", defaul
 # "typed" when the user typed this turn's message, "voice" when it was spoken, None when the
 # caller did not say. Only speech can arrive as a fragment ("ply", "find your mo").
 input_channel_var: ContextVar[Optional[str]] = ContextVar("eli_input_channel", default=None)
+
+
+# The ids api/server.py gives a caller that names no user of its own: ChatRequest's default
+# ("default"), _effective_user's fallback for an empty one ("anon") and the loopback owner principal
+# in RBAC mode ("operator"). Such a caller is the machine's owner (single-operator mode has no
+# per-user tokens), so its turn reads the owner's own records, as a desktop turn does.
+OWNER_STANDIN_IDS = frozenset({"default", "anon", "operator"})
+
+
+def user_scope(user_id: Optional[str] = None) -> Optional[str]:
+    """Whose own records (name, profile, user model, learned patterns, pinned facts) a turn reads and
+    writes: `user_id` when given, else this turn's caller's. None means the machine's owner (no id,
+    or an owner stand-in), whose records are the active user's. Outside a turn (the GUI's own
+    thread, the daemons) that is always the owner."""
+    raw = str(user_id if user_id is not None else (user_id_var.get() or "")).strip()
+    return None if not raw or raw.lower() in OWNER_STANDIN_IDS else raw
 
 
 def in_user_turn() -> bool:
@@ -90,6 +111,15 @@ def get_session_sticky(session_id: Optional[str], field: str, default: Any = Non
     with _session_sticky_lock:
         bucket = _session_sticky.get(session_id)
         return bucket.get(field, default) if bucket else default
+
+
+def take_session_sticky(session_id: Optional[str], field: str, default: Any = None) -> Any:
+    """Read and clear one entry in one step, so two turns racing for it never both get it."""
+    if not session_id:
+        return default
+    with _session_sticky_lock:
+        bucket = _session_sticky.get(session_id)
+        return bucket.pop(field, default) if bucket else default
 
 
 def set_session_sticky(session_id: Optional[str], field: str, value: Any) -> None:

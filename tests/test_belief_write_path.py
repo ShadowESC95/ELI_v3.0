@@ -216,3 +216,84 @@ def test_topics_are_matched_case_and_space_insensitively(cur):
 
 def test_an_unheld_topic_returns_nothing(cur):
     assert SS.get_stance(cur, "nothing was ever said about this") is None
+
+
+# ── where a fact came from, and when it was said ─────────────────────────────
+
+def _style(cur):
+    return [r[0] for r in cur.execute(
+        "SELECT pattern_data FROM user_patterns WHERE pattern_type='preference.style'").fetchall()]
+
+
+def test_a_passing_word_does_not_replace_the_answer_style_the_user_chose(cur, tmp_path):
+    """Four keyword rules all wrote the single-valued preference.style at the same provenance as the
+    onboarding answer, so 'that answer was generic' replaced the style the user had picked."""
+    from eli.runtime.profile_extractor import write_patterns_from_turn
+    db = tmp_path / "user.sqlite3"
+    _insert_user_pattern(cur, "preference.style", "User prefers short answers by default.")
+    cur.connection.commit()
+    write_patterns_from_turn("that answer was generic and you should challenge me more", db_path=db)
+    assert _style(cur) == ["User prefers short answers by default."]
+    facets = {r[0] for r in cur.execute("SELECT pattern_type FROM user_patterns").fetchall()}
+    assert {"preference.originality", "preference.challenge"} <= facets
+
+
+def test_the_extractors_facts_carry_how_they_were_known(cur, tmp_path):
+    from eli.runtime.profile_extractor import write_patterns_from_turn
+    db = tmp_path / "user.sqlite3"
+    write_patterns_from_turn("my name is Robin and I'm an engineer, be thorough please", db_path=db)
+    prov = dict(cur.execute("SELECT pattern_type, provenance FROM user_patterns").fetchall())
+    assert prov["identity.name"] == "user_explicit" and prov["identity.role"] == "user_explicit"
+    assert prov["preference.detail"] == "observed"
+
+
+def test_the_same_label_in_new_words_corroborates_it(cur):
+    """Each row carries the user's quote after its label; whole-string comparison made every
+    rephrasing a rival, so corroboration never built and single-valued keys flipped back and forth."""
+    day = 86400
+    t0 = time.time() - 3 * day
+    _insert_user_pattern(cur, "preference.challenge", 'User wants assumptions challenged. Said: "correct me"',
+                         ts_value=t0)
+    _insert_user_pattern(cur, "preference.challenge", 'User wants assumptions challenged. Said: "challenge me"',
+                         ts_value=t0 + day)
+    rows = cur.execute("SELECT corroboration FROM user_patterns WHERE pattern_type='preference.challenge'").fetchall()
+    assert rows == [(2,)]
+
+
+def test_an_older_statement_cannot_replace_a_newer_value(cur):
+    """The boot backfill replays old turns; weighed as if said now, an old role replaced the current one."""
+    now = time.time()
+    _insert_user_pattern(cur, "identity.role", "User is an engineer", ts_value=now, provenance="user_explicit")
+    assert _insert_user_pattern(cur, "identity.role", "User is a student", ts_value=now - 90 * 86400,
+                                provenance="user_explicit") is False
+    assert [r[0] for r in _role(cur)] == ["User is an engineer"]
+
+
+def test_replaying_an_old_statement_never_moves_a_fact_back_in_time(cur):
+    now = time.time()
+    _insert_user_pattern(cur, "interest.explicit", "User is interested in tide tables.", ts_value=now)
+    _insert_user_pattern(cur, "interest.explicit", "User is interested in tide tables.", ts_value=now - 30 * 86400)
+    ts = cur.execute("SELECT ts FROM user_patterns WHERE pattern_type='interest.explicit'").fetchone()[0]
+    assert abs(ts - now) < 1
+
+
+def test_the_boot_backfill_reads_each_turn_once(tmp_path):
+    from eli.runtime.profile_extractor import backfill_user_patterns
+    db = tmp_path / "user.sqlite3"
+    ensure_profile_tables(db)
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE conversation_turns (id INTEGER PRIMARY KEY, session_id TEXT, user_id TEXT, "
+                "role TEXT, content TEXT, ts REAL, timestamp REAL)")
+    old = time.time() - 200 * 86400
+    con.execute("INSERT INTO conversation_turns (session_id, user_id, role, content, ts) VALUES "
+                "('s', '', 'user', 'I am a student', ?)", (old,))
+    con.commit()
+    assert backfill_user_patterns(db_path=db)["scanned"] == 1
+    # the user has since said otherwise
+    cur = con.cursor()
+    _insert_user_pattern(cur, "identity.role", "User is an engineer.", provenance="user_explicit")
+    con.commit()
+    assert backfill_user_patterns(db_path=db)["scanned"] == 0
+    assert [r[0] for r in con.execute("SELECT pattern_data FROM user_patterns "
+                                      "WHERE pattern_type='identity.role'")] == ["User is an engineer."]
+    con.close()

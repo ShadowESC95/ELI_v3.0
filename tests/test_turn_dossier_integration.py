@@ -133,3 +133,36 @@ def test_phatic_handoff_includes_dossier_blocks():
     assert "Cached insight here" in brief
     assert "Should not appear" not in brief
     assert "CURRENT TIME" in brief
+
+
+def test_the_dossier_shows_each_user_their_own_identity(monkeypatch):
+    """The dossier read the name, profile, user model and emotion trend with no user, so an API
+    member was given the owner's name as '[USER IDENTITY — verified]'."""
+    from types import SimpleNamespace
+    from eli.cognition.turn_dossier import assemble_turn_dossier
+    from eli.kernel import request_context as rc
+    from eli.kernel.state import get_user_name, set_user_name
+
+    monkeypatch.setattr("eli.memory.policy.rbac_members", lambda: frozenset({"member-b"}), raising=False)
+    before = get_user_name()
+    set_user_name("Robin")                               # the owner's, outside any turn
+    try:
+        engine = SimpleNamespace(memory=None, _awareness=None, user_id="", session_id="s")
+        token = rc.user_id_var.set("member-b")
+        try:
+            member = assemble_turn_dossier(engine, "what is my name?", user_id="member-b")
+            set_user_name("Kit")                         # the member says theirs, in their turn
+            again = assemble_turn_dossier(engine, "what is my name?", user_id="member-b")
+        finally:
+            rc.user_id_var.reset(token)
+        assert "Robin" not in member.identity_block
+        assert "Kit" in again.identity_block and "Robin" not in again.identity_block
+        assert get_user_name() == "Robin"                # the member's name did not replace the owner's
+        token = rc.user_id_var.set("default")            # an API caller that named nobody is the owner
+        try:
+            owner = assemble_turn_dossier(engine, "what is my name?", user_id="default")
+        finally:
+            rc.user_id_var.reset(token)
+        assert "Robin" in owner.identity_block
+    finally:
+        set_user_name(before)

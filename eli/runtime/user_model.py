@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from eli.runtime.profile_extractor import _SINGLE_VALUED_PATTERNS as _SINGLE_VALUED_TYPES
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 # Pattern-prefix → structured column. user_patterns is the evidence; this groups it.
 _PREFIX_TO_COL = {
@@ -84,8 +87,17 @@ def _db_path(db_path: Optional[Path | str] = None) -> Path:
 
 
 def _resolve_user_id(user_id: Optional[str] = None) -> str:
+    """The user model's key: the id given, else the user of the turn running in this context (an API
+    member's own), else the owner's (the install's id file)."""
     if user_id:
         return str(user_id)
+    try:
+        from eli.kernel.state import member_user_id
+        member = member_user_id()
+        if member:
+            return member
+    except Exception:
+        log.debug("turn user unavailable", exc_info=True)
     try:
         from eli.core.paths import get_paths
         f = get_paths().config_dir / "user_id"
@@ -107,16 +119,28 @@ def _get_name(user_id: Optional[str] = None) -> str:
 # --------------------------------------------------------------------------- #
 # Evidence: group user_patterns by structured column                          #
 # --------------------------------------------------------------------------- #
-def _read_patterns_grouped(db_path: Optional[Path | str] = None) -> Dict[str, List[str]]:
-    """Return {column: [pattern_data, ...]} from user_patterns (most-recent first)."""
+def _read_patterns_grouped(db_path: Optional[Path | str] = None,
+                           user_id: Optional[str] = None) -> Dict[str, List[str]]:
+    """Return {column: [pattern_data, ...]} from one user's user_patterns (most-recent first): the
+    user given, else the turn's (profile_extractor.pattern_owner). Every user's rows used to be read
+    into one model, so the owner's brief went into an API member's prompt."""
     out: Dict[str, List[str]] = {c: [] for c in _COLS}
     try:
+        from eli.runtime.profile_extractor import pattern_owner
+        who = pattern_owner(user_id)
         con = sqlite3.connect(str(_db_path(db_path)))
         try:
-            rows = con.execute(
-                "SELECT pattern_type, pattern_data FROM user_patterns "
-                "ORDER BY COALESCE(timestamp, ts, 0) DESC"
-            ).fetchall()
+            try:
+                rows = con.execute(
+                    "SELECT pattern_type, pattern_data FROM user_patterns WHERE COALESCE(user_id, '') = ? "
+                    "ORDER BY COALESCE(timestamp, ts, 0) DESC", (who,)
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # written before rows carried a user: every row is the owner's
+                rows = [] if who else con.execute(
+                    "SELECT pattern_type, pattern_data FROM user_patterns "
+                    "ORDER BY COALESCE(timestamp, ts, 0) DESC"
+                ).fetchall()
         finally:
             con.close()
     except Exception:
@@ -241,7 +265,7 @@ def read_user_model(user_id: Optional[str] = None, db_path: Optional[Path | str]
             "is_seeded": True,
         })
         return model
-    grouped = _read_patterns_grouped(db_path)
+    grouped = _read_patterns_grouped(db_path, user_id)
     return {
         "user_id": uid, "name": name,
         "identity": grouped["identity"], "comms_style": grouped["comms_style"],
@@ -262,7 +286,7 @@ def get_user_brief(user_id: Optional[str] = None, turn_count: int = 0,
     if row and (row.get("brief") or "").strip():
         return row["brief"].strip()
     name = _get_name(user_id)
-    grouped = _read_patterns_grouped(db_path)
+    grouped = _read_patterns_grouped(db_path, user_id)
     has_evidence = bool(name or any(grouped[c] for c in _COLS))
     if not has_evidence:
         return ONBOARDING_NUDGE if int(turn_count) <= 4 else ""
@@ -278,7 +302,7 @@ def refresh_user_model_brief(memory: Any = None, user_id: Optional[str] = None,
     + name. Keeps the per-turn read fresh between full LLM syntheses. Returns the brief."""
     uid = _resolve_user_id(user_id)
     name = _get_name(user_id)
-    grouped = _read_patterns_grouped(db_path)
+    grouped = _read_patterns_grouped(db_path, user_id)
     if not (name or any(grouped[c] for c in _COLS)):
         return ""
     row = _read_row(uid, db_path)
@@ -297,7 +321,7 @@ def synthesize_user_model(memory: Any = None, user_id: Optional[str] = None,
     degrades to the heuristic brief. Fully local; returns True if a row was written."""
     uid = _resolve_user_id(user_id)
     name = _get_name(user_id)
-    grouped = _read_patterns_grouped(db_path)
+    grouped = _read_patterns_grouped(db_path, user_id)
     if not (name or any(grouped[c] for c in _COLS)):
         return False
 

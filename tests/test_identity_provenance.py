@@ -54,7 +54,8 @@ def test_profile_extractor_tracks_anti_stub_persona_preferences():
 
     assert _label("preference.output_quality").startswith(
         "User rejects stubs, templates, placeholders, and boilerplate as generated output.")
-    assert _label("preference.style").startswith(
+    # its own facet: preference.style is the one answer style the user chose
+    assert _label("preference.originality").startswith(
         "User rejects generic, repetitive, shallow, customer-service style responses.")
     assert _label("preference.persona").startswith(
         "User wants ELI to keep a deeper, more characterful persona while staying technically grounded.")
