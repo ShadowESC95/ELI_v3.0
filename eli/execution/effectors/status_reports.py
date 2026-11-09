@@ -217,9 +217,21 @@ def _h_hardware_profile(a, args):
             from eli.core.hardware_profile import run_benchmark, apply_recommendation, recommend
             if args.get("apply"):
                 rec = recommend()
-                result = apply_recommendation(rec)
-                msg = f"Applied: {rec.model_name}, {rec.n_gpu_layers} GPU layers, ctx={rec.n_ctx}, batch={rec.batch_size}, threads={rec.n_threads}.\nRestart Eli to use new settings."
-                return {"ok": True, "action": a, "content": msg, "response": msg}
+                result = apply_recommendation(rec) or {}
+                # what was written, as apply_recommendation says: "Applied" was said whatever came of it,
+                # a failed save and a model left as it was included
+                if not result.get("ok"):
+                    msg = f"The hardware recommendation was not saved: {result.get('error') or 'the settings could not be written'}."
+                    return {"ok": False, "action": a, "error": str(result.get("error") or "not saved"),
+                            "content": msg, "response": msg, "applied": result}
+                tuned = (f"{rec.n_gpu_layers} GPU layers, ctx={rec.n_ctx}, batch={rec.batch_size}"
+                         f" (cache {rec.cache_type_k}/{rec.cache_type_v})")
+                if result.get("model_written"):
+                    msg = f"Applied: {rec.model_name}, {tuned}.\nRestart Eli to use new settings."
+                else:
+                    msg = (f"Applied: {tuned}. The model was left as it was: the recommendation found no model "
+                           f"file to choose.\nRestart Eli to use new settings.")
+                return {"ok": True, "action": a, "content": msg, "response": msg, "applied": result}
             bench = run_benchmark()
             hw = bench["hardware"]
             rec = bench["recommendation"]

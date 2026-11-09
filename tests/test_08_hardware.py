@@ -179,3 +179,24 @@ def test_gpu_use_is_sampled_from_the_first_generation_s_start_to_the_last_one_s_
     assert (a["index"], a["name"], a["util_avg"], a["util_max"], a["samples"]) == (0, "Card A", 60.0, 80.0, 2)
     assert (b["index"], b["util_max"], b["samples"]) == (1, 10.0, 1)
     assert ib.last_generation()["ended"] == pytest.approx(_t.time(), abs=5)
+
+
+def test_applying_the_recommendation_says_what_was_written(monkeypatch):
+    """"Applied: <model>, ..." was said whatever apply_recommendation returned: a save that failed, and
+    a model it left as it was, both read as applied."""
+    from types import SimpleNamespace
+    import eli.core.hardware_profile as hp
+    from eli.execution.effectors.status_reports import _h_hardware_profile
+    rec = SimpleNamespace(model_name="a-model", n_gpu_layers=20, n_ctx=8192, batch_size=256, n_threads=4,
+                          cache_type_k="q8_0", cache_type_v="q8_0", model_path="")
+    monkeypatch.setattr(hp, "recommend", lambda *a, **k: rec)
+    monkeypatch.setattr(hp, "apply_recommendation", lambda r: {"ok": False, "written": {}, "model_written": False,
+                                                               "error": "PermissionError: read-only settings"})
+    out = _h_hardware_profile("HARDWARE_PROFILE", {"apply": True})
+    assert out["ok"] is False and "read-only settings" in out["content"] and "Applied" not in out["content"]
+    monkeypatch.setattr(hp, "apply_recommendation", lambda r: {"ok": True, "written": {}, "model_written": False})
+    out = _h_hardware_profile("HARDWARE_PROFILE", {"apply": True})
+    assert out["ok"] is True and "a-model" not in out["content"] and "left as it was" in out["content"]
+    monkeypatch.setattr(hp, "apply_recommendation", lambda r: {"ok": True, "written": {}, "model_written": True})
+    out = _h_hardware_profile("HARDWARE_PROFILE", {"apply": True})
+    assert out["ok"] is True and "a-model" in out["content"]
