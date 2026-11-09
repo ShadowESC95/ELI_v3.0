@@ -39,3 +39,28 @@ def test_resolve_relative_against_detected_root():
     resolved = resolve_path_value(rel, root)
     assert resolved.endswith("artifacts/db/user.sqlite3")
     assert Path(resolved).is_absolute()
+
+
+def test_the_scrub_script_makes_only_this_installs_paths_relative(tmp_path):
+    """scripts/scrub_portable_paths.py promised a v2 → v3 rewrite, and its text branch replaced any
+    path with another version's or checkout's folder name in it by this install's root."""
+    import importlib.util
+    import json
+    from pathlib import Path as _P
+    script = _P(__file__).resolve().parents[1] / "scripts" / "scrub_portable_paths.py"
+    spec = importlib.util.spec_from_file_location("scrub_portable_paths_under_test", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    root = tmp_path / "an-install"
+    (root / "models").mkdir(parents=True)
+    other = "/home/someone/ELI_v2.0/models/b.gguf"
+    text = tmp_path / "notes.log"
+    text.write_text(f"loaded {root}/models/a.gguf and {other}\n", encoding="utf-8")
+    assert mod.scrub_file(text, root) is True
+    assert text.read_text(encoding="utf-8") == f"loaded models/a.gguf and {other}\n"
+    js = tmp_path / "state.json"
+    js.write_text(json.dumps({"model_path": str(root / "models" / "a.gguf"), "note": other}), encoding="utf-8")
+    mod.scrub_file(js, root)
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["model_path"] == "models/a.gguf" and data["note"] == other
+    assert "v2 →" not in (mod.__doc__ or "") and "ELI_MKXI" not in script.read_text(encoding="utf-8")
