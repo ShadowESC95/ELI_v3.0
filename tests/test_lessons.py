@@ -58,30 +58,39 @@ def test_an_unconfirmed_lesson_expires(conn):
 
 
 def test_failure_clusters_become_lessons(tmp_path, monkeypatch):
+    """Read from the failure record every runtime failure path writes (Memory.log_failure into the
+    failures table), not error_tracking, which no action failure ever reached."""
+    from eli.memory import Memory
     db = tmp_path / "agent.sqlite3"
-    c = sqlite3.connect(db)
-    c.execute("create table error_tracking (id integer primary key, error_type text, details text, occurrence_count integer, last_seen real, timestamp real)")
-    for n in range(3):
-        c.execute("insert into error_tracking (error_type, details, occurrence_count, last_seen) values (?,?,?,?)",
-                  ("no display", json.dumps({"action": "SCREENSHOT", "args": {"n": n}}), 1, time.time()))
-    c.execute("insert into error_tracking (error_type, details, occurrence_count, last_seen) values ('rare', ?, 1, ?)",
-              (json.dumps({"action": "OPEN_APP"}), time.time()))
-    c.commit()
-    c.close()
+    mem = Memory(db_path=str(db), db_type="agent")
+    for n in range(3):    # the executor's shape: one row per argument set, the action in the context
+        mem.log_failure(f'SCREENSHOT {{"n": {n}}}', error="no display", context={"action": "SCREENSHOT", "args": {"n": n}},
+                        source="executor_post_dispatch")
+    mem.log_failure("OPEN_APP {}", error="rare", context={"action": "OPEN_APP"}, source="executor_post_dispatch")
+    for _ in range(3):    # a complaint is not a failure of the action its turn routed to
+        mem.log_failure("a complaint, in the person's words", error="anomaly (rejected): the reply was rejected",
+                        context={"action": "CHAT", "outcome": "ok"}, source="anomaly")
     monkeypatch.setattr("eli.core.paths.agent_db_path", lambda: db)
     made = lessons.from_failure_clusters()
     assert len(made) == 1
-    row = sqlite3.connect(db).execute("select applies_to, proposed_change from lessons").fetchone()
-    assert row[0] == "SCREENSHOT" and "no display" in row[1]
+    rows = sqlite3.connect(db).execute("select applies_to, proposed_change from lessons").fetchall()
+    assert len(rows) == 1 and rows[0][0] == "SCREENSHOT" and "no display" in rows[0][1]
 
 
-def test_finished_actions_give_active_lessons_a_check(tmp_path, monkeypatch):
+def test_a_lesson_is_checked_only_on_runs_it_was_shown_for(tmp_path, monkeypatch):
+    """brief() had no caller, so no lesson ever reached a prompt, while every run of the action
+    counted as a check of it: lessons were kept or retired on runs that never saw them."""
     db = tmp_path / "agent.sqlite3"
     monkeypatch.setattr("eli.core.paths.agent_db_path", lambda: db)
-    lessons._CACHE["at"] = 0.0
-    lid = lessons.propose("SCREENSHOT", "t", ["e"], "change")
+    lid = lessons.propose("SCREENSHOT", "t", ["e"], "check a display is there first")
+    lessons.observe_action("screenshot", True)              # nobody saw the lesson
+    assert sqlite3.connect(db).execute("select checks from lessons where id = ?", (lid,)).fetchone() == (0,)
+
+    told = lessons.brief("SCREENSHOT")
+    assert "check a display is there first" in told
+    lessons.observe_action("OPEN_APP", False)               # another action: not this lesson's check
     lessons.observe_action("screenshot", True)
-    lessons.observe_action("OPEN_APP", False)
+    lessons.observe_action("screenshot", False)             # shown once, checked once
     row = sqlite3.connect(db).execute("select checks, helped from lessons where id = ?", (lid,)).fetchone()
     assert row == (1, 1)
 
@@ -118,6 +127,19 @@ def test_the_scope_is_the_argument_only_the_failures_share(tmp_path, monkeypatch
 
 def test_a_lesson_is_checked_on_sibling_actions_too(conn):
     lid = lessons.propose("SCREENSHOT", "t5", ["e"], "check display", now=1000.0, conn=conn, siblings=["SCREEN_READ_ANALYZE"])
+    shown = lessons.applicable("SCREEN_READ_ANALYZE", now=1500.0, conn=conn, siblings=True)
+    assert [r["id"] for r in shown] == [lid] and shown[0]["transfer"] is True
     for ok in (True, True, True):
-        lessons._record_transfer("SCREEN_READ_ANALYZE", ok, conn=conn)
+        lessons._record_transfer([lid], ok, conn=conn)
     assert lessons.transfers(lid, conn=conn) is True
+
+
+def test_a_sibling_lesson_shown_is_a_transfer_check(tmp_path, monkeypatch):
+    db = tmp_path / "agent.sqlite3"
+    monkeypatch.setattr("eli.core.paths.agent_db_path", lambda: db)
+    lid = lessons.propose("SCREENSHOT", "t6", ["e"], "check display", siblings=["SCREEN_READ_ANALYZE"])
+    assert "check display" in lessons.brief("SCREEN_READ_ANALYZE")
+    lessons.observe_action("SCREEN_READ_ANALYZE", True)
+    row = sqlite3.connect(db).execute("select checks, transfer_checks, transfer_helped from lessons where id = ?",
+                                      (lid,)).fetchone()
+    assert row == (0, 1, 1)

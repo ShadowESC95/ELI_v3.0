@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -52,7 +53,10 @@ CREATE TABLE IF NOT EXISTS lessons (
 );
 """
 
-_CACHE: Dict[str, Any] = {"at": 0.0, "actions": set()}
+# Lessons shown for an action about to run, per thread: (ACTION) -> {"direct": [ids], "transfer": [ids]}.
+# A lesson is checked only on a run it was shown for; a run that never saw it says nothing about it.
+_SHOWN: Dict[tuple, Dict[str, List[int]]] = {}
+_SHOWN_LOCK = threading.Lock()
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
@@ -106,7 +110,6 @@ def propose(applies_to: str, trigger: str, evidence: List[str], proposed_change:
              json.dumps(list(scope or [])), baseline[0] if baseline else None, baseline[1] if baseline else 0,
              json.dumps(list(siblings or []))))
         conn.commit()
-        _CACHE["at"] = 0.0
         return int(cur.lastrowid)
     finally:
         if own:
@@ -114,23 +117,29 @@ def propose(applies_to: str, trigger: str, evidence: List[str], proposed_change:
 
 
 def applicable(action: str, *, now: Optional[float] = None, limit: int = 3, args: Optional[Dict[str, Any]] = None,
-               conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
-    """Active lessons for this action. A lesson scoped to certain argument names applies only when they are present."""
+               conn: Optional[sqlite3.Connection] = None, siblings: bool = False) -> List[Dict[str, Any]]:
+    """Active lessons for this action. A lesson scoped to certain argument names applies only when they are present.
+    With `siblings`, lessons learned on another action of the same kind that name this one as a sibling come too,
+    marked `transfer`."""
     own = conn is None
     conn = conn or _connect()
     try:
         now = float(now if now is not None else time.time())
+        a = str(action).upper()
         rows = conn.execute(
-            "SELECT id, applies_to, trigger_text, proposed_change, predicted_outcome, checks, helped, expires_at, scope "
-            "FROM lessons WHERE status = 'active' AND expires_at > ? AND applies_to IN (?, '*') "
-            "ORDER BY helped DESC, id DESC", (now, str(action).upper())).fetchall()
+            "SELECT id, applies_to, trigger_text, proposed_change, predicted_outcome, checks, helped, expires_at, scope, siblings "
+            "FROM lessons WHERE status = 'active' AND expires_at > ? AND (applies_to IN (?, '*')"
+            + (" OR siblings LIKE ?" if siblings else "") + ") ORDER BY helped DESC, id DESC",
+            (now, a, f'%"{a}"%') if siblings else (now, a)).fetchall()
         names = ("id", "applies_to", "trigger", "change", "predicted", "checks", "helped", "expires_at")
         out = []
         for r in rows:
             scope = json.loads(r[8] or "[]")
             if scope and args is not None and not all(k in args for k in scope):
                 continue
-            out.append(dict(zip(names, r[:8])))
+            item = dict(zip(names, r[:8]))
+            item["transfer"] = item["applies_to"] not in (a, "*")
+            out.append(item)
         return out[:int(limit)]
     finally:
         if own:
@@ -160,7 +169,6 @@ def record_outcome(lesson_id: int, helped: bool, *, now: Optional[float] = None,
                 conn.execute("UPDATE lessons SET status = 'retired', retired_reason = ? WHERE id = ?", (reason, int(lesson_id)))
                 status = "retired"
         conn.commit()
-        _CACHE["at"] = 0.0
         return status
     finally:
         if own:
@@ -186,7 +194,6 @@ def review(*, now: Optional[float] = None, conn: Optional[sqlite3.Connection] = 
                 conn.execute("UPDATE lessons SET status = 'retired', retired_reason = ? WHERE id = ?", (reason, lid))
                 out["retired"] += 1
         conn.commit()
-        _CACHE["at"] = 0.0
         return out
     finally:
         if own:
@@ -194,36 +201,33 @@ def review(*, now: Optional[float] = None, conn: Optional[sqlite3.Connection] = 
 
 
 def observe_action(action: str, ok: bool) -> None:
-    """Called when an action finishes: each active lesson for it gets one check."""
+    """Called when an action finishes: each lesson shown for this run of it (brief) gets one check, a lesson
+    shown on a sibling action one transfer check. Lessons nobody saw are not checked."""
     a = str(action or "").upper()
     if not a:
         return
+    with _SHOWN_LOCK:
+        shown = _SHOWN.pop((threading.get_ident(), a), None)
+    if not shown:
+        return
     try:
-        if time.time() - _CACHE["at"] > 60.0:
-            conn = _connect()
-            try:
-                _CACHE["actions"] = {r[0] for r in conn.execute("SELECT DISTINCT applies_to FROM lessons WHERE status = 'active'")}
-                _CACHE["siblings"] = {a for (s,) in conn.execute("SELECT siblings FROM lessons WHERE status = 'active' AND siblings IS NOT NULL")
-                                      for a in json.loads(s or "[]")}
-            finally:
-                conn.close()
-            _CACHE["at"] = time.time()
-        if a not in _CACHE["actions"] and a not in _CACHE.get("siblings", set()):
-            return
-        for lesson in applicable(a, limit=5):
-            record_outcome(lesson["id"], bool(ok))
-        _record_transfer(a, bool(ok))
+        for lid in shown.get("direct") or []:
+            record_outcome(lid, bool(ok))
+        if shown.get("transfer"):
+            _record_transfer(shown["transfer"], bool(ok))
     except Exception:
         log.debug("lesson outcome not recorded", exc_info=True)
 
 
-def _record_transfer(action: str, ok: bool, conn: Optional[sqlite3.Connection] = None) -> None:
+def _record_transfer(lesson_ids: List[int], ok: bool, conn: Optional[sqlite3.Connection] = None) -> None:
     """The same kind of difficulty on a different action: did the lesson's advice hold up there too?"""
+    if not lesson_ids:
+        return
     own = conn is None
     conn = conn or _connect()
     try:
-        conn.execute("UPDATE lessons SET transfer_checks = transfer_checks + 1, transfer_helped = transfer_helped + ? "
-                     "WHERE status = 'active' AND siblings LIKE ?", (1 if ok else 0, f'%"{action}"%'))
+        conn.executemany("UPDATE lessons SET transfer_checks = transfer_checks + 1, transfer_helped = transfer_helped + ? "
+                         "WHERE status = 'active' AND id = ?", [(1 if ok else 0, int(i)) for i in lesson_ids])
         conn.commit()
     finally:
         if own:
@@ -244,38 +248,74 @@ def transfers(lesson_id: int, *, min_checks: int = MIN_CHECKS, conn: Optional[sq
             conn.close()
 
 
-def brief(action: Optional[str] = None, *, limit: int = 3) -> str:
-    """Active lessons as plain lines, or "" when there are none."""
+def brief(action: Optional[str] = None, *, args: Optional[Dict[str, Any]] = None, limit: int = 3) -> str:
+    """The lessons for the action about to run, as plain lines for the prompt or the pre-run check that decides
+    how it runs, or "" when there are none. What is returned is remembered as shown for this run (on this
+    thread), so observe_action checks exactly those lessons when the run ends."""
+    if not action:
+        return ""
     try:
-        rows = applicable(action, limit=limit) if action else []
+        rows = applicable(action, limit=limit, args=args, siblings=True)
     except Exception:
         return ""
+    if not rows:
+        return ""
+    with _SHOWN_LOCK:
+        _SHOWN[(threading.get_ident(), str(action).upper())] = {
+            "direct": [r["id"] for r in rows if not r["transfer"]],
+            "transfer": [r["id"] for r in rows if r["transfer"]],
+        }
     lines = [f"- {r['change']} (from: {r['trigger']}; checked {r['checks']}x, helped {r['helped']}x)" for r in rows]
-    return "Lessons to apply:\n" + "\n".join(lines) if lines else ""
+    return "Lessons to apply:\n" + "\n".join(lines)
+
+
+def _failure_rows(src: sqlite3.Connection, since: float) -> List[tuple]:
+    """(error, context, occurrence_count) of the open failures seen since `since`, from the one failure store
+    (the failures table that Memory.log_failure writes). note_turn_anomalies rows are left out: their context
+    names the turn the person complained in, not an action that failed."""
+    have = {r[1] for r in src.execute("PRAGMA table_info(failures)")}
+    if not {"error", "context"} <= have:
+        return []
+    seen = "COALESCE(last_seen, timestamp, 0)" if "last_seen" in have else "COALESCE(timestamp, 0)"
+    where = [f"{seen} >= ?"]
+    if "source" in have:
+        where.append("COALESCE(source, '') != 'anomaly'")
+    if "status" in have:
+        where.append("COALESCE(status, 'open') NOT IN ('resolved', 'closed')")
+    count = "occurrence_count" if "occurrence_count" in have else "1"
+    return src.execute(f"SELECT error, context, {count} FROM failures WHERE " + " AND ".join(where),
+                       (since,)).fetchall()
+
+
+def _failure_action(context: Any) -> str:
+    try:
+        ctx = json.loads(context) if isinstance(context, str) else (context or {})
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(ctx, dict):
+        return ""
+    intent = ctx.get("intent") if isinstance(ctx.get("intent"), dict) else {}
+    return str(ctx.get("action") or intent.get("action") or "").upper()
 
 
 def from_failure_clusters(*, days: float = 14.0, min_count: int = 3, now: Optional[float] = None) -> List[int]:
-    """Lessons from failures that keep happening: same command and error, at least min_count times."""
+    """Lessons from failures that keep happening: same action and error, at least min_count times."""
     made: List[int] = []
     now = float(now if now is not None else time.time())
     try:
         from eli.core.paths import agent_db_path
         src = sqlite3.connect(str(agent_db_path()), timeout=10)
         try:
-            rows = src.execute(
-                "SELECT error_type, details, occurrence_count, last_seen FROM error_tracking "
-                "WHERE COALESCE(last_seen, 0) >= ?", (now - days * 86400.0,)).fetchall()
+            rows = _failure_rows(src, now - days * 86400.0)
         finally:
             src.close()
     except Exception:
+        log.debug("failure record unavailable to lessons", exc_info=True)
         return made
     grouped: Dict[tuple, int] = {}
-    for error_type, details, count, _seen in rows:
-        try:
-            action = str(json.loads(details or "{}").get("action") or "").upper()
-        except Exception:
-            action = ""
-        text = str(error_type or "").strip()
+    for error, context, count in rows:
+        action = _failure_action(context)
+        text = str(error or "").strip()
         if action and text and "mock" not in text.lower():
             grouped[(action, text)] = grouped.get((action, text), 0) + int(count or 1)
     rows = [(t, a, n, 0) for (a, t), n in sorted(grouped.items(), key=lambda kv: -kv[1])[:10] if n >= int(min_count)]
