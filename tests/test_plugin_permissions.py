@@ -138,13 +138,15 @@ def test_risk_of_reports_the_worst():
 def test_the_consent_text_says_which_permissions_are_not_enforced():
     """The dialog asked about every capability but only network, files and programs are stopped at
     runtime; the rest read as protections they were not."""
+    enforced = ("network", "filesystem_read", "filesystem_write", "process_exec", "memory_read", "memory_write",
+                "model_access", "clipboard", "screen_capture", "microphone", "camera")
     for cap in P.ALL_CAPABILITIES:
         d = P.describe(cap)
-        if cap in ("network", "filesystem_read", "filesystem_write", "process_exec"):
+        if cap in enforced:
             assert d["enforced"] is True and "does not enforce" not in d["why_risky"]
         else:
             assert d["enforced"] is False and "does not enforce" in d["why_risky"]
     seen = []
     P.set_prompt_handler(lambda req: seen.append(req) or P.DENY_ONCE)
-    P.check("p", "clipboard")
+    P.check("p", "notifications")
     assert seen and seen[0]["enforced"] is False and "does not enforce" in seen[0]["why_risky"]

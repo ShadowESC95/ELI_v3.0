@@ -1857,6 +1857,8 @@ class ELIAudioSTT:
             log.debug("suppressed exception", exc_info=True)
 
     def start_listening(self, callback=None):
+        from eli.plugins.sandbox import enforce
+        enforce("microphone", "listen on the microphone")
         with self._state_lock:
             self.callback = callback
             if self._thread and self._thread.is_alive():
@@ -2664,6 +2666,8 @@ def stop_audio_listening():
 
 
 def listen_for_command(timeout=5):
+    from eli.plugins.sandbox import enforce
+    enforce("microphone", "listen on the microphone")
     try:
         return get_audio_stt().listen_once(timeout)
     except Exception:

@@ -144,7 +144,13 @@ ALL_CAPABILITIES = tuple(CAPABILITIES)
 # operation itself, and asks the operator before the first use). The others are declarations
 # only: nothing at runtime stops a plugin that does them, asked or not, until ELI's own entry
 # points for them call sandbox.enforce(). The consent text says so.
-ENFORCED_CAPABILITIES = frozenset({"network", "filesystem_read", "filesystem_write", "process_exec"})
+# Enforced at runtime: the network, files and programs by the sandbox's audit hooks; memory, the
+# model, the clipboard, the screen, the microphone and the camera at ELI's own entry points
+# (sandbox.enforce, called by Memory, gguf_inference/inference_broker, platform_compat,
+# os_controller.take_screenshot, audio_stt/voice_input and gaze_engine).
+ENFORCED_CAPABILITIES = frozenset({"network", "filesystem_read", "filesystem_write", "process_exec",
+                                   "memory_read", "memory_write", "model_access", "clipboard",
+                                   "screen_capture", "microphone", "camera"})
 _NOT_ENFORCED = ("ELI does not enforce this one yet: once the plugin is switched on, nothing stops "
                  "it doing this, whatever you answer.")
 

@@ -1463,6 +1463,13 @@ def _ensure_full_memory_schema(conn):
     conn.execute("DROP TABLE IF EXISTS error_tracking")     # the second failure store (see above)
     _ensure_owner_columns(conn)
 
+def _plugin_may(capability: str, what: str) -> None:
+    """A plugin behind this call must have declared `capability` (eli/plugins/sandbox.enforce, which
+    lets ELI's own calls pass): the memory was open to any plugin running in ELI's process."""
+    from eli.plugins.sandbox import enforce
+    enforce(capability, what)
+
+
 def _memory_table_columns(conn, table):
     try:
         t = _validate_identifier(table, "table")
@@ -2119,6 +2126,7 @@ class Memory(metaclass=_MemoryMeta):
             Pass None to let _score_importance compute it automatically.
         user_id : whose memory it is; None reads the turn's own (eli/memory/policy.owner_key).
         """
+        _plugin_may("memory_write", "store a memory")
         t = (text or "").strip()
         if not t:
             return {"ok": False, "error": "empty_text"}
@@ -2375,6 +2383,7 @@ class Memory(metaclass=_MemoryMeta):
         """What the turn's user has stored that matches `query` (user_id None: the turn's own,
         eli/memory/policy.owner_key). Another user's memories, claims, graph facts and turns never
         come back: every channel below is scoped to them."""
+        _plugin_may("memory_read", "recall memories")
         q = _norm_text(query).strip()
         if not q:
             return []
@@ -2914,6 +2923,7 @@ class Memory(metaclass=_MemoryMeta):
         return {mid: round(float(c), 4) for mid, c in zip(order, chances)}
 
     def search_memory(self, query, limit=10, include_conversations=True, user_id=None, session_id=None):
+        _plugin_may("memory_read", "search memories and conversations")
         _q_lower = query.lower() if query else ""
         _q_lower = str(query or "").lower()
         out = list(self.recall_memory(query, limit=limit))

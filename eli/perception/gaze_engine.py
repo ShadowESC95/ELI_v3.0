@@ -106,6 +106,8 @@ class _GazeEngineService:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self, camera: str | int = "auto") -> Dict[str, Any]:
+        from eli.plugins.sandbox import enforce
+        enforce("camera", "open the camera")
         with self._lock:
             if self.is_running():
                 return {"ok": True, "already_running": True,

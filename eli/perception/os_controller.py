@@ -641,6 +641,8 @@ def take_screenshot(region: str = "full", *, keep: bool = True) -> Dict[str, Any
     that never worked here last, each way's time limit comes from its own measured times, and the
     whole capture is bounded by FIRST_TRY_CEILING_S.
     """
+    from eli.plugins.sandbox import enforce
+    enforce("screen_capture", "take a screenshot")
     area = (region or "full").lower() != "full"
     kind = "area" if area else "full"
     path = _screenshot_path("Screenshot_area" if area else "Screenshot", keep=keep)

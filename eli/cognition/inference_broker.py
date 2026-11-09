@@ -239,6 +239,8 @@ class InferenceBroker:
         retry: bool = True,
         background: bool = False,
     ) -> str:
+        from eli.plugins.sandbox import enforce
+        enforce("model_access", "ask the language model")
         if not self.gguf_ready:
             raise RuntimeError("GGUF model not ready")
         global _last_foreground_ts, _last_foreground_duration

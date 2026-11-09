@@ -996,6 +996,8 @@ def notify(title: str, message: str) -> bool:
 
 def copy_to_clipboard(text: str) -> bool:
     """Copy text to system clipboard."""
+    from eli.plugins.sandbox import enforce
+    enforce("clipboard", "write the clipboard")
     try:
         if ANDROID:
             if shutil.which("termux-clipboard-set"):
@@ -1041,6 +1043,8 @@ def copy_to_clipboard(text: str) -> bool:
 
 def get_clipboard() -> str:
     """Get text from system clipboard."""
+    from eli.plugins.sandbox import enforce
+    enforce("clipboard", "read the clipboard")
     try:
         if ANDROID:
             if shutil.which("termux-clipboard-get"):

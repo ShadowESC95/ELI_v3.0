@@ -2487,6 +2487,8 @@ def _normalize_call_args(*args, **kwargs):
 
 
 def chat_completion(*args, **kwargs) -> str:
+    from eli.plugins.sandbox import enforce
+    enforce("model_access", "ask the language model")
     system_prompt, user_prompt, rest = _normalize_call_args(*args, **kwargs)
     if not getattr(_bg_tls, "job", False):
         return _chat_completion_impl(prompt=user_prompt, system=system_prompt, **rest)
@@ -2504,6 +2506,8 @@ def chat_completion(*args, **kwargs) -> str:
 
 def generate(*args, **kwargs):
     global _llm
+    from eli.plugins.sandbox import enforce
+    enforce("model_access", "ask the language model")
 
     if _llm is None:
         # Auto-reload: if the model was unloaded (e.g. by a settings save),

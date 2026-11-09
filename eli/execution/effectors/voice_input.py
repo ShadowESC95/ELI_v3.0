@@ -27,6 +27,8 @@ def _h_dictate(a, args):
 
 
 def _h_listen_for_command(a, args):
+    from eli.plugins.sandbox import enforce
+    enforce("microphone", "listen on the microphone")
     try:
         from eli.perception.audio_stt import listen_for_command
         timeout = float((args or {}).get("timeout", 5))

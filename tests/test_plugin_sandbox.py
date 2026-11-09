@@ -279,3 +279,58 @@ def test_elis_own_threads_and_pools_are_unaffected(handoff, tmp_path):
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         ex.submit(b.write_text, "ok").result()
     assert a.read_text() == "ok" and b.read_text() == "ok"
+
+
+# ── ELI's own in-process entry points hold a plugin to what it declared ──
+ENTRY_SRC = (
+    "def memory(m):\n"
+    "    return m.recall_memory('anything')\n"
+    "def model():\n"
+    "    from eli.cognition import gguf_inference\n"
+    "    return gguf_inference.chat_completion('hello')\n"
+    "def clipboard():\n"
+    "    from eli.utils import platform_compat\n"
+    "    return platform_compat.get_clipboard()\n"
+    "def screen():\n"
+    "    from eli.perception.os_controller import take_screenshot\n"
+    "    return take_screenshot()\n"
+)
+
+
+@pytest.fixture()
+def entry_plugin(tmp_path, monkeypatch):
+    import importlib.util
+    plugins = tmp_path / "plugins"
+    pkg = plugins / "entries"
+    pkg.mkdir(parents=True)
+    (pkg / "eli_plugin.json").write_text(json.dumps({
+        "id": "entries", "name": "Entries", "version": "1.0.0", "description": "d",
+        "author": "x", "license": "MIT", "permissions": []}), encoding="utf-8")
+    (pkg / "plugin.py").write_text(ENTRY_SRC, encoding="utf-8")
+    monkeypatch.setenv("ELI_PLUGINS_DIR", str(plugins))
+    from eli.plugins import sandbox
+    sandbox.install_plugin_sandbox()
+    sandbox.refresh()
+    sandbox.reset_session_grants()
+    spec = importlib.util.spec_from_file_location("plugins.entries.plugin", pkg / "plugin.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    yield mod
+    sandbox.reset_session_grants()
+
+
+def test_a_plugin_reaches_memory_the_model_the_clipboard_and_the_screen_only_as_declared(entry_plugin, tmp_path):
+    """The sandbox's enforce() hook had no caller, so a plugin with no permissions read the memory,
+    asked the model, read the clipboard and took screenshots in ELI's own process."""
+    from eli.memory import Memory
+    from eli.plugins import permissions as P
+    mem = Memory(db_path=tmp_path / "user.sqlite3")
+    P.set_prompt_handler(lambda req: P.DENY_ONCE)
+    try:
+        for call in (lambda: entry_plugin.memory(mem), entry_plugin.model, entry_plugin.clipboard,
+                     entry_plugin.screen):
+            with pytest.raises(PermissionError):
+                call()
+    finally:
+        P.set_prompt_handler(None)
+    assert isinstance(mem.recall_memory("anything"), list), "ELI's own call passes"
