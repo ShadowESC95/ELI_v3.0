@@ -156,7 +156,7 @@ def test_the_way_that_worked_here_goes_first_with_a_limit_from_its_own_times(des
 
     def way(name, status, seconds):
         def run(limit):
-            calls.append((name, round(limit, 3)))
+            calls.append((name, pytest.approx(limit, abs=0.5)))     # the whole capture's deadline trims it a little
             return osc._outcome(name, status, seconds)
         return (name, None, run)
 
@@ -166,7 +166,7 @@ def test_the_way_that_worked_here_goes_first_with_a_limit_from_its_own_times(des
     assert calls == [("broken", osc.FIRST_TRY_CEILING_S), ("good", osc.FIRST_TRY_CEILING_S)]
     calls.clear()
     assert osc.take_screenshot("full", keep=False)["way"] == "good"
-    assert calls == [("good", round(0.2 * osc.STALL_FACTOR, 3))], "the way that works here was not tried first"
+    assert calls == [("good", 0.2 * osc.STALL_FACTOR)], "the way that works here was not tried first"
 
 
 def test_a_way_that_ran_out_of_time_gets_the_full_wait_next_time(desktop, monkeypatch):
