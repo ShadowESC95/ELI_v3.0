@@ -185,3 +185,24 @@ def test_windows_kill_is_not_forced():
     src = Path("eli/system/process_guard.py").read_text(encoding="utf-8")
     block = src[src.index('if os.name == "nt":', src.index("def safe_pkill")):]
     assert '"/F"' not in block and "'/F'" not in block, "Windows kill uses /F"
+
+
+def test_a_close_is_done_only_when_the_process_is_gone(monkeypatch):
+    """safe_pkill said ok when the signal was sent; an app that catches SIGTERM (a save prompt)
+    stayed up and was reported closed."""
+    import subprocess
+    import sys
+
+    stubborn = subprocess.Popen([sys.executable, "-c",
+                                 "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)"])
+    try:
+        import time
+        time.sleep(0.5)          # its handler is in place
+        monkeypatch.setattr(pg, "check_kill_pattern", lambda pattern, full_cmdline=False: pg.KillPlan(
+            allowed=True, reason="test", pattern=pattern, full_cmdline=full_cmdline, pids=[stubborn.pid]))
+        res = pg.safe_pkill("stubborn-test-app", timeout=1.0)
+        assert res["ok"] is False and res["still_running"] == [stubborn.pid] and "still running" in res["reason"]
+    finally:
+        stubborn.kill()
+        stubborn.wait()
+

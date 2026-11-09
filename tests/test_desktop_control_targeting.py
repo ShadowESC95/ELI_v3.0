@@ -292,12 +292,14 @@ def test_macos_mouse_advice_mentions_accessibility():
 # and ELI had already said "Opened app: Spotify": the launch call returning was taken as the app
 # being open.
 @pytest.fixture
-def linux_spotify(monkeypatch):
+def linux_spotify(monkeypatch, tmp_path):
+    monkeypatch.setattr(pac, "_timings_file", lambda: tmp_path / "app_timings.json")
     monkeypatch.setattr(pac, "_system", lambda: "linux")
     monkeypatch.setattr(pac, "resolve_app", lambda q: pac.AppCandidate(
         name="Spotify", command=["spotify"], desktop_id="spotify.desktop", source="desktop"))
     monkeypatch.setattr(pac.shutil, "which", lambda c, *a, **k: f"/usr/bin/{c}")
     monkeypatch.setattr(pac, "_popen", lambda args: True)
+    monkeypatch.setattr(pac, "_ready_signal", lambda target, needles: "")   # no window or player yet
     import time
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     return monkeypatch
@@ -312,9 +314,37 @@ def test_an_app_that_dies_at_once_is_not_reported_open(linux_spotify):
 
 
 def test_an_app_that_stays_up_is_open(linux_spotify):
-    # not up before the launch, up after it
+    # not up before the launch, up after it, and its window shows
     linux_spotify.setattr(pac, "_app_running", lambda needles, loose=True: loose and "spotify" in needles)
-    assert pac.open_app("spotify")["ok"] is True
+    linux_spotify.setattr(pac, "_ready_signal", lambda target, needles: "window")
+    r = pac.open_app("spotify")
+    assert r["ok"] is True and r["ready"] is True and r["ready_by"] == "window"
+
+
+def test_an_app_is_ready_when_its_window_or_player_is_up_and_that_time_is_kept(linux_spotify):
+    """'open spotify and play ...' asked a player that was not there yet: the launch returning was
+    taken as the app being ready. It is ready when its window or its player name shows."""
+    clock = iter(x * 0.5 for x in range(1000))
+    linux_spotify.setattr("time.monotonic", lambda: next(clock))
+    linux_spotify.setattr(pac, "_app_running", lambda needles, loose=True: loose)
+    checks = iter(["", "", "", "media player"])
+    linux_spotify.setattr(pac, "_ready_signal", lambda target, needles: next(checks))
+    r = pac.open_app("spotify")
+    assert r["ready"] is True and r["ready_by"] == "media player" and r["ready_after_s"] > 0
+    assert pac._timings()["ready"]["spotify"] == [r["ready_after_s"]]
+
+
+def test_the_wait_is_measured_from_the_apps_past_launches(linux_spotify):
+    pac._record_timing("ready", "spotify", 4.0)
+    pac._record_timing("ready", "spotify", 6.0)
+    assert pac.wait_bound("ready", "spotify") == pac._WAIT_FACTOR * 6.0
+    assert pac.wait_bound("ready", "an-app-never-timed") == pac._WAIT_FACTOR * 6.0   # this machine's slowest
+    # running but never shown within that: said so, not "Opened"
+    clock = iter(range(1000))
+    linux_spotify.setattr("time.monotonic", lambda: next(clock))
+    linux_spotify.setattr(pac, "_app_running", lambda needles, loose=True: loose)
+    r = pac.open_app("spotify")
+    assert r["ok"] is True and r["ready"] is False and "has not appeared yet" in r["content"]
 
 
 def test_the_needles_name_the_app():
@@ -386,3 +416,51 @@ def test_find_the_word_looks_on_the_screen(said, query):
                                          ("press enter", "KEYBOARD"), ("find cheap flights to rome", "OPEN_BROWSER")])
 def test_mouse_media_keys_and_web_are_unchanged(said, action):
     assert route(said)["action"] == action
+
+
+# ── closing: the app is asked, and "Closed" is said once it is gone ──────────────
+@pytest.fixture
+def gnome_text_editor(monkeypatch, tmp_path):
+    """A native Wayland window, which wmctrl cannot see, of an app with its own quit action."""
+    from eli.system import process_guard
+    monkeypatch.setattr(pac, "_timings_file", lambda: tmp_path / "app_timings.json")
+    monkeypatch.setattr(pac, "_system", lambda: "linux")
+    monkeypatch.setattr(pac, "resolve_app", lambda q: pac.AppCandidate(
+        name="Text Editor", command=["gnome-text-editor"], desktop_id="org.gnome.TextEditor.desktop",
+        source="desktop"))
+    monkeypatch.setattr(pac.shutil, "which", lambda c, *a, **k: f"/usr/bin/{c}" if c in ("wmctrl", "gapplication") else None)
+    asked, signalled = [], []
+
+    import subprocess
+
+    def run(args, timeout=8.0):
+        asked.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")   # wmctrl lists no window
+
+    monkeypatch.setattr(pac, "_run", run)
+    monkeypatch.setattr(process_guard, "safe_pkill", lambda *a, **k: signalled.append(a) or {"ok": True, "killed": 1})
+    import time
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    return monkeypatch, asked, signalled
+
+
+def test_a_plain_close_asks_the_app_and_never_signals_it(gnome_text_editor):
+    """'close text editor' on GNOME Wayland ended the editor by SIGTERM, without its save prompt."""
+    mp, asked, signalled = gnome_text_editor
+    running = iter([True, True, False])          # running when asked, gone a moment later
+    mp.setattr(pac, "_app_running", lambda needles, loose=True: next(running))
+    r = pac.close_app("text editor")
+    assert r["ok"] is True and r["content"] == "Closed Text Editor."
+    assert ["/usr/bin/gapplication", "action", "org.gnome.TextEditor", "quit"] in asked
+    assert signalled == []
+
+
+def test_an_app_still_open_after_being_asked_is_said_so_and_left_alone(gnome_text_editor):
+    mp, asked, signalled = gnome_text_editor
+    clock = iter(range(1000))
+    mp.setattr("time.monotonic", lambda: next(clock))
+    mp.setattr(pac, "_app_running", lambda needles, loose=True: True)   # a save prompt is up
+    r = pac.close_app("text editor")
+    assert r["ok"] is False and r["asked_to_close"] and r["handled"] and "still open" in r["content"]
+    assert signalled == []
+

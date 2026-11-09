@@ -193,17 +193,22 @@ def test_closing_settings_never_matches_gsd_xsettings():
     assert [h for h in hit if h] == lines[:2]
 
 
-def test_closing_an_app_uses_its_program_when_no_window_tool_can(monkeypatch):
+def test_closing_an_app_no_window_tool_reaches_needs_force_and_then_uses_its_program(monkeypatch):
+    """With no window or quit command to ask, a plain close used to end the app by a signal, which
+    skips its "save your changes?". That is a forced close now, by the program it runs."""
     from eli.system import portable_app_control as pac, process_guard
     seen = []
     monkeypatch.setattr(pac, "_system", lambda: "linux")
     monkeypatch.setattr(pac, "resolve_app", lambda q: pac.AppCandidate("Settings", command=["gnome-control-center"],
                                                                       desktop_id="org.gnome.Settings", source="linux-desktop"))
     monkeypatch.setattr(pac.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pac, "_app_running", lambda needles, loose=True: True)
     monkeypatch.setattr(process_guard, "safe_pkill",
                         lambda pattern, full_cmdline=False: seen.append((pattern, full_cmdline)) or
                         {"ok": True, "killed": 1, "plan": {"pids": [1]}})
     r = pac.close_app("settings")
+    assert not r["ok"] and r["needs_force"] and r["handled"] and seen == []
+    r = pac.close_app("settings", force=True)
     assert r["ok"] and seen == [(pac._posix_program_pattern("gnome-control-center"), True)]
 
 

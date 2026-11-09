@@ -313,21 +313,101 @@ def _app_running(needles: list[str], *, loose: bool = True) -> bool:
     return False
 
 
-def _stayed_up(needles: list[str], was_running: bool, window: float = 8.0) -> bool:
-    """True when the app is running a moment after the launch. A launch that "worked" can still
-    end at once: Spotify started from the AppImage died on the bundle's libraries while ELI said
-    "Opened app: Spotify". An app already running counts (the launch hands over to it)."""
+# ── how long an app takes here ───────────────────────────────────────────────────
+# How long each app took on this machine to come up after a launch (its window, or its media-player
+# name on the session bus) and to be gone after it was asked to close, kept per app, so a wait is
+# measured from what this app has done here rather than a hand-set sleep.
+_WAIT_FACTOR = 2.0       # a wait allows twice the slowest time measured: room for a cold start
+_FIRST_WAIT_S = 30.0     # the bound for the first launch or close ever timed here, until one is measured
+_KEEP_PER_APP = 20       # measurements kept per app and kind: enough to hold its slow ones, and bounded
+_POLL_S = 0.25           # how often a wait looks again
+
+
+def _timings_file() -> Path:
+    from eli.core.paths import data_dir
+    return Path(data_dir()) / "runtime" / "app_timings.json"
+
+
+def _timings() -> dict:
+    try:
+        import json
+        data = json.loads(_timings_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_timing(kind: str, app: str, seconds: float) -> None:
+    import json
+    data = _timings()
+    kept = [float(x) for x in (data.get(kind) or {}).get(app, []) if isinstance(x, (int, float))]
+    data.setdefault(kind, {})[app] = (kept + [round(float(seconds), 3)])[-_KEEP_PER_APP:]
+    try:
+        path = _timings_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    except OSError:
+        log.debug("app timing not kept", exc_info=True)
+
+
+def wait_bound(kind: str, app: str) -> float:
+    """How long to wait for `app` to come up ("ready") or go ("close"): _WAIT_FACTOR times the
+    slowest this app has taken here, else the slowest of any app here, else _FIRST_WAIT_S."""
+    measured = _timings().get(kind) or {}
+    own = [float(x) for x in measured.get(app, [])]
+    every = [float(x) for runs in measured.values() for x in runs]
+    slowest = max(own or every or [0.0])
+    return _WAIT_FACTOR * slowest if slowest > 0 else _FIRST_WAIT_S
+
+
+def _timing_key(target: "AppCandidate") -> str:
+    return (app_program(target) or str(target.name or "")).strip().lower()
+
+
+def _ready_signal(target: "AppCandidate", needles: list[str]) -> str:
+    """What shows the app is up: "window" when a window of it is mapped, "media player" when it has
+    its name on the session bus (MPRIS), "" when neither shows yet."""
+    if window_exists(target.name):
+        return "window"
+    try:
+        from eli.integrations.mpris.playerctl_backend import list_players
+        players = [str(p).lower() for p in list_players()]
+    except Exception:
+        players = []
+    if any(n in p for p in players for n in needles):
+        return "media player"
+    return ""
+
+
+def _await_ready(target: "AppCandidate", needles: list[str], was_running: bool) -> dict:
+    """Wait for a launched app to be up, as long as wait_bound says for it. A launch that "worked"
+    can still end at once (Spotify from the AppImage died on the bundle's libraries while ELI said
+    "Opened app: Spotify"), and one that is still starting is not ready for what comes next ("open
+    spotify and play ..." asked a player that was not there yet)."""
     import time as _time
-    if was_running or not needles:
-        return True
-    deadline = _time.monotonic() + window
-    while _time.monotonic() < deadline:
+    key = _timing_key(target)
+    start = _time.monotonic()
+    deadline = start + wait_bound("ready", key)
+    seen = was_running
+    while True:
+        signal = _ready_signal(target, needles)
+        if signal:
+            waited = _time.monotonic() - start
+            if not was_running:
+                _record_timing("ready", key, waited)
+            return {"ok": True, "ready": True, "ready_by": signal, "ready_after_s": round(waited, 3)}
         if _app_running(needles):
-            _time.sleep(1.0)
-            if _app_running(needles):
-                return True
-        _time.sleep(0.25)
-    return False
+            seen = True
+        elif seen and not was_running:
+            _time.sleep(1.0)        # a launcher handing over to the app is gone a moment, not for good
+            if not _app_running(needles):
+                return {"ok": False, "ready": False, "died": True}
+        if _time.monotonic() >= deadline:
+            break
+        _time.sleep(_POLL_S)
+    if not (seen or _app_running(needles)):
+        return {"ok": False, "ready": False, "died": True}
+    return {"ok": True, "ready": False}
 
 
 def open_app(name: str) -> dict:
@@ -349,11 +429,18 @@ def open_app(name: str) -> dict:
             exe = shutil.which(target.name)
             launched = bool(exe and _popen([exe]))
         if launched:
-            if _stayed_up(needles, was_running):
-                return _result(True, "OPEN_APP", f"Opened app: {target.name}", resolved=target.__dict__)
-            return _result(False, "OPEN_APP",
-                           f"{target.name} started but closed straight away, so it isn't open.",
-                           resolved=target.__dict__)
+            up = _await_ready(target, needles, was_running)
+            if up.get("died"):
+                return _result(False, "OPEN_APP",
+                               f"{target.name} started but closed straight away, so it isn't open.",
+                               resolved=target.__dict__, ready=False)
+            if up.get("ready"):
+                return _result(True, "OPEN_APP", f"Opened app: {target.name}", resolved=target.__dict__,
+                               **{k: up[k] for k in ("ready", "ready_by", "ready_after_s")})
+            where = (" (on Wayland ELI cannot see a native window)" if display_server() == "wayland" else "")
+            return _result(True, "OPEN_APP",
+                           f"Started {target.name}; it is running but its window has not appeared yet{where}.",
+                           resolved=target.__dict__, ready=False)
 
     if sysname == "darwin":
         opener = shutil.which("open")
@@ -417,8 +504,9 @@ def _posix_program_pattern(program: str) -> str:
 
 
 def _close_by_program(target: AppCandidate) -> Optional[dict]:
-    """Close the app by the program its launcher runs, verified by the process guard. None when the
-    program is unknown or nothing of it is running."""
+    """End the app by a signal to the program its launcher runs, verified by the process guard and
+    reported done only once its processes are gone. Only for a forced close: a signal skips the
+    app's own "save your changes?". None when the program is unknown or nothing of it is running."""
     program = app_program(target)
     if not program:
         return None
@@ -434,7 +522,7 @@ def _close_by_program(target: AppCandidate) -> Optional[dict]:
     else:
         return None
     if res.get("ok"):
-        return _result(True, "CLOSE_APP", f"Closed {target.name} ({res.get('killed')} process(es) of {program}).",
+        return _result(True, "CLOSE_APP", f"Force-closed {target.name} ({res.get('killed')} process(es) of {program}).",
                        resolved=target.__dict__, kill_plan=res.get("plan"))
     if "no ordinary application matches" in str(res.get("reason") or "") or not (res.get("plan") or {}).get("pids"):
         return None
@@ -442,25 +530,82 @@ def _close_by_program(target: AppCandidate) -> Optional[dict]:
                    resolved=target.__dict__, kill_plan=res.get("plan"))
 
 
+def _ask_linux_app_to_close(target: AppCandidate, needles: list[str]) -> str:
+    """Ask the app itself to close, the way its own close button or Quit would, so it can ask about
+    unsaved work: its window through the window manager (X11/XWayland), a Wayland compositor's tool,
+    the app's own quit action (GApplication, which native GNOME apps on Wayland have), or its media
+    player's Quit (MPRIS). What was asked, or "" when no way reached it."""
+    q = target.name.lower()
+    wmctrl = shutil.which("wmctrl")
+    if wmctrl:
+        for line in _run([wmctrl, "-lx"]).stdout.splitlines():
+            if q in line.lower() and _run([wmctrl, "-i", "-c", line.split(None, 1)[0]]).returncode == 0:
+                return "its window"
+    for tool in _wayland_window_tools():
+        if tool == "wlrctl" and _run([tool, "toplevel", "close", target.name]).returncode == 0:
+            return "its window"
+        if tool == "kdotool":
+            ids = [x.strip() for x in _run([tool, "search", "--class", target.name]).stdout.splitlines() if x.strip()]
+            if ids and _run([tool, "windowclose", ids[0]]).returncode == 0:
+                return "its window"
+    # Only an app that is running: asking a D-Bus-activatable app that is not would start it.
+    if not _app_running(needles, loose=False):
+        return ""
+    app_id = Path(str(target.desktop_id or "")).name
+    app_id = app_id[:-len(".desktop")] if app_id.endswith(".desktop") else app_id
+    gapplication = shutil.which("gapplication")
+    if gapplication and app_id.count(".") >= 2 and _run([gapplication, "action", app_id, "quit"]).returncode == 0:
+        return "the app to quit"
+    dbus_send = shutil.which("dbus-send")
+    if dbus_send:
+        try:
+            from eli.integrations.mpris.playerctl_backend import list_players
+            players = [str(p) for p in list_players()]
+        except Exception:
+            players = []
+        for player in players:
+            if any(n in player.lower() for n in needles) and _run(
+                    [dbus_send, "--session", "--type=method_call", f"--dest=org.mpris.MediaPlayer2.{player}",
+                     "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Quit"]).returncode == 0:
+                return "its media player to quit"
+    return ""
+
+
+def _closed_once_gone(target: AppCandidate, needles: list[str], how: str) -> dict:
+    """After the app was asked to close: Closed once its processes are gone, within wait_bound for
+    it; otherwise said as it is. It may be asking whether to save, so nothing else may end it then."""
+    import time as _time
+    key = _timing_key(target)
+    start = _time.monotonic()
+    deadline = start + wait_bound("close", key)
+    while _app_running(needles, loose=False):
+        if _time.monotonic() >= deadline:
+            return _result(False, "CLOSE_APP",
+                           f"Asked {target.name} to close ({how}); it is still open, and may be asking whether "
+                           f"to save. Say 'force close {target.name}' to end it anyway.",
+                           resolved=target.__dict__, asked_to_close=True, handled=True)
+        _time.sleep(_POLL_S)
+    _record_timing("close", key, _time.monotonic() - start)
+    return _result(True, "CLOSE_APP", f"Closed {target.name}.", resolved=target.__dict__)
+
+
 def close_app(name: str, force: bool = False) -> dict:
-    """Close an app, its windows first, then the program ELI resolved for it (the one OPEN_APP
-    launches), on every OS. The word the user said is the last resort, in the executor."""
+    """Close an app: ask it to close (its window, its own quit), and report it closed once its
+    processes are gone. Ending it by a signal skips the app's own "save your changes?", so that is
+    done only with `force`. On every OS; the word the user said is the last resort, in the executor."""
     target = resolve_app(name)
     sysname = _system()
     if not target.name:
         return _result(False, "CLOSE_APP", "No app name supplied.")
 
     if sysname == "linux":
-        wmctrl = shutil.which("wmctrl")
-        if wmctrl:
-            cp = _run([wmctrl, "-lx"])
-            q = target.name.lower()
-            for line in cp.stdout.splitlines():
-                if q in line.lower():
-                    win_id = line.split(None, 1)[0]
-                    rc = _run([wmctrl, "-i", "-c", win_id]).returncode
-                    if rc == 0:
-                        return _result(True, "CLOSE_APP", f"Closed app/window: {target.name}", resolved=target.__dict__)
+        needles = _process_needles(target)
+        how = _ask_linux_app_to_close(target, needles)
+        if how:
+            return _closed_once_gone(target, needles, how)
+        by_program = _close_by_program(target) if force else None
+        if by_program is not None:
+            return by_program
         if force:
             # `pkill -f` matches every process's full command line as a regex, so a short target signals
             # unrelated infrastructure (a "file" target matches `dbus-daemon --session ... --nopidfile` and
@@ -504,10 +649,29 @@ def close_app(name: str, force: bool = False) -> dict:
             if cp.returncode == 0:
                 return _result(True, "CLOSE_APP", f"Closed app: {target.name}", resolved=target.__dict__)
 
-    by_program = _close_by_program(target)
-    if by_program is not None:
-        return by_program
+    if force:
+        by_program = _close_by_program(target)
+        if by_program is not None:
+            return by_program
+    elif sysname in ("linux", "darwin") and (_app_running(_process_needles(target), loose=False)
+                                              or _program_running(target)):
+        return _result(False, "CLOSE_APP",
+                       f"{target.name} is running, but no window or quit command of it could be reached here, "
+                       f"and ending it by a signal could lose unsaved work. Say 'force close {target.name}' "
+                       f"to end it anyway.", resolved=target.__dict__, needs_force=True, handled=True)
     return _result(False, "CLOSE_APP", f"Could not close app/window: {name}", resolved=target.__dict__)
+
+
+def _program_running(target: AppCandidate) -> bool:
+    """Whether the program the app's launcher runs has a process (the dry run of a close, no signal)."""
+    program = app_program(target)
+    if not program:
+        return False
+    try:
+        from eli.system.process_guard import check_kill_pattern
+        return bool(check_kill_pattern(_posix_program_pattern(program), full_cmdline=True).pids)
+    except Exception:
+        return False
 
 
 def minimize_app(name: str) -> dict:

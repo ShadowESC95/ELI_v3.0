@@ -458,16 +458,31 @@ def safe_pkill(pattern: str, *, full_cmdline: bool = False, timeout: float = 8.0
     # after a few seconds is signalled then.
     pids = [int(p) for p in plan.pids]
     roots = [p for p in pids if _parent_pid(p) not in pids] or pids
-    killed = sum(1 for pid in roots if _term(pid))
-    deadline = time.monotonic() + min(float(timeout), 5.0)
-    while time.monotonic() < deadline and any(pid_alive(p) for p in pids):
-        time.sleep(0.2)
-    killed += sum(1 for pid in pids if pid not in roots and pid_alive(pid) and _term(pid))
+    def _wait_gone(group: list) -> None:
+        deadline = time.monotonic() + min(float(timeout), 5.0)
+        while time.monotonic() < deadline and any(pid_alive(p) for p in group):
+            time.sleep(0.2)
 
+    killed = sum(1 for pid in roots if _term(pid))
+    _wait_gone(pids)
+    rest = [pid for pid in pids if pid not in roots and pid_alive(pid) and _term(pid)]
+    killed += len(rest)
+    _wait_gone(rest)
+
+    # Done when the processes are gone, not when a signal was sent: an app can catch SIGTERM and
+    # stay up (a save prompt), and "Closed" was said of it all the same.
+    still = [p for p in pids if pid_alive(p)] if killed else []
+    if not killed:
+        reason = "matched processes could not be signalled"
+    elif still:
+        reason = f"signalled, but {len(still)} of its processes are still running"
+    else:
+        reason = plan.reason
     return {
-        "ok": killed > 0,
+        "ok": killed > 0 and not still,
         "killed": killed,
         "pids": list(plan.pids),
-        "reason": plan.reason if killed else "matched processes could not be signalled",
+        "still_running": still,
+        "reason": reason,
         "plan": plan.as_dict(),
     }
