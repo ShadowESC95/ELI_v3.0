@@ -251,7 +251,7 @@ def _h_create_folder(a, args):
 
 
 def _h_summarize_file(a, args):
-    import os as _os2, subprocess as _sfsp
+    import os as _os2
     from pathlib import Path as _SFPP
     path = str(args.get("path") or args.get("file") or "").strip()
     _sf_instruction = str(args.get("instruction") or "").strip()
@@ -267,37 +267,12 @@ def _h_summarize_file(a, args):
     if expanded.lower().endswith(
             (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif")):
         return _execute_impl("ANALYZE_IMAGE", {"path": expanded})
-    # Directory: if it contains PDFs, delegate to ANALYZE_PDF_FOLDER for real content
+    # A folder is read, not described from its names: its PDFs, or for a folder with none the files
+    # that define it (eli.runtime.folder_analysis), with a summary that cites the files it read. It
+    # used to send `ls -R` to the model and ask for the folder's "inferred purpose".
     if _os2.path.isdir(expanded):
-        import glob as _glob
-        _pdfs = _glob.glob(_os2.path.join(expanded, "**", "*.pdf"), recursive=True)
-        if _pdfs:
-            return _execute_impl("ANALYZE_PDF_FOLDER", {"folder": expanded, "recursive": True,
-                                                        "instruction": _sf_instruction})
-        # No PDFs: fall back to ls -R + GGUF description
-        try:
-            _ls_result = _sfsp.run(
-                ["ls", "-R", expanded], capture_output=True, text=True, timeout=10)
-            _sf_raw = _ls_result.stdout[:8000]
-        except Exception as _dir_err:
-            _sf_raw = f"Directory listing failed: {_dir_err}"
-        _sf_summary = None
-        try:
-            from eli.cognition import gguf_inference as _sfgi
-            if _sfgi.load_model() is not None:
-                _sf_user_msg = (
-                    f"{_sf_instruction}\n\nDirectory listing:\n\n{_sf_raw[:6000]}"
-                    if _sf_instruction else
-                    f"Describe the structure and contents of this directory tree:\n\n{_sf_raw[:6000]}"
-                )
-                _sf_summary = _sfgi.chat_completion(
-                    _sf_user_msg,
-                    system="You are a precise technical analyst. Describe the directory structure, key files, and inferred purpose.",
-                    max_tokens=700, temperature=0.3)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        _sf_body = _sf_summary if _sf_summary else _sf_raw[:3000]
-        return {"ok": True, "action": a, "content": _sf_body, "response": _sf_body}
+        return _execute_impl("ANALYZE_PDF_FOLDER", {"folder": expanded, "recursive": True,
+                                                    "instruction": _sf_instruction})
     # Anchor the conversational "current file" so a later proof-challenge
     # ("prove you read it") audits THIS file rather than the GUI default.
     try:

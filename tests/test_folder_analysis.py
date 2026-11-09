@@ -142,3 +142,48 @@ def test_asked_to_analyse_the_whole_text_is_read(tmp_path, monkeypatch):
     out = fa.analyse(made, whole=True)
     assert out["ok"] and "read in full" in out["content"] and "## Analysis" in out["content"]
     assert sum(t.count("w ") for t in seen) >= 2 * 1400     # all of both, not their openings
+
+
+# ── a folder with no PDFs is read from its own files ──────────────────────────────────────────────
+def _project(tmp_path):
+    folder = tmp_path / "garden_tool"
+    (folder / "garden").mkdir(parents=True)
+    (folder / "README.md").write_text("# Garden tool\nPlans watering from soil readings.\n")
+    (folder / "garden" / "water.py").write_text("from garden import soil\n\ndef plan():\n    return soil.read()\n")
+    (folder / "garden" / "soil.py").write_text("def read():\n    return 0.4\n")
+    (folder / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\0\0\0binary")
+    (folder / ".secret").write_text("hidden")
+    return folder
+
+
+def test_a_folder_with_no_pdfs_is_read_from_its_files(tmp_path, index, monkeypatch):
+    folder = _project(tmp_path)
+    asked = []
+    monkeypatch.setattr(fa, "_model", lambda: ((lambda text, n: asked.append(text) or "A watering planner."), 100_000))
+    out = fa.analyse(folder, progress=lambda *a: None)
+    assert out["ok"] is True and out["count"] == 3
+    read = "\n".join(asked)
+    assert "Plans watering from soil readings" in read and "def plan()" in read and "return 0.4" in read
+    assert "binary" not in read and "hidden" not in read
+    assert read.startswith("Below are the openings of 3 files")
+    assert "README.md" in out["markdown"] and "garden/water.py" in out["markdown"]
+
+
+def test_the_files_that_define_a_folder_come_first(tmp_path):
+    folder = _project(tmp_path)
+    order = [f.relative_to(folder).as_posix() for f in fa.folder_files(folder)]
+    assert order[0] == "README.md"
+    assert order.index("garden/soil.py") < order.index("garden/water.py")   # named by water.py
+    assert "logo.png" not in order and ".secret" not in order
+
+
+def test_a_checkout_leaves_out_what_its_gitignore_ignores(tmp_path):
+    import subprocess
+    folder = _project(tmp_path)
+    (folder / "build").mkdir()
+    (folder / "build" / "out.txt").write_text("generated")
+    (folder / ".gitignore").write_text("build/\n")
+    if subprocess.run(["git", "-C", str(folder), "init", "-q"], capture_output=True).returncode != 0:
+        pytest.skip("git is not installed")
+    order = [f.relative_to(folder).as_posix() for f in fa.folder_files(folder)]
+    assert "build/out.txt" not in order and "README.md" in order

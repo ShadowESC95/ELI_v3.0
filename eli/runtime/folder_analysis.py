@@ -1,5 +1,6 @@
-"""Reading a folder of PDFs: every file kept whole in the document index, a summary that covers all of
-them, and the result as a PDF with its formulas typeset.
+"""Reading a folder: its PDFs, or for a folder with none the files that make it up (text, code,
+configuration, documents), each kept in the document index where it is a document, a summary that
+covers all of them and cites them, and the result as a PDF with its formulas typeset.
 
 It used to parse every page with its own reader and file each 4,500-character piece as a personal
 memory (2,399 of 2,929 memories on one machine after one 349-PDF folder), summarise from the opening
@@ -7,6 +8,7 @@ of the first 17 documents only, and end the summary at the reply limit in mid-li
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -22,7 +24,7 @@ PART_CHARS = 14000
 SUMMARY_TOKENS = 700
 PER_FILE_TOKENS = 520
 
-_SYSTEM = "You are a precise technical analyst summarising a collection of research PDFs."
+_SYSTEM = "You are a precise technical analyst summarising the documents and files of a folder."
 _PART_ASK = ("Below are the opening pages of {n} PDF documents from the folder “{folder}”{part}. Write a "
              "concise, technical summary of what they cover: the central topics, methods/formalism, and how "
              "the documents relate. Be specific and grounded ONLY in the text shown; do not invent results. "
@@ -47,6 +49,86 @@ _FILE_ASK = ("Summarise this single research document titled “{name}”. Cover
              "or results named in the text. Be specific and grounded ONLY in the text below; do not invent "
              "results or citations. Write formulas in LaTeX between $ signs. Keep it within about {words} words, "
              "so it ends complete.\n\n")
+
+
+# A folder with no PDFs is read from its own files. Asked "what is this folder", ELI listed the names
+# (ls -R) and guessed the purpose from them, three times over.
+_FILES_ASK = ("Below are the openings of {n} files from the folder “{folder}”{part}, the files that define it "
+              "first. Say what this folder is: its purpose, how it is organised, its main parts and how they "
+              "fit together, naming the files each point comes from. Be specific and grounded ONLY in the text "
+              "shown; do not guess from file names alone. Keep it within about {words} words, so it ends "
+              "complete.\n\n")
+_FILES_JOIN_ASK = ("Below are {n} accounts, each of a share of the {docs} files read from the folder “{folder}”. "
+                   "Write one account of what the folder is: its purpose, how it is organised, its main parts and "
+                   "how they fit together, naming the files each point comes from. Use only what the accounts say, "
+                   "and do not mention the accounts or how the files were split. Keep it within about {words} "
+                   "words, so it ends complete.\n\n")
+
+
+def _is_text(path: Path) -> bool:
+    """A file of text: one of the document formats, or one whose first block has no NUL byte and reads
+    as UTF-8 (source, configuration, notes), whatever it is called."""
+    from eli.memory.document_index import SUFFIXES
+    if path.suffix.lower() in SUFFIXES:
+        return True
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return False
+    if not head or b"\0" in head:
+        return False
+    try:
+        head.decode("utf-8")
+    except UnicodeDecodeError as cut:
+        return cut.start >= len(head) - 4      # a character split at the block's end
+    return True
+
+
+def _listed_by_git(root: Path) -> Optional[List[Path]]:
+    """The files git keeps or would keep in a checkout (its .gitignore honoured), or None outside one."""
+    import subprocess
+    try:
+        done = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                              capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return [root / name for name in done.stdout.decode("utf-8", "replace").split("\0") if name]
+
+
+def folder_files(root: Any, recursive: bool = True) -> List[Path]:
+    """The files that make up a folder with no PDFs, those that define it first: the readable files (its
+    .gitignore honoured in a checkout, hidden files and installed software left out), shallowest first,
+    then those the other files name most (an import, an include, a link), then by name."""
+    from eli.memory.document_index import _not_documents
+    root = Path(str(root)).expanduser()
+    found = _listed_by_git(root)
+    if found is None:
+        found = []
+        for here, dirs, names in os.walk(str(root)):
+            dirs[:] = sorted(d for d in dirs if recursive and not _not_documents(here, d))
+            found += [Path(here) / n for n in names if not n.startswith(".")]
+    kept = []
+    for f in found:
+        rel = f.relative_to(root).parts if f.is_absolute() else f.parts
+        if any(p.startswith(".") for p in rel) or (not recursive and len(rel) > 1):
+            continue
+        if f.is_file() and _is_text(f):
+            kept.append(f)
+    texts = {}
+    for f in kept:
+        try:
+            texts[f] = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            texts[f] = ""
+
+    def named_by(f: Path) -> int:
+        word = re.compile(rf"\b{re.escape(f.stem)}\b") if len(f.stem) > 1 else None
+        return sum(1 for other, text in texts.items() if other != f and word and word.search(text))
+
+    return sorted(kept, key=lambda f: (len(f.relative_to(root).parts), -named_by(f), str(f)))
 
 
 def _model():
@@ -154,7 +236,7 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
     """`folder` is one path or several. `whole`: read all of every document and weigh them against
     each other, not the opening of each. `progress` defaults to the background job this runs in (its
     "check job" answer and ETA)."""
-    from eli.memory.document_index import _PASSAGE_CHARS, document_files, get_document_index
+    from eli.memory.document_index import _PASSAGE_CHARS, document_files, get_document_index, indexable
     from eli.runtime.background_tasks import report as job_report
     from eli.runtime.rich_document import write_document
 
@@ -177,8 +259,15 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
             return f"{root.name}/{inside}" if len(roots) > 1 else inside
         return Path(path).name
 
-    files = list(dict.fromkeys(f for root in roots
-                               for f in ([root] if root.is_file() else document_files(root, (".pdf",), recursive))))
+    def _files_of(root):
+        if root.is_file():
+            return [root], False
+        pdfs = document_files(root, (".pdf",), recursive)
+        return (pdfs, False) if pdfs else (folder_files(root, recursive), True)
+
+    picked = [_files_of(root) for root in roots]
+    of_files = any(read_files for _, read_files in picked)
+    files = list(dict.fromkeys(f for found, _ in picked for f in found))
     if limit:
         files = files[: int(limit)]
     call, room = _model()
@@ -191,6 +280,19 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
     unreadable: List[tuple] = []
     for n, path in enumerate(files):
         report(n, len(files), "reading")
+        if of_files and path.suffix.lower() != ".pdf" and (index is None or not indexable(path)):
+            # source, configuration: read as text, it is not a document for the index
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as failure:
+                unreadable.append((shown(path), str(failure)))
+                continue
+            if not text.strip():
+                unreadable.append((shown(path), "empty"))
+                continue
+            docs.append({"title": shown(path), "path": str(path), "chars": len(text), "pages": 0,
+                         "opening": text[:share]})
+            continue
         if index is not None:
             res = index.add(path, user_id=user_id, source="folder analysis", embed=False)
             if res.get("ok"):
@@ -207,6 +309,11 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
         docs.append({"title": path.name, "path": str(path), "chars": len(text),
                      "pages": sum(1 for where, _ in parts if where.startswith("p. ")), "opening": text[:share]})
     report(len(files), len(files), "reading")
+    if not docs and of_files:
+        msg = (f"Nothing readable in “{name}”: {len(files)} file(s) looked like text and {len(unreadable)} of "
+               "them could not be read, so I have not said what the folder is.")
+        return {"ok": False, "count": 0, "unreadable": [n for n, _ in unreadable], "error": "nothing_readable",
+                "content": msg}
     if not docs:
         msg = (f"No readable PDF text found in “{name}” ({len(unreadable)} unreadable). The PDFs may be "
                "image-only/scanned (need OCR) or the folder has none.")
@@ -226,6 +333,9 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
         summary = _summary([p for d in docs for p in _pieces(d["title"], d["opening"], PART_CHARS - len(_READ_ASK))],
                            name, call, PART_CHARS, report, docs=len(docs), stage="analysing",
                            part_ask=_READ_ASK, join_ask=_WEIGH_ASK)
+    elif call and of_files:
+        summary = _summary([f"### {d['title']}\n{d['opening']}" for d in docs], name, call, PART_CHARS, report,
+                           part_ask=_FILES_ASK, join_ask=_FILES_JOIN_ASK)
     elif call:
         summary = _summary([f"### {d['title']}\n{d['opening']}" for d in docs], name, call, PART_CHARS, report)
     else:

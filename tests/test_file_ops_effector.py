@@ -27,3 +27,17 @@ def test_create_file_replaces_only_when_asked(tmp_path):
     out = _h_create_file("CREATE_FILE", {"path": str(target), "content": "new", "overwrite": True})
     assert out["ok"] is True
     assert Path(out["path"]).read_text(encoding="utf-8") == "new"
+
+
+def test_summarize_on_a_folder_reads_it_and_does_not_guess_from_names(tmp_path, monkeypatch):
+    """SUMMARIZE_FILE on a folder with no PDFs sent `ls -R` to the model to infer what it was for."""
+    from eli.execution.effectors import file_ops
+
+    (tmp_path / "README.md").write_text("# Kiln log\nRecords firing temperatures.\n", encoding="utf-8")
+    ran = []
+    monkeypatch.setattr(file_ops, "_execute_impl", lambda action, args: ran.append((action, args)) or {"ok": True})
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no ls -R")))
+    file_ops._h_summarize_file("SUMMARIZE_FILE", {"path": str(tmp_path), "instruction": "what is this folder"})
+    assert ran == [("ANALYZE_PDF_FOLDER", {"folder": str(tmp_path), "recursive": True,
+                                           "instruction": "what is this folder"})]
