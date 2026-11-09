@@ -11,6 +11,15 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")  # the real GPU libraries load
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Each run starts as a fresh install: what an earlier run left in the throwaway sandbox (its vector
+# index, the world's sessions, the databases) is gone before anything below writes or reads it. An
+# index copied in once was searched by every later run, and a VR session one run recorded turned up
+# in the next run's period log.
+_SANDBOX_ROOT = ROOT / "artifacts" / "_pytest"
+if _SANDBOX_ROOT.parent.parent == ROOT and _SANDBOX_ROOT.is_dir():
+    import shutil as _shutil
+    _shutil.rmtree(_SANDBOX_ROOT, ignore_errors=True)
+
 # Tests never reach this machine's desktop, as on a CI runner: no session bus (media players,
 # notifications) and no display for an app a test launches. A test run once started the real
 # Spotify and played a song.
@@ -164,6 +173,13 @@ def _assert_db_isolated() -> None:
             f"{_persona_file_resolved}, outside the throwaway {_safe}. A test could "
             f"overwrite the real persona overlay. Check eli.cognition.persona / "
             f"eli.core.paths overrides in conftest.")
+    # The semantic vector index resolves through its own helper (eli.memory.vector_store).
+    from eli.memory.vector_store import _get_index_paths
+    for _vector_file in _get_index_paths():
+        if _safe not in Path(_vector_file).resolve().parents:
+            raise RuntimeError(
+                f"TEST ISOLATION BREACH: the vector index resolves to {_vector_file}, outside the "
+                f"throwaway {_safe}. A test could add to the real semantic memory.")
     # WORLD_DIR is frozen at import time — check the module constant, not a fresh call.
     from eli.world.persistence import storage as _world_storage_mod
     _world_dir_resolved = Path(_world_storage_mod.WORLD_DIR).resolve()

@@ -212,6 +212,7 @@ def test_a_reset_that_wiped_nothing_is_shown_as_a_failure(tmp_path, monkeypatch)
     pytest.importorskip("PySide6")
     from eli.gui.main_window._mixins.features import reset_outcome
     base, _config = _sandbox(tmp_path, monkeypatch)
+    _wal_db_with_an_open_writer(base / "db" / "user.sqlite3").close()     # something the backup must copy
     base.chmod(0o500)                # the backup folder cannot be made: nothing is wiped
     try:
         s = mr.run_reset(rebuild=False)
@@ -222,3 +223,33 @@ def test_a_reset_that_wiped_nothing_is_shown_as_a_failure(tmp_path, monkeypatch)
     assert text.startswith("Nothing was wiped: backup") and s["backup_incomplete"] in text
     wiped, title, text = reset_outcome({"wiped": True, "ok": True, "db_rows": 4, "files_removed": 3}, name_kept=True)
     assert wiped and title == "Memory cleared" and "3 other file(s)" in text and "Name kept" in text
+
+
+def _clear_memory_tool():
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "tools" / "clear_memory.py"
+    spec = importlib.util.spec_from_file_location("eli_clear_memory_tool", path)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
+
+
+def test_the_reset_tool_lists_the_other_files_and_says_when_nothing_was_wiped(tmp_path, monkeypatch, capsys):
+    """tools/clear_memory.py left out the notes, documents and logs it removes, and after a failed
+    backup printed "✓ wiped 0 DB rows" as if it had worked."""
+    base, _config = _sandbox(tmp_path, monkeypatch)
+    _wal_db_with_an_open_writer(base / "db" / "user.sqlite3").close()     # something the backup must copy
+    (base / "notes").mkdir()
+    (base / "notes" / "shopping.md").write_text("bread", encoding="utf-8")
+    tool = _clear_memory_tool()
+    assert tool.main(["--dry-run"]) == 0
+    plan = capsys.readouterr().out
+    assert "1  other files" in plan
+    base.chmod(0o500)                # the backup folder cannot be made: nothing is wiped
+    try:
+        rc = tool.main(["--yes"])
+    finally:
+        base.chmod(0o700)
+    out = capsys.readouterr().out
+    assert rc == 2 and "nothing was wiped: backup" in out and "✓ wiped" not in out
+    assert (base / "notes" / "shopping.md").exists()

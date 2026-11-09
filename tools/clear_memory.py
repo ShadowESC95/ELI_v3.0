@@ -55,6 +55,7 @@ def main(argv=None) -> int:
         "settings": "settings.json identity fields",
         "conversations": "conversation logs",
         "persona_overlay": "persona.auto.txt overlay",
+        "files": "other files (notes, documents, logs, the world, …)",
     }
     for k, lbl in labels.items():
         print(f"    {len(t.get(k, [])):>4}  {lbl}")
@@ -80,8 +81,15 @@ def main(argv=None) -> int:
                     keep_conversations=args.keep_conversations,
                     do_backup=not args.no_backup)
     print("  " + "─" * 56)
+    if not s.get("wiped"):
+        # nothing was touched (the backup could not be made whole): say so, never "✓ wiped 0 rows"
+        print(f"  ✗ nothing was wiped: {'; '.join(str(e) for e in s.get('errors') or []) or 'the reset did not run'}")
+        if s.get("backup_incomplete"):
+            print(f"  incomplete backup left at: {s['backup_incomplete']}")
+        print()
+        return 2
     print(f"  ✓ wiped {s['db_rows']} DB rows · reset {s['faiss_reset']} FAISS file(s) · "
-          f"removed {s['profiles_removed']} profile file(s)")
+          f"removed {s['profiles_removed']} profile file(s) · {s.get('files_removed', 0)} other file(s)")
     print(f"  ✓ blanked {s['name_fields_blanked']} name field(s) · "
           f"settings identity {'cleared' if s.get('settings_identity_cleared') else 'unchanged'} · "
           f"deleted {s['conversations_removed']} conversation log(s)")

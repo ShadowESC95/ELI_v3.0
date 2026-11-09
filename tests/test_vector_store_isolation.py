@@ -137,3 +137,17 @@ def test_tests_never_take_the_checkout_s_index(tmp_path, monkeypatch):
     monkeypatch.setattr("eli.core.paths.artifacts_dir", lambda: tmp_path / "data")
     index_path, _ = vs._get_index_paths()
     assert not Path(index_path).exists()
+
+
+def test_the_test_sandbox_starts_without_the_last_runs_state():
+    """A vector index copied into the sandbox once was searched by every later run, and a VR session
+    one run recorded showed in the next run's period log. Each run starts with an empty sandbox: no
+    file in it was made before this run's own start (asound.conf, written as the run's conftest
+    loads). Change times, which a copy cannot carry over as it can a modification time."""
+    import eli.memory.vector_store as vs
+    sandbox = (Path(__file__).resolve().parents[1] / "artifacts" / "_pytest").resolve()
+    started = (sandbox / "asound.conf").stat().st_ctime
+    stale = [p for p in sandbox.rglob("*") if p.is_file() and p.stat().st_ctime < started - 1]
+    assert stale == [], f"left from an earlier run: {stale[:5]}"
+    for path in vs._get_index_paths():
+        assert sandbox in Path(path).resolve().parents, path
