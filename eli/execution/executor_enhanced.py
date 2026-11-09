@@ -703,9 +703,24 @@ def _gpu_status_report() -> Dict[str, Any]:
         lines.append(f"- VRAM: ~{total} MiB total (best known figure, not necessarily a live reading)")
     else:
         lines.append("- VRAM: unavailable")
-    lines.append(f"- GPU utilization: {util}%" if util is not None else "- GPU utilization: unavailable")
-    lines.append(f"- GPU core temperature: {telem['temp_c']} C (VRAM / memory-chip temperature is not reported by this reading)"
-                 if telem["temp_c"] is not None else "- temperature: unknown")
+    # Several cards: use and temperature are each card's own. The one figure is the busiest (hottest)
+    # card's, and a "1%" read from one of two cards was taken for the whole machine.
+    cards = [d for d in (telem.get("devices") or []) if isinstance(d, dict)]
+
+    def _each(key: str, unit: str) -> str:
+        return ", ".join(f"GPU {d.get('index', i)} " + (f"{d[key]:.0f}{unit}" if d.get(key) is not None else "not reported")
+                         for i, d in enumerate(cards))
+
+    if len(cards) > 1 and any(d.get("util_pct") is not None for d in cards):
+        lines.append(f"- GPU utilization: {_each('util_pct', '%')}")
+    else:
+        lines.append(f"- GPU utilization: {util}%" if util is not None else "- GPU utilization: unavailable")
+    if len(cards) > 1 and any(d.get("temp_c") is not None for d in cards):
+        lines.append(f"- GPU core temperature: {_each('temp_c', ' C')} (VRAM / memory-chip temperature is not "
+                     f"reported by this reading)")
+    else:
+        lines.append(f"- GPU core temperature: {telem['temp_c']} C (VRAM / memory-chip temperature is not reported by this reading)"
+                     if telem["temp_c"] is not None else "- temperature: unknown")
     if telem["power_w"] is not None:
         _limit = f" / {telem['power_limit_w']:.2f} W limit" if telem["power_limit_w"] is not None else ""
         lines.append(f"- power: {telem['power_w']:.2f} W{_limit}")
@@ -6552,9 +6567,7 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     if a == 'RUNTIME_STATUS':
         rep = _runtime_status_report(); txt = _format_runtime_status(rep)
         return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
-    if a == 'GPU_STATUS':
-        rep = _gpu_status_report()
-        return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
+    # GPU_STATUS is its effector's (introspection._h_gpu_status): the reading with what it means.
     if a == 'SELF_IMPROVEMENT_LOG':
         limit = int((args or {}).get('limit') or 5) if isinstance(args, dict) else 5
         days = int((args or {}).get('days') or 30) if isinstance(args, dict) else 30

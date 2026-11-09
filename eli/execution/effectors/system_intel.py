@@ -78,8 +78,6 @@ def gpu_use_facts(report: Dict[str, Any]) -> Dict[str, Any]:
             if d.get("power_w") is not None:
                 bits.append(f"{float(d['power_w']):.0f} W")
             lines.append(f"- GPU {d.get('index', i)} {d.get('name') or ''}: " + ", ".join(bits))
-        if len(devices) > 1 and telem.get("util_pct") is not None:
-            lines.append(f"- the single utilisation figure above ({telem['util_pct']}%) is the busiest card's")
 
     generating = False
     try:

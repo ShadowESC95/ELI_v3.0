@@ -124,3 +124,21 @@ def test_amd_used_vram_is_rendered(monkeypatch, tmp_path):
     assert "AMD Radeon RX 7900 XTX" in rep["content"]
     assert "4096 MiB used" in rep["content"]
     assert "context: 12000" in rep["content"]
+
+
+def test_several_cards_are_each_given_their_own_use_and_temperature(monkeypatch, tmp_path):
+    """"GPU utilization: 1%" was the busiest of two cards (and the temperature the hottest), read as
+    the whole machine's."""
+    _setup(monkeypatch, tmp_path, snapshot=SNAPSHOT, telemetry=_telem(
+        ok=True, name="Card A", vendor="nvidia", total_mb=16384, used_mb=12600, free_mb=3784,
+        util_pct=1, temp_c=49, power_w=48.0, devices=[
+            {"index": 0, "name": "Card A", "util_pct": 1, "temp_c": 49},
+            {"index": 1, "name": "Card B", "util_pct": 0, "temp_c": 45}]))
+    c = ex._gpu_status_report()["content"]
+    assert "- GPU utilization: GPU 0 1%, GPU 1 0%" in c
+    assert "- GPU core temperature: GPU 0 49 C, GPU 1 45 C" in c
+    _setup(monkeypatch, tmp_path, snapshot=SNAPSHOT, telemetry=_telem(
+        ok=True, name="Card A", vendor="nvidia", util_pct=7, temp_c=50,
+        devices=[{"index": 0, "name": "Card A", "util_pct": 7, "temp_c": 50}]))
+    c = ex._gpu_status_report()["content"]
+    assert "- GPU utilization: 7%" in c and "GPU 0 7%" not in c, "one card reads as it did"

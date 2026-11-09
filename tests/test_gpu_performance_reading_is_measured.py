@@ -276,3 +276,12 @@ def test_a_question_about_the_reading_is_answered_in_words(monkeypatch):
     assert out["explain_in_words"] is True
     assert _shown_as_is("GPU_STATUS", "quick", out) is False
     assert _shown_as_is("GPU_STATUS", "quick", {"ok": True}) is True
+
+
+def test_asking_for_gpu_status_reaches_the_reading_with_what_it_means(monkeypatch):
+    """The executor answered GPU_STATUS itself, above its effector, so the per-card facts and the
+    idle reading never reached the user however they asked."""
+    _two_cards(monkeypatch)
+    out = ex.execute("GPU_STATUS", {"question": "gpu status"})
+    assert "gpu_use" in out, sorted(out)
+    assert "GPU 1 Card B: use 0%" in out["content"] and "not generating" in out["content"]
