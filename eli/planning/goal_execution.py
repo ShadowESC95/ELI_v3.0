@@ -163,7 +163,7 @@ def plan_goal(goal) -> Dict[str, Any]:
             "confidence": confidence, "objective": objective}
 
 
-def _approve(action: str, action_class: str, goal_id: str) -> Dict[str, Any]:
+def _approve(action: str, action_class: str, goal_id: str, user_confirmed: bool = False) -> Dict[str, Any]:
     """Ask the existing approval engine. This module never decides safety itself."""
     try:
         from eli.planning.proposal_models import ProposalRecord
@@ -176,7 +176,7 @@ def _approve(action: str, action_class: str, goal_id: str) -> Dict[str, Any]:
             emitter="proactive",
             requested_by="goal_driven",
         )
-        rec = evaluate_record(rec)
+        rec = evaluate_record(rec, user_confirmed=user_confirmed)
         return {"state": rec.approval_state, "reason": rec.policy_reason,
                 "requires_confirmation": bool(rec.requires_confirmation)}
     except Exception as e:
@@ -186,8 +186,10 @@ def _approve(action: str, action_class: str, goal_id: str) -> Dict[str, Any]:
                 "requires_confirmation": True}
 
 
-def execute_goal(goal, *, dry_run: bool = False) -> Dict[str, Any]:
-    """Plan, gate and (if permitted) run one goal. Returns an honest trace."""
+def execute_goal(goal, *, dry_run: bool = False, user_confirmed: bool = False) -> Dict[str, Any]:
+    """Plan, gate and (if permitted) run one goal. Returns an honest trace. `user_confirmed`: the
+    user said yes to this goal's proposal (eli/planning/goal_tick.confirm_goal_proposal); the
+    approval engine still decides what that yes may allow."""
     goal_id = str(getattr(goal, "goal_id", "") or "")
     title = str(getattr(goal, "title", "") or goal_id)
     trace: Dict[str, Any] = {"goal_id": goal_id, "title": title, "at": time.time(),
@@ -209,7 +211,7 @@ def execute_goal(goal, *, dry_run: bool = False) -> Dict[str, Any]:
 
     action_class = classify_action(action)
     trace["action_class"] = action_class
-    verdict = _approve(action, action_class, goal_id)
+    verdict = _approve(action, action_class, goal_id, user_confirmed=user_confirmed)
     trace["approval"] = verdict
     if verdict["state"] != "approved":
         trace["outcome"] = "needs_approval" if verdict["state"] != "blocked" else "blocked"

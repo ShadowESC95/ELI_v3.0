@@ -23,3 +23,55 @@ def test_a_goal_tick_is_handed_to_the_queue_with_the_proposal_as_its_payload(mon
     assert taken["kind"] == "mission_goal" and taken["source"] == "goal_mission_layer"
     assert taken["payload"]["requested_action"]["goal_id"] == "g1" and taken["payload"]["title"] == "Goal tick: tidy"
     assert "metadata" not in taken["rest"], "only what the queue takes is passed by name"
+
+
+# ── a goal's proposal asks the user; nobody approves it by itself ────────────
+
+def _queue_and_goals(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELI_PROPOSAL_QUEUE_PATH", str(tmp_path / "queue.jsonl"))
+    monkeypatch.setenv("ELI_PROPOSAL_ARCHIVE_PATH", str(tmp_path / "archive.jsonl"))
+    from eli.planning import goal_store
+    monkeypatch.setattr(goal_store, "goal_store_path", lambda: tmp_path / "goals.json")
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    goal_store.upsert_goal({"goal_id": "g1", "title": "Tidy the notes folder", "objective": "move old notes",
+                            "cadence_sec": 60})
+    return goal_store
+
+
+def test_a_goal_tick_waits_for_the_user_and_is_asked_once(tmp_path, monkeypatch):
+    """Every goal tick was filed observe-only from an unknown emitter and approved by 'policy:auto'
+    whatever the goal was, then drained into observations nobody was asked about."""
+    from eli.planning import proposal_queue
+    from eli.planning.proposal_memory_bridge import drain_proposals_to_agent_memory
+    goal_store = _queue_and_goals(tmp_path, monkeypatch)
+    goal_tick.governed_goal_tick(now=10_000.0)
+    (rec,) = proposal_queue.read_records()
+    assert rec.approval_state == "pending_confirmation" and rec.approved_by is None, rec
+    assert rec.emitter == goal_tick.EMITTER
+    goal_tick.governed_goal_tick(now=20_000.0)                    # due again: still one question
+    assert len(proposal_queue.read_records()) == 1
+    drain_proposals_to_agent_memory(memory=type("M", (), {"add_observation": lambda *a, **k: True})(), archive=True)
+    assert [r.proposal_id for r in proposal_queue.read_records()] == [rec.proposal_id], "a question was drained away"
+    assert goal_tick.pending_goal_proposals()[0]["goal_id"] == "g1"
+
+
+def test_a_goal_whose_work_planned_a_read_is_classed_by_that_action(tmp_path, monkeypatch):
+    goal_store = _queue_and_goals(tmp_path, monkeypatch)
+    goal_store.update_goal("g1", lambda g: g.metadata.update(work={"steps": [{"action": "LIST_NOTES"}]}))
+    goal = goal_store.load_goals()[0]
+    from eli.planning.goal_execution import classify_action
+    assert goal_tick._action_class(goal) == classify_action("LIST_NOTES")
+
+
+def test_a_yes_runs_the_goal_once_through_the_gate_with_the_yes_given(tmp_path, monkeypatch):
+    from eli.planning import goal_execution, proposal_queue
+    _queue_and_goals(tmp_path, monkeypatch)
+    goal_tick.governed_goal_tick(now=10_000.0)
+    (rec,) = proposal_queue.read_records()
+    ran = []
+    monkeypatch.setattr(goal_execution, "execute_goal",
+                        lambda goal, **kw: ran.append((goal.goal_id, kw)) or {"outcome": "done", "executed": True})
+    out = goal_tick.confirm_goal_proposal(rec.proposal_id)
+    assert out["ok"] and ran == [("g1", {"dry_run": False, "user_confirmed": True})]
+    assert proposal_queue.read_records() == []
+    assert goal_tick.confirm_goal_proposal(rec.proposal_id)["outcome"] == "not_found", "a yes runs it once"
