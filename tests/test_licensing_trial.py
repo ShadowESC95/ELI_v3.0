@@ -571,3 +571,36 @@ def test_the_mcp_server_is_behind_the_licence_gate(retail_env, monkeypatch):
     from eli.__main__ import main
 
     assert main() == 1 and not served
+
+
+def test_the_web_server_run_on_its_own_is_behind_the_licence_gate(retail_env, monkeypatch):
+    """`python -m api.server` and eli_serve.sh start api.server.main() directly, past every gate."""
+    import sys
+    pytest.importorskip("fastapi")
+    try:
+        import api.server as srv
+    except Exception as e:  # the suite's mocked pydantic cannot build the real server
+        pytest.skip(f"web server not importable here: {e}")
+    served = []
+    monkeypatch.setenv("ELI_TRIAL_DISABLED", "1")
+    monkeypatch.setenv("ELI_KEYS_DIR", str(retail_env["tmp"] / "eli-keys"))
+    monkeypatch.setattr(srv.uvicorn, "run", lambda *a, **k: served.append(a))
+    monkeypatch.setattr(srv, "_open_browser_async", lambda url: served.append(url) or False)
+    monkeypatch.setattr(sys, "argv", ["api.server"])
+    assert srv.main() == 1 and served == []
+
+
+@pytest.mark.parametrize("trial,expect", [("revoked", (1, 0)), ("available", (0, 1))])
+def test_the_mcp_script_on_its_own_is_behind_the_licence_gate(retail_env, monkeypatch, trial, expect):
+    """The `eli-mcp` console script enters eli.integrations.mcp.server.main() directly."""
+    import sys
+    from eli.integrations.mcp import server as mcp
+    served = []
+    monkeypatch.setenv("ELI_KEYS_DIR", str(retail_env["tmp"] / "eli-keys"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(retail_env["tmp"] / "xdg"))
+    if trial == "revoked":
+        monkeypatch.setenv("ELI_TRIAL_DISABLED", "1")
+    monkeypatch.setattr(sys, "stdout", sys.stdout)          # main() points stdout at stderr; put back after
+    monkeypatch.setattr(mcp.os, "dup", lambda fd: (_ for _ in ()).throw(OSError("not in a test")))
+    monkeypatch.setattr(mcp, "serve", lambda stdout=None: served.append(1) or 0)
+    assert (mcp.main(), len(served)) == expect

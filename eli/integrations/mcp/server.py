@@ -214,6 +214,11 @@ def main() -> int:
     except OSError:
         protocol_out = sys.stdout
     sys.stdout = sys.stderr
+    # Behind the licence gate like every other way into ELI (the `eli-mcp` script comes here
+    # directly). Never a prompt: the protocol owns stdin, and why is written to stderr.
+    from eli.licensing.launch_gate import launch_allowed
+    if not launch_allowed(allow_gui_prompt=False):
+        return 1
     return serve(stdout=protocol_out)
 
 

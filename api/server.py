@@ -5517,6 +5517,17 @@ def _open_browser_async(url: str, delay: float = 1.2) -> bool:
 
 
 def main():
+    # Behind the licence gate like every other way into ELI: `python -m api.server` and eli_serve.sh
+    # come here directly and served the whole engine with no licence.
+    from eli.licensing.launch_gate import launch_allowed
+    if not launch_allowed(allow_gui_prompt=True):
+        return 1
+    # ELI's console in a file of its own, which it can read back (eli/utils/log.py)
+    try:
+        from eli.utils.log import keep_console_log
+        keep_console_log()
+    except Exception:
+        _mcp_log.debug("console log not kept", exc_info=True)
     import argparse
     ap = argparse.ArgumentParser(
         prog="api.server",
@@ -5634,4 +5645,4 @@ def main():
     uvicorn.run("api.server:app", host=host, port=port, reload=reload, log_level="info")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
