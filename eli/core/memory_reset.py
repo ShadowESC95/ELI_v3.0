@@ -422,6 +422,7 @@ def _drop_empty_dirs(base: Path) -> None:
         if rel[0] in KEEP_TOP or _skip(d) or rel[0] == "db":
             continue
         try:
-            d.rmdir()
+            if not any(d.iterdir()):               # not empty: something kept is in it
+                d.rmdir()
         except OSError:
-            pass                                   # not empty: something kept is in it
+            log.debug("emptied folder %s left in place", d, exc_info=True)
