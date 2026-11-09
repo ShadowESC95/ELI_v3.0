@@ -3272,14 +3272,15 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                        entities={"query": query, "target": target})
 
     # "shuffle" toggles; "shuffle on" / "shuffle off" (and "turn shuffle off") ask for that state, and
-    # carry it as "mode" ("On"/"Off", playerctl's words). Both were a toggle, so "shuffle off" said
-    # with shuffle already off turned it on.
+    # carry it as "state" ("on"/"off"), the argument the shuffle action sets it from
+    # (effectors/media.shuffle_media). Both were a toggle, so "shuffle off" said with shuffle already
+    # off turned it on; then the router said "mode" and the action read "state", so it still toggled.
     _shuffle = (re.match(r"^shuffle(?:\s+(on|off|music))?\b", low)
                 or re.match(r"^turn\s+(?:the\s+)?shuffle\s+(on|off)\b|^turn\s+(on|off)\s+(?:the\s+)?shuffle\b", low))
     if _shuffle:
         _state = next((g for g in _shuffle.groups() if g in ("on", "off")), None)
-        return _mk("SHUFFLE_MEDIA", {"mode": _state.capitalize()} if _state else {}, 0.95, matched_by="media.shuffle",
-                   entities={"mode": _state} if _state else None)
+        return _mk("SHUFFLE_MEDIA", {"state": _state} if _state else {}, 0.95, matched_by="media.shuffle",
+                   entities={"state": _state} if _state else None)
 
     # "repeat" / "repeat track" / "loop" / "repeat all"
     if re.match(r"^(?:repeat|loop)(?:\s+(?:one|track|all|playlist|off))?\b", low):

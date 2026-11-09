@@ -172,15 +172,24 @@ def test_a_bare_transport_word_to_an_app_is_still_transport():
     assert _route("play songs from the eighties")["args"].get("target") is None   # "from" names no service here
 
 
-@pytest.mark.parametrize("said,mode", [("shuffle on", "On"), ("shuffle off", "Off"), ("turn shuffle off", "Off")])
-def test_shuffle_on_or_off_asks_for_that_state(said, mode):
-    """Both were a toggle with no arguments: "shuffle off" with shuffle already off turned it on."""
+@pytest.mark.parametrize("said,state,player_word", [("shuffle on", "on", "On"), ("shuffle off", "off", "Off"),
+                                                    ("turn shuffle off", "off", "Off")])
+def test_shuffle_on_or_off_asks_for_that_state(said, state, player_word, monkeypatch):
+    """Both were a toggle with no arguments: "shuffle off" with shuffle already off turned it on. Then
+    the router said "mode" and the action read "state", so the state asked for never reached it."""
     out = _route(said)
-    assert out["action"] == "SHUFFLE_MEDIA" and out["args"].get("mode") == mode
+    assert out["action"] == "SHUFFLE_MEDIA" and out["args"].get("state") == state
+    from eli.execution.effectors import media
+    import eli.integrations.media.cross_platform as cross
+    sent = []
+    monkeypatch.setattr(media, "_resolve_media_target", lambda target, what: "spotify")
+    monkeypatch.setattr(cross, "spotify_shuffle", lambda p, mode="Toggle": sent.append(mode) or {"ok": True})
+    media._h_shuffle_media("SHUFFLE_MEDIA", out["args"])
+    assert sent == [player_word]
 
 
 def test_a_bare_shuffle_still_toggles():
-    assert "mode" not in _route("shuffle")["args"]
+    assert "state" not in _route("shuffle")["args"]
 
 
 @pytest.mark.parametrize("said,target", [("play golden hour in example.ch", "example.ch"),
