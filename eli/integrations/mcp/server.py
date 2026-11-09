@@ -12,10 +12,13 @@ Two deliberate restrictions:
 
 * **Actions are exposed, not the engine.** A caller gets the effector surface, which
   is already gated, rather than a free-text prompt into the assistant.
-* **The dangerous surface is opt-in.** Actions that control the machine or run code
-  are withheld unless ``ELI_MCP_ALLOW_CONTROL=1``. Handing an arbitrary external
-  client the mouse, the shell and the self-upgrade path by default would be a poor
-  trade for convenience.
+* **Only what reads ELI's state and the machine's is open by default.** The clock, the
+  machine's load and ELI's own status (``_OPEN_ACTIONS``) — nothing that changes anything,
+  and nothing that reads the user's files, screen, microphone, clipboard, memories or
+  conversations. Every other action, the composite ones that run others (SEQUENCE,
+  MULTI_COMMAND) included, is withheld unless ``ELI_MCP_ALLOW_CONTROL=1`` or the saved
+  setting allows it. A list of what to withhold missed whatever its prefixes did not name
+  (READ_FILE, PLUGIN_INSTALL, MEMORY_FORGET, and SEQUENCE running any of the rest).
 """
 from __future__ import annotations
 
@@ -30,13 +33,19 @@ log = get_logger(__name__)
 
 _PROTOCOL_VERSION = "2024-11-05"
 
-# Withheld unless explicitly allowed: anything that drives the machine, executes
-# code, changes ELI itself, or spends the user's money/attention irreversibly.
-_CONTROL_PREFIXES = (
-    "COMPUTER_USE", "KEYBOARD", "MOUSE", "SHELL", "RUN_", "EXECUTE",
-    "SELF_", "CODE_", "GAZE", "SET_CLIPBOARD", "SCHEDULE_", "DELETE_",
-    "INSTALL", "UNINSTALL", "UPGRADE", "SMART_HOME", "SEND_",
-)
+# Offered to any MCP client by default. Each one only reads, whatever arguments it is given,
+# and reads nothing of the user's own: the clock, the machine's load, and ELI's status. An
+# action is added here only after its handler has been read for that; anything not listed
+# needs the control opt-in.
+_OPEN_ACTIONS = frozenset({
+    "DATE", "GET_DATE", "TIME", "GET_TIME",
+    "CPU_USAGE", "RAM_USAGE", "GPU_STATUS", "SYSTEM_STATS",
+    "HELP", "LIST_CAPABILITIES", "VERSION_CHANGES",
+    "COGNITION_STATUS", "RUNTIME_STATUS", "REASONING_MODE_STATUS",
+    "EXPLAIN_ALL_REASONING_MODES", "EXPLAIN_COGNITION_RUNTIME",
+    "MEMORY_STATS", "ORCHESTRATION_STATUS", "PERSONA_LOCK_STATUS", "LORA_STATUS",
+    "PLUGIN_LIST",
+})
 
 
 def _allow_control() -> bool:
@@ -68,7 +77,7 @@ def _exposed_actions() -> List[str]:
     actions = sorted(set(SUPPORTED_ACTIONS))
     if _allow_control():
         return actions
-    return [a for a in actions if not a.startswith(_CONTROL_PREFIXES)]
+    return [a for a in actions if a in _OPEN_ACTIONS]
 
 
 def _describe(action: str) -> Dict[str, Any]:
@@ -93,8 +102,8 @@ def _describe(action: str) -> Dict[str, Any]:
 def _call(action: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if action not in _exposed_actions():
         hint = ("" if _allow_control() else
-                " (control actions are withheld — turn them on under Extensions ▸ "
-                "Settings, or set ELI_MCP_ALLOW_CONTROL=1)")
+                " (only ELI's read-only status actions are offered by default — turn the rest "
+                "on under Extensions ▸ Settings, or set ELI_MCP_ALLOW_CONTROL=1)")
         return {"content": [{"type": "text", "text": f"'{action}' is not exposed{hint}"}],
                 "isError": True}
     try:

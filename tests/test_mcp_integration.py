@@ -40,18 +40,47 @@ def test_unknown_method_is_a_proper_jsonrpc_error():
 
 
 def test_tools_list_exposes_real_actions(monkeypatch):
+    from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
     monkeypatch.delenv("ELI_MCP_ALLOW_CONTROL", raising=False)
     reply = mcp_server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in reply["result"]["tools"]}
-    assert len(names) > 50, "the real action surface should be exposed"
+    # every open action is a real one (the list cannot rot into names the executor lacks)
+    assert set(mcp_server._OPEN_ACTIONS) <= set(SUPPORTED_ACTIONS)
+    assert names == set(mcp_server._OPEN_ACTIONS)
     assert all("inputSchema" in t for t in reply["result"]["tools"])
 
 
 def test_control_actions_are_withheld_by_default(monkeypatch):
+    from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
     monkeypatch.delenv("ELI_MCP_ALLOW_CONTROL", raising=False)
     exposed = set(mcp_server._exposed_actions())
     assert "COMPUTER_USE" not in exposed, "must not hand out the mouse by default"
     assert not any(a.startswith(("SHELL", "SELF_")) for a in exposed)
+    # what a list of prefixes to withhold never named: it changes things, runs other actions,
+    # or reads what is the user's own
+    for action in ("PLUGIN_INSTALL", "PLUGIN_UNINSTALL", "FIX_FILE", "CONFIRM_CODE_FIX",
+                   "MEMORY_FORGET", "CLEAR_CHAT_HISTORY", "PERSONA_LOCK_SET", "PERSONA_LOCK_CLEAR",
+                   "MCP_CALL", "SEQUENCE", "MULTI_COMMAND", "READ_FILE", "LIST_DIR", "GET_CLIPBOARD",
+                   "SCREENSHOT", "SCREEN_READ_ANALYZE", "LISTEN_FOR_COMMAND", "DICTATE",
+                   "MEMORY_RECALL", "PERSONAL_MEMORY_SUMMARY", "OPEN_APP", "CLOSE_APP",
+                   "CREATE_FILE", "CREATE_FOLDER", "LORA_TRAIN", "TRAIN_VOICE", "WAKE_TRAIN"):
+        assert action in SUPPORTED_ACTIONS, action
+        assert action not in exposed, action
+    # and every action not on the open list is withheld, whatever it is named
+    assert exposed == set(SUPPORTED_ACTIONS) & set(mcp_server._OPEN_ACTIONS)
+
+
+def test_a_sequence_cannot_carry_a_withheld_action_through(monkeypatch):
+    monkeypatch.delenv("ELI_MCP_ALLOW_CONTROL", raising=False)
+    called = []
+    import eli.execution.executor_enhanced as ex
+    monkeypatch.setattr(ex, "execute", lambda *a, **k: called.append(a) or {"ok": True})
+    for name, arguments in (("SEQUENCE", {"steps": [{"action": "RUN_CMD", "args": {"cmd": "id"}}]}),
+                            ("MULTI_COMMAND", {"text": "run id and then read my notes"})):
+        reply = mcp_server.handle({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                                   "params": {"name": name, "arguments": arguments}})
+        assert reply["result"]["isError"] is True
+    assert called == [], "a composite action must never reach the executor without the opt-in"
 
 
 def test_control_actions_can_be_opted_into(monkeypatch):
