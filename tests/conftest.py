@@ -43,6 +43,7 @@ def _fresh_sandbox() -> None:
 
 _SANDBOX_HOLD = None
 _fresh_sandbox()
+_SANDBOX_STARTED = __import__("time").time()     # this run's start, for the check that nothing older is in it
 
 # Tests never reach this machine's desktop, as on a CI runner: no session bus (media players,
 # notifications) and no display for an app a test launches. A test run once started the real

@@ -142,11 +142,14 @@ def test_tests_never_take_the_checkout_s_index(tmp_path, monkeypatch):
 def test_the_test_sandbox_starts_without_the_last_runs_state():
     """A vector index copied into the sandbox once was searched by every later run, and a VR session
     one run recorded showed in the next run's period log. Each run starts with an empty sandbox: no
-    file in it was made before this run's own start (asound.conf, written as the run's conftest
-    loads). Change times, which a copy cannot carry over as it can a modification time."""
+    file in it was made before this run's own start (tests/conftest.py's _SANDBOX_STARTED). Change
+    times, which a copy cannot carry over as it can a modification time."""
+    import sys
     import eli.memory.vector_store as vs
+    conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
+    started = getattr(conftest, "_SANDBOX_STARTED", None)
+    assert started is not None, "the run does not record when its sandbox was made"
     sandbox = (Path(__file__).resolve().parents[1] / "artifacts" / "_pytest").resolve()
-    started = (sandbox / "asound.conf").stat().st_ctime
     stale = [p for p in sandbox.rglob("*") if p.is_file() and p.stat().st_ctime < started - 1]
     assert stale == [], f"left from an earlier run: {stale[:5]}"
     for path in vs._get_index_paths():
