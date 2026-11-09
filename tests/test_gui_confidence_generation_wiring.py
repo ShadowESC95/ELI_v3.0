@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 
 def test_quick_mode_clarifies_when_below_confidence_threshold():
     from eli.kernel.engine import CognitiveEngine
@@ -73,81 +75,118 @@ def test_create_document_test_mode_uses_document_artifacts(monkeypatch, tmp_path
     assert "Generation Contract" in body
 
 
-def test_generate_script_rejects_invalid_python(monkeypatch):
+@pytest.fixture()
+def generator_only(monkeypatch, tmp_path):
+    """The one script generator (effectors/coding.py) with its model call faked: no evidence
+    gathering, no coding agent, no background job, no sandbox run, no model."""
     from eli.cognition import gguf_inference
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    for name in ("ELI_EVIDENCE_PLANNER", "ELI_GENERATE_SCRIPT_AGENT", "ELI_CODEGEN_BACKGROUND", "ELI_GENSCRIPT_VERIFY_RUN"):
+        monkeypatch.setenv(name, "0")
+    monkeypatch.setattr(gguf_inference, "load_model", lambda: None)
+    return tmp_path
+
+
+_REAL_SCRIPT = """import math
+
+
+def area(radius: float) -> float:
+    return math.pi * radius ** 2
+
+
+def main() -> None:
+    for r in range(1, 4):
+        print(r, area(r))
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+
+def test_generate_script_rejects_invalid_python(generator_only, monkeypatch):
     from eli.execution import executor_enhanced as ex
 
-    monkeypatch.setattr(gguf_inference, "load_model", lambda: None)
-    monkeypatch.setattr(ex, "chat", lambda *args, **kwargs: {"content": "def broken(:\n    pass"})
+    broken = _REAL_SCRIPT.replace("def area(radius: float) -> float:", "def area(radius: float -> float:")
+    monkeypatch.setattr(ex, "chat", lambda *args, **kwargs: {"ok": True, "content": broken})
 
-    result = ex.execute("GENERATE_SCRIPT", {"description": "write a python script to print hello"})
+    result = ex.execute("GENERATE_SCRIPT", {"description": "write a python script to print circle areas"})
 
     assert result["ok"] is False
-    assert "syntax validation" in result["error"]
+    assert "SyntaxError" in result["error"]
 
 
-def test_generate_script_rejects_stub_markers(monkeypatch):
+def test_generate_script_rejects_stub_markers(generator_only, monkeypatch):
     from eli.execution import executor_enhanced as ex
 
-    monkeypatch.setattr(
-        ex,
-        "chat",
-        lambda *args, **kwargs: {"content": "def generated():\n    # TODO: Add code here\n    pass\n"},
-    )
+    stub = _REAL_SCRIPT.replace("    return math.pi * radius ** 2", "    # TODO: Add code here\n    pass")
+    monkeypatch.setattr(ex, "chat", lambda *args, **kwargs: {"ok": True, "content": stub})
 
-    result = ex.execute("GENERATE_SCRIPT", {"description": "write a python script to print hello"})
+    result = ex.execute("GENERATE_SCRIPT", {"description": "write a python script to print circle areas"})
 
     assert result["ok"] is False
     assert "stub/template markers" in result["error"]
 
 
-def test_generate_script_chat_backend_skips_router(monkeypatch, tmp_path):
-    from eli.cognition import gguf_inference
+def test_generate_script_chat_backend_skips_router(generator_only, monkeypatch):
     from eli.execution import executor_enhanced as ex
 
     calls = []
 
-    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
-    monkeypatch.setattr(gguf_inference, "load_model", lambda: None)
-
     def fake_chat(*args, **kwargs):
         calls.append(kwargs)
-        return {"content": "print('hello')"}
+        return {"ok": True, "content": _REAL_SCRIPT}
 
     monkeypatch.setattr(ex, "chat", fake_chat)
 
-    result = ex.execute("GENERATE_SCRIPT", {"description": "write a python script to print hello"})
+    result = ex.execute("GENERATE_SCRIPT", {"description": "write a python script to print circle areas",
+                                            "open_in_labs": True, "destination": "labs_sim_ide"})
 
     assert result["ok"] is True
     assert calls
     assert calls[0].get("skip_router") is True
+    assert Path(result["script_path"]).read_text(encoding="utf-8") == _REAL_SCRIPT.strip()
+    # where it was asked to be shown travels with it
+    assert result["open_in_labs"] is True and result["destination"] == "labs_sim_ide"
 
 
-def test_relative_time_function_generation_is_deterministic():
-    from datetime import datetime
+def test_a_failed_generation_is_a_failure_and_nothing_is_saved(generator_only, monkeypatch):
     from eli.execution import executor_enhanced as ex
 
-    result = ex.execute(
-        "GENERATE_SCRIPT",
-        {
-            "description": (
-                "Write a Python function that takes a unix timestamp float and "
-                'returns a human-readable relative time string ("3 hours ago", '
-                '"yesterday at 14:30", etc).'
-            ),
-            "language": "python",
-        },
-    )
+    monkeypatch.setattr(ex, "chat", lambda *args, **kwargs: {
+        "ok": False, "content": "The model is not loaded yet. Pick one in Settings."})
 
-    assert result["ok"] is True
-    path = Path(result["path"])
-    namespace = {}
-    exec(path.read_text(encoding="utf-8"), namespace)
-    relative_time = namespace["relative_time"]
-    now = datetime(2026, 5, 5, 21, 0)
+    result = ex.execute("GENERATE_SCRIPT", {"description": "write a bash script that backs up a folder",
+                                            "language": "bash"})
 
-    assert relative_time(datetime(2026, 5, 5, 18, 0).timestamp(), now=now) == "3 hours ago"
-    assert relative_time(datetime(2026, 5, 4, 14, 30).timestamp(), now=now) == "yesterday at 14:30"
+    assert result["ok"] is False
+    scripts = generator_only / "artifacts" / "scripts"
+    assert not scripts.exists() or not any(scripts.iterdir())
+
+
+@pytest.mark.parametrize("asked", [
+    "write a python script that creates a users table in my sqlite database",
+    "write a python script that empties a database table",
+    "write a bash script that watches gpu memory",
+    "write a python function that takes a unix timestamp and returns a relative time like 3 hours ago",
+    "write a python script to calculate the redshift of a type ia supernova",
+    "create a python script for a quantum system's decoherence and gate time: the maximum circuit depth",
+    "create a python script comparing the mass and density of ton 618 with earth",
+])
+def test_every_script_request_reaches_the_generator(asked, generator_only, monkeypatch):
+    # these used to get a stored file back before any generator ran, whatever was asked
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import load_all, registry
+
+    load_all()
+    reached = []
+    monkeypatch.setitem(registry._HANDLERS, "GENERATE_SCRIPT", lambda a, args: reached.append(args["description"]) or {
+        "ok": False, "action": a, "error": "generator reached", "content": "generator reached", "response": "generator reached"})
+
+    for name in ("GENERATE_SCRIPT", "CREATE_SCRIPT", "WRITE_SCRIPT"):
+        result = ex.execute(name, {"description": asked, "language": "python"})
+        assert result.get("error") == "generator reached", name
+    assert reached == [asked] * 3
 
 
 def test_script_language_inference_ignores_in_an_ide_tail():
@@ -166,88 +205,6 @@ def test_generation_complaints_are_not_routed_as_new_scripts():
     from eli.execution.portable_intent_contract import try_route
 
     assert try_route("You did not generate that script, your code generation agent never ran.") is None
-
-
-def test_type_ia_supernova_redshift_generation_is_deterministic():
-    from eli.execution import executor_enhanced as ex
-
-    result = ex.execute(
-        "GENERATE_SCRIPT",
-        {
-            "description": "write a python script to calculate the redshift of a supernova typa 1a",
-            "language": "python",
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["language"] == "python"
-    assert result["open_in_labs"] is True
-    assert result["open_in_ide"] is True
-    path = Path(result["path"])
-    namespace = {}
-    exec(path.read_text(encoding="utf-8"), namespace)
-
-    z = namespace["redshift_from_wavelength"](7626.0, 6355.0)
-    assert round(z, 6) == 0.200000
-    assert namespace["luminosity_distance_mpc_from_modulus"](35.0) == 100.0
-
-
-def test_quantum_decoherence_depth_generation_is_deterministic():
-    from eli.execution import executor_enhanced as ex
-
-    result = ex.execute(
-        "GENERATE_SCRIPT",
-        {
-            "description": (
-                "create a python script for the following; A quantum system has "
-                "decoherence time T2 = 100us and gate time tg = 50ns. What's "
-                "the maximum circuit depth before fidelity drops below 99%? Show the calculation."
-            ),
-            "language": "an",
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["language"] == "python"
-    assert result["open_in_labs"] is True
-    assert result["open_in_ide"] is True
-    path = Path(result["path"])
-    namespace = {}
-    exec(path.read_text(encoding="utf-8"), namespace)
-
-    continuous, depth = namespace["max_depth_exponential"](100e-6, 50e-9, 0.99)
-    assert round(continuous, 6) == 20.100672
-    assert depth == 20
-    assert namespace["fidelity_after_depth"](20, 100e-6, 50e-9) >= 0.99
-    assert namespace["fidelity_after_depth"](21, 100e-6, 50e-9) < 0.99
-
-
-def test_ton_618_mass_density_generation_is_deterministic():
-    from eli.execution import executor_enhanced as ex
-
-    result = ex.execute(
-        "GENERATE_SCRIPT",
-        {
-            "description": (
-                "create a python script to generate the mass and density on "
-                "ton 618 against earths mass and density"
-            ),
-            "language": "python",
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["language"] == "python"
-    assert result["open_in_labs"] is True
-    assert result["open_in_ide"] is True
-    path = Path(result["path"])
-    namespace = {}
-    exec(path.read_text(encoding="utf-8"), namespace)
-
-    comparison = namespace["compare_ton_618"]()
-    assert comparison.mass_earth_masses > 1e16
-    assert comparison.density_earth_ratio < 1e-5
-    assert namespace["EARTH_RADIUS_M"] > 6_000_000
 
 
 def test_generate_document_normalizes_to_documents_dir(monkeypatch, tmp_path):

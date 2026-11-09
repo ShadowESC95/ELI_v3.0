@@ -172,11 +172,15 @@ def target_class(action: str, args: Optional[Dict[str, Any]]) -> str:
 
 # ── what a run did, checked ───────────────────────────────────────────────────────────────────────
 
+# Where a run that writes says it wrote: a place, so a bare file name ("filename": "x.py") is not one.
+_WRITTEN_KEYS = ("path", "script_path", "doc_path", "output_path", "saved_to", "pdf_path", "file", "filepath", "dest")
+
+
 def _file_named(args: Dict[str, Any], result: Dict[str, Any]) -> str:
     for source in (result, args):
-        for key in _PATH_KEYS:
+        for key in _WRITTEN_KEYS:
             value = source.get(key)
-            if isinstance(value, str) and value.strip():
+            if isinstance(value, str) and value.strip() and os.path.dirname(os.path.expanduser(value.strip())):
                 return value.strip()
     return ""
 

@@ -57,6 +57,11 @@ def test_a_written_file_is_checked_and_a_search_that_brought_nothing_had_no_effe
     assert ao.verify("WEB_SEARCH", {"query": "x"}, {"ok": True, "results": [{"title": "t"}]})[0] is True
     assert ao.verify("OPEN_URL", {"url": "https://a.b"}, {"ok": True}) == (None, ""), "what cannot be seen is not judged"
     assert ao.verify("CREATE_DOCUMENT", {"path": "/nowhere"}, {"ok": False}) == (None, ""), "a failure is not re-checked"
+    # a generated script names its place in script_path; its bare file name is not a place
+    script = tmp_path / "plot.py"
+    script.write_text("print(1)")
+    assert ao.verify("GENERATE_SCRIPT", {}, {"ok": True, "filename": "plot.py", "script_path": str(script)},
+                     started=time.time() - 5) == (True, "the file plot.py is there")
 
 
 def test_why_a_run_failed_by_the_one_taxonomy():

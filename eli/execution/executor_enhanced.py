@@ -4833,6 +4833,11 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         "LS": "LIST_DIR",
         "CREATE_DOC": "CREATE_DOCUMENT",
         "WRITE_DOCUMENT": "CREATE_DOCUMENT",
+        # Other names for a script: one generator writes them all (effectors/coding.py).
+        "CREATE_SCRIPT": "GENERATE_SCRIPT",
+        "WRITE_SCRIPT": "GENERATE_SCRIPT",
+        "GENERATE_CODE": "GENERATE_SCRIPT",
+        "WRITE_CODE": "GENERATE_SCRIPT",
     }
     a = _ACTION_ALIASES.get(a, a)
 
@@ -4878,7 +4883,14 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         _effector = None
     if _effector is not None:
         try:
-            return _effector(a, args)
+            _eff_out = _effector(a, args)
+            # Where the user asked to be shown what it made ("open it in the Labs IDE") travels with
+            # the result, unless the effector said otherwise.
+            if isinstance(_eff_out, dict):
+                for _shown in ("destination", "open_in_labs"):
+                    if _shown in args and _shown not in _eff_out:
+                        _eff_out[_shown] = args[_shown]
+            return _eff_out
         except Exception as _eff_err:
             log.debug("[EXECUTOR] effector dispatch failed for %s", a, exc_info=True)
             return {"ok": False, "action": a, "error": str(_eff_err), "content": str(_eff_err), "response": str(_eff_err)}
@@ -7007,17 +7019,6 @@ except NameError:
         slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._-")
         return slug or default
 
-    def _eli_schema_text_from_result(result):
-        if isinstance(result, dict):
-            for key in ("content", "response", "text", "answer", "message", "output"):
-                value = result.get(key)
-                if value is not None and str(value).strip():
-                    return str(value)
-            return ""
-        if result is not None:
-            return str(result)
-        return ""
-
     def _eli_schema_create_document(args):
         args = args if isinstance(args, dict) else {}
         topic = args.get("topic") or args.get("title") or args.get("name") or "document"
@@ -7070,29 +7071,6 @@ except NameError:
             "response": msg,
         }
 
-    def _eli_schema_extract_python_source(args):
-        args = args if isinstance(args, dict) else {}
-        for key in ("code", "script", "source", "content", "python", "body", "text"):
-            value = args.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-
-        generator = globals().get("chat")
-        if callable(generator):
-            prompt = args.get("description") or args.get("prompt") or "Generate a Python script."
-            result = generator(str(prompt))
-            text = _eli_schema_text_from_result(result)
-            if text.strip():
-                return text
-
-        prompt = args.get("prompt")
-        if isinstance(prompt, str) and prompt.strip():
-            stripped = prompt.lstrip()
-            if "\n" in prompt or stripped.startswith(("def ", "class ", "import ", "from ", "print(", "for ", "while ", "if ", "try:")):
-                return prompt
-
-        return None
-
     def _eli_schema_failure(action_name, message):
         return {
             "ok": False,
@@ -7135,17 +7113,6 @@ except NameError:
                 return _eli_schema_create_document(call_args)
             result = _ELI_SCHEMA_CONTRACT_ORIGINAL_EXECUTE(action, args, *pargs, **kwargs)
             return _eli_schema_normalise_failure(action_name, result)
-
-        if action_name in {"GENERATE_SCRIPT", "CREATE_SCRIPT", "WRITE_SCRIPT"}:
-            source = _eli_schema_extract_python_source(call_args)
-            if source is not None:
-                try:
-                    compile(str(source), "<eli-generated-script>", "exec")
-                except SyntaxError as exc:
-                    return _eli_schema_failure(
-                        action_name,
-                        f"Generated Python script failed syntax validation: {exc}",
-                    )
 
         result = _ELI_SCHEMA_CONTRACT_ORIGINAL_EXECUTE(action, args, *pargs, **kwargs)
         return _eli_schema_normalise_failure(action_name, result)
@@ -7364,16 +7331,6 @@ except NameError:
     def _eli_v3_args(args):
         return args if isinstance(args, dict) else {}
 
-    def _eli_v3_error(action_name, text):
-        return {
-            "ok": False,
-            "action": action_name,
-            "error": str(text),
-            "content": str(text),
-            "response": str(text),
-            "evidence": [str(text)],
-        }
-
     def _eli_v3_direct_system_action(action, args=None):
         action_name = _eli_v3_action_name(action)
         data = _eli_v3_args(args)
@@ -7426,281 +7383,19 @@ except NameError:
 
         return None
 
-    def _eli_v3_project_root():
-        from pathlib import Path
-        import os
-        env_root = os.environ.get("ELI_PROJECT_ROOT")
-        if env_root:
-            return Path(env_root).expanduser().resolve()
-        return Path(__file__).resolve().parents[2]
-
-    def _eli_v3_artifacts_dir():
-        from pathlib import Path
-        import os
-        root = _eli_v3_project_root()
-        env_dir = os.environ.get("ELI_ARTIFACTS_DIR")
-        if env_dir:
-            p = Path(env_dir).expanduser()
-            return p.resolve() if p.is_absolute() else (root / p).resolve()
-        return (root / "artifacts").resolve()
-
-    def _eli_v3_slug(text, default="generated_script"):
-        import re
-        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(text or "").strip()).strip("._-")
-        return slug[:80] or default
-
-    def _eli_v3_language_ext(language):
-        mapping = {
-            "python": "py", "py": "py",
-            "bash": "sh", "shell": "sh", "sh": "sh", "zsh": "zsh",
-            "javascript": "js", "js": "js",
-            "typescript": "ts", "ts": "ts",
-            "c++": "cpp", "cpp": "cpp",
-            "c": "c",
-            "c#": "cs", "csharp": "cs",
-            "java": "java",
-            "rust": "rs",
-            "go": "go",
-            "ruby": "rb",
-            "php": "php",
-            "lua": "lua",
-            "r": "r",
-            "swift": "swift",
-            "kotlin": "kt",
-            "scala": "scala",
-            "sql": "sql",
-            "html": "html",
-            "css": "css",
-            "json": "json",
-            "yaml": "yaml", "yml": "yml",
-        }
-        lang = str(language or "auto").strip().lower()
-        return mapping.get(lang, lang if lang and lang != "auto" and len(lang) <= 12 else "txt")
-
-    def _eli_v3_extract_code(raw, language="auto"):
-        import re
-        if isinstance(raw, dict):
-            for key in ("code", "content", "response", "text", "answer", "message", "output"):
-                val = raw.get(key)
-                if val is not None and str(val).strip():
-                    raw = str(val)
-                    break
-            else:
-                raw = str(raw)
-        else:
-            raw = str(raw or "")
-
-        def _norm(s):
-            # Some backends return code as a single physical line with escaped newlines
-            # ("\n"/"\t", JSON-style) — that compiles as an "unterminated string literal
-            # at line 1". If escapes are present but there are no real newlines, decode them.
-            s = str(s or "").strip()
-            if "\n" not in s and ("\\n" in s or "\\t" in s):
-                s = (s.replace("\\r\\n", "\n").replace("\\n", "\n")
-                       .replace("\\t", "\t").replace('\\"', '"').replace("\\'", "'"))
-            return s.strip()
-
-        fences = re.findall(r"```([A-Za-z0-9+#._-]*)\n(.*?)```", raw, flags=re.DOTALL)
-        if fences:
-            wanted = str(language or "").lower()
-            for lang, code in fences:
-                if wanted and wanted != "auto" and lang.lower() == wanted:
-                    return _norm(code)
-            return _norm(fences[0][1])
-
-        return _norm(raw)
-
-    def _eli_v3_generate_script(args=None):
-        action_name = "GENERATE_SCRIPT"
-        data = _eli_v3_args(args)
-
-        description = (
-            data.get("description")
-            or data.get("prompt")
-            or data.get("task")
-            or data.get("query")
-            or data.get("message")
-            or ""
-        )
-
-        if not str(description).strip():
-            return _eli_v3_error(action_name, "No script description supplied.")
-
-        language = data.get("language") or "auto"
-        if str(language).strip().lower() in {"", "auto", "none"}:
-            try:
-                from eli.execution.portable_intent_contract import infer_script_language
-                language = infer_script_language(description)
-            except Exception:
-                language = "auto"
-
-        generation_prompt = (
-            "You are ELI's local code generation engine. Return a complete, runnable source file only. "
-            f"Requested language: {language}.\n\n"
-            "Hard requirements:\n"
-            "- Solve the user's actual task; do not echo or rephrase the prompt.\n"
-            "- No TODO markers, placeholder functions, fake outputs, or hardcoded demonstration answers.\n"
-            "- Include imports, validation, error handling, and a clear executable entry point where the language supports one.\n"
-            "- For Python: use type hints, docstrings where they clarify behaviour, and an `if __name__ == \"__main__\"` guard for scripts.\n"
-            "- For CLI-style requests: use arguments with useful help text instead of burying constants in the body.\n"
-            "- Output only raw source code. No markdown fences, no commentary, no postscript.\n\n"
-            f"Task:\n{description}"
-        )
-
-        raw = None
-        chat_fn = globals().get("chat")
-        if callable(chat_fn):
-            try:
-                raw = chat_fn(generation_prompt, skip_router=True)
-            except TypeError:
-                raw = chat_fn(generation_prompt)
-
-        if raw is None:
-            try:
-                from eli.cognition import gguf_inference
-                raw = gguf_inference.generate(
-                    generation_prompt,
-                    max_tokens=int(data.get("max_tokens") or 1200),
-                )
-            except Exception as exc:
-                return _eli_v3_error(action_name, f"Script generation backend unavailable: {exc}")
-
-        code = _eli_v3_extract_code(raw, language=language)
-        if not code:
-            return _eli_v3_error(action_name, "Script generation returned no source code.")
-
-        _stub = _stub_marker(code)
-        if _stub:
-            return _eli_v3_error(
-                action_name,
-                f"Generated script rejected: output contained stub/template markers ({_stub}).",
-            )
-        if re.fullmatch(r"\s*(?:pass|return\s+None)\s*", code):
-            return _eli_v3_error(
-                action_name,
-                "Generated script rejected: output was an empty implementation.",
-            )
-
-        ext = _eli_v3_language_ext(language)
-
-        if ext == "py":
-            try:
-                compile(code, "<eli-generated-script>", "exec")
-            except SyntaxError as _v3_syn_exc:
-                # One retry with a stricter prompt: standard library only, no
-                # third-party packages. Catches hallucinated APIs like
-                # pytz.utc.location.LocationIn that pass regex checks but fail compile.
-                _v3_retry_prompt = (
-                    "You are ELI's local code generation engine. The previous attempt had a syntax error: "
-                    f"{_v3_syn_exc}\n\n"
-                    "Write a CORRECTED, complete, runnable Python script for the task below.\n"
-                    "STRICT REQUIREMENTS:\n"
-                    "- Standard library ONLY. Do not import any third-party package (no ephem, pytz, astral, requests, etc.).\n"
-                    "- No markdown fences, no commentary, no TODO markers.\n"
-                    "- Must be syntactically valid Python 3.\n"
-                    "- Use an `if __name__ == '__main__':` entry point.\n\n"
-                    f"Task:\n{description}"
-                )
-                _v3_retry_raw = None
-                _v3_chat = globals().get("chat")
-                if callable(_v3_chat):
-                    try:
-                        _v3_retry_raw = _v3_chat(_v3_retry_prompt, skip_router=True)
-                    except TypeError:
-                        _v3_retry_raw = _v3_chat(_v3_retry_prompt)
-                if _v3_retry_raw is None:
-                    try:
-                        from eli.cognition import gguf_inference as _v3_gi
-                        _v3_retry_raw = _v3_gi.generate(
-                            _v3_retry_prompt,
-                            max_tokens=int(data.get("max_tokens") or 1200),
-                        )
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                if _v3_retry_raw:
-                    code = _eli_v3_extract_code(_v3_retry_raw, language=language)
-                    try:
-                        compile(code, "<eli-generated-script>", "exec")
-                    except SyntaxError as _v3_retry_exc:
-                        return _eli_v3_error(
-                            action_name,
-                            f"Generated Python script failed syntax validation (after retry): {_v3_retry_exc}",
-                        )
-                else:
-                    return _eli_v3_error(
-                        action_name,
-                        f"Generated Python script failed syntax validation: {_v3_syn_exc}",
-                    )
-
-        out_dir = _eli_v3_artifacts_dir() / "scripts"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        stem = _eli_v3_slug(data.get("title") or description)
-        path = out_dir / f"{stem}.{ext}"
-
-        if path.exists() and not bool(data.get("overwrite", False)):
-            idx = 2
-            while True:
-                candidate = out_dir / f"{path.stem}_{idx}{path.suffix}"
-                if not candidate.exists():
-                    path = candidate
-                    break
-                idx += 1
-
-        path.write_text(code, encoding="utf-8")
-
-        text = json.dumps(
-            {
-                "event": "artifact_generated",
-                "kind": "script",
-                "path": str(path),
-                "language": language,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
-        return {
-            "ok": True,
-            "action": action_name,
-            "script_path": str(path),
-            "path": str(path),
-            "language": language,
-            "destination": data.get("destination") or "labs_sim_ide",
-            "open_in_labs": bool(data.get("open_in_labs", True)),
-            "open_in_ide": bool(data.get("open_in_ide", True)),
-            "content": text,
-            "response": text,
-        }
-
     if callable(_ELI_PORTABLE_V3_ORIG_EXECUTE):
         def execute(action, args=None, *pargs, **kwargs):
-            action_name = _eli_v3_action_name(action)
-
             direct = _eli_v3_direct_system_action(action, args)
             if direct is not None:
                 return direct
-
-            if action_name in {
-                "GENERATE_SCRIPT", "CREATE_SCRIPT", "WRITE_SCRIPT",
-                "GENERATE_CODE", "WRITE_CODE",
-            }:
-                return _eli_v3_generate_script(args)
 
             return _ELI_PORTABLE_V3_ORIG_EXECUTE(action, args, *pargs, **kwargs)
 
     if callable(_ELI_PORTABLE_V3_ORIG_EXECUTE_ACTION):
         def execute_action(action, args=None, *pargs, **kwargs):
-            action_name = _eli_v3_action_name(action)
-
             direct = _eli_v3_direct_system_action(action, args)
             if direct is not None:
                 return direct
-
-            if action_name in {
-                "GENERATE_SCRIPT", "CREATE_SCRIPT", "WRITE_SCRIPT",
-                "GENERATE_CODE", "WRITE_CODE",
-            }:
-                return _eli_v3_generate_script(args)
 
             return _ELI_PORTABLE_V3_ORIG_EXECUTE_ACTION(action, args, *pargs, **kwargs)
 
