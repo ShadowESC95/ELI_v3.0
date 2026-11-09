@@ -301,3 +301,70 @@ def test_album_is_judged_by_the_playing_tracks_album():
     assert cp.album_matches("salt and a stone", "veridians", now) is True
     assert cp.album_matches("salt and a stone", "copper tides", now) is False
     assert cp.album_matches("north and south", "", now) is False
+
+
+# ── shuffle says what the player reports, and "shuffle on/off" sets it ───────────────────────────────
+def _linux_player(monkeypatch, shuffle, takes=True):
+    monkeypatch.setattr(cp.pc, "LINUX", True)
+    monkeypatch.setattr(cp.pc, "MACOS", False)
+    monkeypatch.setattr(cp.pc, "WINDOWS", False)
+    monkeypatch.setattr(cp.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    state = {"shuffle": shuffle}
+    sent = []
+
+    def run(argv, **k):
+        if argv[:4] == ["playerctl", "-p", "spotify", "shuffle"]:
+            if len(argv) == 5:                     # setting prints nothing, as playerctl does
+                sent.append(argv[4])
+                if takes:
+                    state["shuffle"] = {"On": "On", "Off": "Off"}.get(argv[4]) or (
+                        "Off" if state["shuffle"] == "On" else "On")
+                return True, "", ""
+            return True, state["shuffle"], ""
+        return True, "", ""
+
+    monkeypatch.setattr(cp, "_run", run)
+    return state, sent
+
+
+def test_a_shuffle_toggle_says_the_state_the_player_reports_after(monkeypatch):
+    """"Shuffle toggle — spotify" said nothing of whether shuffle was now on, and a reply claiming it
+    was off had nothing to be held to."""
+    state, sent = _linux_player(monkeypatch, "On")
+    r = cp.spotify_shuffle("spotify")
+    assert sent == ["Toggle"] and r["ok"] is True and r["shuffle"] is False
+    assert r["content"] == "🔀 Shuffle off — spotify"
+
+
+def test_shuffle_on_or_off_sets_it_and_a_change_not_taken_is_a_failure(monkeypatch):
+    state, sent = _linux_player(monkeypatch, "On")
+    assert cp.spotify_shuffle("spotify", "On")["shuffle"] is True and sent == ["On"], "on stays on, never toggled off"
+    assert cp.spotify_shuffle("spotify", "off")["shuffle"] is False and state["shuffle"] == "Off"
+    state, sent = _linux_player(monkeypatch, "On", takes=False)
+    r = cp.spotify_shuffle("spotify", "Off")
+    assert r["ok"] is False and r["shuffle"] is True and "still on" in r["content"]
+
+
+def test_shuffle_on_where_the_os_session_only_toggles_toggles_only_when_it_differs(monkeypatch):
+    from eli.integrations.media import system_session
+    monkeypatch.setattr(cp.pc, "LINUX", False)
+    monkeypatch.setattr(cp.pc, "MACOS", True)
+    monkeypatch.setattr(cp.pc, "WINDOWS", False)
+    toggled = []
+    monkeypatch.setattr(system_session, "shuffle_state", lambda: {"player": "Spotify", "shuffle": True})
+    monkeypatch.setattr(system_session, "toggle_shuffle",
+                        lambda: toggled.append(1) or {"player": "Spotify", "shuffle": False})
+    assert cp.spotify_shuffle(None, "on")["shuffle"] is True and toggled == []
+    assert cp.spotify_shuffle(None, "off")["shuffle"] is False and toggled == [1]
+
+
+def test_the_shuffle_action_passes_the_state_it_was_asked_for(monkeypatch):
+    from eli.execution.effectors import media
+    import eli.integrations.media.cross_platform as cross
+    asked = []
+    monkeypatch.setattr(media, "_resolve_media_target", lambda target, what: "spotify")
+    monkeypatch.setattr(cross, "spotify_shuffle", lambda p, mode="Toggle": asked.append(mode) or {"ok": True})
+    media._h_shuffle_media("SHUFFLE_MEDIA", {"state": "off"})
+    media._h_shuffle_media("SHUFFLE_MEDIA", {})
+    media._h_media_control("MEDIA_CONTROL", {"command": "shuffle", "state": True})
+    assert asked == ["Off", "Toggle", "On"]

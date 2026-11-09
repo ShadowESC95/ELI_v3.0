@@ -1309,11 +1309,13 @@ def previous_media(target: str | None = None) -> Dict[str, Any]:
     return result
 
 
-def shuffle_media(target: str | None = None) -> Dict[str, Any]:
-    """Toggle shuffle mode via playerctl."""
-    from eli.integrations.media.cross_platform import spotify_shuffle
+def shuffle_media(target: str | None = None, state: Any = None) -> Dict[str, Any]:
+    """Shuffle: set on or off when `state` names one ("shuffle on"), else toggled; the result says the
+    state the player reports afterwards (cross_platform.spotify_shuffle)."""
+    from eli.integrations.media.cross_platform import shuffle_wanted, spotify_shuffle
     p = _resolve_media_target(target, "shuffle") or _get_active_player("shuffle") or "spotify"
-    result = spotify_shuffle(p)
+    wanted = shuffle_wanted(state)
+    result = spotify_shuffle(p, "Toggle" if wanted is None else ("On" if wanted else "Off"))
     result["action"] = "SHUFFLE_MEDIA"
     return result
 
@@ -1408,7 +1410,7 @@ def _h_media_control(a, args):
         if target and mapped == "PREVIOUS_MEDIA":
             return previous_media(target=target)
         if mapped == "SHUFFLE_MEDIA":
-            return shuffle_media(target=target)
+            return shuffle_media(target=target, state=args.get("state"))
         if mapped == "REPEAT_MEDIA":
             return repeat_media(target=target)
         return _execute_impl(mapped, forwarded)
@@ -1470,7 +1472,7 @@ def _h_play_media(action, args):
 
 def _h_shuffle_media(action, args):
     target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-    return shuffle_media(target=target)
+    return shuffle_media(target=target, state=args.get("state"))
 
 
 def _h_repeat_media(action, args):

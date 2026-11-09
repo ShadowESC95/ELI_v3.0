@@ -473,25 +473,58 @@ def spotify_open_liked_songs() -> bool:
     return False
 
 
-def spotify_shuffle(player: str | None = None, mode: str = "Toggle") -> dict[str, Any]:
-    """Toggle or set shuffle via playerctl."""
+def shuffle_wanted(value: Any) -> bool | None:
+    """The shuffle state asked for: True for on, False for off, None to toggle (nothing named)."""
+    if isinstance(value, bool):
+        return value
+    word = str(value or "").strip().lower()
+    return {"on": True, "true": True, "1": True, "off": False, "false": False, "0": False}.get(word)
+
+
+def _mpris_shuffle(player: str) -> bool | None:
+    """A player's MPRIS Shuffle as it reports it (playerctl), or None when it does not say."""
+    ok, out, _ = _run(["playerctl", "-p", player, "shuffle"], timeout=5)
+    word = out.strip().lower() if ok else ""
+    return word in ("on", "true") if word in ("on", "off", "true", "false") else None
+
+
+def _shuffle_result(player: str, wanted: bool | None, now: bool | None) -> dict[str, Any]:
+    """What a shuffle change came to, from the state the player reports afterwards."""
+    if now is None:
+        msg = f"🔀 Shuffle {'set ' + ('on' if wanted else 'off') if wanted is not None else 'toggled'} — {player}; " \
+              f"the player did not say whether shuffle is on now."
+        return {"ok": True, "player": player, "shuffle": None, "content": msg, "response": msg}
+    if wanted is not None and now is not wanted:
+        msg = f"Shuffle is still {'on' if now else 'off'} on {player}: it did not take the change."
+        return {"ok": False, "player": player, "shuffle": now, "error": "shuffle unchanged",
+                "content": msg, "response": msg}
+    msg = f"🔀 Shuffle {'on' if now else 'off'} — {player}"
+    return {"ok": True, "player": player, "shuffle": now, "content": msg, "response": msg}
+
+
+def spotify_shuffle(player: str | None = None, mode: Any = "Toggle") -> dict[str, Any]:
+    """Toggle shuffle, or set it with mode on/off (shuffle_wanted). The result's `shuffle` and words are
+    the state the player reports afterwards, read back, not the command that was sent."""
     p = (player or "spotify").strip() or "spotify"
+    wanted = shuffle_wanted(mode)
     if pc.LINUX and shutil.which("playerctl"):
-        ok, out, err = _run(["playerctl", "-p", p, "shuffle", mode], timeout=5)
+        ok, out, err = _run(["playerctl", "-p", p, "shuffle",
+                             "Toggle" if wanted is None else ("On" if wanted else "Off")], timeout=5)
         if ok:
-            state = out or mode
-            msg = f"🔀 Shuffle {state.lower()} — {p}"
-            return {"ok": True, "player": p, "content": msg, "response": msg}
+            return _shuffle_result(p, wanted, _mpris_shuffle(p))
         return {"ok": False, "player": p, "error": err or "shuffle failed",
-                "content": f"Couldn't toggle shuffle on {p}.",
-                "response": f"Couldn't toggle shuffle on {p}."}
+                "content": f"Couldn't change shuffle on {p}.",
+                "response": f"Couldn't change shuffle on {p}."}
     if pc.MACOS or pc.WINDOWS:
         # the running player the OS knows about: Spotify or Music on macOS, any app in Windows' media session
         from eli.integrations.media import system_session
+        if wanted is not None:
+            before = system_session.shuffle_state()
+            if before and before["shuffle"] is wanted:
+                return _shuffle_result(before["player"], wanted, wanted)
         done = system_session.toggle_shuffle()
         if done:
-            msg = f"🔀 Shuffle {'on' if done['shuffle'] else 'off'} — {done['player']}"
-            return {"ok": True, "player": done["player"], "content": msg, "response": msg}
+            return _shuffle_result(done["player"], wanted, done["shuffle"])
         return {"ok": False, "error": "no player",
                 "content": "Nothing is playing, so there is no shuffle to change.",
                 "response": "Nothing is playing, so there is no shuffle to change."}
@@ -773,10 +806,7 @@ def spotify_live_meta(player: str = "spotify") -> tuple[str, str, str]:
 def spotify_shuffle_state() -> bool | None:
     """Whether Spotify's shuffle is on; None when it cannot be read."""
     if pc.LINUX and shutil.which("playerctl"):
-        ok, out, _ = _run(["playerctl", "-p", "spotify", "shuffle"], timeout=5)
-        if ok and out.strip().lower() in ("on", "off", "true", "false"):
-            return out.strip().lower() in ("on", "true")
-        return None
+        return _mpris_shuffle("spotify")
     if pc.MACOS:
         ok, out = _macos_osascript('tell application "Spotify" to return shuffling')
         return (out.strip().lower() == "true") if ok and out.strip().lower() in ("true", "false") else None

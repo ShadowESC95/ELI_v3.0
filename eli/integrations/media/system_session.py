@@ -196,6 +196,23 @@ def toggle_shuffle() -> Optional[Dict[str, Any]]:
     return None
 
 
+def shuffle_state() -> Optional[Dict[str, Any]]:
+    """{"player", "shuffle": bool} of the player the OS knows about, as it reports it, or None."""
+    if pc.WINDOWS:
+        d = _windows("info")
+        if d and isinstance(d.get("shuffle"), bool):
+            return {"player": "the playing app", "shuffle": d["shuffle"]}
+        return None
+    if pc.MACOS:
+        app = macos_running_player()
+        if app:
+            prop = "shuffling" if app == "Spotify" else "shuffle enabled"
+            out = _osascript(f'tell application "{app}" to return {prop}')
+            if out in ("true", "false"):
+                return {"player": app, "shuffle": out == "true"}
+    return None
+
+
 def cycle_repeat() -> Optional[Dict[str, Any]]:
     """{"player", "repeat": "none"|"track"|"list"} after moving repeat on (none → track → list), or None."""
     if pc.WINDOWS:
