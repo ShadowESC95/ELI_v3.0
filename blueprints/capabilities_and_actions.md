@@ -67,7 +67,7 @@ evidence-planner first (real code/web/memory analysis) before synthesising.
 
 | Action | What it does | Example activation phrase(s) | Source |
 |---|---|---|---|
-| `VOLUME` | Adjust/mute system volume | “volume up” · “mute” · “set volume to 30” | Core |
+| `VOLUME` | Adjust, mute or read the system volume | “volume up” · “mute” · “set volume to 30” · “what's the volume?” | Core |
 | `KEYBOARD` | Send keystrokes / type text | “press enter” · “type hello world” | Core |
 | `MOUSE_CONTROL` | Move/click the mouse | “left click” · “move the mouse up” | Core |
 

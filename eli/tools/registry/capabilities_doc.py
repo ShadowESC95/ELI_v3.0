@@ -132,7 +132,8 @@ _add("App & window control", "CONFIRM_PENDING_REMEDIATION", "Approve a pending f
 _add("App & window control", "CANCEL_PENDING_REMEDIATION", "Decline a pending fix/install offer", "“no” (to an “install X?” offer)")
 
 # ── Input control ───────────────────────────────────────────────────────────
-_add("Input control", "VOLUME", "Adjust/mute system volume", "“volume up”", "“mute”", "“set volume to 30”")
+_add("Input control", "VOLUME", "Adjust, mute or read the system volume", "“volume up”", "“mute”",
+     "“set volume to 30”", "“what's the volume?”")
 _add("Input control", "KEYBOARD", "Send keystrokes / type text", "“press enter”", "“type hello world”")
 _add("Input control", "MOUSE_CONTROL", "Move/click the mouse", "“left click”", "“move the mouse up”")
 
