@@ -35,7 +35,8 @@ _DRIVER = textwrap.dedent(
     from eli.runtime import evidence_ledger as L
     L._default_db_path = lambda: Path(art) / "audit.sqlite3"
     S.get_engine = lambda: type("E", (), {"process": lambda s, *a, **k: {"response": "hi"}})()
-    c = TestClient(S.app)
+    S._model_reply = lambda prompt, system="": iter(["hi"])   # completions call the model, never load one here
+    c = TestClient(S.app, base_url="http://127.0.0.1")
     H = lambda t: {"Authorization": "Bearer " + t} if t else {}
 
     # operator bootstraps users (works even after RBAC turns on)

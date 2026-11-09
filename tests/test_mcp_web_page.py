@@ -24,7 +24,7 @@ except Exception as _e:  # mocked-pydantic conflict inside the full suite
 
 
 def _client():
-    return TestClient(srv.app)
+    return TestClient(srv.app, base_url="http://127.0.0.1")
 
 
 

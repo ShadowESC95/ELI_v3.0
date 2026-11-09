@@ -122,9 +122,11 @@ def _bearer(authorization: str) -> str:
 
 def _is_loopback_client(request) -> bool:
     """True when the request comes from THIS machine (the socket peer is loopback). Used to
-    keep same-machine browsing zero-friction even when the server is bound to 0.0.0.0 for
-    the LAN. The peer address is the real kernel socket source — it can't be spoofed to
-    127.x from another device (martian-source packets are dropped), so this is safe."""
+    keep same-machine use zero-friction even when the server is bound to 0.0.0.0 for the
+    LAN. The peer address is the real kernel socket source — it can't be spoofed to 127.x
+    from another device (martian-source packets are dropped). The owner's browser is a
+    loopback peer too, for every page it has open, so a request a page from another site
+    makes is refused before this is ever asked (_OwnSiteOnly)."""
     try:
         host = (request.client.host if (request and request.client) else "") or ""
     except Exception:
@@ -161,7 +163,7 @@ def _resolve_principal(authorization: str, loopback: bool = False) -> Optional[P
     if configured:
         if token and secrets.compare_digest(token, configured):
             return Principal("operator", "admin")
-        if not token and loopback:   # same machine, no token typed → owner
+        if not token and loopback_admin:   # same machine, no token typed → owner (unless ELI_LOOPBACK_ADMIN=0)
             return Principal("operator", "admin")
         return None
     if tokenless:
@@ -229,6 +231,33 @@ def _effective_user(principal: Optional[Principal], supplied: str) -> str:
     except Exception:
         pass
     return (supplied or "anon")
+
+
+def _turn_user(principal: Optional[Principal]) -> Optional[str]:
+    """Whose conversation an API turn is. Under RBAC, the authenticated user's (a member is
+    someone else). Otherwise, and for the machine's own operator, the owner's: the web chat, the
+    phone, ELI VR and the desktop are one person on different surfaces. A client's own label
+    ('web-…' from the browser, 'default' from the phone and VR) filed his turns and agenda items
+    where the desktop and VR never looked, and split "what did I say" by surface. None is the
+    engine's own owner, exactly the desktop's."""
+    try:
+        from eli.runtime import api_users
+        if api_users.rbac_enabled() and principal is not None and principal.user_id != "operator":
+            return principal.user_id
+    except Exception:
+        pass
+    return None
+
+
+def _turn_label(who: Optional[str]) -> str:
+    """The id an API turn is recorded under in the audit trail."""
+    if who:
+        return who
+    try:
+        from eli.kernel.state import get_active_user_id
+        return get_active_user_id()
+    except Exception:
+        return "owner"
 
 app = FastAPI(
     title="ELI Cognitive OS Agent API",
@@ -311,16 +340,151 @@ def _eli_startup_hooks():
 # Connect tab uses this to detect-and-warn (with the exact 'allow' command).
 _LAN_SEEN = {"any": False, "count": 0, "last": None}
 
-@app.middleware("http")
-async def _track_lan_reachability(request, call_next):
+
+# ----------------------------------------------------------------------
+# Only ELI's own pages and native clients are served
+# ----------------------------------------------------------------------
+# The owner's browser is a loopback peer for every page it has open, so the loopback rule above
+# would make any web page the admin: through DNS rebinding (a site's own name pointed at 127.0.0.1
+# makes its page same-origin with this server), through plain cross-site form posts, and through
+# WebSockets, which the browser's same-origin policy does not cover at all. So before anything else
+# runs, every request and every WebSocket handshake is checked for where it came from:
+#   * Host must name this server: an IP address, localhost, this machine's own name, or a name the
+#     owner lists in ELI_API_ALLOWED_HOSTS (a reverse proxy's, say). A rebound page sends its site's.
+#   * Origin, when a browser sends one, must be this server's own address or a listed name. Native
+#     clients (ELI VR, the phone app, the desktop's own calls, curl) send none.
+#   * Sec-Fetch-Site, when a browser sends it, must be same-origin or none (typed, bookmarked,
+#     opened by ELI). A link on another site may still open one of ELI's pages, never call /v1.
+def _split_host(value: str):
+    """(host, port) of a Host header value; IPv6 literals in brackets, port '' when none."""
+    v = (value or "").strip().lower()
+    if v.startswith("["):
+        end = v.find("]")
+        host, rest = (v[1:end], v[end + 1:]) if end > 0 else (v, "")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif v.count(":") == 1:
+        host, port = v.split(":", 1)
+    else:
+        host, port = v, ""
+    return host.rstrip("."), port
+
+
+def _listed_hosts() -> set:
+    """Names the owner allows besides this machine's own (ELI_API_ALLOWED_HOSTS, read live)."""
+    raw = os.environ.get("ELI_API_ALLOWED_HOSTS", "")
+    return {_split_host(p)[0] for p in raw.replace(",", " ").split() if p.strip()}
+
+
+def _own_names() -> set:
+    """What this machine calls itself, the names a device on the LAN may reach it by."""
+    import socket
+    names = {"localhost"}
     try:
-        if not _is_loopback_client(request):
-            _LAN_SEEN["any"] = True
-            _LAN_SEEN["count"] += 1
-            _LAN_SEEN["last"] = request.client.host if request.client else None
-    except Exception:
+        full = socket.gethostname().strip().lower().rstrip(".")
+        if full:
+            short = full.split(".")[0]
+            names |= {full, short, short + ".local"}
+    except OSError:
         pass
-    return await call_next(request)
+    return names
+
+
+def _names_this_server(host: str) -> bool:
+    if not host:
+        return True       # no Host at all (HTTP/1.0): no name a page could have rebound
+    try:
+        import ipaddress
+        ipaddress.ip_address(host)
+        return True       # a page whose address is an IP is that address's own page
+    except ValueError:
+        pass
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    return host in _own_names() or host in _listed_hosts()
+
+
+def _same_origin(origin: str, host_header: str, scheme: str) -> bool:
+    from urllib.parse import urlsplit
+    default = {"http": 80, "ws": 80, "https": 443, "wss": 443}
+    try:
+        o = urlsplit(origin.strip())
+        o_host, o_port = (o.hostname or "").rstrip("."), o.port or default.get(o.scheme, 0)
+    except ValueError:
+        return False
+    if not o_host:
+        return False      # "null": a file, a sandboxed frame, an opaque redirect
+    if o_host in _listed_hosts():
+        return True
+    h_host, h_port = _split_host(host_header)
+    return o_host == h_host and o_port == (int(h_port) if h_port.isdigit() else default.get(scheme, 0))
+
+
+def _foreign_request(scope) -> str:
+    """Why this request or handshake came from somewhere ELI does not serve, '' when it did not."""
+    headers = {}
+    for k, v in scope.get("headers") or []:
+        headers[k.decode("latin-1").lower()] = v.decode("latin-1")
+    host_header = headers.get("host", "")
+    host, _port = _split_host(host_header)
+    if not _names_this_server(host):
+        return (f"This ELI server answers to its own address, not '{host}'. To reach it by that "
+                f"name, list the name in ELI_API_ALLOWED_HOSTS.")
+    origin = headers.get("origin")
+    if origin is not None and not _same_origin(origin, host_header, str(scope.get("scheme") or "http")):
+        return "A page from another site may not use ELI's server."
+    site = headers.get("sec-fetch-site", "").strip().lower()
+    if site and site not in ("same-origin", "none"):
+        opening_a_page = (scope.get("type") == "http"
+                          and str(scope.get("method") or "").upper() in ("GET", "HEAD")
+                          and headers.get("sec-fetch-mode", "").strip().lower() == "navigate"
+                          and not str(scope.get("path") or "").startswith("/v1"))
+        if not opening_a_page:
+            return "A page from another site may not use ELI's server."
+    return ""
+
+
+class _OwnSiteOnly:
+    """ASGI guard in front of every route, WebSockets included (see above). Also notes LAN reach."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        kind = scope.get("type")
+        if kind in ("http", "websocket"):
+            why = _foreign_request(scope)
+            if why:
+                if kind == "http":
+                    from fastapi.responses import JSONResponse
+                    await JSONResponse({"detail": why}, status_code=403)(scope, receive, send)
+                else:
+                    # closed before it is accepted: the server answers the handshake with 403
+                    await send({"type": "websocket.close", "code": 1008, "reason": why[:120]})
+                return
+            if kind == "http":
+                try:
+                    from starlette.requests import HTTPConnection
+                    conn = HTTPConnection(scope)
+                    if not _is_loopback_client(conn):
+                        _LAN_SEEN["any"] = True
+                        _LAN_SEEN["count"] += 1
+                        _LAN_SEEN["last"] = conn.client.host if conn.client else None
+                except Exception:
+                    pass
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_OwnSiteOnly)
+
+# The escapes every page this server writes uses, one copy (spliced in where a page says
+# /*ELI_ESCAPES*/). esc() is for text and attribute values; jsq() is for a value inside an inline
+# handler's JavaScript: a quoted JS string literal in which every character that could end the
+# string, the attribute or the tag is a \u escape. HTML-escaping a value is no protection there (the
+# page decodes &#39; back to a quote before the script runs), and a device id taken from a broker's
+# discovery message is anyone's text: one that closed the string ran script with the dashboard's
+# own authority when the owner clicked Turn on.
+_PAGE_ESCAPES = r'''function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function jsq(s){return "'"+String(s==null?'':s).replace(/[^\w .,:\/@-]/g,c=>'\\u'+('000'+c.charCodeAt(0).toString(16)).slice(-4))+"'";}'''
 
 # Minimal, dependency-free, mobile-first chat UI. Served at "/". Lets any device
 # with a browser (Android/iOS/desktop) talk to a self-hosted ELI over the network —
@@ -852,7 +1016,7 @@ _WEB_UI = """<!doctype html>
     throw lastErr;
   }
   const api=(path,opts)=>_fetchHeal(path,Object.assign({headers:H()},opts||{})).then(r=>r.json());
-  function esc(s){return (''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+  /*ELI_ESCAPES*/
   // ── Settings (real, typed options wired to ELI's config) ───────────────
   let _setSub='General', _setSchema=[], _setVals={}, _setVoices=[], _setModels=[], _setModelActive='';
   function loadSettings(){
@@ -892,7 +1056,7 @@ _WEB_UI = """<!doctype html>
     let h='<div class="jhead">'+esc(group)+'</div><div class="syscard">';
     items.forEach(it=>{h+='<div class="setrow"><div class="setlbl"><div>'+esc(it.label)+'</div>'+(it.hint?'<div class="rnote">'+esc(it.hint)+'</div>':'')+'</div><div class="setctl">'+settingControl(it,_setVals[it.key])+'</div></div>';});
     h+='</div>';
-    if(isAdmin)h+='<div class="rrow" style="margin-top:14px"><button onclick="saveSettings(\\''+esc(group)+'\\')">Save '+esc(group)+'</button><span id="set-status-'+esc(group)+'" class="rnote" style="align-self:center"></span></div>';
+    if(isAdmin)h+='<div class="rrow" style="margin-top:14px"><button onclick="saveSettings('+jsq(group)+')">Save '+esc(group)+'</button><span id="set-status-'+esc(group)+'" class="rnote" style="align-self:center"></span></div>';
     else h+='<div class="rnote" style="margin-top:10px">Sign in as admin to change settings.</div>';
     el.innerHTML=h;
     if(!isAdmin)el.querySelectorAll('[data-k]').forEach(x=>x.disabled=true);
@@ -1116,7 +1280,7 @@ _WEB_UI = """<!doctype html>
     try{
       // tries=2: one connection-establishment retry (power-save wake). Never retries once
       // the server has responded, so a partially-streamed reply can't be resubmitted.
-      const r=await _fetchHeal('/v1/chat/stream',{method:'POST',headers:H(),body:JSON.stringify({message:text,user_id:uid,session_id:session}),signal:abortCtl.signal},2);
+      const r=await _fetchHeal('/v1/chat/stream',{method:'POST',headers:H(),body:JSON.stringify({message:text,session_id:session}),signal:abortCtl.signal},2);
       const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
       for(;;){const rd=await reader.read();if(rd.done)break;
         buf+=dec.decode(rd.value,{stream:true});let i;
@@ -1342,7 +1506,7 @@ _WEB_UI = """<!doctype html>
       const col={ready:'#2ec07a',roadmap:'#e0a72e',cloud:'#6aa3e0',detected:'#7a8699'};
       let h='';
       if(br.length){h+='<div class="rnote" style="margin-top:10px">MQTT broker(s) found — click to use:</div>';
-        br.forEach(b=>{h+='<div class="src" style="cursor:pointer" onclick="useBroker(\\''+esc(b.host)+'\\','+(b.port||1883)+')"><div class="sh"><span>&#128268; '+esc(b.name||b.host)+'</span><span>'+esc(b.host)+':'+(b.port||'')+'</span></div></div>';});}
+        br.forEach(b=>{h+='<div class="src" style="cursor:pointer" onclick="useBroker('+jsq(b.host)+','+(Number(b.port)||1883)+')"><div class="sh"><span>&#128268; '+esc(b.name||b.host)+'</span><span>'+esc(b.host)+':'+(b.port||'')+'</span></div></div>';});}
       window._disc=all;
       const others=[]; all.forEach((f,i)=>{if(f.kind!=='mqtt_broker')others.push([f,i]);});
       const ADDABLE={airplay:1,firetv:1,cast:1,upnp_renderer:1,sonos:1};
@@ -1764,9 +1928,9 @@ _WEB_UI = """<!doctype html>
     } else if(canCast||dv.driver==='airplay'){
       h+='<div class="syscard"><p class="rnote">Push a URL — video, audio, or image — to '+esc(dv.name||dv.id)+'.</p>'
         +'<div class="devurl"><input id="dh-url-'+esc(dv.id)+'" type="url" placeholder="https://… mp4, mp3, or image URL">'
-        +'<button class="cbtn pri" onclick="playOnDevice(\\''+esc(dv.id)+'\\',document.getElementById(\\'dh-url-'+esc(dv.id)+'\\').value)">Play</button></div>'
+        +'<button class="cbtn pri" onclick="playOnDevice('+jsq(dv.id)+',document.getElementById('+jsq('dh-url-'+dv.id)+').value)">Play</button></div>'
         +'<div class="devact" style="margin-top:8px">'
-        +'<button class="cbtn" onclick="document.getElementById(\\'dh-url-'+esc(dv.id)+'\\').value=\\'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4\\';playOnDevice(\\''+esc(dv.id)+'\\',document.getElementById(\\'dh-url-'+esc(dv.id)+'\\').value)">Sample video</button>'
+        +'<button class="cbtn" onclick="document.getElementById('+jsq('dh-url-'+dv.id)+').value=\\'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4\\';playOnDevice('+jsq(dv.id)+',document.getElementById('+jsq('dh-url-'+dv.id)+').value)">Sample video</button>'
         +'</div></div>';
     } else if(dv.driver==='bluetooth'){
       h+='<div class="syscard"><p class="rnote">Route system audio to this Bluetooth device, then play from Spotify, VLC, or ELI voice on this PC.</p>'
@@ -2149,7 +2313,7 @@ _WEB_UI = """<!doctype html>
       if((g.suggested_hosts||[]).length){
         h+='<div style="margin-top:10px">Quick try: ';
         g.suggested_hosts.slice(0,4).forEach(hst=>{
-          h+='<button class="cbtn" style="padding:2px 8px;margin:2px" onclick="quickBrokerHost(\\''+esc(hst)+'\\')">'+esc(hst)+'</button> ';
+          h+='<button class="cbtn" style="padding:2px 8px;margin:2px" onclick="quickBrokerHost('+jsq(hst)+')">'+esc(hst)+'</button> ';
         });
         h+='</div>';
       }
@@ -2172,7 +2336,7 @@ _WEB_UI = """<!doctype html>
       }
       let h='<div class="rnote">Brokers found — click one to fill the form:</div>';
       br.forEach(b=>{
-        h+='<div class="src" style="cursor:pointer" onclick="useBroker(\\''+esc(b.host)+'\\','+(b.port||1883)+')"><div class="sh"><span>&#128268; '+esc(b.name||b.host)+'</span><span>'+esc(b.host)+':'+(b.port||1883)+'</span></div></div>';
+        h+='<div class="src" style="cursor:pointer" onclick="useBroker('+jsq(b.host)+','+(Number(b.port)||1883)+')"><div class="sh"><span>&#128268; '+esc(b.name||b.host)+'</span><span>'+esc(b.host)+':'+(b.port||1883)+'</span></div></div>';
       });
       box.innerHTML=h;
     }).catch(e=>{box.innerHTML='<div class="banner bad">'+esc(''+e)+'</div>';});
@@ -2859,7 +3023,7 @@ _WEB_UI = """<!doctype html>
       if(!t.length)h+='<div class="muted" style="margin-bottom:8px">No scheduled tasks. Queue one below — e.g. &ldquo;review the codebase for bugs&rdquo; overnight.</div>';
       t.slice(0,6).forEach(x=>{const col=badge[x.kind]||'#7a8699',when=x.when_ts?fmtTime(x.when_ts):esc(x.when_spec||'');
         h+='<div class="ovact"><span class="aa"><span class="kindbadge" style="background:'+col+'22;color:'+col+';border-color:'+col+'66">'+esc(x.kind||'task')+'</span>'+esc((x.request||'').slice(0,56))+'</span>'+
-          '<span style="display:flex;gap:6px;align-items:center"><span class="at">'+when+(x.recurring?' &#8635;':'')+'</span><button class="wbtn rm" onclick="ovTaskRemove(\\''+esc(x.pid)+'\\')" title="Cancel">&#10005;</button></span></div>';});
+          '<span style="display:flex;gap:6px;align-items:center"><span class="at">'+when+(x.recurring?' &#8635;':'')+'</span><button class="wbtn rm" onclick="ovTaskRemove('+jsq(x.pid)+')" title="Cancel">&#10005;</button></span></div>';});
       h+='<div class="ovform">'+
         '<input id="tk-req" placeholder="Tell ELI to do something…" style="flex:1;min-width:150px">'+
         '<select id="tk-when"><option value="overnight">Overnight</option><option value="tonight">Tonight</option><option value="in 1 hour">In 1 hour</option><option value="in 10 minutes">In 10 min</option></select>'+
@@ -2883,7 +3047,7 @@ _WEB_UI = """<!doctype html>
           +'<span style="opacity:.7;font-size:.85em;min-width:5em">Device '+(s.device_number||'?')+'</span>'
           +'<span style="opacity:.55;font-size:.8em;max-width:100px;overflow:hidden;text-overflow:ellipsis" title="'+esc(s.os_name||s.name||'')+'">'+esc(s.os_name||s.name||'')+'</span>'
           +'<input class="inp" id="ov-sink-'+i+'" style="flex:1;min-width:120px" placeholder="Name for voice control" value="'+esc(s.custom_name||s.alias||'')+'">'
-          +'<button class="cbtn pri" onclick="ovSaveDeviceName('+JSON.stringify(s.name_key||'')+','+JSON.stringify('ov-sink-'+i)+',this)">Save</button></div>').join('');
+          +'<button class="cbtn pri" onclick="ovSaveDeviceName('+jsq(s.name_key||'')+','+jsq('ov-sink-'+i)+',this)">Save</button></div>').join('');
         audioSel='<div class="npaudio"><label>Sound output</label><div class="nprow">'
           +'<select onchange="ovSetAudioOutput(this)">'+opts+'</select>'
           +'<button class="cbtn pri" onclick="ovSetAudioOutput(this.previousElementSibling)">Apply</button></div>'
@@ -2924,8 +3088,8 @@ _WEB_UI = """<!doctype html>
           +'<span style="opacity:.7;font-size:.8em;min-width:4.5em">'+kind+'</span>'
           +'<span style="opacity:.5;font-size:.78em;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+os+'">'+os+'</span>'
           +'<input class="inp" id="'+kid+'" style="flex:1;min-width:130px" placeholder="Your name (voice keyword)" value="'+saved+'">'
-          +'<button class="cbtn pri" onclick="ovSaveDeviceName('+JSON.stringify(key)+','+JSON.stringify(kid)+',this)">Save</button>'
-          +(saved?('<button class="cbtn" onclick="document.getElementById(\\''+kid+'\\').value=\\'\\';ovSaveDeviceName('+JSON.stringify(key)+','+JSON.stringify(kid)+',this)" title="Remove custom name">Clear</button>'):'')
+          +'<button class="cbtn pri" onclick="ovSaveDeviceName('+jsq(key)+','+jsq(kid)+',this)">Save</button>'
+          +(saved?('<button class="cbtn" onclick="document.getElementById('+jsq(kid)+').value=\\'\\';ovSaveDeviceName('+jsq(key)+','+jsq(kid)+',this)" title="Remove custom name">Clear</button>'):'')
           +'</div>';
       });
       return h;
@@ -2972,8 +3136,8 @@ _WEB_UI = """<!doctype html>
       ctl.forEach(z=>{const xon=(''+(z.state||'')).toUpperCase()==='ON';
         const md=['airplay','firetv','cast','upnp'].indexOf(z.driver)>=0;
         cb+='<div class="ovact"><span class="aa">'+esc(z.display_name||z.name||z.id)+'</span>'+
-          (md?('<span><button class="roombtn" onclick="ovCtl(\\''+esc(z.id)+'\\',\\'play\\')">&#9654;</button> <button class="roombtn" onclick="ovCtl(\\''+esc(z.id)+'\\',\\'pause\\')">&#9208;</button></span>')
-            :('<button class="roombtn" onclick="ovCtl(\\''+esc(z.id)+'\\',\\''+(xon?'off':'on')+'\\')">'+(xon?'Turn off':'Turn on')+'</button>'))+'</div>';});
+          (md?('<span><button class="roombtn" onclick="ovCtl('+jsq(z.id)+',\\'play\\')">&#9654;</button> <button class="roombtn" onclick="ovCtl('+jsq(z.id)+',\\'pause\\')">&#9208;</button></span>')
+            :('<button class="roombtn" onclick="ovCtl('+jsq(z.id)+',\\''+(xon?'off':'on')+'\\')">'+(xon?'Turn off':'Turn on')+'</button>'))+'</div>';});
       return cb;
     }
     if(id==='rooms'){
@@ -2982,14 +3146,14 @@ _WEB_UI = """<!doctype html>
       let h='';
       rooms.forEach(rm=>{const nm=rm.room||'Room',ds=rm.devices||[];
         h+='<div class="ovroom"><div class="ovroomh"><span class="aa">'+esc(nm)+' <span class="muted">('+ds.length+')</span></span>'+
-          '<span><button class="roombtn" onclick="ovRoom(\\''+esc(nm)+'\\',\\'on\\')">All on</button> '+
-          '<button class="roombtn" onclick="ovRoom(\\''+esc(nm)+'\\',\\'off\\')">All off</button></span></div>';
+          '<span><button class="roombtn" onclick="ovRoom('+jsq(nm)+',\\'on\\')">All on</button> '+
+          '<button class="roombtn" onclick="ovRoom('+jsq(nm)+',\\'off\\')">All off</button></span></div>';
         ds.forEach(z=>{const sv=(''+(z.state||'')).toUpperCase(),on=sv==='ON',off=sv==='OFF';
           const media=['airplay','firetv','cast','upnp'].indexOf(z.driver)>=0;
           const dot=on?'on':(off?'':'idle');
           h+='<div class="ovdev"><span class="aa"><span class="ddot '+dot+'"></span>'+esc(z.display_name||z.name||z.id)+'</span>'+
-            (media?('<span><button class="roombtn" onclick="ovCtl(\\''+esc(z.id)+'\\',\\'play\\')">&#9654;</button> <button class="roombtn" onclick="ovCtl(\\''+esc(z.id)+'\\',\\'pause\\')">&#9208;</button></span>')
-              :('<button class="roombtn" onclick="ovCtl(\\''+esc(z.id)+'\\',\\''+(on?'off':'on')+'\\')">'+(on?'Off':'On')+'</button>'))+'</div>';});
+            (media?('<span><button class="roombtn" onclick="ovCtl('+jsq(z.id)+',\\'play\\')">&#9654;</button> <button class="roombtn" onclick="ovCtl('+jsq(z.id)+',\\'pause\\')">&#9208;</button></span>')
+              :('<button class="roombtn" onclick="ovCtl('+jsq(z.id)+',\\''+(on?'off':'on')+'\\')">'+(on?'Off':'On')+'</button>'))+'</div>';});
         h+='</div>';});
       return h;
     }
@@ -2997,7 +3161,7 @@ _WEB_UI = """<!doctype html>
       const sc=(D.scenes&&D.scenes.scenes)||[];
       if(!sc.length)return '<div class="muted">No scenes yet — create scenes in Home.</div>';
       let h='';sc.forEach(s=>{const nm=s.name||s.id||'Scene';
-        h+='<div class="ovact"><span class="aa">'+esc(nm)+'</span><button class="roombtn" onclick="ovScene(\\''+esc(s.id||nm)+'\\')">Activate</button></div>';});
+        h+='<div class="ovact"><span class="aa">'+esc(nm)+'</span><button class="roombtn" onclick="ovScene('+jsq(s.id||nm)+')">Activate</button></div>';});
       return h;
     }
     if(id==='automations'){
@@ -3008,8 +3172,8 @@ _WEB_UI = """<!doctype html>
       au.slice(0,8).forEach(a=>{const tr=a.trigger||{},ac=a.action||{};
         h+='<div class="ovact"><span class="aa">'+esc(a.name||ac.device||'Automation')+
           ' <span class="muted">'+esc((tr.time||'')+' &middot; '+(ac.command||''))+'</span></span>'+
-          '<span style="display:flex;gap:8px;align-items:center"><label class="miniSw"><input type="checkbox" '+(a.enabled?'checked':'')+' onchange="ovAutoToggle(\\''+esc(a.id)+'\\',this.checked)"></label>'+
-          '<button class="wbtn rm" onclick="ovAutoRemove(\\''+esc(a.id)+'\\')" title="Remove">&#10005;</button></span></div>';});
+          '<span style="display:flex;gap:8px;align-items:center"><label class="miniSw"><input type="checkbox" '+(a.enabled?'checked':'')+' onchange="ovAutoToggle('+jsq(a.id)+',this.checked)"></label>'+
+          '<button class="wbtn rm" onclick="ovAutoRemove('+jsq(a.id)+')" title="Remove">&#10005;</button></span></div>';});
       const opts=devs.map(d=>'<option value="'+esc(d.id)+'">'+esc(d.display_name||d.name||d.id)+'</option>').join('');
       h+='<div class="ovform">'+
         '<select id="au-dev">'+(opts||'<option value="">no devices</option>')+'</select>'+
@@ -3096,9 +3260,9 @@ _WEB_UI = """<!doctype html>
       const body=ovWidget(id,D);
       grid+='<div class="widget'+(OV_WIDE[id]?' wide':'')+'" data-wid="'+id+'"'+(OV_EDIT?' draggable="true"':'')+'>'+
         '<div class="whead"><h4>'+esc(OV_TITLES[id]||id)+'</h4>'+
-        (OV_EDIT?('<span class="wctl"><button class="wbtn" onclick="ovMove(\\''+id+'\\',-1)" title="Move up">&#9650;</button>'+
-          '<button class="wbtn" onclick="ovMove(\\''+id+'\\',1)" title="Move down">&#9660;</button>'+
-          '<button class="wbtn rm" onclick="ovRemove(\\''+id+'\\')" title="Remove">&#10005;</button></span>'):'')+
+        (OV_EDIT?('<span class="wctl"><button class="wbtn" onclick="ovMove('+jsq(id)+',-1)" title="Move up">&#9650;</button>'+
+          '<button class="wbtn" onclick="ovMove('+jsq(id)+',1)" title="Move down">&#9660;</button>'+
+          '<button class="wbtn rm" onclick="ovRemove('+jsq(id)+')" title="Remove">&#10005;</button></span>'):'')+
         '</div>'+(body||'')+'</div>';
     });
     const editbar='<div class="oveditbar"><button class="cbtn" onclick="ovToggleEdit()">'+(OV_EDIT?'&#10003; Done':'&#9998; Customize')+'</button>'+
@@ -3107,7 +3271,7 @@ _WEB_UI = """<!doctype html>
     if(OV_EDIT){
       const avail=OV_CATALOG.filter(id=>vis.indexOf(id)<0);
       pal='<div class="ovpal"><div class="muted" style="margin-bottom:6px">'+(avail.length?('Available tiles ('+avail.length+') — tap to add:'):'Every tile is on your dashboard.')+'</div>'+
-        avail.map(id=>'<button class="qchip" onclick="ovAdd(\\''+id+'\\')">+ '+esc(OV_TITLES[id]||id)+'</button>').join('')+'</div>';
+        avail.map(id=>'<button class="qchip" onclick="ovAdd('+jsq(id)+')">+ '+esc(OV_TITLES[id]||id)+'</button>').join('')+'</div>';
     }
     $('#overview').innerHTML='<div class="ovwrap">'+hero+editbar+'<div class="ov-grid'+(OV_EDIT?' editing':'')+'" id="ov-grid">'+grid+'</div>'+pal+'</div>';
     if(OV_EDIT)ovBindDnd();
@@ -3566,17 +3730,18 @@ _MCP_PAGE = """<!doctype html>
     <div class="card">
       <p class="desc" style="margin-top:0">Point any MCP client at this command to give it ELI's own action surface:</p>
 <pre>python -m eli.integrations.mcp.server</pre>
-      <p class="note">Actions that drive the machine, run code, or change ELI itself are withheld
-      unless <code>ELI_MCP_ALLOW_CONTROL=1</code>. Handing an external client the mouse, the shell
-      and the self-upgrade path by default would be a poor trade for convenience.</p>
+      <p class="note">By default a client gets only ELI's read-only status actions: the clock, the
+      machine's load and ELI's own state. Everything else, including whatever reads your files,
+      screen, clipboard or memories, waits for <code>ELI_MCP_ALLOW_CONTROL=1</code> (or the switch
+      under Extensions). Handing an external client the mouse, the shell and the self-upgrade path
+      by default would be a poor trade for convenience.</p>
     </div>
   </section>
 </div>
 <script>
   const token = localStorage.getItem('eli_token') || '';
   const H = () => { const h = {}; if (token) h['Authorization'] = 'Bearer ' + token; return h; };
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
-    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  /*ELI_ESCAPES*/
 
   function applyTheme(t){ document.documentElement.setAttribute('data-theme', t); }
   applyTheme(localStorage.getItem('eli_theme') || 'dark');
@@ -3632,9 +3797,13 @@ _MCP_PAGE = """<!doctype html>
 """
 
 
+_WEB_UI = _WEB_UI.replace("/*ELI_ESCAPES*/", _PAGE_ESCAPES, 1)
+_MCP_PAGE = _MCP_PAGE.replace("/*ELI_ESCAPES*/", _PAGE_ESCAPES, 1)
+
 from eli.utils.log import get_logger
 
 _mcp_log = get_logger(__name__)
+_stream_log = _mcp_log
 
 
 @app.get("/mcp", response_class=HTMLResponse, tags=["Root"])
@@ -3825,25 +3994,118 @@ def _audit(event_type: str, *, user_id: str = "default", action: str = "",
         pass
 
 
+_STREAM_END = object()
+
+
+def _stream_on_its_own_thread(frames, name: str):
+    """An async body for StreamingResponse whose sync generator runs, start to finish, on one
+    thread of its own.
+
+    Handed a sync generator, Starlette steps it on whichever pool thread is free and, when the
+    client goes (Stop in the web chat, the phone app closed, Wi-Fi lost), closes it on the event
+    loop's thread. The model's call lock is taken inside the stream and given back in its
+    finally; given back from another thread it stays held, and every later generation or
+    embedding, the desktop's and ELI VR's included, waited for ever. Here one thread starts the
+    turn, takes each frame and closes the generator itself, so the lock is released by the thread
+    that took it. When the client has gone, the thread stops at its next frame and closes it."""
+    import asyncio
+    import contextvars
+
+    async def _body():
+        loop = asyncio.get_running_loop()
+        frames_out: "asyncio.Queue" = asyncio.Queue()
+        gone = threading.Event()
+
+        def _hand_over(item) -> None:
+            try:
+                loop.call_soon_threadsafe(frames_out.put_nowait, item)
+            except RuntimeError:     # the loop is closed: the server is going away
+                gone.set()
+
+        def _produce() -> None:
+            gen = None
+            try:
+                gen = frames()
+                while not gone.is_set():
+                    try:
+                        frame = next(gen)
+                    except StopIteration:
+                        break
+                    _hand_over(frame)
+            except Exception:
+                _stream_log.exception("[API] %s stream failed", name)
+            finally:
+                close = getattr(gen, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        _stream_log.exception("[API] %s stream did not close cleanly", name)
+                _hand_over(_STREAM_END)
+
+        ctx = contextvars.copy_context()
+        threading.Thread(target=ctx.run, args=(_produce,), daemon=True,
+                         name=f"eli-api-{name}").start()
+        try:
+            while True:
+                frame = await frames_out.get()
+                if frame is _STREAM_END:
+                    break
+                yield frame
+        finally:
+            gone.set()
+
+    return _body()
+
+
+def _close_iterator(it) -> None:
+    """Close a stream (an engine turn, the model's pieces) on the thread that read it."""
+    close = getattr(it, "close", None)
+    if close is not None:
+        close()
+
+
+def _model_reply(prompt: str, system: str = ""):
+    """The local model's answer to one prompt, piece by piece, outside any conversation.
+
+    For callers whose text is not the owner speaking to ELI: a research question wrapped in its
+    passages, or a third-party client's own system prompt and transcript. Run as a turn, that text
+    was stored as something the owner said, mined for his name and his facts, fed to working
+    memory, routed to actions, and it settled the last reply's figures. Here it only reaches the
+    model: ELI's own persona is the system prompt unless the caller brought one."""
+    from eli.cognition import gguf_inference
+    if not system:
+        from eli.cognition.persona import get_persona
+        system = get_persona()
+    pieces = gguf_inference.generate(prompt, system=system, stream=True)
+    try:
+        for chunk in pieces:
+            text = chunk.get("response") if isinstance(chunk, dict) else chunk
+            if text:
+                yield str(text)
+    finally:
+        _close_iterator(pieces)
+
+
 @app.post("/v1/chat", response_model=ChatResponse, tags=["Chat"])
 def chat(request: ChatRequest, principal: Principal = Depends(require_member)):
     """Send a message to ELI and get a response."""
     try:
         engine = get_engine()
         session_id = request.session_id or str(int(time.time()))
-        who = _effective_user(principal, request.user_id)
+        who = _turn_user(principal)
 
         # The engine is one process-wide instance: the turn runs as this caller, in this session, so
         # concurrent callers never read or overwrite each other's turn state.
         result = engine.process(
             request.message,
-            source=f"api:{who}",
+            source=f"api:{_turn_label(who)}",
             stream=False,
             user_id=who,
             session_id=session_id,
         )
 
-        _audit("api_chat", user_id=who, action="CHAT", session_id=session_id)
+        _audit("api_chat", user_id=_turn_label(who), action="CHAT", session_id=session_id)
         return ChatResponse(
             response=_extract_response_text(result),
             session_id=session_id,
@@ -3862,15 +4124,16 @@ def chat_stream(request: ChatRequest, principal: Principal = Depends(require_mem
     is 403'd here too, and attribution uses the authenticated identity."""
     engine = get_engine()
     session_id = request.session_id or str(int(time.time()))
-    who = _effective_user(principal, request.user_id)
+    who = _turn_user(principal)
 
     def _frame(obj) -> str:
         return "data: " + json.dumps(obj) + "\n\n"
 
     def _gen():
         yield _frame({"session_id": session_id})
+        result = None
         try:
-            result = engine.process(request.message, source=f"api:{who}", stream=True,
+            result = engine.process(request.message, source=f"api:{_turn_label(who)}", stream=True,
                                     user_id=who, session_id=session_id)
             if isinstance(result, dict):
                 yield _frame({"delta": _extract_response_text(result)})
@@ -3890,8 +4153,10 @@ def chat_stream(request: ChatRequest, principal: Principal = Depends(require_mem
             yield _frame({"done": True})
         except Exception as e:
             yield _frame({"error": str(e)})
+        finally:
+            _close_iterator(result)
 
-    return StreamingResponse(_gen(), media_type="text/event-stream",
+    return StreamingResponse(_stream_on_its_own_thread(_gen, "chat"), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 # ----------------------------------------------------------------------
@@ -3900,12 +4165,12 @@ def chat_stream(request: ChatRequest, principal: Principal = Depends(require_mem
 # its "Base URL" at ELI and run on your hardware. NOT OpenAI: nothing leaves the
 # box; the model is ELI's local GGUF, behind netguard, token-gated like everything.
 # ----------------------------------------------------------------------
-def _messages_to_prompt(messages) -> str:
-    """Flatten a standard `messages` array into one ELI turn. Single-turn → the raw
-    user text; multi-turn → a transcript, with any system message(s) on top."""
+def _messages_to_prompt(messages):
+    """A standard `messages` array as (system, prompt): the client's own system message(s), and
+    its conversation (single-turn → the raw user text; multi-turn → a transcript)."""
     msgs = [m for m in messages if (m.content or "").strip()]
     if not msgs:
-        return ""
+        return "", ""
     system = "\n".join(m.content for m in msgs if (m.role or "").lower() == "system").strip()
     convo = [m for m in msgs if (m.role or "").lower() != "system"]
     if len(convo) == 1:
@@ -3914,7 +4179,7 @@ def _messages_to_prompt(messages) -> str:
         body = "\n".join(
             (("Assistant: " if (m.role or "").lower() == "assistant" else "User: ") + m.content)
             for m in convo)
-    return ((system + "\n\n") if system else "") + body
+    return system, body
 
 @app.get("/v1/models", tags=["Chat"], dependencies=[Depends(_require_token)])
 def list_models():
@@ -3925,20 +4190,20 @@ def list_models():
 
 @app.post("/v1/chat/completions", tags=["Chat"])
 def chat_completions(request: CompletionRequest, principal: Principal = Depends(require_member)):
-    """Standard chat-completions shape, answered by ELI's LOCAL model + pipeline.
+    """Standard chat-completions shape, answered by ELI's LOCAL model.
     Honours `stream`; returns the canonical `chat.completion` / `chat.completion.chunk`
     objects (and the `[DONE]` sentinel) so standard clients work drop-in.
-    Acting level (member+): it runs the full engine, so read-only viewers are 403'd."""
-    engine = get_engine()
-    prompt = _messages_to_prompt(request.messages)
+    Stateless by contract (the client sends the whole conversation), so it is a model call, not
+    a turn of the owner's conversation: nothing the client sends is stored, remembered, routed to
+    an action or used to settle what ELI said elsewhere (_model_reply).
+    Acting level (member+): read-only viewers are 403'd."""
+    system, prompt = _messages_to_prompt(request.messages)
     if not prompt.strip():
         raise HTTPException(status_code=400, detail="no message content")
     model = request.model or "eli-local"
     created = int(time.time())
     cid = "chatcmpl-" + secrets.token_hex(12)
-    # Stateless by design (the client sends the whole conversation): each call is its own session, so
-    # nothing one call left behind (an open question, the last command) is read by another caller's.
-    who = _effective_user(principal, "default")
+    who = _turn_user(principal)
 
     def _chunk(delta: dict, finish=None) -> str:
         return "data: " + json.dumps({
@@ -3947,42 +4212,29 @@ def chat_completions(request: CompletionRequest, principal: Principal = Depends(
 
     if request.stream:
         def _gen():
+            pieces = None
             try:
                 yield _chunk({"role": "assistant"})
-                result = engine.process(prompt, source="api:completions", stream=True,
-                                        user_id=who, session_id=cid)
-                if isinstance(result, dict):
-                    t = _extract_response_text(result)
-                    if t:
-                        yield _chunk({"content": t})
-                elif isinstance(result, str):
-                    if result:
-                        yield _chunk({"content": result})
-                else:
-                    for chunk in result:
-                        if isinstance(chunk, str):
-                            t = chunk
-                        elif isinstance(chunk, dict):
-                            t = (chunk.get("token") or chunk.get("delta") or chunk.get("content")
-                                 or chunk.get("response") or "")
-                        else:
-                            t = str(chunk)
-                        if t:
-                            yield _chunk({"content": t})
+                pieces = _model_reply(prompt, system)
+                for t in pieces:
+                    yield _chunk({"content": t})
                 yield _chunk({}, finish="stop")
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 yield "data: " + json.dumps({"error": {"message": str(e)}}) + "\n\n"
                 yield "data: [DONE]\n\n"
-        return StreamingResponse(_gen(), media_type="text/event-stream",
+            finally:
+                _close_iterator(pieces)
+        _audit("api_completions", user_id=_turn_label(who), action="COMPLETION", session_id=cid)
+        return StreamingResponse(_stream_on_its_own_thread(_gen, "completions"),
+                                 media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     try:
-        result = engine.process(prompt, source="api:completions", stream=False,
-                                user_id=who, session_id=cid)
-        text = _extract_response_text(result)
+        text = "".join(_model_reply(prompt, system)).strip()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    _audit("api_completions", user_id=_turn_label(who), action="COMPLETION", session_id=cid)
     return {
         "id": cid, "object": "chat.completion", "created": created, "model": model,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
@@ -5020,9 +5272,8 @@ def research_query(req: ResearchQuery, principal: Principal = Depends(require_me
               "the answer, say so plainly — do not invent.\n\nSOURCES:\n" + ctx +
               "\n\nQUESTION: " + req.question)
     try:
-        answer = _extract_response_text(get_engine().process(
-            prompt, source="api:research", stream=False,
-            user_id=_effective_user(principal, req.user), session_id="research-" + secrets.token_hex(8)))
+        # the passages are documents, not the owner talking: a model call, never a turn
+        answer = "".join(_model_reply(prompt)).strip()
     except Exception as e:
         answer = f"(retrieval succeeded; local-model synthesis unavailable: {e})"
     sources = [{"source": h["source"], "score": h["score"], "excerpt": (h["text"] or "")[:240]}
@@ -5103,10 +5354,10 @@ def _world_chat(text: str, principal, session_id: str = "") -> str:
     """A turn of conversation from inside ELI's world (ELI VR). The same engine and the
     same person as /v1/chat: a body is another surface of the owner, not another user, so
     the turn is never attributed to the client's own name."""
-    who = _effective_user(principal, "default")
-    result = get_engine().process(text, source=f"api:{who}", stream=False,
+    who = _turn_user(principal)
+    result = get_engine().process(text, source=f"api:{_turn_label(who)}", stream=False,
                                   user_id=who, session_id=session_id or None)
-    _audit("api_chat", user_id=who, action="CHAT", subject="world", session_id=session_id or "")
+    _audit("api_chat", user_id=_turn_label(who), action="CHAT", subject="world", session_id=session_id or "")
     return _extract_response_text(result)
 
 
