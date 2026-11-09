@@ -25,6 +25,22 @@ DIAGNOSTIC_ACTIONS = {
 }
 
 
+# A word of ELI's machinery is also a word of the world's: "who is the governor of california",
+# "which model has the biggest context window", "how many memories can a human brain hold", "what
+# packages are missing from my react project" each got one of ELI's internal reports. A topic below
+# is ELI's only when ELI owns it in the sentence: "your agent bus", "ELI's orchestrator", or the topic
+# with ELI as who has or uses it ("how many memories do you have", "what reasoning mode are you in").
+# "you" anywhere is not enough: "can you tell me who the governor of texas is" asks about Texas.
+_ELI_OWNS = r"\b(?:your|yours|eli['’]s)\s+(?:own\s+)?(?:[\w-]+\s+){0,3}?"
+_ELI_HAS = r"[^.?!,]{0,24}?\b(?:do|did|are|were|have|has|can|could|will|would)\s+you\b"
+
+
+def _of_eli(low: str, topic: str) -> bool:
+    """Whether `topic` (a regex) is spoken of as ELI's own in `low`."""
+    return bool(re.search(_ELI_OWNS + r"(?:" + topic + r")", low)
+                or re.search(r"(?:" + topic + r")" + _ELI_HAS, low))
+
+
 def classify_diagnostic_action(text: str) -> Optional[str]:
     low = str(text or "").strip().lower()
     if not low:
@@ -42,17 +58,17 @@ def classify_diagnostic_action(text: str) -> Optional[str]:
 
     # "who are you" is a persona/identity question — let the LLM answer it
     # in ELI's voice.  Only map *technical* runtime queries to RUNTIME_STATUS.
-    if re.search(r"\b(what are you running|runtime status|model.*context|gpu layers|context size)\b", low):
+    if re.search(r"\bwhat\s+are\s+you\s+running\b", low) or _of_eli(
+            low, r"runtime status|model[^.?!]{0,20}context|gpu layers|context size"):
         return "RUNTIME_STATUS"
 
-    if re.search(r"\b(how many memories|memory system|memory runtime|what do you know about me from memory|memory count|stored memories)\b", low):
+    if re.search(r"\bwhat do you know about me from memory\b", low) or _of_eli(
+            low, r"how many memories|memory system|memory runtime|memory count|stored memories|memories"):
         return "EXPLAIN_MEMORY_RUNTIME"
 
     # === PHASE15_REDISTRIBUTABLE_IMPORT_VENV_CLASSIFIER ===
-    _eli_phase15_import_subject = bool(re.search(
-        r"\b(imports?|modules?|dependencies?|packages?|virtual environments?|venv|\.venv|python environment)\b",
-        low,
-    ))
+    _eli_phase15_import_subject = _of_eli(
+        low, r"imports?|modules?|dependencies|dependency|packages?|virtual environments?|venv|\.venv|python environment")
     _eli_phase15_import_request = bool(re.search(
         r"\b(status|missing|failing|failure|failures|broken|audit|check|inspect|what is|what are|show me|tell me)\b",
         low,
@@ -61,22 +77,26 @@ def classify_diagnostic_action(text: str) -> Optional[str]:
         return "IMPORT_AUDIT"
 
     # ELI_REASONING_MODE_STATUS_FIX_20260505: exact mode-status request is not a full diagnostic report.
-    if re.search(r"\breasoning mode\b", low) and not re.search(r"\b(cognition pipeline|input to output|cognition runtime|diagnostic|diagnostics|audit|every step|explain)\b", low):
+    if _of_eli(low, r"reasoning mode") and not re.search(r"\b(cognition pipeline|input to output|cognition runtime|diagnostic|diagnostics|audit|every step|explain)\b", low):
         return "REASONING_MODE_STATUS"
 
-    if re.search(r"\b(cognition pipeline|input to output|cognition runtime)\b", low):
+    if _of_eli(low, r"cognition pipeline|input to output|cognition runtime"):
         return "EXPLAIN_COGNITION_RUNTIME"
 
-    if re.search(r"\b(confidence in your last|which agents contributed|last response|last answer|why.*cut off|why.*incomplete)\b", low):
+    # "why was your answer cut off": a reply of ELI's, not a film or a call ("why did the movie cut off")
+    if re.search(r"\bconfidence in your last\b|\bwhich agents contributed\b", low) or _of_eli(
+            low, r"last (?:response|answer|reply)") or (
+            re.search(r"\bwhy\b.*\b(?:cut off|incomplete)\b", low)
+            and _of_eli(low, r"(?:last\s+)?(?:answer|response|reply|message|sentence)")):
         return "EXPLAIN_LAST_RESPONSE"
 
-    if re.search(r"\b(agent bus|agentbus)\b", low):
+    if _of_eli(low, r"agent bus|agentbus"):
         return "AGENTBUS_STATUS"
 
-    if re.search(r"\b(orchestrator)\b", low):
+    if _of_eli(low, r"orchestrator"):
         return "ORCHESTRATOR_STATUS"
 
-    if re.search(r"\b(output governor|response governance|governor)\b", low):
+    if _of_eli(low, r"output governor|response governance|governor"):
         return "OUTPUT_GOVERNOR_STATUS"
 
     return None
