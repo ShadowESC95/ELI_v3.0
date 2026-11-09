@@ -96,6 +96,28 @@ def test_an_app_is_asked_to_quit_from_its_top_process_first(monkeypatch):
     assert res["ok"] and res["pids"] == [100, 101, 102]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="signals are POSIX")
+def test_an_app_is_closed_only_once_its_processes_are_gone(monkeypatch):
+    """A signal sent was reported as the app closed, while it was still running."""
+    plan = pg.KillPlan(allowed=True, reason="ok", pattern="player", full_cmdline=False)
+    plan.pids = [200]
+    monkeypatch.setattr(pg, "check_kill_pattern", lambda *a, **k: plan)
+    monkeypatch.setattr(pg, "_parent_pid", lambda pid: 1)
+    monkeypatch.setattr(pg.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(pg, "pid_alive", lambda pid: True)          # it does not go
+    res = pg.safe_pkill("player", timeout=0.3)
+    from eli.runtime import failure_taxonomy as ft
+    assert res["ok"] is False and res["still_running"] == [200] and res["cause"] == ft.TIMEOUT
+    monkeypatch.setattr(pg, "pid_alive", lambda pid: False)         # it goes
+    assert pg.safe_pkill("player", timeout=0.3)["ok"] is True
+
+
+def test_a_refused_or_empty_kill_says_its_cause():
+    from eli.runtime import failure_taxonomy as ft
+    assert pg.safe_pkill("file", full_cmdline=True)["cause"] in (ft.USER_INPUT, ft.PERMISSION, ft.MISSING)
+    assert pg.safe_pkill("no-such-program-anywhere-xyz")["cause"] in (ft.MISSING, ft.DEPENDENCY)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="pgrep/pkill path is POSIX-only")
 @pytest.mark.skipif(shutil.which("pgrep") is None, reason="pgrep not installed")
 def test_live_dry_run_blocks_patterns_resolving_to_protected_processes():

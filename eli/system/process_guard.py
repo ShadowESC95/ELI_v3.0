@@ -404,15 +404,44 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def _refusal_cause(plan: "KillPlan") -> str:
+    """Why a refused plan sent nothing, in the failure taxonomy's words (eli/runtime/failure_taxonomy)."""
+    from eli.runtime import failure_taxonomy as ft
+    if plan.blocked:
+        return ft.PERMISSION                   # what matched is protected
+    if not plan.pids and "no running process" in plan.reason:
+        return ft.MISSING
+    if "unavailable" in plan.reason:
+        return ft.DEPENDENCY
+    return ft.USER_INPUT                       # a target too short or generic to name a process
+
+
+def _closed_result(plan: "KillPlan", signalled: int, still: list) -> dict:
+    """Closed only when every matched process has gone; otherwise said as not closed, with why."""
+    from eli.runtime import failure_taxonomy as ft
+    if signalled and not still:
+        return {"ok": True, "killed": signalled, "pids": list(plan.pids), "reason": plan.reason,
+                "plan": plan.as_dict()}
+    if not signalled:
+        return {"ok": False, "killed": 0, "pids": list(plan.pids), "plan": plan.as_dict(),
+                "reason": "matched processes could not be signalled", "cause": ft.PERMISSION}
+    return {"ok": False, "killed": signalled, "pids": list(plan.pids), "still_running": still,
+            "plan": plan.as_dict(), "cause": ft.TIMEOUT,
+            "reason": f"{len(still)} of {len(plan.pids)} matched process(es) still running after the signal"}
+
+
 def safe_pkill(pattern: str, *, full_cmdline: bool = False, timeout: float = 8.0) -> dict:
     """Kill `pattern` only if `check_kill_pattern` clears it.
 
-    Returns {"ok", "killed", "pids", "reason", "plan"}. `ok` is False and no
-    signal is sent whenever the plan is refused.
+    Returns {"ok", "killed", "pids", "reason", "plan", "cause"?, "still_running"?}. `ok` is True only
+    once every matched process has exited: a signal sent is not an app closed (it was reported closed
+    while it was still running). `ok` is False and no signal is sent whenever the plan is refused;
+    a failure carries `cause`, the failure taxonomy's category.
     """
     plan = check_kill_pattern(pattern, full_cmdline=full_cmdline)
     if not plan.allowed:
-        return {"ok": False, "killed": 0, "pids": [], "reason": plan.reason, "plan": plan.as_dict()}
+        return {"ok": False, "killed": 0, "pids": [], "reason": plan.reason, "plan": plan.as_dict(),
+                "cause": _refusal_cause(plan)}
 
     if os.name == "nt":
         taskkill = shutil.which("taskkill")
@@ -430,9 +459,10 @@ def safe_pkill(pattern: str, *, full_cmdline: bool = False, timeout: float = 8.0
                     killed += 1
             except Exception:
                 continue
-        return {"ok": killed > 0, "killed": killed, "pids": list(plan.pids),
-                "plan": plan.as_dict(),
-                "reason": plan.reason if killed else "matched processes could not be closed"}
+        deadline = time.monotonic() + float(timeout)
+        while killed and time.monotonic() < deadline and any(pid_alive(p) for p in plan.pids):
+            time.sleep(0.2)
+        return _closed_result(plan, killed, [int(p) for p in plan.pids if pid_alive(p)])
 
     kill = shutil.which("kill")
 
@@ -458,31 +488,13 @@ def safe_pkill(pattern: str, *, full_cmdline: bool = False, timeout: float = 8.0
     # after a few seconds is signalled then.
     pids = [int(p) for p in plan.pids]
     roots = [p for p in pids if _parent_pid(p) not in pids] or pids
-    def _wait_gone(group: list) -> None:
-        deadline = time.monotonic() + min(float(timeout), 5.0)
-        while time.monotonic() < deadline and any(pid_alive(p) for p in group):
-            time.sleep(0.2)
-
     killed = sum(1 for pid in roots if _term(pid))
-    _wait_gone(pids)
-    rest = [pid for pid in pids if pid not in roots and pid_alive(pid) and _term(pid)]
-    killed += len(rest)
-    _wait_gone(rest)
-
-    # Done when the processes are gone, not when a signal was sent: an app can catch SIGTERM and
-    # stay up (a save prompt), and "Closed" was said of it all the same.
-    still = [p for p in pids if pid_alive(p)] if killed else []
-    if not killed:
-        reason = "matched processes could not be signalled"
-    elif still:
-        reason = f"signalled, but {len(still)} of its processes are still running"
-    else:
-        reason = plan.reason
-    return {
-        "ok": killed > 0 and not still,
-        "killed": killed,
-        "pids": list(plan.pids),
-        "still_running": still,
-        "reason": reason,
-        "plan": plan.as_dict(),
-    }
+    deadline = time.monotonic() + min(float(timeout), 5.0)
+    while time.monotonic() < deadline and any(pid_alive(p) for p in pids):
+        time.sleep(0.2)
+    killed += sum(1 for pid in pids if pid not in roots and pid_alive(pid) and _term(pid))
+    # and closed only once they have gone, within what is left of the time allowed
+    deadline = time.monotonic() + max(0.0, float(timeout) - min(float(timeout), 5.0))
+    while killed and time.monotonic() < deadline and any(pid_alive(p) for p in pids):
+        time.sleep(0.2)
+    return _closed_result(plan, killed, [p for p in pids if pid_alive(p)])
