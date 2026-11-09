@@ -330,6 +330,9 @@ def test_the_link_the_server_opens_on_this_computer_carries_its_token(monkeypatc
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(srv.uvicorn, "run", lambda *a, **k: None)
     monkeypatch.setattr(srv, "_open_browser_async", lambda url: opened.append(url) or True)
+    # the server keeps its console in a file from here on; started for real, it held the rest of the
+    # run's output and test_console_log's own file was never opened
+    monkeypatch.setattr("eli.utils.log.keep_console_log", lambda *a, **k: None)
     monkeypatch.setattr(sys, "argv", ["api.server", "--port", "8099", "--token", _SAVED_TOKEN])
     srv.main()
     assert opened == [f"http://127.0.0.1:8099/#token={_SAVED_TOKEN}"]
