@@ -325,6 +325,33 @@ def _truncate_system_prompt_preserving_evidence(enhanced_system: str, sys_budget
     return head_region + evidence_region + tail_region
 
 
+def _read_within(scope, open_stream):
+    """The pieces of a stream, each one read inside ``scope()`` (a thread's own flag, such as
+    gguf_inference.force_no_think) and handed on outside it; ``open_stream()`` is called inside it.
+
+    A scope or a lock held across a yield stays with the thread that asked for the first piece: a
+    web server asks for each piece from any pool thread, and a reader that stops midway never comes
+    back, so the engine's lock stayed held (an owner-bound lock cannot be given back by another
+    thread) and the no-think flag stayed set on that thread for every later call. Here every scope
+    is entered and left within one step, on the thread taking that step. Closing this stream closes
+    the one under it, which stops its decode."""
+    pieces = None
+    try:
+        while True:
+            with scope():
+                if pieces is None:
+                    pieces = iter(open_stream())
+                try:
+                    piece = next(pieces)
+                except StopIteration:
+                    return
+            yield piece
+    finally:
+        close = getattr(pieces, "close", None)
+        if callable(close):
+            close()
+
+
 def _stream_char_budget(n_ctx: int, reply_floor: int, cpt: Optional[float] = None) -> int:
     """How many characters of system prompt and prompt a streamed turn can send: the window less the
     reply floor the request needs (and the template slack), at the loaded model's measured characters
@@ -948,29 +975,33 @@ class GenerationMixin:
                         from contextlib import nullcontext as _nullctx_stream
                     except Exception:
                         from contextlib import nullcontext as _fnt_stream, nullcontext as _nullctx_stream  # type: ignore
-                    _stream_think_ctx = _fnt_stream() if _is_phatic_stream else _nullctx_stream()
-                    with self._gguf_lock, _stream_think_ctx:
-                        for chunk in generate(
-                            prompt,
-                            system=enhanced_system,
-                            max_tokens=_safe_max,
-                            temperature=gen["temperature"],
-                            stream=True,
-                        ):
-                            try:
-                                from eli.cognition import gguf_inference as _ggi_abort
-                                if _ggi_abort.is_cancel_requested():
-                                    break
-                            except Exception:
-                                log.debug("suppressed exception", exc_info=True)
-                            if isinstance(chunk, dict):
-                                token = str(
+                    # The model call is held one at a time by gguf_inference itself (its decode runs
+                    # on a thread of its own that holds the model lock). The engine's own lock and the
+                    # no-think scope are not held across a yield: each piece is read inside the scope
+                    # and handed on outside it (_read_within), so a reader on another thread, or one
+                    # that stops midway, leaves nothing held on the thread that asked for the first.
+                    _stream_think_ctx = _fnt_stream if _is_phatic_stream else _nullctx_stream
+                    for chunk in _read_within(_stream_think_ctx, lambda: generate(
+                        prompt,
+                        system=enhanced_system,
+                        max_tokens=_safe_max,
+                        temperature=gen["temperature"],
+                        stream=True,
+                    )):
+                        try:
+                            from eli.cognition import gguf_inference as _ggi_abort
+                            if _ggi_abort.is_cancel_requested():
+                                break
+                        except Exception:
+                            log.debug("suppressed exception", exc_info=True)
+                        if isinstance(chunk, dict):
+                            token = str(
     chunk.get("response") or chunk.get("token") or "")
-                            else:
-                                token = str(chunk or "")
-                            if token:
-                                _yielded = True
-                                yield token
+                        else:
+                            token = str(chunk or "")
+                        if token:
+                            _yielded = True
+                            yield token
                     if _yielded:
                         return
                     log.debug("[COGNITIVE] Stream: generate() produced zero visible tokens; falling back to non-streaming Stage 11")
@@ -1579,14 +1610,18 @@ class GenerationMixin:
         bus_result: Any = None,
     ) -> Optional[str]:
         try:
-            from eli.cognition.chat_grounding_gate import evaluate_chat_grounding_gate
+            from eli.cognition.chat_grounding_gate import HEDGED_PATH, evaluate_chat_grounding_gate
             fact = evaluate_chat_grounding_gate(
                 user_input,
                 query_class=query_class,
                 memory_context=memory_context,
                 bus_result=bus_result,
             )
-            return (self._say_in_own_words(user_input, fact) or fact) if fact else None
+            if not fact:
+                return None
+            # the reply's assessment says it was hedged here, so the floor is judged by the others
+            _request_context.note_turn_fact("reply_path", HEDGED_PATH)
+            return self._say_in_own_words(user_input, fact) or fact
         except Exception as _fc_err:
             log.debug(f"[COGNITIVE] chat fail-closed gate skipped: {_fc_err}")
             return None

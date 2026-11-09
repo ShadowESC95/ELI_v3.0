@@ -262,3 +262,61 @@ def test_a_stream_the_user_stopped_ends_quietly_without_a_fault_message(monkeypa
     monkeypatch.setattr(eng, "_get_chat_response", lambda *a, **k: fallback.append(1) or "")
     out = "".join(eng._stream_model_response("tell me about tides", ""))
     assert out == "" and fallback == []
+
+
+def _engine_streaming(monkeypatch, pieces):
+    from eli.kernel.engine import CognitiveEngine
+    from eli.kernel.stages import generation as gen_mod
+    eng = CognitiveEngine()
+    eng._gguf_available = True
+
+    def _generate(*a, **k):
+        assert k.get("stream") is True
+        for p in pieces:
+            yield {"response": p}
+
+    monkeypatch.setattr(gen_mod.gguf_inference, "generate", _generate, raising=False)
+    monkeypatch.setattr(gen_mod.gguf_inference, "is_cancel_requested", lambda: False)
+    return eng
+
+
+def _free_elsewhere(lock) -> bool:
+    import threading
+    got = []
+
+    def _try():
+        ok = lock.acquire(blocking=False)
+        got.append(ok)
+        if ok:
+            lock.release()
+    t = threading.Thread(target=_try)
+    t.start()
+    t.join()
+    return got == [True]
+
+
+def test_the_engines_stream_read_from_different_threads_leaves_nothing_held(monkeypatch):
+    """The engine held its own lock (and, for a short greeting, the no-think flag) across every
+    piece of a stream: taken on the thread that asked for the first piece, the release from the
+    thread that asked for the last failed, and the lock stayed held for every later call."""
+    import concurrent.futures as cf
+    from eli.cognition import gguf_inference as g
+    eng = _engine_streaming(monkeypatch, ["Hey", " there", "!"])
+    stream = eng._stream_model_response("hey", "")
+    with cf.ThreadPoolExecutor(max_workers=1) as first, cf.ThreadPoolExecutor(max_workers=1) as rest:
+        got = [first.submit(next, stream).result()]
+        got += rest.submit(list, stream).result()
+        flag_left_on_first = first.submit(g._force_no_think_active).result()
+    assert "".join(got) == "Hey there!"
+    assert _free_elsewhere(eng._gguf_lock), "the engine's lock was left held"
+    assert flag_left_on_first is False, "the no-think flag was left set on the thread that began the stream"
+
+
+def test_the_engines_stream_stopped_midway_leaves_nothing_held(monkeypatch):
+    import concurrent.futures as cf
+    eng = _engine_streaming(monkeypatch, ["one", " two", " three"])
+    stream = eng._stream_model_response("tell me about tides", "")
+    with cf.ThreadPoolExecutor(max_workers=1) as reader:
+        assert reader.submit(next, stream).result() == "one"
+    stream.close()
+    assert _free_elsewhere(eng._gguf_lock), "a stream stopped midway kept the engine's lock"
