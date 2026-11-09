@@ -602,14 +602,34 @@ def _blocked_result(msg: str) -> Dict[str, Any]:
             "content": msg, "response": msg, "blocked": True}
 
 
+def _same_command(cmd: Union[str, Sequence[Any]], approved: Any) -> bool:
+    """Whether ``approved`` is this very command: the same text (outer spaces aside), or the same
+    argv. Anything else, a line with one more command in it included, is another command."""
+    if approved is None:
+        return False
+    if isinstance(cmd, (list, tuple)):
+        return (isinstance(approved, (list, tuple)) and bool(cmd)
+                and [str(x) for x in cmd] == [str(x) for x in approved])
+    text = str(cmd).strip()
+    return bool(text) and isinstance(approved, str) and text == approved.strip()
+
+
 def check_command(cmd: Union[str, Sequence[Any]],
-                  full_control: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+                  full_control: Optional[bool] = None,
+                  approved: Optional[Union[str, Sequence[Any]]] = None) -> Optional[Dict[str, Any]]:
     """Evaluate a command line against the safety floor.
 
     Returns a block-result dict (caller should set ``["action"]``) when the command
     must be refused, otherwise ``None``. ``full_control=None`` queries the live toggle.
     A list is one command's own argv (no shell reads it); a string is read as the shell
     reads it, every command in it checked.
+
+    ``approved`` is the exact command the owner said yes to, passed by the in-process caller
+    that asked him (a confirmed repair, say). It is never taken from an action's arguments.
+    When it is this very command, his yes stands for this one command in place of Full Control
+    and ELI_ALLOWED_CMDS: the executable denylist and the only-reads rule step aside (a
+    confirmed ``python3 -m pip install x`` runs). The destructive patterns, a line that cannot
+    be read and a file written by redirection are refused all the same.
     """
     # When cmd is a list, join to a string for pattern matching so that
     # ["bash", "-c", "..."] cannot bypass regex checks via str(list) repr.
@@ -622,6 +642,7 @@ def check_command(cmd: Union[str, Sequence[Any]],
     fc = _full_control() if full_control is None else bool(full_control)
     if fc:
         return None  # Full Control lifts the hard safety floor
+    consented = _same_command(cmd, approved)
 
     for pat in _BLOCKED_PATTERNS:
         if re.search(pat, cmd_low):
@@ -638,19 +659,23 @@ def check_command(cmd: Union[str, Sequence[Any]],
                 f"(an open quote or bracket): {cmd_str[:60]}")
         commands, writes = read
 
-    for argv in commands:
-        name = _command_name(argv[0])
-        named = [name] + ([_command_name(w) for w in argv[1:]] if name in _RUNS_ANOTHER else [])
-        denied = next((w for w in named if w in _DENIED_EXECUTABLES), "")
-        if denied:
-            return _blocked_result(
-                f"Execution of '{denied}' is not permitted via RUN_CMD for security reasons.")
+    if not consented:
+        for argv in commands:
+            name = _command_name(argv[0])
+            named = [name] + ([_command_name(w) for w in argv[1:]] if name in _RUNS_ANOTHER else [])
+            denied = next((w for w in named if w in _DENIED_EXECUTABLES), "")
+            if denied:
+                return _blocked_result(
+                    f"Execution of '{denied}' is not permitted via RUN_CMD for security reasons.")
 
     for target in writes:
         if target.strip().lower() not in _DISCARD_TARGETS:
             return _blocked_result(
                 f"Not run: it writes to {target[:60]} and Full Control is off, so commands "
                 f"may not write files.")
+
+    if consented:
+        return None
 
     for argv in commands:
         if only_reads(argv) or (_UNKNOWN not in argv[0] and _owner_allows(argv[0])):
