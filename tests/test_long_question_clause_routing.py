@@ -162,3 +162,17 @@ def test_a_report_is_not_a_repo():
     assert not audit("is the engineer around, status please")
     assert audit("audit the repo for missing imports")
     assert audit("check the router.py for what is wrong")
+
+
+@pytest.mark.parametrize("said", ["my wifi router is broken", "check my router settings",
+                                  "how is the engine in my car running", "what's the status of the oil pipeline"])
+def test_a_router_or_engine_of_the_world_is_not_elis_codebase(said):
+    """Each of these ran a codebase RUNTIME_AUDIT of ELI's own code at 0.99."""
+    from eli.execution.router_enhanced import _eli_phase10_is_codebase_audit_request as audit, route
+    assert not audit(said)
+    assert route(said)["action"] != "RUNTIME_AUDIT"
+
+
+def test_elis_own_parts_still_get_the_codebase_audit():
+    from eli.execution.router_enhanced import _eli_phase10_is_codebase_audit_request as audit
+    assert audit("how is your router doing") and audit("audit router_enhanced") and audit("check the executor_enhanced.py")

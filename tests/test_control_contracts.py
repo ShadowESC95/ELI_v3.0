@@ -150,3 +150,20 @@ def test_a_diagnostic_is_told_in_words_unless_the_raw_trace_is_asked_for():
         assert asks_for_raw(wanted), wanted
     for not_wanted in ("why was that so difficult?", "what went wrong there", "are all my searches going to be like this?"):
         assert not asks_for_raw(not_wanted), not_wanted
+
+
+@pytest.mark.parametrize("said", ["explain how memory works in the brain", "explain how RAG works",
+                                  "explain the difference between sqlite and postgres",
+                                  "why do people search for meaning", "my health check went fine",
+                                  "i need diagnostics for my car", "what image processing library should I use"])
+def test_a_question_about_the_world_is_not_turned_into_a_report_on_eli(said):
+    """After routing, each was put in place of the router's choice as a report on ELI's own pipeline,
+    search routing, runtime or image job."""
+    assert cc.route_control_text(said, "CHAT") is None
+    assert cc.route_control_text(said, "WEB_SEARCH") is None
+
+
+def test_a_question_about_eli_is_still_upgraded():
+    assert cc.route_control_text("explain your cognition pipeline", "CHAT") == "EXPLAIN_COGNITION_RUNTIME"
+    assert cc.route_control_text("why did you search the web", "CHAT") == "ROUTING_FAULT_EXPLAIN"
+    assert cc.route_control_text("how do you know my name", "CHAT") == "NAME_SOURCE_AUDIT"

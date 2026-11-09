@@ -239,3 +239,53 @@ def test_a_last_command_too_old_to_mean_it_is_not_used():
         assert cp.last_object() == ""
     finally:
         turn_facts_var.reset(token)
+
+
+# ── what "it" and "that folder" point back at ───────────────────────────────────────────────────
+def test_it_and_that_folder_are_the_place_the_last_command_opened(tmp_path):
+    """"list it" after a folder was opened listed <working directory>/it, and "summarise what that folder
+    contains" dumped old messages from memory."""
+    from eli.kernel.request_context import turn_facts_var
+    token = turn_facts_var.set({"request_id": "t", "last_command": {
+        "action": "OPEN_FILE_SYSTEM", "args": {"path": str(tmp_path)}, "ts": time.time()}})
+    try:
+        listed = route("list it")
+        assert (listed["action"], listed["args"].get("path")) == ("LIST_DIR", str(tmp_path))
+        summed = route("can you summarise what that folder contains")
+        assert (summed["action"], summed["args"].get("path")) == ("SUMMARIZE_FILE", str(tmp_path))
+    finally:
+        turn_facts_var.reset(token)
+
+
+def test_with_nothing_opened_it_is_not_a_path():
+    from eli.kernel.request_context import turn_facts_var
+    token = turn_facts_var.set({"request_id": "t"})
+    try:
+        assert (route("list it").get("args") or {}).get("path") != "it"
+        assert route("can you summarise what that folder contains")["action"] != "MEMORY_RECALL"
+    finally:
+        turn_facts_var.reset(token)
+
+
+# ── the volume, said by its noun ────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("said,args", [
+    ("vol down 10%", {"direction": "down", "delta": 10}),     # the number was dropped: a fixed 15
+    ("vol 60%", {"level": 60, "mode": "absolute"}),           # every absolute rule needed "volume"
+    ("vol up 8%", {"direction": "up", "delta": 8}),
+    ("volume 60%", {"level": 60, "mode": "absolute"}),
+    ("set the volume to 40 percent", {"level": 40, "mode": "absolute"}),
+    ("volume to fifty", {"level": 50, "mode": "absolute"}),
+    ("volume max", {"level": 100, "mode": "absolute"}),
+    ("turn up the volume by 20", {"direction": "up", "delta": 20}),
+    ("louder", {"direction": "up"}),
+])
+def test_the_volume_is_read_by_one_grammar(said, args):
+    got = route(said)
+    assert got["action"] == "VOLUME", got
+    assert {k: got["args"].get(k) for k in args} == args, got
+
+
+def test_a_step_not_said_is_the_effectors_own():
+    """The router set 15 and the effector 10: with no number said the route names none."""
+    assert "delta" not in route("volume down")["args"] and "delta" not in route("vol up")["args"]
+    assert route("lower the price of milk")["action"] != "VOLUME"

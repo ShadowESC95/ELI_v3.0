@@ -210,6 +210,9 @@ def test_calendar_and_reminder_requests_reach_the_right_action(text, action):
     "what a boring meeting that was", "i missed my appointment", "what events led to the first world war",
     "what's on tv tonight", "remind me what we talked about yesterday", "add milk to my shopping list",
     "i have a meeting at 3pm tomorrow with the bank", "have you added anything to the report",
+    # a word of a command inside a remark: "you remind me" says who someone is like, "forgot to put it
+    # on the schedule" is about someone else. Both set an alarm or added an event.
+    "you remind me of my brother", "my boss forgot to put it on the schedule again",
 ])
 def test_a_sentence_that_only_mentions_a_meeting_is_not_a_calendar_command(text):
     from eli.execution.router_enhanced import route

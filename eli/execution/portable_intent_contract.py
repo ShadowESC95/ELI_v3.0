@@ -140,6 +140,18 @@ def _normalise_media_service(target: str) -> str:
     return _MEDIA_SERVICE_ALIASES.get(key, key)
 
 
+def _known_media_service(target: str) -> bool:
+    """Whether a phrase names a media service ELI knows (Spotify, YouTube, a streaming site)."""
+    key = re.sub(r"\s+", " ", _clean_target(target).lower()).strip()
+    if key in _MEDIA_SERVICE_ALIASES:
+        return True
+    try:
+        from eli.execution.media_runtime import normalize_streaming_target
+        return bool(normalize_streaming_target(key))
+    except Exception:
+        return False
+
+
 # Words that signal the utterance is a question/instruction about an app, not
 # a launch command. If any of these appear in the tail, OPEN_APP/CLOSE_APP/etc.
 # should NOT capture the entire sentence as the app name.
@@ -193,6 +205,26 @@ def _browser_open_target(target: str):
         if rest == before:
             break
     return rest.strip(" .,:;-")
+
+
+def site_named(target: str) -> str:
+    """The web address a close or open target names when it is a site and not an installed app:
+    a domain ("example.com"), a site ELI knows by name (app_aliases.WEBSITE_ALIASES), or a streaming
+    service (media_runtime). "" for anything else."""
+    from eli.execution.app_aliases import APP_ALIASES, WEBSITE_ALIASES
+    key = re.sub(r"\s+", " ", _clean_target(target).lower()).strip()
+    if not key or key in APP_ALIASES:
+        return ""
+    if re.fullmatch(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:/\S*)?", key):
+        return key if key.startswith("http") else f"https://{key}"
+    if key in WEBSITE_ALIASES:
+        return WEBSITE_ALIASES[key]
+    try:
+        from eli.execution.media_runtime import _STREAMING_CANONICAL_URLS, normalize_streaming_target
+        canon = normalize_streaming_target(key)
+        return str(_STREAMING_CANONICAL_URLS.get(canon) or "") if canon else ""
+    except Exception:
+        return ""
 
 
 def _looks_like_app_target(target: str) -> bool:
@@ -422,6 +454,51 @@ def _looks_like_generation_complaint(norm: str) -> bool:
     return norm.startswith(complaint_starts) or any(p in norm for p in complaint_phrases)
 
 
+# What follows "by" in a phrase, not an artist: "who is that by the way", "by now", "what did you mean by
+# that", and a time a thing is due by ("finish the report by tomorrow", "by friday", "by 5pm").
+_NOT_AN_ARTIST = re.compile(
+    r"(?:the\s+(?:way|time|end)|now|then|far|default|chance|accident|mistake|hand)\b.*"
+    r"|(?:me|you|him|her|it|us|them|that|this|these|those|myself|yourself|himself|herself|itself"
+    r"|ourselves|yourselves|themselves)"
+    r"|(?:today|tonight|tomorrow|noon|midnight|(?:mon|tues|wednes|thurs|fri|satur|sun)day|next\s+\w+"
+    r"|this\s+(?:morning|afternoon|evening|week|weekend|month|year)|(?:the\s+)?(?:end|start)\s+of\b.*"
+    r"|\d{1,2}(?::\d{2})?\s*(?:am|pm|o'?clock)?)\b.*", re.I)
+# A song is not asked for with the words a request or a statement is made of. Pronouns are not among
+# them: titles are full of them ("all eyez on me", "you mean everything to me"), and a sentence that
+# opens on one is a statement the route's own fit test turns down.
+_NOT_A_TITLE_WORD = frozenset((
+    "will", "would", "could", "should", "can", "please", "did", "does", "done", "been", "got", "get", "go", "run",
+    "come", "take", "give", "send", "also", "then", "just", "not", "never", "no", "yes", "ok", "okay", "now", "is",
+    "are", "was", "were", "be", "am"))
+# The question words and verbs of another command: "explain X by Y", "search X by Y", "what is X by Y".
+_NOT_A_TITLE_START = re.compile(
+    r"^(?:search|find|look|show|get|tell|what|how|why|when|where|which|who|is|are|was|were|will|can|could|should"
+    r"|would|do|does|did|make|create|run|start|stop|open|close|pause|explain|describe|define|read|write|list|audit"
+    r"|check|scan|review|analyse|analyze|created?|written?|made|designed?|built|developed?|then|so|but|and)\b", re.I)
+# "by" after a passive or a participle names who did it: "my car was hit by a truck", "the book was
+# written by tolkien", "i got stung by a bee".
+_BY_AN_AGENT = re.compile(r"\b(?:am|is|are|was|were|be|been|being|get|gets|got|gotten|getting)\s+(?:\w+ly\s+)?\w+$", re.I)
+
+def implied_song_by_artist(raw: str, norm: str = "") -> str:
+    """The query when a message is "<title> by <artist>" said with no "play" ("bohemian rhapsody by
+    queen"), or "" when it is a sentence with "by" in it. The one test of that shape: a copy of it
+    ran on every message after routing, so "my car was hit by a truck" played Spotify."""
+    raw = str(raw or "").strip()
+    norm = norm or normalise_voice_text(raw)
+    m = re.fullmatch(r"(.+?)\s+by\s+(.+)", norm)
+    if not m or len(norm.split()) < 4:
+        return ""
+    before, artist = m.group(1).strip(), m.group(2).strip()
+    if ("?" in raw or re.search(r"[.!?]", raw.strip().rstrip(".!? "))
+            or set(before.lower().split()) & _NOT_A_TITLE_WORD or _NOT_A_TITLE_START.match(before)
+            or _BY_AN_AGENT.search(before) or _NOT_AN_ARTIST.fullmatch(artist)
+            # "so what do you mean by the second one": a clarification, not a title
+            or re.search(r"\b(?:what|why|how|who|when|where)\b[^.?!]{0,25}\byou\s+(?:mean|meant|said|say|think|thought)\b",
+                         before)):
+        return ""
+    return re.sub(r"(?i)^\s*play\s+", "", _clean_target(raw)).strip()
+
+
 def try_route(text: str) -> Optional[dict]:
     if _eli_phase10_blocks_media_intent(text):
         return None
@@ -560,11 +637,15 @@ def try_route(text: str) -> Optional[dict]:
     if m:
         target = _clean_target(m.group(1))
         if _looks_like_app_target(target):
+            # A site ELI opens in the browser ("close netflix", "close example.com") is a tab, not a
+            # process: the route says so (args "site"), and what closes it is the browser's tab.
+            site = site_named(target)
             return {
                 "action": "CLOSE_APP",
-                "args": {"name": target, "target": target},
+                "args": {"name": target, "target": target, **({"site": site, "tab": True} if site else {})},
                 "confidence": 0.995,
-                "meta": {"matched_by": "portable_intent_contract.close_app"},
+                "meta": {"matched_by": "portable_intent_contract.close_site" if site
+                         else "portable_intent_contract.close_app"},
             }
 
     m = re.fullmatch(r"(?:kill|force close|force quit)\s+(.+)", norm)
@@ -603,26 +684,37 @@ def try_route(text: str) -> Optional[dict]:
                 "meta": {"matched_by": "portable_intent_contract.maximise_app"},
             }
 
-    m = re.fullmatch(r"(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?", norm)
-    if m:
-        level = max(0, min(100, int(m.group(1))))
-        return {
-            "action": "VOLUME",
-            "args": {"level": level, "percent": level, "mode": "absolute"},
-            "confidence": 0.999,
-            "meta": {"matched_by": "portable_intent_contract.volume_absolute"},
-        }
+    # The volume is read by its one grammar (routing/command_parser.volume_said).
+    from eli.execution.routing.command_parser import volume_said
+    volume = volume_said(raw)
+    if volume is not None:
+        return volume
 
-    m = re.fullmatch(r"play\s+(.+?)\s+(?:on|using|with)\s+(.+)", norm)
+    # "no, play X on youtube" is a correction that asks for X there: its lead is not part of the
+    # request. A service is named after "in", "at" or "from" too ("play X in youtube"); those take a
+    # service ELI knows, so "play X from the eighties" keeps its words.
+    from eli.runtime.command_splitter import without_correction_lead
+    _play_norm = normalise_voice_text(without_correction_lead(norm))
+    _play_raw = without_correction_lead(raw)
+    m = re.fullmatch(r"play\s+(.+?)\s+(?:on|using|with)\s+(.+)", _play_norm)
+    if not m:
+        m = re.fullmatch(r"play\s+(.+?)\s+(?:in|at|from)\s+(.+)", _play_norm)
+        if m and not _known_media_service(m.group(2)):
+            m = None
     if m:
         query = _clean_target(m.group(1))
         try:
-            raw_m = re.fullmatch(r"play\s+(.+?)[\s,]+(?:on|using|with)\s+(.+)", raw, re.I)
-            if raw_m:
+            raw_m = re.fullmatch(r"play\s+(.+?)[\s,]+(?:on|using|with|in|at|from)\s+(.+)", _play_raw, re.I)
+            if raw_m and _normalise_media_service(raw_m.group(2)) == _normalise_media_service(m.group(2)):
                 query = _clean_target(raw_m.group(1))
         except Exception:
             pass
         target = _normalise_media_service(m.group(2))
+        # "no, play it on youtube": "it" is what was last asked to play, not a title to search for
+        from eli.execution.routing.command_parser import _PRONOUN, _last_command
+        if _PRONOUN.match(query.strip()):
+            query = str(((_last_command().get("args") or {}).get("query")) or "").strip()
+    if m and query:
         return {
             "action": "PLAY_MEDIA",
             "args": {"query": query, "target": target, "service": target},
@@ -640,38 +732,14 @@ def try_route(text: str) -> Optional[dict]:
     ):
         return None
 
-    m = re.fullmatch(r"(.+?)\s+by\s+(.+)", norm)
-    if m and len(norm.split()) >= 4:
-        # Guard against conversational sentences where "by" is a preposition, not a "song by artist"
-        # separator: the title before "by" must not contain common function/pronoun/verb words, and
-        # text opening with a negation or conversational opener is blocked.
-        _before_by = m.group(1).strip()
-        _before_words = set(_before_by.lower().split())
-        _sentence_signals = {
-            "you", "will", "would", "could", "should", "can", "me", "my",
-            "i", "we", "they", "he", "she", "it", "is", "are", "was",
-            "were", "be", "been", "am", "no", "yes", "ok", "okay", "got",
-            "get", "go", "did", "do", "does", "done", "please", "that",
-            "this", "which", "what", "how", "run", "come", "take", "give",
-            "your", "our", "their", "its", "first", "now", "then", "also",
-            "just", "not", "never", "always", "but", "and", "or", "so",
+    implied = implied_song_by_artist(raw, norm)
+    if implied:
+        return {
+            "action": "PLAY_MEDIA",
+            "args": {"query": implied, "target": "spotify", "service": "spotify"},
+            "confidence": 0.96,
+            "meta": {"matched_by": "portable_intent_contract.implied_song_by_artist"},
         }
-        # A genuine "song by artist" query is short and single-clause. Long utterances, or ones
-        # spanning several sentences (interior . ! ?), are conversation with a stray "by".
-        _too_long = len(norm.split()) > 9
-        _multi_sentence = bool(re.search(r"[.!?]", raw.strip().rstrip(".!? ")))
-        if (_before_words & _sentence_signals) or _too_long or _multi_sentence:
-            pass  # "by" is a preposition in a sentence — not a media query
-        else:
-            query = _clean_target(raw)
-            query = re.sub(r"(?i)^\s*play\s+", "", query).strip()
-            target = "spotify"
-            return {
-                "action": "PLAY_MEDIA",
-                "args": {"query": query, "target": target, "service": target},
-                "confidence": 0.96,
-                "meta": {"matched_by": "portable_intent_contract.implied_song_by_artist"},
-            }
 
     wants_generation = re.search(r"\b(?:generate|write|create|build|make)\b", norm)
     wants_code = re.search(r"\b(?:script|code|program|module|tool|app)\b", norm)

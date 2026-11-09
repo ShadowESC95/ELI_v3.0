@@ -858,9 +858,11 @@ def test_a_clarification_question_with_by_does_not_play_music():
         assert route(q)["action"] != "PLAY_MEDIA", f"clarification wrongly played music: {q!r}"
 
     # Real "<song> by <artist>" still plays — including titles that contain 'you mean' / 'what you'.
+    # Said bare, a title that opens on "you" reads as a sentence to ELI (route_contracts.fits): with
+    # "play" in front it is a request for it.
     for q in [
         "bohemian rhapsody by queen",
-        "you mean everything to me by neil sedaka",
+        "play you mean everything to me by neil sedaka",
         "baby what you want me to do by jimmy reed",
     ]:
         assert route(q)["action"] == "PLAY_MEDIA", f"real song wrongly blocked: {q!r}"
@@ -1018,3 +1020,29 @@ def test_a_result_marked_to_be_explained_is_not_shown_as_it_is(monkeypatch):
     marked = {"ok": True, "action": "GPU_STATUS", "response": "GPU 0: 1%", "explain_in_words": True}
     assert engine_mod._result_shown_as_is("GPU_STATUS", "quick", marked) is False
     assert engine_mod._result_shown_as_is("GPU_STATUS", "quick", {"ok": True}) is True and seen[0] is marked
+
+
+@pytest.mark.parametrize("said", ["my car was hit by a truck", "the book was written by tolkien", "i got stung by a bee",
+                                  "finish the report by tomorrow", "we drove by the lake"])
+def test_a_sentence_with_by_in_it_does_not_play_music(said):
+    """A copy of the "<title> by <artist>" rule ran on every message after routing and played Spotify for these."""
+    assert route(said)["action"] != "PLAY_MEDIA", said
+
+
+def test_a_play_after_a_complaint_searches_for_the_song_alone():
+    """"<a complaint> man.. play <song> by <artist>" searched the complaint with the song; the right
+    track then failed the check and was paused."""
+    got = route("damn man.. play golden hour by jvke")
+    assert got["action"] == "PLAY_MEDIA"
+    assert got["args"]["query"].lower() == "golden hour by jvke"
+    # a longer complaint is answered as talk beside the command, which carries the song alone
+    got = route("ugh this is so annoying man.. play golden hour by jvke")
+    assert [c.lower() for c in (got["args"].get("agreed") or {}).get("commands", [])] == ["play golden hour by jvke"]
+
+
+def test_the_same_command_with_more_words_than_the_instruction_does_not_carry_it():
+    from eli.execution import router_enhanced as r
+    told = {"action": "PLAY_MEDIA", "args": {"query": "golden hour by jvke", "target": "spotify"}}
+    whole = {"action": "PLAY_MEDIA", "args": {"query": "ugh man play golden hour by jvke", "target": "spotify"}}
+    assert not r._eli_carried_by("play golden hour by jvke", told, whole)
+    assert r._eli_carried_by("play golden hour by jvke", told, dict(told))

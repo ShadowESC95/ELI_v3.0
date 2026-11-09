@@ -215,3 +215,13 @@ def test_dated_records_in_a_dump_offer_nothing():
 
 def test_the_status_report_itself_is_never_an_offer():
     assert not pp._offerable("RUNTIME_STATUS")
+
+
+@pytest.mark.parametrize("reply,stays_open", [("no, don't do it", False), ("nah leave it", False),
+                                              ("yes, not no", True), ("do it, don't wait", True)])
+def test_the_answer_said_first_is_the_answer(reply, stays_open):
+    """"no, don't do it" holds "do it": an affirmation anywhere won, so the offer stayed open."""
+    from eli.execution.router_enhanced import route
+    pp.set_pending_proposal("", question="Want me to look into it?", from_reply=True)
+    route(reply)
+    assert bool(pp.get_follow_up()) is stays_open, reply

@@ -203,8 +203,28 @@ def asked_outright(text: Any, action: Any) -> bool:
 
 
 def route_control_text(user_input: Any, current_action: Any = None) -> str | None:
+    """The control action a message asks for in its own words, to put in place of what the router
+    chose; None when there is none.
+
+    A report on ELI answers a question about ELI. The branches below that match a common word
+    ("explain ... memory", "why ... search", "health check", "image ... processing") take it only
+    when ELI is named (route_contracts.names_eli): "explain how memory works in the brain", "why do
+    people search for meaning" and "my health check went fine" were turned into reports on ELI's own
+    pipeline, search routing and runtime after the router had passed them to chat."""
+    return _control_text(user_input, current_action)
+
+
+# The user as what a message is about: what ELI holds about them.
+_ABOUT_THE_USER = re.compile(
+    r"\b(?:about me|about myself|know me|remember me|who am i|what am i|"
+    r"my (?:name|preferences?|profile|tastes?|habits?|style|tone))\b", re.I)
+
+
+def _control_text(user_input: Any, current_action: Any = None) -> str | None:
     low = re.sub(r"\s+", " ", str(user_input or "").strip().lower())
     act = normalise_action(current_action)
+    from eli.execution.route_contracts import names_eli
+    _names_eli = names_eli(user_input)
 
     if re.fullmatch(r"(?:self[- ]?update|update yourself|refresh yourself|refresh all overlays)", low):
         return "SELF_UPDATE"
@@ -264,11 +284,7 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
     # A question about the USER is never a question about ELI's identity ("what do you know about me ... who am i?"
     # must reach personal memory, not a runtime self-report), and a route a first-class contract already decided
     # is not second-guessed by the generic patterns below.
-    _is_about_the_user = bool(re.search(
-        r"\b(about me|about myself|know me|remember me|who am i|what am i|"
-        r"my (?:name|preferences?|profile|tastes?|habits?|style|tone))\b",
-        low,
-    ))
+    _is_about_the_user = bool(_ABOUT_THE_USER.search(low))
     if _is_about_the_user and act in CONTROL_ACTIONS:
         return act
 
@@ -303,13 +319,16 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
     ):
         return "SELF_REPORT"
 
+    # ELI's own image job: "the latest image", "your render", "the image job". "what image processing
+    # library should I use" is not one.
     if re.search(
         r"\b("
-        r"(?:what|which|latest|current|recent|last).{0,40}(?:image|images|picture|visual|render).{0,40}(?:status|update|job|output|processing|processed|generated)"
-        r"|(?:image|images|picture|visual|render).{0,30}(?:status|update|job|processing|processed|generated)"
+        r"(?:latest|current|recent|last|your)\s+(?:image|images|picture|visual|render)s?\b.{0,40}(?:status|update|job|output|processing|processed|generated)"
+        r"|(?:image|images|picture|visual|render)\s+(?:status|update|job)"
         r")\b",
         low,
-    ):
+    ) or (_names_eli and re.search(
+            r"\b(?:image|images|picture|visual|render)\b.{0,30}\b(?:status|processing|processed|generated)\b", low)):
         return "IMAGE_STATUS"
 
     if re.search(
@@ -344,7 +363,7 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
     if re.search(r"\b(show me the resolved runtime paths|resolved runtime paths|runtime paths for every critical file|critical file you depend on)\b", low):
         return "RESOLVE_RUNTIME_PATHS"
 
-    if re.search(r"\b(explain|break down|show)\b", low) and re.search(r"\b(cognition|memory|agent|gui|router|executor|pipeline|faiss|faiis|fts5|hyde|rag|sqlite|wal|semantic|canonical)\b", low):
+    if _names_eli and re.search(r"\b(explain|break down|show)\b", low) and re.search(r"\b(cognition|memory|agent|gui|router|executor|pipeline|faiss|faiis|fts5|hyde|rag|sqlite|wal|semantic|canonical)\b", low):
         return "EXPLAIN_COGNITION_RUNTIME"
 
     if re.search(r"\b(self[- ]?improvement|improvement)\s+log\b", low) or (
@@ -353,7 +372,8 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
     ):
         return "SELF_IMPROVEMENT_LOG"
 
-    if re.search(r"\b(run a full runtime audit|run full runtime audit|runtime audit|system audit|health check|diagnostics?|what'?s actually broken|what is actually broken)\b", low):
+    if re.search(r"\b(run a full runtime audit|run full runtime audit|runtime audit|system audit)\b", low) or (
+            _names_eli and re.search(r"\b(health check|diagnostics?|what'?s actually broken|what is actually broken)\b", low)):
         return "RUNTIME_AUDIT"
 
     # META_DIAGNOSTIC: clarification requests about ELI's own background activity. The bare "what
@@ -380,14 +400,12 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
             return "PERSONAL_MEMORY_DEEP_EXPLAIN"
         return "PERSONAL_MEMORY_SUMMARY"
 
-    if re.search(r"\bwhy\b.*\b(browser|web|online|search)\b", low):
+    if re.search(r"\bwhy\b.*\b(browser|web|online|search)\b", low) and (
+            _names_eli or re.search(r"\bwhy\b[^.?!]*\b(?:did|didn'?t|does|was)\s+(?:that|it)\b", low)):
         return "ROUTING_FAULT_EXPLAIN"
 
-    if (
-        ("how do you know" in low and "name" in low)
-        or ("where" in low and "name" in low and ("file" in low or "stored" in low or "located" in low))
-        or ("which file" in low and "name" in low)
-    ):
+    from eli.execution.route_contracts import asks_where_the_name_comes_from
+    if asks_where_the_name_comes_from(low):
         return "NAME_SOURCE_AUDIT"
 
     if re.search(r"\b(explain your cognition pipeline|cognition pipeline from input to output|input to output.*every step|cognitive pipeline)\b", low):
@@ -416,7 +434,12 @@ def route_control_text(user_input: Any, current_action: Any = None) -> str | Non
         low,
     ))
 
-    if (
+    # ELI's own fault: ELI named, its reply ("the answer", "that output"), or what it just did ("why
+    # did that search the web"). "why do people search for meaning" and "why is the system of
+    # government broken" are not.
+    _eli_phase15_about_eli = _names_eli or bool(re.search(
+        r"\b(response|answer|output|reply)\b|\bwhy\b[^.?!]*\b(?:did|didn'?t|does|was)\s+(?:that|it)\b", low))
+    if _eli_phase15_about_eli and (
         _eli_phase15_browser_fault
         or (
             _eli_phase15_meta_referent

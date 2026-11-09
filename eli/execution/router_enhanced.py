@@ -24,6 +24,12 @@ def _eli_pipeline_trace(stage: str, **data):
 def _eli_phase10_is_codebase_audit_request(text: str) -> bool:
     """
     Prevent broad memory-runtime regexes from hijacking codebase audits.
+
+    A codebase audit is asked of ELI's code: a source file or module of it ("router_enhanced",
+    "executor_enhanced.py", "/runtime"), the code as such ("the repo", "the codebase", "python
+    files"), or one of its parts in a common word ("router", "engine", "pipeline") when ELI is named
+    ("your router"). "my wifi router is broken", "how is the engine in my car running" and "what's
+    the status of the oil pipeline" ran a codebase audit.
     """
     s = str(text or "").lower()
 
@@ -32,18 +38,21 @@ def _eli_phase10_is_codebase_audit_request(text: str) -> bool:
         "what is wrong", "what's wrong", "broken", "missing",
         "how is", "how's", "how are", "status", "health", "state",
     )
+    # the code itself, or a name only ELI's code has
     code_words = (
-        "router", "executor", "engine", "agent_bus", "world_model",
-        "gguf_inference", "orchestrator", "output_governor",
+        "agent_bus", "world_model",
+        "gguf_inference", "output_governor",
         "output_governer", "response_governance", "response_governence",
-        "hyde", "vector_store", "working_memory", "introspection_agent",
-        "reranker", "llm_intent", "hardware_profile", "runtime_settings",
-        "pipeline", "self_upgrade", "habits_memory_db", "knowledge_graph",
+        "vector_store", "working_memory", "introspection_agent",
+        "llm_intent", "hardware_profile", "runtime_settings",
+        "self_upgrade", "habits_memory_db", "knowledge_graph",
         "memory_adapter", "memory_truth", "memory_service", "sqlite_memory",
         "os_controller", "screen_locator", "log_rotation", "/runtime",
         "python files", ".py", "eli_pro_audio_gui", "router_enhanced",
         "executor_enhanced", "codebase", "code base", "repo", "repository",
     )
+    # parts of ELI said in words that name other things too
+    part_words = ("router", "executor", "engine", "orchestrator", "pipeline", "hyde", "reranker")
 
     def _has(word: str) -> bool:
         # "repo" must not match "report", "engine" must not match "engineer".
@@ -51,7 +60,9 @@ def _eli_phase10_is_codebase_audit_request(text: str) -> bool:
             return re.search(rf"\b{re.escape(word)}\b", s) is not None
         return word in s
 
-    return any(_has(a) for a in audit_words) and any(_has(c) for c in code_words)
+    if not any(_has(a) for a in audit_words):
+        return False
+    return any(_has(c) for c in code_words) or (any(_has(c) for c in part_words) and _names_eli(text))
 
 
 import os
@@ -121,37 +132,17 @@ _last_used_path: str | None = None
 
 
 def _eli_latest_screenshot() -> str | None:
-    """Return the path to the most recent screenshot image, or None.
-
-    Searches the user's Pictures dir (where SCREENSHOT saves) and a few common
-    fallbacks for the newest screenshot-named image by modification time.
-    """
-    import glob as _g
-    dirs: list[str] = []
+    """The path to ELI's most recent screenshot, or None: eli.perception.os_controller.latest_screenshot
+    is the one owner of where screenshots land and which is newest (this kept its own folder scan)."""
     try:
-        from eli.utils import platform_compat as _pf
-        dirs.append(str(_pf.user_pictures_dir()))
-    except Exception:
-        _SWLOG.debug("suppressed exception", exc_info=True)
-    dirs += [
-        os.path.expanduser("~/Pictures"),
-        os.path.expanduser("~/Pictures/Screenshots"),
-        os.path.expanduser("~/Desktop"),
-    ]
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for d in dirs:
-        if not d or d in seen or not os.path.isdir(d):
-            continue
-        seen.add(d)
-        for pat in ("Screenshot*.png", "Screenshot*.jpg",
-                    "*creenshot*.png", "*creenshot*.jpg"):
-            candidates.extend(_g.glob(os.path.join(d, pat)))
-    if not candidates:
+        from eli.perception.os_controller import latest_screenshot
+    except ImportError:
+        _SWLOG.debug("latest screenshot reader unavailable", exc_info=True)
         return None
     try:
-        return max(set(candidates), key=lambda p: os.path.getmtime(p))
-    except Exception:
+        return latest_screenshot()
+    except (OSError, ValueError, TypeError):
+        _SWLOG.debug("latest screenshot not read", exc_info=True)
         return None
 
 
@@ -180,6 +171,9 @@ from eli.execution.routing._helpers import (  # noqa: F401
     _normalize_text,
     _normalize_url,
 )
+# Whether a message names ELI as what it is about ("your", "you" past an asking frame, "ELI", one of
+# its source files): the rules for ELI's own reports ask it before taking a common word as theirs.
+from eli.execution.route_contracts import names_eli as _names_eli  # noqa: E402
 
 DESKTOP_APP_PRIORITY = {
     "spotify", "steam", "discord", "slack", "code", "vscode", "codium",
@@ -553,23 +547,39 @@ def _eli_agenda_prepass(user_text: str):
     # "did you add it to my calendar?" asks what is there; showing the calendar answers it.
     if _AG_ASKING_RX.search(low) and re.search(rf"\b{_AG_CAL}\b|\b{_AG_ITEM}\b", low):
         return _mk("LIST_EVENTS", {"text": t}, 0.96, matched_by="agenda.list")
+    # The rules anchored on the start of the message read the request's own form ("You add it!",
+    # "can you cancel the dentist"), so they say so (meta "spoken_as_remark"). The two that may match
+    # further in ("remind me", "add/put ... to my calendar") take an instruction of the message that
+    # starts with their verb: "you remind me of my brother" set an alarm, and "my boss forgot to put
+    # it on the schedule again" added an event.
+    _own_form = {"spoken_as_remark": True}
+    try:
+        from eli.runtime.command_splitter import read_message as _ag_read
+        _ag_told = [part["tells"] for part in _ag_read(t) if part["tells"]]
+    except Exception:
+        _ag_told = []
     if _AG_MOVE_RX.search(t):
         try:
             from eli.runtime.agenda import parse_when as _ag_when
             if _ag_when(t) is not None:
                 # "i meant 8pm", "move the dentist to friday": changes what is there, adds nothing
-                return _mk("ADD_EVENT", {"text": t, "move": True}, 0.96, matched_by="agenda.move")
+                return _mk("ADD_EVENT", {"text": t, "move": True}, 0.96, matched_by="agenda.move", meta_extra=_own_form)
         except Exception:
             log.debug("agenda prepass: time probe failed", exc_info=True)
     if _AG_REMOVE_RX.search(t) and not re.search(
             r"\b(?:timer|pomodoro|download|upload|job|task|order|subscription|files?|folders?|notes?|documents?|photos?|"
             r"pictures?|emails?|messages?|apps?|contacts?|songs?|playlists?|tabs?|windows?|recordings?|minutes)\b", low):
-        return _mk("REMOVE_EVENT", {"text": t}, 0.96, matched_by="agenda.remove")
+        return _mk("REMOVE_EVENT", {"text": t}, 0.96, matched_by="agenda.remove", meta_extra=_own_form)
     if _AG_ADD_IT_RX.search(t):
-        return _mk("ADD_EVENT", {"text": t, "from_context": True}, 0.96, matched_by="agenda.add_it")
-    if _AG_REMIND_RX.search(t) and not _AG_REMIND_QUESTION_RX.search(t):
-        return _mk("SET_ALARM", {"text": t}, 0.96, matched_by="agenda.remind")
-    if _AG_ADD_RX.search(t) or _AG_BOOK_RX.search(t):
+        return _mk("ADD_EVENT", {"text": t, "from_context": True}, 0.96, matched_by="agenda.add_it", meta_extra=_own_form)
+    if not _AG_REMIND_QUESTION_RX.search(t):
+        _anchored_remind = _AG_REMIND_RX.match(t) and not _AG_REMIND_RX.match(t).group(0).lower().startswith("remind")
+        if _anchored_remind or any(_AG_REMIND_RX.match(told) for told in _ag_told):
+            return _mk("SET_ALARM", {"text": t}, 0.96, matched_by="agenda.remind",
+                       meta_extra=_own_form if _anchored_remind else None)
+    if _AG_BOOK_RX.search(t):
+        return _mk("ADD_EVENT", {"text": t}, 0.96, matched_by="agenda.add", meta_extra=_own_form)
+    if any(_AG_ADD_RX.match(told) for told in _ag_told):
         return _mk("ADD_EVENT", {"text": t}, 0.96, matched_by="agenda.add")
     if _AG_LIST_RX.search(low) and not _AG_NOT_LIST_RX.search(low):
         return _mk("LIST_EVENTS", {"text": t}, 0.96, matched_by="agenda.list")
@@ -752,6 +762,24 @@ def _expand_common_dir(s: str) -> str:
     return COMMON_DIRS.get(low, str(Path(key).expanduser()))
 
 
+def _media_words_beyond(low: str, app: str) -> List[str]:
+    """The words a media command to `app` says beyond the command itself: its verbs, the app, what
+    a command is made of ("the", "on", "please", "music", "it"). "pause spotify please" says nothing
+    more; "play the long road playlist spotify" names the long road playlist."""
+    from eli.execution.route_contracts import _GRAMMAR
+    from eli.execution.routing.command_parser import _MEDIA_NOUNS
+    verbs = ("unmute", "mute", "pause", "stop", "resume", "play", "next", "skip", "previous", "prev", "back",
+             "shuffle", "repeat", "loop", "continue", "start")
+    app_words = set(app.lower().split()) | {"app", "website", "site", "player", "using", "via", "through"}
+    out = []
+    for w in re.findall(r"[a-z0-9']+", low.lower()):
+        if (w in _GRAMMAR or w in app_words or w in _MEDIA_NOUNS or w in ("thanks", "cheers", "mate", "now")
+                or any(w == v or (w.startswith(v) and len(w) - len(v) <= 3) for v in verbs)):
+            continue
+        out.append(w)
+    return out
+
+
 def _canonical_media_command(low: str) -> Optional[str]:
     # Whole-word matching only: substring matching fired media commands from prose ("prev" in
     # "prevent", "mute" in "commuter"). Word boundaries don't save "next" in "the next log lands",
@@ -866,13 +894,22 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
     _facts = extract_explicit_identity_facts(_said[_decls[-1].start():]) if _decls else {}
     _declared = _facts.get("name") or _facts.get("preferred_name") or _facts.get("nickname") or ""
     if _declared and _declared.lower() not in {"you", "eli"}:
-        return _mk("SET_USER_NAME", {"name": _declared}, 0.97, matched_by="identity.set_user_name")
+        # A declaration is the request said as a statement: "my name is Alex" tells ELI nothing to
+        # do by its form, and is what it is (route_contracts.fits).
+        return _mk("SET_USER_NAME", {"name": _declared}, 0.97, matched_by="identity.set_user_name",
+                   meta_extra={"spoken_as_remark": True, "declared_by": "my_name_is"})
     if _re.search(r"\b(?:my name is|my name's|call me)\b", low):
         return None
 
-    # "i'm X" / "i am X" as the whole message, or a bare capitalised name
+    # "i'm X" / "i am X" as the whole message, or a bare capitalised name. "I'm tired", "i am bored"
+    # and "I'm home!" say how or where the user is, not who: after "I'm" a word is a name only as
+    # typed with a capital (a proper noun), or as the answer when ELI has just asked for the name
+    # (speech arrives in lower case). The pattern matched any case, and every one of those renamed
+    # the user.
+    _asked = _eli_asked_for_the_name()
     _patterns = (
-        r"^(?:i'?m|i am)\s+([A-Z][a-z]{2,24})\s*[.,!?]?\s*$",
+        r"^(?i:i'?m|i am|im)\s+([A-Za-z][a-z]{2,24})\s*[.,!?]?\s*$" if _asked
+        else r"^(?i:i'?m|i am|im)\s+([A-Z][a-z]{2,24})\s*[.,!?]?\s*$",
         # Bare name as full message: require actual uppercase first char (typed, not STT-lowercased)
         r"^([A-Z][a-z]{3,24})\s*[.,!?]?\s*$",
     )
@@ -909,7 +946,7 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
     for i, pat in enumerate(_patterns):
         # Use the LAST occurrence: "my name is speak, my name is alex" must
         # resolve to the final assertion (alex), not a quoted earlier error.
-        _matches = list(_re.finditer(pat, raw, _re.IGNORECASE))
+        _matches = list(_re.finditer(pat, raw.strip()))
         m = _matches[-1] if _matches else None
         if m:
             candidate = m.group(1).strip().rstrip(".,!?")
@@ -921,7 +958,7 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
                 continue
             # A word on its own is a name only as the answer to being asked for one. Without
             # this "Dublin", "Tuesday" or "Pizza", typed in reply to anything, renamed the user.
-            if i == 1 and not _eli_asked_for_the_name():
+            if i == 1 and not _asked:
                 continue
             if _clow not in _bad and len(candidate) >= 3 and _has_vowel:
                 return _mk(
@@ -929,24 +966,62 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
                     {"name": candidate},
                     0.97,
                     matched_by="identity.set_user_name",
+                    # read from one word, not from "my name is": what it replaces is the
+                    # executor's to keep until the user confirms
+                    meta_extra={"spoken_as_remark": True,
+                                "declared_by": "answer_to_name_question" if _asked else "i_am_word"},
                 )
     return None
 
 
+# What may follow how ELI is to speak without being about something else: "use a dry tone with me",
+# "... from now on". "use the apa style for citations" names the citations, not ELI's voice.
+_STYLE_FOR_ELI = re.compile(
+    r"\s*(?:(?:with|for|to)\s+(?:me|us)|when\s+(?:you\s+)?(?:talk|speak|answer|reply|respond)(?:\s+to\s+(?:me|us))?"
+    r"|in\s+(?:your\s+)?(?:answers|replies|responses)|from\s+now\s+on|for\s+now|please|thanks|again|instead"
+    r"|[\s,.!?])*$", re.I)
+# A way of speaking for a moment ("let's be serious for a second") is not a standing preference.
+_FOR_A_MOMENT = re.compile(r"\bfor\s+(?:a|one)\s+(?:sec(?:ond)?|moment|minute|bit|while|tick)\b", re.I)
+
+
 def _route_set_communication_style(raw: str, low: str) -> Optional[Dict[str, Any]]:
     """Detect explicit 'speak to me like X' / 'change your tone to X' requests and route to
-    SET_COMMUNICATION_STYLE so the tone preference persists into the persona brief."""
+    SET_COMMUNICATION_STYLE so the tone preference persists into the persona brief.
+
+    A standing change to how ELI speaks is made only when the user tells ELI so: each pattern is
+    read at the start of an instruction (command_splitter.instruction), not anywhere in a sentence.
+    "answer as soon as you can" asks for speed ("as ... as" compares, it names no manner), "use the
+    apa style for citations" is about the citations, and "let's be serious for a second" is a moment
+    the user shares, not an instruction for ELI's persona. All three were stored as ELI's style."""
     import re as _re
+    from eli.runtime.command_splitter import instruction, sentences
+    _manner = r"(?:as(?!\s+(?:\w+\s+)?as\b)(?!\s+(?:well|much|many|long|soon|far|if\s+i)\b)|like)"
     _pats = (
         r"(?:speak|talk)\s+to\s+me\s+(?:like|as|more|in a way that'?s?|in)\s+(.{2,80})",
-        r"(?:respond|reply|answer|talk)\s+(?:to me\s+)?(?:as|like)\s+(.{2,80})",
+        r"(?:respond|reply|answer|talk)\s+(?:to me\s+)?" + _manner + r"\s+(.{2,80})",
         r"(?:change|set|update|make)\s+your\s+(?:tone|persona|voice|style|character|way you (?:speak|talk))\s+(?:to|into)?\s*(.{2,80})",
         r"(?:be|talk|speak)\s+(?:more\s+|less\s+)?((?:funny|funnier|blunt|blunter|formal|casual|serious|sarcastic|playful|concise|verbose|warm|friendly|professional|direct|witty|humorous|relaxed)(?:\s+and\s+[\w ]+)?)",
         r"(?:use|with)\s+(?:a\s+)?(.{2,60}?)\s+(?:tone|voice|humou?r|style)\b",
-        r"i want you to (?:speak|talk|respond|be)\s+(.{2,80})",
     )
+    told = []
+    for _sentence in sentences(raw):
+        if _re.match(r"\s*let'?s\b", _sentence, _re.I) or _FOR_A_MOMENT.search(_sentence):
+            continue
+        _said = instruction(_sentence)
+        if _said:
+            told.append(_said)
+    found = None
     for pat in _pats:
-        m = _re.search(pat, raw, _re.IGNORECASE)
+        for _said in told:
+            m = _re.match(pat, _said, _re.IGNORECASE)
+            if m and (pat is not _pats[4] or _STYLE_FOR_ELI.match(_said[m.end():])):
+                found = m
+                break
+        if found:
+            break
+    if found is None and not _FOR_A_MOMENT.search(raw):
+        found = _re.search(r"\bi want you to (?:speak|talk|respond|be)\s+(.{2,80})", raw, _re.IGNORECASE)
+    for m in ((found,) if found else ()):
         if m:
             style = m.group(1).strip().strip('."\'!?,').strip()
             if len(style) >= 2:
@@ -1015,24 +1090,9 @@ def _pm_asks_something(low: str) -> bool:
     return bool(_ASKING_RE.search(t))
 
 
-# Technical runtime questions ("what model are you running", "how many gpu layers"). The old
-# version matched bare model/threads/batch/provider at 0.99, so "what's going on with your world
-# model?" went to runtime status. Each alternative now needs the runtime sense of the word.
-_RUNTIME_STATUS_RE = re.compile(
-    r"\bwhat are you actually running on\b"
-    r"|\brunning on right now\b"
-    r"|\b(?:what|which|whats|what's)(?:\s+\w+){0,4}\s+model\b"
-    r"|\bmodel\s+(?:are|is|do|does)\s+(?:you|it)\b"
-    r"|\bmodel\s+(?:name|path|file|size|id|weights|quant\w*)\b"
-    r"|\b(?:running|loaded|load(?:ing)?|using|swap\w*\s+to)\s+(?:a\s+|the\s+|which\s+|what\s+)?model\b"
-    r"|\bcontext\s+(?:size|window|length)\b|\bn_ctx\b"
-    r"|\bgpu\s+layers?\b|\bn_gpu_layers\b|\boffload(?:ed|ing)?\s+layers?\b"
-    r"|\bbatch\s+size\b|\bn_batch\b"
-    r"|\b(?:how many|number of)\s+threads\b|\bthread\s+count\b|\bn_threads\b"
-    r"|\b(?:inference|model|llm|backend)\s+provider\b"
-    r"|\bwhich\s+provider\b|\bwhat\s+provider\b",
-    re.I,
-)
+# Technical runtime questions: routing/_helpers._RUNTIME_STATUS_RE (one owner; the self-report
+# stage reads the same one).
+from eli.execution.routing._helpers import _RUNTIME_STATUS_RE  # noqa: E402
 
 
 # The GUI turns an attached image into a marker: [Attached image: shot.png — path: /home/u/
@@ -1928,12 +1988,17 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             task_family="grounded_audit",
         )
 
-    if not _explain_prior_claim and re.search(
-        r"\b(what (?:are|have been|is)|show|list|get).{0,40}\b(failures?|failed)\b",
-        low,
-    ) or re.search(
-        r"\b(tripping up|failure log|executor failures?|\d+\s+failures?)\b",
-        low,
+    # ELI's own failure log. "what is heart failure?" and "what are common failures of hard drives"
+    # name another thing's failures and got the executor's log: the failures asked for are ELI's
+    # when the message says so ("your failures", "what failed just now") or names nothing else
+    # ("what are the failures", "show me the last 20 failures").
+    if not _explain_prior_claim and (
+        re.search(r"\b(?:what (?:are|have been|were)|show|list|get)\s+(?:me\s+)?"
+                  r"(?:(?:the|all|any|recent|latest|last|most|\d+)\s+)*failures?\s*(?:(?:so far|today|lately|recently|"
+                  r"again|please|now)\s*)*[?.!]*$", low)
+        or re.search(r"^\s*what(?:'s|\s+has|\s+have)?\s+failed\b", low)
+        or re.search(r"\b(?:failure log|executor failures?)\b", low)
+        or (_names_eli(raw) and re.search(r"\b(?:failures?|failed|tripping (?:you )?up)\b", low))
     ):
         return _mk(
             "EXPLAIN_FAILURE_LOG",
@@ -2273,7 +2338,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if re.search(r"\b(generate|create)\s+patch\b|\bpatch\s+(eli|system)\b", low):
         return _mk("SELF_IMPROVE", {"mode": "propose", "_raw_user_text": raw}, 0.93, matched_by="self.patch_propose")
 
-    if re.search(r"\bpatch\s+yourself\b|\bself.?patch\b|\bapply.*patch\b|\bfix\s+your\s+own\s+code\b", low):
+    # ELI's own patch: "apply a nicotine patch" is not one.
+    if re.search(r"\bpatch\s+yourself\b|\bself.?patch\b|\bfix\s+your\s+own\s+code\b"
+                 r"|\bapply\s+(?:the|your|that|this|those|these|its)\s+(?:self[- ]?improvement\s+|own\s+)?patch(?:es)?\b", low):
         return _mk("SELF_PATCH", {}, 0.95, matched_by="self.patch_cycle")
 
     # User file fix — must beat the generic "fix the bugs/errors" self-patch guard.
@@ -2290,12 +2357,16 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if re.search(r"\bself[- ]?fix\w*\b|\bfix\s+yourself\b", low):
         return _mk("SELF_PATCH", {}, 0.96, matched_by="self.fix")
 
+    # ELI's own code: the errors it just listed ("fix those issues"), or its code named as its own.
+    # "can you fix the errors in this paragraph" and "please fix the issues with my cv" are the
+    # user's text, and ran a patch cycle on ELI's source.
     if re.search(
-        r"\bfix\s+(?:those|the|these)\s+(?:errors?|issues?|bugs?|findings?)\b"
-        r"|\b(?:can you|could you|please)\s+fix\b.{0,50}\b(?:your\s+)?(?:code|errors?|issues?|bugs?)\b"
-        r"|\bfix\s+your\s+code\b",
+        r"\bfix\s+(?:all\s+)?(?:those|the|these|them)\s+(?:errors?|issues?|bugs?|findings?|problems?)"
+        r"\s*(?:(?:for me|please|now|then|too|as well|again)\s*)*[.!?]*$"
+        r"|\bfix\s+(?:your|eli'?s)\s+(?:own\s+)?(?:code|errors?|issues?|bugs?|source)\b",
         low,
-    ):
+    ) or (_names_eli(raw) and re.search(
+            r"\b(?:can you|could you|please)\s+fix\b.{0,50}\b(?:code|errors?|issues?|bugs?)\b", low)):
         return _mk("SELF_PATCH", {}, 0.97, matched_by="self.fix_errors_or_code")
 
     # ── SELF_TEST (before generic 'test' routes) ──────────────────────────────
@@ -2933,10 +3004,26 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("PREVIOUS_MEDIA", {}, 0.95,
                    matched_by="media.prev_track_specific")
 
-    # App-targeted media commands
+    # App-targeted media commands: a transport verb said to an app ("pause spotify", "skip it on
+    # youtube"). "play <X> playlist spotify", "no, play <X> on youtube" and "play <X> in youtube"
+    # were read as "resume Spotify/YouTube" and <X> was dropped: a "play" with words of its own asks
+    # for them on that app. (Any other verb is the transport whatever else is said; whether the
+    # message tells ELI to do it is the fit test's.)
+    from eli.runtime.command_splitter import without_correction_lead as _wcl
+    _told_low = _wcl(low).lower()
     for app in MEDIA_APPS:
-        if re.search(rf"\b{re.escape(app)}\b", low):
-            cmd = _canonical_media_command(low)
+        if re.search(rf"\b{re.escape(app)}\b", _told_low):
+            cmd = _canonical_media_command(_told_low)
+            _own = _media_words_beyond(_told_low, app)
+            if cmd == "play" and _own:
+                _q = re.sub(r"^.*?\b(?:play|resume)\b\s*", "", _told_low, count=1)
+                _q = re.sub(rf"(?:[\s,]+(?:on|in|at|from|using|with|via|through))?[\s,]+(?:the\s+)?"
+                            rf"{re.escape(app)}(?:\s+(?:app|website|site|player))?\b", " ", f" {_q}")
+                _q = re.sub(r"\s+", " ", _without_courtesy(_q)).strip(" ,.!?")
+                if not _q:
+                    break
+                return _mk("PLAY_MEDIA", {"query": _q, "target": app}, 0.93,
+                           matched_by="media.app_targeted_query", entities={"query": _q, "target": app})
             if cmd:
                 # preserve STOP_MEDIA semantic if user literally says stop
                 # media/music/spotify later
@@ -3146,9 +3233,15 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                        matched_by="media.play_specific",
                        entities={"query": query, "target": target})
 
-    # "shuffle" / "shuffle music" / "shuffle on"
-    if re.match(r"^shuffle(?:\s+(?:on|off|music))?\b", low):
-        return _mk("SHUFFLE_MEDIA", {}, 0.95, matched_by="media.shuffle")
+    # "shuffle" toggles; "shuffle on" / "shuffle off" (and "turn shuffle off") ask for that state, and
+    # carry it as "mode" ("On"/"Off", playerctl's words). Both were a toggle, so "shuffle off" said
+    # with shuffle already off turned it on.
+    _shuffle = (re.match(r"^shuffle(?:\s+(on|off|music))?\b", low)
+                or re.match(r"^turn\s+(?:the\s+)?shuffle\s+(on|off)\b|^turn\s+(on|off)\s+(?:the\s+)?shuffle\b", low))
+    if _shuffle:
+        _state = next((g for g in _shuffle.groups() if g in ("on", "off")), None)
+        return _mk("SHUFFLE_MEDIA", {"mode": _state.capitalize()} if _state else {}, 0.95, matched_by="media.shuffle",
+                   entities={"mode": _state} if _state else None)
 
     # "repeat" / "repeat track" / "loop" / "repeat all"
     if re.match(r"^(?:repeat|loop)(?:\s+(?:one|track|all|playlist|off))?\b", low):
@@ -3599,20 +3692,16 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("SCREENSHOT", {"region": region}, 0.98,
                    matched_by="io.screenshot", entities={"region": region})
 
-    # Volume (order matters: unmute before mute)
-    if re.search(
-            r"\bmax(?:imum)?\s+volume\b|\bvolume\s+max\b|\bfull\s+volume\b", low):
-        return _mk("VOLUME", {"direction": "set", "level": 100},
+    # Volume: said by its noun ("vol down 10%", "volume 60%") it is read by command_parser.volume_said,
+    # its one grammar; said by its verb ("turn it down", "raise the volume") by that parser's volume
+    # frames. Order matters: unmute before mute.
+    if re.search(r"\bmax(?:imum)?\s+volume\b|\bfull\s+volume\b", low):
+        return _mk("VOLUME", {"level": 100, "percent": 100, "mode": "absolute", "direction": "set"},
                    0.99, matched_by="audio.volume_max")
-
-    m = re.search(
-        r"\b(?:(?:set|change)\s+volume(?:\s+to)?|volume\s+set)\s+(\d+)%?",
-        raw,
-        re.I)
-    if m:
-        level = max(0, min(100, int(m.group(1))))
-        return _mk("VOLUME", {"direction": "set", "level": level}, 0.98,
-                   matched_by="audio.volume_set", entities={"level": level})
+    from eli.execution.routing.command_parser import volume_said
+    _volume = volume_said(raw)
+    if _volume is not None:
+        return _volume
 
     if re.search(r"\bunmute\b", low):
         return _mk("VOLUME", {"direction": "unmute"},
@@ -3622,21 +3711,6 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         return _mk("VOLUME", {"direction": "mute"},
                    0.98, matched_by="audio.mute")
 
-    _vol_up_m = re.search(
-        r"\b(?:vol(?:ume)?\s+up|turn\s+up\s+(?:the\s+)?(?:volume|sound|audio)|"
-        r"increase\s+(?:the\s+)?(?:volume|sound|audio)|"
-        r"raise\s+(?:the\s+)?(?:volume|sound|audio)|louder)\b",
-        low,
-    )
-    if _vol_up_m:
-        _pct = re.search(r"\b(?:by\s+)?(\d{1,3})\s*%?\b", low[_vol_up_m.end():])
-        delta = max(1, min(100, int(_pct.group(1)))) if _pct else 15
-        return _mk("VOLUME", {"direction": "up", "delta": delta},
-                   0.95, matched_by="audio.volume_up")
-
-    if re.search(r"\b(?:vol(?:ume)?\s+down|lower|decrease)\b", low):
-        return _mk("VOLUME", {"direction": "down", "delta": 15},
-                   0.95, matched_by="audio.volume_down")
 
     # Browser tab controls — keyboard shortcuts for tab navigation.
     if re.search(r"\b(?:go\s+to\s+|switch\s+to\s+|move\s+to\s+|next)\s*(?:next\s+)?tab\b|\bnext\s+(?:browser\s+)?tab\b", low):
@@ -3943,6 +4017,15 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         if re.search(r"\b(?:my|the)\s+(?:screen|display|monitor)\b", low):
             return _mk("SCREEN_READ_ANALYZE", {}, 0.92,
                        matched_by="screen.analyze_referential")
+        # "summarise what that folder contains", "read that file": the place the last command opened
+        # or listed. Taken as a topic, it was looked up in memory and old messages came back.
+        from eli.execution.routing.command_parser import place_referred_to
+        _place = place_referred_to(target)
+        if _place:
+            return _mk("SUMMARIZE_FILE", {"path": _place, "instruction": raw}, 0.9,
+                       matched_by="analyze.summarize_referred", entities={"path": _place, "said": target})
+        if _place == "":
+            return _mk("CHAT", {"message": raw}, 0.6, matched_by="chat.vague_file_ref")
         # A bare generic file-noun ("read the document", "summarize the file") with no filename or
         # path isn't a memory topic; there's nothing to recall. Defer to CHAT so ELI asks which
         # file.
@@ -4133,18 +4216,6 @@ def _eli_voice_contract_norm(text):
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-def _eli_voice_contract_response(message, matched_by):
-    return {
-        "action": "NOOP",
-        "args": {
-            "message": message,
-            "response": message,
-            "content": message,
-        },
-        "confidence": 0.999,
-        "meta": {"matched_by": matched_by},
-    }
-
 def _eli_voice_contract_route(text):
     import re
 
@@ -4153,35 +4224,11 @@ def _eli_voice_contract_route(text):
     if not norm:
         return None
 
-    # Absolute volume: "volume 80", "volume 80%", "set volume to 80".
-    m = re.fullmatch(r"(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})\s*%?", norm)
-    if m:
-        level = max(0, min(100, int(m.group(1))))
-        return {
-            "action": "VOLUME",
-            "args": {"level": level, "percent": level, "mode": "absolute"},
-            "confidence": 0.999,
-            "meta": {
-                "matched_by": "voice_runtime_contract.volume_absolute",
-                "normalized": f"volume {level}%",
-            },
-        }
-
-    if re.fullmatch(r"volume\s+(?:max|maximum|full)", norm):
-        return {
-            "action": "VOLUME",
-            "args": {"level": 100, "percent": 100, "mode": "absolute"},
-            "confidence": 0.999,
-            "meta": {"matched_by": "voice_runtime_contract.volume_maximum"},
-        }
-
-    if re.fullmatch(r"volume\s+(?:off|zero|mute)", norm):
-        return {
-            "action": "VOLUME",
-            "args": {"level": 0, "percent": 0, "mode": "absolute"},
-            "confidence": 0.999,
-            "meta": {"matched_by": "voice_runtime_contract.volume_zero"},
-        }
+    # The volume is read by its one grammar (routing/command_parser.volume_said).
+    from eli.execution.routing.command_parser import volume_said
+    volume = volume_said(raw)
+    if volume is not None:
+        return volume
 
     # Keep "open settings" on the direct-execution path. Do not send this to
     # cognition/broker after the OS action has already succeeded.
@@ -4195,23 +4242,6 @@ def _eli_voice_contract_route(text):
                 "normalized": "open settings",
             },
         }
-
-    # ASR variants for "May the Fourth" / "May the Force".
-    may_fourth = (
-        re.search(r"\bmay\s+(?:the\s+)?(?:4th|fourth|forth|fort|force|default)\b", norm)
-        or re.search(r"\b(?:4th|fourth|forth|fort)\s+of\s+may\b", norm)
-        or "fort of may" in norm
-        or "fort fou or th" in norm
-        or "made of fort" in norm
-        or "fort be with you" in norm
-        or "force be with you" in norm
-    )
-    if may_fourth:
-        msg = (
-            "You mean May the Fourth. Its significance is Star Wars Day: "
-            "a pun on “May the Force be with you.”"
-        )
-        return _eli_voice_contract_response(msg, "voice_runtime_contract.may_fourth_asr_normalised")
 
     return None
 
@@ -4474,6 +4504,20 @@ def wants_routing_fault_explain(text: str) -> bool:
     return bool(_ROUTING_FAULT_COMPLAINT_RE.search(s))
 
 
+def _eli_dispatch_is_the_subject(raw: str, low: str) -> bool:
+    """Whether a "why ... fail / not work / route" question is about what ELI dispatched: ELI is
+    named ("you", "your", "ELI"), or the thing that failed is one of ELI's own commands ("the
+    search", "the timer", "that command"), not a thing of the world ("the roman empire", "my wifi")."""
+    if _names_eli(raw):
+        return True
+    m = re.search(r"\bwhy\s+(?:did|does|do|didn'?t|doesn'?t|is|was|isn'?t|wasn'?t|has|hasn'?t)\s+"
+                  r"(?:the|that|this)\s+([a-z]+)\b", low)
+    if not m:
+        return False
+    from eli.runtime.command_splitter import _command_words
+    return m.group(1) in _command_words()
+
+
 def _eli_pm_pre_route(text):
     raw = str(text or "").strip()
     low = raw.lower()
@@ -4490,13 +4534,19 @@ def _eli_pm_pre_route(text):
     # that routed wrong": questions about ELI's own dispatch. Runs in the pre-route, ahead of
     # chat.long_question_guard which would force 12+ words to CHAT with no trace, and the model
     # invented a cause. ROUTING_FAULT_EXPLAIN answers from the actual router result.
+    # The second and third forms name no subject of their own: "why did the roman empire fail", "why
+    # does my wifi not work" and "why is this route closed" got ELI's routing trace. They are about
+    # ELI's dispatch when ELI is their subject ("why did you fail to open it", "why was my request
+    # routed there") or one of ELI's own commands is ("why did the search fail").
     if (
         _eli_pm_re.search(
             r"\bwhy\b[^?]*\b(?:did|does|didn'?t|do)\b[^?]*"
             r"\b(?:that|this|it|those|the\s+(?:others?|first|last|previous|other\s+ones?))\b"
             r"[^?]*\b(?:work(?:ing|ed)?|fail(?:ed)?|open|run|route[ds]?)\b", low)
-        or _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:fail(?:ed)?|not\s+work|didn'?t\s+work|did\s+not\s+work)\b", low)
-        or _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:route[ds]?|routing|mis-?rout\w*)\b", low)
+        or (_eli_dispatch_is_the_subject(raw, low) and (
+            _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:fail(?:ed)?|not\s+work|didn'?t\s+work|did\s+not\s+work)\b", low)
+            or _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:routed|routing|mis-?rout\w*)\b", low)))
+        or _eli_pm_re.search(r"\bwhy\b[^?]*\b(?:was|were|is|got)\b[^?]*\b(?:mis-?routed|routed)\b", low)
     ):
         return _eli_pm_mk(
             "ROUTING_FAULT_EXPLAIN",
@@ -4557,6 +4607,12 @@ def _eli_pm_pre_route(text):
 
 
 # --- ELI high-priority self-improvement route guard ---
+# A failure in code: a traceback's frames, an exception class, a source file, a line number, pytest.
+_CODE_FAILURE_EVIDENCE = re.compile(
+    r"\b[A-Z]\w*(?:Error|Exception|Warning)\b|\.py\b|\bline\s+\d+\b|File \"|\beli/|\bpytest\b|\btests?/\w"
+    r"|\bstack\s*trace\b|\btraceback\b")
+
+
 def _eli_self_improvement_phrase_guard(text):
     raw = str(text or "")
     low = raw.lower().strip()
@@ -4564,9 +4620,14 @@ def _eli_self_improvement_phrase_guard(text):
     # Self/system routes that the generic portable open_app / shell / memory
     # matchers would otherwise steal (claims-suite findings: "run a self test" →
     # OPEN_APP, etc.). Tight patterns, matched here BEFORE portable_route.
-    if re.search(r"\b(generate|write|create)\s+(behaviou?ral\s+|unit\s+)?tests?\b|"
-                 r"\btest\s+generation\b|\bgrow\s+(your\s+)?(test\s+)?coverage\b|"
-                 r"\bwrite\s+tests?\s+for\s+(your|the)\b", low) and "report" not in low:
+    # GENERATE_TESTS writes tests for ELI's own functions: "write unit tests for my react app" is the
+    # user's code, a script to write.
+    _gen_tests = re.search(r"\b(generate|write|create)\s+(behaviou?ral\s+|unit\s+)?tests?\b|"
+                           r"\btest\s+generation\b|\bgrow\s+(your\s+)?(test\s+)?coverage\b|"
+                           r"\bwrite\s+tests?\s+for\s+(your|the)\b", low)
+    if _gen_tests and "report" not in low and (
+            _names_eli(raw) or not re.search(r"\b(?:for|of|in|on)\s+(?:my|our|his|her|their|a|an|this|these|those)\b"
+                                             r"|\bmy\b", low[_gen_tests.start():])):
         return _eli_schedule_prepass(raw) or _mk("GENERATE_TESTS", {}, 0.95, matched_by="tests.generate.guard")
     if re.search(r"\btest\s+review\b|\breview\s+(the\s+)?test(s| results| suite)\b|"
                  r"\brun\s+(the\s+)?(full\s+)?(tests?|test\s+suite|project)\b.*\b(review|summari[sz]e|"
@@ -4594,32 +4655,43 @@ def _eli_self_improvement_phrase_guard(text):
             or re.search(r"\b(show|explain|draw|describe|map)\s+(me\s+)?(your\s+)?"
                          r"(codebase|code\s*base|how\s+your\s+code\s+(is\s+)?(built|organi[sz]ed|connects|fits))\b", low)
             or re.search(r"\bhow\s+(are|do)\s+your\s+" + _comp + r"\s+(connect|wired|linked|relate)", low)
-            or re.search(r"\bhow\s+does\s+(the\s+|your\s+)?" + _comp +
-                         r"\b.{0,40}\b(connect|talk|link|relate|reach|wire|depend|feed|work\s+with)\b", low)
-            or re.search(r"\bwhat\s+does\s+(the\s+|your\s+)?" + _comp + r"\b.{0,20}\bdepend\s+on\b", low)):
+            # A part of ELI said in common words ("memory", "world", "engine") is ELI's when ELI is
+            # named or what it connects to is a part as well: "how does the router reach the
+            # executor", not "how does memory relate to sleep".
+            or ((_names_eli(raw) or len(re.findall(r"\b" + _comp + r"\b", low)) >= 2)
+                and re.search(r"\bhow\s+does\s+(the\s+|your\s+)?" + _comp +
+                              r"\b.{0,40}\b(connect|talk|link|relate|reach|wire|depend|feed|work\s+with)\b", low))
+            or (_names_eli(raw)
+                and re.search(r"\bwhat\s+does\s+(the\s+|your\s+)?" + _comp + r"\b.{0,20}\bdepend\s+on\b", low))):
         return _mk("CODEBASE_GRAPH", {"question": low}, 0.9, matched_by="codebase.graph.guard")
     # AUTOPILOT_DEBUG — a pasted traceback / pytest failure, or an explicit "debug/diagnose
     # this error" request. Passes the RAW text (case-preserved) so file paths in the
     # traceback parse correctly. A bare Python traceback signature is enough on its own.
+    # The plan is drawn from ELI's own git history, so the failure has to be one in code: a traceback,
+    # a pytest line, an exception class, a source file, or ELI named. "why did the plane crash?" was
+    # given a debugging plan for ELI's own code.
     if ("traceback (most recent call last)" in low
             or re.search(r"^failed\s+\S+\.py|^\s*failed\s+tests?/", low, re.M)
             or (re.search(r"\b(debug|diagnose|root[\s-]?cause|troubleshoot|"
                           r"what('?s| is)\s+(causing|wrong\s+with)|why\s+(is|does|did)\b[^.?!]{0,40}\b"
                           r"(fail|crash|break|error|except))\b", low)
                 and re.search(r"\b(error|traceback|exception|failure|failing|crash(ed)?|"
-                              r"stack\s*trace|pytest|assert(ion)?|bug)\b", low))):
+                              r"stack\s*trace|pytest|assert(ion)?|bug)\b", low)
+                and (_names_eli(raw) or _CODE_FAILURE_EVIDENCE.search(raw)))):
         _dbg_args = {"error_text": raw}
         # "reproduce/verify/confirm this" → run the failing tests (read-only). v2 keeps the
         # verify half only; the governed apply→fix loop is a v3 frontier feature.
         if re.search(r"\b(reproduce|verify|confirm)\b", low):
             _dbg_args["verify"] = True
         return _mk("AUTOPILOT_DEBUG", _dbg_args, 0.93, matched_by="autopilot.debug.guard")
+    # ELI's own model: "fine-tune the eq on my speakers" and "can you train my dog" are not.
+    _own_model = r"(?:yourself|your\s+(?:own\s+)?(?:model|weights|llm|brain|voice|persona)|eli|the\s+(?:model|llm)|a\s+lora|an?\s+adapter)"
     if re.search(r"\blora\s+status\b|\b(lora|training)\s+(status|readiness|ready)\b|"
                  r"\bis\s+lora\s+ready\b|\bcheck\s+(the\s+)?lora\b|"
-                 r"\bcan\s+you\s+(fine[- ]?tune|train)\b", low):
+                 r"\bcan\s+you\s+(?:fine[- ]?tune|train)(?:\s+" + _own_model + r")?\s*[?.!]*$", low):
         return _mk("LORA_STATUS", {}, 0.95, matched_by="lora.status.guard")
     if re.search(r"\b(train|run|start)\s+(a\s+|the\s+)?lora\b|\blora\s+train(ing)?\b|"
-                 r"\bfine[- ]?tune\b|\btrain\s+(an?\s+)?adapter\b", low):
+                 r"\bfine[- ]?tune\s+" + _own_model + r"\b|^\s*fine[- ]?tune\s*[.!]*$|\btrain\s+(an?\s+)?adapter\b", low):
         return _mk("LORA_TRAIN", {}, 0.95, matched_by="lora.train.guard")
     if re.search(r"\banaly[sz]e\s+(your(self)?|its?\s+own)\s+"
                  r"(failures?|errors?|mistakes|performance|metrics)\b", low):
@@ -4629,14 +4701,19 @@ def _eli_self_improvement_phrase_guard(text):
     # ELI's self-generated agenda: "do you have any proposals/suggestions/ideas for me",
     # "what are you proposing", "what's on your agenda". Surfaces proposal_only goals +
     # capability proposals (GET_PROPOSALS) — was mis-routing to unrelated status dumps.
-    if re.search(
-        r"\b(?:do you have|got|any|you have)\b[^?]*\b(?:proposals?|suggestions?|ideas?|"
-        r"recommendations?)\b[^?]*\b(?:for me|to make)\b"
-        r"|\bwhat\s+(?:are\s+you|do\s+you)\s+propos"
-        r"|\b(?:any|some)\s+(?:proposals?|suggestions?|recommendations?)\s*\??$"
-        r"|\bwhat'?s?\s+on\s+your\s+agenda\b",
-        low,
-    ):
+    # The proposals are ELI's own when nothing else is what they are for: "i want to repaint my kitchen,
+    # any suggestions?" and "do you have any ideas for me for dinner" ask for advice, and got ELI's
+    # list of its own goals.
+    _ask_proposals = re.search(
+        r"\b(?:do you have|have you got|got|any|you have)\b[^?]*\b(?:proposals?|suggestions?|ideas?|"
+        r"recommendations?)\b[^?]*\b(?:for me|to make)\b(?P<rest>.*)$", low)
+    if ((_ask_proposals and (re.fullmatch(r"[\s?.!,]*(?:(?:please|then|now|today|at all|yet)[\s?.!,]*)*",
+                                         _ask_proposals.group("rest"))
+                             or _names_eli(_ask_proposals.group("rest"))))
+            or re.search(r"\bwhat\s+(?:are\s+you|do\s+you)\s+propos", low)
+            or re.fullmatch(r"\s*(?:(?:so|ok|okay|well|and|eli)[,\s]+)*(?:got\s+)?(?:any|some)\s+(?:proposals?|"
+                            r"suggestions?|recommendations?)(?:\s+for\s+(?:me|us))?\s*[?.!]*", low)
+            or re.search(r"\bwhat'?s?\s+on\s+your\s+agenda\b|\byour\s+(?:own\s+)?(?:proposals?|agenda)\b", low)):
         return _mk("GET_PROPOSALS", {}, 0.95, matched_by="proactive.get_proposals")
     if re.search(r"\b(start|launch|enable|turn\s+on)\s+(the\s+)?proactive(\s+(mode|daemon))?\b", low):
         return _mk("PROACTIVE_START", {}, 0.96, matched_by="proactive.start.guard")
@@ -5460,40 +5537,17 @@ def _eli_phase38_runtime_status_or_name_source_contract(raw):
             },
         }
 
-    if (
-        ("how do you know" in low and "name" in low)
-        or ("where" in low and "name" in low and ("file" in low or "located" in low or "stored" in low))
-        or ("which file" in low and "name" in low)
-    ):
+    # The user's own name, in words: "where is the file named report.pdf located", "which file has the
+    # username in it" and "how do you know the name of that song" got the audit of where ELI keeps
+    # the user's name (route_contracts.asks_where_the_name_comes_from).
+    from eli.execution.route_contracts import asks_where_the_name_comes_from
+    if asks_where_the_name_comes_from(raw):
         return {
             "action": "NAME_SOURCE_AUDIT",
             "args": {"question": str(raw or "")},
             "confidence": 0.99,
             "meta": {
                 "matched_by": "eli.final_name_source_audit_route_contract",
-                "need_grounding": True,
-                "allow_chat_without_evidence": False,
-                "task_family": "grounded_audit",
-            },
-        }
-
-    return None
-
-
-def _eli_phase38_identity_name_source_single_safe_contract(raw):
-    low = str(raw or "").lower().strip()
-
-    if (
-        ("how do you know" in low and "name" in low)
-        or ("where" in low and "name" in low and ("file" in low or "located" in low or "stored" in low))
-        or ("which file" in low and "name" in low)
-    ):
-        return {
-            "action": "NAME_SOURCE_AUDIT",
-            "args": {"question": str(raw or "")},
-            "confidence": 0.99,
-            "meta": {
-                "matched_by": "identity.name_source_audit.single_safe",
                 "need_grounding": True,
                 "allow_chat_without_evidence": False,
                 "task_family": "grounded_audit",
@@ -5882,13 +5936,6 @@ def _eli_phase38_open_typo_or_core_route(raw, *args, **kwargs):
     }
 
 
-# What follows "by" in a phrase, not an artist: "who is that by the way", "by now", "what did you mean by that".
-_NOT_AN_ARTIST = re.compile(
-    r"(?:the\s+(?:way|time|end)|now|then|far|default|chance|accident|mistake|hand)\b.*"
-    r"|(?:me|you|him|her|it|us|them|that|this|these|those|myself|yourself|himself|herself|itself"
-    r"|ourselves|yourselves|themselves)", re.I)
-
-
 def _eli_media_contract_post(raw, result):
     """Final media-routing contract for legacy GUI/STT command shapes."""
     try:
@@ -6023,30 +6070,9 @@ def _eli_media_contract_post(raw, result):
         if m and not re.search(r"\bon\s+(?:youtube|spotify|soundcloud|mpv)\b", text):
             return _play("spotify", m.group(1), "media.play_song_by_artist_contract")
 
-        # Implied song request: "title by artist" with no play verb ("bohemian rhapsody by queen").
-        # The negative lookahead excludes action/question openers so "explain X by Y" / "search X by
-        # Y" / "what is X by Y" fall through.
-        m = re.match(
-            r"^(?!(?:search|find|look|show|get|tell|what|how|why|when|where|which|who"
-            r"|is|are|was|were|will|can|could|should|would|do|does|did"
-            r"|make|create|run|start|stop|open|close|pause|explain|describe|define"
-            r"|read|write|list|audit|check|scan|review|analyse|analyze"
-            r"|created?|written?|made|designed?|built|developed?)\b)"
-            r"(.{4,70})\s+by\s+([a-z][a-z\s]{1,35})$",
-            text,
-        )
-        # A song is not asked for as a question, and "by the way" names no artist: "looks like your creator
-        # is giving you an easy time haha, who is that by the way?" played a track called "...who is that".
-        if m and "?" not in original and not _NOT_AN_ARTIST.fullmatch(m.group(2).strip()) and not re.search(
-                # "then what did you mean by the first message" is a clarification question addressed to
-                # ELI, not "<song> by <artist>" — the leading "then" slipped past the ^-anchored opener
-                # guard and "by" did the rest, so ELI played (and crashed) Spotify. Narrow: a question
-                # word + "you mean/said" is a clarification; real titles ("You Mean Everything to Me by
-                # …", "Baby What You Want Me to Do by …") have no "what … you mean/said".
-                r"\b(?:what|why|how|who|when|where)\b[^.?!]{0,25}"
-                r"\byou\s+(?:mean|meant|said|say|think|thought)\b",
-                m.group(1)):
-            return _play("spotify", raw, "media.implied_song_by_artist")
+        # A "<title> by <artist>" with no "play" is read by its one test in the portable contract
+        # (implied_song_by_artist), as a stage held to the fit test. Applied here as well, after the
+        # stages, it played "my car was hit by a truck".
 
         m = re.match(r"^(open|launch|start|close|quit|kill|exit)\s+(.+?)$", text)
         if m:
@@ -6076,6 +6102,12 @@ def _eli_media_contract_post(raw, result):
                         matched_by="app.wake_prefix_contract.web_alias",
                     )
                 action = "CLOSE_APP" if verb in {"close", "quit", "kill", "exit"} else "OPEN_APP"
+                if action == "CLOSE_APP":
+                    from eli.execution.portable_intent_contract import site_named
+                    _site = site_named(name)
+                    if _site:
+                        return _mk(action, {"name": name, "target": name, "site": _site, "tab": True}, 0.98,
+                                   matched_by="app.wake_prefix_contract.site")
                 return _mk(action, {"name": name}, 0.98, matched_by="app.wake_prefix_contract")
 
         controls = {
@@ -6412,20 +6444,12 @@ def _eli_phase38_runtime_cognition_failure_dispatch(raw, *args, **kwargs):
     return _eli_phase38_self_improvement_dispatch(raw, *args, **kwargs)
 
 
-def _eli_phase38_identity_name_dispatch(raw, *args, **kwargs):
-    identity_name = _eli_phase38_identity_name_source_single_safe_contract(raw)
-    if identity_name is not None:
-        return identity_name
-
-    return _eli_phase38_runtime_cognition_failure_dispatch(raw, *args, **kwargs)
-
-
 def _eli_phase38_runtime_status_dispatch(raw, *args, **kwargs):
     status_or_name = _eli_phase38_runtime_status_or_name_source_contract(raw)
     if status_or_name is not None:
         return status_or_name
 
-    return _eli_phase38_identity_name_dispatch(raw, *args, **kwargs)
+    return _eli_phase38_runtime_cognition_failure_dispatch(raw, *args, **kwargs)
 
 
 def _eli_phase38_final_memory_dispatch(raw, *args, **kwargs):
@@ -6789,9 +6813,6 @@ try:
             def _stage_runtime_or_name_contract(text, *_a, **_k):
                 return _eli_phase38_runtime_status_or_name_source_contract(text)
 
-            def _stage_identity_name_source_contract(text, *_a, **_k):
-                return _eli_phase38_identity_name_source_single_safe_contract(text)
-
             def _stage_generate_script_prepass(text, *_a, **_k):
                 """Fire BEFORE GPU/runtime guards so 'write a bash script that monitors GPU...'
                 always routes to GENERATE_SCRIPT, not GPU_STATUS."""
@@ -7117,8 +7138,16 @@ try:
                         _nw = re.compile(r"\b(no|nope|nah|cancel|don'?t|never mind|leave it|skip it)\b", re.I)
                         is_affirmation = lambda t: bool(_yw.search(t or ""))
                         is_negation = lambda t: bool(_nw.search(t or ""))
-                    # Affirmation wins when both appear ("yes, not no").
-                    if is_negation(low) and not is_affirmation(low):
+                    # The answer is the one said first: "yes, not no" agrees, and "no, don't do it"
+                    # declines (it holds "do it", and an affirmation anywhere had won, so the offer
+                    # stayed open for the next turn to agree to).
+                    _said = low.split()
+
+                    def _first(reader):
+                        return next((i for i in range(1, len(_said) + 1) if reader(" ".join(_said[:i]))), None)
+
+                    _no_at, _yes_at = _first(is_negation), _first(is_affirmation)
+                    if _no_at is not None and (_yes_at is None or _no_at < _yes_at):
                         _pp.clear_pending_proposal()
                         return None
                     offered = bool(prop.get("command") or prop.get("items"))
@@ -7220,7 +7249,6 @@ try:
                 ("profile_scope_explicit", _stage_profile_scope_explicit),
                 ("final_memory_contract", _stage_final_memory_contract),
                 ("runtime_or_name_contract", _stage_runtime_or_name_contract),
-                ("identity_name_source_contract", _stage_identity_name_source_contract),
                 ("generate_script_prepass", _stage_generate_script_prepass),
                 ("runtime_cognition_failure_guard", _stage_runtime_cognition_failure_guard),
                 ("self_improvement_guard", _stage_self_improvement_guard),
@@ -7289,10 +7317,15 @@ try:
             return out
 
         # The stages whose rules match on words anywhere in the text. What they return is carried
-        # out only when the sentence is telling ELI to do it. The stages before them read a reply
-        # to something ELI asked, or a statement that is itself the request ("my name is ...").
+        # out only when the sentence is telling ELI to do it.
         _ELI_WORD_RULE_STAGES = frozenset((
             "schedule_prepass", "shell_prepass", "portable_route", "voice_contract", "web_lookup", "core_router"))
+        # The stages that read a reply to something ELI itself left open (a "yes" to its offer, a
+        # pick from its list), an explicit tool prefix, or a chained message whose parts are each
+        # routed, and held to the tests below, on their own. What they return is carried out as is.
+        _ELI_REPLY_STAGES = frozenset((
+            "pending_habit_confirm", "pending_code_fix_confirm", "pending_remediation_confirm",
+            "pending_proposal_confirm", "mcp_explicit", "computer_use_explicit", "multi_command_prepass"))
 
         def _eli_fits(text, candidate):
             try:
@@ -7301,6 +7334,29 @@ try:
             except Exception:
                 _SWLOG.debug("fits check failed", exc_info=True)
                 return True
+
+        def _eli_told(stage_name, text, candidate) -> bool:
+            """Whether a stage's match is carried out. By what the action does, not only by which
+            stage matched it: every stage's rules match words, and "you remind me of my brother" set
+            an alarm from a stage the six word-rule stages did not include. An action that changes
+            something is carried out only when a sentence of the message tells ELI to do it
+            (route_contracts.fits); a word-rule stage's reading action only when it was asked for."""
+            if stage_name in _ELI_REPLY_STAGES or not isinstance(candidate, dict):
+                return True
+            try:
+                from eli.execution.route_contracts import asks_what_was_done, changes_something, does_work
+                action = candidate.get("action")
+                # "did you inspect any of those files?" asks what was done, and the record answers it:
+                # it is not a request to do it. A rule matching "inspect ... files" in it started a
+                # lint of ELI's own core nobody asked for. Reading a state ("did you add it to my
+                # calendar?" shows the calendar) still answers it.
+                if (changes_something(action) or does_work(action)) and asks_what_was_done(text):
+                    return False
+                if stage_name in _ELI_WORD_RULE_STAGES or changes_something(action):
+                    return _eli_fits(text, candidate)
+            except Exception:
+                _SWLOG.debug("route gate failed", exc_info=True)
+            return True
 
         def _eli_target_took_the_rest(whole) -> bool:
             """Whether a command took the rest of the message as its target: "open steam, set an
@@ -7311,16 +7367,31 @@ try:
             args = (whole or {}).get("args") or {}
             return any(isinstance(args.get(k), str) and holds_more_than_one(args[k]) for k in TARGET_ARGS)
 
-        def _eli_carried_by(tells, told, whole) -> bool:
+        def _eli_carried_by(tells, told, whole, told_parts=()) -> bool:
             """Whether the command the whole message routed to carries this instruction: it is that
-            command ("write a note saying buy milk"), or the instruction is inside what it was given
-            ("call mom" in the note's text). "open steam, set an alarm for 30 minutes" set the timer
-            and left "open steam" out."""
-            if str((told or {}).get("action") or "").upper() == str((whole or {}).get("action") or "").upper():
-                return True
-            given = " ".join(str(v) for v in ((whole or {}).get("args") or {}).values() if isinstance(v, str))
-            words = lambda t: " ".join(re.findall(r"[a-z0-9']+", str(t).lower()))   # noqa: E731
-            return bool(words(tells)) and words(tells) in words(given)
+            command with what the instructions name ("write a note saying buy milk", "open the
+            browser and search kite"), or the instruction is inside what it was given ("call mom" in
+            the note's text). "open steam, set an alarm for 30 minutes" set the timer and left "open
+            steam" out. The same command is not enough: "<a complaint> man.. play <song> by <artist>"
+            played a search for the complaint and the song together, because the whole message had
+            also routed to a play. What the whole command was given has to be said by the
+            instructions that are that command (`told_parts`, with this one)."""
+            from eli.execution.route_contracts import TARGET_ARGS
+            words = lambda t: re.findall(r"[a-z0-9']+", str(t).lower())   # noqa: E731
+            whole_args = (whole or {}).get("args") or {}
+            action = str((whole or {}).get("action") or "").upper()
+            if str((told or {}).get("action") or "").upper() == action:
+                said = set()
+                for part_tells, part_told in [(tells, told), *told_parts]:
+                    if str((part_told or {}).get("action") or "").upper() != action:
+                        continue
+                    part_args = (part_told or {}).get("args") or {}
+                    said |= set(words(part_tells)) | {w for k in TARGET_ARGS if isinstance(part_args.get(k), str)
+                                                      for w in words(part_args[k])}
+                return all(w in said for k in TARGET_ARGS if isinstance(whole_args.get(k), str)
+                           for w in words(whole_args[k]))
+            given = " ".join(str(v) for v in whole_args.values() if isinstance(v, str))
+            return bool(words(tells)) and " ".join(words(tells)) in " ".join(words(given))
 
         def _eli_instructions_and_talk(text, whole, *args, **kwargs):
             """A message of several sentences or instructions that is not one command: the ones that
@@ -7355,7 +7426,7 @@ try:
                 if not steps or len(steps) > 5:
                     return None
                 if (is_command(whole) and not _eli_target_took_the_rest(whole)
-                        and all(_eli_carried_by(tells, told, whole) for tells, told in told_parts)):
+                        and all(_eli_carried_by(tells, told, whole, told_parts) for tells, told in told_parts)):
                     return None                    # one command that carries every instruction in it
                 rest = " ".join(talk).strip()
                 if len(re.findall(r"[A-Za-z0-9']+", _without_courtesy(rest) if rest else "")) < 3:
@@ -7458,7 +7529,7 @@ try:
                     log.debug(
                         f"[PIPELINE][ROUTER] stage={stage_name} hit={candidate is not None} dt_ms={_dt:.2f}",
                     )
-                if candidate is not None and stage_name in _ELI_WORD_RULE_STAGES and not _eli_fits(text, candidate):
+                if candidate is not None and not _eli_told(stage_name, text, candidate):
                     # A rule matched a word in a sentence that is not telling ELI to do that
                     # (route_contracts.fits). The later stages still get the message.
                     not_told = not_told or {
@@ -7489,7 +7560,15 @@ try:
                 }
                 matched_by = "not_an_instruction"
 
-            result = _eli_route_apply_post_contracts(text, result)
+            # The final contracts normalise what was chosen. One that turns the result into another
+            # action is held to the same tests as a stage: "my car was hit by a truck" was made a
+            # song request after the stages had all passed it by.
+            contracted = _eli_route_apply_post_contracts(text, result)
+            if (isinstance(contracted, dict) and isinstance(result, dict)
+                    and str(contracted.get("action") or "").upper() != str(result.get("action") or "").upper()
+                    and not _eli_told("post_contract", text, contracted)):
+                contracted = result
+            result = contracted
             if isinstance(result, dict):
                 meta = dict(result.get("meta") or {})
                 meta.setdefault("priority_pipeline_stage", matched_by)

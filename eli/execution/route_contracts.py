@@ -56,27 +56,28 @@ def wants_personal_memory_deep_explain(text: Any) -> bool:
     return wants_user_model_provenance(text)
 
 
+# What ELI holds about the user, said as the user says it: "my profile", "your understanding of me",
+# "what you know about me". A profile, a template or an understanding of anything else is not it:
+# "a template for a linkedin profile", "the aerodynamic profile of a wing" and "how humans evolved
+# their understanding of fire" were answered with the user's own profile.
+_USER_MODEL_SUBJECT = re.compile(
+    r"\babout me\b|\bwho i am\b|\b(?:understanding|picture|model|view|knowledge|memory|memories|profile|image|idea)"
+    r"\s+of me\b|\bwhat you (?:know|remember|think|have|hold|store)\b[^.?!]{0,30}\babout me\b"
+    r"|\bmy\s+(?:(?:user|personal)\s+)?(?:profile|preferences?|info|information|details|persona|user model)\b"
+    r"|\buser\s+(?:info|information|profile|model)\b", re.I)
+_STATIC_MARKER = re.compile(r"\b(?:hard[\s-]?coded|templates?|templated|stubs?|static|canned|fixed text)\b", re.I)
+_DYNAMIC_MARKER = re.compile(
+    r"\b(?:dynamic(?:ally)?|emergent|evolv(?:e|es|ed|ing)|update[sd]? these preferences?|actually remember"
+    r"|not updating)\b", re.I)
+
+
 def wants_user_model_provenance(text: Any) -> bool:
-    """Static template vs dynamic/evolving understanding of the user."""
+    """Static template vs dynamic/evolving understanding of the user: whether what ELI holds about
+    the user is fixed text or learned. Whole words only ("aerodynamic" is not "dynamic")."""
     low = _low(text)
-    if not low:
+    if not low or not _USER_MODEL_SUBJECT.search(low):
         return False
-    static_markers = (
-        "hardcoded", "hard coded", "hard-coded", "template", "stub", "static info",
-        "static profile", "about me section",
-    )
-    dynamic_markers = (
-        "dynamic", "emergent", "evolving", "evolve", "update these preference",
-        "actually remember", "not updating",
-    )
-    subject_markers = (
-        "about me", "profile", "preference", "memory", "user info", "understanding",
-        "who i am", "what you know about me",
-    )
-    has_static = any(m in low for m in static_markers)
-    has_dynamic = any(m in low for m in dynamic_markers)
-    has_subject = any(m in low for m in subject_markers)
-    return has_subject and (has_static or has_dynamic)
+    return bool(_STATIC_MARKER.search(low) or _DYNAMIC_MARKER.search(low))
 
 
 def personal_memory_deep_route(text: Any) -> Dict[str, Any]:
@@ -166,6 +167,20 @@ def changes_something(action: Any) -> bool:
     return not (name in _READS_NAMED or name.startswith(_READS_START) or name.endswith(_READS_END))
 
 
+# Reading actions that do work to answer, rather than read what is kept: an examination, an audit, an
+# analysis, a diagnosis. By name, as above.
+_WORKS_START = ("EXAMINE_", "ANALYZE_", "ANALYSE_", "DIAGNOSE_", "AUTOPILOT_", "SUMMARIZE_", "SUMMARISE_", "OCR_",
+                "TRANSCRIBE")
+_WORKS_END = ("_AUDIT", "_DOCTOR", "_DIAGNOSTICS", "_DIAG", "_READ_ANALYZE", "_GRAPH")
+
+
+def does_work(action: Any) -> bool:
+    """Whether carrying a reading action out does work to find its answer (scans, lints, runs,
+    analyses) rather than reading a state ELI keeps."""
+    name = str(action or "").strip().upper()
+    return name.startswith(_WORKS_START) or name.endswith(_WORKS_END)
+
+
 # Words that carry grammar and not content: what is left of a sentence without them and without
 # the command's own words is what else the sentence is about.
 _GRAMMAR = frozenset("""a an the this that these those my your his her its our their me you u i it he she we they them us
@@ -249,3 +264,99 @@ def fits(text: Any, intent: Any) -> bool:
         return False
     spare = [w for w in said if w not in own and not any(_same_word(w, o) for o in own)]
     return len(spare) < 6 or len(spare) <= len(said) - len(spare)
+
+
+# ── who a message is about, and what it asks ─────────────────────────────────
+#
+# A report on ELI (its runtime, failures, code, tests, models, agenda) answers a question about ELI.
+# Rules that fired on a word matched their words in questions about the world: "what is heart
+# failure?" got the executor's failure log, "my wifi router is broken" a codebase audit, "why did the
+# plane crash?" a debugging plan for ELI's own code. A rule for such a report that matches a common
+# English word ("router", "failure", "fail", "pipeline", "suggestions") asks `names_eli` as well.
+
+# Second person, ELI by name, and ELI's work on itself ("self-update", "the self-improvement log").
+_ADDRESSED = re.compile(r"\b(?:you|your|yours|yourself|eli|eli's|eli’s)\b"
+                        r"|\bself[- ]?(?:updat|improv|test|patch|repair|upgrad|fix|heal|maintenan|analy[sz]|report)\w*", re.I)
+# Who is asked, not what it is about: in "can you fix the errors in this paragraph" and "do you know
+# why startups fail" the "you" is the one asked. The frame is passed over before looking for ELI.
+_ASKING_FRAME = re.compile(
+    r"\b(?:can|could|would|will|won'?t)\s+you\b(?:\s+(?:please|kindly|just|maybe|possibly|now|also|quickly))*"
+    r"|\b(?:do|did|does|would|could|can)\s+you\s+(?:(?:please|just|actually|really|even|ever|happen\s+to)\s+)*"
+    r"(?:think|know|reckon|believe|suppose|guess|feel|mind|have|got)\b|\bhave\s+you\s+got\b"
+    r"|\bi(?:'d|\s+would)\s+(?:like|love)\s+(?:you|for\s+you)\s+to\b|\bi\s+(?:want|need)\s+you\s+to\b"
+    r"|\b(?:thank|thanks)\s+you\b|\bare\s+you\s+able\s+to\b",
+    re.I)
+_SOURCE_PATH = re.compile(r"(?:^|[\s\"'(\[])(?:\./)?eli/[\w./-]+|\b([\w-]+)\.py\b", re.I)
+_IDENTIFIER = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", re.I)
+_ELI_SOURCE_NAMES: Optional[frozenset] = None
+
+
+def _eli_source_names() -> frozenset:
+    """The names of ELI's own source files, without ".py"."""
+    global _ELI_SOURCE_NAMES
+    if _ELI_SOURCE_NAMES is None:
+        try:
+            from pathlib import Path
+            root = Path(__file__).resolve().parents[1]
+            _ELI_SOURCE_NAMES = frozenset(p.stem.lower() for p in root.rglob("*.py") if p.stem != "__init__")
+        except Exception:
+            _ELI_SOURCE_NAMES = frozenset()
+    return _ELI_SOURCE_NAMES
+
+
+def names_eli(text: Any) -> bool:
+    """Whether a message names ELI as what it is about: "your", "you" (past the frame that asks
+    something of ELI: "can you", "do you know"), "ELI", or one of ELI's own source files
+    ("router_enhanced", "eli/core/paths.py", "executor_enhanced.py")."""
+    said = _ASKING_FRAME.sub(" ", str(text or ""))
+    if _ADDRESSED.search(said):
+        return True
+    names = _eli_source_names()
+    for m in _SOURCE_PATH.finditer(said):
+        if m.group(1) is None or m.group(1).lower() in names:
+            return True
+    return any(m.group(0).lower() in names for m in _IDENTIFIER.finditer(said))
+
+
+# A yes/no question about what was done: "did you inspect any of those files?", "have you run the
+# tests?". The record answers it; it does not ask for the thing to be done. A rule that matched
+# "inspect ... files" in it started a lint of ELI's own core. With "you" the inverted auxiliary is a
+# question as said aloud too; with any other subject ("were the tests run") it needs its "?".
+_DONE_YOU = re.compile(
+    r"^\s*(?:(?:so|and|but|wait|well|ok|okay|hey|eli|hold on|sorry)[,\s]+)*"
+    r"(?:did|didn'?t|have|haven'?t|has|hasn'?t|had|hadn'?t|were|weren'?t|was|wasn'?t)\s+(?:you|eli)\b(?!\s+(?:to|got\s+to)\b)",
+    re.I)
+_DONE_OTHER = re.compile(
+    r"^\s*(?:(?:so|and|but|wait|well|ok|okay|hey|eli|hold on|sorry)[,\s]+)*"
+    r"(?:did|didn'?t|has|hasn'?t|had|hadn'?t|were|weren'?t|was|wasn'?t)\s+(?:it|that|this|they|those|these|the\b)",
+    re.I)
+
+
+def asks_what_was_done(text: Any) -> bool:
+    """Whether a message only asks whether something was done, every sentence of it."""
+    from eli.runtime.command_splitter import sentences
+    parts = sentences(str(text or ""))
+    return bool(parts) and all(
+        _DONE_YOU.match(part) or (_DONE_OTHER.match(part) and part.rstrip(" )\"'’”").endswith("?"))
+        for part in parts)
+
+
+# The user's own name as what is asked about ("how do you know my name", "where is my name stored",
+# "what you call me"), in words: "named", "username" and "filename" are not it.
+_USERS_NAME = re.compile(
+    r"\bmy\s+(?:(?:first|full|last|real|preferred|user)\s+)?name\b|\bwhat\s+(?:you\s+)?call\s+me\b"
+    r"|\bwho\s+i\s+am\b|\bthe\s+user'?s\s+name\b", re.I)
+_NAME_SOURCE = re.compile(
+    r"\bhow\s+(?:do|did|does)\s+you\s+know\b|\bwhere\b[^.?!]*\b(?:files?|located|stored|saved|kept|comes?\s+from|"
+    r"get|got|learn\w*|find|found|read)\b|\bwhich\s+(?:files?|database|db|table|store)\b|\bwhere\s+(?:does|did)\b",
+    re.I)
+
+
+def asks_where_the_name_comes_from(text: Any) -> bool:
+    """Whether a message asks where ELI's knowledge of the user's name comes from."""
+    said = str(text or "")
+    return bool(_USERS_NAME.search(said) and _NAME_SOURCE.search(said))
+
+
+__all__ += ["TARGET_ARGS", "is_command", "changes_something", "has_what_it_needs", "fits",
+            "does_work", "names_eli", "asks_what_was_done", "asks_where_the_name_comes_from"]

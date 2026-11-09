@@ -126,10 +126,19 @@ def route_shell_ops(text: str, raw: str, low: str, text_l: str):
             path_value = path_match.group(1).strip().rstrip(".,;:")
             return _mk("LIST_DIR", {"path": path_value}, 0.98,
                        matched_by="fs.list_dir_bare", entities={"path": path_value})
+        # "list it", "list that folder": what the last command opened or listed. Read as a path, "it"
+        # was looked for as <working directory>/it.
+        from eli.execution.routing.command_parser import place_referred_to
+        _place = place_referred_to(captured)
+        if _place is not None:
+            if not _place:
+                return None
+            return _mk("LIST_DIR", {"path": _place}, 0.92, matched_by="fs.list_dir_referred",
+                       entities={"path": _place, "said": captured})
         # If no path found but it's a single bare token, treat as relative path. Require
         # ONE token (no spaces) so multi-word prose ("my notes", "the reports") falls
         # through to CHAT/LLM-resolver instead of being mistaken for a directory name.
-        elif len(captured.split()) == 1 and not any(w in captured.lower() for w in ("every", "all", "each", "the")):
+        if len(captured.split()) == 1 and not any(w in captured.lower() for w in ("every", "all", "each", "the")):
             return _mk("LIST_DIR", {"path": captured.rstrip(".,;:")}, 0.90,
                        matched_by="fs.list_dir_bare", entities={"path": captured.rstrip(".,;:")})
         # Otherwise it's natural language about listing — fall through to CHAT

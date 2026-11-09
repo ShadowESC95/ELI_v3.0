@@ -92,3 +92,72 @@ def test_a_sentence_fits_its_action_when_it_tells_eli_to_do_it():
     assert fits("play the long and winding road to nowhere in particular at all", play), "its argument is its own words"
     assert fits("anything at all, however long, about whatever it may be and then some more words",
                 {"action": "RUNTIME_STATUS", "args": {}}), "a reading action changes nothing"
+
+
+def test_a_profile_or_an_understanding_of_something_else_is_not_the_users_own():
+    """"explain dynamic memory allocation in c" and "the aerodynamic profile of a wing" got the user's own
+    profile, explained from memory."""
+    from eli.execution.route_contracts import classify_precedence_route, wants_user_model_provenance
+
+    for asked in ("explain dynamic memory allocation in c", "explain the aerodynamic profile of a wing",
+                  "what's a good template for a linkedin profile",
+                  "how did humans evolve their understanding of fire"):
+        assert not wants_user_model_provenance(asked), asked
+        assert classify_precedence_route(asked) is None, asked
+    assert wants_user_model_provenance("is my profile a static template or does it evolve?")
+
+
+def test_the_world_question_is_not_the_users_profile_in_the_router_either():
+    from eli.execution.router_enhanced import route
+
+    for asked in ("explain dynamic memory allocation in c", "what's a good template for a linkedin profile"):
+        assert route(asked)["action"] not in ("PERSONAL_MEMORY_DEEP_EXPLAIN", "USER_IDENTITY_SUMMARY"), asked
+
+
+def test_who_a_message_names():
+    from eli.execution.route_contracts import names_eli
+
+    for said in ("can you fix your code", "why did you fail", "audit router_enhanced",
+                 "debug this error: ValueError in eli/core/paths.py", "eli, check the router"):
+        assert names_eli(said), said
+    # the one asked is not what the message is about
+    for said in ("can you fix the errors in this paragraph", "do you know why startups fail",
+                 "do you have any ideas for me for dinner", "write a script called sort.py"):
+        assert not names_eli(said), said
+
+
+def test_a_question_about_what_was_done_is_told_from_a_request():
+    from eli.execution.route_contracts import asks_what_was_done
+
+    for asked in ("did you inspect any of those files?", "have you read the report yet?",
+                  "did you run the tests", "were the tests run?"):
+        assert asks_what_was_done(asked), asked
+    for told in ("have the summary ready by tomorrow", "examine eli/memory/memory.py for errors",
+                 "is there any issues with the files?", "did you inspect it? also examine the gui file"):
+        assert not asks_what_was_done(told), told
+
+
+def test_where_the_name_comes_from_is_asked_of_the_users_own_name():
+    from eli.execution.route_contracts import asks_where_the_name_comes_from as asks
+
+    assert asks("how do you know my name") and asks("where is my name stored") and asks("which file is my name in")
+    for asked in ("where is the file named report.pdf located", "which file has the username in it",
+                  "how do you know the name of that song"):
+        assert not asks(asked), asked
+
+
+def test_every_stage_that_changes_something_is_held_to_the_fit_test():
+    """Only six stages were: "you remind me of my brother" set an alarm from the agenda stage."""
+    from eli.execution.router_enhanced import route
+    assert route("you remind me of my brother")["action"] != "SET_ALARM"
+    assert route("remind me to call the dentist at 5")["action"] == "SET_ALARM"
+
+
+def test_a_final_contract_that_changes_the_action_is_held_to_it_too(monkeypatch):
+    """The media contract ran after the fit test and turned a statement into a song request."""
+    from eli.execution import router_enhanced as r
+    monkeypatch.setattr(r, "_eli_media_contract_post", lambda raw, result: {
+        "action": "PLAY_MEDIA", "args": {"query": raw, "target": "spotify"}, "confidence": 0.97,
+        "meta": {"matched_by": "media.test_rewrite"}})
+    assert r.route("you did not open the folder i asked for")["action"] != "PLAY_MEDIA"
+    assert r.route("play golden hour by jvke")["action"] == "PLAY_MEDIA"

@@ -828,3 +828,21 @@ def test_the_task_turn_knows_what_actually_ran_before_it(monkeypatch):
     assert seen.agreed[0]["ran"] == ["MULTI_COMMAND"]
     carry(me, "yes", {"tasks": ["write it up"], "commands": [], "explicit": [], "offer": ""})
     assert seen.agreed[1]["ran"] == []
+
+
+@pytest.mark.parametrize("said", ["I'm tired", "I'm hungry.", "i am bored", "I'm home!", "im stressed", "I'm busy"])
+def test_how_or_where_the_user_is_is_not_their_name(proposals, said):
+    """"I'm tired" set the user's name to "tired", and the stored name rows that disagreed were deleted."""
+    from eli.execution.router_enhanced import route
+    assert route(said)["action"] != "SET_USER_NAME", said
+
+
+def test_i_am_with_a_name_still_sets_it_typed_or_asked_for(proposals):
+    from eli.execution.router_enhanced import route
+    got = route("I'm Alex")
+    assert got["action"] == "SET_USER_NAME" and got["args"]["name"] == "Alex"
+    assert got["meta"]["declared_by"] == "i_am_word"           # one word, not "my name is": the executor confirms
+    pp.set_pending_proposal("", question="So, to start with, what should I call you?", from_reply=True)
+    got = route("i'm alex")                                     # speech arrives in lower case
+    assert got["action"] == "SET_USER_NAME" and got["args"]["name"].lower() == "alex"
+    assert got["meta"]["declared_by"] == "answer_to_name_question"

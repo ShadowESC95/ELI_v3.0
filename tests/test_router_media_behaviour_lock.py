@@ -152,3 +152,32 @@ def test_separating_punctuation_goes(said, query):
                                   "the notorious b.i.g. juicy", "what's my age again by blink-182"])
 def test_punctuation_inside_a_name_stays(name):
     assert clean(name) == name
+
+
+@pytest.mark.parametrize("said,query,target", [
+    ("play golden hour playlist spotify", "golden hour playlist", "spotify"),
+    ("no, play golden hour on youtube", "golden hour", "youtube"),
+    ("play golden hour in youtube", "golden hour", "youtube"),
+])
+def test_a_play_that_names_something_on_an_app_plays_it(said, query, target):
+    """All three were read as "resume Spotify/YouTube" (MEDIA_CONTROL) and the song was dropped."""
+    out = _route(said)
+    assert out["action"] == "PLAY_MEDIA", out
+    assert out["args"]["query"].lower() == query and out["args"]["target"] == target
+
+
+def test_a_bare_transport_word_to_an_app_is_still_transport():
+    assert _route("mute vlc")["action"] == "MEDIA_CONTROL"
+    assert _route("skip this song on spotify")["action"] == "MEDIA_CONTROL"
+    assert _route("play songs from the eighties")["args"].get("target") is None   # "from" names no service here
+
+
+@pytest.mark.parametrize("said,mode", [("shuffle on", "On"), ("shuffle off", "Off"), ("turn shuffle off", "Off")])
+def test_shuffle_on_or_off_asks_for_that_state(said, mode):
+    """Both were a toggle with no arguments: "shuffle off" with shuffle already off turned it on."""
+    out = _route(said)
+    assert out["action"] == "SHUFFLE_MEDIA" and out["args"].get("mode") == mode
+
+
+def test_a_bare_shuffle_still_toggles():
+    assert "mode" not in _route("shuffle")["args"]

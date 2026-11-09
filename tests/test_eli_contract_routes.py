@@ -159,3 +159,15 @@ def test_complaint_about_search_quality_is_not_a_routing_fault_dump(asked):
 
 def test_genuine_went_to_web_complaint_still_explains_routing():
     assert_route("why did you search the web for that?", "ROUTING_FAULT_EXPLAIN")
+
+
+@pytest.mark.parametrize("asked", ["why did the roman empire fail", "why do startups fail", "why does my wifi not work",
+                                   "why is this route closed"])
+def test_why_a_thing_of_the_world_failed_is_not_elis_routing_trace(asked):
+    assert route(asked)["action"] != "ROUTING_FAULT_EXPLAIN"
+
+
+@pytest.mark.parametrize("asked", ["why did that fail", "why did you fail to open downloads", "why didn't it work",
+                                   "why did the search fail", "why was that routed wrong"])
+def test_why_elis_last_command_failed_is_still_its_routing_trace(asked):
+    assert route(asked)["action"] == "ROUTING_FAULT_EXPLAIN"

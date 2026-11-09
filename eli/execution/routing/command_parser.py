@@ -185,6 +185,33 @@ def last_object() -> str:
     return ""
 
 
+# "that folder", "this file", "the directory", "what that folder contains": a place named by pointing
+# back at what the last command opened or listed.
+_POINTS_AT_A_PLACE = re.compile(
+    r"^(?:(?:what|everything|all)\s+(?:is\s+)?(?:in\s+)?)?(?:the\s+contents?\s+of\s+)?"
+    r"(?:it|that|this|there|(?:that|this|the|those|these)\s+(?:same\s+)?(?:folder|directory|dir|file|files|document|place))"
+    r"(?:\s+(?:contains?|has|holds|has\s+in\s+it|again))?$", re.I)
+
+
+def place_referred_to(phrase: str) -> Optional[str]:
+    """The place a phrase points back at ("it", "that folder", "what that folder contains"): the
+    path the last command acted on, when it names one that exists. "" when the phrase points back
+    and there is nothing it can mean (a path is never made of the word "it"); None when the phrase
+    is not a pointer."""
+    said = re.sub(r"\s+", " ", str(phrase or "").strip().strip(".,;:!?")).strip()
+    if not _POINTS_AT_A_PLACE.match(said):
+        return None
+    was = last_object()
+    if not was:
+        return ""
+    import os
+    from eli.execution.routing._helpers import _known_dir_path
+    for candidate in (was, _known_dir_path(was.lower()) or ""):
+        if candidate and os.path.exists(os.path.expanduser(candidate)):
+            return os.path.abspath(os.path.expanduser(candidate))
+    return ""
+
+
 # ── the frames ───────────────────────────────────────────────────────────────────────────────────
 # What else is said for a catalogue verb. The first form of each frame's `verbs` is the catalogue's.
 SAID_FOR: Dict[str, Tuple[str, ...]] = {
@@ -244,8 +271,9 @@ FRAMES: Tuple[Frame, ...] = (
     Frame("play", "play", "PLAY_MEDIA", "text", ("on",), confidence=0.88),
     Frame("search", "search", "WEB_SEARCH", "text", (), confidence=0.88),
     Frame("note", "note", "WRITE_NOTE", "text", (), confidence=0.9),
-    Frame("volume_up", "turn up", "VOLUME", "volume", (), confidence=0.9),
-    Frame("volume_down", "turn down", "VOLUME", "volume", (), confidence=0.9),
+    # the volume's own words are atoms: these run before the rules (see also volume_said)
+    Frame("volume_up", "turn up", "VOLUME", "volume", (), strict=True, confidence=0.9),
+    Frame("volume_down", "turn down", "VOLUME", "volume", (), strict=True, confidence=0.9),
 )
 
 # Verbs that may stand in front of a timer or an alarm ("start a timer", "give me a 10 minute timer").
@@ -499,6 +527,59 @@ def _realise(frame: Frame, cmd: Command, *, strict: bool) -> Optional[Dict[str, 
     return None
 
 
+# ── the volume, said by its noun ─────────────────────────────────────────────────────────────────
+# "volume 60%", "vol 60", "set the volume to 60", "vol down 10%", "volume up by 5", "sound off": the
+# noun first, then a direction or a level. The one reading of this; the portable contract, the voice
+# contract and the router's audio rules each held a copy, every absolute copy needed the full word
+# "volume", and the down rule dropped its number. A step that is not said is left to the effector
+# (no step of its own here).
+_VOLUME_NOUN = r"(?:vol(?:ume)?|sound|audio)"
+_VOLUME_SAID = re.compile(
+    rf"^(?:(?:set|change|put|make|turn)\s+)?(?:the\s+|my\s+)?{_VOLUME_NOUN}"
+    r"(?:\s+(?P<dir>up|down|louder|quieter|higher|lower))?"
+    r"(?:\s+(?:to|at|by))?"
+    r"(?:\s+(?P<num>\d{1,3})\s*(?:%|percent|per\s*cent)?|\s+(?P<word>max(?:imum)?|full|off|zero|mute|half))?"
+    r"(?:\s+(?:please|now|thanks))*\s*[.!]*$", re.I)
+
+
+_LOUDER = re.compile(r"^(?:(?:a\s+)?(?:bit|little|touch|tad)\s+)?(louder|quieter)(?:\s+(?:please|now|thanks))*\s*[.!]*$", re.I)
+
+
+def volume_said(text: str) -> Optional[Dict[str, Any]]:
+    """The VOLUME route for a message that names the volume and what to do with it, or None.
+    Absolute when a level is named without a direction ({"level", "percent", "mode": "absolute"}),
+    relative with a direction ({"direction", "delta"?})."""
+    said = _instruction(text) or str(text or "").strip()
+    louder = _LOUDER.match(said)
+    if louder:
+        return _mk("VOLUME", {"direction": "up" if louder.group(1).lower() == "louder" else "down"}, 0.95,
+                   matched_by="parser.volume_louder", entities={"said": said})
+    m = _VOLUME_SAID.match(in_digits(said).strip())
+    if not m or not (m.group("dir") or m.group("num") or m.group("word")):
+        return None
+    word = (m.group("word") or "").lower()
+    direction = (m.group("dir") or "").lower()
+    direction = {"louder": "up", "higher": "up", "quieter": "down", "lower": "down"}.get(direction, direction)
+    entities = {"said": said}
+    if direction:
+        if word:
+            return None
+        args: Dict[str, Any] = {"direction": direction}
+        if m.group("num"):
+            args["delta"] = max(1, min(100, int(m.group("num"))))
+        return _mk("VOLUME", args, 0.95, matched_by=f"parser.volume_{direction}", entities=entities)
+    if word in ("off", "zero", "mute"):
+        level = 0
+    elif word in ("max", "maximum", "full"):
+        level = 100
+    elif word == "half":
+        level = 50
+    else:
+        level = max(0, min(100, int(m.group("num"))))
+    return _mk("VOLUME", {"level": level, "percent": level, "mode": "absolute", "direction": "set"}, 0.99,
+               matched_by="parser.volume_absolute", entities={**entities, "level": level})
+
+
 # ── the literals of the language ─────────────────────────────────────────────────────────────────
 _VARIABLE = re.compile(r"\b[XY]\b|…|\.\.\.|\w+\.\w{2,4}\b|\d|“|”|\(|/", re.I)
 # Words that carry no meaning of their own in a literal: "show my habits" names HABIT_STATUS by
@@ -555,6 +636,9 @@ def route_command(text: str, raw: str, low: str, text_l: str, *, strict: bool = 
     """A route for the command a sentence is, under the first frame that fits its parts. With
     `strict`, only frames whose object is an atom, and no literals: the rules have not had their
     turn yet. None leaves the sentence to the rules."""
+    volume = volume_said(raw)
+    if volume is not None:
+        return volume
     cmd = read(raw)
     if cmd is None:
         if strict:
@@ -583,4 +667,4 @@ def route_command_tail(text: str, raw: str, low: str, text_l: str) -> Optional[D
 
 
 __all__ = ["Command", "FRAMES", "Frame", "SAID_FOR", "clock_time", "duration_seconds", "in_digits", "last_object",
-           "literals", "read", "route_command", "route_command_strict", "route_command_tail"]
+           "place_referred_to", "volume_said", "literals", "read", "route_command", "route_command_strict", "route_command_tail"]

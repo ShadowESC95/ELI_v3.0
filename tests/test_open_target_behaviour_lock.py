@@ -313,3 +313,17 @@ def test_concurrent_world_state_reads_do_not_race():
     for t in threads:
         t.join()
     assert not errors, f"world-state race: {errors[:3]}"
+
+
+@pytest.mark.parametrize("said,site", [("close example.com", "https://example.com"), ("close netflix", "netflix"),
+                                       ("close youtube", "youtube")])
+def test_closing_a_site_is_closing_its_tab_not_a_process(said, site):
+    """"close <site>.com" looked for a process called "<site>.com" and said none was running."""
+    out = router.route(said)
+    assert out["action"] == "CLOSE_APP" and out["args"].get("tab") is True
+    assert site in str(out["args"].get("site"))
+
+
+def test_closing_an_app_is_still_closing_the_app():
+    for said in ("close firefox", "close spotify", "close steam"):
+        assert "site" not in router.route(said)["args"], said

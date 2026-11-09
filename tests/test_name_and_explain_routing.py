@@ -145,3 +145,15 @@ def test_a_slow_reply_is_answered_from_the_turn_record():
     text = "why did you take 20 minutes to respond?"
     assert str(route(text).get("action")) == "CHAT"
     assert asks_about_own_behaviour(text)
+
+
+@pytest.mark.parametrize("asked", ["where is the file named report.pdf located", "which file has the username in it",
+                                   "how do you know the name of that song"])
+def test_a_name_that_is_not_the_users_is_not_the_name_source_audit(asked):
+    """"named", "username" and "the name of that song" got the audit of where ELI keeps the user's name."""
+    assert route(asked)["action"] != "NAME_SOURCE_AUDIT"
+
+
+@pytest.mark.parametrize("asked", ["how do you know my name", "where is my name stored", "which file is my name in"])
+def test_where_the_users_name_comes_from_is_still_the_audit(asked):
+    assert route(asked)["action"] == "NAME_SOURCE_AUDIT"

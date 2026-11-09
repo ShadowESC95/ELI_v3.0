@@ -401,4 +401,24 @@ def _tone_is_negated(low: str, tone: str) -> bool:
     return False
 
 
-__all__ = ['COMMON_DIRS', '_known_dir_path', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']
+# Technical runtime questions ("what model are you running", "how many gpu layers"). The old
+# version matched bare model/threads/batch/provider at 0.99, so "what's going on with your world
+# model?" went to runtime status. Each alternative now needs the runtime sense of the word.
+_RUNTIME_STATUS_RE = re.compile(
+    r"\bwhat are you actually running on\b"
+    r"|\brunning on right now\b"
+    r"|\b(?:what|which|whats|what's)(?:\s+\w+){0,4}\s+model\b"
+    r"|\bmodel\s+(?:are|is|do|does)\s+(?:you|it)\b"
+    r"|\bmodel\s+(?:name|path|file|size|id|weights|quant\w*)\b"
+    r"|\b(?:running|loaded|load(?:ing)?|using|swap\w*\s+to)\s+(?:a\s+|the\s+|which\s+|what\s+)?model\b"
+    r"|\bcontext\s+(?:size|window|length)\b|\bn_ctx\b"
+    r"|\bgpu\s+layers?\b|\bn_gpu_layers\b|\boffload(?:ed|ing)?\s+layers?\b"
+    r"|\bbatch\s+size\b|\bn_batch\b"
+    r"|\b(?:how many|number of)\s+threads\b|\bthread\s+count\b|\bn_threads\b"
+    r"|\b(?:inference|model|llm|backend)\s+provider\b"
+    r"|\bwhich\s+provider\b|\bwhat\s+provider\b",
+    re.I,
+)
+
+
+__all__ = ['_RUNTIME_STATUS_RE', 'COMMON_DIRS', '_known_dir_path', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']

@@ -71,9 +71,6 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
         return _mk("RUNTIME_AUDIT", {}, 0.95, matched_by="audit.runtime.preempt",
                    need_grounding=True, task_family="grounded_audit")
 
-    if re.search(r"\b(what are you actually running on|running on right now|context size|gpu layers|threads|batch|provider)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.runtime_status_grounded_to_chat", allow_chat_without_evidence=False)
-
     # See notes on cognition.trace.chat_handoff in _route_grounded_runtime_intent.
     if re.search(r"\b(confidence in your last response|which agents contributed|agents contributed|grounded trace|trace metadata)\b", low):
         return _mk("CHAT", {"message": raw}, 0.98,

@@ -110,3 +110,20 @@ def test_new_actions_are_registered_capabilities():
     for a in ("LIST_VOICES", "DOWNLOAD_VOICE", "SET_VOICE"):
         assert a in by, f"{a} missing from manifest"
         assert by[a].get("routable") and by[a].get("in_dispatch")
+
+
+@pytest.mark.parametrize("text", [
+    "use the apa style for citations",   # the citations' style, not ELI's
+    "answer as soon as you can",         # "as ... as" asks for speed
+    "let's be serious for a second",     # a moment shared, not an instruction for ELI's persona
+    "reply as quickly as possible",
+])
+def test_an_ordinary_sentence_does_not_change_how_eli_speaks(text):
+    """Each of these was stored as ELI's standing style or tone."""
+    assert _action(text) not in ("SET_COMMUNICATION_STYLE", "SET_TONE"), text
+
+
+def test_a_style_said_to_eli_is_still_taken():
+    assert _action("can you talk to me like a butler please") == "SET_COMMUNICATION_STYLE"
+    assert _action("respond as a pirate would") == "SET_COMMUNICATION_STYLE"
+    assert _action("use a dry tone with me from now on") == "SET_TONE"

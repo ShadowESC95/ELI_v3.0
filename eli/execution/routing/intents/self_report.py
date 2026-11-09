@@ -67,7 +67,7 @@ def _pm_asks_something(low: str) -> bool:
         return True
     return bool(_ASKING_RE.search(t))
 
-from eli.execution.routing._helpers import _mk, _is_wallclock_question
+from eli.execution.routing._helpers import _RUNTIME_STATUS_RE, _mk, _is_wallclock_question
 from eli.execution.routing.memory_runtime import (
     _eli_activity_question_is_about_dev_work,
     _eli_memory_runtime_route_lock_should_trigger,
@@ -280,7 +280,13 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     ):
         return _mk("SELF_REPORT", {}, 0.99, matched_by="router.self_report_with_runtime", allow_chat_without_evidence=False)
 
-    if re.search(r"\b(what are you actually running on|running on right now|context size|gpu layers|threads|batch|provider|runtime status)\b", low):
+    # The runtime sense of each word (routing/_helpers._RUNTIME_STATUS_RE): bare "threads", "batch" and
+    # "provider" sent "who's the best internet provider in my area" here.
+    _runtime = _RUNTIME_STATUS_RE.search(low) or re.search(r"\bruntime\s+status\b", low)
+    if _runtime and "model" in _runtime.group(0):
+        return _mk("RUNTIME_STATUS", {"question": raw}, 0.99, matched_by="router.runtime_status_model_query",
+                   allow_chat_without_evidence=False)
+    if _runtime:
         return _mk("RUNTIME_STATUS", {}, 0.99, matched_by="router.runtime_status", allow_chat_without_evidence=False)
 
     if re.search(r"\bwhat(?:'s|\s+is)\s+(?:your\s+)?model\b", low):
@@ -336,21 +342,9 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(what do you know about me from memory|what do you know about me|what do you remember of me|who am i|what is my name|do you remember me|do you know me|my preferences|my persona|my ethos)\b", low):
         return _mk("USER_IDENTITY_SUMMARY", {}, 0.99, matched_by="router.user_identity_summary", allow_chat_without_evidence=False)
 
-    # Meta-questions about static profile files vs live/evolving memory — must not
-    # fall through long_question_guard → generic CHAT with a 128-token answer cap.
-    if re.search(
-        r"\b(?:hard[\s-]?coded|template|stub|static)\b.{0,80}\b(?:profile|preference|about me|memory|user info)\b"
-        r"|\b(?:dynamic|emergent|evolv\w+)\b.{0,80}\b(?:understand\w*|profile|preference|memory|you)\b"
-        r"|\babout me section\b.{0,80}\b(?:static|dynamic|template|stub|hard[\s-]?coded)\b",
-        low,
-    ):
-        return _mk(
-            "USER_IDENTITY_SUMMARY",
-            {"question": raw, "detail": "full", "include_memory_provenance": True},
-            0.99,
-            matched_by="router.user_identity_dynamic_vs_static",
-            allow_chat_without_evidence=False,
-        )
+    # Static profile vs learned understanding is route_contracts.wants_user_model_provenance, taken
+    # by the precedence stage before this one (a second copy here routed "explain dynamic memory
+    # allocation in c" to the user's profile).
 
     # Pure persona questions (no runtime keywords) → CHAT so ELI answers from
     # its own character and memory, not a raw JSON spec dump.

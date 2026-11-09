@@ -219,3 +219,14 @@ def test_an_attached_image_is_looked_at_whatever_verb_leads_the_message(image, m
     intent = eng._parse_intent(msg, [])
     assert intent["action"] == "ANALYZE_IMAGE" and intent["args"]["path"] == str(image)
     assert intent["args"]["instruction"] == "This is the screenshot you took earlier, analyse it"
+
+
+def test_the_latest_screenshot_is_the_capture_reader_s(monkeypatch, tmp_path):
+    """One owner of "the latest screenshot" (os_controller.latest_screenshot); the router kept its own scan."""
+    import eli.perception.os_controller as oc
+    from eli.execution.router_enhanced import route
+    shot = tmp_path / "Screenshot from today.png"
+    shot.write_bytes(b"\x89PNG")
+    monkeypatch.setattr(oc, "latest_screenshot", lambda *a, **k: str(shot), raising=False)
+    got = route("analyse the recent screenshot")
+    assert got["action"] == "ANALYZE_IMAGE" and got["args"]["path"] == str(shot)

@@ -306,3 +306,40 @@ def test_hardcoded_provenance_routes_explain_last_response():
 def test_fix_recall_routes_examine_code():
     assert action("how did you fix that file/LOC?") == "EXAMINE_CODE"
     assert action("which line did you change?") == "EXAMINE_CODE"
+
+
+# ── a report on ELI answers a question about ELI ──────────────────────────
+
+@pytest.mark.parametrize("text", ["what is heart failure?", "what are common failures of hard drives"])
+def test_failures_of_other_things_are_not_elis_failure_log(text):
+    assert action(text) != "EXPLAIN_FAILURE_LOG"
+
+
+@pytest.mark.parametrize("text", ["what are the failures", "show the failure log", "show me the last 20 failures",
+                                  "what failed?", "list executor failures"])
+def test_elis_own_failures_still_get_the_log(text):
+    assert action(text) == "EXPLAIN_FAILURE_LOG"
+
+
+def test_a_prior_claim_question_is_not_turned_into_the_log_by_a_count():
+    """`not X and A or B` let "\\d+ failures" fire whatever X said; a count of another thing's failures
+    is not ELI's log either."""
+    assert action("my car had 3 failures this year, is that normal?") != "EXPLAIN_FAILURE_LOG"
+
+
+@pytest.mark.parametrize("text", ["how many days until the 4th of May?", "what day of the week is the 4th of may?",
+                                  "the loan may default next month"])
+def test_a_date_in_may_is_answered_not_met_with_a_fixed_reply(text):
+    """The voice contract returned a fixed Star Wars line (shown as silence) for any of these."""
+    out = route(text)
+    assert out["action"] != "NOOP" and "may_fourth" not in str((out.get("meta") or {}).get("matched_by"))
+
+
+@pytest.mark.parametrize("text", ["who's the best internet provider in my area", "any good reddit threads about python"])
+def test_a_provider_or_threads_of_the_world_is_not_runtime_status(text):
+    assert action(text) != "RUNTIME_STATUS"
+
+
+@pytest.mark.parametrize("text", ["what model are you running", "how many threads are you using", "runtime status"])
+def test_runtime_questions_still_get_runtime_status(text):
+    assert action(text) == "RUNTIME_STATUS"
