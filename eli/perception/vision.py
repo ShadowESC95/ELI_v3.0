@@ -700,22 +700,27 @@ def describe_image(
             # Never close the RESIDENT model — it stays loaded for reuse.
             if not use_resident:
                 _close_vl(vl)
-            # Restore the text model only if we actually swapped it out. In
-            # co-resident (no_swap) mode it was never unloaded — leave it.
-            if text_was_loaded and swapped:
-                for attempt in range(2):
-                    try:
-                        gi.load_model(force_reload=True)
-                        break
-                    except Exception as re:
-                        log.debug(f"[VISION] text-model restore attempt {attempt+1} failed: {re}")
-                        time.sleep(0.5)
 
     if lock is not None:
         with lock:
             result = _run()
     else:
         result = _run()
+
+    # Restore the text model only if we actually swapped it out (in co-resident, no_swap, mode it was
+    # never unloaded), and only once the llama.cpp lock is let go. Its loader first places the
+    # embedder, which takes the vector store's embed lock; an embed running meanwhile holds that lock
+    # and waits for the llama.cpp lock, so restoring under it froze both threads for good. Out here
+    # the order is the embedder's own: embed lock, then llama.cpp lock. A text call that came in
+    # first has loaded it already, and load_model then hands that one back.
+    if text_was_loaded and swapped:
+        for attempt in range(2):
+            try:
+                gi.load_model()
+                break
+            except Exception as re:
+                log.debug(f"[VISION] text-model restore attempt {attempt+1} failed: {re}")
+                time.sleep(0.5)
 
     result["elapsed"] = round(time.time() - started, 2)
     return result
