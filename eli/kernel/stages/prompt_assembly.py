@@ -884,11 +884,6 @@ Answer:"""
                             log.debug("suppressed exception", exc_info=True)
                         _log_lines.append(f"  [{_its}] [{_i[1]}:{_i[2]}] {_suggestion[:100]}")
 
-                # error_tracking table
-                _row = _aconn.execute("SELECT COUNT(*) FROM error_tracking").fetchone()
-                _err_count = _row[0] if _row else 0
-                _log_lines.append(f"- error_tracking table: {_err_count} entries")
-
                 _aconn.close()
                 lines.extend(_log_lines)
             except Exception as _log_err:

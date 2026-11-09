@@ -293,9 +293,25 @@ def test_engine_failures_go_to_the_one_failure_record(tmp_path, monkeypatch):
     conn = sqlite3.connect(db)
     assert conn.execute("select occurrence_count from failures where error = ?", ("KeyError: 'title'",)).fetchone() == (5,)
     tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
-    if "error_tracking" in tables:
-        assert conn.execute("select count(*) from error_tracking").fetchone() == (0,)
+    assert "error_tracking" not in tables, "the second failure store is gone"
     assert notices and notices[-1]["count"] == 5
+
+
+def test_a_database_made_before_loses_the_second_failure_store_and_no_prompt_counts_it(tmp_path):
+    """Nothing writes error_tracking, and the prompt kept saying "error_tracking table: 0 entries"."""
+    import inspect
+    import sqlite3
+    from eli.memory import Memory
+    from eli.kernel.stages import prompt_assembly
+    db = tmp_path / "agent.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE error_tracking (id INTEGER PRIMARY KEY, error_type TEXT, details TEXT)")
+    conn.commit()
+    conn.close()
+    Memory(db_path=str(db), db_type="agent")
+    tables = {r[0] for r in sqlite3.connect(db).execute("select name from sqlite_master where type='table'")}
+    assert "error_tracking" not in tables and "failures" in tables
+    assert "error_tracking" not in inspect.getsource(prompt_assembly)
 
 
 def test_an_interrupted_self_repair_job_resumes_after_its_finished_steps(contained, tmp_path):

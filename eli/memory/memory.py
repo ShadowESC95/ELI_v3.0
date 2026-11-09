@@ -247,7 +247,7 @@ import re as _re_sql
 # Allowlist of known table names used in schema migrations.
 _KNOWN_TABLES: frozenset = frozenset({
     "memories", "conversation_turns", "conversations", "session_summaries",
-    "kg_entities", "kg_relations", "recall_log", "error_tracking",
+    "kg_entities", "kg_relations", "recall_log",
     "improvements", "failures", "habit_rules", "habit_events",
     "memories_fts", "self_improvements", "capabilities",
     "agent_dispatches", "proactive_insights",
@@ -255,7 +255,7 @@ _KNOWN_TABLES: frozenset = frozenset({
 
 # Written by the self-improvement engine and the proactive daemon on agent.sqlite3. Both databases are created
 # from one schema, so user.sqlite3 carries empty copies of these; reports must read them from the agent database.
-AGENT_OWNED_TABLES = ("improvements", "failures", "corrections", "capability_proposals", "error_tracking")
+AGENT_OWNED_TABLES = ("improvements", "failures", "corrections", "capability_proposals")
 
 _IDENTIFIER_RE = _re_sql.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
@@ -909,18 +909,10 @@ def _ensure_memory_schema(conn):
     for name, decl in [("source", "TEXT"), ("content", "TEXT"), ("timestamp", "REAL"), ("ts", "REAL")]:
         _add_column_if_missing(conn, "observations", name, decl)
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS error_tracking (id INTEGER PRIMARY KEY AUTOINCREMENT, error_type TEXT, details TEXT, timestamp REAL, occurrence_count INTEGER DEFAULT 1, first_seen REAL, last_seen REAL)"
-    )
-    for name, decl in [
-        ("error_type", "TEXT"),
-        ("details", "TEXT"),
-        ("timestamp", "REAL"),
-        ("occurrence_count", "INTEGER DEFAULT 1"),
-        ("first_seen", "REAL"),
-        ("last_seen", "REAL"),
-    ]:
-        _add_column_if_missing(conn, "error_tracking", name, decl)
+    # error_tracking was a second failure store: nothing writes it since every failure goes to the
+    # `failures` table (Memory.log_failure), and the prompt line that counted it said "0 entries"
+    # forever. Gone, and taken out of databases made before.
+    conn.execute("DROP TABLE IF EXISTS error_tracking")
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS user_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_type TEXT, pattern_data TEXT, timestamp REAL, ts REAL)"
@@ -1468,22 +1460,7 @@ def _ensure_full_memory_schema(conn):
     ]:
         _add_memory_column(conn, "capability_proposals", n, d)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS error_tracking (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            error_type TEXT,
-            details TEXT,
-            timestamp REAL,
-            occurrence_count INTEGER DEFAULT 1,
-            first_seen REAL,
-            last_seen REAL
-        )
-    """)
-    for n, d in [
-        ("error_type", "TEXT"), ("details", "TEXT"), ("timestamp", "REAL"),
-        ("occurrence_count", "INTEGER DEFAULT 1"), ("first_seen", "REAL"), ("last_seen", "REAL")
-    ]:
-        _add_memory_column(conn, "error_tracking", n, d)
+    conn.execute("DROP TABLE IF EXISTS error_tracking")     # the second failure store (see above)
     _ensure_owner_columns(conn)
 
 def _memory_table_columns(conn, table):
