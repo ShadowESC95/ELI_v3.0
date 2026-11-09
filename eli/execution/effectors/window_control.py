@@ -99,14 +99,22 @@ def _h_close_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
     from eli.system.process_guard import safe_pkill
 
     name = str(args.get("name") or args.get("app") or args.get("target") or "").strip()
+    if args.get("tab") and (args.get("site") or name):
+        # a site is a browser tab: never the browser's window or a signal to the browser
+        from eli.system.portable_app_control import close_tab
+        return {**close_tab(str(args.get("site") or name)), "action": a}
     if not name:
         return {"ok": False, "action": a, "error": "missing app name", "content": "Specify app to close.", "response": "Specify app to close."}
 
     # Window-scoped close first — Linux only; portable_app_control handles all OSes upstream.
+    # Its exit status says only that the window was asked: the app may be asking whether to save. It is
+    # reported closed once the app's processes are gone, as every other close is
+    # (portable_app_control._closed_once_gone), and otherwise said as it is.
     from eli.utils import platform_compat as _pc_close
     if _pc_close.LINUX and shutil.which("wmctrl") and _run_ok(["wmctrl", "-c", name]):
-        msg = f"Closed {name} via wmctrl."
-        return {"ok": True, "action": a, "content": msg, "response": msg}
+        from eli.system.portable_app_control import _closed_once_gone, _process_needles, resolve_app
+        target = resolve_app(name)
+        return {**_closed_once_gone(target, _process_needles(target), "its window"), "action": a}
 
     # Then process kills, exact name before command line, both verified, and only when the user said
     # to force it: a signal skips the app's own "save your changes?". Without force, processes the

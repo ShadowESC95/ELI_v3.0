@@ -128,6 +128,50 @@ def _resolve_media_target(target: str | None, command: Optional[str] = None) -> 
     return alias   # e.g. "spotify", "vlc"
 
 
+# Transport commands that need the named player running to mean anything: resume, skip, shuffle and
+# repeat. A pause or stop of a player that is not running has nothing to do, and says so (_NOT_RUNNING).
+_STARTS_THE_PLAYER = frozenset({"play", "next", "previous", "shuffle", "loop"})
+
+
+def _start_named_player(target: str | None, command: str) -> Optional[Dict[str, Any]]:
+    """A transport command on a named app that is not running ("next on spotify" with Spotify closed):
+    start it (portable_app_control.open_app, which waits until it is ready) and wait for its media
+    player to appear, so the command reaches it. None to go on; a result when it could not be
+    started, said as that. A site in a browser is not an app to start."""
+    alias = _TARGET_ALIASES.get(str(target or "").lower().strip())
+    if not alias or alias == "browser" or command not in _STARTS_THE_PLAYER:
+        return None
+    from eli.system import portable_app_control as pac
+    app = pac.resolve_app(alias)
+    needles = pac._process_needles(app)
+    if pac._app_running(needles, loose=False):
+        return None
+    opened = pac.open_app(alias)
+    if not (isinstance(opened, dict) and opened.get("ok")):
+        why = str((opened or {}).get("content") or (opened or {}).get("error") or "it could not be started")
+        msg = f"{alias} is not running, and starting it failed: {why}"
+        return {"ok": False, "error": "player_not_started", "cause": "missing_resource", "content": msg,
+                "response": msg, "player": alias}
+    # its media player name comes up after its window (MPRIS on Linux): wait for it, within the bound
+    # measured for this app
+    try:
+        from eli.integrations.mpris import playerctl_backend as pb
+        if pb._has("playerctl"):
+            import time as _time
+            key = f"player:{alias}"
+            start = _time.monotonic()
+            deadline = start + pac.wait_bound("open", key)
+            while not any(p.lower().split(".")[0] == alias for p in pb.list_players()):
+                if _time.monotonic() >= deadline:
+                    break
+                _time.sleep(pac._POLL_S)
+            else:
+                pac._record_timing("open", key, _time.monotonic() - start)
+    except Exception:
+        log.debug("player name not awaited", exc_info=True)
+    return None
+
+
 def _targets_mpv(target: str | None) -> bool:
     """True when controls should go to the headless YouTube mpv: it's the active ELI
     source and alive, and the user didn't explicitly name a different player."""
@@ -1397,6 +1441,11 @@ def _h_media_control(a, args):
     }
     mapped = cmd_map.get(cmd)
     if mapped:
+        _not_started = _start_named_player(target, {"PLAY_MEDIA": "play", "NEXT_MEDIA": "next",
+                                                    "PREVIOUS_MEDIA": "previous", "SHUFFLE_MEDIA": "shuffle",
+                                                    "REPEAT_MEDIA": "loop"}.get(mapped, ""))
+        if _not_started:
+            return {**_not_started, "action": a}
         forwarded = dict(args)
         forwarded["_target"] = target
         if target and mapped == "PAUSE_MEDIA":
@@ -1467,17 +1516,17 @@ def _h_play_media(action, args):
         # `kind` (track, album, episode, ...) when the router or the model read it; else the request's
         # own words are read (spotify_intent.media_request).
         return play_specific(query, target, browser=browser, kind=str(args.get("kind") or "") or None)
-    return play_media(target)
+    return _start_named_player(target, "play") or play_media(target)
 
 
 def _h_shuffle_media(action, args):
     target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-    return shuffle_media(target=target, state=args.get("state"))
+    return _start_named_player(target, "shuffle") or shuffle_media(target=target, state=args.get("state"))
 
 
 def _h_repeat_media(action, args):
     target = (args.get("target") or args.get("app") or args.get("player") or "").strip() or None
-    return repeat_media(target=target)
+    return _start_named_player(target, "loop") or repeat_media(target=target)
 
 
 for _action, _fn in {
@@ -1485,8 +1534,10 @@ for _action, _fn in {
     "STOP_MEDIA": lambda a, args: stop_media(_media_target(args)),
     "PAUSE_MEDIA": lambda a, args: pause_media(_media_target(args)),
     "NOW_PLAYING": lambda a, args: now_playing(),
-    "NEXT_MEDIA": lambda a, args: next_media(_media_target(args)),
-    "PREVIOUS_MEDIA": lambda a, args: previous_media(_media_target(args)),
+    "NEXT_MEDIA": lambda a, args: (_start_named_player(_media_target(args), "next")
+                                   or next_media(_media_target(args))),
+    "PREVIOUS_MEDIA": lambda a, args: (_start_named_player(_media_target(args), "previous")
+                                       or previous_media(_media_target(args))),
     "SHUFFLE_MEDIA": _h_shuffle_media,
     "REPEAT_MEDIA": _h_repeat_media,
 }.items():

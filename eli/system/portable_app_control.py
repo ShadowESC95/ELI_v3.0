@@ -659,6 +659,49 @@ def close_app(name: str, force: bool = False) -> dict:
     return _result(False, "CLOSE_APP", f"Could not close app/window: {name}", resolved=target.__dict__)
 
 
+def _close_front_tab() -> bool:
+    """The browser's own close-tab key, sent to the window in front (Ctrl+W, Cmd+W on macOS)."""
+    sysname = _system()
+    if sysname == "linux":
+        return _xdotool_key("ctrl+w")
+    if sysname == "windows":
+        return _windows_send_keys("^w")
+    if sysname == "darwin":
+        return _macos_keystroke("^w")
+    return False
+
+
+def close_tab(site: str) -> dict:
+    """Close the browser tab showing `site`: its window brought to the front (by the title, which a
+    browser sets to the tab shown), checked to be in front, then the browser's own close-tab key, and
+    reported closed only once no window shows it. Never the browser's window or a signal to the
+    browser: a site is a tab, and closing the window or ending the process took every other tab with
+    it. A tab that is not the one shown in its window cannot be reached by title, and is said so."""
+    site = str(site or "").strip()
+    if not site:
+        return _result(False, "CLOSE_APP", "No site named to close.")
+    focus_app(site)
+    if not active_window_matches(site):
+        return _result(False, "CLOSE_APP",
+                       f"{site} is a browser tab, and no browser window showing it could be brought to the "
+                       f"front, so nothing was closed. Bring its tab to the front and ask again.",
+                       site=site, tab=True, handled=True)
+    if not _close_front_tab():
+        return _result(False, "CLOSE_APP", f"Could not send the browser its close-tab key for {site}.",
+                       site=site, tab=True, handled=True)
+    import time as _time
+    deadline = _time.monotonic() + wait_bound("close", f"tab:{site.lower()}")
+    start = _time.monotonic()
+    while active_window_matches(site):
+        if _time.monotonic() >= deadline:
+            return _result(False, "CLOSE_APP",
+                           f"Sent the browser its close-tab key, but a window still shows {site}.",
+                           site=site, tab=True, handled=True)
+        _time.sleep(_POLL_S)
+    _record_timing("close", f"tab:{site.lower()}", _time.monotonic() - start)
+    return _result(True, "CLOSE_APP", f"Closed the {site} tab.", site=site, tab=True)
+
+
 def needs_force(name: str, **extra) -> dict:
     """The answer for an app that is running where only a signal would end it: nothing is signalled,
     because a signal skips the app's own "save your changes?". The user can say to force it."""
@@ -932,6 +975,7 @@ def _macos_keystroke(keys: str) -> bool:
         "%+{TAB}": 'tell application "System Events" to keystroke tab using {command down, shift down}',
         "^{Left}": 'tell application "System Events" to key code 123 using {control down}',
         "^{Right}": 'tell application "System Events" to key code 124 using {control down}',
+        "^w": 'tell application "System Events" to keystroke "w" using {command down}',   # close the tab
     }
     script = mapping.get(keys)
     if not script:

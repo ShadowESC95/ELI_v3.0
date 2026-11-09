@@ -368,3 +368,33 @@ def test_the_shuffle_action_passes_the_state_it_was_asked_for(monkeypatch):
     media._h_shuffle_media("SHUFFLE_MEDIA", {})
     media._h_media_control("MEDIA_CONTROL", {"command": "shuffle", "state": True})
     assert asked == ["Off", "Toggle", "On"]
+
+
+def test_a_transport_command_on_a_named_player_that_is_not_running_starts_it_first(monkeypatch):
+    """"next on spotify" with Spotify closed went to whatever player was there, or to none. The named
+    app is started (and its player waited for) before the command; a pause or stop has nothing to do
+    and starts nothing; an app that cannot be started is said so."""
+    from eli.execution.effectors import media
+    import eli.system.portable_app_control as pac
+    from eli.integrations.mpris import playerctl_backend as pb
+    running, opened, sent = {"spotify": False}, [], []
+    monkeypatch.setattr(pac, "_app_running", lambda needles, loose=True: running["spotify"])
+    monkeypatch.setattr(pac, "open_app", lambda name: opened.append(name) or running.update(spotify=True) or {"ok": True})
+    monkeypatch.setattr(pac, "wait_bound", lambda kind, key: 0.0)
+    monkeypatch.setattr(pac, "_record_timing", lambda *a, **k: None)
+    monkeypatch.setattr(pb, "_has", lambda tool: True)
+    monkeypatch.setattr(pb, "list_players", lambda: ["spotify"] if running["spotify"] else [])
+    monkeypatch.setattr(media, "next_media", lambda target=None: sent.append(("next", target)) or {"ok": True})
+    monkeypatch.setattr(media, "pause_media", lambda target=None: sent.append(("pause", target)) or {"ok": True})
+    media._h_media_control("MEDIA_CONTROL", {"command": "pause", "target": "spotify"})
+    assert opened == [] and sent == [("pause", "spotify")], "a pause started the player"
+    sent.clear()
+    from eli.execution.effectors.registry import get as _effector
+    _effector("NEXT_MEDIA")("NEXT_MEDIA", {"target": "spotify"})
+    assert opened == ["spotify"] and sent == [("next", "spotify")]
+    running["spotify"] = False
+    monkeypatch.setattr(pac, "open_app", lambda name: {"ok": False, "content": "no such app here"})
+    sent.clear()
+    out = media._h_media_control("MEDIA_CONTROL", {"command": "next", "target": "spotify"})
+    assert out["ok"] is False and out["cause"] == "missing_resource" and "no such app here" in out["content"]
+    assert sent == []

@@ -249,3 +249,53 @@ def test_the_close_effector_signals_an_app_only_when_told_to_force_it(monkeypatc
         assert signalled == [], "a plain close signalled the app"
         assert r["ok"] is False and r["needs_force"] and r["handled"] and r["action"] == "CLOSE_APP"
         assert "force close a drawing app" in r["content"]
+
+
+def test_a_window_asked_to_close_is_reported_closed_only_once_the_app_is_gone(monkeypatch):
+    """`wmctrl -c` exiting 0 was reported "Closed": it only asks the window, and the app may be asking
+    whether to save. Closed once its processes are gone; otherwise said as it is."""
+    from eli.execution.effectors import window_control as wc
+    import eli.system.portable_app_control as pac
+    from eli.utils import platform_compat
+    monkeypatch.setattr(platform_compat, "LINUX", True)
+    monkeypatch.setattr(wc.shutil, "which", lambda c, *a, **k: "/usr/bin/wmctrl" if c == "wmctrl" else None)
+    monkeypatch.setattr(wc, "_run_ok", lambda argv, *a, **k: True)
+    monkeypatch.setattr(pac, "wait_bound", lambda kind, key: 0.0)
+    monkeypatch.setattr(pac, "_record_timing", lambda *a, **k: None)
+    running = [True]
+    monkeypatch.setattr(pac, "_app_running", lambda needles, loose=True: running[0])
+    still = wc._h_close_app("CLOSE_APP", {"name": "a drawing app"})
+    assert still["ok"] is False and still["handled"] and "still open" in still["content"]
+    running[0] = False
+    gone = wc._h_close_app("CLOSE_APP", {"name": "a drawing app"})
+    assert gone["ok"] is True and gone["action"] == "CLOSE_APP"
+
+
+def test_a_site_is_closed_as_its_tab_never_the_browser(monkeypatch):
+    """"close <site>" closed the browser's whole window (wmctrl -c on the window whose title showed it)
+    or ended the browser: every other tab went with it. The tab is brought to the front, checked, and
+    closed with the browser's own key; one that cannot be brought to the front is said so."""
+    import eli.system.portable_app_control as pac
+    from eli.execution.effectors import window_control as wc
+    from eli.execution.executor_enhanced import execute
+    keys, signalled, front = [], [], {"shows": False}
+    monkeypatch.setattr(pac, "_system", lambda: "linux")
+    monkeypatch.setattr(pac, "focus_app", lambda name: {"ok": True})
+    monkeypatch.setattr(pac, "active_window_matches", lambda name: front["shows"])
+    monkeypatch.setattr(pac, "_xdotool_key", lambda k: keys.append(k) or front.update(shows=False) or True)
+    monkeypatch.setattr(pac, "wait_bound", lambda kind, key: 0.0)
+    monkeypatch.setattr(pac, "_record_timing", lambda *a, **k: None)
+    monkeypatch.setattr(pac, "close_app", lambda *a, **k: signalled.append(("close_app", a)) or {"ok": True})
+    monkeypatch.setattr(pg, "safe_pkill", lambda *a, **k: signalled.append(("pkill", a)) or {"ok": True})
+    monkeypatch.setattr(wc, "_run_ok", lambda argv, *a, **k: signalled.append(("run", argv)) or True)
+    args = {"name": "a-video-site.com", "target": "a-video-site.com", "site": "a-video-site.com", "tab": True}
+    r = execute("CLOSE_APP", dict(args))
+    assert r["ok"] is False and r["handled"] and keys == [] and "front" in r["content"]
+    front["shows"] = True
+    r = execute("CLOSE_APP", dict(args))
+    assert r["ok"] is True and keys == ["ctrl+w"] and r["tab"] is True
+    front["shows"] = True
+    keys.clear()
+    r = wc._h_close_app("CLOSE_APP", dict(args))
+    assert r["ok"] is True and keys == ["ctrl+w"]
+    assert signalled == [], "the browser's window or process was reached"

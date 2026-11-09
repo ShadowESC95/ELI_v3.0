@@ -7290,6 +7290,11 @@ except NameError:
             return None
 
         if action_name in {"CLOSE_APP", "QUIT_APP", "EXIT_APP", "CLOSE_APPLICATION"}:
+            # A site is a browser tab (the router says so with `tab` and `site`): closed as a tab, never
+            # by closing the browser's window or ending its process, which took every other tab too.
+            if data.get("tab") and (data.get("site") or data.get("name")):
+                from eli.system.portable_app_control import close_tab
+                return close_tab(str(data.get("site") or data.get("name")))
             from eli.system.portable_app_control import close_app
             _r = close_app(
                 data.get("name") or data.get("target") or data.get("app") or "",
