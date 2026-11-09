@@ -189,6 +189,22 @@ def is_endorsement(text: str) -> bool:
     return not is_answer_correction(s)
 
 
+# A sentence that opens by saying no ("no, I live in Lisbon now", "nope, Tuesdays"). On its own it
+# is no verdict on the whole answer ("No I think you're right" opens agreement), so it never settles
+# a reply (is_answer_correction leaves it out); it denies what the rest of the message speaks of,
+# which is how a claim about the user is corrected (eli/kernel/engine._settle_recall_outcome).
+_DENIAL_RE = re.compile(r"(?:^|[.!?]\s+)(?:no|nope|nah)\b(?![-'’])", re.I)
+_SAYS_RIGHT_RE = re.compile(r"\b(?<!not )(?:you(?:'re|’re| are)\s+right|(?:that's|that is)\s+(?:right|it)|correct|"
+                            r"exactly|spot on|i\s+agree)\b", re.I)
+
+
+def denies(text: str) -> bool:
+    """The message opens a sentence with a no and nowhere says the answer was right: a denial of
+    what it goes on to speak of."""
+    s = str(text or "")
+    return bool(_DENIAL_RE.search(s)) and not _SAYS_RIGHT_RE.search(s)
+
+
 def is_correction_query(text: str) -> bool:
     s = str(text or "")
     if is_news_fetch_complaint(s):

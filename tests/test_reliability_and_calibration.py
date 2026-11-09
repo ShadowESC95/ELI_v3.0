@@ -182,6 +182,17 @@ def test_an_aside_a_new_request_or_the_users_news_settles_nothing():
         assert is_answer_correction(said), said
 
 
+def test_a_plain_no_denies_what_it_speaks_of_and_agreement_is_no_denial():
+    """'no, I live in Lisbon now' is no verdict on a whole reply, but it denies what it goes on to say
+    (a claim about the user); 'No I think you're right' denies nothing."""
+    from eli.cognition.correction_patterns import denies
+    for said in ("no, I live in Lisbon now", "Nope. Tuesdays, not Mondays", "ok. no, that's not correct"):
+        assert denies(said), said
+    for said in ("No I think you're right", "no, that's right", "I know nothing about it", "nobody asked",
+                 "no-one told me", "thanks"):
+        assert not denies(said), said
+
+
 # ── the model's own confidence in the tokens of a reply, read beside the score ──────────────────
 # gguf_inference records, for each user-facing generation, how sure the model was of the tokens it
 # chose (epistemics.FEATURES); the fit weighs each figure by what the outcomes have shown it to tell.

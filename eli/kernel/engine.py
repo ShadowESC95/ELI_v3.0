@@ -4609,8 +4609,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 log.debug("route not settled", exc_info=True)
         # The claims about the user the last reply rested on: an endorsement settles them all right; a
         # correction settles wrong the ones it speaks of (its words share the claim's), and leaves the
-        # rest open, since a reply corrected on one point was not wrong on every claim it used.
+        # rest open, since a reply corrected on one point was not wrong on every claim it used. A
+        # plain no that goes on to speak of a claim ("no, I live in Lisbon now") corrects that claim,
+        # though it is no verdict on the whole reply.
         if claims:
+            from eli.cognition.correction_patterns import denies
             from eli.cognition.scoring import tokenize
             from eli.execution.route_contracts import _same_word
             said = set(tokenize(user_input))
@@ -4626,7 +4629,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 if endorsed and not corrected:
                     epistemics.settle(rid, True, how="endorsement", kind=epistemics.CLAIM)
                     thoughts.settle(rid, "right", how="endorsement")
-                elif corrected and _speaks_of(claim):
+                elif (corrected or denies(user_input)) and _speaks_of(claim):
                     epistemics.settle(rid, False, how="correction", kind=epistemics.CLAIM)
                     thoughts.settle(rid, "wrong", how="correction")
                     # a claim the user corrected is a surprise about what it was about
