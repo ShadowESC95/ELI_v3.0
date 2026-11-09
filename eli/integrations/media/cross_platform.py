@@ -134,8 +134,8 @@ def spotify_launch_if_needed() -> bool:
         return True
     try:
         from eli.execution.media_runtime import open_spotify
-        msg = open_spotify()
-        return "Could not open" not in str(msg)
+        msg = open_spotify()      # it waits for Spotify to come up (spotify_wait_launched)
+        return "Could not open" not in str(msg) and "has not come up" not in str(msg)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     if pc.MACOS:
@@ -146,6 +146,69 @@ def spotify_launch_if_needed() -> bool:
     if pc.ANDROID:
         return _android_open_uri("spotify:")
     return False
+
+
+# How long a launched Spotify has to come up (register its MPRIS name, or show as running elsewhere).
+# Until a launch has been timed on this machine it gets FIRST_LAUNCH_ALLOWANCE_S, the wait the play
+# paths have always given it; after that LAUNCH_MARGIN times the slowest launch seen here, since the
+# slowest start (a cold disk, a login rush) is the one that comes again.
+FIRST_LAUNCH_ALLOWANCE_S = 8.0
+LAUNCH_MARGIN = 2.0
+
+
+def _launch_record():
+    from eli.core.paths import get_paths
+    return get_paths().artifacts_dir / "runtime" / "launch_times.json"
+
+
+def launch_deadline(app: str = "spotify") -> float:
+    """Seconds to wait for `app` to come up after it is launched, from its launches timed here."""
+    try:
+        longest = float((json.loads(_launch_record().read_text(encoding="utf-8")).get(app) or {}).get("longest") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        longest = 0.0
+    return LAUNCH_MARGIN * longest if longest > 0 else FIRST_LAUNCH_ALLOWANCE_S
+
+
+def note_launch(app: str, seconds: float) -> None:
+    """Keep how long a launch took to come up, for the next deadline."""
+    path = _launch_record()
+    try:
+        record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        record = {}
+    seen = dict(record.get(app) or {})
+    seen.update({"longest": max(float(seen.get("longest") or 0.0), float(seconds)), "last": float(seconds),
+                 "launches": int(seen.get("launches") or 0) + 1})
+    record[app] = seen
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, indent=1), encoding="utf-8")
+    except OSError:
+        log.debug("launch time not kept", exc_info=True)
+
+
+def spotify_ready() -> bool:
+    """Spotify can take commands: on Linux its MPRIS name is on the session bus (a process alone is not
+    enough: commands sent before the name is there go nowhere); elsewhere its process runs."""
+    if pc.LINUX and shutil.which("playerctl"):
+        ok, out, _ = _run(["playerctl", "--list-all"], timeout=3)
+        return ok and any(line.strip().lower().startswith("spotify") for line in out.splitlines())
+    return spotify_running()
+
+
+def spotify_wait_launched(started: float | None = None) -> bool:
+    """After a launch: True once Spotify is ready, within the deadline its past launches set; the time
+    it took is kept. False when it did not come up in time."""
+    began = time.monotonic() if started is None else float(started)
+    deadline = began + launch_deadline("spotify")
+    while True:
+        if spotify_ready():
+            note_launch("spotify", time.monotonic() - began)
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
 
 
 def spotify_running() -> bool:

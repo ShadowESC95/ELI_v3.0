@@ -75,3 +75,38 @@ def test_spotify_play_delegates_to_original_executor():
 
     assert calls == [("PLAY_MEDIA", {"target": "spotify", "query": "dmx"})]
     assert result["response"] == "Playing on Spotify"
+
+
+# ── "open spotify" says it opened once Spotify can take commands ─────────────────────────────────
+from eli.execution.media_runtime import open_spotify as _real_open_spotify  # noqa: E402 (before the test stub)
+
+
+def _clock(monkeypatch, tmp_path):
+    from eli.integrations.media import cross_platform as cp
+    monkeypatch.setattr(cp, "_launch_record", lambda: tmp_path / "launch_times.json")
+    now = {"t": 0.0}
+    monkeypatch.setattr(cp.time, "monotonic", lambda: now["t"])
+    monkeypatch.setattr(cp.time, "sleep", lambda s: now.update(t=now["t"] + s))
+    return now
+
+
+def test_open_spotify_waits_until_spotify_is_up_and_learns_how_long_it_took(monkeypatch, tmp_path):
+    from eli.integrations.media import cross_platform as cp
+    now = _clock(monkeypatch, tmp_path)
+    import eli.execution.media_runtime as mr2
+    monkeypatch.setattr(mr2, "_launch_spotify", lambda: "Opened app: spotify")
+    monkeypatch.setattr(cp, "spotify_ready", lambda: now["t"] >= 3.0)
+    assert _real_open_spotify() == "Opened app: spotify"
+    assert now["t"] >= 3.0
+    assert cp.launch_deadline("spotify") == cp.LAUNCH_MARGIN * 3.0
+
+
+def test_open_spotify_that_never_comes_up_is_not_called_open(monkeypatch, tmp_path):
+    from eli.integrations.media import cross_platform as cp
+    _clock(monkeypatch, tmp_path)
+    import eli.execution.media_runtime as mr2
+    monkeypatch.setattr(mr2, "_launch_spotify", lambda: "Opened app: spotify")
+    monkeypatch.setattr(cp, "spotify_ready", lambda: False)
+    monkeypatch.setattr(cp, "launch_deadline", lambda app="spotify": 5.0)
+    said = _real_open_spotify()
+    assert said.startswith("Started spotify, but it has not come up")

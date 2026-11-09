@@ -243,6 +243,23 @@ def youtube_play(query: str) -> str:
 
 
 def open_spotify() -> str:
+    """Launch Spotify and say it opened only once it can take commands: "open spotify and play X" sent
+    the play the moment the launcher process started, to a player that was not there yet."""
+    import time as _time
+    from eli.integrations.media.cross_platform import launch_deadline, spotify_ready, spotify_wait_launched
+
+    if spotify_ready():
+        return "Opened app: spotify"
+    started = _time.monotonic()
+    said = _launch_spotify()
+    if said.startswith("Could not open"):
+        return said
+    if spotify_wait_launched(started):
+        return said
+    return f"Started spotify, but it has not come up after {launch_deadline('spotify'):.0f} s."
+
+
+def _launch_spotify() -> str:
     from eli.utils import platform_compat as _pc
 
     if _pc.LINUX:
