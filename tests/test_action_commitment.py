@@ -179,3 +179,20 @@ def test_retrospective_or_negated_verbs_are_not_commitments():
     # A genuine forward commitment still fires.
     assert d("Let me verify the current schedule for you")
     assert d("I'll search the web for the release date")
+
+
+# ── a correction that repeats an instruction carries it out ──────────────────────────────────────
+from eli.runtime.action_commitment import corrected_action
+
+
+def test_an_instruction_said_again_after_i_said_is_carried_out():
+    """Live: "i said play the … movie on <site>!" went to chat, and the model refused on its own."""
+    import time as _t
+    fix = corrected_action("i said play the movie on someflix.example!", {"action": "PAUSE_MEDIA", "args": {}, "ts": _t.time()})
+    assert fix and fix["action"] == "PLAY_MEDIA" and fix["args"].get("target") == "someflix.example"
+    fix = corrected_action("no, open the downloads folder", None)
+    assert fix and fix["action"] != "CHAT"
+
+
+def test_a_correction_that_asks_is_not_an_instruction():
+    assert corrected_action("i said what time is it?", None) is None

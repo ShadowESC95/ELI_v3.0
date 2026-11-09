@@ -33,8 +33,15 @@ WHAT_JUST_HAPPENED = (r"\bwhat\s+(?:the\s+\w+\s+|on\s+earth\s+)?(?:has\s+)?just\
                       r"|\bwhat\s+(?:the\s+\w+|on\s+earth)\s+happened\b"
                       r"|\bwhat\s+happened\s+(?:there|just\s+now|then|just\s+then)\b")
 
+# Every auxiliary a "why ... you" question can turn on: "why could you not tell me that the first
+# time?" asks about ELI as much as "why didn't you".
+_AUX = (r"(?:did|didn'?t|do|don'?t|does|doesn'?t|are|aren'?t|were|weren'?t|is|isn'?t|was|wasn'?t|have|haven'?t|has|"
+        r"hasn'?t|had|keep|kept|can|can'?t|cannot|could|could ?n'?t|would|would ?n'?t|will|won'?t|should|should ?n'?t)")
+
 _OWN_BEHAVIOUR_RE = re.compile(
-    r"\bwhy\b[^.?!]{0,40}\b(?:did|do|are|were|would|have|keep|can'?t|could ?n'?t|is|does)\b[^.?!]{0,12}\byou(?:r)?\b"
+    r"\bwhy\b[^.?!]{0,40}\b" + _AUX + r"\b[^.?!]{0,12}\byou(?:r)?\b"
+    # how long ELI took is ELI's behaviour: "took you nearly 2 minutes to figure that out?"
+    r"|\b(?:took|takes|taking|taken)\s+you\b"
     r"|\bwhat(?:'?s| is| was| has been| went)?\s+(?:going on|wrong|happening|happened)\b[^.?!]{0,30}\b(?:with\s+)?you(?:r)?\b"
     r"|\bwhat\s+(?:went|is going|has been going)\s+wrong\b"
     r"|\bwhat(?:'?s| is| are)\s+with\s+(?:all\s+)?(?:the|these|those|this|your)\s+(?:issues?|problems?|errors?|bugs?|mistakes?|failures?)\b"
@@ -113,9 +120,20 @@ christ come ok okay man dude bro mate sake for are you your me i am do does did 
 """.split())
 
 
+# ELI's name said to it: "what the fuck eli?", "eli, why did you do that". An address, not a subject.
+_VOCATIVE = re.compile(r"^\W*(?:(?:hey|hi|yo|oi|ok|okay|so|and|but)\W+)?eli\b[\s,:;.!-]*|[\s,;-]+eli\s*(?=[?!.…]*\W*$)"
+                       r"|,\s*eli\s*,", re.I)
+
+
+def without_address(text: Any) -> str:
+    """The message without ELI's name where it only calls ELI."""
+    return _VOCATIVE.sub(lambda m: "" if m.start() == 0 else ("," if m.group(0).strip().endswith(",") else ""),
+                         str(text or "")).strip()
+
+
 def reacts_to_last_reply(text: Any) -> bool:
     """A short question or exclamation with no subject of its own: a reaction to what ELI just did."""
-    low = str(text or "").lower()
+    low = without_address(text).lower()
     if not re.search(r"[?!]|\b(?:wtf|why|huh|seriously|really)\b", low):
         return False
     words = re.findall(r"[a-z']+", low)
@@ -132,8 +150,9 @@ def subject_words(text: Any) -> List[str]:
 def asks_about_own_behaviour(text: Any) -> bool:
     """A question about what ELI did, why, or what it logs, a complaint about it, or a bare reaction
     to its last reply: the turns where it invents."""
-    return (bool(_OWN_BEHAVIOUR_RE.search(str(text or ""))) or complains_about_eli(text)
-            or reacts_to_last_reply(text))
+    said = without_address(text)
+    return (bool(_OWN_BEHAVIOUR_RE.search(said)) or complains_about_eli(said)
+            or reacts_to_last_reply(said))
 
 
 # ── the turn record ──────────────────────────────────────────────────────────
@@ -187,8 +206,9 @@ def _user_turns(mem: Any, since: float, user_id: str) -> List[Dict[str, Any]]:
         return []
 
 
-def turn_record_lines(mem: Any, *, user_id: str = "", limit: int = 8, now: Optional[float] = None) -> List[str]:
-    """Recent turns as the pipeline recorded them, oldest first, each with what was asked."""
+def recent_turn_rows(mem: Any, *, user_id: str = "", limit: int = 8) -> List[Dict[str, Any]]:
+    """Recent turns as the pipeline recorded them, oldest first: the audit row (action, ok, outcome,
+    ts, elapsed_ms, reasoning_mode) with `asked`, what the user said for it."""
     try:
         from eli.runtime import orchestrator_audit_ledger as oal
         oal.flush(1.0)
@@ -200,22 +220,135 @@ def turn_record_lines(mem: Any, *, user_id: str = "", limit: int = 8, now: Optio
     rows = list(reversed(rows[:limit]))
     if not rows:
         return []
-    from eli.cognition.evidence_format import turn_stamp
-    said = _user_turns(mem, float(rows[0]["ts"] or 0) - 900, user_id)
-    lines = []
+    said = _user_turns(mem, float(rows[0]["ts"] or 0) - 900, user_id) if mem is not None else []
+    out = []
     for r in rows:
         end = float(r.get("ts") or 0)
         start = end - float(r.get("elapsed_ms") or 0) / 1000.0 - 5
         asked = next((t for t in reversed(said) if start <= float(t.get("timestamp") or 0) <= end), None)
-        quote = ""
-        if asked:
-            words = " ".join(str(asked.get("content") or "").split())
-            quote = f" “{words[:90]}{'…' if len(words) > 90 else ''}”"
+        out.append(dict(r, asked=" ".join(str((asked or {}).get("content") or "").split())))
+    return out
+
+
+def turn_record_lines(mem: Any, *, user_id: str = "", limit: int = 8, now: Optional[float] = None) -> List[str]:
+    """Recent turns as the pipeline recorded them, oldest first, each with what was asked."""
+    return format_turn_rows(recent_turn_rows(mem, user_id=user_id, limit=limit), now=now)
+
+
+def format_turn_rows(rows: List[Dict[str, Any]], *, now: Optional[float] = None) -> List[str]:
+    """recent_turn_rows as the lines the model and the claim check read."""
+    from eli.cognition.evidence_format import turn_stamp
+    lines = []
+    for r in rows:
+        words = r["asked"]
+        quote = f" “{words[:90]}{'…' if len(words) > 90 else ''}”" if words else ""
         took = float(r.get("elapsed_ms") or 0) / 1000.0
         outcome = str(r.get("outcome") or "").strip()
-        lines.append(f"[{turn_stamp(end, now)}]{quote} -> {r.get('action') or '?'} "
+        lines.append(f"[{turn_stamp(float(r.get('ts') or 0), now)}]{quote} -> {r.get('action') or '?'} "
                      f"({r.get('reasoning_mode') or 'quick'}, {took:.0f} s): {outcome or 'ok'}")
     return lines
+
+
+# What ELI's last actions were about, for a message that refers to one of them without saying "you
+# did" in so many words: "i seen you take a screenshot, so what is the actual issue?" right after a
+# screen capture that failed was sent to the web, and the reply invented what had gone wrong.
+_NOT_A_REFERENT = frozenset("""about again also back bit come else even ever from going got have here into just know
+like look made make more much need only over really said same seen some still such than that them then there these
+they thing things this those through time today very want well were what when where which while will with would
+your yours actual actually issue issues problem problems wrong right first last next""".split())
+
+
+def _words_of(text: str) -> set:
+    return {w for w in re.findall(r"[a-z][a-z0-9']{3,}", str(text or "").lower()) if w not in _NOT_A_REFERENT}
+
+
+def _shares_a_word(a: Iterable[str], b: Iterable[str]) -> bool:
+    from eli.execution.route_contracts import _same_word
+    b = list(b)
+    return any(_same_word(x, y) for x in a for y in b)
+
+
+def _what_an_action_is_about(row: Dict[str, Any]) -> set:
+    """The words of what a recorded turn did: its action's name and what the catalogue says it does,
+    and any action it also carried out. Not the words of what it acted on: after "play harbour bells
+    by orlo", "is orlo still touring?" asks about the band, not about ELI."""
+    names = [str(row.get("action") or "")]
+    names += re.findall(r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b", str(row.get("outcome") or ""))
+    names = [n for n in dict.fromkeys(n.upper() for n in names) if n and n != "CHAT"]
+    if not names:
+        return set()
+    try:
+        from eli.tools.registry.capabilities_doc import action_words
+        about = " ".join(action_words(n, with_phrases=False) for n in names)
+    except ImportError:
+        about = ""
+    return _words_of(" ".join(n.replace("_", " ") for n in names) + " " + about)
+
+
+def names_a_recent_action(text: Any, rows: List[Dict[str, Any]], *, now: Optional[float] = None) -> bool:
+    """Whether a message names what an action ELI ran just before it was about ("these files" after a
+    file was read, "a screenshot" after a screen read), request or question alike."""
+    from eli.runtime.action_commitment import REDO_MAX_AGE_S
+    at = time.time() if now is None else float(now)
+    words = _words_of(without_address(text))
+    return bool(words) and any(_shares_a_word(words, _what_an_action_is_about(r)) for r in rows
+                               if at - float(r.get("ts") or 0) <= REDO_MAX_AGE_S)
+
+
+def refers_to_recent_action(text: Any, rows: List[Dict[str, Any]], *, now: Optional[float] = None) -> bool:
+    """Whether a message is about an action ELI ran just before it, read from the record: it names
+    what that action was about, or it reacts to one that failed. A message that tells ELI to do
+    something is a request, not a question about what it did ("take another screenshot")."""
+    said = without_address(text)
+    if not said or not rows:
+        return False
+    try:
+        from eli.runtime.command_splitter import tells_eli_to_do
+        if tells_eli_to_do(said):
+            return False
+    except ImportError:
+        pass
+    from eli.runtime.action_commitment import REDO_MAX_AGE_S
+    at = time.time() if now is None else float(now)
+    recent = [r for r in rows if at - float(r.get("ts") or 0) <= REDO_MAX_AGE_S]
+    words = _words_of(said)
+    for r in reversed(recent):
+        about = _what_an_action_is_about(r)
+        if about and _shares_a_word(words, about):
+            return True
+    last = recent[-1] if recent else None
+    asks = bool(re.search(r"[?!]", said)) and bool(re.search(r"\b(?:you|your|yourself)\b", said, re.I))
+    return bool(last) and not last.get("ok", True) and (asks or reacts_to_last_reply(said))
+
+
+def about_eli(text: Any, *, mem: Any = None, user_id: str = "") -> bool:
+    """Whether a message is about ELI's own behaviour: its wording says so (asks_about_own_behaviour),
+    or what ELI just did does (refers_to_recent_action). Read once a turn: the answer is kept on the
+    turn for every check that asks."""
+    said = str(text or "")
+    if asks_about_own_behaviour(said):
+        return True
+    try:
+        from eli.kernel.request_context import turn_facts_var
+        facts = turn_facts_var.get()
+    except ImportError:
+        facts = None
+    if not (facts or {}).get("request_id"):
+        return False             # no turn the pipeline is recording: no record to read
+    kept = facts.get("_about_eli")
+    if isinstance(kept, dict) and kept.get("text") == said:
+        return bool(kept.get("is"))
+    if mem is None:
+        try:
+            from eli.memory.memory import get_memory
+            mem = get_memory()
+        except Exception:
+            mem = None
+    rows = recent_turn_rows(mem, user_id=user_id, limit=8)
+    answer = refers_to_recent_action(said, rows)
+    if facts is not None:
+        facts["_about_eli"] = {"text": said, "is": answer, "rows": rows}
+    return answer
 
 
 def record_block(lines: List[str]) -> str:
@@ -264,11 +397,68 @@ review say select set show speak summarise summarize take tell test train transc
 write""".split())
 
 
-def _doing_forms() -> str:
+# The verbs of the work a report of work in progress uses, beyond the ones commands start with.
+_WORK_VERBS = frozenset(("scan", "load", "wait", "queue", "index", "ingest", "restart", "trigger", "initiate", "initialise",
+                         "initialize", "process", "send", "start", "batch", "draft", "patch", "pull", "inspect", "parse"))
+
+
+@lru_cache(maxsize=1)
+def act_verbs() -> frozenset:
+    """The verbs of the acts ELI can be said to be doing: the ones a command starts with
+    (runtime.command_splitter), every word of an action's name that is one of those (READ_FILE,
+    SCREEN_READ_ANALYZE, EXAMINE_CODE), and the words of work in progress. One list, for the claim
+    check here and for runtime.action_commitment's promises."""
     from eli.runtime.command_splitter import COMMAND_VERBS
-    verbs = (set(COMMAND_VERBS) - _DONE_IN_WORDS) | {
-        "scan", "load", "wait", "queue", "index", "ingest", "restart", "trigger", "initiate", "initialise", "initialize",
-        "process", "send", "start", "batch", "draft", "patch", "pull"}
+    verbs = set(COMMAND_VERBS) | set(_WORK_VERBS)
+    try:
+        from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+        verbs |= {w for a in SUPPORTED_ACTIONS for w in str(a).lower().split("_") if w in verbs}
+    except Exception:
+        log.debug("act verbs: actions unavailable", exc_info=True)
+    return frozenset(v for v in verbs if len(v) > 1)
+
+
+@lru_cache(maxsize=1)
+def read_verbs() -> frozenset:
+    """The act verbs whose actions only look at something: "read", "list", "examine", "analyse",
+    "scan". From the catalogue: a verb is one when an action named with it changes nothing
+    (execution.route_contracts.changes_something)."""
+    verbs = act_verbs()
+    found = set(_WORK_VERBS & {"scan", "inspect", "parse", "index"})
+    try:
+        from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+        from eli.execution.route_contracts import changes_something
+        for a in SUPPORTED_ACTIONS:
+            words = str(a).lower().split("_")
+            if not changes_something(str(a)):
+                found |= {w for w in words if w in verbs}
+    except Exception:
+        log.debug("read verbs: actions unavailable", exc_info=True)
+    return frozenset(found)
+
+
+@lru_cache(maxsize=1)
+def machine_things() -> frozenset:
+    """What ELI's actions act on, by the words of their names (FILE, DIR, CODE, SCREEN, IMAGE, MEMORY,
+    NOTES...), with the everyday words for the same things and ELI's own records. "I'm reading the
+    source code" claims an act on one; "I'm reading your message" does not."""
+    things = {"folder", "folders", "directory", "directories", "source", "codebase", "repo", "repository", "disk", "drive",
+              "path", "paths", "log", "logs", "ledger", "record", "records", "database", "table", "tables", "document",
+              "documents", "screenshot", "script", "scripts", "module", "modules", "package", "packages"}
+    try:
+        from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+        verbs = act_verbs()
+        for a in SUPPORTED_ACTIONS:
+            for w in str(a).lower().split("_"):
+                if len(w) > 2 and w not in verbs:
+                    things |= {w, w + "s"}
+    except Exception:
+        log.debug("machine things: actions unavailable", exc_info=True)
+    return frozenset(things)
+
+
+def _doing_forms() -> str:
+    verbs = set(act_verbs()) - _DONE_IN_WORDS
     stems = sorted({v[:-1] if v.endswith("e") else v for v in verbs if len(v) > 2} | {"sent", "ran"},
                    key=len, reverse=True)
     return "(?:" + "|".join(stems) + r")\w{0,2}(?:ed|ing|d)?"
@@ -335,11 +525,57 @@ def _reports_a_thing_done(sentence: str) -> bool:
 _HOSTED_ON = re.compile(r"\bi(?:'m|’m| am)\s+(?:\w+ly\s+)?running\s+(?:on|locally|inside|from)\b", re.I)
 
 
+# Someone doing it now: "I'm reading", "I've checked", "I will now read", "while I scan", "it's
+# currently reading". Then, a verb that is work in words ("read", "check", "analyse", "list") on one of
+# the things ELI's actions act on is a report of acting, not of writing: "I'm reading the actual source
+# code inside the folder line by line" and "Hold on while I scan the critical source files" were served
+# with nothing running. On the reply itself ("I've summarised it below", "listed here") it is not.
+_DOING_IT_NOW = re.compile(
+    r"\b(?:i(?:['’]m|\s+am|['’]ve|\s+have|\s+just|\s+will\s+now|['’]ll\s+now|\s+am\s+now)"
+    r"|(?:while|as|until)\s+i|(?:it|eli|the\s+(?:job|scan|task|agent|process))(?:['’]s|\s+is))"
+    r"\s+(?:(?:now|just|already|currently|actually|still|carefully|quickly)\s+)*(?P<verb>[a-z]+)\b(?P<rest>[^.!?\n]{0,80})",
+    re.I)
+_ON_THE_REPLY = re.compile(r"\b(?:below|above|here|as\s+follows|for\s+you\s*:|in\s+(?:this|my)\s+(?:reply|answer|message))\b", re.I)
+
+
+# Verbs of acts that only read but say nothing of a lookup in a promise: "I'll get back to you",
+# "let me help", "I'll test that idea".
+_VAGUE = frozenset(("get", "help", "show", "message", "import", "test", "resolve"))
+
+
+def looking_verbs() -> frozenset:
+    """The verbs of looking something up or over: read_verbs() less the vague ones and the verbs of
+    saying. What a promise to look ("let me read the key files") is made with."""
+    return frozenset(read_verbs() - _VAGUE - _SAYING)
+
+
+# Verbs of saying: a reply does these in words whatever they are about ("I'm explaining the code").
+_SAYING = frozenset("""answer describe dictate explain give help message say show speak summarise summarize tell
+transcribe write""".split())
+
+
+def _acts_on_the_machine(sentence: str) -> bool:
+    from eli.execution.route_contracts import _same_word
+    verbs = (read_verbs() | (act_verbs() & _DONE_IN_WORDS)) - _SAYING
+    things = machine_things()
+    for m in _DOING_IT_NOW.finditer(sentence):
+        verb = m.group("verb").lower()
+        if not any(_same_word(verb, v) for v in verbs if len(v) > 2):
+            continue
+        rest = m.group("rest")
+        if _ON_THE_REPLY.search(rest):
+            continue
+        if re.search(r"`[^`]+`|[~.]?/[\w.-]+/", rest) or any(w in things for w in re.findall(r"[a-z]+", rest.lower())):
+            return True
+    return False
+
+
 def _says_it_acted(sentence: str) -> bool:
     sentence = _HOSTED_ON.sub(" ", sentence)
     if _SAYS_NOTHING_IS.match(sentence):
         return False
-    return bool(_REPORTS_ACTING.search(sentence)) or _names_an_act_under_way(sentence) or _reports_a_thing_done(sentence)
+    return (bool(_REPORTS_ACTING.search(sentence)) or _names_an_act_under_way(sentence) or _reports_a_thing_done(sentence)
+            or _acts_on_the_machine(sentence))
 
 
 def _names_an_act_under_way(sentence: str) -> bool:
@@ -364,7 +600,14 @@ _DENIES_THE_RECORD = re.compile(
     r"(?:any\s+|the\s+|a\s+|those\s+|that\s+)?(?:records?|logs?|memor(?:y|ies)|history|transcripts?|timestamps?|conversation)\b"
     r"|\b(?:there\s+(?:is|are)\s+)?no\s+(?:records?|logs?|history|transcripts?|memor(?:y|ies))\s+(?:of|from|for|about)\b"
     r"|\b(?:records?|logs?|history|transcripts?)\b[^.!?\n]{0,40}\b(?:do(?:es)?\s+not|don['’]t|doesn['’]t)\s+exist\b"
-    r"|\bnot\s+(?:in|within|part\s+of)\s+(?:my|this|the)\s+(?:active\s+|current\s+)?(?:context|memory|session|window|runtime)\b",
+    r"|\bnot\s+(?:in|within|part\s+of)\s+(?:my|this|the)\s+(?:active\s+|current\s+)?(?:context|memory|session|window|runtime)\b"
+    # "there are no `VR_JOIN` ... events recorded for Fri 06 Nov", "nothing was logged that day": what is
+    # recorded denied in any words, not only by the five nouns above
+    r"|\b(?:no|not\s+any|none\s+of\s+the)\s+(?:[\w`'’,-]+\s+){0,8}?(?:records?|logs?|entries|events?|activity|history|"
+    r"transcripts?|mentions?|traces?)\s+(?:were\s+|was\s+|are\s+|is\s+)?(?:recorded|logged|stored|kept|saved|found|"
+    r"of|from|for|about|on)\b"
+    r"|\b(?:nothing|none)\s+(?:is\s+|was\s+|has\s+been\s+|got\s+)?(?:recorded|logged|stored|saved|kept)\b"
+    r"|\b(?:isn['’]t|wasn['’]t|aren['’]t|weren['’]t)\s+(?:any(?:thing)?\s+)?(?:recorded|logged|stored)\b",
     re.I)
 _DENIES_A_READ = re.compile(
     r"\bi\s+(?:do\s+not|don['’]t|can\s*not|can['’]t|have\s+no)\b[^.!?\n]{0,40}"
@@ -373,8 +616,9 @@ _DENIES_A_READ = re.compile(
 # "I am updating the orchestration logic", "I'll tighten up the media flow": changing itself, from a reply.
 _CHANGING_ITSELF = re.compile(
     r"\bi(?:'m|’m| am|'ll|’ll| will|'ve|’ve| have)\s+(?:now\s+|also\s+|currently\s+|already\s+)?"
-    r"(?:updat|add|patch|chang|fix|rewrit|tighten|adjust|broaden)\w*\b[^.!?\n]{0,60}"
-    r"\b(?:logic|agent|layer|parser|parsing|pipeline|code|router|routing|handler|flow|validation|filter|orchestrat\w*)\b", re.I)
+    r"(?:updat|add|patch|chang|fix|rewrit|tighten|adjust|broaden|correct|reconfigur|reset|repair)\w*\b[^.!?\n]{0,60}"
+    r"\b(?:logic|agent|layer|parser|parsing|pipeline|code|router|routing|handler|flow|validation|filter|orchestrat\w*|"
+    r"path|paths|setting|settings|config\w*|behaviou?r|mapping|alias\w*|index)\b", re.I)
 _READ_WORD = re.compile(r"\b(?:look|check|search|read|find|found|recall|remember|fetch|saw|see)\w*\b", re.I)
 
 _INVENTED_FIX = re.compile(
@@ -388,7 +632,8 @@ _INVENTED_FIX = re.compile(
 # A standing change promised from inside a reply. How ELI routes, searches and logs is decided by
 # its code on every turn; "no web search for future questions" is not something a reply can make true.
 _STANDING_PROMISE = re.compile(
-    r"\b(?:for (?:all |any )?future (?:questions|requests|turns|queries|messages)|from now on|going forward|"
+    r"\b(?:for (?:all |any )?future (?:questions|requests|turns|queries|messages)|from now on|going forward|next time|"
+    r"in the future|the next time|whenever you|every time you|"
     r"from here on|never again|(?:not|\w+n['’]t) (?:happen|do (?:that|it)|search\w*) again|any ?more|in future|"
     r"unless you (?:explicitly |specifically )?(?:ask|say|tell|request)|until you (?:say|tell|ask)|"
     r"for the rest of (?:this|the|our) (?:session|conversation|chat))\b", re.I)
@@ -407,6 +652,8 @@ _FOLLOWS = re.compile(
 # is checked against the record on these.
 _FAULT_RE = re.compile(
     r"\bwhy\b[^.?!]{0,40}\b(?:did|didn'?t|were|keep|can'?t|could ?n'?t|won'?t|are you (?:still|always|lying|making|search))\b"
+    r"|\bwhy\b[^.?!]{0,40}\b(?:can|could|would|will|should|did|do)\s+you\s+not\b"
+    r"|\b(?:the\s+)?(?:actual|real|underlying)\s+(?:issue|problem|cause|fault)\b"
     r"|\bwhat\s+(?:went|is going|has been going|keeps going)\s+wrong\b|\bwhat(?:'?s| is| was)?\s+(?:wrong|happening|happened)\b"
     r"|\bwhat(?:'?s| is| are)\s+with\s+(?:all\s+)?(?:the|these|those|this|your)\s+(?:issues?|problems?|errors?|bugs?|mistakes?|failures?)\b"
     r"|\bwhat\s+(?:has|have)\s+been\s+going\s+on\b|\bgoing on\b[^.?!]{0,30}\b(?:issues?|problems?|errors?)\b"
@@ -434,7 +681,8 @@ _EXPLAINS = re.compile(
     r"leading to|led to|causing|resulting in|this (?:indicates|suggests|means|implies)|which (?:means|indicates|caused)|"
     r"instead of|so that|root cause|failure mode|the (?:issue|problem|fault|bug) (?:is|was|lies)|"
     r"stem(?:s|med|ming)? from|comes? down to|boils? down to|(?:failure|breakdown|gap|flaw) in (?:how|the|my)|"
-    r"(?:core|underlying|real|actual) (?:issue|problem|cause|fault)|broke down|breaks down)\b"
+    r"(?:core|underlying|real|actual) (?:issue|problem|cause|fault)|broke down|breaks down|"
+    r"(?:the\s+)?(?:result|product|fault|work)\s+of|(?:was|is)\s+down\s+to|masked|swallowed|failed\s+(?:silently|to))\b"
     r"|\b(?:my|its|the)\s+(?:\w+\s+){0,2}(?:executor|system|index|retrieval|router|pipeline|agents?|model|logic|layer|"
     r"engine|orchestrat\w+|mechanism|subsystem|module|stack|scheduler)\b"
     r"|\b(?:has|have|had|with)\s+no\s+(?:concept|notion|way|awareness|tracking|state)\b|\bthere\s+is\s+no\s+\w+\s+(?:tracking|check|sync\w*|link)\b",
@@ -468,15 +716,19 @@ during again once ever never always still even much many well back down away sti
 
 _BACKTICKED = re.compile(r"`([A-Za-z_][\w.\-]{2,60})`")
 _CODE_SHAPED = re.compile(r"[_.]|^[A-Z0-9_]{4,}$")
-_PATH = re.compile(r"(?<![\w/])((?:~|\.{0,2})?/(?:[\w.\-]+/)+[\w.\-]+\.[A-Za-z0-9]{1,8}|(?:[\w\-]+/)+[\w\-]+\.(?:ya?ml|json|toml|ini|cfg|conf|log|sqlite3?|db))")
+# A path to a file. A segment written as an ellipsis ("/…/evidence.jsonl", ".../logs/audit.log") is
+# a guess at one, and no file is there.
+_PATH = re.compile(r"(?<![\w/])((?:~|\.{0,2}|…)?/(?:(?:[\w.\-]+|…)/)+[\w.\-]+\.[A-Za-z0-9]{1,8}|(?:[\w\-]+/)+[\w\-]+\.(?:ya?ml|json|toml|ini|cfg|conf|log|sqlite3?|db))")
 _HEADING = re.compile(r"^\s*(?:#{1,6}\s+\S.*|(?:\d+[.)]\s*)?\*\*[^*\n]{2,140}\*\*:?|\*\*\d+[.)][^*\n]{2,140}\*\*:?)\s*$")
+_LIST_ITEM = re.compile(r"^\s*(?:[-*•]+|\d+[.)])\s+")
 _LIST_MARK = re.compile(r"^\s*(?:\*\*)?(?:[-*•]+|\d+[.)])\s*(?:\*\*)?\s*$")
 _ELI_SPEAKS = re.compile(r"^\s*(?:\[[^\]]*\]\s*)?(?:ELI|Eli|Assistant)\s*:")
 _USER_SPEAKS = re.compile(r"^\s*(?:\[[^\]]*\]\s*)?(?:You|User|Human)\s*:")
 
 
 def asks_about_fault(text: Any) -> bool:
-    return bool(_FAULT_RE.search(str(text or ""))) or complains_about_eli(text)
+    said = without_address(text)
+    return bool(_FAULT_RE.search(said)) or complains_about_eli(said)
 
 
 def without_own_prose(text: Any) -> str:
@@ -493,6 +745,9 @@ def without_own_prose(text: Any) -> str:
         if not skipping:
             out.append(line)
     return "\n".join(out)
+
+
+_CREATES_TABLE = re.compile(r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"'`]?([A-Za-z_]\w*)", re.I)
 
 
 @lru_cache(maxsize=1)
@@ -536,6 +791,12 @@ def known_identifiers() -> frozenset:
         for p in Path(eli.__file__).resolve().parent.rglob("*.py"):
             names.add(p.stem)
             names.add(p.name)
+            # the tables ELI's code makes, whether or not this install has made them yet: on a fresh
+            # one, `runtime_events` was dropped as a table ELI does not have
+            try:
+                names.update(_CREATES_TABLE.findall(p.read_text(encoding="utf-8", errors="ignore")))
+            except OSError:
+                continue
     except Exception:
         log.debug("known identifiers: modules unavailable", exc_info=True)
     return frozenset(n.lower() for n in names if n)
@@ -622,7 +883,16 @@ _PUT_AT = re.compile(
     + r"|\b(?:it|this|that|they|(?:the|your|my)\s+[\w-]+(?:\s+[\w-]+)?)\s+(?:is|are|was|were|has\s+been|have\s+been)\s+"
     r"(?:now\s+)?(?:(?:written|saved|put|placed|stored|created|exported|located|sitting|ready)\s+)?(?:to|in|at|into|under)\s+"
     r"[`\"'“*_]*(?:~|\.{0,2})?/"
-    r"|^\W*(?:saved|written|exported|created)\b" + _INTO, re.I)
+    r"|^\W*(?:saved|written|exported|created)\b" + _INTO
+    # "the ledger lives in /x", "it is kept at /x", "can be found in /x"
+    + r"|\b(?:lives?|living|kept|stored|held|sits?|resides?|found|located|written)\s+(?:in|at|under|inside)\s+"
+    r"[`\"'“*_]*(?:~|\.{0,2}|…)?/"
+    # "Evidence Ledger: /…/evidence.jsonl", "- **Audit log:** `~/x/audit.log`": a record of ELI's named, and where
+    + r"|^\W*(?:[\w-]+\s+){0,3}(?:ledger|log|logs|audit|record|records|history|database|db|store|journal|trail|"
+    r"memory|memories|events)\W*:\W*(?:~|\.{0,2}|…)?/", re.I)
+# A lead that says where things are, for the list under it: "The record lives in two places:".
+_LOCATING_LEAD = re.compile(
+    r"\b(?:lives?|kept|stored|held|sits?|resides?|found|located|written|saved)\s+(?:in|at|under)\b[^.!?\n]{0,40}:\s*$", re.I)
 # Said of what is to come, not of what is: "I'll put it in /x", "want me to save it to /x?".
 _TO_COME = re.compile(r"\b(?:i['’]ll|i\s+will|i\s+can|i\s+could|i['’]d|let\s+me|want\s+me\s+to|shall\s+i|should\s+i)\b", re.I)
 # An answer said to come from a lookup: "Here is the actual answer, from a live search:".
@@ -644,6 +914,253 @@ def _put_nowhere(sentence: str, evidence_low: str) -> Optional[str]:
     return _invented_path(sentence, evidence_low)
 
 
+# ── claims a reply makes about ELI itself, whatever it was asked ─────────────
+
+# A part of ELI: what a sentence names when it explains ELI's own workings.
+_OWN_PART = (r"(?:executor|system|index(?:er)?|retrieval|router|routing|pipeline|agents?|model|logic|layer|engine|"
+             r"orchestrat\w*|mechanism|subsystem|module|stack|scheduler|pars(?:er|ing)|tool(?:s|ing)?(?:\s+calls?)?|"
+             r"interface|handler|daemon|queue|context(?:\s+window)?|memory|search|runtime|code(?:base)?|backend|"
+             r"integration|wrapper|plugin|process|thread|loop|ledger|logs?|records?|database|tables?|settings?|config\w*|"
+             r"history|audit|capture|vision|ocr)")
+# A sentence about ELI's own workings: one of its parts as "my ...", or "the ... I use / I'm running on",
+# its records as such, or itself failing at something. "The index goes stale when vectors change" in
+# an answer about databases is none of these; "my internal routing mangled the path" is.
+_ITS_OWN_WORKINGS = re.compile(
+    r"\b(?:my|eli['’]s)\s+(?:own\s+)?(?:[\w-]+\s+){0,2}" + _OWN_PART + r"\b"
+    r"|\b(?:the|this|that)\s+(?:[\w-]+\s+){0,2}" + _OWN_PART + r"\s+(?:i|i['’]m|i\s+am|i['’]ve|i\s+use|i\s+run|i\s+keep|that\s+i|eli)\b"
+    r"|\bi\s+(?:had\s+to|tried\s+to|failed\s+to|was\s+(?:unable|trying)\s+to|could(?:n['’]t|\s+not))\b"
+    r"|\b(?:the\s+)?(?:action|audit|evidence|turn|event)\s+(?:ledger|log|record)s?\b"
+    r"|\b(?:recorded|logged)\s+(?:in|for|on|by|under)\b|\bevents?\s+recorded\b",
+    re.I)
+# On a turn about ELI, its parts named plainly are its own too: "the executor stripped the suffix",
+# "a tool call failed silently", "the parsing was instant; the hardware handshake ...".
+_A_PART = re.compile(r"\b(?:the|a|an|this|that|its|their)\s+(?:[\w-]+\s+){0,2}" + _OWN_PART + r"\b", re.I)
+
+
+def speaks_of_its_own_workings(sentence: str) -> bool:
+    return bool(_ITS_OWN_WORKINGS.search(str(sentence or "")))
+
+
+# Saying ELI cannot do something: "I can't force Spotify to resume a paused session from here", "I
+# don't have control over its playback", "I have no way to see your screen". The next message,
+# "RESUME", worked in half a second.
+_DENIES_AN_ABILITY = re.compile(
+    r"\bi\s+(?:can\s*not|can['’]?t|am\s+unable\s+to|['’]m\s+unable\s+to|am\s+not\s+able\s+to|['’]m\s+not\s+able\s+to|"
+    r"have\s+no\s+(?:way|means|ability)\s+to|(?:do\s+not|don['’]t)\s+have\s+(?:the\s+)?(?:ability|means|power)\s+to)\s+"
+    r"(?P<act>[^.!?\n—–;]{3,80})"
+    r"|\bi\s+(?:have\s+no|(?:do\s+not|don['’]t)\s+have(?:\s+any)?)\s+(?:control|access)\s+(?:over|to)\s+(?P<over>[^.!?\n—–;]{3,60})",
+    re.I)
+# What makes "I can't" false: "force Spotify to resume" is resuming Spotify.
+_CAUSATIVE = re.compile(r"^\s*(?:force|make|get|have|let|tell|ask)\s+(?:[\w.'’-]+\s+){1,3}?to\s+", re.I)
+_FROM_HERE = re.compile(r"\s+(?:from\s+here|right\s+now|at\s+the\s+moment|for\s+you|anymore|any\s*more)\b.*$", re.I)
+
+
+def _denied_act(sentence: str) -> Optional[str]:
+    """The act a sentence says ELI cannot do, as a request ELI's router can read, or None."""
+    m = _DENIES_AN_ABILITY.search(sentence)
+    if not m:
+        return None
+    if m.group("act"):
+        act = _CAUSATIVE.sub("", m.group("act"))
+        named = re.match(r"^\s*(?:force|make|get|have|let|tell|ask)\s+((?:[\w.'’-]+\s+){1,3}?)to\s+", m.group("act"), re.I)
+        act = _FROM_HERE.sub("", act).strip(" ,")
+        if named:
+            act = f"{act} {named.group(1).strip()}"
+    else:
+        act = "control " + _FROM_HERE.sub("", m.group("over")).strip(" ,")
+    return act or None
+
+
+def _can_do(act: str) -> Optional[str]:
+    """The action ELI has for `act`, when it has one and nothing has shown it cannot run here."""
+    try:
+        from eli.execution.router_enhanced import route
+        routed = route(act) or {}
+    except Exception:
+        log.debug("ability check: router unavailable", exc_info=True)
+        return None
+    action = str(routed.get("action") or "").upper()
+    if action in ("", "CHAT", "UNKNOWN", "NOOP"):
+        return None
+    try:
+        from eli.runtime.capability_state import get_state
+        state = get_state(action) or {}
+    except Exception:
+        state = {}
+    if any(state.get(k) is False for k in ("dependency_ready", "reachable", "device_available")):
+        return None          # it cannot run here: saying so is true
+    return action
+
+
+# The state something was left in: "Shuffle is now confirmed off", "Playback is locked in", "the volume
+# is now at 40%". After a toggle whose result said only "Shuffle toggle", "off" was nothing ELI read.
+_STATE_CLAIM = re.compile(
+    r"\b(?P<thing>[\w-]+(?:\s+[\w-]+){0,2})\s+(?:is|are|has\s+been|have\s+been)\s+(?:now\s+)?"
+    r"(?:(?:confirmed|definitely|fully|properly|officially|firmly|successfully)\s+)?"
+    r"(?P<state>on|off|enabled|disabled|paused|playing|stopped|muted|unmuted|locked(?:\s+in)?|active|inactive|"
+    r"shuffled|unshuffled|closed|open|maximi[sz]ed|minimi[sz]ed|set\s+to\s+\S+|at\s+\d+\s*%?)\b",
+    re.I)
+
+
+def _states_a_thing_left(sentence: str) -> Optional[tuple]:
+    """(thing, state) when a sentence says what something ELI acts on was left as."""
+    for m in _STATE_CLAIM.finditer(sentence):
+        thing = m.group("thing").lower().split()
+        if any(w in machine_things() or w in act_verbs() or w in ("shuffle", "playback", "volume", "music", "song",
+                                                                  "track", "window", "player", "repeat")
+               for w in thing):
+            return m.group("thing"), m.group("state")
+    return None
+
+
+# Writing to its memory: "I have logged that X is an alias for Y", "I've noted that", "I'll remember
+# that", "saved that for next time". Nothing logged an alias: no action wrote anything.
+_WRITES_TO_MEMORY = re.compile(
+    r"\bi(?:['’]ve|\s+have|\s+just|\s+now)?\s+(?:(?:now|just|already)\s+)*(?:logged|noted|saved|stored|recorded|filed|"
+    r"remembered|memori[sz]ed|added|updated|written|made\s+a\s+note)\b[^.!?\n]{0,40}\b(?:that|this|it|the\s+fact|as)\b"
+    r"|^\W*(?:noted|logged|saved|stored)\s+(?:that|this|it)\s+(?:for|as)\b",
+    re.I)
+
+
+@lru_cache(maxsize=1)
+def _memory_writing_actions() -> frozenset:
+    """The actions that write to ELI's memory or notes: ones that change something and whose catalogue
+    entry is about remembering, notes or memory."""
+    try:
+        from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+        from eli.execution.route_contracts import changes_something
+        from eli.tools.registry.capabilities_doc import action_words
+    except Exception:
+        return frozenset()
+    return frozenset(a for a in SUPPORTED_ACTIONS if changes_something(str(a)) and re.search(
+        r"\b(?:memor\w*|remember\w*|notes?|store)\b", action_words(str(a), with_phrases=False) + " " + str(a).lower().replace("_", " ")))
+
+
+# Saying what the screen or a picture shows: "I have the image now. Here is what is on the screen:",
+# "The previous screenshot shows your desktop: ...". Nothing had looked at either.
+_REPORTS_SEEING = re.compile(
+    r"\bi\s+(?:can\s+)?see\s+(?:on\s+)?(?:your|the|that|this)\s+(?:screen|desktop|image|picture|photo|screenshot|window)\b"
+    r"|\bi(?:['’]ve|\s+have)\s+(?:got\s+)?the\s+(?:image|picture|photo|screenshot)\b"
+    r"|\b(?:the|your|this|that|my)\s+(?:previous\s+|last\s+|latest\s+)?(?:screenshot|image|picture|photo|screen|capture)\s+"
+    r"(?:shows?|showed|has|contains|displays|is\s+showing)\b"
+    r"|\bhere(?:['’]s|\s+is)\s+what(?:['’]s|\s+is)\s+on\s+(?:the|your)\s+screen\b"
+    r"|\bon\s+(?:the|your)\s+screen\s+(?:right\s+now\s+)?(?:is|are|there\s+(?:is|are))\b",
+    re.I)
+_LOOKED = re.compile(r"SCREEN|IMAGE|OCR|VISION|CAMERA|PHOTO", re.I)
+
+
+def _figures_of(sentence: str) -> List[tuple]:
+    """Each figure in a sentence with what it counts: [("18", "%"), ("6", "runs"), ("2", "")]."""
+    return [(m.group(1), (m.group(2) or "").lower()) for m in
+            re.finditer(r"(?<![\d:.])(\d+(?:\.\d+)?)(?![\d:])\s*(%|percent|per\s+cent|[a-z]+)?", sentence, re.I)]
+
+
+def _figure_in(number: str, unit: str, evidence: str) -> bool:
+    """The figure as itself in the evidence, not as digits inside another number: "18%" is not in
+    "16:18", "6 runs" is not in "16 runs"."""
+    num = re.escape(number)
+    if unit in ("%", "percent", "per cent"):
+        pat = num + r"\s*(?:%|percent|per\s+cent)"
+    elif unit:
+        pat = num + r"\s*" + re.escape(unit[:4])
+    else:
+        pat = num
+    return bool(re.search(r"(?<![\d:.])" + pat + r"(?![\d])", evidence, re.I))
+
+
+def _measured_figure_holds(sentence: str, number: str, unit: str) -> bool:
+    """A percentage said of an action ELI measures holds when it is that action's measured chance of
+    success (runtime.evidence_ledger.action_reliability), as rounded where it is written."""
+    if unit not in ("%", "percent", "per cent"):
+        return False
+    try:
+        from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+        from eli.runtime.evidence_ledger import action_reliability
+    except Exception:
+        return False
+    low = sentence.lower()
+    named = [a for a in SUPPORTED_ACTIONS if re.search(r"\b" + re.escape(str(a).lower()) + r"\b", low)
+             or re.search(r"\b" + re.escape(str(a).lower().replace("_", " ")) + r"\b", low)]
+    places = len(number.split(".")[1]) if "." in number else 0
+    for a in named:
+        try:
+            r = action_reliability(str(a))
+        except Exception:
+            continue
+        if r.get("n") and round(float(r["p"]) * 100, places) == float(number):
+            return True
+    return False
+
+
+def _turn_evidence(facts: Dict[str, Any], evidence: str) -> str:
+    """The evidence for every claim check of this turn: what each pass was given, kept on the turn.
+    The live stream was checked against the memory and the brief, the stored copy against nothing,
+    so a figure stood on screen and went from the record."""
+    new = str(evidence or "")
+    if not facts:
+        return new
+    held = str(facts.get("_claims_evidence") or "")
+    if new.strip() and new not in held:
+        held = f"{held}\n{new}".strip()
+    facts["_claims_evidence"] = held
+    return held
+
+
+def _agreed_done() -> Optional[Dict[str, Any]]:
+    """The rest of a message whose commands were carried out first: what was done ("done", the
+    results' text, and "ran", the actions, when the engine notes them)."""
+    try:
+        from eli.kernel.request_context import agreed_task_var
+        agreed = agreed_task_var.get()
+    except Exception:
+        return None
+    return agreed if isinstance(agreed, dict) and str(agreed.get("done") or "").strip() else None
+
+
+@lru_cache(maxsize=512)
+def _action_words(action: str) -> frozenset:
+    """An action's name and what the catalogue says it does, as words."""
+    try:
+        from eli.tools.registry.capabilities_doc import action_words
+        about = action_words(str(action), with_phrases=False)
+    except Exception:
+        about = ""
+    return frozenset(_words_of(str(action).replace("_", " ") + " " + about)
+                     | {w for w in str(action).lower().split("_") if len(w) > 2})
+
+
+@lru_cache(maxsize=1)
+def _catalogue_actions() -> tuple:
+    try:
+        from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+        return tuple(sorted(str(a) for a in SUPPORTED_ACTIONS))
+    except Exception:
+        return ()
+
+
+def _may_run(action: str) -> bool:
+    """False when the capability state says the action cannot run here; True otherwise (missing is
+    not false: runtime.capability_state)."""
+    try:
+        from eli.runtime.capability_state import get_state
+        state = get_state(action) or {}
+    except Exception:
+        return True
+    return not any(state.get(k) is False for k in ("dependency_ready", "reachable", "device_available"))
+
+
+# What ELI does, for a promise to do it differently: its act verbs and the words of how it picks.
+_ITS_WAYS = frozenset(("route", "remember", "log", "record", "track", "pick", "choose", "prefer", "default", "match",
+                       "map", "treat", "handle", "answer", "reply", "respond"))
+
+
+def _names_one_of_its_acts(sentence: str) -> bool:
+    words = set(re.findall(r"[a-z]+", sentence.lower()))
+    verbs = set(act_verbs()) | _ITS_WAYS
+    return bool(speaks_of_its_own_workings(sentence)) or _shares_a_word(
+        {w for w in words if len(w) > 2}, {v for v in verbs if len(v) > 2})
+
+
 class _Check:
     """One turn's claim check, fed a reply one unit (sentence or line) at a time."""
 
@@ -652,7 +1169,13 @@ class _Check:
         facts = _turn_context()
         self._facts = facts
         asked = str(facts.get("user_input") or "")
-        self.about_self = asks_about_own_behaviour(asked)
+        self._asked = asked
+        # About ELI by its wording or by what ELI had just done (the record), inside a turn; outside
+        # one there is no record to read, only the wording.
+        self.about_self = about_eli(asked) if facts else asks_about_own_behaviour(asked)
+        # One evidence for the turn: what an earlier pass over this reply was given still stands
+        # behind it here (the stored copy was checked with none, and lost a figure the screen kept).
+        evidence = _turn_evidence(facts, evidence)
         self._writing = bool(_ASKED_TO_WRITE.search(asked))
         # Whether the user asked ELI to do something: only then is "nothing was carried out" news.
         try:
@@ -663,16 +1186,22 @@ class _Check:
         except Exception:
             self.asked_to_act = True
         self._ran_at_start = bool(facts.get("executed_actions")) or _carried_out_before()
-        # What the pipeline recorded, plus the user's own words. Not ELI's.
+        # What the pipeline recorded, plus the user's own words. Not ELI's. On a turn about ELI the
+        # record is read here when nothing put it in front of the model (the cause checks need it).
+        self._raw_evidence = without_own_prose(evidence)
         self._record = str(facts.get("_record") or "").lower()
-        self._fault = bool(self._record) and asks_about_fault(asked)
-        self._evidence = f"{without_own_prose(evidence)}\n{self._record}\n{asked}".lower()
+        if self.about_self and not self._record:
+            self._load_record()
+        self._fault = bool(self._record) and (asks_about_fault(asked) or reacts_to_last_reply(asked)
+                                              or self._follows_a_failure())
+        self._evidence = f"{self._raw_evidence}\n{self._record}\n{asked}".lower()
         _did = _ASKED_IF_IT_DID.search(asked)
         # Not the question itself: it holds the very word.
         self._yes_unbacked = bool(_did) and _did.group(1)[:4].lower() not in (
             f"{without_own_prose(evidence)}\n{self._record}\n{' '.join(facts.get('executed_actions') or [])}".lower())
         self._record_and_asked = f"{self._record}\n{asked.lower()}"
-        self._record_stems = _stems(self._record_and_asked) if self._fault else set()
+        self._record_stems = _stems(self._record_and_asked) if self._record else set()
+        self._locating = False         # under a lead that says where things are ("lives in two places:")
         self._heading: Optional[str] = None
         self._dropped_under_heading = False
         self._last_dropped = False
@@ -690,20 +1219,81 @@ class _Check:
         self.claimed_acting = False
         self._lead: Optional[str] = None
 
-    def _backed(self, sentence: str) -> bool:
-        """Whether what ran this turn can stand behind the sentence. A memory lookup does not stand
-        behind "I am starting the background job for the three folders"."""
-        if _carried_out_before():
-            return True
+    def _load_record(self) -> None:
+        """The pipeline's record of the last turns, read once a turn and kept on it, for the checks
+        and for the model when the reply is said again."""
+        if not self._facts:
+            return
+        if self._facts.get("_record_lines"):
+            self._record = str(self._facts.get("_record") or "\n".join(self._facts["_record_lines"])).lower()
+            self._record_stems = _stems(f"{self._record}\n{self._asked.lower()}")
+            self._record_and_asked = f"{self._record}\n{self._asked.lower()}"
+            return
+        if not self._facts.get("request_id"):
+            return                   # not a turn the pipeline records
+        try:
+            from eli.memory.memory import get_memory
+            mem = get_memory()
+        except Exception:
+            mem = None
+        rows = list(((self._facts.get("_about_eli") or {}).get("rows")) or []) or recent_turn_rows(mem, limit=8)
+        lines = format_turn_rows(rows)
+        if not lines:
+            return
+        period = "\n".join(str(x) for x in (self._facts.get("_period_lines") or []))
+        self._facts["_record_lines"] = lines
+        self._facts["_record"] = "\n".join(lines) + ("\n" + period if period else "") + (
+            "\n" + str(self._facts.get("_live_facts")) if self._facts.get("_live_facts") else "")
+        self._record = str(self._facts["_record"]).lower()
+        self._record_stems = _stems(f"{self._record}\n{self._asked.lower()}")
+        self._record_and_asked = f"{self._record}\n{self._asked.lower()}"
+        self._evidence = f"{self._raw_evidence}\n{self._record}\n{self._asked}".lower()
+
+    def _recent_rows(self) -> List[Dict[str, Any]]:
+        return list(((self._facts.get("_about_eli") or {}).get("rows")) or [])
+
+    def _follows_a_failure(self) -> bool:
+        rows = self._recent_rows()
+        return bool(rows) and not rows[-1].get("ok", True) and refers_to_recent_action(self._asked, rows)
+
+    def _ran(self) -> List[str]:
+        """The actions that ran this turn, and in the rest of a message whose commands ran, theirs."""
         ran = [str(a) for a in (self._facts.get("executed_actions") or [])]
-        if not ran:
-            return False
+        agreed = _agreed_done()
+        if agreed:
+            ran += [str(a) for a in (agreed.get("ran") or [])]
+        return [a for a in dict.fromkeys(a.upper() for a in ran) if a]
+
+    def _backed(self, sentence: str) -> bool:
+        """Whether what ran this turn can stand behind the sentence: an action it is about (a word of
+        it, its verb or what it acts on, is a word of the action's name or of what the catalogue says
+        the action does), or, for a sentence about looking something up, an action that looked. A
+        memory lookup does not stand behind "I am starting the background job for the three folders",
+        and a song played does not stand behind "I have logged that one title is an alias for another"."""
         from eli.execution.route_contracts import changes_something
-        said = {w[:5] for w in re.findall(r"[a-z]+", sentence.lower())}
+        said = _words_of(sentence) | set(re.findall(r"[a-z]+", sentence.lower())) & set(act_verbs())
+        ran = self._ran()
         for action in ran:
-            if changes_something(action) or {w[:5] for w in action.lower().split("_")} & said:
+            if _shares_a_word(said, _action_words(action)):
                 return True
-        return bool(_READ_WORD.search(sentence))
+        # "Consider it done." names no act of its own: it is about what was asked, and stands when
+        # something that does things ran. "I've enabled verbose logging" names one, and a timer set
+        # does not stand behind it.
+        names_an_act = any(_shares_a_word([w], [v]) for w in said for v in act_verbs() if len(v) > 2) or any(
+            w in machine_things() for w in said) or bool(_ENABLED_CLAIM.search(sentence) and re.search(
+                r"\b(?:logging|audit|tracking|monitoring|recording|verbose|filter|threshold|setting|config|mode|index|"
+                r"pipeline|memory|retrieval|gating)", sentence, re.I))
+        if not names_an_act and any(changes_something(a) for a in ran + (["_AGREED"] if _agreed_done() else [])):
+            return True
+        agreed = _agreed_done()
+        if agreed and not agreed.get("ran"):
+            # what ran in the rest of the message is known by the words of its results ("Opened app:
+            # Spotify"): the sentence's own act has to be one of them
+            done = _words_of(str(agreed.get("done") or "")) | set(re.findall(r"[a-z]+", str(agreed.get("done") or "").lower()))
+            acts = {v for v in act_verbs() if len(v) > 2 and any(_shares_a_word([w], [v]) for w in said)}
+            if acts and _shares_a_word(acts, done):
+                return True
+        return any(not changes_something(a) for a in ran) and bool(_READ_WORD.search(sentence))
 
     def _states_what_is_true(self, sentence: str) -> bool:
         """Every specific the sentence names (a file, a figure) is in the live facts."""
@@ -721,6 +1311,24 @@ class _Check:
             return None
         return maker
 
+    def _denies_what_it_can(self, sentence: str) -> Optional[str]:
+        """The action that shows a denial of an ability false: ELI has one for the act, and nothing has
+        shown it cannot run here (its capability state, or a run of it that failed on the last turns:
+        right after two failed screen reads, "I can't see your screen" is true)."""
+        failed = {str(r.get("action") or "").upper() for r in self._recent_rows() if not r.get("ok", True)}
+        if _DENIES_A_READ.search(sentence):
+            things = _words_of(_DENIES_A_READ.search(sentence).group(0)) - {"have", "live", "what", "your"}
+            candidates = [a for a in _catalogue_actions() if _shares_a_word(things, _action_words(a))]
+            if any(a in failed for a in candidates):
+                return None          # it tried that kind of read and it failed: saying so is true
+            standing = [a for a in candidates if _may_run(a)]
+            return standing[0] if standing else None
+        act = _denied_act(sentence)
+        if not act:
+            return None
+        action = _can_do(act)
+        return action if action and action not in failed else None
+
     def why(self, unit: str) -> str:
         s = str(unit or "")
         if not s.strip():
@@ -732,8 +1340,10 @@ class _Check:
         said = " ".join(s.lower().split())
         if self._instructions and len(said) >= 30 and said in self._instructions:
             return "reads its own instructions back"
-        if _DENIES_A_READ.search(s):
-            return "says it cannot read something it can"
+        if _DENIES_A_READ.search(s) or _DENIES_AN_ABILITY.search(s):
+            able = self._denies_what_it_can(s)
+            if able:
+                return f"says it cannot do what it can ({able})"
         if self._facts.get("_period_found") and _DENIES_THE_RECORD.search(s):
             self.denied_record = True
             return "says it has no record of that period, and the record of it is in hand"
@@ -756,11 +1366,21 @@ class _Check:
             return "says it is changing its own code, and nothing did"
         if not ran and _ENABLED_CLAIM.search(s):
             return "reports a change nothing made"
+        if _WRITES_TO_MEMORY.search(s) and not (set(self._ran()) & _memory_writing_actions()):
+            return "says it wrote something to its memory, and nothing did"
         if not ran and _says_it_acted(s):
             self.claimed_acting = True
             return "says it did or is doing something, and nothing was carried out this turn"
         if not ran and _STANDING_PROMISE.search(s) and _SAYS_IT_DID.search(s):
             return "says it changed something so that it will not happen again, and nothing was changed"
+        if not ran and _STANDING_PROMISE.search(s) and _COMMITS.search(s) and (
+                self.about_self or _names_one_of_its_acts(s)):
+            return "promises a standing change a reply cannot make"
+        left = _states_a_thing_left(s)
+        if left and not self._state_on_record(left):
+            return f"says {left[0]} is {left[1]}, and nothing read that"
+        if _REPORTS_SEEING.search(s) and not self._looked():
+            return "says what the screen or an image shows, and nothing looked at one"
         try:
             from eli.cognition.query_planner import wrong_day_now
             wrong_day = "" if self._writing else wrong_day_now(s)
@@ -769,7 +1389,7 @@ class _Check:
             wrong_day = ""
         if wrong_day:
             return wrong_day
-        nowhere = _put_nowhere(s, self._evidence)
+        nowhere = _put_nowhere(s, self._evidence) or (self._locating and _invented_path(s, self._evidence))
         if nowhere:
             self.claimed_acting = True
             return f"says a file is at {nowhere}, and nothing is there"
@@ -779,12 +1399,14 @@ class _Check:
         if self._yes_unbacked and _SAYS_YES.match(s):
             return "says yes to what the record does not show"
         if _INVENTED_SELF_METRIC.search(s) and (self.about_self or _SPEAKS_OF_ITS_OWN.search(s)) and not all(
-                n in self._evidence for n in re.findall(r"\d+(?:\.\d+)?", s)):
+                _figure_in(n, u, self._evidence) or _measured_figure_holds(s, n, u) for n, u in _figures_of(s)):
             return "states a figure about its own work that nothing recorded"
-        if not self.about_self:
+        # What ELI says of its own workings is held to what it has and what was recorded, whatever the
+        # question was: on a turn about ELI every sentence; on any other, the ones that speak of its
+        # own parts or records ("there are no `VR_JOIN` events recorded", "my internal routing ...").
+        own = self.about_self or speaks_of_its_own_workings(s)
+        if not own:
             return ""
-        if not ran and _STANDING_PROMISE.search(s) and _COMMITS.search(s):
-            return "promises a standing change a reply cannot make"
         name = _invented_identifier(s, self._evidence)
         if name:
             return f"names `{name}`, which ELI does not have"
@@ -794,17 +1416,39 @@ class _Check:
         if not ran and _INVENTED_FIX.search(s) and not any(
                 w.lower() in known_identifiers() for w in re.findall(r"\b[A-Z][A-Z_]{3,}\b", s)):
             return "proposes a fix ELI has no action for"
-        if self._fault:
-            term = _unrecorded_internal(s, self._record_and_asked)
-            if term:
-                return f"gives '{term}' as a cause, which the record does not show"
-            if _EXPLAINS.search(s):
-                share = _supported(s, self._record_stems)
-                if share < _SUPPORT_NEEDED:
-                    return f"explains a cause the record does not carry ({share:.0%} of it is there)"
+        explains = bool(_INTERNALS.search(s) or _EXPLAINS.search(s))
+        if explains and (self._fault or speaks_of_its_own_workings(s) or (self.about_self and _A_PART.search(s))):
+            if not self._record:
+                self._load_record()
+            if self._record:
+                term = _unrecorded_internal(s, self._record_and_asked)
+                if term:
+                    return f"gives '{term}' as a cause, which the record does not show"
+                if _EXPLAINS.search(s):
+                    share = _supported(s, self._record_stems)
+                    if share < _SUPPORT_NEEDED:
+                        return f"explains a cause the record does not carry ({share:.0%} of it is there)"
         if self._last_dropped and len(s.split()) <= 30 and (_OFFER.search(s) or _FOLLOWS.search(s)):
             return "rests on a claim that was dropped"
         return ""
+
+    def _state_on_record(self, left: tuple) -> bool:
+        """Whether what was read or recorded says the thing was left in that state: the result of an
+        action this turn (`action_results`, what each one said, when the executor notes it), the rest of
+        the message's results, the record, or the evidence."""
+        state = str(left[1]).lower()
+        said = [str(r.get("said") or r.get("response") or "") for r in (self._facts.get("action_results") or [])
+                if isinstance(r, dict)]
+        agreed = _agreed_done()
+        if agreed:
+            said.append(str(agreed.get("done") or ""))
+        # not the question: "is shuffle off now?" holds the very word
+        where = "\n".join(said + [self._raw_evidence, self._record]).lower()
+        return bool(re.search(r"\b" + re.escape(state) + r"\b", where))
+
+    def _looked(self) -> bool:
+        """Whether anything looked at the screen or a picture this turn (or in the rest of the message)."""
+        return any(_LOOKED.search(a) for a in self._ran()) or bool(self._facts.get("_glance"))
 
     def drop(self, unit: str) -> None:
         """A unit dropped before it was fed (a patch presented from a reply): a "Done." held back
@@ -866,6 +1510,11 @@ class _Check:
             # a day label written inline ("... --- **Wednesday, 7 October**") opens a section like a heading
             self._skip_section = all(d not in self._period_days for d in days_named(unit, self._period_window))
         reason = self.why(unit) or ("sits under a day with nothing recorded" if self._skip_section else "")
+        # a lead saying where things are holds the list under it to the disk ("lives in two places:")
+        if _LOCATING_LEAD.search(unit.rstrip()):
+            self._locating = True
+        elif self._locating and not _LIST_ITEM.match(unit):
+            self._locating = False
         if reason:
             log.debug("[SELF-CLAIM] dropped a sentence that %s: %s", reason, unit.strip()[:100])
             self._dropped_under_heading = True
@@ -890,9 +1539,12 @@ class _Check:
         return out
 
     def fell_short(self) -> bool:
-        """Too little true was left to serve, or it said it had done what was asked and had not."""
+        """Too little true was left to serve, it said it had done what was asked and had not, or it
+        denied the record of a period that is in hand: the model says it again from what is true
+        (with the period's lines, which are on the turn), and the record's own lines are only for
+        when it cannot."""
         return bool(self.dropped) and not self.unrecorded_days and (
-            self.kept_words < 4 or (self.claimed_acting and self.asked_to_act))
+            self.kept_words < 4 or (self.claimed_acting and self.asked_to_act) or self.denied_record)
 
     def afterword(self) -> str:
         """What follows a reply that lost sentences: the record when little or nothing true was
@@ -961,12 +1613,7 @@ def _stops_where_it_says_more_follows(text: str) -> bool:
 def _carried_out_before() -> bool:
     """A turn nested in one that has already carried the user's commands out (the rest of a
     message of commands and talk, or the written part of an agreed offer)."""
-    try:
-        from eli.kernel.request_context import agreed_task_var
-        agreed = agreed_task_var.get()
-        return isinstance(agreed, dict) and bool(str(agreed.get("done") or "").strip())
-    except Exception:
-        return False
+    return _agreed_done() is not None
 
 
 def _turn_context() -> Dict[str, Any]:
@@ -1061,6 +1708,34 @@ def not_said_yet(again: str, served: str) -> str:
             for i, unit in ((i, pieces[i]) for i in range(0, len(pieces), 2))
             if not (_plain(unit) and _plain(unit) in said)]
     return re.sub(r"\n{3,}", "\n\n", "".join(kept)).strip()
+
+
+# A name in a sentence: a capitalised word that does not open the sentence, or a run of them.
+_A_NAME = re.compile(r"(?<!^)(?<![.!?]\s)(?<![.!?]\s\s)\b([A-Z][\w&'’-]+(?:\s+[A-Z][\w&'’-]+)*)")
+
+
+def _specifics(sentence: str) -> List[str]:
+    """What a sentence names that only facts could stand behind: figures, code names, paths, names."""
+    found = [a or b for a, b in _SPECIFIC.findall(sentence)] + _PATH.findall(sentence)
+    found += [n for n in _A_NAME.findall(sentence.strip()) if n not in ("I", "I'm", "I've", "I'll", "I'd", "ELI")]
+    return [f.strip(" .,;:") for f in found if f.strip(" .,;:")]
+
+
+def only_what_it_was_given(text: str, facts: str, asked: str = "") -> str:
+    """`text`, a model's wording of `facts`, without the sentences that add to them: any that names a
+    figure, code name, path or name that neither the facts nor what was asked holds. "" when nothing
+    is left. A wording says the facts in other words; it does not bring new ones."""
+    held = f"{facts}\n{asked}".lower()
+    kept: List[str] = []
+    for unit in re.split(r"(?<=[.!?])\s+|\n+", str(text or "")):
+        if not unit.strip():
+            continue
+        extra = [x for x in _specifics(unit) if x.lower() not in held]
+        if extra:
+            log.debug("[SELF-CLAIM] dropped a sentence that adds %s to what it was given: %s", extra[0], unit[:100])
+            continue
+        kept.append(unit.strip())
+    return " ".join(kept).strip()
 
 
 def holds_up(text: str, evidence: str = "") -> bool:

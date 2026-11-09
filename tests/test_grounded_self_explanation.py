@@ -343,8 +343,10 @@ def test_reporting_a_change_nothing_made_is_dropped_unless_something_ran(sentenc
     try:
         out = sc.drop_invented_self_claims(reply)
         assert sentence not in out and "already written to the evidence ledger" in out
+        # A timer set stands behind "Consider it done.", which names no act of its own, and behind
+        # nothing about logging: what ran backs only what it is about.
         facts["executed_actions"] = ["SET_TIMER"]
-        assert sentence in sc.drop_invented_self_claims(reply)
+        assert (sentence in sc.drop_invented_self_claims(reply)) is (sentence == "Consider it done.")
     finally:
         rc.turn_facts_var.reset(token)
 
@@ -1013,3 +1015,254 @@ def test_a_finished_reply_is_not_asked_to_go_on(turn):
     called = []
     out = "".join(sc.gate_stream(iter(["Yes. ", "It finished at 16:02."]), go_on=lambda said: called.append(said) or []))
     assert out == "Yes. It finished at 16:02." and not called
+
+
+# ── what ELI says of itself is held to the record whatever the question's wording ────────────────
+
+@pytest.fixture()
+def pipeline_turn(monkeypatch):
+    """A turn the pipeline is running (it has a request id), with the record of the turns before it."""
+    rows = []
+    monkeypatch.setattr(sc, "recent_turn_rows", lambda *a, **k: list(rows))
+
+    def start(said, *recorded, **facts):
+        rows[:] = [dict({"ts": time.time() - 30, "ok": True, "outcome": "ok", "elapsed_ms": 900.0,
+                         "reasoning_mode": "quick", "asked": ""}, **r) for r in recorded]
+        f = dict({"user_input": said, "request_id": "req-test", "t0": time.perf_counter()}, **facts)
+        tokens.append(rc.turn_facts_var.set(f))
+        return f
+    tokens = []
+    yield start
+    for t in reversed(tokens):
+        rc.turn_facts_var.reset(t)
+
+
+@pytest.mark.parametrize("text", [
+    "what the fuck eli?",
+    "eli, what was that?",
+    "took you nearly 2 minutes to figure that out?",
+    "so what was the issue and why could you not tell me that the first time?!",
+])
+def test_elis_name_and_every_auxiliary_still_make_it_about_eli(text):
+    assert sc.asks_about_own_behaviour(text)
+
+
+def test_a_message_about_the_action_that_just_ran_is_about_eli(pipeline_turn):
+    said = "i seen you take a screenshot, so what is the actual issue?"
+    pipeline_turn(said, {"action": "SCREEN_READ_ANALYZE", "ok": False, "outcome": "failed",
+                         "asked": "take a screenshot and tell me what is on it"})
+    assert sc.about_eli(said)
+    assert not sc.about_eli("take another screenshot")       # a request, not a question about it
+
+
+def test_without_that_action_it_is_not(pipeline_turn):
+    said = "i seen you take a screenshot, so what is the actual issue?"
+    pipeline_turn(said)
+    assert not sc.about_eli(said)
+    pipeline_turn("is orlo still touring?", {"action": "PLAY_MEDIA", "asked": "play harbour bells by orlo"})
+    assert not sc.about_eli("is orlo still touring?")         # the band is not ELI's doing
+
+
+def test_an_invented_cause_goes_on_a_complaint_the_wording_did_not_flag(pipeline_turn):
+    """Live: "what the fuck eli?" got "the executor stripped the suffix ... permissions or a symlink
+    mismatch in my internal routing", and no check ran."""
+    pipeline_turn("what the fuck eli?", {"action": "LIST_DIR", "asked": "list it", "outcome": "ok"})
+    reply = ("You asked me to list that folder. My intent was to run `ls`, but the executor stripped the suffix and "
+             "handed me the home folder. It tried to list it and failed because of a symlink mismatch in my internal "
+             "routing. The listing that came back was the home folder.")
+    out = sc.drop_invented_self_claims(reply)
+    assert "symlink mismatch" not in out and "stripped the suffix" not in out
+    assert out.startswith("You asked me to list that folder.")
+
+
+def test_a_cause_given_for_its_own_doing_is_checked_on_any_turn(pipeline_turn):
+    pipeline_turn("nice one, cheers", {"action": "VOLUME", "asked": "volume up", "outcome": "ok"})
+    reply = "No problem. Because I had to wait for the volume daemon to apply it, that took a moment."
+    out = sc.drop_invented_self_claims(reply)
+    assert "daemon" not in out and out.startswith("No problem.")
+
+
+def test_an_event_name_eli_does_not_have_goes_when_it_speaks_of_its_records(pipeline_turn):
+    pipeline_turn("i was in the vr room today, the 6th, why is there no logs?")
+    reply = ("There are no `VR_JOIN`, `WORLD_MOVE`, or `INTERACTION` events recorded for that day. "
+             "The room keeps its own world file.")
+    out = sc.drop_invented_self_claims(reply)
+    assert "VR_JOIN" not in out and "The room keeps its own world file." in out
+
+
+def test_code_names_in_an_ordinary_answer_stay(pipeline_turn):
+    pipeline_turn("how do I load a csv with pandas?")
+    reply = "Use `pd.read_csv` with the path, then `df.head()` shows the first rows."
+    assert sc.drop_invented_self_claims(reply) == reply
+
+
+# ── reading and scanning files is acting ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("sentence", [
+    "I'm reading the actual source code inside that folder line by line.",
+    "I will now read the actual content of the key files.",
+    "Hold on while I scan the critical source files.",
+    "It's currently reading through the source files to build that summary.",
+    "I have checked the action ledger and memory recall.",
+])
+def test_saying_it_reads_files_when_nothing_read_them_is_not_served(sentence, chat_turn):
+    out = sc.drop_invented_self_claims(f"Right. {sentence} Ask me anything about it.")
+    assert sentence not in out and "Ask me anything" in out
+
+
+@pytest.mark.parametrize("sentence", [
+    "I've summarised it below.",
+    "I'm reading your message again, and I think you mean the second one.",
+    "I've listed the options below:",
+])
+def test_reading_or_listing_in_the_reply_itself_is_not_acting(sentence, chat_turn):
+    assert sentence in sc.drop_invented_self_claims(sentence)
+
+
+def test_a_promise_to_read_files_is_followed_through_and_reading_back_is_not():
+    from eli.runtime.action_commitment import detect_action_commitment
+    assert detect_action_commitment("I will now read the actual content of the key files in that folder.")
+    assert detect_action_commitment("Let me scan the critical source files.")
+    assert detect_action_commitment("Let me read that back to you.") is None
+
+
+# ── what ELI can do, and what an action left ─────────────────────────────────────────────────────
+
+def test_saying_it_cannot_do_what_it_has_an_action_for_is_not_served(pipeline_turn):
+    """Live: "I can't force Spotify to resume a paused session from here"; "RESUME" then worked."""
+    pipeline_turn("why did the music stop?")
+    reply = "It stopped after the last song. I can't force Spotify to resume a paused session from here. Say play."
+    out = sc.drop_invented_self_claims(reply)
+    assert "can't force" not in out and "It stopped after the last song." in out
+
+
+def test_saying_it_cannot_is_true_when_that_capability_cannot_run(pipeline_turn, monkeypatch):
+    monkeypatch.setattr("eli.runtime.capability_state.get_state", lambda action, **k: {"dependency_ready": False})
+    pipeline_turn("why did the music stop?")
+    reply = "I can't force Spotify to resume a paused session from here. The player is not answering."
+    assert "I can't force" in sc.drop_invented_self_claims(reply)
+
+
+def test_saying_it_cannot_see_the_screen_stands_after_the_screen_reads_failed(pipeline_turn):
+    pipeline_turn("so can you see it or not?", {"action": "SCREEN_READ_ANALYZE", "ok": False, "outcome": "failed"},
+                  {"action": "SCREENSHOT", "ok": False, "outcome": "failed"})
+    reply = "No. I can't see your screen right now: both captures failed."
+    assert "I can't see your screen" in sc.drop_invented_self_claims(reply)
+
+
+def test_a_state_an_action_did_not_report_is_not_served(pipeline_turn):
+    """Live: shuffle is a toggle whose result said "Shuffle toggle", and the reply said it was off."""
+    facts = pipeline_turn("is shuffle off now?", executed_actions=["SHUFFLE_MEDIA"],
+                          action_results=[{"action": "SHUFFLE_MEDIA", "ok": True, "said": "Shuffle toggle — spotify"}])
+    out = sc.drop_invented_self_claims("Done. Shuffle is now confirmed off. Enjoy the album.")
+    assert "confirmed off" not in out
+    facts["action_results"] = [{"action": "SHUFFLE_MEDIA", "ok": True, "said": "Shuffle is off — spotify"}]
+    assert "Shuffle is now confirmed off." in sc.drop_invented_self_claims("Shuffle is now confirmed off.")
+
+
+# ── what ran stands behind only what it is about ─────────────────────────────────────────────────
+
+def test_in_the_rest_of_a_message_a_played_song_does_not_stand_behind_a_memory_written(chat_turn):
+    token = rc.agreed_task_var.set({"message": "that title is the same song", "done": "▶ Playing Harbour Bells by Orlo — spotify"})
+    try:
+        reply = ("Playing it now. I have logged that Night Ferry is an alias for Harbour Bells. Next time you ask for "
+                 "either title, I'll route to the right track.")
+        out = sc.drop_invented_self_claims(reply)
+    finally:
+        rc.agreed_task_var.reset(token)
+    assert out.startswith("Playing it now.")
+    assert "logged that" not in out and "Next time" not in out
+
+
+def test_a_memory_written_stands_when_a_memory_action_ran(chat_turn):
+    chat_turn["executed_actions"] = ["MEMORY_STORE"]
+    reply = "I have noted that your train leaves at nine."
+    assert sc.drop_invented_self_claims(reply) == reply
+
+
+def test_a_fix_said_to_be_made_for_next_time_is_not_served(chat_turn):
+    reply = "I have now corrected the path so I can read the image directly next time. The file is still there."
+    out = sc.drop_invented_self_claims(reply)
+    assert "corrected the path" not in out
+
+
+# ── what an image or the screen shows needs something to have looked ────────────────────────────
+
+def test_describing_the_screen_when_nothing_looked_is_not_served(chat_turn):
+    reply = ("I have the image now. Here is what is on the screen: a terminal on the right and a browser on the left. "
+             "Tell me which window you meant and I will go from there.")
+    out = sc.drop_invented_self_claims(reply)
+    assert "terminal on the right" not in out and "I have the image" not in out and "Tell me which window" in out
+
+
+def test_describing_the_screen_after_a_screen_read_stands(chat_turn):
+    chat_turn["executed_actions"] = ["SCREEN_READ_ANALYZE"]
+    reply = "Here is what is on the screen: a terminal on the right and a browser on the left."
+    assert sc.drop_invented_self_claims(reply) == reply
+
+
+# ── figures about its own work ───────────────────────────────────────────────────────────────────
+
+def test_a_clock_time_does_not_stand_behind_a_percentage(pipeline_turn):
+    pipeline_turn("how are you doing?")
+    out = sc.drop_invented_self_claims("Fine. My media success rate is about 18% lately.",
+                                       evidence="[today 16:18] played a song")
+    assert "18%" not in out
+
+
+def test_a_measured_chance_of_success_is_reported(pipeline_turn, monkeypatch):
+    monkeypatch.setattr("eli.runtime.evidence_ledger.action_reliability",
+                        lambda action, **k: {"action": action, "n": 6, "p": 0.18 if action == "MEDIA_CONTROL" else 0.9})
+    pipeline_turn("how reliable is your media control?")
+    reply = "MEDIA_CONTROL has an est. 18% chance of success lately, from 6 recent runs."
+    assert sc.drop_invented_self_claims(reply, evidence="from 6 recent runs") == reply
+
+
+def test_every_check_of_a_turn_has_the_evidence_of_the_first(pipeline_turn):
+    pipeline_turn("how reliable is your media control?")
+    reply = "My media success rate is 18% lately."
+    assert sc.drop_invented_self_claims(reply, evidence="MEDIA_CONTROL (est. 18% chance of success)") == reply
+    assert sc.drop_invented_self_claims(reply) == reply          # the stored copy, checked with nothing
+
+
+# ── a denied period record is said again by the model ────────────────────────────────────────────
+
+def test_a_denied_period_is_said_again_with_the_record_not_pasted_under_a_header(pipeline_turn):
+    pipeline_turn("what did i do on friday?", _period_found=True, _period_lines=["Fri 21:40 you: the room was dark"])
+    asked = []
+
+    def rewrite(dropped, served):
+        asked.append(dropped)
+        return "On Friday evening you said the room was dark."
+
+    reply = "There are no events recorded for Friday. Ask me another day."
+    out = "".join(sc.gate_stream([reply], rewrite=rewrite))
+    assert asked and "There are no events recorded for Friday." in [d.strip() for d in asked[0]]
+    assert "What I have for that period" not in out and "On Friday evening" in out
+
+
+# ── where a file is said to be ───────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("reply,gone", [
+    ("The records are kept. Evidence Ledger: /…/evidence.jsonl (or a similar path).", "evidence.jsonl"),
+    ("The audit trail lives in /nowhere/at/all/audit.log on this machine.", "audit.log"),
+    ("It lives in two places:\n- `/nowhere/one/events.jsonl`\n- `/nowhere/two/audit.log`\nBoth are append-only.",
+     "events.jsonl"),
+])
+def test_where_a_record_is_said_to_live_is_held_to_the_disk(reply, gone, chat_turn):
+    assert gone not in sc.drop_invented_self_claims(reply)
+
+
+def test_telling_the_user_where_to_put_a_file_is_not_checked(chat_turn):
+    reply = "Put your settings in ~/.config/someapp/settings.toml and restart it."
+    assert sc.drop_invented_self_claims(reply) == reply
+
+
+def test_a_table_eli_makes_is_known_before_this_install_has_made_it(monkeypatch):
+    monkeypatch.setattr("eli.core.paths.user_db_path", lambda: "/nonexistent/user.sqlite3")
+    monkeypatch.setattr("eli.core.paths.agent_db_path", lambda: "/nonexistent/agent.sqlite3")
+    sc.known_identifiers.cache_clear()
+    try:
+        assert "runtime_events" in sc.known_identifiers() and "orchestrator_audit" in sc.known_identifiers()
+    finally:
+        sc.known_identifiers.cache_clear()

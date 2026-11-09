@@ -13,31 +13,64 @@ from __future__ import annotations
 
 import re
 import time
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
-# Verbs ELI uses when promising to actually perform/redo a task. Deliberately
-# excludes vague ones ("get back to you", "think", "know") to avoid false hits.
-_ACTION_VERB = (
-    r"(?:check|re-?check|fetch|re-?fetch|search|look(?:ing)?\s+(?:up|into)|"
-    r"pull\s+(?:up|it\s+up)|run|re-?run|verify|confirm|find\s+out|update|refresh|"
-    r"look\s+that\s+up)"
-)
+# Verbs ELI uses when promising to actually perform/redo a task: the phrasal ones below, and the verbs
+# of looking something up or over that ELI's own actions are named with (read, list, scan, examine,
+# analyse...: cognition.self_claims.looking_verbs, the one list the claim check uses too). "I will now
+# read the actual content of key files" was not a promise to this module, and nothing read them.
+# Deliberately excludes vague ones ("get back to you", "think", "know") to avoid false hits.
+_PHRASAL_VERBS = (r"re-?check|re-?fetch|look(?:ing)?\s+(?:up|into|through|over)|go(?:ing)?\s+through|"
+                  r"pull\s+(?:up|it\s+up)|run|re-?run|verify|confirm|find\s+out|update|refresh|look\s+that\s+up")
 
-# "let me … <verb>", "I'll … <verb>", "give me a moment … <verb>", etc.
-_COMMIT_RE = re.compile(
-    r"\b(?:let\s+me|let'?s|i'?ll|i\s+will|i\s+am\s+going\s+to|i'?m\s+going\s+to|"
-    r"allow\s+me\s+to|give\s+me\s+(?:a\s+)?(?:moment|sec(?:ond)?)|one\s+moment|"
-    r"hang\s+on|on\s+it,?)\b[^.!?\n]{0,60}?\b" + _ACTION_VERB + r"\b",
-    re.I,
-)
 
-# Present-tense "doing it now" theatre.
-_DOING_RE = re.compile(
-    r"\b(?:checking|re-?checking|fetching|re-?fetching|searching|"
-    r"looking\s+that\s+up|running\s+that|pulling\s+(?:that|it)\s+up|verifying)\b"
-    r"(?:\s*\.\.\.|\s+now|\s+for\s+you)?",
-    re.I,
-)
+def _verb_forms(verbs) -> str:
+    stems = sorted({v[:-1] if v.endswith("e") else v for v in verbs}, key=len, reverse=True)
+    return "(?:" + "|".join(re.escape(v) for v in stems) + r")\w{0,3}"
+
+
+_COMMIT_LEAD = (r"\b(?:let\s+me|let'?s|i'?ll|i\s+will|i\s+am\s+going\s+to|i'?m\s+going\s+to|"
+                r"allow\s+me\s+to|give\s+me\s+(?:a\s+)?(?:moment|sec(?:ond)?)|one\s+moment|"
+                r"hang\s+on|on\s+it,?)\b[^.!?\n]{0,60}?\b")
+
+
+@lru_cache(maxsize=1)
+def _commit_patterns():
+    """(_COMMIT_RE, _LOOK_RE, _DOING_RE), built on first use from the claim check's list of looking
+    verbs. A looking verb is a promise to act only on one of the things ELI's actions act on ("let me
+    read the key files"); "let me read that back to you" is saying it again."""
+    try:
+        from eli.cognition.self_claims import looking_verbs
+        looking = set(looking_verbs()) - {"check", "fetch", "search"}
+    except Exception:
+        looking = set()
+    # "let me … <verb>", "I'll … <verb>", "give me a moment … <verb>", etc.
+    commit = re.compile(_COMMIT_LEAD + r"(?:check|fetch|search|" + _PHRASAL_VERBS + r")\b", re.I)
+    look = re.compile(_COMMIT_LEAD + _verb_forms(looking) + r"\b", re.I) if looking else None
+    # Present-tense "doing it now" theatre.
+    doing = re.compile(
+        r"\b(?:checking|re-?checking|fetching|re-?fetching|searching|"
+        r"looking\s+that\s+up|running\s+that|pulling\s+(?:that|it)\s+up|verifying)\b"
+        r"(?:\s*\.\.\.|\s+now|\s+for\s+you)?",
+        re.I,
+    )
+    return commit, look, doing
+
+
+def _looks_at_something(text: str, at: int) -> bool:
+    """Whether what follows a looking verb names a thing ELI's actions act on, or a path."""
+    rest = text[at:at + 100]
+    rest = re.split(r"[.!?\n]", rest, maxsplit=1)[0]
+    if re.search(r"`[^`]+`|[~.]?/[\w.-]+/", rest):
+        return True
+    try:
+        from eli.cognition.self_claims import machine_things
+        things = machine_things()
+    except Exception:
+        return False
+    return any(w in things for w in re.findall(r"[a-z]+", rest.lower()))
+
 
 # Obvious fabricated fill-ins / fake-fetch markers — always a fake action.
 _FAKE_THEATRE_RE = re.compile(
@@ -168,12 +201,17 @@ def corrected_action(text: str, last_cmd: Optional[Dict[str, Any]],
     action, recent, acted on one named thing (route_contracts.TARGET_ARGS)."""
     from eli.execution.route_contracts import TARGET_ARGS
     from eli.runtime.command_splitter import correction, starts_with_command
+    named = correction(text)
+    # "i said play the film on that site!", "no, open the other folder": the correction is an
+    # instruction of its own, the one that was not carried out. It is read as the instruction it is,
+    # whatever ran last: live it went to chat, and the model refused on its own.
+    if named and "?" not in named and starts_with_command(named, after_lead=True):
+        return _instruction_again(named)
     if not last_cmd:
         return None
     age = (time.time() if now is None else float(now)) - float(last_cmd.get("ts") or 0.0)
     if age > REDO_MAX_AGE_S:
         return None
-    named = correction(text)
     if not named or "?" in named or starts_with_command(named) or len(named.split()) > 12:
         return None
     if not [w for w in re.findall(r"[a-z0-9']+", named.lower()) if w not in _POINTS_BACK]:
@@ -186,6 +224,20 @@ def corrected_action(text: str, last_cmd: Optional[Dict[str, Any]],
     if key == "name" and isinstance(args.get("target"), str):
         args["target"] = named          # app actions carry the name twice
     return {"action": str(last_cmd.get("action") or ""), "args": args}
+
+
+def _instruction_again(instruction: str) -> Optional[Dict[str, Any]]:
+    """The instruction a correction repeats, as the router reads it ({"action", "args"}), or None when
+    the router finds no action in it."""
+    try:
+        from eli.execution.router_enhanced import route
+        routed = route(instruction) or {}
+    except Exception:
+        return None
+    action = str(routed.get("action") or "").upper()
+    if action in ("", "CHAT", "UNKNOWN", "NOOP"):
+        return None
+    return {"action": action, "args": dict(routed.get("args") or {}), "instruction": instruction}
 
 
 # "Go deeper on <topic>" phrasings. When the previous turn was a news briefing,
@@ -258,7 +310,11 @@ def detect_action_commitment(text: str) -> Optional[Dict[str, str]]:
     s = str(text or "").strip()
     if not s:
         return None
-    m = _COMMIT_RE.search(s) or _DOING_RE.search(s) or _FAKE_THEATRE_RE.search(s)
+    _commit_re, _look_re, _doing_re = _commit_patterns()
+    looked = _look_re.search(s) if _look_re is not None else None
+    if looked and not _looks_at_something(s, looked.end()):
+        looked = None
+    m = _commit_re.search(s) or looked or _doing_re.search(s) or _FAKE_THEATRE_RE.search(s)
     if not m:
         return None
     # Past or perfect-continuous narration ("I've been checking", "I was searching", "I checked
