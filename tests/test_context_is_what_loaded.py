@@ -230,3 +230,66 @@ def test_the_settings_page_offers_only_cache_types_that_load():
     assert len(offered) == 2, offered
     for line in offered:
         assert '["", "q8_0", "f16"]' in line, line
+
+
+# ── CPU threads: auto unless the operator chose a number ─────────────────────
+
+def test_the_thread_box_keeps_auto_and_reaches_every_thread_this_machine_has(monkeypatch):
+    """The box ran 1-64 and started at 8: the saved auto (0) came up as 1, the window's Load asked
+    llama.cpp for one thread, and the next save wrote 1 over auto."""
+    import os
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from eli.gui.main_window._mixins.settings_model import SettingsModelMixin
+    monkeypatch.setattr(os, "cpu_count", lambda: 128)
+    box = SettingsModelMixin._cpu_threads_box()
+    assert box.value() == 0 and box.text() == "auto"
+    box.setValue(96)
+    assert box.value() == 96 and box.maximum() == 128
+    box.setValue(0)                                  # what load_settings does with the saved auto
+    assert box.value() == 0
+    assert "auto is" in box.toolTip()
+
+
+def test_the_tuner_does_not_write_its_thread_figure_as_the_operators():
+    text = (ROOT / "eli/gui/main_window/_mixins/settings_model.py").read_text(encoding="utf-8")
+    i = text.index("    def _apply_hardware_recommendation_for_model")
+    j = text.index("\n    def ", i + 10)
+    assert '_s["n_threads"]' not in text[i:j]
+
+
+# ── the window's loader sizes the budgets for the window the model can use ─────
+
+def test_a_load_past_the_trained_length_sizes_budgets_for_the_trained_length(monkeypatch, tmp_path, caplog):
+    """A model trained on 32768 loaded at 39168: generation sized every prompt at 32768, but the
+    reasoning-mode budgets were re-derived from 39168."""
+    import eli.core.startup_hardware_optimizer as sho
+    import eli.gui.main_window.models as M
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF" + b"\0" * 64)
+    llm = _Loaded(39168)
+    sized = []
+
+    def _load(force_reload=False, request=None):
+        monkeypatch.setattr(G, "_llm", llm, raising=False)
+        return llm
+
+    monkeypatch.setattr(M, "resolve_model_path", lambda p: model)
+    monkeypatch.setattr(G, "load_request", lambda *a, **k: object())
+    monkeypatch.setattr(G, "load_model", _load)
+    monkeypatch.setattr(G, "get_effective_runtime_report",
+                        lambda: {"model_path": str(model), "effective": {"n_ctx": 39168}})
+    monkeypatch.setattr(G, "_ELI_EFFECTIVE_RUNTIME_REPORT", {"effective": {"n_ctx": 39168}}, raising=False)
+    monkeypatch.setattr(G, "_model_train_ctx", lambda *a: 32768)
+    monkeypatch.setattr(sho, "train_ctx_for_model", lambda p: 32768)
+    monkeypatch.setattr(sho, "resize_budgets_to_effective_ctx", lambda ctx: sized.append(ctx) or {})
+    import eli.core.gpu_pack_runtime as gpr
+    import eli.memory.vector_store as vs
+    monkeypatch.setattr(gpr, "try_activate_gpu_pack", lambda verify=True: None)
+    monkeypatch.setattr(vs, "get_vector_store", lambda: None)
+    mgr = M.LocalModelManager()
+    with caplog.at_level("WARNING"):
+        assert mgr.load_model(str(model), n_ctx=39000)
+    assert mgr.n_ctx == 39168, "the status line still says what loaded"
+    assert sized == [32768]
+    assert "trained on 32768" in caplog.text

@@ -69,3 +69,47 @@ def test_exact_name_match_not_substring(fake_pa):
     fake_pa(["pulse_monitor", "pulse", "pulseaudio"])
     c = CaptureChoice(device_index=99, pulse_source=None, reason="probed", device_name="pulse")
     assert live_device_index(c) == 1
+
+
+# ── the GUI's microphone choice (eli/gui/main_window/_mixins/conversation.py) ──
+
+def _gui_choice(monkeypatch, data, *, save):
+    import os
+    import time
+    import types
+    import eli.perception.mic_resolver as mr
+    from eli.gui.main_window._mixins.conversation import ConversationMixin
+    forced = []
+    monkeypatch.setattr(mr, "resolve_capture", lambda force=False: forced.append(force) or
+                        CaptureChoice(None, None, "stub"))
+
+    class _Window(ConversationMixin):
+        _first_run_complete = False
+        mic_device_combo = types.SimpleNamespace(currentData=lambda: data)
+
+    _Window()._on_mic_device_changed(_save=save)
+    deadline = time.monotonic() + 5
+    while save and not forced and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return os.environ, forced
+
+
+def test_a_pulse_source_chosen_in_settings_pins_no_device_index(monkeypatch):
+    """Choosing a PipeWire/PulseAudio source (a Bluetooth headset) set ELI_MIC_DEVICE_INDEX to 14,
+    one machine's PortAudio number: elsewhere it opened another device or none."""
+    for name in ("ELI_MIC_PULSE_SOURCE", "PULSE_SOURCE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ELI_MIC_DEVICE_INDEX", "3")
+    env, forced = _gui_choice(monkeypatch, ("pulse", "bluez_input.AA_BB_CC.0"), save=True)
+    assert "ELI_MIC_DEVICE_INDEX" not in env
+    assert env["ELI_MIC_PULSE_SOURCE"] == env["PULSE_SOURCE"] == "bluez_input.AA_BB_CC.0"
+    assert forced == [True], "the cached earlier choice is resolved again"
+
+
+def test_a_device_chosen_after_a_pulse_source_is_not_overridden_by_it(monkeypatch):
+    monkeypatch.setenv("ELI_MIC_PULSE_SOURCE", "bluez_input.AA_BB_CC.0")
+    monkeypatch.setenv("PULSE_SOURCE", "bluez_input.AA_BB_CC.0")
+    env, forced = _gui_choice(monkeypatch, ("alsa", 2), save=False)
+    assert env["ELI_MIC_DEVICE_INDEX"] == "2"
+    assert "ELI_MIC_PULSE_SOURCE" not in env and "PULSE_SOURCE" not in env
+    assert forced == [], "restoring the saved choice at start-up opens no microphone"

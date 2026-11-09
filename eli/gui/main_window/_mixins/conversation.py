@@ -438,20 +438,40 @@ class ConversationMixin:
             return
         kind, value = data
         if kind == "alsa":
+            # A PortAudio device (or the system default): no PulseAudio/PipeWire source pinned, so
+            # the resolver does not take a source chosen earlier over this device.
+            for name in ("ELI_MIC_PULSE_SOURCE", "PULSE_SOURCE"):
+                _os.environ.pop(name, None)
             if value is None:
                 _os.environ.pop("ELI_MIC_DEVICE_INDEX", None)
-                _os.environ.pop("PULSE_SOURCE", None)
             else:
                 _os.environ["ELI_MIC_DEVICE_INDEX"] = str(value)
-                _os.environ.pop("PULSE_SOURCE", None)
         elif kind == "pulse":
-            _os.environ["ELI_MIC_DEVICE_INDEX"] = "14"
+            # A PulseAudio/PipeWire source (a Bluetooth headset): the resolver opens it through this
+            # machine's own 'pulse' device (eli/perception/mic_resolver.py). The index was pinned
+            # to 14, one machine's number, which elsewhere is another device or none at all.
+            _os.environ.pop("ELI_MIC_DEVICE_INDEX", None)
+            _os.environ["ELI_MIC_PULSE_SOURCE"] = value
             _os.environ["PULSE_SOURCE"] = value
         self._saved_mic_device = data
+        if _save:
+            self._reresolve_mic()
         # Don't save during load_settings — caller sets _save=False to avoid
         # triggering a model reload cycle on startup.
         if _save and getattr(self, "_first_run_complete", False):
             self.save_settings(silent=True)
+
+    @staticmethod
+    def _reresolve_mic() -> None:
+        """The capture device chosen earlier is cached; resolve the new choice now, off the
+        window's thread (the resolver checks the device delivers audio)."""
+        def _run():
+            try:
+                from eli.perception.mic_resolver import resolve_capture
+                log.debug("[AUDIO] microphone choice resolved: %s", resolve_capture(force=True).reason)
+            except Exception:
+                log.debug("[AUDIO] microphone choice not resolved", exc_info=True)
+        threading.Thread(target=_run, daemon=True, name="eli-mic-resolve").start()
 
     def _apply_direct_chat_env(self):
         """Sync ELI_STT_ALLOW_DIRECT_CHAT env var from the checkbox — takes effect immediately."""

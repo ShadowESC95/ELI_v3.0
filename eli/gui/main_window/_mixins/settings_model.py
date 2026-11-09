@@ -623,6 +623,24 @@ class SettingsModelMixin:
             except Exception as ex:
                 log.debug(f"[GUI] voice combo repopulate failed: {ex}", exc_info=True)
 
+    @staticmethod
+    def _cpu_threads_box() -> QSpinBox:
+        """CPU threads for llama.cpp: 0 is auto (this machine's physical cores, measured fastest,
+        eli/core/hardware_profile.recommend_cpu_threads), up to every thread it has. The box ran
+        1-64 and showed 8: the saved auto 0 came up as 1, the window's Load asked llama.cpp for one
+        thread and the next save wrote 1 over auto; a machine with more than 64 could not be set."""
+        box = QSpinBox()
+        box.setRange(0, max(1, os.cpu_count() or 1))
+        box.setSpecialValueText("auto")
+        box.setValue(0)
+        try:
+            from eli.core.hardware_profile import recommend_cpu_threads
+            auto = f"auto is {int(recommend_cpu_threads())} on this machine (its physical cores)"
+        except Exception:
+            auto = "auto is this machine's physical cores"
+        box.setToolTip(f"Threads llama.cpp runs on the CPU; {auto}. A number is kept as yours.")
+        return box
+
     def _build_settings_runtime_page(self) -> QWidget:
         page, vbox = self._settings_page(
             "Runtime",
@@ -641,9 +659,7 @@ class SettingsModelMixin:
             "a number is kept for the model it was set for.")
         form.addRow(self._field_label("Context size"), self.n_ctx_input)
 
-        self.n_threads_input = QSpinBox()
-        self.n_threads_input.setRange(1, 64)
-        self.n_threads_input.setValue(8)
+        self.n_threads_input = self._cpu_threads_box()
         form.addRow(self._field_label("CPU threads"), self.n_threads_input)
 
         self.n_gpu_layers_input = QSpinBox()
@@ -1943,7 +1959,7 @@ class SettingsModelMixin:
         optimal = recommend_optimal_settings(sysinfo)
         self.n_ctx_input.setValue(optimal['n_ctx'])
         self.n_gpu_layers_input.setValue(optimal['n_gpu_layers'])
-        self.n_threads_input.setValue(optimal['n_threads'])
+        self.n_threads_input.setValue(0)     # auto: the same count, kept as auto, not as a number of yours
         self.batch_size_input.setValue(optimal['batch_size'])
         self.temperature_input.setValue(optimal['temperature'])
         if optimal.get('max_tokens'):
@@ -2210,8 +2226,8 @@ class SettingsModelMixin:
                 _s["n_gpu_layers_model"] = _this_model
                 _s["n_gpu_layers_ctx"] = _canonical_ctx
                 _s["batch_size"] = _canonical_batch   # user's choice, preserved
-                if int(rec.n_threads) > 0:
-                    _s["n_threads"] = int(rec.n_threads)
+                # Threads stay the operator's: 0 (auto) is the count the tuner measures, so its
+                # figure is not written as a number of theirs (the box and every loader read 0 as it).
                 _s["hw_profile_n_ctx"] = int(rec.n_ctx)   # effective (VRAM-reduced) value
                 _s["hw_profile_n_gpu_layers"] = int(rec.n_gpu_layers)
                 _s["hw_profile_batch_size"] = int(rec.batch_size)
@@ -2224,8 +2240,9 @@ class SettingsModelMixin:
                 # block deliberately does not take from the profile (see
                 # _canonical_ctx above). Reading the panel, the tuner's ctx looked
                 # like the live setting; it never was.
-                _applied_desc = ((f"threads={int(rec.n_threads)}" if int(rec.n_threads) > 0
-                                  else "nothing"))
+                _applied_desc = (f"threads={int(_s.get('n_threads') or 0) or 'auto'}"
+                                 + (f" ({int(rec.n_threads)})" if not int(_s.get('n_threads') or 0)
+                                    and int(rec.n_threads) > 0 else ""))
                 _not_applied = []
                 if int(rec.n_ctx) != int(_canonical_ctx):
                     _not_applied.append(f"n_ctx (yours: {_canonical_ctx}, tuner: {int(rec.n_ctx)})")

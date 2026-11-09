@@ -88,6 +88,7 @@ class LocalModelManager:
             from eli.core.mem_units import file_size_gib
             print(f"🔄 Loading model: {path_obj.name}")
             print(f"   Size: {file_size_gib(path_obj):.2f} GB")
+            _train = 0
             try:
                 from eli.core.startup_hardware_optimizer import train_ctx_for_model
                 _train = int(train_ctx_for_model(str(path_obj)) or 0)
@@ -115,12 +116,20 @@ class LocalModelManager:
             llm = _gg.load_model(force_reload=True, request=request)
             self.adopt(llm)
             # The reasoning-mode budgets were sized for the tuner's recommendation; size them for
-            # the context that loaded.
+            # the window the model can use: what loaded, up to what it was trained on (the
+            # generation path sizes every prompt the same way). A load past the trained length
+            # sized them for tokens the model is never given.
+            _usable = int(_gg.current_context_limit() or 0) or int(self.n_ctx)
+            if _train and int(self.n_ctx) > _train:
+                log.warning(f"[LOAD_PLAN] {path_obj.name} loaded at ctx={self.n_ctx}, but it was trained "
+                            f"on {_train} tokens: it reads at most {_train}, and the cache for the "
+                            f"other {int(self.n_ctx) - _train} is memory it does not use. A context of "
+                            f"{_train} or less loads only what it can use.")
             try:
                 from eli.core.startup_hardware_optimizer import resize_budgets_to_effective_ctx
-                _delta = resize_budgets_to_effective_ctx(int(self.n_ctx))
+                _delta = resize_budgets_to_effective_ctx(_usable)
                 if _delta:
-                    log.debug(f"[LOAD_PLAN] mode budgets re-derived from effective ctx={self.n_ctx}: "
+                    log.debug(f"[LOAD_PLAN] mode budgets re-derived from usable ctx={_usable}: "
                               f"{sorted(_delta)}")
             except Exception as _budget_err:
                 log.debug(f"[GUI][LOAD] mode budget re-derivation skipped: {_budget_err}")
