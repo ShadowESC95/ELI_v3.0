@@ -130,3 +130,50 @@ def test_install_buttons_enable_an_existing_pack_before_downloading():
     assert body.index("_enable_switched_off_pack(owner)") < body.index("_GpuPackInstallThread(")
     for starter in ("def _start_gpu_pack_install(", "def _wiz_start_gpu_pack_install("):
         j = src.index(starter)
+
+
+# ── 3. the Install GPU pack buttons call install() as this build defines it ───────
+
+def _install_thread_against(monkeypatch, signature_of, *, emits_progress=False):
+    import inspect
+    import types
+    import eli.gui.panels.startup as st
+    sys.path.insert(0, str(PACK_DIR))
+    import eli_gpu_pack as real
+    called, progress = [], []
+
+    def install(*args):
+        inspect.signature(signature_of).bind(*args)   # refuses what the real one refuses
+        called.append(args[0])
+        if emits_progress:
+            args[1]("downloading", 0.5)
+        return 0
+
+    install.__signature__ = inspect.signature(signature_of)
+    stub = types.SimpleNamespace(install=install, _eli_root=lambda: Path("/nonexistent"),
+                                 activate_gpu_pack_runtime=lambda dest, verify=True: True,
+                                 last_failure=lambda: "")
+    monkeypatch.setattr(st, "_import_eli_gpu_pack", lambda: stub)
+    thread = st._GpuPackInstallThread(["--vulkan"])
+    done = []
+    thread.finished_result.connect(lambda rc, msg: done.append((rc, msg)))
+    thread.progress_text.connect(progress.append)
+    thread.run()                                       # on this thread: no Qt event loop needed
+    return real, called, progress, done
+
+
+def test_the_install_button_runs_against_the_real_signature(monkeypatch):
+    """Every Install Vulkan/CUDA GPU pack button said "install() takes from 0 to 1 positional
+    arguments but 2 were given": the start-up window passed a progress callback v3's
+    install(argv) does not take."""
+    sys.path.insert(0, str(PACK_DIR))
+    import eli_gpu_pack as real
+    _, called, _, done = _install_thread_against(monkeypatch, real.install)
+    assert done == [(0, "GPU pack installed.")] and called == [["--vulkan"]]
+
+
+def test_an_install_that_takes_progress_reports_it_to_the_window(monkeypatch):
+    def install(argv=None, progress=None):
+        return 0
+    _, called, progress, done = _install_thread_against(monkeypatch, install, emits_progress=True)
+    assert done == [(0, "GPU pack installed.")] and progress == ["downloading"]

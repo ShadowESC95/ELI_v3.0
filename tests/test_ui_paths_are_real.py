@@ -66,6 +66,9 @@ REAL_PAGES = {
     m.group(1).lower()
     for m in re.finditer(r'inner_tabs\.addTab\([^,]+,\s*"[^"]*?([A-Za-z-]+)"',
                          SETTINGS_PANEL)
+} | {
+    # The dialog's pages by the key they are opened with (AdvancedSettingsDialog.open_page)
+    m.group(1) for m in re.finditer(r'_page\("([a-z_]+)",', SETTINGS_PANEL)
 }
 
 

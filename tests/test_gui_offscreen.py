@@ -122,6 +122,24 @@ def test_settings_dialog_builds_deep_tree(qapp):
     assert len(w.findChildren(QWidget)) > 50   # a full multi-tab settings surface
 
 
+def test_settings_dialog_has_no_second_plugin_install_path(qapp):
+    """Its Plugins tab installed through PluginManager.install: a registry entry's code was
+    downloaded and run at once, with no hash, scan or consent, and switched on. Plugins are
+    installed in the Extensions tab; the cards open pages by name."""
+    import pathlib
+    from eli.gui.panels.settings import AdvancedSettingsDialog
+    w = AdvancedSettingsDialog(start_tab="upgrade")
+    labels = [w.inner_tabs.tabText(i) for i in range(w.inner_tabs.count())]
+    assert not any(label.endswith(" Plugins") for label in labels), labels
+    assert "Self-Upgrade" in w.inner_tabs.tabText(w.inner_tabs.currentIndex())
+    w.open_page("cognition")
+    assert "Cognition" in w.inner_tabs.tabText(w.inner_tabs.currentIndex())
+    gui = pathlib.Path(__file__).resolve().parents[1] / "eli" / "gui"
+    for path in gui.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "mgr.install(" not in text and "manager.install(" not in text, path
+
+
 # --------------------------------------------------------------------------- #
 # extensions_tab — the top-level plugins / MCP / marketplace surface
 # --------------------------------------------------------------------------- #

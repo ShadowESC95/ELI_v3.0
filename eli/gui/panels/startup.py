@@ -116,10 +116,23 @@ class _GpuPackInstallThread(QThread):
         super().__init__(parent)
         self._argv = list(argv or [])
 
+    @staticmethod
+    def _install(gp, argv: List[str], progress) -> int:
+        """eli_gpu_pack.install as this build has it: given the progress callback only where it
+        takes one. It was always given one, and v3's install(argv) refused the call, so every
+        Install GPU pack button said 'install() takes from 0 to 1 positional arguments'."""
+        import inspect
+        try:
+            takes_progress = len(inspect.signature(gp.install).parameters) >= 2
+        except (TypeError, ValueError):
+            takes_progress = False
+        return gp.install(argv, progress) if takes_progress else gp.install(argv)
+
     def run(self):
         try:
             gp = _import_eli_gpu_pack()
-            rc = int(gp.install(self._argv, lambda text, _pct: self.progress_text.emit(text)) or 0)
+            rc = int(self._install(gp, self._argv, lambda text, _pct=None: self.progress_text.emit(str(text)))
+                     or 0)
             msg = ""
             if rc == 0:
                 dest = gp._eli_root() / "runtime" / "gpu"

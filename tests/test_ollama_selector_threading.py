@@ -136,3 +136,78 @@ def test_a_selector_dropped_mid_fetch_is_not_destroyed_on_the_worker(qapp, _stub
         t.join(timeout=5)
     later = OllamaModelSelector()
     assert _drive(qapp, lambda: later._combo.count() > 0)
+
+
+# --------------------------------------------------------------------------- #
+# Pulling a model from the setup dialog: widgets touched on the GUI thread only,
+# and Cancel stops the download. The dialog drove its progress dialog and message
+# boxes from the pull thread, and Cancel was connected to nothing.
+# --------------------------------------------------------------------------- #
+class _PullResponse:
+    """/api/pull as Ollama streams it, a line per progress step, closing when the client does."""
+
+    def __init__(self, lines, endless=False):
+        import json
+        import threading
+        self._lines = [json.dumps(line).encode() + b"\n" for line in lines]
+        self._endless, self.closed, self.read = endless, threading.Event(), 0
+
+    def readline(self):
+        import json
+        import time
+        self.read += 1
+        if self._lines:
+            return self._lines.pop(0)
+        if self._endless and not self.closed.is_set():
+            time.sleep(0.01)
+            return json.dumps({"status": "pulling", "total": 100, "completed": 1}).encode() + b"\n"
+        return b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed.set()
+
+
+@pytest.fixture
+def _pull_lane(qapp, monkeypatch):
+    import threading
+    from PySide6.QtWidgets import QMessageBox, QProgressDialog
+    import eli.integrations.ollama.client as client
+    said = []
+    for kind in ("information", "warning", "critical"):
+        monkeypatch.setattr(QMessageBox, kind, lambda *a, _k=kind, **kw: said.append(
+            (_k, threading.current_thread() is threading.main_thread(), a[2] if len(a) > 2 else "")))
+    monkeypatch.setattr(QProgressDialog, "show", lambda self: None)     # nothing reaches a screen
+    monkeypatch.setattr(client, "set_active_host", lambda host: None, raising=False)
+    monkeypatch.setattr(client, "candidate_hosts", lambda *a, **k: ["http://127.0.0.1:9"], raising=False)
+    monkeypatch.setattr(client, "_allow_via_netguard", lambda host: None, raising=False)
+    return client, said
+
+
+def test_a_pull_from_the_setup_dialog_reports_on_the_gui_thread(_pull_lane, monkeypatch, qapp):
+    client, said = _pull_lane
+    response = _PullResponse([{"status": "pulling", "total": 10, "completed": 5}, {"status": "success"}])
+    monkeypatch.setattr(client.urllib.request, "urlopen", lambda req, timeout=None: response)
+    from eli.gui.widgets.ollama_model_selector import OllamaSetupDialog
+    dlg = OllamaSetupDialog(current_host="http://127.0.0.1:9")
+    dlg._run_pull("gamma:2b")
+    assert _drive(qapp, lambda: bool(said))
+    assert said == [("information", True, "✅ gamma:2b is ready.")]
+    assert dlg.selected_model() == "gamma:2b"
+
+
+def test_cancel_stops_a_pull_and_says_nothing_more(_pull_lane, monkeypatch, qapp):
+    client, said = _pull_lane
+    response = _PullResponse([], endless=True)
+    monkeypatch.setattr(client.urllib.request, "urlopen", lambda req, timeout=None: response)
+    from eli.gui.widgets.ollama_model_selector import OllamaSetupDialog
+    dlg = OllamaSetupDialog(current_host="http://127.0.0.1:9")
+    dlg._run_pull("gamma:2b")
+    assert _drive(qapp, lambda: response.read > 3), "the pull is running"
+    from PySide6.QtWidgets import QPushButton
+    dlg._pull_dialog.findChild(QPushButton).click()  # the progress dialog's own Cancel button
+    assert _drive(qapp, lambda: response.closed.is_set() and dlg._pull_dialog is None)
+    assert said == [], "a cancelled pull is neither a success nor a failure"
+    assert dlg.selected_model() != "gamma:2b"

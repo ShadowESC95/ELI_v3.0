@@ -69,7 +69,89 @@ class _StatusDot(QLabel):
             self.setToolTip("Checking Ollama...")
 
 
-class OllamaSetupDialog(QDialog):
+class _PullCancelled(Exception):
+    """Cancel was pressed in the pull's progress dialog."""
+
+
+class _PullsModels:
+    """One pull flow for the setup dialog and the toolbar selector. The pull runs on the client's
+    thread and reports through the process-wide relay (_WorkerRelay), so every widget is touched
+    on the GUI thread only; Cancel stops the download. The dialog drove its progress dialog and
+    message boxes from the pull thread itself, and neither one's Cancel did anything."""
+
+    def _connect_pull_relay(self) -> None:
+        relay = _worker_relay()
+        relay.pull_progress.connect(self._relayed_pull_progress)
+        relay.pull_done.connect(self._relayed_pull_done)
+        self._pull_dialog = None
+        self._pull_model_name = ""
+        self._pull_cancel = threading.Event()
+
+    def _start_pull(self, model: str) -> None:
+        progress = QProgressDialog(f"Pulling {model}…", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Pulling Model")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setValue(0)
+        cancel = threading.Event()
+        progress.canceled.connect(cancel.set)
+        self._pull_dialog, self._pull_model_name, self._pull_cancel = progress, model, cancel
+        progress.show()
+        relay, key = _worker_relay(), id(self)
+
+        def _progress(status, pct):
+            if cancel.is_set():
+                raise _PullCancelled()      # the client closes the download and reports it ended
+            relay.pull_progress.emit(key, str(status or ""), int(pct or 0))
+
+        def _done(result):
+            relay.pull_done.emit(key, dict(result or {}, cancelled=cancel.is_set()))
+
+        try:
+            from eli.integrations.ollama.client import pull_model_async
+            pull_model_async(model, progress_cb=_progress, done_cb=_done)
+        except Exception as e:
+            progress.close()
+            self._pull_dialog = None
+            QMessageBox.critical(self, "Error", f"Pull failed: {e}")
+
+    def _relayed_pull_progress(self, key: int, status: str, pct: int):
+        if key == id(self):
+            self._on_pull_progress(status, pct)
+
+    def _relayed_pull_done(self, key: int, result: dict):
+        if key == id(self):
+            self._on_pull_done(result)
+
+    def _on_pull_progress(self, status: str, pct: int):
+        dlg = getattr(self, "_pull_dialog", None)
+        if dlg is None or self._pull_cancel.is_set():
+            return
+        dlg.setValue(int(pct))
+        if status:
+            dlg.setLabelText(f"{status}\n{pct}%")
+
+    def _on_pull_done(self, result: dict):
+        dlg = getattr(self, "_pull_dialog", None)
+        model = getattr(self, "_pull_model_name", "") or "model"
+        if dlg is not None:
+            dlg.close()
+        self._pull_dialog = None
+        if result.get("cancelled"):
+            return                          # the user stopped it; nothing more to say
+        if result.get("ok"):
+            QMessageBox.information(self, "Pull complete", f"✅ {model} is ready.")
+            self._pulled(model)
+        else:
+            QMessageBox.warning(
+                self, "Pull failed",
+                f"❌ {model}:\n{result.get('error', 'Unknown error')}",
+            )
+
+    def _pulled(self, model: str) -> None:
+        """What the widget does with a model that has just been pulled."""
+
+
+class OllamaSetupDialog(_PullsModels, QDialog):
     """User-friendly Ollama configuration: host, model pick, popular pulls, folder."""
 
     def __init__(self, parent=None, *, current_host: str = "", models: Optional[List[str]] = None):
@@ -78,6 +160,7 @@ class OllamaSetupDialog(QDialog):
         self.setMinimumWidth(420)
         self._models = list(models or [])
         self._build_ui(current_host or "http://localhost:11434")
+        self._connect_pull_relay()
 
     def _build_ui(self, host: str):
         layout = QVBoxLayout(self)
@@ -188,43 +271,20 @@ class OllamaSetupDialog(QDialog):
             self._run_pull(tag.strip())
 
     def _run_pull(self, model: str):
-        progress = QProgressDialog(f"Pulling {model}…", "Cancel", 0, 100, self)
-        progress.setWindowTitle("Pulling Model")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setValue(0)
-        progress.show()
-        done = {"finished": False}
-
-        def _progress(status: str, pct: int):
-            if done["finished"]:
-                return
-            progress.setValue(int(pct))
-            if status:
-                progress.setLabelText(f"{status}\n{pct}%")
-
-        def _done(result: dict):
-            done["finished"] = True
-            progress.close()
-            if result.get("ok"):
-                QMessageBox.information(self, "Pull complete", f"✅ {model} is ready.")
-                if self._model_combo.findText(model) < 0:
-                    self._model_combo.addItem(model)
-                idx = self._model_combo.findText(model)
-                if idx >= 0:
-                    self._model_combo.setCurrentIndex(idx)
-            else:
-                QMessageBox.warning(
-                    self, "Pull failed",
-                    f"❌ {model}:\n{result.get('error', 'Unknown error')}",
-                )
-
         try:
-            from eli.integrations.ollama.client import pull_model_async, set_active_host
+            from eli.integrations.ollama.client import set_active_host
             set_active_host(self.selected_host())
-            pull_model_async(model, progress_cb=_progress, done_cb=_done)
         except Exception as e:
-            progress.close()
             QMessageBox.critical(self, "Error", str(e))
+            return
+        self._start_pull(model)
+
+    def _pulled(self, model: str) -> None:
+        if self._model_combo.findText(model) < 0:
+            self._model_combo.addItem(model)
+        idx = self._model_combo.findText(model)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
 
 
 class _WorkerRelay(QObject):
@@ -276,7 +336,7 @@ def _fetch_models(key: int) -> None:
     _worker_relay().models_ready.emit(key, bool(running), list(models or []), active)
 
 
-class OllamaModelSelector(QWidget):
+class OllamaModelSelector(_PullsModels, QWidget):
     """
     Compact toolbar widget: [● ▼ model ] [↻] [⬇] [⚙]
     Emits model_changed(str) when selection changes.
@@ -290,10 +350,7 @@ class OllamaModelSelector(QWidget):
         self._setup_ui()
         relay = _worker_relay()
         relay.models_ready.connect(self._relayed_models)
-        relay.pull_progress.connect(self._relayed_pull_progress)
-        relay.pull_done.connect(self._relayed_pull_done)
-        self._pull_dialog = None
-        self._pull_model_name = ""
+        self._connect_pull_relay()
         self._last_models: List[str] = []
         self._refresh_async()
 
@@ -360,14 +417,6 @@ class OllamaModelSelector(QWidget):
         if key == id(self):
             self._update_ui(running, models, active)
 
-    def _relayed_pull_progress(self, key: int, status: str, pct: int):
-        if key == id(self):
-            self._on_pull_progress(status, pct)
-
-    def _relayed_pull_done(self, key: int, result: dict):
-        if key == id(self):
-            self._on_pull_done(result)
-
     def _update_ui(self, running: bool, models: List[str], active: Optional[str]):
         self._dot.set_state(running)
         self._combo.setEnabled(True)
@@ -393,6 +442,10 @@ class OllamaModelSelector(QWidget):
         if idx >= 0:
             self._combo.setCurrentIndex(idx)
         self._combo.blockSignals(False)
+        pulled = getattr(self, "_select_when_listed", "")
+        if pulled and pulled in models:
+            self._select_when_listed = ""
+            self._select_model(pulled)
 
     def _open_setup(self):
         try:
@@ -434,50 +487,12 @@ class OllamaModelSelector(QWidget):
         )
         if not ok or not model.strip():
             return
-        model = model.strip()
-        progress = QProgressDialog(f"Pulling {model}...", "Cancel", 0, 100, self)
-        progress.setWindowTitle("Pulling Model")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setValue(0)
-        progress.show()
-        self._pull_dialog = progress
-        self._pull_model_name = model
-        try:
-            from eli.integrations.ollama.client import pull_model_async
-            relay, key = _worker_relay(), id(self)
-            pull_model_async(
-                model,
-                progress_cb=lambda status, pct: relay.pull_progress.emit(key, str(status or ""), int(pct or 0)),
-                done_cb=lambda result: relay.pull_done.emit(key, dict(result or {})),
-            )
-        except Exception as e:
-            progress.close()
-            self._pull_dialog = None
-            QMessageBox.critical(self, "Error", f"Pull failed: {e}")
+        self._start_pull(model.strip())
 
-    def _on_pull_progress(self, status: str, pct: int):
-        dlg = getattr(self, "_pull_dialog", None)
-        if dlg is None:
-            return
-        dlg.setValue(int(pct))
-        if status:
-            dlg.setLabelText(f"{status}\n{pct}%")
-
-    def _on_pull_done(self, result: dict):
-        dlg = getattr(self, "_pull_dialog", None)
-        model = getattr(self, "_pull_model_name", "") or "model"
-        if dlg is not None:
-            dlg.close()
-        self._pull_dialog = None
-        if result.get("ok"):
-            QMessageBox.information(self, "Pull Complete", f"✅ {model} pulled successfully!")
-            self._refresh_async()
-            QTimer.singleShot(2000, lambda: self._select_model(model))
-        else:
-            QMessageBox.warning(
-                self, "Pull Failed",
-                f"❌ Failed to pull {model}:\n{result.get('error', 'Unknown error')}",
-            )
+    def _pulled(self, model: str) -> None:
+        # chosen once the refreshed list has it (it was chosen two seconds later, listed or not)
+        self._select_when_listed = model
+        self._refresh_async()
 
     def _select_model(self, model: str):
         idx = self._combo.findText(model)

@@ -16,30 +16,34 @@ from eli.gui.panels.agent_wizard import AgentCreateDialog, AgentEditDialog
 
 class AdvancedSettingsDialog(QDialog):
     """
-    Comprehensive settings dialog with four tabs:
-      1. Agents   — list, edit, enable/disable all bus agents
-      2. Models   — list installed GGUF + Ollama models
-      3. Plugins  — install, enable/disable, uninstall
-      4. Upgrade  — self-improvement cycle + capability manifest
+    Settings dialog: Agents, Models, Cognition, Marketplace, Self-Upgrade.
+
+    Plugins are installed, enabled and removed in the Extensions tab (eli/gui/tabs/extensions_tab.py),
+    where every install is verified, scanned, consented to and arrives switched off. The Plugins
+    tab that was here installed through PluginManager.install, which downloads a registry entry's
+    code and runs it at once with none of that.
     """
     # Thread-safe signals — worker threads emit these; Qt delivers them on the main thread
-    _plugin_log_sig   = pyqtSignal(str)
-    _plugin_refresh_sig = pyqtSignal()
     _upgrade_log_sig  = pyqtSignal(str)
 
-    def __init__(self, parent=None, start_tab: int = 0):
+    def __init__(self, parent=None, start_tab=0):
         super().__init__(parent)
         self.setWindowTitle("\u2699\ufe0f Advanced Settings")
         self.setMinimumSize(780, 560)
         self._agent_overrides: dict = {}
         self._build_ui()
         # Connect thread-safe signals to actual GUI slots
-        self._plugin_log_sig.connect(self._do_log_plugin,   Qt.ConnectionType.QueuedConnection)
-        self._plugin_refresh_sig.connect(self._populate_plugins_table, Qt.ConnectionType.QueuedConnection)
         self._upgrade_log_sig.connect(self._do_log_upgrade, Qt.ConnectionType.QueuedConnection)
-        # Jump to the requested tab
-        if 0 <= start_tab < self.inner_tabs.count():
-            self.inner_tabs.setCurrentIndex(start_tab)
+        self.open_page(start_tab)
+
+    def open_page(self, page) -> None:
+        """A page by its key ("agents", "cognition", "upgrade", ...) or its index. The cards that
+        open this dialog named pages by number, and a tab added in between sent "Self-Upgrade" to
+        the Marketplace."""
+        if isinstance(page, str):
+            page = self._page_keys.index(page) if page in self._page_keys else -1
+        if 0 <= int(page) < self.inner_tabs.count():
+            self.inner_tabs.setCurrentIndex(int(page))
 
     # ── UI skeleton ────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -47,21 +51,25 @@ class AdvancedSettingsDialog(QDialog):
         self.inner_tabs = QTabWidget()
         root.addWidget(self.inner_tabs)
 
-        self.inner_tabs.addTab(self._build_agents_tab(),  "\U0001f916 Agents")
-        self.inner_tabs.addTab(self._build_models_tab(),  "\U0001f9e0 Models")
-        self.inner_tabs.addTab(self._build_cognition_tab(), "\U0001f9e0 Cognition")
-        self.inner_tabs.addTab(self._build_plugins_tab(), "\U0001f50c Plugins")
-        # Community marketplace. Separate from the Plugins tab above, which manages
-        # what is already here — this one is the door strangers' code comes through,
-        # so it carries its own verification, scanning and consent surface.
+        self._page_keys = []
+
+        def _page(key, widget, label):
+            self.inner_tabs.addTab(widget, label)
+            self._page_keys.append(key)
+
+        _page("agents", self._build_agents_tab(), "\U0001f916 Agents")
+        _page("models", self._build_models_tab(), "\U0001f9e0 Models")
+        _page("cognition", self._build_cognition_tab(), "\U0001f9e0 Cognition")
+        # Community marketplace: the verified way strangers' code comes in (download to memory,
+        # hash, scan, consent, installed switched off), the same page as Extensions ▸ Browse.
         try:
             from eli.gui.tabs.marketplace_tab import MarketplaceTab
             self._marketplace_tab = MarketplaceTab(parent_window=self)
-            self.inner_tabs.addTab(self._marketplace_tab, "\U0001f6d2 Marketplace")
+            _page("marketplace", self._marketplace_tab, "\U0001f6d2 Marketplace")
         except Exception as _mk_err:
             from eli.utils.log import get_logger
             get_logger(__name__).debug(f"[Settings] Marketplace tab unavailable: {_mk_err}")
-        self.inner_tabs.addTab(self._build_upgrade_tab(), "\U0001f504 Self-Upgrade")
+        _page("upgrade", self._build_upgrade_tab(), "\U0001f504 Self-Upgrade")
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -465,173 +473,6 @@ class AdvancedSettingsDialog(QDialog):
             self.models_table.setItem(i, 2, QTableWidgetItem(size))
             self.models_table.setItem(i, 3, QTableWidgetItem(str(path)))
         self.models_table.resizeRowsToContents()
-
-    # ── Plugins tab ────────────────────────────────────────────────────────────
-    def _build_plugins_tab(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-
-        lbl = QLabel("Manage ELI plugins. Install from registry, enable, disable, or uninstall.")
-        lbl.setWordWrap(True)
-        layout.addWidget(lbl)
-
-        self.plugins_table = QTableWidget()
-        self.plugins_table.setColumnCount(5)
-        self.plugins_table.setHorizontalHeaderLabels(
-            ["ID", "Version", "Status", "Description", "Actions"]
-        )
-        self.plugins_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.plugins_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.plugins_table)
-
-        self.plugin_log = QTextEdit()
-        self.plugin_log.setReadOnly(True)
-        self.plugin_log.setFixedHeight(90)
-        self.plugin_log.setPlaceholderText("Plugin operations log\u2026")
-        layout.addWidget(self.plugin_log)
-
-        btn_row = QHBoxLayout()
-        refresh_btn = QPushButton("\U0001f504 Refresh")
-        refresh_btn.clicked.connect(self._populate_plugins_table)
-        btn_row.addWidget(refresh_btn)
-        registry_btn = QPushButton("\U0001f310 Fetch Registry")
-        registry_btn.clicked.connect(self._fetch_registry)
-        btn_row.addWidget(registry_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        self._populate_plugins_table()
-        return w
-
-    def _get_plugin_manager(self):
-        try:
-            from eli.plugins.manager import get_manager
-            return get_manager()
-        except Exception as e:
-            self._log_plugin(f"Plugin manager unavailable: {e}")
-            return None
-
-    def _log_plugin(self, msg: str):
-        self._plugin_log_sig.emit(str(msg))
-
-    def _do_log_plugin(self, msg: str):
-        if hasattr(self, "plugin_log"):
-            self.plugin_log.append(msg)
-
-    def _populate_plugins_table(self):
-        mgr = self._get_plugin_manager()
-        if mgr is None:
-            self.plugins_table.setRowCount(0)
-            return
-
-        installed = {p["id"]: p for p in mgr.list_installed()}
-        available = mgr.list_available()
-
-        all_ids = {e["id"] for e in available}
-        for pid in installed:
-            all_ids.add(pid)
-
-        rows = []
-        for entry in available:
-            pid = entry["id"]
-            inst = installed.get(pid)
-            status = "installed+enabled" if (inst and inst.get("enabled")) else \
-                     "installed" if inst else "available"
-            rows.append({
-                "id": pid,
-                "version": entry.get("version", "?"),
-                "status": status,
-                "description": entry.get("description", ""),
-                "installed": inst is not None,
-                "enabled": inst.get("enabled", False) if inst else False,
-            })
-
-        self.plugins_table.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            self.plugins_table.setItem(i, 0, QTableWidgetItem(row["id"]))
-            self.plugins_table.setItem(i, 1, QTableWidgetItem(row["version"]))
-            self.plugins_table.setItem(i, 2, QTableWidgetItem(row["status"]))
-            self.plugins_table.setItem(i, 3, QTableWidgetItem(row["description"][:60]))
-
-            btn_w = QWidget()
-            btn_l = QHBoxLayout(btn_w)
-            btn_l.setContentsMargins(4, 2, 4, 2)
-            btn_l.setSpacing(4)
-
-            if not row["installed"]:
-                inst_btn = QPushButton("\u2b07 Install")
-                inst_btn.clicked.connect(lambda _, pid=row["id"]: self._install_plugin(pid))
-                btn_l.addWidget(inst_btn)
-            else:
-                if row["enabled"]:
-                    dis_btn = QPushButton("\u23f8 Disable")
-                    dis_btn.clicked.connect(lambda _, pid=row["id"]: self._disable_plugin(pid))
-                    btn_l.addWidget(dis_btn)
-                else:
-                    en_btn = QPushButton("\u25b6 Enable")
-                    en_btn.clicked.connect(lambda _, pid=row["id"]: self._enable_plugin(pid))
-                    btn_l.addWidget(en_btn)
-                rm_btn = QPushButton("\U0001f5d1 Remove")
-                rm_btn.clicked.connect(lambda _, pid=row["id"]: self._uninstall_plugin(pid))
-                btn_l.addWidget(rm_btn)
-
-            self.plugins_table.setCellWidget(i, 4, btn_w)
-
-        self.plugins_table.resizeRowsToContents()
-
-    def _install_plugin(self, plugin_id: str):
-        self._log_plugin(f"Installing {plugin_id}\u2026")
-        def worker():
-            mgr = self._get_plugin_manager()
-            if mgr:
-                result = mgr.install(plugin_id, progress_cb=self._log_plugin)
-                if result.get("ok", True):
-                    self._log_plugin(f"\u2705 {plugin_id} installed.")
-                else:
-                    self._log_plugin(f"\u274c {plugin_id}: {result.get('error', 'unknown error')}")
-            self._plugin_refresh_sig.emit()
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _enable_plugin(self, plugin_id: str):
-        mgr = self._get_plugin_manager()
-        if mgr:
-            mgr.enable(plugin_id)
-            self._log_plugin(f"\u2705 {plugin_id} enabled.")
-            self._populate_plugins_table()
-
-    def _disable_plugin(self, plugin_id: str):
-        mgr = self._get_plugin_manager()
-        if mgr:
-            mgr.disable(plugin_id)
-            self._log_plugin(f"\u23f8 {plugin_id} disabled.")
-            self._populate_plugins_table()
-
-    def _uninstall_plugin(self, plugin_id: str):
-        reply = QMessageBox.question(
-            self, "Uninstall Plugin",
-            f"Remove plugin '{plugin_id}'? This will delete its files.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            mgr = self._get_plugin_manager()
-            if mgr:
-                mgr.uninstall(plugin_id)
-                self._log_plugin(f"\U0001f5d1 {plugin_id} uninstalled.")
-                self._populate_plugins_table()
-
-    def _fetch_registry(self):
-        self._log_plugin("Fetching plugin registry\u2026")
-        def worker():
-            mgr = self._get_plugin_manager()
-            if mgr:
-                try:
-                    mgr.refresh_registry()
-                    self._log_plugin("\u2705 Registry refreshed.")
-                except Exception as e:
-                    self._log_plugin(f"\u274c Registry fetch error: {e}")
-            self._plugin_refresh_sig.emit()
-        threading.Thread(target=worker, daemon=True).start()
 
     # ── Self-Upgrade tab ───────────────────────────────────────────────────────
     def _build_upgrade_tab(self) -> QWidget:

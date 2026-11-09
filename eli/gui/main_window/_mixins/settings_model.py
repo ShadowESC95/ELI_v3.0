@@ -114,9 +114,19 @@ class SettingsModelMixin:
                 lambda: self._open_prefilled_agent_spec(prefill),
             )
 
-    def open_advanced_settings(self, tab: int = 0):
+    def open_advanced_settings(self, tab="agents"):
+        """The settings dialog at a page named by its key (AdvancedSettingsDialog.open_page)."""
         dlg = AdvancedSettingsDialog(parent=self, start_tab=tab)
         dlg.exec()
+
+    def open_extensions_page(self, page: str = "installed") -> None:
+        """The Extensions tab at one of its pages: where plugins are installed and managed."""
+        ext = getattr(self, "_extensions_widget", None)
+        if ext is None:
+            return
+        self._focus_tab_widget(ext)
+        if hasattr(ext, "open_page"):
+            ext.open_page(page)
 
     def _settings_page(self, title: str, subtitle: str = "") -> tuple:
         """Return (page_widget, vbox) with a compact styled header."""
@@ -1822,28 +1832,28 @@ class SettingsModelMixin:
             (
                 "🤖  Agents",
                 "View, edit, enable or disable every agent in the bus.\nAdjust timeout, persona, and description per agent.",
-                lambda: self.open_advanced_settings(0),
+                lambda: self.open_advanced_settings("agents"),
                 "Manage Agents",
                 "#5e81ac",
             ),
             (
                 "🧠  Cognition",
                 "Tune knowledge-gathering & context limits: how many memory facts, KG\nfacts, rerank depth, and the synthesis prompt cap ELI uses per answer.",
-                lambda: self.open_advanced_settings(2),
+                lambda: self.open_advanced_settings("cognition"),
                 "Tune Cognition",
                 "#b48ead",
             ),
             (
                 "🔌  Plugins",
-                "Install plugins from the registry, enable, disable, or uninstall them.",
-                lambda: self.open_advanced_settings(3),
+                "Install plugins (each one verified, scanned and asked about first), enable,\ndisable or remove them, in the Extensions tab.",
+                lambda: self.open_extensions_page("installed"),
                 "Manage Plugins",
                 "#88c0d0",
             ),
             (
                 "🔄  Self-Upgrade",
                 "Run improvement cycles, rebuild the FAISS index, update the capability manifest, and refresh ELI's persona.",
-                lambda: self.open_advanced_settings(4),
+                lambda: self.open_advanced_settings("upgrade"),
                 "Open Upgrade Tools",
                 "#a3be8c",
             ),
