@@ -393,3 +393,29 @@ def test_a_discovered_device_is_keyed_safely_and_keeps_the_brokers_id(server, fa
     dev = [d for d in server.list_devices() if d["name"] == "Porch"][0]
     assert dev["id"] == "zb_0x00_porch_light_1"
     assert dev["attrs"]["unique_id"] == "zb/0x00 porch?light#1"
+
+
+def test_a_routine_suggestion_carries_the_command_and_needs_separate_days(server, tmp_path, monkeypatch):
+    """Uses were counted per device across every command, and Accept always sent 'on': a light
+    switched off most nights at 23:00 became an automation switching it on at 23:00."""
+    import datetime as _dt
+    from eli.runtime import home_intel
+    monkeypatch.setattr(home_intel, "_server", lambda: server)
+    today = _dt.datetime.now().replace(hour=23, minute=0, second=0, microsecond=0)
+    rows = []
+    for back in range(4):                                       # off at 23:00 on four nights
+        ts = (today - _dt.timedelta(days=back)).timestamp()
+        rows.append({"id": "porch", "name": "Porch Light", "room": "Hall", "command": "off", "ts": ts, "hour": 23})
+    burst = (today - _dt.timedelta(hours=5)).timestamp()      # on, five times in one afternoon
+    rows += [{"id": "porch", "name": "Porch Light", "room": "Hall", "command": "on", "ts": burst + i, "hour": 18}
+             for i in range(5)]
+    for back in range(3):                                       # dimmed to 30 at 21:30 on three nights
+        ts = (today - _dt.timedelta(days=back, minutes=90)).timestamp()
+        rows.append({"id": "lamp", "name": "Desk Lamp", "room": "", "command": "brightness", "value": 30,
+                     "ts": ts, "hour": 21})
+    (tmp_path / "usage.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    found = {(s["device"], s["command"]): s for s in home_intel.suggestions()}
+    assert set(found) == {("porch", "off"), ("lamp", "brightness")}, "one afternoon is not a routine"
+    off = found[("porch", "off")]
+    assert (off["hour"], off["minute"], off["days"]) == (23, 0, 4) and "turn off" in off["text"]
+    assert found[("lamp", "brightness")]["value"] == 30

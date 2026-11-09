@@ -533,17 +533,19 @@ class DeviceServer:
                 return {"ok": False, "error": f"unsupported command: {command}"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        self._record_usage(device_id, cmd, dev)
+        self._record_usage(device_id, cmd, dev, value=value if cmd in ("brightness", "set_brightness", "set") else None)
         return {"ok": True, "device": device_id, "command": cmd}
 
     # ── Usage / preference tracking + awareness ──────────────────────────────
-    def _record_usage(self, device_id: str, cmd: str, dev: dict) -> None:
+    def _record_usage(self, device_id: str, cmd: str, dev: dict, value: Any = None) -> None:
         """Append a usage event (for ELI to learn preferences) + feed the LLM's memory.
-        Best-effort; never raises into control()."""
+        Best-effort; never raises into control(). `value` is what the command set, when it set one."""
         try:
             row = {"id": device_id, "name": dev.get("name") or device_id, "type": dev.get("type"),
                    "room": dev.get("room") or "", "command": cmd, "ts": time.time(),
                    "hour": time.localtime().tm_hour}
+            if value is not None and isinstance(value, (int, float, str)):
+                row["value"] = value
             with self._lock:
                 p = _registry_path().parent / "usage.jsonl"
                 with p.open("a", encoding="utf-8") as fh:
@@ -557,12 +559,11 @@ class DeviceServer:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-    def usage_summary(self, days: int = 14) -> Dict[str, Any]:
-        """Aggregate recent device usage into preference signals: per-device counts and
-        the typical hour of use. Drives proactive automation suggestions."""
-        import collections
+    def usage_events(self, days: int = 14) -> List[Dict[str, Any]]:
+        """The recorded uses of the last `days`, oldest first: {id, name, room, command, ts, hour,
+        value?} each. What the summary below and the automation suggestions (home_intel) read."""
         since = time.time() - float(days) * 86400.0
-        per: Dict[str, dict] = {}
+        out: List[Dict[str, Any]] = []
         try:
             p = _registry_path().parent / "usage.jsonl"
             if p.exists():
@@ -573,16 +574,24 @@ class DeviceServer:
                         r = json.loads(line)
                     except Exception:
                         continue
-                    if (r.get("ts") or 0) < since:
-                        continue
-                    d = per.setdefault(r.get("id"), {"id": r.get("id"), "name": r.get("name"),
-                                                     "room": r.get("room", ""), "count": 0,
-                                                     "hours": collections.Counter(), "last": 0})
-                    d["count"] += 1
-                    d["hours"][r.get("hour")] += 1
-                    d["last"] = max(d["last"], r.get("ts") or 0)
+                    if isinstance(r, dict) and (r.get("ts") or 0) >= since:
+                        out.append(r)
         except Exception:
-            log.debug("device_server: usage summary failed", exc_info=True)
+            log.debug("device_server: usage events unreadable", exc_info=True)
+        return out
+
+    def usage_summary(self, days: int = 14) -> Dict[str, Any]:
+        """Aggregate recent device usage into preference signals: per-device counts and
+        the typical hour of use."""
+        import collections
+        per: Dict[str, dict] = {}
+        for r in self.usage_events(days):
+            d = per.setdefault(r.get("id"), {"id": r.get("id"), "name": r.get("name"),
+                                             "room": r.get("room", ""), "count": 0,
+                                             "hours": collections.Counter(), "last": 0})
+            d["count"] += 1
+            d["hours"][r.get("hour")] += 1
+            d["last"] = max(d["last"], r.get("ts") or 0)
         out = []
         for d in per.values():
             fav = d["hours"].most_common(1)

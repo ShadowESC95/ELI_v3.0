@@ -92,23 +92,56 @@ def home_context(max_chars: int = 420) -> str:
     return " ".join(parts)[:max_chars]
 
 
-def suggestions(min_uses: int = 4) -> List[Dict[str, Any]]:
-    """Proactive automation ideas from usage patterns. Each: {device, room, hour, text}."""
+# What each command does, in the words a suggestion uses; a command not here is named as it is.
+_DOING = {"on": "turn on", "off": "turn off", "toggle": "switch", "brightness": "set the brightness of",
+          "set_brightness": "set the brightness of", "set": "set"}
+
+
+def suggestions(min_days: int = 3, days: int = 14) -> List[Dict[str, Any]]:
+    """Proactive automation ideas from usage patterns: one per routine, a command given to a device
+    around the same time on at least `min_days` separate days (eli/planning/routine_stats, the
+    routine test the app habits use). Each: {device, name, room, command, value, hour, minute, days,
+    text}. Uses were counted per device across every command, and the suggestion carried none, so a
+    lamp switched OFF most nights at 23:00 was offered, and accepted, as an automation turning it ON."""
     srv = _server()
     if srv is None:
         return []
+    from collections import Counter, defaultdict
+    from datetime import datetime
+    from eli.planning import routine_stats as rs
     out: List[Dict[str, Any]] = []
     try:
-        for d in srv.usage_summary().get("devices", []):
-            h = d.get("favourite_hour")
-            if d.get("uses", 0) >= min_uses and h is not None:
-                where = f" in the {d['room']}" if d.get("room") else ""
+        by_command: Dict[tuple, list] = defaultdict(list)
+        info: Dict[str, Dict[str, Any]] = {}
+        for r in srv.usage_events(days):
+            try:
+                when = datetime.fromtimestamp(float(r.get("ts") or 0))
+            except (OverflowError, OSError, ValueError):
+                continue
+            key = (str(r.get("id") or ""), str(r.get("command") or "").lower())
+            if not key[0] or not key[1]:
+                continue
+            by_command[key].append((rs.minute_of_day(when.hour, when.minute), when.date().toordinal(),
+                                    r.get("value")))
+            info[key[0]] = {"name": r.get("name") or key[0], "room": r.get("room") or ""}
+        for (device, command), uses in by_command.items():
+            for cluster in rs.cluster_times([(m, d) for m, d, _v in uses]):
+                if cluster.distinct_days < int(min_days):
+                    continue
+                hour, minute = rs.to_hour_minute(int(round(cluster.centre)))
+                values = Counter(v for m, _d, v in uses if v is not None and m in cluster.minutes)
+                value = values.most_common(1)[0][0] if values else None
+                name, room = info[device]["name"], info[device]["room"]
+                where = f" in the {room}" if room else ""
+                doing = _DOING.get(command, command)
+                setting = f" to {value}" if value is not None else ""
                 out.append({
-                    "device": d["id"], "name": d["name"], "room": d.get("room", ""),
-                    "hour": int(h),
-                    "text": f"You usually use the {d['name']}{where} around {int(h):02d}:00 "
-                            f"({d['uses']} times lately). Want ELI to automate it?",
+                    "device": device, "name": name, "room": room, "command": command, "value": value,
+                    "hour": int(hour), "minute": int(minute), "days": int(cluster.distinct_days),
+                    "text": f"You usually {doing} the {name}{where}{setting} around {hour:02d}:{minute:02d} "
+                            f"(on {cluster.distinct_days} days lately). Want ELI to automate it?",
                 })
     except Exception:
         log.debug("home_intel: suggestions failed", exc_info=True)
+    out.sort(key=lambda s: s["days"], reverse=True)
     return out[:6]
