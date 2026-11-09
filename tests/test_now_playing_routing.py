@@ -25,7 +25,7 @@ def test_liked_songs_request_detection():
 
 
 def test_now_playing_empty_state(monkeypatch):
-    monkeypatch.setattr(em, "_get_active_player", lambda: None)
+    monkeypatch.setattr(em, "_get_active_player", lambda *a, **k: None)
     monkeypatch.setattr(
         em, "_MEDIA_STATE",
         {"source": None, "title": None, "mpv_sock": None},
@@ -40,7 +40,7 @@ def test_now_playing_prefers_live_playerctl(monkeypatch):
         em, "_MEDIA_STATE",
         {"source": "spotify", "title": "liked songs (playlist)", "mpv_sock": None},
     )
-    monkeypatch.setattr(em, "_get_active_player", lambda: "spotify")
+    monkeypatch.setattr(em, "_get_active_player", lambda *a, **k: "spotify")
     monkeypatch.setattr(
         em, "_spotify_live_meta",
         lambda player="spotify": ("▶ Playing", "OTB ORTIZ", "Real One"),

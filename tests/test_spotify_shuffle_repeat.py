@@ -10,7 +10,7 @@ def test_shuffle_media_uses_cross_platform(monkeypatch):
         lambda p: calls.append(p) or {"ok": True, "content": "🔀 Shuffle on — spotify",
                                       "response": "🔀 Shuffle on — spotify"},
     )
-    monkeypatch.setattr(ex, "_get_active_player", lambda: "spotify")
+    monkeypatch.setattr(ex, "_get_active_player", lambda *a, **k: "spotify")
     out = ex.shuffle_media()
     assert out["action"] == "SHUFFLE_MEDIA"
     assert out["ok"] is True
@@ -24,7 +24,7 @@ def test_repeat_media_uses_cross_platform(monkeypatch):
         lambda p: calls.append(p) or {"ok": True, "content": "🔁 Repeat track — spotify",
                                       "response": "🔁 Repeat track — spotify"},
     )
-    monkeypatch.setattr(ex, "_get_active_player", lambda: "spotify")
+    monkeypatch.setattr(ex, "_get_active_player", lambda *a, **k: "spotify")
     out = ex.repeat_media()
     assert out["action"] == "REPEAT_MEDIA"
     assert out["ok"] is True

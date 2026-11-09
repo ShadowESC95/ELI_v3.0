@@ -54,23 +54,16 @@ _TARGET_ALIASES: dict = {
 }
 
 
-def _get_active_player() -> Optional[str]:
-    """Get the best active MPRIS2 player via playerctl. Returns None if none found."""
-    pass  # shutil already imported at module level
-    if not shutil.which("playerctl"):
-        return None
+def _get_active_player(command: Optional[str] = None) -> Optional[str]:
+    """The player a command with no named player goes to: the one that is playing (or, for "play",
+    the one that is paused), as playerctl_backend ranks them by their live status. A fixed list put
+    Spotify first whenever it was open, so "pause" paused an already-paused Spotify while a browser
+    video played, and went to a Spotify that had just been closed."""
+    from eli.integrations.mpris import playerctl_backend as pb
     try:
-        r = subprocess.run(["playerctl", "--list-all"], capture_output=True, text=True, timeout=3)
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        players = [p.strip() for p in r.stdout.splitlines() if p.strip()]
-        # Priority: spotify first, then whatever is running
-        for preferred in ("spotify", "Spotify", "vlc", "mpv", "firefox", "chromium"):
-            for p in players:
-                if p.lower().startswith(preferred.lower()):
-                    return p
-        return players[0] if players else None
+        return pb.get_active_player(command=command)
     except Exception:
+        log.debug("active player not read", exc_info=True)
         return None
 
 
@@ -97,20 +90,18 @@ def _playerctl(cmd: str, player: Optional[str] = None) -> Dict[str, Any]:
     return fn(player)
 
 
-def _resolve_media_target(target: str | None) -> str | None:
+def _resolve_media_target(target: str | None, command: Optional[str] = None) -> str | None:
     """Map a user-supplied target string to an MPRIS player name or None."""
     if not target:
         return None
     alias = _TARGET_ALIASES.get(target.lower().strip())
     if alias == "browser":
-        # Return first available browser player from playerctl
+        # The browser player that is playing (or paused, for "play"), not the first one listed.
         try:
-            import subprocess as _sp
-            r = _sp.run(["playerctl", "--list-all"], capture_output=True, text=True, timeout=3)
-            for p in r.stdout.splitlines():
-                for bp in _BROWSER_PLAYERS:
-                    if p.strip().lower().startswith(bp.lower()):
-                        return p.strip()
+            from eli.integrations.mpris import playerctl_backend as pb
+            found = pb.resolve_player_target("browser", command=command)
+            if found:
+                return found
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         return "firefox"   # fallback name
@@ -132,7 +123,7 @@ def play_media(target: str | None = None) -> Dict[str, Any]:
         title = _MEDIA_STATE.get("title") or "YouTube"
         return {"ok": True, "action": "PLAY_MEDIA", "content": f"▶ Resumed — {title}",
                 "response": f"▶ Resumed — {title}"}
-    result = _playerctl("play", _resolve_media_target(target) or _get_active_player())
+    result = _playerctl("play", _resolve_media_target(target, "play"))
     result["action"] = "PLAY_MEDIA"
     return result
 
@@ -1082,7 +1073,7 @@ def stop_media(target: str | None = None) -> Dict[str, Any]:
         _MEDIA_STATE.update({"source": None, "title": None, "mpv_sock": None})
         return {"ok": True, "action": "STOP_MEDIA", "content": "⏹ Stopped — YouTube",
                 "response": "⏹ Stopped — YouTube"}
-    p = _resolve_media_target(target) or _get_active_player()
+    p = _resolve_media_target(target, "stop") or _get_active_player("stop")
     # Spotify ignores Stop — use pause instead
     cmd = "pause" if (p and "spotify" in p.lower()) else "stop"
     result = _playerctl(cmd, p)
@@ -1096,7 +1087,8 @@ def pause_media(target: str | None = None) -> Dict[str, Any]:
         _mpv_ipc(["set_property", "pause", True])
         return {"ok": True, "action": "PAUSE_MEDIA", "content": "⏸ Paused — YouTube",
                 "response": "⏸ Paused — YouTube"}
-    result = _playerctl("pause", _resolve_media_target(target) or _get_active_player())
+    # No player named: the media backend picks the one that is playing.
+    result = _playerctl("pause", _resolve_media_target(target, "pause"))
     result["action"] = "PAUSE_MEDIA"
     return result
 
@@ -1107,8 +1099,7 @@ def next_media(target: str | None = None) -> Dict[str, Any]:
         _mpv_ipc(["playlist-next", "weak"])
         return {"ok": True, "action": "NEXT_MEDIA", "content": "⏭ Next — YouTube",
                 "response": "⏭ Next — YouTube"}
-    p = _resolve_media_target(target) or _get_active_player()
-    result = _playerctl("next", p)
+    result = _playerctl("next", _resolve_media_target(target, "next"))
     result["action"] = "NEXT_MEDIA"
     return result
 
@@ -1125,7 +1116,7 @@ def previous_media(target: str | None = None) -> Dict[str, Any]:
         _mpv_ipc(["playlist-prev", "weak"])
         return {"ok": True, "action": "PREVIOUS_MEDIA", "content": "⏮ Previous — YouTube",
                 "response": "⏮ Previous — YouTube"}
-    p = _resolve_media_target(target) or _get_active_player()
+    p = _resolve_media_target(target, "previous") or _get_active_player("previous")
     if p and "spotify" in p.lower():
         try:
             subprocess.run(
@@ -1142,7 +1133,7 @@ def previous_media(target: str | None = None) -> Dict[str, Any]:
 def shuffle_media(target: str | None = None) -> Dict[str, Any]:
     """Toggle shuffle mode via playerctl."""
     from eli.integrations.media.cross_platform import spotify_shuffle
-    p = _resolve_media_target(target) or _get_active_player() or "spotify"
+    p = _resolve_media_target(target, "shuffle") or _get_active_player("shuffle") or "spotify"
     result = spotify_shuffle(p)
     result["action"] = "SHUFFLE_MEDIA"
     return result
@@ -1151,7 +1142,7 @@ def shuffle_media(target: str | None = None) -> Dict[str, Any]:
 def repeat_media(target: str | None = None) -> Dict[str, Any]:
     """Cycle repeat mode (None → Track → Playlist) via playerctl."""
     from eli.integrations.media.cross_platform import spotify_set_loop
-    p = _resolve_media_target(target) or _get_active_player() or "spotify"
+    p = _resolve_media_target(target, "loop") or _get_active_player("loop") or "spotify"
     result = spotify_set_loop(p)
     result["action"] = "REPEAT_MEDIA"
     return result

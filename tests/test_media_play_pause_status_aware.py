@@ -91,3 +91,55 @@ def test_next_names_the_track_it_moved_to(player):
 def test_a_track_that_never_changed_is_not_named(player):
     r = mp.next_track()
     assert r["ok"] and "Trouble" not in r["content"]
+
+
+# A bare "pause" goes to what is playing. A fixed list put Spotify first whenever it was open, so
+# "pause" paused an already-paused Spotify while a browser video played.
+@pytest.fixture
+def two_players(monkeypatch):
+    from eli.execution.effectors import media
+    status = {"spotify": "Paused", "firefox.instance_1_9": "Playing"}
+    sent = []
+
+    def run(argv, timeout=8, input_bytes=None):
+        if argv[:2] == ["playerctl", "--list-all"]:
+            return True, "\n".join(status), ""
+        if len(argv) >= 4 and argv[1] == "-p":
+            if argv[3] == "status":
+                return True, status.get(argv[2], ""), ""
+            if argv[3] in ("pause", "play", "stop", "next", "previous"):
+                sent.append((argv[3], argv[2]))
+                return True, "", ""
+        return True, "", ""
+
+    import subprocess
+
+    class _Listed:
+        returncode, stdout, stderr = 0, "\n".join(status), ""
+
+    # playerctl is there, as far as anything in ELI can tell
+    monkeypatch.setattr(media.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(media.subprocess, "run", lambda argv, **kw: _Listed() if "--list-all" in argv
+                        else subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr(mp, "_has", lambda tool: True)
+    monkeypatch.setattr(mp, "_run", run)
+    monkeypatch.setattr(mp, "_metadata", lambda p, key: "")
+    monkeypatch.setattr(mp, "_switched", lambda p, before: True, raising=False)
+    monkeypatch.setattr(media, "_MEDIA_STATE", {"source": None, "title": None, "mpv_sock": None})
+    return status, sent
+
+
+def test_a_bare_pause_goes_to_the_player_that_is_playing(two_players):
+    from eli.execution.effectors import media
+    _, sent = two_players
+    out = media.pause_media()
+    assert out["ok"] is True
+    assert sent == [("pause", "firefox.instance_1_9")]
+
+
+def test_a_bare_play_goes_to_the_paused_player(two_players):
+    from eli.execution.effectors import media
+    status, sent = two_players
+    status["firefox.instance_1_9"] = "Stopped"
+    media.play_media()
+    assert sent == [("play", "spotify")]
