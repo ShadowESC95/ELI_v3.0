@@ -718,8 +718,13 @@ def _h_memory_forget(a, args):
             clear_pending_proposal()
         except Exception:
             log.debug("pending forget not cleared", exc_info=True)
-        _parts = [f"{v} {k}" for k, v in _rep.items() if v]
-        msg = ("Forgotten: " + ", ".join(_parts) + ".") if _rep.get("memories") else "Nothing matched those ids, so nothing was deleted."
+        # What could not be removed (Memory.forget's *_kept keys: the audit chain cannot be edited
+        # without breaking it) is said apart: it was listed as forgotten.
+        _parts = [f"{v} {k}" for k, v in _rep.items() if v and not k.endswith("_kept")]
+        _kept = [f"{v} {k[:-len('_kept')].replace('_', ' ')}" for k, v in _rep.items() if v and k.endswith("_kept")]
+        msg = ("Forgotten: " + ", ".join(_parts) + "."
+               + (" Kept, as it cannot be removed: " + ", ".join(_kept) + "." if _kept else "")) \
+            if _rep.get("memories") else "Nothing matched those ids, so nothing was deleted."
         return {"ok": bool(_rep.get("memories")), "action": a, "report": _rep, "content": msg, "response": msg}
     query = str(args.get("query") or "").strip()
     # Documents ELI has read are stored whole in the document index: forgetting one takes it

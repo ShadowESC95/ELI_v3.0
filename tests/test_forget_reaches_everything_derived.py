@@ -171,3 +171,17 @@ def test_forget_takes_the_words_out_of_every_store_that_copied_them(mem, monkeyp
         c.close()
     # the audit chain commits to each row's content: it keeps them and says so
     assert holding == ["runtime_events.content"] and report["audit_log_kept"] >= 1, holding
+
+
+def test_the_forget_reply_says_what_was_kept_apart_from_what_went(monkeypatch):
+    """The audit log's rows that cannot be edited were listed under "Forgotten"."""
+    from eli.execution.effectors import memory_ops
+
+    class _Mem:
+        def forget(self, ids):
+            return {"memories": 2, "claims": 1, "vectors": 0, "audit_log_kept": 3}
+
+    monkeypatch.setattr("eli.memory.get_memory", lambda *a, **k: _Mem())
+    out = memory_ops._h_memory_forget("MEMORY_FORGET", {"confirm": True, "ids": [11, 12]})
+    assert out["ok"] is True
+    assert out["content"] == "Forgotten: 2 memories, 1 claims. Kept, as it cannot be removed: 3 audit log."
