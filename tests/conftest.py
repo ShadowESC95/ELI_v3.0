@@ -15,10 +15,34 @@ sys.path.insert(0, str(ROOT))
 # index, the world's sessions, the databases) is gone before anything below writes or reads it. An
 # index copied in once was searched by every later run, and a VR session one run recorded turned up
 # in the next run's period log.
+# A run still going in this checkout holds the sandbox (a shared lock beside it, kept for the session):
+# then the sandbox is left as it is, rather than pulled from under that run's open databases.
 _SANDBOX_ROOT = ROOT / "artifacts" / "_pytest"
-if _SANDBOX_ROOT.parent.parent == ROOT and _SANDBOX_ROOT.is_dir():
-    import shutil as _shutil
-    _shutil.rmtree(_SANDBOX_ROOT, ignore_errors=True)
+
+
+def _fresh_sandbox() -> None:
+    import shutil
+    if _SANDBOX_ROOT.parent.parent != ROOT:
+        return
+    _SANDBOX_ROOT.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:                 # Windows: a file another run has open is not deleted anyway
+        shutil.rmtree(_SANDBOX_ROOT, ignore_errors=True)
+        return
+    global _SANDBOX_HOLD
+    _SANDBOX_HOLD = open(_SANDBOX_ROOT.parent / "_pytest.lock", "a+")
+    try:
+        fcntl.flock(_SANDBOX_HOLD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fcntl.flock(_SANDBOX_HOLD, fcntl.LOCK_SH)         # another run is using it
+        return
+    shutil.rmtree(_SANDBOX_ROOT, ignore_errors=True)
+    fcntl.flock(_SANDBOX_HOLD, fcntl.LOCK_SH)             # this run's, until it ends
+
+
+_SANDBOX_HOLD = None
+_fresh_sandbox()
 
 # Tests never reach this machine's desktop, as on a CI runner: no session bus (media players,
 # notifications) and no display for an app a test launches. A test run once started the real

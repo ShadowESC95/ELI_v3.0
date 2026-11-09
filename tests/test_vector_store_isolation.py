@@ -151,3 +151,30 @@ def test_the_test_sandbox_starts_without_the_last_runs_state():
     assert stale == [], f"left from an earlier run: {stale[:5]}"
     for path in vs._get_index_paths():
         assert sandbox in Path(path).resolve().parents, path
+
+
+def test_a_run_going_on_in_the_checkout_keeps_its_sandbox(tmp_path, monkeypatch):
+    """Starting a second run while one is going must not pull the sandbox from under the first: the
+    run going on holds a shared lock beside it, and the new run then leaves it as it is."""
+    import sys
+    fcntl = pytest.importorskip("fcntl")
+    conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
+    assert conftest is not None and hasattr(conftest, "_fresh_sandbox")
+    sandbox = tmp_path / "artifacts" / "_pytest"
+    (sandbox / "db").mkdir(parents=True)
+    marker = sandbox / "db" / "open.sqlite3"
+    marker.write_text("in use")
+    monkeypatch.setattr(conftest, "ROOT", tmp_path)
+    monkeypatch.setattr(conftest, "_SANDBOX_ROOT", sandbox)
+    monkeypatch.setattr(conftest, "_SANDBOX_HOLD", conftest._SANDBOX_HOLD)    # this session's own, put back
+    other_run = open(tmp_path / "artifacts" / "_pytest.lock", "a+")
+    try:
+        fcntl.flock(other_run, fcntl.LOCK_SH)
+        conftest._fresh_sandbox()
+        assert marker.exists(), "a run going on lost its sandbox"
+    finally:
+        other_run.close()
+    conftest._SANDBOX_HOLD.close()
+    conftest._fresh_sandbox()
+    assert not sandbox.exists(), "with no run going on, the last run's sandbox goes"
+    conftest._SANDBOX_HOLD.close()
