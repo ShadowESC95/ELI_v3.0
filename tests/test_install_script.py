@@ -89,7 +89,7 @@ def test_shell_scripts_use_nothing_newer_than_the_bash_on_a_mac():
 def test_install_ps1_uses_editable_dot_full_not_scriptdir_subscript():
     text = (Path(__file__).resolve().parents[1] / "install.ps1").read_text(encoding="utf-8")
     assert '$ScriptDir[full]' not in text, "PowerShell treats $ScriptDir[full] as indexing, not pip extras syntax"
-    assert '.[full]' in text
+    assert '.[$EliExtras]' in text and '$EliExtras = "full"' in text
 
 
 # ── shipped PowerShell must survive Windows PowerShell 5.1 ─────────────────
@@ -239,6 +239,45 @@ def test_windows_installer_falls_back_to_cpu_wheel():
     assert "$CpuOnly = $true" in llama, "fallback does not correct the build label"
 
 
+def test_no_llama_install_step_can_end_the_windows_installer():
+    """PyPI has only the source of llama-cpp-python. On a PC with no C++ compiler the CPU step ran
+    a plain pip install, which builds it, and the failure threw out of Invoke-Pip and ended the
+    installer. Every llama-cpp-python install is now inside a try."""
+    lines = [line.strip() for line in _ps1_code().splitlines() if line.strip()]
+    steps = [i for i, line in enumerate(lines) if line.startswith("Invoke-Pip") and "llama-cpp-python" in line]
+    assert steps, "no llama-cpp-python install found"
+    for i in steps:
+        assert lines[i - 1] == "try {", f"not inside a try: {lines[i]}"
+
+
+def test_the_windows_cpu_build_comes_from_wheels_and_is_built_only_where_a_compiler_is():
+    code = _ps1_code()
+    body = code[code.index("function Install-LlamaCpu"):code.index("$LlamaInstalled = $true")]
+    binary, source = [line for line in body.splitlines() if line.strip().startswith("Invoke-Pip")]
+    assert "--only-binary=:all:" in binary and "whl/cpu" in binary
+    assert body.index("Test-MsvcPresent") < body.index(source), "a source build without a compiler"
+    assert all("| Out-Host" in line for line in (binary, source)), "pip's output would become the answer"
+    # with nothing installed, the rest is still installed and the summary does not say OK
+    assert "if (-not $LlamaInstalled)" in code and "[WARN] Build" in code
+
+
+def test_without_an_inference_engine_eli_is_installed_with_every_extra_but_llm():
+    """[full] includes the llm extra (llama-cpp-python), which pip would build from source."""
+    import tomllib
+
+    code = _ps1_code()
+    line = next(line for line in code.splitlines() if "$Rest = & $PythonVenv -c" in line)
+    snippet = line.split('-c "', 1)[1].rsplit('" (Join-Path', 1)[0]
+    assert '"' not in snippet and "$" not in snippet and "`" not in snippet, \
+        "Windows PowerShell 5.1 breaks quotes inside a native command's argument"
+    root = Path(__file__).resolve().parents[1]
+    got = subprocess.run([sys.executable, "-c", snippet, str(root / "pyproject.toml")],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    full = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = full["project"]["optional-dependencies"]["full"][0].split("[", 1)[1].rstrip("]").split(",")
+    assert got.split(",") == [e for e in extras if e != "llm"]
+
+
 def test_windows_installer_explains_the_fallback():
     """A silent downgrade to CPU is how 0 GPU layers became a mystery."""
     text = _ps1_text()
@@ -319,8 +358,8 @@ def test_no_installer_advises_a_python_version_for_ready_made_engine_builds():
 def test_windows_cuda_wheel_is_version_bounded():
     text = _ps1_text()
     llama = text[text.index("llama-cpp-python (CUDA"):]
-    assert f"llama-cpp-python>={LLAMA_MIN_FOR_MODERN_GGUF}" in llama, \
-        "Windows still accepts any CUDA wheel version"
+    assert f'$LlamaMin = "{LLAMA_MIN_FOR_MODERN_GGUF}"' in text
+    assert "llama-cpp-python>=$LlamaMin" in llama, "Windows still accepts any CUDA wheel version"
 
 
 def test_ddgs_replaces_the_deprecated_package_name():

@@ -257,9 +257,50 @@ if ($CpuOnly) {
 
 # llama-cpp-python
 Eli-Progress -Phase llama -Pct 35 -Msg "Installing inference engine"
+# The oldest release that reads current GGUF architectures: below it a hybrid attention+SSM model
+# (qwen35, nemotron-h) fails on a missing ssm_conv1d tensor. install.sh's LLAMA_MIN.
+$LlamaMin = "0.3.30"
+
+# Visual Studio's C++ tools, which a source build of llama-cpp-python needs on Windows.
+function Test-MsvcPresent {
+    try {
+        if (-not ${env:ProgramFiles(x86)}) { return $false }
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path $vswhere)) { return $false }
+        $found = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        return [bool]$found
+    } catch {
+        return $false
+    }
+}
+
+# PyPI publishes llama-cpp-python as source only, so on a PC with no C++ compiler a plain
+# "pip install" cannot succeed, and its failure used to end the installer. The CPU build comes
+# from prebuilt wheels (the bundled wheelhouse, the project's CPU wheel index); it is built from
+# source only where Visual Studio's C++ tools are present. $true when it is installed (pip's own
+# output goes to the screen, not into the answer).
+function Install-LlamaCpu {
+    try {
+        Invoke-Pip (@("install") + $PipFindLinksArgs + @("llama-cpp-python>=$LlamaMin", "--only-binary=:all:", "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu", "--quiet")) | Out-Host
+        return $true
+    } catch {
+        Write-Host "[..] No prebuilt CPU wheel of llama-cpp-python >=$LlamaMin for Python $pyVer." -ForegroundColor Yellow
+    }
+    if (-not (Test-MsvcPresent)) { return $false }
+    Write-Host "[..] Building llama-cpp-python from source with Visual Studio's C++ tools (several minutes)..."
+    try {
+        Invoke-Pip @("install", "llama-cpp-python>=$LlamaMin", "--no-cache-dir", "--quiet") | Out-Host
+        return $true
+    } catch {
+        Write-Host "[WARN] The source build failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
+}
+
+$LlamaInstalled = $true
 if ($CpuOnly) {
     Write-Host "[..] Installing llama-cpp-python (CPU)..."
-    Invoke-Pip (@("install") + $PipFindLinksArgs + @("llama-cpp-python", "--quiet"))
+    $LlamaInstalled = Install-LlamaCpu
 } else {
     Write-Host "[..] Installing llama-cpp-python (CUDA $CudaVersion)..."
     # --only-binary=:all: is the important part. With --prefer-binary, pip
@@ -274,24 +315,31 @@ if ($CpuOnly) {
         # anything below 0.3.30 cannot read hybrid attention+SSM GGUFs
         # (qwen35, nemotron-h) - they fail on a missing ssm_conv1d tensor.
         # Require a version that can, rather than silently taking an old wheel.
-        Invoke-Pip @("install", "llama-cpp-python>=0.3.30", "--only-binary=:all:", "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/$CudaVersion", "--quiet")
+        Invoke-Pip @("install", "llama-cpp-python>=$LlamaMin", "--only-binary=:all:", "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/$CudaVersion", "--quiet")
         $llamaCudaOk = $true
     } catch {
         Write-Host "[WARN] No prebuilt CUDA $CudaVersion wheel for llama-cpp-python on Python $pyVer." -ForegroundColor Yellow
         Write-Host "       Installing the CPU build instead so the install completes." -ForegroundColor Yellow
         Write-Host "       (The CUDA wheel index tops out at 0.3.19 for some Python versions;" -ForegroundColor Yellow
-        Write-Host "        ELI needs >=0.3.30 to read current GGUF architectures.)" -ForegroundColor Yellow
+        Write-Host "        ELI needs >=$LlamaMin to read current GGUF architectures.)" -ForegroundColor Yellow
         Write-Host "       ELI will run without GPU offload. Options:" -ForegroundColor Yellow
         Write-Host "         - re-run with -CudaVersion cu124 (or another published version)" -ForegroundColor Yellow
         Write-Host "         - re-run with -InstallCuda to build with CUDA locally" -ForegroundColor Yellow
     }
     if (-not $llamaCudaOk) {
-        Invoke-Pip (@("install") + $PipFindLinksArgs + @("llama-cpp-python>=0.3.30", "--only-binary=:all:", "--quiet"))
+        $LlamaInstalled = Install-LlamaCpu
         # Keep the rest of the run honest: the offload verify below and the
         # summary must not claim a GPU build that was not installed.
         $CpuOnly = $true
         $BuildLabel = "CPU-only (CUDA wheel unavailable)"
     }
+}
+if (-not $LlamaInstalled) {
+    # As install.sh does: the rest of ELI is installed, and what is missing is said plainly.
+    $BuildLabel = "NOT installed - no local model until it is"
+    Write-Host "[WARN] llama-cpp-python is NOT installed - ELI cannot run a local model yet." -ForegroundColor Yellow
+    Write-Host "       Cause: no prebuilt wheel of it for Python $pyVer, and no C++ compiler here to build one." -ForegroundColor Yellow
+    Write-Host "       Fix: install Visual Studio Build Tools ('Desktop development with C++'), then run install.bat again." -ForegroundColor Yellow
 }
 
 # Verify the installed runtime actually STARTS on this CPU.
@@ -300,12 +348,18 @@ if ($CpuOnly) {
 # libggml-cpu tuned for newer chips (AVX-VNNI and friends): `import llama_cpp`
 # succeeds and llama_backend_init() then dies with STATUS_ILLEGAL_INSTRUCTION
 # (0xC000001D) on an older Intel part. Catch it here, while a fallback is still cheap.
-& $PythonVenv -c "from llama_cpp import llama_cpp as _lc; _lc.llama_backend_init(); print('ok')" *> $null
-if ($LASTEXITCODE -ne 0) {
+if ($LlamaInstalled) { & $PythonVenv -c "from llama_cpp import llama_cpp as _lc; _lc.llama_backend_init(); print('ok')" *> $null }
+if (-not $LlamaInstalled) {
+    # nothing to start: said above
+} elseif ($LASTEXITCODE -ne 0) {
     Write-Host "[WARN] llama-cpp failed to initialise on this CPU (exit $LASTEXITCODE)." -ForegroundColor Yellow
     Write-Host "       This CPU predates the instruction set the prebuilt wheel was built for." -ForegroundColor Yellow
     Write-Host "[..] Reinstalling the generic PyPI CPU wheel, which targets a lower baseline..."
-    Invoke-Pip (@("install", "--force-reinstall", "--no-cache-dir") + $PipFindLinksArgs + @("llama-cpp-python>=0.3.30", "--only-binary=:all:", "--quiet"))
+    try {
+        Invoke-Pip (@("install", "--force-reinstall", "--no-cache-dir") + $PipFindLinksArgs + @("llama-cpp-python>=$LlamaMin", "--only-binary=:all:", "--quiet"))
+    } catch {
+        Write-Host "[WARN] $($_.Exception.Message)" -ForegroundColor Yellow
+    }
     & $PythonVenv -c "from llama_cpp import llama_cpp as _lc; _lc.llama_backend_init(); print('ok')" *> $null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK] llama-cpp runtime starts on this CPU (CPU build)." -ForegroundColor Green
@@ -322,7 +376,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Verify llama-cpp GPU offload actually compiled in (catch a silent CPU-only wheel).
-if (-not $CpuOnly) {
+if ($LlamaInstalled -and (-not $CpuOnly)) {
     & $PythonVenv -c "import llama_cpp,sys; sys.exit(0 if llama_cpp.llama_supports_gpu_offload() else 1)" 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK] llama-cpp-python has CUDA GPU offload." -ForegroundColor Green
@@ -352,7 +406,15 @@ if (-not $CpuOnly) {
 Eli-Progress -Phase eli -Pct 55 -Msg "Installing ELI core"
 Write-Host "[..] Installing ELI v3..."
 $Wheel = Get-ChildItem (Join-Path $ScriptDir "dist") -Filter "eli_v3-*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
-$EliTarget = if ($Wheel) { @("$($Wheel.FullName)[full]") } else { @("-e", ".[full]") }
+# [full] includes the llm extra, which is llama-cpp-python: with no inference engine installed above
+# pip would try to build it from source here and end the installer. Then the rest of [full] is
+# installed, read from pyproject.toml.
+$EliExtras = "full"
+if (-not $LlamaInstalled) {
+    $Rest = & $PythonVenv -c "import sys; t=open(sys.argv[1],encoding='utf-8').read(); s=t.split('\nfull = [',1)[1]; inner=s[s.index('[')+1:s.index(']')]; print(','.join(x.strip() for x in inner.split(',') if x.strip()!='llm'))" (Join-Path $ScriptDir "pyproject.toml")
+    if ($LASTEXITCODE -eq 0 -and $Rest) { $EliExtras = "$Rest".Trim() }
+}
+$EliTarget = if ($Wheel) { @("$($Wheel.FullName)[$EliExtras]") } else { @("-e", ".[$EliExtras]") }
 # The lock bounds this install too. Without it pip took the newest of everything here and the
 # lock replaced it below: the newest Qt's add-on packages stayed behind, built for a Qt no
 # longer installed. Where the lock cannot be met on this Python, as before.
@@ -505,7 +567,8 @@ Write-Host "  ELI v3 - installation complete" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "--- Summary ---" -ForegroundColor Magenta
-Write-Host "[OK] Build       llama-cpp $BuildLabel" -ForegroundColor Green
+if ($LlamaInstalled) { Write-Host "[OK] Build       llama-cpp $BuildLabel" -ForegroundColor Green }
+else { Write-Host "[WARN] Build     llama-cpp $BuildLabel" -ForegroundColor Yellow }
 Write-Host "[OK] Model       $ModelStatus" -ForegroundColor Green
 Write-Host "[OK] Voice       $VoiceStatus" -ForegroundColor Green
 Write-Host "[OK] Data        fresh local databases, offline-by-default" -ForegroundColor Green
