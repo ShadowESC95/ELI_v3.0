@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import pytest
 
 import pytest
 
@@ -242,3 +243,30 @@ def test_generate_document_normalizes_to_documents_dir(monkeypatch, tmp_path):
     assert payload["event"] == "artifact_generated"
     assert payload["kind"] == "document"
     assert result["doc_path"] == payload["path"]
+
+
+@pytest.mark.parametrize("asked, language, ending", [
+    ("write a python script that counts words in a file", "python", ".py"),
+    ("write a script that shows the time", "python", ".py"),
+    ("write a script for an algorithm to evaluate trust", "python", ".py"),
+    ("write a rust script that sorts numbers", "rust", ".rs"),
+    ("make a script in go that pings a host", "go", ".go"),
+])
+def test_generate_script_writes_the_language_the_request_names(monkeypatch, tmp_path, asked, language, ending):
+    """The language is the one the request names, not a few letters inside another word ("shows"
+    was Bash, "counts" TypeScript), and not a word of the evidence added to the request."""
+    import eli.coding.agent as coding
+    from eli.execution.effectors.coding import _h_generate_script
+
+    seen = {}
+
+    def fake_solve(task, **kw):
+        seen["language"] = kw.get("language")
+        return {"code": "print('done')\n", "solved": True, "score": 1.0}
+
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(coding, "solve", fake_solve)
+    result = _h_generate_script("GENERATE_SCRIPT", {"description": asked, "_no_background": True,
+                                                    "_evidence": "notes gathered by ELI's agents and its tests"})
+    assert seen["language"] == language
+    assert result["filename"].endswith(ending)

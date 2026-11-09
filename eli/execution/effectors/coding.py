@@ -33,6 +33,41 @@ def _resolve_existing_user_or_artifact_path(*a, **k):
     return _f(*a, **k)
 
 
+# Every language a script can be written in here: its name as portable_intent_contract names it
+# (infer_script_language / _normalise_script_language), its name in a prompt, and its file ending.
+# CODE_SOLVE, GENERATE_SCRIPT and FIX_FILE each kept a table of their own.
+_LANGUAGES = {
+    "python": ("Python", ".py"), "bash": ("Bash", ".sh"), "zsh": ("Zsh", ".zsh"),
+    "javascript": ("JavaScript", ".js"), "typescript": ("TypeScript", ".ts"),
+    "rust": ("Rust", ".rs"), "ruby": ("Ruby", ".rb"), "go": ("Go", ".go"),
+    "c++": ("C++", ".cpp"), "cpp": ("C++", ".cpp"), "c": ("C", ".c"), "c#": ("C#", ".cs"),
+    "java": ("Java", ".java"), "lua": ("Lua", ".lua"), "perl": ("Perl", ".pl"),
+    "php": ("PHP", ".php"), "swift": ("Swift", ".swift"), "kotlin": ("Kotlin", ".kt"),
+    "scala": ("Scala", ".scala"), "r": ("R", ".r"), "julia": ("Julia", ".jl"),
+    "powershell": ("PowerShell", ".ps1"), "sql": ("SQL", ".sql"), "html": ("HTML", ".html"),
+    "css": ("CSS", ".css"), "fortran": ("Fortran", ".f90"),
+}
+_EXTENSION_LANGUAGE = {ext: shown for shown, ext in reversed(list(_LANGUAGES.values()))}
+_EXTENSION_LANGUAGE[".bash"] = "Bash"
+
+
+def script_language(description: str) -> tuple:
+    """(name, name in a prompt, file ending) of the language a request names, Python when it names
+    none. The language is read the way the router's contract reads it: as what the script is
+    written in ("a rust script", "in go", "using typescript"), never a letter run inside another
+    word: "shows" asked for Bash, "counts" for TypeScript, "algorithm" for Go."""
+    try:
+        from eli.execution.portable_intent_contract import infer_script_language
+        name = str(infer_script_language(description) or "").strip().lower()
+    except Exception:
+        log.debug("script language not read", exc_info=True)
+        name = ""
+    if name not in _LANGUAGES:
+        name = "python"
+    shown, ext = _LANGUAGES[name]
+    return name, shown, ext
+
+
 def _h_code_solve(a, args):
     import json as _json_cs, re as _re_cs
     desc = (args.get("description") or args.get("text") or args.get("prompt")
@@ -109,8 +144,7 @@ def _h_code_solve(a, args):
             except SyntaxError as _se_cs:
                 _runnable = False
                 _syntax_note = f"SyntaxError: {_se_cs.msg} (line {_se_cs.lineno})"
-        _ext = {"python": ".py", "bash": ".sh", "javascript": ".js", "typescript": ".ts",
-                "ruby": ".rb", "go": ".go", "lua": ".lua"}.get(_lang, ".txt")
+        _ext = _LANGUAGES.get(_lang, ("", ".txt"))[1]
         # Park un-runnable output as a .draft so a user never accidentally runs
         # a broken file and hits a traceback.
         if not _runnable:
@@ -144,6 +178,13 @@ def _h_generate_script(a, args):
     if not desc:
         msg = "Missing description for GENERATE_SCRIPT"
         return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+    # The language is the one the request names (or the router's own field), read before the
+    # evidence is added below: the evidence header's own words ("agents") once chose TypeScript.
+    _named_lang = str(args.get("language") or "").strip().lower()
+    _lang_key, _detected_lang, _detected_ext = (
+        (_named_lang,) + _LANGUAGES[_named_lang] if _named_lang in _LANGUAGES else script_language(desc))
+    # What the request is about is read from it alone too, not from the evidence added to it.
+    _desc_low = desc.lower()
     # Ground the script in evidence gathered by the central evidence-routing
     # hook (e.g. real ELI source for a "script to test ELI's memory", web docs
     # for an external API). Fed into the coding agent's task so it plans from
@@ -156,25 +197,6 @@ def _h_generate_script(a, args):
     _bg = _maybe_background_codegen(a, args)
     if _bg is not None:
         return _bg
-    # Detect target language from description
-    _lang_map = {
-        "bash": ("bash", ".sh"), "shell": ("bash", ".sh"), "sh": ("bash", ".sh"),
-        "javascript": ("JavaScript", ".js"), "js": ("JavaScript", ".js"),
-        "typescript": ("TypeScript", ".ts"), "ts": ("TypeScript", ".ts"),
-        "rust": ("Rust", ".rs"), "ruby": ("Ruby", ".rb"),
-        "go": ("Go", ".go"), "golang": ("Go", ".go"),
-        "c++": ("C++", ".cpp"), "cpp": ("C++", ".cpp"),
-        "c script": ("C", ".c"), "java": ("Java", ".java"),
-        "lua": ("Lua", ".lua"), "perl": ("Perl", ".pl"),
-    }
-    _detected_lang = "Python"
-    _detected_ext = ".py"
-    _desc_low = desc.lower()
-    for _kw, (_lang, _ext) in _lang_map.items():
-        if _kw in _desc_low:
-            _detected_lang = _lang
-            _detected_ext = _ext
-            break
 
     # ── Route through the verified coding agent (plan → DAG/tree-search →
     # execute → repair → bug-memory) for top-tier, runnable scripts. Falls
@@ -185,13 +207,13 @@ def _h_generate_script(a, args):
             # Single coherent script: no subtask DAG (composition is for
             # multi-component CODE_SOLVE), and a lean beam/iters so a script
             # request is a handful of calls, not minutes of fan-out.
-            _ag = _agent_solve(desc, language=(_detected_lang or "python").lower(),
+            _ag = _agent_solve(desc, language=_lang_key,
                                use_dag=False, beam=2, max_iterations=2)
             _ag_code = (_ag or {}).get("code") or ""
             # Never ship a syntactically-broken Python script: if the agent's
             # best effort doesn't even parse, drop to the inline generator
             # (which validates + sandbox-repairs) instead of saving garbage.
-            if _ag_code.strip() and (_detected_lang or "").lower() == "python":
+            if _ag_code.strip() and _lang_key == "python":
                 try:
                     import ast as _ast_gs
                     _ast_gs.parse(_ag_code)
@@ -723,14 +745,7 @@ def _h_fix_file(a, args):
         log.debug("suppressed exception", exc_info=True)
     original = pp.read_text(encoding='utf-8', errors='replace')
     extra_error = str(args.get("error") or args.get("stderr") or "").strip()
-    ext_to_lang = {
-        ".py": "Python", ".sh": "Bash", ".bash": "Bash", ".js": "JavaScript",
-        ".ts": "TypeScript", ".rb": "Ruby", ".go": "Go", ".rs": "Rust",
-        ".lua": "Lua", ".pl": "Perl", ".java": "Java", ".cpp": "C++",
-        ".c": "C", ".cs": "C#", ".php": "PHP", ".swift": "Swift",
-        ".kt": "Kotlin", ".r": "R", ".ps1": "PowerShell",
-    }
-    lang = ext_to_lang.get(pp.suffix.lower(), "the same language")
+    lang = _EXTENSION_LANGUAGE.get(pp.suffix.lower(), "the same language")
     err_block = f"\n\nReported error / stderr:\n{extra_error}" if extra_error else ""
     # IMPROVE mode (router: file.improve_python) vs FIX mode: same machinery, different
     # intent — make working code better (clarity/correctness/robustness, dedupe, dead
