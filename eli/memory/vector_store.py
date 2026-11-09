@@ -97,11 +97,15 @@ _store: Optional["VectorStore"] = None
 _store_lock = threading.Lock()
 
 
-def reset_vector_store() -> None:
-    """Discard the singleton so the next call to get_vector_store() returns a fresh instance."""
+def reset_vector_store(discard: bool = False) -> None:
+    """Discard the singleton so the next call to get_vector_store() returns a fresh instance. With
+    discard (a memory reset), the old instance never writes its index to disk again: a save it had
+    pending, or the flush at shutdown, put the wiped index back."""
     global _store
     with _store_lock:
-        _store = None
+        old, _store = _store, None
+    if discard and old is not None:
+        old._discarded = True
 
 
 def embedder_in_ram(Llama) -> Dict[str, Any]:
@@ -565,6 +569,8 @@ class VectorStore:
         self._needs_rebuild = True
 
     def _save_async(self) -> None:
+        if getattr(self, "_discarded", False):
+            return
         with self._lock, FAISS_IO_LOCK:
             self._save_generation += 1
             generation = self._save_generation
@@ -575,7 +581,7 @@ class VectorStore:
             try:
                 with FAISS_IO_LOCK:
                     with self._lock:
-                        if generation != self._save_generation:
+                        if generation != self._save_generation or getattr(self, "_discarded", False):
                             return
                     faiss.write_index(idx_snapshot, self._index_path)
                     _dump_meta(self._meta_path, meta_snapshot)
@@ -649,7 +655,7 @@ class VectorStore:
         """Save index and metadata to disk; with pending_only, only when there are unsaved adds.
         Each save rewrites both files whole, so callers batch (add() saves every SAVE_EVERY)."""
         with self._lock, FAISS_IO_LOCK:
-            if pending_only and not self._adds_since_save:
+            if getattr(self, "_discarded", False) or (pending_only and not self._adds_since_save):
                 return
             try:
                 self._save_generation += 1

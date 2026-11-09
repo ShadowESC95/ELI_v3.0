@@ -1,20 +1,23 @@
 """ELI memory / identity factory-reset — reusable core.
 
-Clears every store where ELI keeps learned state AND the user's identity, while
-preserving all DB schema (tables/columns/FTS) and install config. Backs up first.
+Clears every place ELI keeps learned state AND the user's identity, while preserving all DB schema
+(tables/columns/FTS) and install config. Backs up first, and wipes nothing unless the backup is whole.
 
-Identity lives in MORE than artifacts/db — clearing only the DB left ELI still
-knowing the user, because the name was seeded in config/settings.json + runtime
-caches and re-synced on next launch. This module knows ALL of them:
+The reset is inverted: everything under data_dir() goes, except what is the installation or the
+machine and holds none of the user's words (KEEP_TOP / KEEP_RUNTIME: models, voices, plugins, GPU
+packs, hardware measurements, the licence trial). A list of what to wipe always fell behind the
+stores ELI grew: the executor's incidents, auto goals quoting the user's commands, the attention
+queue, notes, documents, the proactive queue, the world journal, logs and backup copies of the user
+database all survived a "factory reset". Also cleared outside data_dir():
 
-  • artifacts/db/*.sqlite3        rows wiped (schema kept, FTS reset, VACUUM)
-  • vectors/index.faiss + meta    semantic index reset (rebuilds empty)
-  • runtime/users/**/user_profile.json + user_info*   learned profile
   • config/settings.json identity fields              name, device labels, …
-  • runtime/world_model.json, state.json              removed or name-scrubbed
-  • conversations/*.json                              session transcripts
-  • eli/cognition/persona.auto.txt                    ELI learned overlay
-  • runtime residue (last_trace, user_info.txt, …)  stale caches
+  • the persona overlay (persona.auto.txt)            ELI's learned overlay
+
+Databases are emptied in place (rows wiped, schema kept, FTS reset, VACUUM). Their backup is taken
+with SQLite's own backup API inside one read snapshot and checked (integrity_check, every table's
+row count) before anything is wiped: copying the .sqlite3 file alone missed every commit still in
+its -wal file while ELI held the database open. Other files are moved into the backup folder, so
+backing them up costs no extra disk.
 
 After wipe, rebuilds the full DB architecture via init_all_data().
 
@@ -42,15 +45,21 @@ _IDENTITY_SETTINGS = {
     "device_custom_names": {},
     "audio_output_aliases": {},
 }
-_RUNTIME_RESIDUE = (
-    "runtime_snapshot.json",
-    "runtime/last_trace.json",
-    "runtime/last_response.json",
-    "runtime/last_image_generation.json",
-    "user_info.txt",
-    "user_info.meta.json",
-    "user_info_diff.jsonl",
-)
+# What a reset leaves under data_dir(): the installation and the machine, none of the user's words.
+KEEP_TOP = frozenset({
+    "models", "voices", "plugins", "bundles",          # installed models, voices, plugins, GPU packs
+    "plugins_state.json",                               # which installed plugins are switched on
+    "llama_runtime_smoke.json", "runtime_hardware_profile.json", "runtime_dynamic_budget.json",
+    ".eli_trial_state.json",                            # the licence trial
+    "README.md",                                        # shipped with the data folder
+    "_pytest",                                          # a checkout's test sandbox, not ELI's state
+})
+# Under runtime/: what was measured on this machine.
+KEEP_RUNTIME = frozenset({
+    "gpu_headroom.json", "gpu_xr.json", "whisper_gpu.json", "model_sizes.json", "load_probe.json",
+    "capability_inventory.generated.json", "versions_seen.json",
+})
+_BACKUP_PREFIX = "_memory_backup_"
 _BLANK_PERSONA_TEMPLATE = Path(__file__).resolve().parents[2] / "config" / "templates" / "persona.auto.template.txt"
 
 
@@ -65,7 +74,7 @@ def bases():
 
 
 def _skip(p: Path) -> bool:
-    return "_memory_backup_" in str(p)
+    return _BACKUP_PREFIX in str(p)
 
 
 def _persona_overlay_paths(config: Path) -> List[Path]:
@@ -85,32 +94,39 @@ def _persona_overlay_paths(config: Path) -> List[Path]:
 
 def discover(base: Path, config: Path,
              keep_conversations: bool = False, keep_profile: bool = False) -> Dict[str, List[Path]]:
-    """Existing targets by category."""
-    t: Dict[str, List[Path]] = {}
-    t["dbs"] = [p for p in base.glob("db/*.sqlite3") if not _skip(p)]
-    t["faiss"] = [p for p in (base / "vectors").glob("*.faiss") if not _skip(p)]
-    if (base / "vectors" / "meta.json").exists():
-        t["faiss"].append(base / "vectors" / "meta.json")
-    wm = base / "runtime" / "world_model.json"
-    st = [base / "state.json", base / "runtime" / "state.json"]
-    if keep_profile:
-        t["name_caches"] = [p for p in [wm, *st] if p.exists()]
-        t["runtime_wipe"] = []
-    else:
-        t["name_caches"] = []
-        t["runtime_wipe"] = [p for p in [wm, *st] if p.exists()]
-        t["runtime_wipe"].extend(p for rel in _RUNTIME_RESIDUE if (p := base / rel).exists())
+    """Existing targets by category. Everything under `base` is a target unless it is in KEEP_TOP
+    or KEEP_RUNTIME (or kept by the options): the databases are emptied in place, every other file
+    goes. keep_profile keeps the learned profile and settings identity, and scrubs the names from
+    the world model and state caches instead of removing them; keep_conversations keeps the
+    transcripts."""
+    t: Dict[str, List[Path]] = {k: [] for k in (
+        "dbs", "faiss", "name_caches", "runtime_wipe", "settings", "profile", "conversations", "files",
+        "persona_overlay")}
+    t["dbs"] = sorted(p for p in base.glob("db/*.sqlite3") if not _skip(p))
+    db_files = set(t["dbs"]) | {Path(str(p) + sfx) for p in t["dbs"] for sfx in ("-wal", "-shm", "-journal")}
+    name_caches = {base / "runtime" / "world_model.json", base / "state.json", base / "runtime" / "state.json"}
+    if base.is_dir():
+        for p in sorted(base.rglob("*")):
+            if not p.is_file() or _skip(p) or p in db_files:
+                continue
+            rel = p.relative_to(base).parts
+            if rel[0] in KEEP_TOP or (rel[0] == "runtime" and len(rel) == 2 and rel[1] in KEEP_RUNTIME):
+                continue
+            if rel[0] == "vectors":
+                t["faiss"].append(p)
+            elif rel[0] == "conversations":
+                if not keep_conversations:
+                    t["conversations"].append(p)
+            elif rel[:2] == ("runtime", "users"):
+                if not keep_profile:
+                    t["profile"].append(p)
+            elif p in name_caches:
+                t["name_caches" if keep_profile else "runtime_wipe"].append(p)
+            elif rel[0] == "runtime" or p.name.startswith(("runtime_", "user_info")):
+                t["runtime_wipe"].append(p)
+            else:
+                t["files"].append(p)
     t["settings"] = [config / "settings.json"] if (config / "settings.json").exists() and not keep_profile else []
-    t["profile"] = []
-    if not keep_profile:
-        for p in (base / "runtime" / "users").rglob("*"):
-            if p.is_file() and (p.name == "user_profile.json" or p.name.startswith("user_info")):
-                t["profile"].append(p)
-    t["conversations"] = ([] if keep_conversations
-                          else [p for p in (base / "conversations").rglob("*.json") if not _skip(p)])
-    t["transient"] = [p for p in (base / "pending_code_fix.json",
-                                  base / "pending_remediation.json")
-                      if p.exists()]
     t["persona_overlay"] = _persona_overlay_paths(config)
     return t
 
@@ -265,34 +281,99 @@ def rebuild_after_reset(verbose: bool = False) -> Dict[str, Any]:
     return out
 
 
-def backup(t: Dict[str, List[Path]], base: Path) -> Path:
-    bk = base / f"_memory_backup_{time.strftime('%Y%m%d_%H%M%S')}"
-    for cat, paths in t.items():
-        for p in paths:
-            rel = p.relative_to(base) if base in p.parents else Path(cat) / p.name
-            dest = bk / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
+def _table_counts(conn: sqlite3.Connection) -> Dict[str, int]:
+    names = [n for (n,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
+
+
+def backup_db(src_path: Path, dest: Path) -> Dict[str, int]:
+    """Copy a live database with SQLite's backup API inside one read snapshot, so the commits still
+    in its -wal file come too, then check the copy: integrity_check must say ok and every table must
+    hold the rows the snapshot held. Returns those counts; raises when the copy is not whole."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(str(src_path), timeout=30.0)
+    src.isolation_level = None
+    try:
+        src.execute("BEGIN")                       # one snapshot for the counts and the copy
+        try:
+            want = _table_counts(src)
+            dst = sqlite3.connect(str(dest))
             try:
-                shutil.copy2(p, dest)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                src.backup(dst)
+                ok = dst.execute("PRAGMA integrity_check").fetchone()
+                got = _table_counts(dst)
+            finally:
+                dst.close()
+        finally:
+            src.execute("COMMIT")
+    finally:
+        src.close()
+    if not ok or str(ok[0]).lower() != "ok":
+        raise RuntimeError(f"backup of {src_path.name} failed its integrity check: {ok[0] if ok else 'no answer'}")
+    if got != want:
+        short = sorted(n for n in want if got.get(n) != want[n])
+        raise RuntimeError(f"backup of {src_path.name} does not hold every row ({', '.join(short[:5])})")
+    return want
+
+
+def _backup_dest(bk: Path, base: Path, cat: str, p: Path) -> Path:
+    return bk / (p.relative_to(base) if base in p.parents else Path(cat) / p.name)
+
+
+def backup(t: Dict[str, List[Path]], base: Path, bk: Optional[Path] = None) -> Path:
+    """Back up every target into one folder: databases through backup_db, the files edited in
+    place (settings identity, name caches, persona overlay) copied. Raises on the first failure, so
+    the caller can refuse to wipe. The files a reset removes are moved in by run_reset instead."""
+    bk = bk or base / f"{_BACKUP_PREFIX}{time.strftime('%Y%m%d_%H%M%S')}"
+    for p in t.get("dbs", []):
+        backup_db(p, _backup_dest(bk, base, "dbs", p))
+    for cat in ("settings", "name_caches", "persona_overlay"):
+        for p in t.get(cat, []):
+            dest = _backup_dest(bk, base, cat, p)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dest)
     return bk
+
+
+_REMOVED = ("faiss", "profile", "conversations", "runtime_wipe", "files")
 
 
 def run_reset(keep_profile: bool = False, keep_conversations: bool = False,
               do_backup: bool = True,
               keep_tables: "frozenset[str] | set[str] | None" = None,
               rebuild: bool = True) -> Dict[str, Any]:
-    """Perform the reset. Returns a summary dict (safe to show in a UI)."""
+    """Perform the reset. Returns a summary dict (safe to show in a UI). With do_backup, nothing is
+    wiped unless every database backed up whole: then ok is False, the reason is in errors and
+    summary['wiped'] is False."""
     base, config = bases()
     t = discover(base, config, keep_conversations, keep_profile)
-    summary: Dict[str, Any] = {"ok": True, "backup": None, "db_rows": 0, "errors": []}
+    summary: Dict[str, Any] = {"ok": True, "backup": None, "db_rows": 0, "errors": [], "wiped": False,
+                               "not_removed": [], "faiss_reset": 0, "profiles_removed": 0,
+                               "conversations_removed": 0, "runtime_wiped": 0, "files_removed": 0,
+                               "name_fields_blanked": 0, "settings_identity_cleared": False,
+                               "settings_name_cleared": False, "persona_overlay_reset": False}
 
+    bk: Optional[Path] = None
     if do_backup:
+        bk = base / f"{_BACKUP_PREFIX}{time.strftime('%Y%m%d_%H%M%S')}"
         try:
-            summary["backup"] = str(backup(t, base))
+            backup(t, base, bk)
+            summary["backup"] = str(bk)
         except Exception as e:
             summary["errors"].append(f"backup: {e}")
+            summary["ok"] = False
+            summary["backup_incomplete"] = str(bk)
+            log.warning("[MEMORY_RESET] backup failed, nothing wiped: %s", e)
+            return summary
+
+    # A running store would write its old index back over the wiped one.
+    try:
+        from eli.memory.vector_store import reset_vector_store
+        reset_vector_store(discard=True)
+        summary["vector_store_reset"] = True
+    except Exception as e:
+        summary["vector_store_reset"] = False
+        summary["errors"].append(f"vector_store_reset: {e}")
 
     for p in t["dbs"]:
         try:
@@ -300,21 +381,19 @@ def run_reset(keep_profile: bool = False, keep_conversations: bool = False,
         except Exception as e:
             summary["errors"].append(f"{p.name}: {e}")
 
-    removed = (t["faiss"] + t["profile"] + t["conversations"]
-               + t.get("transient", []) + t.get("runtime_wipe", []))
-    for p in removed:
-        try:
-            p.unlink()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    try:
-        from eli.memory.vector_store import reset_vector_store
-        reset_vector_store()
-        summary["vector_store_reset"] = True
-    except Exception as e:
-        summary["vector_store_reset"] = False
-        summary["errors"].append(f"vector_store_reset: {e}")
+    for cat in _REMOVED:
+        for p in t.get(cat, []):
+            try:
+                if bk is not None:
+                    dest = _backup_dest(bk, base, cat, p)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(p), str(dest))
+                else:
+                    p.unlink()
+            except Exception as e:
+                summary["not_removed"].append(str(p))
+                summary["errors"].append(f"{p.name}: {e}")
+    _drop_empty_dirs(base)
 
     summary["name_fields_blanked"] = sum(scrub_json_names(p) for p in t["name_caches"])
     summary["settings_identity_cleared"] = any(clear_settings_identity(p) for p in t["settings"])
@@ -323,11 +402,26 @@ def run_reset(keep_profile: bool = False, keep_conversations: bool = False,
     summary["faiss_reset"] = len(t["faiss"])
     summary["profiles_removed"] = len(t["profile"])
     summary["conversations_removed"] = len(t["conversations"])
-    summary["transient_removed"] = len(t.get("transient", []))
-    summary["runtime_wiped"] = len(t.get("runtime_wipe", []))
+    summary["runtime_wiped"] = len(t["runtime_wipe"])
+    summary["files_removed"] = len(t["files"])
+    summary["wiped"] = True
 
     if rebuild:
         summary["rebuild"] = rebuild_after_reset()
 
     summary["ok"] = not summary["errors"]
     return summary
+
+
+def _drop_empty_dirs(base: Path) -> None:
+    """Folders a reset emptied go too (deepest first); kept and backup folders stay."""
+    if not base.is_dir():
+        return
+    for d in sorted((p for p in base.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        rel = d.relative_to(base).parts
+        if rel[0] in KEEP_TOP or _skip(d) or rel[0] == "db":
+            continue
+        try:
+            d.rmdir()
+        except OSError:
+            pass                                   # not empty: something kept is in it

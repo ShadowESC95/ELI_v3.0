@@ -66,7 +66,7 @@ def test_clear_settings_identity_clears_device_labels(tmp_path):
         "user_name": "Alex",
         "device_custom_names": {"bt:AA:BB:CC:DD:EE:FF": "Kitchen"},
         "audio_output_aliases": {"sink1": "Office"},
-        "bluetooth_display_name": "JayPhone",
+        "bluetooth_display_name": "Pocket-Phone",
     }), encoding="utf-8")
     assert mr.clear_settings_identity(p) is True
     d = json.loads(p.read_text())
@@ -87,3 +87,120 @@ def test_reset_persona_overlay_writes_template(tmp_path, monkeypatch):
     monkeypatch.setattr("eli.cognition.persona.write_auto_persona", _write)
     assert mr.reset_persona_overlay(tpl) is True
     assert "blank overlay" in dest.read_text(encoding="utf-8")        # nothing left to clear
+
+
+# ── the backup is whole, and nothing is wiped without it ─────────────────────
+
+def _wal_db_with_an_open_writer(path):
+    """A database in WAL mode whose last commit is still in the -wal file, its writer still open,
+    as ELI's memory holds it while the GUI runs the reset."""
+    w = sqlite3.connect(str(path))
+    w.execute("PRAGMA journal_mode=WAL")
+    w.execute("PRAGMA wal_autocheckpoint=0")
+    w.execute("CREATE TABLE memories(id INTEGER PRIMARY KEY, text TEXT)")
+    w.execute("INSERT INTO memories(text) VALUES ('the plant needs water on mondays')")
+    w.commit()
+    assert Path(str(path) + "-wal").stat().st_size > 0
+    return w
+
+
+def test_the_backup_holds_the_commits_still_in_the_wal(tmp_path):
+    base = tmp_path / "data"
+    (base / "db").mkdir(parents=True)
+    db = base / "db" / "user.sqlite3"
+    writer = _wal_db_with_an_open_writer(db)
+    try:
+        bk = mr.backup({"dbs": [db]}, base)
+        c = sqlite3.connect(str(bk / "db" / "user.sqlite3"))
+        try:
+            assert c.execute("SELECT text FROM memories").fetchall() == [("the plant needs water on mondays",)]
+            assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            c.close()
+    finally:
+        writer.close()
+
+
+def _sandbox(tmp_path, monkeypatch):
+    base, config = tmp_path / "data", tmp_path / "config"
+    (base / "db").mkdir(parents=True)
+    config.mkdir()
+    monkeypatch.setattr(mr, "bases", lambda: (base, config))
+    monkeypatch.setattr(mr, "reset_persona_overlay", lambda template=None: True)
+    return base, config
+
+
+def test_a_failed_backup_wipes_nothing(tmp_path, monkeypatch):
+    """A failed copy was logged at debug and the wipe went ahead, the summary pointing at the
+    incomplete backup and the dialog saying everything was backed up first."""
+    base, _config = _sandbox(tmp_path, monkeypatch)
+    db = base / "db" / "user.sqlite3"
+    writer = _wal_db_with_an_open_writer(db)
+    writer.close()
+    note = base / "notes" / "note.md"
+    note.parent.mkdir()
+    note.write_text("the plant needs water on mondays", encoding="utf-8")
+
+    base.chmod(0o500)                # the backup folder cannot be made: a real failure, not a stub
+    try:
+        s = mr.run_reset(rebuild=False)
+    finally:
+        base.chmod(0o700)
+    c = sqlite3.connect(str(db))
+    try:
+        assert c.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 1, "wiped without a backup"
+    finally:
+        c.close()
+    assert note.exists()
+    assert s["ok"] is False and s["wiped"] is False and any(e.startswith("backup") for e in s["errors"])
+
+
+def test_a_reset_leaves_none_of_the_user_s_words_and_keeps_the_installation(tmp_path, monkeypatch):
+    """discover() listed the stores to wipe and missed the incidents, auto goals, the attention
+    queue, notes, documents, the proactive queue, the world journal, logs and a backup copy of the
+    user database. Now everything goes except the installation and the machine's measurements."""
+    base, config = _sandbox(tmp_path, monkeypatch)
+    marker = "QUOKKA-5521"
+    db = base / "db" / "user.sqlite3"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE memories(id INTEGER PRIMARY KEY, text TEXT)")
+    c.execute("INSERT INTO memories(text) VALUES (?)", (f"play {marker} on repeat",))
+    c.commit()
+    c.close()
+    personal = ["incidents/20261108.jsonl", "runtime/goals.json", "runtime/attention_queue.jsonl",
+                "notes/shopping.md", "documents/report.txt", "proactive/proposal_queue.jsonl",
+                "world/journal/eli_world_journal.md", "world/events.jsonl", "logs/eli.log",
+                "conversations/conversation_1.json", "conversations/archive/20261027.jsonl",
+                "vectors/meta.json", "db/user.sqlite3.pre_policy.bak", "runtime/users/u1/user_profile.json",
+                "state.json", "runtime/world_model.json", "image_engine/outputs/job.json", "training/candidates.jsonl"]
+    for rel in personal:
+        (base / rel).parent.mkdir(parents=True, exist_ok=True)
+        (base / rel).write_text(f'{{"said": "{marker}"}}', encoding="utf-8")
+    kept = ["models/gguf/base/model.gguf", "voices/voice.onnx", "plugins/p/plugin.py", "bundles/pack.json",
+            "runtime/gpu_headroom.json", "runtime_hardware_profile.json", ".eli_trial_state.json"]
+    for rel in kept:
+        (base / rel).parent.mkdir(parents=True, exist_ok=True)
+        (base / rel).write_text("machine", encoding="utf-8")
+    (config / "settings.json").write_text(json.dumps({"user_name": "Alex", "theme": "dark"}), encoding="utf-8")
+
+    s = mr.run_reset(rebuild=False)
+    assert s["ok"] and s["wiped"], s["errors"]
+    bk = Path(s["backup"])
+    survivors = [p for p in base.rglob("*") if p.is_file() and bk not in p.parents
+                 and marker.encode() in p.read_bytes()]
+    assert survivors == [], f"the reset left the user's words in {survivors}"
+    for rel in kept:
+        assert (base / rel).read_text(encoding="utf-8") == "machine", rel
+    c = sqlite3.connect(str(db))
+    try:
+        assert c.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0          # schema kept, rows gone
+    finally:
+        c.close()
+    assert json.loads((config / "settings.json").read_text())["user_name"] == ""
+    for rel in personal:                                   # moved into the backup, not lost
+        assert marker in (bk / rel).read_text(encoding="utf-8"), rel
+    c = sqlite3.connect(str(bk / "db" / "user.sqlite3"))
+    try:
+        assert c.execute("SELECT text FROM memories").fetchall() == [(f"play {marker} on repeat",)]
+    finally:
+        c.close()
