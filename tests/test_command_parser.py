@@ -364,3 +364,17 @@ def test_a_correction_with_an_adverb_in_its_lead_is_still_a_correction():
     assert correction("no, i obviously said the other one") == "the other one"
     assert without_correction_lead("i meant the second file") == "the second file"
     assert correction("i really like this song") == ""
+
+
+@pytest.mark.parametrize("said", ["yes, not no", "not now", "no not that", "the not one"])
+def test_a_word_of_grammar_is_never_read_as_a_misspelt_command(said):
+    """"yes, not no" was read as a misspelt "note" and wrote a note; "not now" stored a memory."""
+    from eli.execution.router_enhanced import route
+    from eli.runtime.command_splitter import misspelt_commands
+    assert all(fixed not in ("note", "now", "no") for _r, fixed in misspelt_commands(said))
+    assert route(said)["action"] not in ("WRITE_NOTE", "MEMORY_STORE")
+
+
+def test_a_command_word_with_a_letter_wrong_is_still_read():
+    from eli.runtime.command_splitter import misspelt_commands
+    assert ("vol down", "down") in misspelt_commands("vol don")

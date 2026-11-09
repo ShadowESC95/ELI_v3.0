@@ -375,7 +375,10 @@ def misspelt_commands(text: str, *, max_words: int = 4) -> List[tuple]:
     reading with that word corrected, as (reading, the corrected word): ("vol down", "down"). The
     router keeps a reading that is a command and does not carry the corrected word as what the
     command acts on ("my name is listed" is not "my name is listen"). Empty for longer messages and
-    for words that are command words already."""
+    for words that are command words already. A word of the language's own grammar ("not", "now",
+    "the": route_contracts._GRAMMAR) is a word as written and is never read as a misspelt command
+    word: "yes, not no" became a note ("not" read as "note")."""
+    from eli.execution.route_contracts import _GRAMMAR
     words = str(text or "").split()
     if not words or len(words) > max_words:
         return []
@@ -383,7 +386,7 @@ def misspelt_commands(text: str, *, max_words: int = 4) -> List[tuple]:
     readings: List[str] = []
     for i, word in enumerate(words):
         low = word.lower().strip(".,!?")
-        if len(low) < 3 or low in vocab or not low.isalpha():
+        if len(low) < 3 or low in vocab or low in _GRAMMAR or not low.isalpha():
             continue
         for near in sorted(w for w in vocab if w[0] == low[0] and _one_edit_apart(low, w)):
             readings.append((" ".join(words[:i] + [near] + words[i + 1:]), near))
