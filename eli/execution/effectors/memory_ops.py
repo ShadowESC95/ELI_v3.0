@@ -399,7 +399,7 @@ def _h_memory_store(a, args):
 
 
 def _h_set_user_name(a, args):
-    return set_user_name(str(args.get("name", "")))
+    return set_user_name(str(args.get("name", "")), declared_by=str(args.get("declared_by") or ""))
 
 
 def _h_clear_chat_history(a, args):

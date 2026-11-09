@@ -3627,7 +3627,10 @@ def set_communication_style_action(style: str) -> Dict[str, Any]:
     return {"ok": True, "action": "SET_COMMUNICATION_STYLE", "communication_style": s, "content": msg, "response": msg}
 
 
-def set_user_name(name: str) -> Dict[str, Any]:
+def set_user_name(name: str, declared_by: str = "") -> Dict[str, Any]:
+    """Store the user's name. `declared_by` is how it was said (the router's route meta): a name read
+    from one word ("I'm Sam", `i_am_word`) is no declaration, so it never replaces a different
+    stored name or clears the name rows by itself: ELI asks, and a yes says "my name is <name>"."""
     n = (name or "").strip()
     if not n:
         msg = "Empty name."
@@ -3644,6 +3647,24 @@ def set_user_name(name: str) -> Dict[str, Any]:
         log.debug(f"[EXECUTOR] set_user_name: rejected phrase-like name {n!r}")
         msg = "That doesn't look like a name — please say just the name."
         return {"ok": False, "action": "SET_USER_NAME", "error": "invalid_name", "content": msg, "response": msg}
+    if str(declared_by or "") == "i_am_word":
+        try:
+            from eli.kernel.state import get_user_name as _stored_name
+            stored = str(_stored_name("") or "").strip()
+        except Exception:
+            log.debug("stored name unreadable", exc_info=True)
+            stored = ""
+        if stored and stored.lower() != n.lower():
+            try:
+                from eli.runtime.pending_proposal import set_pending_proposal
+                set_pending_proposal(f"my name is {n}", summary=f"call the user {n} instead of {stored}")
+            except Exception:
+                log.debug("name confirmation not armed", exc_info=True)
+            # the facts; the reply asking is worded by the model (explain_in_words)
+            msg = (f"Stored name: {stored}. Read from this message: {n} (one word after \"I'm\", not "
+                   f"\"my name is\"). Not changed. A yes replaces {stored} with {n}.")
+            return {"ok": True, "action": "SET_USER_NAME", "changed": False, "user_name": stored,
+                    "asked_to_replace_with": n, "explain_in_words": True, "content": msg, "response": msg}
     # Write to runtime state (legacy path)
     st = _load_state()
     st["user_name"] = n

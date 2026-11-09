@@ -979,15 +979,15 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
             if not normalize_identity_candidate(candidate, max_words=1):
                 continue
             if _clow not in _bad and len(candidate) >= 3 and _has_vowel:
+                # read from one word, not from "my name is": what it replaces is the executor's to
+                # keep until the user confirms, so the executor is told how it was said
+                _how = "answer_to_name_question" if _asked else "i_am_word"
                 return _mk(
                     "SET_USER_NAME",
-                    {"name": candidate},
+                    {"name": candidate, "declared_by": _how},
                     0.97,
                     matched_by="identity.set_user_name",
-                    # read from one word, not from "my name is": what it replaces is the
-                    # executor's to keep until the user confirms
-                    meta_extra={"spoken_as_remark": True,
-                                "declared_by": "answer_to_name_question" if _asked else "i_am_word"},
+                    meta_extra={"spoken_as_remark": True, "declared_by": _how},
                 )
     return None
 

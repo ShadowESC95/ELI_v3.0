@@ -86,6 +86,32 @@ def test_the_executor_leaves_a_names_letters_to_the_shared_validator(executor_na
     assert ex.set_user_name("pause spotify")["ok"] is False
 
 
+def test_a_name_from_one_word_asks_before_replacing_the_stored_one(executor_name_store, monkeypatch):
+    """"I'm Sam" read as a name overwrote the stored one and cleared every name row unasked: one word
+    after "I'm" is no declaration. ELI asks; the yes says "my name is Sam", which sets it."""
+    from eli.execution.effectors.memory_ops import _h_set_user_name
+    from eli.kernel import state
+    import eli.runtime.pending_proposal as pp
+    ex, stored = executor_name_store
+    purged, armed = [], []
+    monkeypatch.setattr(ex, "_purge_conflicting_identity_patterns", lambda new_name: purged.append(new_name) or 0)
+    monkeypatch.setattr(pp, "set_pending_proposal", lambda command, summary="", **k: armed.append(command))
+    monkeypatch.setattr(state, "get_user_name", lambda default="", user_id=None: "Robin")
+    out = _h_set_user_name("SET_USER_NAME", {"name": "Sam", "declared_by": "i_am_word"})
+    assert out["changed"] is False and out["user_name"] == "Robin" and out["explain_in_words"] is True
+    assert "profile" not in stored and purged == [] and armed == ["my name is Sam"]
+    out = _h_set_user_name("SET_USER_NAME", {"name": "Robin", "declared_by": "i_am_word"})   # the same name
+    assert out.get("changed") is not False and stored.get("profile") == "Robin"
+    out = _h_set_user_name("SET_USER_NAME", {"name": "Sam", "declared_by": "my_name_is"})
+    assert stored.get("profile") == "Sam" and purged == ["Robin", "Sam"]
+
+
+def test_the_name_route_tells_the_executor_how_it_was_said():
+    from eli.execution.router_enhanced import route
+    got = route("I'm Alex")
+    assert got["args"] == {"name": "Alex", "declared_by": "i_am_word"}
+
+
 def test_asking_who_i_am_never_stores_a_name(tmp_path, monkeypatch):
     # "who am I" with no name stored: the answer used to mine the install-wide learned patterns for
     # "called X" (another user's name, or a pet's) and store it as this user's name
