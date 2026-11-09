@@ -10,7 +10,8 @@ much as one it was sure of once it passed a line. Here the reads are what they a
 observations of a state that moves smoothly and fades toward neutral when nothing is heard.
 
     x_t = φ x_{t−1} + w_t          the state [valence, arousal], with inertia φ = e^(−Δt/τ)
-    y_t = x_t + v_t                a read: valence from the label, arousal from the voice
+    y_t = c_t x_t + v_t            a read: valence from the label at the reader's sureness c_t,
+                                   arousal from the voice (seen whole: y = x + v)
 
 A Kalman filter (Kalman, 1960) keeps the state and its uncertainty. Each observation's noise is
 its own: a label the reader was sure of says more than one it was unsure of, a read with no voice
@@ -53,11 +54,15 @@ IDENTIFY_MIN_READS = 4
 # filter, Mehra, 1970), so the state can move to where the reads now are.
 SURPRISE_WINDOW = 2
 SURPRISE_95 = 5.991 / SURPRISE_WINDOW
-# A read's value is a label at ±1 (or 0 for neutral) taken at the reader's sureness c: its noise is
-# the label's own uncertainty c(1 − c) plus a floor measured from this user's reads (half the
-# variance of successive differences), and the state's long-run spread is the reads' mean square
-# about neutral. Until there are reads enough to measure, both are the variance of a label as
-# likely either way, 1/4.
+# A read's value is a label at ±1 (or 0 for neutral) taken at the reader's sureness c, and it sees
+# the state only as far as the reader is sure: y = c·x + v. Its noise is the label's own uncertainty
+# c(1 − c) plus a floor measured from this user's reads (half the variance of successive
+# differences), so what a read says of the state, c²/(c(1 − c) + floor), rises with the reader's
+# sureness and is nothing at c = 0. (Taken as y = x + v, a turn with nothing read, kept as neutral at
+# sureness 0, had the least noise there is: the most precise evidence of a neutral user.) A turn with
+# nothing read is not an observation at all: the state only fades over it. The state's long-run
+# spread is the reads' mean square about neutral. Until there are reads enough to measure, both
+# are the variance of a label as likely either way, 1/4.
 FLOOR_PRIOR = 0.25
 # A state is meant, not a spike, when it is at least this far from neutral (the same line the reads
 # were held to one by one) and stands at least Z_SIG standard deviations from zero (90 %, one-sided:
@@ -106,7 +111,8 @@ def _sign_of(valence_class: str) -> float:
 
 def observations(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The reads as observations, oldest first: {ts, y_v, c, y_a}. `y_v` is the label's sign at
-    the reader's sureness c (a neutral read observes 0); `y_a` is the voice's arousal or None."""
+    the reader's sureness c (a neutral read observes 0); `y_a` is the voice's arousal or None. A
+    turn kept with nothing read (sureness 0) is left out: it says nothing of the user's state."""
     out = []
     for row in rows:
         row = row or {}
@@ -114,6 +120,8 @@ def observations(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             c = max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
         except (TypeError, ValueError):
             c = 0.0
+        if c <= 0.0:
+            continue
         valence = row.get("valence")
         if not valence:
             try:
@@ -173,17 +181,18 @@ def _run(obs: Sequence[Dict[str, Any]], tau_minutes: float, q_scale: float = 0.2
             p_v = phi * phi * p_v + (1.0 - phi * phi) * q_scale * spread_v   # the state wanders its own share
             p_a = phi * phi * p_a + (1.0 - phi * phi) * q_scale * spread_a
         last_ts = o["ts"]
-        r_v = o["c"] * (1.0 - o["c"]) + floor_v
+        h = o["c"]                                  # the read sees the state only as far as it is sure
+        r_v = h * (1.0 - h) + floor_v
         recent = innovations[-SURPRISE_WINDOW:]
         if len(recent) == SURPRISE_WINDOW and sum(i * i / v for i, v in recent) / len(recent) > SURPRISE_95:
             p_v = max(p_v, sum(i * i for i, _ in recent) / len(recent) - r_v)   # the state moved: the reads say so
-        s = p_v + r_v
-        innovation = o["y_v"] - x_v
+        s = h * h * p_v + r_v
+        innovation = o["y_v"] - h * x_v
         loglik += -0.5 * (math.log(2.0 * math.pi * s) + innovation * innovation / s)
         innovations.append((innovation, s))
-        k = p_v / s
+        k = p_v * h / s
         x_v += k * innovation
-        p_v *= (1.0 - k)
+        p_v *= (1.0 - k * h)
         if o["y_a"] is not None:
             s_a = p_a + floor_a
             k_a = p_a / s_a

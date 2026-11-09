@@ -116,27 +116,37 @@ _RESPONSE_POLICY = {
 }
 
 
-def _fuse() -> Tuple[str, str, float]:
-    """(expressed_tone, detected_emotion, confidence) from the two systems."""
+def _read_this_turn() -> Tuple[Optional[str], float]:
+    """(emotion, confidence) this turn's voice and words show of the user; (None, 0) when neither
+    shows any."""
     v_emo, v_conf = detect_voice_emotion()
     t_emo, t_conf = detect_text_emotion(_last_user_text())
     # Agreement boosts confidence; else take the stronger read; voice slightly favoured
     # when both present (tone of voice is a strong signal).
     if v_emo and t_emo and v_emo == t_emo:
-        detected, conf = v_emo, min(0.95, v_conf + t_conf)
-    elif (v_conf * 1.05) >= t_conf and v_emo:
-        detected, conf = v_emo, v_conf
-    elif t_emo:
-        detected, conf = t_emo, t_conf
-    else:
+        return v_emo, min(0.95, v_conf + t_conf)
+    if (v_conf * 1.05) >= t_conf and v_emo:
+        return v_emo, v_conf
+    if t_emo:
+        return t_emo, t_conf
+    return None, 0.0
+
+
+def _fuse() -> Tuple[str, str, float, str]:
+    """(expressed_tone, detected_emotion, confidence, whence) from the two systems. `whence` is
+    "read" when this turn showed it, "state" when it is the standing affect state, "" for nothing."""
+    detected, conf = _read_this_turn()
+    whence = "read" if detected else ""
+    if not detected:
         # Nothing read this turn: the state behind the reads (eli/cognition/affect_state) still stands,
-        # and a mood does not end because one sentence carried no sign of it. Its sign is the read,
-        # at the chance the state is meant.
+        # and a mood does not end because one sentence carried no sign of it. Its sign shades the
+        # reply, at the chance the state is meant; it is not a read of this turn (current_tone).
         detected, conf = _standing_read()
         if not detected:
-            return ("neutral", "neutral", 0.0)
+            return ("neutral", "neutral", 0.0, "")
+        whence = "state"
     expressed = _RESPONSE_POLICY.get(detected, "neutral")
-    return (expressed, detected, conf)
+    return (expressed, detected, conf, whence)
 
 
 # The affect state's sign as an emotion the response policy knows: a standing negative state is met
@@ -235,15 +245,25 @@ def _load_override() -> Optional[str]:
 
 
 def current_tone() -> Dict[str, Any]:
-    """The tone ELI will express now: {tone, detected, source, confidence}.
-    Override → 'override'; else the fused autonomous read → 'auto'; default neutral."""
+    """The tone ELI will express now: {tone, detected, source, confidence, read, read_confidence}.
+    Override → 'override'; else the fused autonomous read → 'auto'; default neutral.
+
+    `read`/`read_confidence` are what this turn itself showed of the user ("neutral", 0.0 when it
+    showed nothing): the only thing the emotion timeline may record. `detected` can be the
+    standing affect state, which shades the reply; recorded as a read, the state was fed its own
+    output and confirmed itself every turn, long after the mood had gone."""
     if not enabled():
-        return {"tone": "neutral", "detected": "neutral", "source": "disabled", "confidence": 0.0}
+        return {"tone": "neutral", "detected": "neutral", "source": "disabled", "confidence": 0.0,
+                "read": "neutral", "read_confidence": 0.0}
     ov = _load_override()
     if ov:
-        return {"tone": ov, "detected": ov, "source": "override", "confidence": 1.0}
-    expressed, detected, conf = _fuse()
-    return {"tone": expressed, "detected": detected, "source": "auto", "confidence": conf}
+        read, read_conf = _read_this_turn()
+        return {"tone": ov, "detected": ov, "source": "override", "confidence": 1.0,
+                "read": read or "neutral", "read_confidence": read_conf if read else 0.0}
+    expressed, detected, conf, whence = _fuse()
+    own = whence == "read"
+    return {"tone": expressed, "detected": detected, "source": "auto", "confidence": conf,
+            "read": detected if own else "neutral", "read_confidence": conf if own else 0.0}
 
 
 _CORE_GUARD = ("Keep your core personality exactly as it is — this shades HOW you deliver, "
@@ -402,10 +422,12 @@ def build_situation_brief(
             from eli.cognition import emotion_timeline as _et
             from eli.perception import voice_profile as _vp_ar
             _arousal = (_vp_ar.get_last_tone(max_age_s=15.0) or {}).get("arousal")
+            # What this turn showed of the user, never the standing state or a tone the user chose
+            # for ELI (current_tone): a turn that showed nothing is kept as nothing read.
             _et.record(
-                _cur.get("detected") or "neutral",
+                _cur.get("read") or "neutral",
                 expressed=_cur.get("tone") or "",
-                confidence=float(_cur.get("confidence") or 0.0),
+                confidence=float(_cur.get("read_confidence") or 0.0),
                 source=str(_cur.get("source") or ""),
                 user_text=user_input or "",
                 user_id=user_id or "",
