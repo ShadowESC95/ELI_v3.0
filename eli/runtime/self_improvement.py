@@ -242,6 +242,16 @@ def _ensure_failure_tables(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS self_repair_steps (
+            step_key TEXT PRIMARY KEY,
+            done_at REAL NOT NULL,
+            proposal TEXT
+        )
+        """
+    )
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS code_patches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path TEXT NOT NULL,
@@ -901,9 +911,14 @@ class SelfImprovementEngine:
                 vtag = "verified fix" if verified else "candidate fix"
                 try:
                     import hashlib as _hl
-                    from eli.planning.goal_store import upsert_goal
+                    from eli.planning.goal_store import list_active_goals, load_goals, upsert_goal
                     from eli.planning.goal_models import GoalSpec
                     gid = "selfrepair_" + _hl.sha1(fail.encode("utf-8", "ignore")).hexdigest()[:12]
+                    # A goal the work loop (or the owner) closed stays closed: only a new goal, or one
+                    # that is still open, is written. Re-upserting as active reopened finished work.
+                    if (any(g.goal_id == gid for g in load_goals())
+                            and not any(g.goal_id == gid for g in list_active_goals())):
+                        continue
                     upsert_goal(GoalSpec.from_any({
                         "goal_id": gid,
                         "title": f"Self-repair ({vtag}): {fail[:70]}",
@@ -962,6 +977,44 @@ class SelfImprovementEngine:
                          f"```python\n{ev['context']}\n```\nPropose a minimal corrected implementation.")
         return "\n".join(parts)
 
+    @staticmethod
+    def _step_key(failure: dict, ev: dict) -> str:
+        """One self-repair step: this failure as it stands. It recurring (its count growing) is a new step."""
+        import hashlib
+        raw = f"{ev['file']}|{ev['error']}|{failure.get('id')}|{failure.get('occurrence_count')}"
+        return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+
+    def _finished_step(self, key: str) -> Optional[dict]:
+        """The proposal a finished step produced, or None when the step has not finished."""
+        try:
+            conn = self.memory._get_connection()
+            try:
+                _ensure_failure_tables(conn)
+                row = conn.execute("SELECT proposal FROM self_repair_steps WHERE step_key = ?", (key,)).fetchone()
+            finally:
+                conn.close()
+            return json.loads(row[0]) if row and row[0] else None
+        except (sqlite3.Error, ValueError, TypeError, AttributeError):
+            log.debug("self-repair checkpoint unreadable", exc_info=True)
+            return None
+
+    def _finish_step(self, key: str, proposal: dict) -> None:
+        """Checkpoint one finished step, so a job cut off later resumes after it instead of redoing it.
+        Steps older than the analysis window are dropped: their failures are outside it too."""
+        try:
+            conn = self.memory._get_connection()
+            try:
+                _ensure_failure_tables(conn)
+                now = time.time()
+                conn.execute("INSERT OR REPLACE INTO self_repair_steps (step_key, done_at, proposal) VALUES (?,?,?)",
+                             (key, now, json.dumps(proposal, default=str)))
+                conn.execute("DELETE FROM self_repair_steps WHERE done_at < ?", (now - DEFAULT_ANALYSIS_DAYS * 86400,))
+                conn.commit()
+            finally:
+                conn.close()
+        except (sqlite3.Error, ValueError, TypeError, AttributeError):
+            log.debug("self-repair checkpoint not written", exc_info=True)
+
     def _repairable_failures(self, max_items: int) -> List[Tuple[dict, dict]]:
         """(failure, evidence) for the newest failures a code change could fix, most frequent first."""
         out: List[Tuple[dict, dict]] = []
@@ -1012,7 +1065,12 @@ class SelfImprovementEngine:
             )
 
             def _mk(failure, ev):
+                key = self._step_key(failure, ev)
+
                 def _run(ctx):
+                    finished = self._finished_step(key)
+                    if finished is not None:
+                        return {**finished, "resumed": True}
                     # The calls are background work (preemptible by a foreground turn, and they must
                     # not stamp _last_foreground_ts). run_graph may run this on the caller's own
                     # thread, so the marker is restored afterwards: the caller's later calls are not
@@ -1050,6 +1108,14 @@ class SelfImprovementEngine:
                         proposal["hunks"] = len(patch.get("hunks") or [])
                     elif isinstance(patch, dict):
                         proposal["not_a_patch"] = "; ".join(patch.get("problems") or [])
+                    if not deadline.expired():
+                        self._finish_step(key, proposal)        # a step the deadline (or shutdown) cut short is not finished
+                    try:
+                        from eli.runtime.background_tasks import report as _report
+                        _report(sum(1 for _f, _e in picked if self._finished_step(self._step_key(_f, _e))),
+                                len(picked), "proposing fixes")
+                    except (ImportError, AttributeError, TypeError):
+                        log.debug("self-repair progress not reported", exc_info=True)
                     return proposal
                 return _run
 

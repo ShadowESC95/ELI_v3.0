@@ -37,14 +37,22 @@ def contained(monkeypatch):
     monkeypatch.setattr(SB, "containment", lambda: {"contained": True, "notes": []}, raising=False)
 
 
+@pytest.fixture
+def fresh_engine(tmp_path):
+    """An engine on its own agent database: self-repair steps are checkpointed there, so a step one
+    test finished would be resumed, not run, in the next."""
+    from eli.memory import Memory
+    return SI.SelfImprovementEngine(memory=Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent"))
+
+
 def _tb(rel, line=3, exc="KeyError: 'k'"):
     from eli.core.paths import source_root
     return (f'Traceback (most recent call last):\n  File "{source_root()}/{rel}", line {line}, in f\n'
             f"    x = d['k']\n{exc}")
 
 
-def test_propose_via_agent_orchestrates_failures(contained):
-    eng = SI.get_self_improvement()
+def test_propose_via_agent_orchestrates_failures(contained, fresh_engine):
+    eng = fresh_engine
     fails = [{"error": _tb("eli/core/dag.py"), "user_input": "do x",
               "context": '{"action": "SOME_ACTION", "args": {"n": 1}}'},
              {"error": _tb("eli/coding/budget.py", exc="TypeError: bad"), "user_input": "do y"}]
@@ -58,12 +66,12 @@ def test_propose_via_agent_orchestrates_failures(contained):
     assert {p["file"] for p in r["proposals"]} == {"eli/core/dag.py", "eli/coding/budget.py"}
 
 
-def test_complaints_and_sentences_never_become_coding_tasks(contained):
+def test_complaints_and_sentences_never_become_coding_tasks(contained, fresh_engine):
     """The proactive loop ran the coding agent on the person's own complaints: note_turn_anomalies
     logs each one with the sentence as user_input, and the agent was told to 'fix the bug' in it.
     Only a failure with a traceback into ELI's source is a coding task, and the task is built from
     the action, its arguments and the error — never the person's words."""
-    eng = SI.get_self_improvement()
+    eng = fresh_engine
     said = "you useless thing, that search was rubbish"
     fails = [{"error": "anomaly (rejected): the person rejected the reply", "user_input": said,
               "source": "anomaly", "context": '{"action": "WEB_SEARCH"}'},
@@ -96,11 +104,11 @@ def test_nothing_runs_where_model_written_code_cannot_be_contained(monkeypatch):
     assert r["ok"] and r["proposals"] == [] and "contained" in r["reason"]
 
 
-def test_the_callers_thread_is_not_left_marked_background(contained):
+def test_the_callers_thread_is_not_left_marked_background(contained, fresh_engine):
     """run_graph with one worker runs the task on the caller's thread, and the marker it set was
     never restored: the same turn's later model calls were capped, deferred or preempted."""
     from eli.cognition.gguf_inference import is_background_inference, set_background_inference
-    eng = SI.get_self_improvement()
+    eng = fresh_engine
     seen = []
 
     def _solve(self, task, **kw):
@@ -288,3 +296,59 @@ def test_engine_failures_go_to_the_one_failure_record(tmp_path, monkeypatch):
     if "error_tracking" in tables:
         assert conn.execute("select count(*) from error_tracking").fetchone() == (0,)
     assert notices and notices[-1]["count"] == 5
+
+
+def test_an_interrupted_self_repair_job_resumes_after_its_finished_steps(contained, tmp_path):
+    """Each failure is one step; a finished step is checkpointed, so running the job again (after a
+    restart cut it off) redoes only what had not finished."""
+    from eli.memory import Memory
+    eng = SI.SelfImprovementEngine(memory=Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent"))
+    fails = [{"id": 1, "occurrence_count": 2, "error": _tb("eli/core/dag.py")},
+             {"id": 2, "occurrence_count": 1, "error": _tb("eli/coding/budget.py", exc="TypeError: bad")}]
+    solved = []
+
+    def _solve_then_die(self, task, **kw):
+        if "budget.py" in task:
+            raise RuntimeError("the job was cut off here")
+        solved.append("dag")
+        return _fake_cr()
+    with patch.object(eng, "analyze_failures", return_value=fails):
+        with patch("eli.coding.agent.CodeAgent.solve", _solve_then_die):
+            first = eng.propose_via_agent(max_items=2)
+    assert [p["file"] for p in first["proposals"]] == ["eli/core/dag.py"]
+
+    def _solve(self, task, **kw):
+        solved.append("budget" if "budget.py" in task else "dag")
+        return _fake_cr()
+    with patch.object(eng, "analyze_failures", return_value=fails):
+        with patch("eli.coding.agent.CodeAgent.solve", _solve):
+            second = eng.propose_via_agent(max_items=2)
+    assert solved == ["dag", "budget"], "the finished step must not run again"
+    assert {p["file"] for p in second["proposals"]} == {"eli/core/dag.py", "eli/coding/budget.py"}
+    assert any(p.get("resumed") for p in second["proposals"])
+
+    # the same failure recurring is a new step
+    fails[0]["occurrence_count"] = 3
+    with patch.object(eng, "analyze_failures", return_value=fails):
+        with patch("eli.coding.agent.CodeAgent.solve", _solve):
+            eng.propose_via_agent(max_items=2)
+    assert solved[2:] == ["dag"]
+
+
+def test_a_closed_self_repair_goal_is_not_reopened(contained):
+    """Every pass upserted the selfrepair goal as active, reopening goals the work loop had closed."""
+    import hashlib
+    from eli.planning.goal_store import load_goals, upsert_goal
+    eng = SI.get_self_improvement()
+    closed_label, new_label = "SOME_ACTION: KeyError: 'closed'", "OTHER_ACTION: KeyError: 'new'"
+    gid = "selfrepair_" + hashlib.sha1(closed_label.encode()).hexdigest()[:12]
+    upsert_goal({"goal_id": gid, "title": "Self-repair: done already", "status": "done", "enabled": True,
+                 "autonomy_mode": "proposal_only"})
+    proposals = [{"failure": closed_label, "verified": False, "approach": "a"},
+                 {"failure": new_label, "verified": False, "approach": "b"}]
+    with patch.object(eng, "propose_via_agent", return_value={"ok": True, "proposals": proposals}):
+        made = eng._generate_and_persist_fix_proposals(max_items=2)
+    goals = {g.goal_id: g for g in load_goals()}
+    assert goals[gid].status == "done" and goals[gid].title == "Self-repair: done already"
+    new_gid = "selfrepair_" + hashlib.sha1(new_label.encode()).hexdigest()[:12]
+    assert goals[new_gid].status == "active" and made == 1
