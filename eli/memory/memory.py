@@ -3396,10 +3396,20 @@ class Memory(metaclass=_MemoryMeta):
                  report["relations"], report["entities"])
         return report
 
+    # "Most of a memory's content words": more than half of them.
+    _FORGET_MOST = 0.5
+    # The graph reads a memory in the same call that stores it, or from the turn that said it moments
+    # before: a relation first learned within this many seconds of the memory was learned from it.
+    _LEARNED_WITH_SECONDS = 60.0
+
     def forget(self, ids, *, include_turns: bool = True) -> Dict[str, int]:
-        """Delete memories and everything derived from them: index entries, claims, summaries, profile items, stances, graph."""
+        """Delete memories and everything made from them: index entries, claims, summaries, profile
+        items, stances, patterns, graph relations, turns, the learning replay, the latest-turn copy,
+        ELI's thoughts that quoted them. What could not be removed is counted under a *_kept key
+        (the audit chain cannot be edited without breaking it)."""
         report: Dict[str, int] = {k: 0 for k in (
-            "memories", "derived", "claims", "recall_log", "semantic", "summaries", "profile", "stances", "graph", "turns", "patterns")}
+            "memories", "derived", "claims", "recall_log", "semantic", "summaries", "profile", "stances", "graph",
+            "turns", "patterns", "replay", "conversations", "thoughts", "vectors", "audit_log_kept")}
         wanted = sorted({int(i) for i in (ids or []) if str(i).isdigit()})
         if not wanted:
             return report
@@ -3414,43 +3424,88 @@ class Memory(metaclass=_MemoryMeta):
                 everyone.update(frontier)
             report["derived"] = len(everyone) - len(wanted)
             marks = ",".join("?" * len(everyone))
-            rows = [{"id": r[0], "text": r[1] or "", "tags": r[2] or "", "ts": r[3] or 0} for r in conn.execute(
-                f"SELECT id, COALESCE(text, ''), COALESCE(tags, ''), COALESCE(timestamp, ts, 0) FROM memories WHERE id IN ({marks})", sorted(everyone))]
+            rows = [{"id": r[0], "text": r[1] or "", "tags": r[2] or "", "ts": r[3] or 0, "source": r[4] or "user"}
+                    for r in conn.execute(
+                        f"SELECT id, COALESCE(text, ''), COALESCE(tags, ''), COALESCE(timestamp, ts, 0), "
+                        f"COALESCE(source, 'user') FROM memories WHERE id IN ({marks})", sorted(everyone))]
             report["memories"] = len(rows)
             if not rows:
                 return report
             self._remove_rows(conn, rows)
             from eli.memory import claims as _claims
             for i in everyone:
-                report["claims"] += _claims.retract_from_memory(conn, i)
+                report["claims"] += _claims.retract_from_memory(conn, i, erase=True)
             report["recall_log"] = conn.execute(f"DELETE FROM recall_log WHERE memory_id IN ({marks})", sorted(everyone)).rowcount or 0
             conn.execute(f"DELETE FROM memory_lineage WHERE child_id IN ({marks}) OR parent_id IN ({marks})", sorted(everyone) * 2)
             for r in rows:
-                self._forget_derivatives(conn, r["text"], r["ts"], report, include_turns)
+                self._forget_derivatives(conn, r["text"], r["ts"], report, include_turns, source=r["source"])
             conn.commit()
         finally:
             conn.close()
+        try:
+            from eli.memory.vector_store import get_vector_store
+            _vs = get_vector_store()
+            if _vs is not None:
+                report["vectors"] = int(_vs.remove_memories(everyone) or 0)
+        except Exception:
+            log.debug("forgotten memories not taken out of the vector index", exc_info=True)
         self._drop_turn_cache()
         return report
 
     @staticmethod
-    def _forget_derivatives(conn, text: str, ts: float, report: Dict[str, int], include_turns: bool) -> None:
-        needle = " ".join(str(text or "").lower().split())[:120]
+    def _only_in(conn, text: str, raw: str) -> set:
+        """The memory's words that nothing else the user said contains: no live memory and no turn
+        but the ones being forgotten with it. Such a word (a code, a name said once) can only have
+        come from this memory, so whatever holds it was made from it."""
+        from eli.cognition.scoring import tokenize
+        has_turns = _eli_table_exists(conn, "conversation_turns")
+        out = set()
+        for w in set(tokenize(text)):
+            if len(w) < 4 and not any(ch.isdigit() for ch in w):
+                continue
+            if conn.execute("SELECT 1 FROM memories WHERE instr(lower(COALESCE(text, '')), ?) > 0 LIMIT 1", (w,)).fetchone():
+                continue
+            if has_turns and conn.execute(
+                    "SELECT 1 FROM conversation_turns WHERE instr(lower(COALESCE(content, '')), ?) > 0 "
+                    "AND instr(lower(COALESCE(content, '')), ?) = 0 LIMIT 1", (w, raw[:120])).fetchone():
+                continue
+            out.add(w)
+        return out
+
+    @staticmethod
+    def _forget_derivatives(conn, text: str, ts: float, report: Dict[str, int], include_turns: bool,
+                            source: str = "user") -> None:
+        """Remove what was made from one forgotten memory. Something was made from it when it quotes
+        the memory whole, is a piece of it (a quote, a thought's excerpt), holds most of its content
+        words, or holds a word nothing else the user said contains (_only_in). One shared capitalised
+        word ("Tomorrow", a friend's name) deleted every fact, stance and pattern that mentioned it."""
+        from eli.cognition.scoring import tokenize
+        from eli.memory import policy as _policy
+        raw = " ".join(str(text or "").lower().split())
+        needle = _policy.normalise_text(text)
         if len(needle) < 6:
             return
-        tokens = {w for w in re.findall(r"[A-Za-z][\w-]*\d[\w-]*|\b[A-Z][a-z]{3,}\b", str(text or "")) if len(w) >= 4}
-        marks = [t.lower() for t in tokens] or [needle]
+        words = set(tokenize(text))
+        only_here = Memory._only_in(conn, text, raw)
 
-        def hit(value) -> bool:
-            low = " ".join(str(value or "").lower().split())
-            return needle in low or any(m in low for m in marks)
-
-        def strict(value) -> bool:
-            low = " ".join(str(value or "").lower().split())
-            return needle in low or sum(m in low for m in marks) >= min(2, len(marks))
+        def derived(value) -> bool:
+            v = _policy.normalise_text(value)
+            if not v:
+                return False
+            if needle in v:
+                return True
+            held = set(tokenize(str(value or "")))
+            if len(held) >= 2 and v in needle:
+                return True
+            if words and len(words & held) / len(words) > Memory._FORGET_MOST:
+                return True
+            return bool(only_here & held)
 
         def has(name: str) -> bool:
             return _eli_table_exists(conn, name)
+
+        def columns(name: str) -> set:
+            return {r[1] for r in conn.execute(f"PRAGMA table_info({name})")}
 
         if has("semantic"):
             for rid, fact, evidence in conn.execute("SELECT id, COALESCE(fact, ''), COALESCE(evidence, '[]') FROM semantic").fetchall():
@@ -3458,8 +3513,8 @@ class Memory(metaclass=_MemoryMeta):
                     quotes = json.loads(evidence or "[]")
                 except Exception:
                     quotes = []
-                kept = [q for q in quotes if not hit(q)]
-                if len(kept) != len(quotes) or (not quotes and hit(fact)):
+                kept = [q for q in quotes if not derived(q)]
+                if len(kept) != len(quotes) or (not quotes and derived(fact)):
                     report["semantic"] += 1
                     if kept:
                         conn.execute("UPDATE semantic SET evidence = ?, evidence_count = ? WHERE id = ?", (json.dumps(kept), len(kept), rid))
@@ -3467,47 +3522,90 @@ class Memory(metaclass=_MemoryMeta):
                         conn.execute("DELETE FROM semantic WHERE id = ?", (rid,))
         if has("session_summaries"):
             for rid, summ, content in conn.execute("SELECT id, COALESCE(summary, ''), COALESCE(content, '') FROM session_summaries").fetchall():
-                if strict(summ) or strict(content):
+                if derived(summ) or derived(content):
                     conn.execute("DELETE FROM session_summaries WHERE id = ?", (rid,))
                     report["summaries"] += 1
         if has("user_model"):
             for row in conn.execute("SELECT user_id, identity, comms_style, current_focus, interests, habits, goals, relationship, dossier, brief FROM user_model").fetchall():
                 uid, changed, sets = row[0], False, {}
                 for name, val in zip(("identity", "comms_style", "current_focus", "interests", "habits", "goals", "relationship", "dossier", "brief"), row[1:]):
-                    if not val or not hit(val):
+                    if not val:
                         continue
                     try:
                         items = json.loads(val)
-                        sets[name] = json.dumps([i for i in items if not hit(i)]) if isinstance(items, list) else ""
                     except Exception:
-                        sets[name] = ""
-                    changed = True
+                        items = None
+                    if isinstance(items, list):
+                        kept_items = [i for i in items if not derived(i)]
+                        if len(kept_items) != len(items):
+                            sets[name], changed = json.dumps(kept_items), True
+                    elif derived(val):
+                        sets[name], changed = "", True
                 if changed:
                     conn.execute("UPDATE user_model SET " + ", ".join(f"{k} = ?" for k in sets) + " WHERE user_id = ?", [*sets.values(), uid])
                     report["profile"] += 1
         for table, cols in (("eli_stances", ("topic", "position")), ("belief_revisions", ("topic", "old_value", "new_value"))):
             if has(table):
                 for rid, *vals in conn.execute(f"SELECT id, {', '.join(cols)} FROM {table}").fetchall():
-                    if any(hit(v) for v in vals):
+                    if derived(" ".join(str(v or "") for v in vals)):
                         conn.execute(f"DELETE FROM {table} WHERE id = ?", (rid,))
                         report["stances"] += 1
-        if has("user_patterns"):
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(user_patterns)")]
-            col = "pattern_data" if "pattern_data" in cols else None
-            if col:
-                for rid, val in conn.execute(f"SELECT id, {col} FROM user_patterns").fetchall():
-                    if hit(val):
-                        conn.execute("DELETE FROM user_patterns WHERE id = ?", (rid,))
-                        report["patterns"] += 1
-        if has("kg_entities") and ts:
-            low = str(text or "").lower()
-            for eid, name in conn.execute("SELECT id, name FROM kg_entities WHERE ts BETWEEN ? AND ?", (ts - 60, ts + 60)).fetchall():
-                if name and name.lower() in low:
-                    report["graph"] += conn.execute("DELETE FROM kg_relations WHERE subject_id = ? OR object_id = ?", (eid, eid)).rowcount or 0
-                    conn.execute("DELETE FROM kg_entities WHERE id = ?", (eid,))
+        if has("user_patterns") and "pattern_data" in columns("user_patterns"):
+            for rid, val in conn.execute("SELECT id, pattern_data FROM user_patterns").fetchall():
+                if derived(val):
+                    conn.execute("DELETE FROM user_patterns WHERE id = ?", (rid,))
+                    report["patterns"] += 1
+        # claims read from the turn itself carry no memory id: the words they were read from say it
+        if has("memory_claims"):
+            from eli.memory import claims as _claims
+            hit_ids = [rid for rid, said in conn.execute(
+                "SELECT id, COALESCE(source_text, '') FROM memory_claims WHERE COALESCE(source_text, '') != ''").fetchall()
+                if derived(said)]
+            for rid in hit_ids:
+                report["claims"] += _claims.erase_claims(conn, "id = ?", (rid,))
+        if has("learning_replay"):
+            for rid, said, replied in conn.execute(
+                    "SELECT id, COALESCE(input_text, ''), COALESCE(output_text, '') FROM learning_replay").fetchall():
+                if derived(said) or derived(replied):
+                    conn.execute("DELETE FROM learning_replay WHERE id = ?", (rid,))
+                    report["replay"] += 1
+        if has("conversations"):
+            for rid, content in conn.execute("SELECT id, COALESCE(content, '') FROM conversations").fetchall():
+                if content and derived(content):
+                    conn.execute("UPDATE conversations SET content = '' WHERE id = ?", (rid,))
+                    report["conversations"] += 1
+        if has("thoughts"):
+            for rid, what, subject, reason, why in conn.execute(
+                    "SELECT id, COALESCE(what, ''), COALESCE(subject, ''), COALESCE(reason, ''), COALESCE(why_json, '') "
+                    "FROM thoughts").fetchall():
+                if derived(what) or derived(subject) or derived(reason) or derived(why):
+                    conn.execute("DELETE FROM thoughts WHERE id = ?", (rid,))
+                    report["thoughts"] += 1
+        if has("runtime_events"):
+            # the audit chain commits to each row's content: editing one breaks the chain, so these
+            # stay and are reported, not hidden
+            report["audit_log_kept"] += sum(1 for (content,) in conn.execute(
+                "SELECT COALESCE(content, '') FROM runtime_events WHERE COALESCE(content, '') != ''") if derived(content))
+        if has("kg_relations") and has("kg_entities") and ts:
+            from eli.memory.knowledge_graph import read_triples
+            ends = set()
+            for subj, predicate, obj in set(read_triples(text, source)):
+                for rid, sid, oid in conn.execute(
+                        "SELECT r.id, r.subject_id, r.object_id FROM kg_relations r "
+                        "JOIN kg_entities s ON s.id = r.subject_id JOIN kg_entities o ON o.id = r.object_id "
+                        "WHERE LOWER(s.name) = LOWER(?) AND LOWER(r.predicate) = LOWER(?) AND LOWER(o.name) = LOWER(?) "
+                        "AND ABS(COALESCE(r.ts, 0) - ?) <= ?",
+                        (subj, predicate, obj, float(ts), Memory._LEARNED_WITH_SECONDS)).fetchall():
+                    conn.execute("DELETE FROM kg_relations WHERE id = ?", (rid,))
+                    report["graph"] += 1
+                    ends.update((sid, oid))
+            for eid in ends:
+                if conn.execute("SELECT 1 FROM kg_relations WHERE subject_id = ? OR object_id = ? LIMIT 1", (eid, eid)).fetchone():
+                    continue
+                conn.execute("DELETE FROM kg_entities WHERE id = ? AND LOWER(name) != 'user'", (eid,))
         if include_turns and has("conversation_turns"):
             report["turns"] += conn.execute("DELETE FROM conversation_turns WHERE lower(COALESCE(content, '')) = ? OR lower(COALESCE(content, '')) LIKE ?",
-                                            (needle, f"%{needle}%")).rowcount or 0
+                                            (raw[:120], f"%{raw[:120]}%")).rowcount or 0
 
     def _drop_turn_cache(self) -> None:
         """Retrieval caches each turn's evidence; after memories or claims change the next question must not get the old one."""

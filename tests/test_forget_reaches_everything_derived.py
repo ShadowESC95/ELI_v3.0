@@ -88,3 +88,86 @@ def test_a_summary_of_a_fact_is_not_independent_evidence(mem):
 def test_forget_candidates_lists_what_would_go(mem):
     rid, *_ = _seed(mem)
     assert rid in [c["id"] for c in mem.forget_candidates("spare key code ORCHID-7319")]
+
+
+def _derived_rows(mem):
+    """A semantic fact, a profile pattern, a stance and a profile item about a friend, each from its
+    own statement that mentions the friend too."""
+    from eli.cognition.stance_store import ensure_tables
+    from eli.runtime.profile_extractor import ensure_profile_tables
+    from eli.runtime.user_model import ensure_user_model_row
+    ensure_profile_tables(mem.db_path)
+    ensure_user_model_row("u", mem.db_path)
+    mem.store_memory("Sam is coming over for dinner on Friday", source="user")
+    mem.store_memory("Tomorrow is bin day on our street", source="user")
+    c = sqlite3.connect(mem.db_path)
+    ensure_tables(c.cursor())
+    now = time.time()
+    c.execute("insert into semantic (user_id, fact, evidence, evidence_count, created_at) values ('u', 'Sam likes tennis', ?, 1, ?)",
+              (json.dumps(["Sam is coming over for dinner on Friday"]), now))
+    c.execute("insert into user_patterns (pattern_type, pattern_data, ts) values ('friend', 'Sam plays tennis on Sundays', ?)", (now,))
+    c.execute("insert into user_patterns (pattern_type, pattern_data, ts) values ('routine', 'Tomorrow is bin day', ?)", (now,))
+    c.execute("insert into eli_stances (topic, position) values ('Sam and tennis', 'Sam should rest his knee')")
+    c.execute("update user_model set interests = ? where user_id = 'u'", (json.dumps(["tennis with Sam"]),))
+    c.commit()
+    c.close()
+
+
+def test_forgetting_one_memory_keeps_what_merely_shares_a_word_with_it(mem):
+    """Every capitalised word was a mark: forgetting a memory that named a friend, or began with
+    "Tomorrow", deleted every unrelated fact, stance and pattern that mentioned the word."""
+    _derived_rows(mem)
+    rid = mem.store_memory("Remember that Sam's locker code is 4411", source="user")["id"]
+    other = mem.store_memory("Tomorrow I have the dentist at 3pm", source="user")["id"]
+    report = mem.forget([rid, other])
+    assert report["memories"] == 2
+    assert report["semantic"] == 0 and report["patterns"] == 0 and report["stances"] == 0 and report["profile"] == 0
+    assert [r[0] for r in _q(mem, "select fact from semantic")] == ["Sam likes tennis"]
+    assert sorted(r[0] for r in _q(mem, "select pattern_data from user_patterns")) == [
+        "Sam plays tennis on Sundays", "Tomorrow is bin day"]
+    assert _q(mem, "select count(*) from eli_stances") == [(1,)]
+    assert _q(mem, "select interests from user_model") == [(json.dumps(["tennis with Sam"]),)]
+
+
+def test_forget_takes_the_words_out_of_every_store_that_copied_them(mem, monkeypatch):
+    """'Forgotten' left the words in the learning replay, the latest-turn copy, the claim's source text,
+    ELI's thoughts and the vector index's saved text."""
+    removed = []
+
+    class VS:
+        def add(self, text, metadata=None):
+            return True
+
+        def mark_memories_deleted(self, ids):
+            return len(list(ids))
+
+        def remove_memories(self, ids):
+            removed.append(sorted(ids))
+            return len(removed[-1])
+
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: VS())
+    said = "I work nights at the ZETA-4242 depot these days"
+    mem.add_conversation_turn("user", said, session_id="s1", user_id="u")
+    rid = mem.store_memory(said, source="user")["id"]
+    mem.record_claims_from(said, rid)
+    c = sqlite3.connect(mem.db_path)
+    from eli.cognition.thoughts import _SCHEMA
+    c.executescript(_SCHEMA)
+    c.execute("insert into thoughts (ts, kind, what, decision) values (?, 'memory', ?, 'shown')", (time.time(), said[:140]))
+    c.commit()
+    c.close()
+    report = mem.forget([rid])
+    assert removed == [[rid]] and report["vectors"] == 1
+    assert report["replay"] >= 1 and report["conversations"] == 1 and report["thoughts"] == 1
+    c = sqlite3.connect(mem.db_path)
+    try:
+        holding = []
+        for (table,) in c.execute("select name from sqlite_master where type='table' and name not like '%fts%'"):
+            cols = [r[1] for r in c.execute(f"pragma table_info({table})") if r[2].upper() in ("TEXT", "")]
+            for col in cols:
+                if c.execute(f'select 1 from "{table}" where lower("{col}") like ? limit 1', ("%zeta-4242%",)).fetchone():
+                    holding.append(f"{table}.{col}")
+    finally:
+        c.close()
+    # the audit chain commits to each row's content: it keeps them and says so
+    assert holding == ["runtime_events.content"] and report["audit_log_kept"] >= 1, holding

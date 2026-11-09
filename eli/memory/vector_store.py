@@ -604,22 +604,46 @@ class VectorStore:
             dead = getattr(self, "_tombstone_ids", set())
             live = [i for i, e in enumerate(self._meta) if _entry_id(e) is None or _as_int(_entry_id(e)) not in dead]
             keep = live[-target:]
-            try:
-                if keep and keep[-1] - keep[0] + 1 == len(keep):      # one run at the end: copy only it
-                    vectors = self._index.reconstruct_n(keep[0], len(keep))
-                else:
-                    vectors = self._index.reconstruct_n(0, total)[keep] if keep else None
-            except Exception as e:
-                log.warning("[VECTOR_STORE] the index cannot give its vectors back (%s); not pruned", e)
+            if not self._keep_positions(keep):
                 return False
-            new_index = faiss.IndexFlatL2(EMBED_DIM)
-            if keep:
-                new_index.add(np.ascontiguousarray(vectors, dtype="float32"))
-            self._index = new_index
-            self._meta = [self._meta[i] for i in keep]
             self._adds_since_save = SAVE_EVERY       # the next add saves the smaller index
         log.debug("[VECTOR_STORE] pruned %d entries to %d (cap %d)", total, len(keep), cap)
         return True
+
+    def _keep_positions(self, keep: List[int]) -> bool:
+        """Swap in an index of only these positions (ascending), each vector copied out of the
+        index with its own metadata row, nothing embedded again. Call with the store lock held."""
+        total = len(self._meta)
+        try:
+            if keep and keep[-1] - keep[0] + 1 == len(keep):      # one run: copy only it
+                vectors = self._index.reconstruct_n(keep[0], len(keep))
+            else:
+                vectors = self._index.reconstruct_n(0, total)[keep] if keep else None
+        except Exception as e:
+            log.warning("[VECTOR_STORE] the index cannot give its vectors back (%s); left as it is", e)
+            return False
+        new_index = faiss.IndexFlatL2(EMBED_DIM)
+        if keep:
+            new_index.add(np.ascontiguousarray(vectors, dtype="float32"))
+        self._index = new_index
+        self._meta = [self._meta[i] for i in keep]
+        return True
+
+    def remove_memories(self, memory_ids) -> int:
+        """Take these memories' entries out of the index and out of the saved metadata now. A
+        tombstone only hides an entry from search: its text stayed in meta.json until a full
+        rebuild, so a forgotten memory was still on disk. Returns how many entries went (0 when the
+        index and its metadata are out of step: the tombstones still hide them)."""
+        ids = {i for i in (_as_int(x) for x in (memory_ids or ())) if i is not None}
+        if not ids:
+            return 0
+        with self._lock:
+            keep = [i for i, e in enumerate(self._meta) if _as_int(_entry_id(e)) not in ids]
+            gone = len(self._meta) - len(keep)
+            if not gone or int(self._index.ntotal) != len(self._meta) or not self._keep_positions(keep):
+                return 0
+        self.flush()
+        return gone
 
     def flush(self, *, pending_only: bool = False) -> None:
         """Save index and metadata to disk; with pending_only, only when there are unsaved adds.

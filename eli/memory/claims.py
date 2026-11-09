@@ -206,11 +206,24 @@ def move_stance_claims(conn) -> int:
     return int(cur.rowcount or 0)
 
 
-def retract_from_memory(conn, memory_id: int) -> int:
-    """A source memory was deleted: claims resting only on it are withdrawn, not left as orphans."""
+def retract_from_memory(conn, memory_id: int, *, erase: bool = False) -> int:
+    """A source memory was deleted: claims resting only on it are withdrawn, not left as orphans.
+    With erase (the user asked to forget it), the claim's value and the words it was read from go too."""
     ensure_schema(conn)
+    if erase:
+        return erase_claims(conn, "source_memory_id = ?", (int(memory_id),))
     cur = conn.execute("UPDATE memory_claims SET status = 'retracted', superseded_at = ? "
                        "WHERE source_memory_id = ? AND status IN ('current', 'former')", (time.time(), int(memory_id)))
+    return int(cur.rowcount or 0)
+
+
+def erase_claims(conn, where: str, args: Tuple[Any, ...]) -> int:
+    """Withdraw the claims matching `where` and blank what they held (value, source text): a
+    retracted claim kept the forgotten words. Returns how many."""
+    ensure_schema(conn)
+    cur = conn.execute(f"UPDATE memory_claims SET status = 'retracted', superseded_at = COALESCE(superseded_at, ?), "
+                       f"value = '', source_text = '' WHERE ({where}) AND (status != 'retracted' OR value != '' "
+                       f"OR COALESCE(source_text, '') != '')", (time.time(), *args))
     return int(cur.rowcount or 0)
 
 

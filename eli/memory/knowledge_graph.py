@@ -288,6 +288,77 @@ def statements(text: str) -> List[Tuple[str, str, str]]:
     return out
 
 
+# Identity predicates and possessions are read only from what the user wrote, never from assistant
+# turns or internal memory synthesis, so a hallucinated reply cannot poison the graph.
+_TRUSTED_SOURCES = frozenset({"user", "user_explicit", "identity_extract"})
+_IDENTITY_PREDICATES = frozenset({"has_name", "nickname"})
+_IDENTITY_PATTERNS = (
+    # "User's name is X" / "my name is X"
+    (r"(?:user(?:'s)?\s+name\s+is|my\s+name\s+is)\s+([A-Za-z][a-zA-Z ]{1,24})", "has_name"),
+    # "nickname: X" / "also known as X" / "call me X"
+    (r"(?:nickname[:\s]+|also\s+known\s+as\s+|call\s+me\s+)([A-Za-z][a-zA-Z ]{1,20})", "nickname"),
+)
+_POSSESSIVE = frozenset(f"has_{_REL_NORMALISE.get(w, w)}" for w in _REL_WORDS)
+
+
+def possessions(text: str) -> List[Tuple[str, str]]:
+    """(has_<rel>, Name) from possessive phrases: "my dog Biscuit", "my dog is/named/called
+    Biscuit", "my dog's name is Biscuit", "Biscuit (my dog)", "Biscuit, my dog", "Biscuit is my
+    dog". Names must be capitalised; noise is filtered via the stopword set. This is the gap that
+    dropped "Biscuit (my dog)" on the floor."""
+    out: List[Tuple[str, str]] = []
+    rel_alt = "|".join(sorted(set(_REL_WORDS), key=len, reverse=True))
+    name_grp = r"[A-Z][A-Za-z'’\-]{1,20}"
+    patterns = [
+        # name AFTER: my <rel> [is/named/called/'s name is] <Name>
+        rf"\bmy\s+(?P<rel>{rel_alt})"
+        rf"(?:’s\s+name\s+is|'s\s+name\s+is|\s+(?:is\s+)?(?:called\s+|named\s+)?)"
+        rf"\s*(?P<name>{name_grp})",
+        # name BEFORE: <Name> (my <rel>) | <Name>, my <rel> | <Name> is my <rel>
+        rf"(?P<name>{name_grp})\s*(?:\(\s*|,\s*|\s+is\s+)my\s+(?P<rel>{rel_alt})\b",
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, text):
+            rel = (m.group("rel") or "").lower()
+            nm = (m.group("name") or "").strip()
+            if nm and nm.lower() not in _STOPWORDS:
+                out.append((f"has_{_REL_NORMALISE.get(rel, rel)}", nm))
+    return out
+
+
+def read_triples(text: str, source: str = "memory") -> List[Tuple[str, str, str]]:
+    """Every (subject, predicate, object) the graph takes from a memory string, without writing
+    anything: the user's declared name and nickname and their possessions (trusted sources only),
+    and the plain statements statements() reads. extract_from_memory writes these, and forgetting a
+    memory takes back exactly these."""
+    text = str(text or "").strip()
+    if not text or len(text) < 10:
+        return []
+    out: List[Tuple[str, str, str]] = []
+    if source in _TRUSTED_SOURCES:
+        # Names come from the shared extractor, which refuses "my name is listed as unknown" and
+        # "my name is not fucking listed" (both were stored as the user's name).
+        declared: Dict[str, str] = {}
+        try:
+            from eli.runtime.identity_validation import extract_explicit_identity_facts
+            facts = extract_explicit_identity_facts(text)
+            if facts.get("name"):
+                declared["has_name"] = facts["name"]
+            if facts.get("nickname") or facts.get("preferred_name"):
+                declared["nickname"] = facts.get("nickname") or facts["preferred_name"]
+        except Exception:
+            log.debug("identity extraction unavailable", exc_info=True)
+        for pattern, predicate in _IDENTITY_PATTERNS:
+            value = declared.get(predicate, "").strip()
+            if (value and len(value) > 1 and value.lower() not in _STOPWORDS
+                    and re.search(pattern, text, re.I)):
+                out.append(("User", predicate, value))
+    out.extend(statements(text))
+    if source in _TRUSTED_SOURCES:
+        out.extend(("User", predicate, name) for predicate, name in possessions(text))
+    return out
+
+
 class KnowledgeGraph:
     """SQLite-backed entity-relation knowledge graph."""
 
@@ -679,123 +750,39 @@ class KnowledgeGraph:
     # ── Automatic extraction from memory text ────────────────────────────────
 
     def extract_from_memory(self, text: str, source: str = "memory") -> int:
-        """
-        Lightweight rule-based triple extraction from a memory string: the user's name and
-        nickname (trusted sources only) and the plain statements statements() reads.
-        Returns number of triples added.
-        """
+        """Write the triples read_triples() finds in a memory string. A new name or nickname for the
+        user retires the one held before (its weight drops to RETIRED_WEIGHT). Returns how many
+        triples were new."""
         added = 0
-        text = text.strip()
-        if not text or len(text) < 10:
-            return 0
-
-        patterns: List[Tuple[str, str]] = [
-            # "User's name is X" / "my name is X"
-            (r"(?:user(?:'s)?\s+name\s+is|my\s+name\s+is)\s+([A-Za-z][a-zA-Z ]{1,24})", "has_name"),
-            # "nickname: X" / "also known as X" / "call me X"
-            (r"(?:nickname[:\s]+|also\s+known\s+as\s+|call\s+me\s+)([A-Za-z][a-zA-Z ]{1,20})", "nickname"),
-        ]
-
-        # Only extract identity predicates from user-authored text, never from
-        # assistant turns or internal memory synthesis, to prevent hallucinated
-        # assistant responses from poisoning the knowledge graph.
-        _identity_predicates = {"has_name", "nickname"}
-        _trusted_sources = {"user", "user_explicit", "identity_extract"}
-
-        # Names come from the shared extractor, which refuses "my name is listed as unknown"
-        # and "my name is not fucking listed" (both were stored as the user's name).
-        _declared: Dict[str, str] = {}
-        if source in _trusted_sources:
-            try:
-                from eli.runtime.identity_validation import extract_explicit_identity_facts
-                _facts = extract_explicit_identity_facts(text)
-                if _facts.get("name"):
-                    _declared["has_name"] = _facts["name"]
-                if _facts.get("nickname") or _facts.get("preferred_name"):
-                    _declared["nickname"] = _facts.get("nickname") or _facts["preferred_name"]
-            except Exception:
-                log.debug("identity extraction unavailable", exc_info=True)
-
-        for pattern, predicate in patterns:
-            if source not in _trusted_sources or predicate not in _declared:
-                continue
-            if not re.search(pattern, text, re.I):
-                continue
-            obj = _declared[predicate].strip()
-            if not obj or len(obj) <= 1 or obj.lower() in _STOPWORDS:
-                continue
-            self.upsert_entity("User", "person")
-            self.upsert_entity(obj, "value")
-            # Contradiction detection for identity predicates: if User already has a different
-            # has_name/nickname, retire the old relation by lowering its weight before adding new.
-            try:
-                uid = self.get_entity_id("User")
-                if uid is not None:
-                    conn = self._conn()
-                    try:
-                        old_rels = conn.execute(
-                            "SELECT r.id, e.name FROM kg_relations r "
-                            "JOIN kg_entities e ON e.id = r.object_id "
-                            "WHERE r.subject_id=? AND LOWER(r.predicate)=? AND r.weight > ?",
-                            (uid, predicate, LIVE_WEIGHT),
-                        ).fetchall()
-                        for _rid, _old_name in old_rels:
-                            if _old_name.lower() != obj.lower():
-                                conn.execute("UPDATE kg_relations SET weight = ? WHERE id = ?",
-                                             (RETIRED_WEIGHT, _rid))
-                        conn.commit()
-                    finally:
-                        conn.close()
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            if self.add_relation("User", predicate, obj, source=source):
-                added += 1
-
-        for subj, predicate, obj in statements(text):
+        for subj, predicate, obj in read_triples(text, source):
+            if predicate in _IDENTITY_PREDICATES:
+                self._retire_other_identity(predicate, obj)
             self.upsert_entity(subj, "person" if subj == "User" else "concept")
-            self.upsert_entity(obj, "value" if subj == "User" else "concept")
+            self.upsert_entity(obj, "concept" if predicate in _POSSESSIVE or subj != "User" else "value")
             if self.add_relation(subj, predicate, obj, source=source):
                 added += 1
-
-        # Possessive relationships — "my dog Biscuit", "Biscuit (my dog)". These are
-        # identity-grade user facts, so trust user-authored text only (same rule
-        # as has_name) to keep hallucinated assistant turns out of the graph.
-        if source in _trusted_sources:
-            added += self._extract_relationships(text, source)
         return added
 
-    def _extract_relationships(self, text: str, source: str) -> int:
-        """
-        Extract "User —[has_<rel>]→ Name" triples from possessive phrases the
-        main pattern table misses: "my dog Biscuit", "my dog is/named/called
-        Biscuit", "my dog's name is Biscuit", "Biscuit (my dog)", "Biscuit, my dog",
-        "Biscuit is my dog". Names must be capitalised; noise is filtered via the
-        stopword set. This is the gap that dropped "Biscuit (my dog)" on the floor.
-        """
-        added = 0
-        rel_alt = "|".join(sorted(set(_REL_WORDS), key=len, reverse=True))
-        name_grp = r"[A-Z][A-Za-z'’\-]{1,20}"
-        patterns = [
-            # name AFTER: my <rel> [is/named/called/'s name is] <Name>
-            rf"\bmy\s+(?P<rel>{rel_alt})"
-            rf"(?:’s\s+name\s+is|'s\s+name\s+is|\s+(?:is\s+)?(?:called\s+|named\s+)?)"
-            rf"\s*(?P<name>{name_grp})",
-            # name BEFORE: <Name> (my <rel>) | <Name>, my <rel> | <Name> is my <rel>
-            rf"(?P<name>{name_grp})\s*(?:\(\s*|,\s*|\s+is\s+)my\s+(?P<rel>{rel_alt})\b",
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text):
-                rel = (m.group("rel") or "").lower()
-                nm = (m.group("name") or "").strip()
-                if not nm or nm.lower() in _STOPWORDS:
-                    continue
-                rel = _REL_NORMALISE.get(rel, rel)
-                predicate = f"has_{rel}"
-                self.upsert_entity("User", "person")
-                self.upsert_entity(nm)
-                if self.add_relation("User", predicate, nm, source=source):
-                    added += 1
-        return added
+    def _retire_other_identity(self, predicate: str, value: str) -> None:
+        """Contradiction detection for identity predicates: a different has_name/nickname the user
+        already has is retired, not left beside the new one."""
+        try:
+            uid = self.get_entity_id("User")
+            if uid is None:
+                return
+            conn = self._conn()
+            try:
+                for rid, old in conn.execute(
+                        "SELECT r.id, e.name FROM kg_relations r JOIN kg_entities e ON e.id = r.object_id "
+                        "WHERE r.subject_id=? AND LOWER(r.predicate)=? AND r.weight > ?",
+                        (uid, predicate, LIVE_WEIGHT)).fetchall():
+                    if old.lower() != value.lower():
+                        conn.execute("UPDATE kg_relations SET weight = ? WHERE id = ?", (RETIRED_WEIGHT, rid))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
 
 
 # ── Singleton ────────────────────────────────────────────────────────────────

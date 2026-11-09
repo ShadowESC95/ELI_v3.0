@@ -155,6 +155,20 @@ def test_the_cap_follows_the_machine(monkeypatch):
     assert vs.entry_cap(meta) == 0, "RAM unknown: nothing is pruned rather than a made-up cap"
 
 
+def test_a_forgotten_memory_leaves_the_index_and_its_saved_text(store, monkeypatch):
+    """A tombstone hid the entry from search but its text stayed in meta.json until a full rebuild."""
+    s, embedded = store
+    saved = []
+    monkeypatch.setattr(s, "flush", lambda **k: saved.append([e["text"] for e in s._meta]), raising=False)
+    _fill(s, 5)
+    assert s.remove_memories([1, 3]) == 2
+    assert [e["memory_id"] for e in s._meta] == [0, 2, 4] and s._index.ntotal == 3
+    for i, entry in enumerate(s._meta):
+        assert np.allclose(s._index.rows[i], _vec(entry["text"]))
+    assert saved == [["memory 0", "memory 2", "memory 4"]], "the smaller metadata was not written out"
+    assert embedded == [] and s.remove_memories([1]) == 0
+
+
 def _user_db(tmp_path, monkeypatch, texts):
     import sqlite3
     db = tmp_path / "user.sqlite3"
