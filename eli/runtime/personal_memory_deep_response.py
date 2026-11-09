@@ -124,15 +124,19 @@ def _fetch_text_rows(conn: sqlite3.Connection, table: str, limit: int = 160) -> 
     if not text_cols:
         return []
 
+    from eli.runtime.personal_memory_render import rows_for_this_user
+    scope = rows_for_this_user(cols)
+    if scope is None:
+        return []
     select_cols = ", ".join(text_cols)
-    where = ""
+    where = f" WHERE {scope[0]}"
     if "role" in cols and table == "conversation_turns":
-        where = " WHERE role='user'"
+        where += " AND role='user'"
 
     sql = f"SELECT {select_cols} FROM {table}{where}{_order_clause(cols)} LIMIT ?"
     out: List[str] = []
     try:
-        for row in conn.execute(sql, (limit,)).fetchall():
+        for row in conn.execute(sql, (*scope[1], limit)).fetchall():
             merged = " | ".join(_sanitize_snippet(x, 320) for x in row if str(x or "").strip())
             merged = _sanitize_snippet(merged, 320)
             if merged and merged not in out:
@@ -323,10 +327,14 @@ def _recent_user_inputs(limit: int = 6) -> List[str]:
         with sqlite3.connect(str(db), timeout=3.0) as conn:
             if not _table_exists(conn, "conversation_turns"):
                 return []
+            from eli.runtime.personal_memory_render import rows_for_this_user
+            scope = rows_for_this_user(_columns(conn, "conversation_turns"))
+            if scope is None:
+                return []
             rows = conn.execute(
-                "SELECT content FROM conversation_turns WHERE role = 'user' "
+                f"SELECT content FROM conversation_turns WHERE role = 'user' AND {scope[0]} "
                 "ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT ?",
-                (int(limit),),
+                (*scope[1], int(limit)),
             ).fetchall()
         return [str(r[0]).strip() for r in rows if r and str(r[0] or "").strip()]
     except Exception:

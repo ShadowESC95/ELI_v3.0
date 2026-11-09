@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+from eli.runtime.personal_memory_render import request_user, rows_for_this_user
+
 
 try:
     from eli.core.paths import canonical_root
@@ -226,11 +228,14 @@ def _iter_table_texts(con: sqlite3.Connection, table: str, limit: int = 80) -> I
     if not usable:
         return []
 
+    scope = rows_for_this_user(cols)
+    if scope is None:
+        return []
     select_cols = ", ".join(f'"{c}"' for c in usable)
     try:
         rows = con.execute(
-            f'SELECT {select_cols} FROM "{table}" ORDER BY rowid DESC LIMIT ?',
-            (limit,),
+            f'SELECT {select_cols} FROM "{table}" WHERE {scope[0]} ORDER BY rowid DESC LIMIT ?',
+            (*scope[1], limit),
         ).fetchall()
     except Exception:
         return []
@@ -265,11 +270,14 @@ def _iter_user_patterns_fresh(con: sqlite3.Connection, limit: int = 200) -> list
     except Exception:
         def _is_travel(_text: str) -> bool:  # type: ignore[misc]
             return False
+    scope = rows_for_this_user(_columns(con, "user_patterns"))
+    if scope is None:
+        return []
     try:
         rows = con.execute(
             "SELECT pattern_type, pattern_data, COALESCE(ts, timestamp, 0) "
-            "FROM user_patterns ORDER BY COALESCE(ts, timestamp, id) DESC LIMIT ?",
-            (limit,),
+            f"FROM user_patterns WHERE {scope[0]} ORDER BY COALESCE(ts, timestamp, id) DESC LIMIT ?",
+            (*scope[1], limit),
         ).fetchall()
     except Exception:
         return []
@@ -309,8 +317,10 @@ def _collect_facts() -> tuple[list[str], dict[str, int]]:
                 counts[f"{db_label}.{table}"] = 0
                 continue
 
+            scope = rows_for_this_user(_columns(con, table))
             try:
-                n = con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                n = (con.execute(f'SELECT COUNT(*) FROM "{table}" WHERE {scope[0]}', scope[1]).fetchone()[0]
+                     if scope is not None else 0)
             except Exception:
                 n = 0
 
@@ -374,7 +384,7 @@ def build_clean_personal_memory_response(user_input: str = "", mode_label: str =
     # rather than letting the model say "name not provided" when ELI plainly knows it.
     try:
         from eli.kernel.state import get_user_name as _gun
-        _name = (_gun() or "").strip()
+        _name = (_gun(user_id=request_user()[0] or None) or "").strip()
         if _name and _name.lower() not in {"unknown", "user", "none"}:
             lines.append(f"- The active user's name is {_name.title()} (from your runtime profile).")
     except Exception:

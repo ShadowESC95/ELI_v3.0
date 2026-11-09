@@ -75,11 +75,21 @@ def _table_exists(cur: sqlite3.Cursor, table: str) -> bool:
     )
 
 
+def _scope(cur: sqlite3.Cursor, table: str):
+    """The rows of `table` this request's user may see (personal_memory_render.rows_for_this_user)."""
+    from eli.runtime.personal_memory_render import rows_for_this_user
+    cols = [r[1] for r in cur.execute(f'PRAGMA table_info("{table}")').fetchall()]
+    return rows_for_this_user(cols)
+
+
 def _count(cur: sqlite3.Cursor, table: str) -> int:
     try:
         if not _table_exists(cur, table):
             return 0
-        return int(cur.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+        scope = _scope(cur, table)
+        if scope is None:
+            return 0
+        return int(cur.execute(f'SELECT COUNT(*) FROM "{table}" WHERE {scope[0]}', scope[1]).fetchone()[0])
     except Exception:
         return -1
 
@@ -224,14 +234,16 @@ def personal_memory_surface(question: Any = None) -> str:
     # This is the authoritative store — SQLite identity patterns are backup evidence only.
     try:
         from eli.kernel.state import get_user_name as _gun, load_user_profile as _lup
-        _profile_name = _gun()
+        from eli.runtime.personal_memory_render import request_user as _request_user
+        _uid = _request_user()[0] or None
+        _profile_name = _gun(user_id=_uid)
         if _profile_name:
             identity.insert(0, _item(
                 "user_profile", "name",
                 f"User's confirmed name: {_profile_name}",
                 1000, 10, time.time(),
             ))
-        _prof = _lup()
+        _prof = _lup(_uid)
         _now_ts = time.time()
         for _pref in (_prof.get("preferences") or []):
             _pref = (_pref or "").strip()
@@ -264,14 +276,16 @@ def personal_memory_surface(question: Any = None) -> str:
         counts[table] = _count(cur, table)
 
     # 1. Highest priority: structured user_patterns.
-    if _table_exists(cur, "user_patterns"):
+    _seen = _scope(cur, "user_patterns") if _table_exists(cur, "user_patterns") else None
+    if _seen is not None:
         rows = cur.execute(
-            """
+            f"""
             SELECT id, pattern_type, pattern_data, ts, timestamp
             FROM user_patterns
+            WHERE {_seen[0]}
             ORDER BY COALESCE(ts, timestamp, 0) DESC
             LIMIT 1000
-            """
+            """, _seen[1]
         ).fetchall()
 
         for r in rows:
@@ -289,14 +303,16 @@ def personal_memory_surface(question: Any = None) -> str:
                 research.append(_item("user_patterns", r["id"], pdata, 300, 4, ts_value))
 
     # 2. Stable memories: backup evidence.
-    if _table_exists(cur, "memories"):
+    _seen = _scope(cur, "memories") if _table_exists(cur, "memories") else None
+    if _seen is not None:
         rows = cur.execute(
-            """
+            f"""
             SELECT id, text, value, content, tags, kind, source, ts, timestamp
             FROM memories
+            WHERE {_seen[0]}
             ORDER BY COALESCE(ts, timestamp, 0) DESC
             LIMIT 1200
-            """
+            """, _seen[1]
         ).fetchall()
 
         for r in rows:
@@ -324,15 +340,16 @@ def personal_memory_surface(question: Any = None) -> str:
                 research.append(_item("memories", r["id"], text, 160, 3, ts_value))
 
     # 3. User conversation turns: last-resort evidence, mostly project/preference examples.
-    if _table_exists(cur, "conversation_turns"):
+    _seen = _scope(cur, "conversation_turns") if _table_exists(cur, "conversation_turns") else None
+    if _seen is not None:
         rows = cur.execute(
-            """
+            f"""
             SELECT id, role, content, ts, timestamp
             FROM conversation_turns
-            WHERE lower(COALESCE(role, '')) = 'user'
+            WHERE lower(COALESCE(role, '')) = 'user' AND {_seen[0]}
             ORDER BY COALESCE(ts, timestamp, 0) DESC
             LIMIT 1200
-            """
+            """, _seen[1]
         ).fetchall()
 
         for r in rows:
