@@ -358,6 +358,15 @@ def _h_self_report(a, args):
     )
     if _active_user:
         summary += f" You're {_active_user}."
+    # how its actions have fared here lately, from the record, the ones with failures first
+    try:
+        from eli.runtime.action_outcomes import report as _outcomes_report
+        _rep = _outcomes_report(limit=3)
+        if any(r["n"] > r["ok"] for r in _rep["actions"]):
+            summary += " " + " ".join(_rep["lines"][:3])
+        ev["actions"] = _rep["actions"]
+    except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+        log.debug("action outcomes unavailable to the self report", exc_info=True)
     # content/response are user-facing — use the plain summary, never raw JSON.
     # Structured data stays in report + evidence for grounding/introspection.
     return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep,

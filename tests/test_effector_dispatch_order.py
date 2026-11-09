@@ -35,13 +35,34 @@ def _dispatched(test):
     return names if on_action else set()
 
 
-def _inline_actions():
+def _outer_execute():
+    tree = ast.parse(EXECUTOR.read_text(encoding="utf-8"))
+    return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "execute")
+
+
+def _inline_actions(fn=None):
     found = {}
-    for node in ast.walk(_execute_impl()):
+    for node in ast.walk(fn or _execute_impl()):
         if isinstance(node, ast.If):
             for name in _dispatched(node.test):
                 found.setdefault(name, node.lineno)
     return found
+
+
+def test_the_outer_execute_answers_no_registered_action_above_the_registry():
+    """The outer execute() answered fifteen registered actions itself (SELF_REPORT, MEMORY_STATUS,
+    RUNTIME_STATUS, ...) before _execute_impl's registry was reached: their effectors never ran,
+    and the copies had drifted from them (the action outcomes in the self report, the question in
+    the cognition explanation)."""
+    from eli.execution.effectors import load_all
+    from eli.execution.effectors.registry import registered_actions
+
+    load_all()
+    both = sorted(set(_inline_actions(_outer_execute())) & registered_actions())
+    assert not both, (
+        f"{len(both)} registered action(s) are answered inline in execute(): {both}. "
+        "Move the change into the action's effector module and delete the inline branch."
+    )
 
 
 def test_no_action_is_handled_both_inline_and_by_an_effector():

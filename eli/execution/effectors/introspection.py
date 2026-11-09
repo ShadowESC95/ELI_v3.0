@@ -65,7 +65,8 @@ def _h_explain_memory_runtime(a, args):
 
 
 def _h_explain_cognition_runtime(a, args):
-    e = _ex(); rep = e._explain_cognition_runtime_report(); txt = e._format_cognition_runtime(rep)
+    _args = args if isinstance(args, dict) else {}
+    e = _ex(); rep = e._explain_cognition_runtime_report(_args); txt = e._format_cognition_runtime(rep, _args)
     return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
 
 
