@@ -301,3 +301,19 @@ def test_eli_paths_db_alias():
 def test_eli_paths_log_dir_alias():
     p = EliPaths()
     assert p.log_dir == p.logs_dir
+
+
+def test_a_real_folder_named_eli_in_the_home_is_the_users_not_the_project(tmp_path, monkeypatch):
+    """'~/eli/...' was always read as the project, so a folder of the user's named ~/eli could not be
+    read or fixed. It stands for the project only where no such folder exists."""
+    from pathlib import Path
+    import eli.core.paths as P
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    project = P.canonical_project_root()
+    assert P.resolve_user_repo_path("~/eli/notes/todo.md") == project / "notes" / "todo.md"
+    (home / "eli" / "notes").mkdir(parents=True)
+    assert P.resolve_user_repo_path("~/eli/notes/todo.md") == (home / "eli" / "notes" / "todo.md").resolve()
+    assert P.resolve_user_repo_path(str(project / "eli" / "core")) == project / "eli" / "core"

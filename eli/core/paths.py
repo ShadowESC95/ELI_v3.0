@@ -867,7 +867,10 @@ def resolve_user_repo_path(raw_path: str | os.PathLike | None) -> Path:
     Resolve user-facing paths.
 
     Rules:
-    - '~/eli' and '~/eli/...' are treated as a legacy alias for the current repo root.
+    - '~/eli' and '~/eli/...' stand for the current repo root only where no folder ~/eli exists
+      of its own (an old name for the project); a real ~/eli is the user's and is read as it is.
+      It was mapped onto the project whatever was there, so a folder of the user's named ~/eli
+      could not be read or fixed.
     - all other paths are expanded normally and resolved non-strictly.
     """
     if raw_path is None:
@@ -883,9 +886,11 @@ def resolve_user_repo_path(raw_path: str | os.PathLike | None) -> Path:
 
     try:
         rel = expanded.relative_to(legacy_root)
-        return (project_root / rel).resolve(strict=False)
     except ValueError:
         return expanded.resolve(strict=False)
+    if legacy_root.is_dir() and legacy_root.resolve() != project_root:
+        return expanded.resolve(strict=False)          # the user's own ~/eli
+    return (project_root / rel).resolve(strict=False)
 
 if __name__ == "__main__":
     ensure_dirs()
