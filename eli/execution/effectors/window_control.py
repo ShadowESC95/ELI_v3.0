@@ -108,9 +108,22 @@ def _h_close_app(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
         msg = f"Closed {name} via wmctrl."
         return {"ok": True, "action": a, "content": msg, "response": msg}
 
-    # Then process kills, exact name before command line, both verified.
+    # Then process kills, exact name before command line, both verified, and only when the user said
+    # to force it: a signal skips the app's own "save your changes?". Without force, processes the
+    # kill would reach are reported as needing it, and nothing is signalled.
+    from eli.system.process_guard import check_kill_pattern
+    force = bool(args.get("force"))
     refusals = []
     for full_cmdline in (False, True):
+        if not force:
+            plan = check_kill_pattern(name, full_cmdline=full_cmdline)
+            if plan.allowed:
+                from eli.system.portable_app_control import needs_force
+                return {**needs_force(name, kill_plan=plan.as_dict()), "action": a}
+            reason = str(plan.reason or "").strip()
+            if reason and reason not in refusals:
+                refusals.append(reason)
+            continue
         res = safe_pkill(name, full_cmdline=full_cmdline)
         if res.get("ok"):
             how = "command-line match" if full_cmdline else "process name"

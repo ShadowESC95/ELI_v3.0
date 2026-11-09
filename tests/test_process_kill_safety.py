@@ -228,3 +228,24 @@ def test_a_close_is_done_only_when_the_process_is_gone(monkeypatch):
         stubborn.kill()
         stubborn.wait()
 
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_the_close_effector_signals_an_app_only_when_told_to_force_it(monkeypatch, force):
+    """The effector reached after close_app signalled the app on a plain "close X": a signal skips
+    its "save your changes?". Without force it says the app needs force, and signals nothing."""
+    from eli.execution.effectors import window_control as wc
+    signalled = []
+    monkeypatch.setattr(wc.shutil, "which", lambda c, *a, **k: None)          # no window tool here
+    monkeypatch.setattr(pg, "check_kill_pattern", lambda pattern, full_cmdline=False: pg.KillPlan(
+        allowed=True, reason="1 matching process(es), none protected", pattern=pattern,
+        full_cmdline=full_cmdline, pids=[4242]))
+    monkeypatch.setattr(pg, "safe_pkill", lambda pattern, full_cmdline=False, **k: signalled.append(pattern)
+                        or {"ok": True, "killed": 1, "plan": {}})
+    r = wc._h_close_app("CLOSE_APP", {"name": "a drawing app", "force": force})
+    if force:
+        assert r["ok"] is True and signalled == ["a drawing app"]
+    else:
+        assert signalled == [], "a plain close signalled the app"
+        assert r["ok"] is False and r["needs_force"] and r["handled"] and r["action"] == "CLOSE_APP"
+        assert "force close a drawing app" in r["content"]

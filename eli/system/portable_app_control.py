@@ -655,11 +655,17 @@ def close_app(name: str, force: bool = False) -> dict:
             return by_program
     elif sysname in ("linux", "darwin") and (_app_running(_process_needles(target), loose=False)
                                               or _program_running(target)):
-        return _result(False, "CLOSE_APP",
-                       f"{target.name} is running, but no window or quit command of it could be reached here, "
-                       f"and ending it by a signal could lose unsaved work. Say 'force close {target.name}' "
-                       f"to end it anyway.", resolved=target.__dict__, needs_force=True, handled=True)
+        return needs_force(target.name, resolved=target.__dict__)
     return _result(False, "CLOSE_APP", f"Could not close app/window: {name}", resolved=target.__dict__)
+
+
+def needs_force(name: str, **extra) -> dict:
+    """The answer for an app that is running where only a signal would end it: nothing is signalled,
+    because a signal skips the app's own "save your changes?". The user can say to force it."""
+    return _result(False, "CLOSE_APP",
+                   f"{name} is running, but no window or quit command of it could be reached here, "
+                   f"and ending it by a signal could lose unsaved work. Say 'force close {name}' "
+                   f"to end it anyway.", needs_force=True, handled=True, **extra)
 
 
 def _program_running(target: AppCandidate) -> bool:

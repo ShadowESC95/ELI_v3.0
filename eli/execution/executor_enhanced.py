@@ -7267,7 +7267,9 @@ except NameError:
                 data.get("name") or data.get("target") or data.get("app") or "",
                 force=bool(data.get("force", False)),
             )
-            if isinstance(_r, dict) and _r.get("ok"):
+            # `handled`: close_app reached the app and has the answer (still open after being asked,
+            # or running where only a signal would end it). Falling through, the effector signalled it.
+            if isinstance(_r, dict) and (_r.get("ok") or _r.get("handled")):
                 return _r
             return None
 

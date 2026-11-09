@@ -464,3 +464,18 @@ def test_an_app_still_open_after_being_asked_is_said_so_and_left_alone(gnome_tex
     assert r["ok"] is False and r["asked_to_close"] and r["handled"] and "still open" in r["content"]
     assert signalled == []
 
+
+
+def test_an_app_left_open_after_being_asked_is_not_then_signalled_by_the_executor(gnome_text_editor):
+    """close_app said the editor was still open (a save prompt, maybe) and marked it handled, but the
+    executor dropped every result that was not ok and went on to the effector, which signalled it."""
+    import itertools
+    mp, asked, signalled = gnome_text_editor
+    clock = itertools.count()
+    mp.setattr("time.monotonic", lambda: next(clock))
+    mp.setattr(pac, "_app_running", lambda needles, loose=True: True)
+    window_closes = []
+    mp.setattr("eli.execution.effectors.window_control._run_ok", lambda argv, timeout=5: window_closes.append(argv) or False)
+    r = ex.execute("CLOSE_APP", {"name": "text editor"})
+    assert r["ok"] is False and r.get("handled") and "still open" in r["content"], r
+    assert signalled == [] and window_closes == []
