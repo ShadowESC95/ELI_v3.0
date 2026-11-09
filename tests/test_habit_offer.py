@@ -172,3 +172,54 @@ def test_a_frequent_behaviour_counts_the_uses_that_worked_lately(tmp_path):
     loose = {h["name"]: h for h in mem.get_detected_habits(min_count=1, limit=10)}
     assert loose["PLAY_MEDIA"]["count"] == 2 and loose["PLAY_MEDIA"]["failed"] == 20
     assert "OPEN_NEWS" not in loose, "uses long past the user's own window still counted"
+
+
+# ── the offer bar comes from his answers; a broken action goes to repair ─────────────────────────────
+class _Rules:
+    """A memory whose habit rules were offered and answered: `answers` maps rule id -> enabled."""
+
+    def __init__(self, answers, habits=()):
+        self.answers, self.habits = dict(answers), list(habits)
+
+    def get_habit_rules(self, enabled_only=False):
+        return [{"id": rid, "enabled": on} for rid, on in self.answers.items()]
+
+    def get_detected_habits(self, min_count=3, limit=10):
+        return [h for h in self.habits if h["count"] >= min_count][:limit]
+
+
+@pytest.mark.parametrize("answers,bar", [({}, 8), ({1: False, 2: False, 3: False}, 32),
+                                         ({1: True, 2: True, 3: True}, 2), ({1: True, 2: False}, 8)])
+def test_the_offer_bar_follows_how_he_answered_earlier_offers(tmp_artifacts, answers, bar):
+    """It was a fixed 8 uses whatever he had said to ELI's offers before."""
+    for rid in answers:
+        H.mark_offered(rid)
+    assert H.offer_threshold(_Rules(answers)) == bar
+
+
+def test_the_offer_still_waiting_is_not_counted_as_an_answer(tmp_artifacts):
+    for rid in (1, 2):
+        H.mark_offered(rid)
+    H.set_pending_habit(2, "Open the news at 08:00", 8, 0, "open the news")
+    assert H.offer_answers(_Rules({1: True, 2: False})) == (1, 0)
+
+
+def test_an_action_that_fails_more_than_it_works_goes_to_repair_not_to_an_offer(tmp_artifacts):
+    """A run of failed plays was offered to be 'streamlined'."""
+    from eli.planning.goal_autogenesis import _candidates_from_patterns
+    from eli.planning.proactive_daemon import ProactiveDaemon
+    for rid in (1, 2, 3):
+        H.mark_offered(rid)
+    daemon = ProactiveDaemon.__new__(ProactiveDaemon)
+    daemon.user_mem = _Rules({1: True, 2: True, 3: True}, habits=[
+        {"name": "PLAY_MEDIA", "count": 9, "failed": 20}, {"name": "SCREENSHOT", "count": 9, "failed": 1},
+        {"name": "OPEN_NEWS", "count": 3, "failed": 0}, {"name": "TIME", "count": 1, "failed": 0}])
+    found = daemon._frequent_behaviour_patterns()
+    assert [(p["type"], p.get("behavior") or p.get("error")) for p in found] == [
+        ("recurring_error", "PLAY_MEDIA fails more often than it works"),
+        ("frequent_behavior", "SCREENSHOT"), ("frequent_behavior", "OPEN_NEWS")]
+    goals = _candidates_from_patterns(found + [{"type": "recurring_error", "error": "x", "count": 1}])
+    kinds = sorted((g["kind"], g["key"]) for g in goals)
+    assert ("frequent_behavior", "OPEN_NEWS") in kinds, "the bar he set reaches the goal too, not a second 8"
+    assert ("recurring_error", "PLAY_MEDIA fails more often than it works") in kinds
+    assert ("frequent_behavior", "PLAY_MEDIA") not in kinds

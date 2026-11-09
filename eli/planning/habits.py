@@ -92,6 +92,47 @@ def mark_offered(rule_id: int) -> None:
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 
+# How many uses of an action, lately, make ELI offer to streamline it before the owner has answered
+# any habit offer: the bar the proactive daemon used before it learned from his answers. His answers
+# move it (offer_threshold).
+OFFER_PRIOR_USES = 8
+
+
+def offer_answers(mem) -> tuple:
+    """(yes, no): how the owner answered the habit offers ELI made. A rule he said yes to was switched
+    on (CONFIRM_HABIT); one he said no to stays off (DECLINE_HABIT keeps it, so it is not offered
+    again). The offer still waiting for an answer is neither."""
+    offered = _offered_ids()
+    if not offered or mem is None or not hasattr(mem, "get_habit_rules"):
+        return 0, 0
+    waiting = (get_pending_habit() or {}).get("rule_id")
+    yes = no = 0
+    for rule in mem.get_habit_rules(enabled_only=False) or []:
+        try:
+            rule = dict(rule)
+            rid = int(rule.get("id", -1))
+        except (TypeError, ValueError):
+            continue
+        if rid not in offered or rid == waiting:
+            continue
+        if rule.get("enabled"):
+            yes += 1
+        else:
+            no += 1
+    return yes, no
+
+
+def offer_threshold(mem) -> int:
+    """The uses of an action, in the owner's own recent window, at which ELI offers to streamline it:
+    OFFER_PRIOR_USES scaled by the odds that he says no to such an offer, read from his answers
+    (offer_answers, Laplace-smoothed, so with none it is the prior). Saying yes to most makes ELI
+    offer sooner; saying no to most, only for what he does a great deal."""
+    import math
+    yes, no = offer_answers(mem)
+    p_yes = (yes + 1) / (yes + no + 2)
+    return max(1, math.ceil(OFFER_PRIOR_USES * (1 - p_yes) / p_yes))
+
+
 def log_event(event_type: str, data: dict):
     """Log an event for habit analysis."""
     mem = get_memory()

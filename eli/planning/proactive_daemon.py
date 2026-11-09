@@ -243,6 +243,36 @@ class ProactiveDaemon:
         'start','started','stop','stopped','end','ended','want','wanted','tell','told',
     })
 
+    def _frequent_behaviour_patterns(self) -> List[Dict[str, Any]]:
+        """Things the user does a lot that never become time-scheduled rules (screenshots, media, news)
+        make ELI offer to streamline them: 'frequent_behavior' signals for goal autogenesis. The bar is
+        eli.planning.habits.offer_threshold, from how the owner answered such offers before (it was a
+        fixed 8). An action that fails more often than it works is not a routine but something broken:
+        it goes to repair as a recurring error, and is never offered to be done faster."""
+        mem = self.user_mem
+        if not hasattr(mem, "get_detected_habits"):
+            return []
+        from eli.planning.habits import offer_threshold
+        bar = offer_threshold(mem)
+        out: List[Dict[str, Any]] = []
+        for hb in mem.get_detected_habits(min_count=1, limit=5) or []:
+            if not isinstance(hb, dict):
+                continue
+            name = str(hb.get("name") or hb.get("command") or "").strip()
+            worked, failed = int(hb.get("count", 0) or 0), int(hb.get("failed", 0) or 0)
+            if not name:
+                continue
+            label = name.replace("_", " ").lower()
+            if failed > worked:
+                out.append({"type": "recurring_error", "error": f"{name} fails more often than it works",
+                            "count": failed,
+                            "suggestion": f"Broken, not a routine: {label} failed {failed} of its "
+                                          f"{failed + worked} recent uses"})
+            elif worked >= bar:
+                out.append({"type": "frequent_behavior", "behavior": name, "count": worked, "offer_at": bar,
+                            "suggestion": f"Frequent behaviour: {label} (×{worked}) — offer to streamline"})
+        return out
+
     def analyze_user_patterns(self) -> List[Dict[str, Any]]:
         """
         Analyze user-facing memories for MEANINGFUL patterns (READ USER DB).
@@ -549,26 +579,9 @@ class ProactiveDaemon:
         except Exception:
             _SWLOG.debug("suppressed exception", exc_info=True)
 
-        # Pattern 6: frequent behaviours -> proactive proposals. Things done a lot that never become
-        # time-scheduled rules (screenshots, media, news) should still make ELI offer to streamline
-        # them. Feed them to goal autogenesis as 'frequent_behavior' signals so a real proposal forms.
+        # Pattern 6: frequent behaviours -> proactive proposals, and broken ones -> repair.
         try:
-            _det = []
-            if hasattr(self.user_mem, "get_detected_habits"):
-                _det = self.user_mem.get_detected_habits(min_count=8, limit=5) or []
-            for _hb in _det:
-                if not isinstance(_hb, dict):
-                    continue
-                _bname = str(_hb.get("name") or _hb.get("command") or "").strip()
-                _bcnt = int(_hb.get("count", 0) or 0)
-                if _bname and _bcnt >= 8:
-                    patterns.append({
-                        "type": "frequent_behavior",
-                        "behavior": _bname,
-                        "count": _bcnt,
-                        "suggestion": (f"Frequent behaviour: {_bname.replace('_', ' ').lower()} "
-                                       f"(×{_bcnt}) — offer to streamline"),
-                    })
+            patterns.extend(self._frequent_behaviour_patterns())
         except Exception:
             _SWLOG.debug("suppressed exception", exc_info=True)
 

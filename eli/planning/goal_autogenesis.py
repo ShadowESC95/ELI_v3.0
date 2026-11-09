@@ -65,9 +65,6 @@ def _candidates_from_world(world_suggestions: Optional[List[Dict[str, Any]]]) ->
     return out
 
 
-_FREQ_BEHAVIOR_MIN_COUNT = int(__import__("os").environ.get("ELI_FREQ_HABIT_MIN", "8") or 8)
-
-
 def _candidates_from_patterns(patterns: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for p in (patterns or []):
@@ -92,9 +89,12 @@ def _candidates_from_patterns(patterns: Optional[List[Dict[str, Any]]]) -> List[
             # A high-frequency behaviour the user repeats but that never became a time-scheduled
             # rule (screenshots, media, news): make ELI offer to streamline it, so curiosity about
             # the user's routine yields a proposal and not passive observation noise.
+            # The bar is the one the daemon read from the owner's answers (habits.offer_threshold),
+            # carried with the signal; a signal without one is held to the prior.
+            from eli.planning.habits import OFFER_PRIOR_USES
             beh = str(p.get("behavior") or "").strip()
             cnt = int(p.get("count", 0) or 0)
-            if not beh or cnt < _FREQ_BEHAVIOR_MIN_COUNT:
+            if not beh or cnt < int(p.get("offer_at") or OFFER_PRIOR_USES):
                 continue
             label = beh.replace("_", " ").lower()
             out.append({
