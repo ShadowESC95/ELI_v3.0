@@ -377,3 +377,19 @@ def test_a_lan_device_is_let_through_the_offline_guard_and_nothing_else(server, 
     assert netguard._is_local_host("10.9.9.9") is False, "only the device's own hosts opened up"
     server.control("far", "play")
     assert netguard._is_local_host("93.184.216.34") is False, "a public address was let through"
+
+
+def test_a_discovered_device_is_keyed_safely_and_keeps_the_brokers_id(server, fake_paho):
+    """A broker's unique_id is whatever the device sends; as the registry key it went into file
+    names, URLs and API paths as it was."""
+    server.configure(host="192.168.1.50", discovery_prefix="homeassistant")
+    server.connect()
+
+    class M:
+        topic = "homeassistant/light/porch/config"
+        payload = json.dumps({"name": "Porch", "unique_id": "zb/0x00 porch?light#1",
+                              "command_topic": "home/porch/set"}).encode()
+    server._on_message(None, None, M())
+    dev = [d for d in server.list_devices() if d["name"] == "Porch"][0]
+    assert dev["id"] == "zb_0x00_porch_light_1"
+    assert dev["attrs"]["unique_id"] == "zb/0x00 porch?light#1"

@@ -29,6 +29,9 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger(__name__)
 
 _DEVICE_TYPES = {"light", "switch", "fan", "sensor", "climate", "media", "cover", "outlet"}
+# What a registry key may hold (a discovered device is keyed by its broker id with anything else
+# made "_"): a key goes into file names, URLs and API paths.
+_DEVICE_KEY_UNSAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 
 
 def _registry_path() -> Path:
@@ -413,15 +416,18 @@ class DeviceServer:
         tmap = {"light": "light", "switch": "switch", "fan": "fan", "sensor": "sensor",
                 "binary_sensor": "sensor", "climate": "climate", "cover": "cover"}
         dtype = tmap.get(component, "switch")
-        did = str(cfg_obj.get("unique_id") or cfg_obj.get("uniq_id") or "/".join(parts[1:-1]))
+        unique_id = str(cfg_obj.get("unique_id") or cfg_obj.get("uniq_id") or "/".join(parts[1:-1]))
+        # The registry key is ELI's own, made of characters safe in a path, a file name and a URL: a
+        # broker's id is whatever the device sends (slashes, spaces, anything) and stays a field.
+        did = _DEVICE_KEY_UNSAFE.sub("_", unique_id)
         self.register_device(
             device_id=did,
-            name=str(cfg_obj.get("name") or did),
+            name=str(cfg_obj.get("name") or unique_id),
             dtype=dtype,
             command_topic=str(cfg_obj.get("command_topic") or cfg_obj.get("cmd_t") or ""),
             state_topic=str(cfg_obj.get("state_topic") or cfg_obj.get("stat_t") or ""),
             attrs={"brightness_command_topic": cfg_obj.get("brightness_command_topic")
-                   or cfg_obj.get("bri_cmd_t") or "", "discovered": True},
+                   or cfg_obj.get("bri_cmd_t") or "", "discovered": True, "unique_id": unique_id},
         )
 
     def _apply_state(self, device_id: str, payload: str) -> None:
