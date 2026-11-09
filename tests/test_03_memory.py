@@ -166,3 +166,18 @@ def test_rows_from_before_the_owner_column_are_the_owner_s(tmp_path):
     c = sqlite3.connect(db)
     assert c.execute("SELECT user_id FROM observations").fetchall() == [("",)]
     c.close()
+
+
+def test_a_fact_stored_for_a_member_outside_their_turn_is_theirs(two_users):
+    """Working memory flushes a member's pinned facts at shutdown, outside any turn of theirs: the
+    store has to take whose they are, or they become the owner's."""
+    import sqlite3
+    mem = two_users
+    mine = mem.store_memory("The spare bike pump is in the shed", user_id="member-7")["id"]
+    owners = mem.store_memory("The kettle descaler is under the sink")["id"]
+    c = sqlite3.connect(mem.db_path)
+    try:
+        who = dict(c.execute("SELECT id, user_id FROM memories WHERE id IN (?, ?)", (mine, owners)).fetchall())
+    finally:
+        c.close()
+    assert who == {mine: "member-7", owners: ""}
