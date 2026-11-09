@@ -93,8 +93,12 @@ _BY_MESSAGE: Tuple[Tuple[str, str], ...] = (
      r"\brefused: .*permission\b|\bread-only file system\b", PERMISSION),
     (r"\bno module named\b|\bnot installed\b|\bcommand not found\b|"
      r"\bno such binary\b|\bmissing dependency\b", DEPENDENCY),
+    # what should be there is not: a file, an app, a device, a player, a process to act on ("Spotify
+    # is not running", "no media player matching 'x'", "no running process")
     (r"\bno such file\b|\bdoes not exist\b|\bnot found on disk\b|\bnot found\b|\bno such (?:app|window|device|folder|directory)\b|"
-     r"\bmodel file missing\b|\bno player could handle\b", MISSING),
+     r"\bmodel file missing\b|\bno player could handle\b|"
+     r"\b(?:is not|isn't|is no longer)\s+(?:currently\s+)?running\b|\bnot currently running\b|"
+     r"\bno running process(?:es)?\b|\bno (?:media )?player (?:is )?(?:matching|found|running)\b", MISSING),
     (r"\bdatabase is locked\b|\bdeadlock\b|\brace condition\b|"
      r"\balready in use\b|\bresource temporarily unavailable\b", CONCURRENCY),
     (r"\bexpected .* got\b|\bwrong (?:answer|result|output)\b|"

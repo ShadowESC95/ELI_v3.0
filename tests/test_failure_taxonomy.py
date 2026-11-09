@@ -93,3 +93,15 @@ def test_every_category_has_a_severity():
         if name.isupper() and isinstance(getattr(T, name), str) and "_" not in name:
             cat = getattr(T, name)
             assert T._SEVERITY.get(cat), f"{name} has no severity"
+
+
+@pytest.mark.parametrize("error", [
+    "Spotify is not running",
+    "the player isn't currently running",
+    "no running process to send that to",
+    "no media player matching 'vlc'",
+])
+def test_something_to_act_on_that_is_not_running_is_a_missing_resource(error):
+    """Read as unclassified, an app that was simply not open counted as an error inside ELI."""
+    assert T.classify_category(error) == T.MISSING
+    assert T.classify(error)["severity"] == "environment"
