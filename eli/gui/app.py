@@ -182,6 +182,14 @@ def main():
             sys.exit(1)
         raise
 
+    # ELI's console in a file of its own, which it can read back (eli/utils/log.py). Here, once this
+    # install's folders are pinned: the `eli`/`eli-gui` scripts enter here, never through eli.__main__.
+    try:
+        from eli.utils.log import keep_console_log
+        keep_console_log()
+    except Exception:
+        log.debug("console log not kept", exc_info=True)
+
     # ── First-run/boot DB + machine-inventory bootstrap (idempotent) ─────────
     # The `eli`/`eli-gui` console scripts enter here directly (bypassing
     # eli.__main__), so ensure the full schema + app index exist even when ELI

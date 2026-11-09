@@ -58,3 +58,28 @@ def test_config_round_trip(monkeypatch):
     assert "gpu_layers" not in store and "context_size" not in store
     assert store["temperature"] == 0.5
     assert app._load_config()["temperature"] == 0.5
+
+
+def test_the_window_keeps_its_console_log_once_its_folders_are_set(monkeypatch, tmp_path):
+    """"Write session log to file" did nothing for the window: the `eli` and `eli-gui` scripts enter
+    eli.gui.app.main, and only eli.__main__ kept the console."""
+    import sys
+    import eli.utils.log as L
+    order = []
+
+    class _Stop(BaseException):
+        pass
+
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "venv" / "bin" / "python"))   # pins no root
+    monkeypatch.setattr("eli.licensing.launch_gate.ensure_license_or_exit",
+                        lambda **k: order.append("licence"))
+    monkeypatch.setattr(L, "keep_console_log", lambda *a, **k: order.append("console") or None)
+
+    def _bootstrap():
+        order.append("bootstrap")
+        raise _Stop()
+
+    monkeypatch.setattr("eli.core.init_data.bootstrap_once", _bootstrap)
+    with pytest.raises(_Stop):
+        app.main()
+    assert order == ["licence", "console", "bootstrap"]
