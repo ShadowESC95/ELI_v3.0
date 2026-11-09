@@ -1,11 +1,16 @@
-"""Shared patterns for user correction / dispute turns.
+"""Shared patterns for user correction / dispute turns: the one reader of what a message says of
+ELI's last reply.
 
-Used by the kernel query classifier and the deterministic router so both
-agree on when a message is challenging ELI's prior answer.
+Used by the kernel query classifier and the deterministic router so both agree on when a message is
+challenging ELI's prior answer, and by everything that learns from the next turn (the engine's
+settlement, self-improvement's record of rejected replies, the claim check, the tone profile), which
+asks ``reply_verdict``. The complaint (self_claims), redo (action_commitment) and challenge
+(diagnostic_patterns) vocabularies live here and those modules import them.
 """
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # Words that say the last answer was wrong: it answered something not asked, or said what is not so.
 _DISPUTES = (
@@ -18,7 +23,9 @@ _DISPUTES = (
     r"never told you|didn't mention|did not mention|"
     r"why did you lie|you lied|that was a lie|why did you say|"
     r"that was a question|that is a question|that's a question|"
-    r"what is your problem|what's your problem"
+    r"what is your problem|what's your problem|"
+    r"you misunderstood|you misunderstand|you missed the point|missed the point|not what i meant|"
+    r"that's not it|that is not it"
 )
 # Words that open a challenge as often as a plain question or the user's own news ("what do you mean
 # by entropy here?", "I never knew that", "I didn't have time to try it"). They mark a turn for the
@@ -189,6 +196,115 @@ def is_endorsement(text: str) -> bool:
     return not is_answer_correction(s)
 
 
+# ── complaints, redos and challenges about ELI's last reply ──────────────────────────────────
+
+# Saying what ELI just did: "then you just stopped spotify", "you just maximised your GUI, not the
+# browser". Live, the first was answered with "a background housekeeping routine misfired ... I have
+# isolated the media player handler", none of which was checked: no pattern took it for a complaint.
+_YOU_JUST_DID = (r"\byou\s+(?:(?:just|then|only|also|somehow|suddenly|actually|even|literally|fucking|bloody|damn)\s+)+"
+                 # a past form, not a present one that happens to end the same way
+                 r"(?!(?:need|want|feed|speed|proceed|exceed|could|should|would|point|count|print)\b)\w+(?:ed|pt|ld|nt)\b"
+                 r"|\bthen\s+you\s+(?!(?:can|could|should|will|would|may|might|need|want|have|just)\b)\w+")
+
+# A complaint aimed at ELI. The worst invented diagnosis on record ("the embedding model decayed
+# the context window's relevance") answered one of these, not a question.
+_COMPLAINT_RE = re.compile(
+    r"\byou\s+(?:do\s+not|don'?t|did\s+not|didn'?t)\s+(?:need|have)\s+to\b"
+    r"|\byou\s+should(?:\s+not|n'?t)?\s+(?:have|be|know|check|remember|log|stop)\b"
+    r"|\byou\s+(?:keep|kept|still|always|never)\s+(?:\w+ing|get|got|forget|ignore|search|answer|remember|listen|say|do|make)\b"
+    r"|\b(?:stop|quit)\s+(?:search\w*|lying|making|guessing|inventing|hallucinat\w+|ignoring)\b"
+    r"|\byou(?:'re|’re| are| were)\s+(?:wrong|lying|making|not listening|useless|broken|ignoring)\b"
+    r"|\byou\s+(?:forgot|ignored|missed|lied|made\s+(?:that|it|this|shit|stuff)\s+up|got\s+(?:that|it|this)\s+wrong|hallucinat\w+)\b"
+    r"|\bthat(?:'s|’s| is| was)\s+(?:wrong|incorrect|bullshit|not\s+(?:right|true|what\s+i\s+(?:asked|said)))\b"
+    r"|\bi\s+asked\s+you\b|\bwhy\s+the\s+(?:fuck|hell)\b"
+    r"|\bi\s+(?:\w+\s+)?(?:told|gave|sent)\s+you\b"
+    # an insult aimed at ELI is a complaint about its last reply ("you fucking idiot, you are talking shit")
+    r"|\byou(?:'re|’re| are)?\s+(?:\w+\s+){0,2}(?:idiot|moron|stupid|useless|dumb|incompetent|clueless|clown|slow)\b"
+    r"|\b(?:talking|talk|spouting|chatting)\s+(?:shit|bollocks|nonsense|rubbish|crap|garbage)\b"
+    # a correction of what ELI answered: "I did not ask about RAM", "I asked why it took so long"
+    r"|\bi\s+(?:did\s+not|didn'?t|never|was\s+not|wasn'?t)\s+ask(?:ed|ing)?\b"
+    r"|\bi\s+(?:only\s+|just\s+)?asked\s+(?:you\s+)?(?:why|what|how|about|for|if|whether|when|where)\b"
+    r"|\b(?:are|were)\s+you\s+(?:just\s+)?making\s+(?:that|this|it|stuff|things|shit)\s+up\b"
+    r"|\byou\s+(?:did\s+not|didn'?t|have\s+not|haven'?t)\s+(?:actually\s+|even\s+)?\w+"
+    r"|\byou\s+never\s+(?!know\b)\w+"
+    r"|" + _YOU_JUST_DID,
+    re.I)
+
+
+# "you didn't burn the house down while I was away, did you?" is banter ending on a tag question; on
+# its own the generic "you didn't <verb>" is not a complaint then (it got the audit rows as a footer)
+_GENERIC_DIDNT_RE = re.compile(r"\byou\s+(?:did\s+not|didn'?t|have\s+not|haven'?t)\s+(?:actually\s+|even\s+)?\w+", re.I)
+_TAG_QUESTION_RE = re.compile(r",?\s*\b(?:did|have|were|would|could|do)\s+you\s*\?+\W*$", re.I)
+
+
+def complains_about_eli(text: Any) -> bool:
+    t = str(text or "")
+    found = [m.group(0) for m in _COMPLAINT_RE.finditer(t)]
+    if not found:
+        return False
+    if _TAG_QUESTION_RE.search(t) and all(_GENERIC_DIDNT_RE.fullmatch(f) for f in found):
+        return False
+    return True
+
+
+# User directives/challenges that mean "actually (re-)do the task": the caller re-runs the last real
+# action instead of letting ELI chat or defend itself. Requires "again / it / that" or a doubt ("are
+# you actually ...ing") so a fresh request ("check the news") isn't treated as a redo.
+REDO_RE = re.compile(
+    r"\b(?:"
+    r"(?:do|run|check|fetch|search|look)\s+(?:it|that)\s+again|"
+    r"(?:check|fetch|search|run|look)\s+(?:it|that|again)|"
+    r"re-?(?:run|check|fetch|do|try)\b|"
+    r"try\s+(?:that\s+|it\s+)?again|"
+    r"(?:are|were)\s+you\s+(?:actually|even|really)\s+\w+ing|"
+    r"did\s+you\s+(?:actually|even|really)\s+\w+|"
+    r"go\s+(?:on|ahead)\s+(?:then|and\s+\w+)|"
+    r"actually\s+(?:do|run|check|fetch|search)\s+it|"
+    # It didn't happen: "you did not open spotify", "spotify didn't open", "nothing happened".
+    # Live: "You did not open spotify again!!!" got a made-up account of checking the logs.
+    r"you\s+(?:did\s*n[o']?t|didn'?t|never|have\s*n[o']?t|haven'?t)\s+(?:actually\s+|even\s+|really\s+)?\w+|"
+    # The same, asked: "why did you not fetch the real story", "why didn't you open it".
+    r"(?:did\s+you\s+not|didn'?t\s+you|have\s*n'?t\s+you)\s+(?:actually\s+|even\s+|really\s+)?\w+|"
+    r"\b(?!(?:i|we)\b)\w+\s+(?:did\s*n[o']?t|didn'?t|never|has\s*n[o']?t|hasn'?t|won'?t)\s+"
+    r"(?:open|opened|play|played|start|started|launch|launched|load|loaded|work|worked|happen|happened)|"
+    r"nothing\s+(?:happened|opened|played|started|is\s+playing)"
+    r")\b",
+    re.I,
+)
+
+
+def is_redo_directive(text: str) -> bool:
+    """True when the user is telling ELI to actually (re-)perform the task —
+    so the caller can re-run the LAST real action rather than route to chat."""
+    s = str(text or "")
+    m = REDO_RE.search(s)
+    if not m:
+        return False
+    # Exclude "I'll check it myself" — the USER doing it, not a directive to ELI.
+    pre = s[max(0, m.start() - 25):m.start()].lower()
+    if "myself" in s.lower() or re.search(r"\b(?:i|i'?ll|i'?m|we|we'?ll)\b", pre):
+        return False
+    return True
+
+
+# A message challenging ELI.
+USER_CHALLENGE_RE = re.compile(
+    r"(?is)\b(?:"
+    r"i\s+did(?:n'?t| not)\s+ask"
+    r"|not\s+what\s+i\s+asked"
+    r"|stop\s+talking\s+about"
+    r"|what\s+(?:the\s+)?(?:fuck|hell|heck)"
+    r"|do\s+you\s+not\s+understand"
+    r"|what\s+is\s+going\s+on\s+with\s+you"
+    r"|what\s+is\s+happening\s+with\s+you"
+    r")\b"
+)
+
+
+def is_user_challenge(text) -> bool:
+    return bool(USER_CHALLENGE_RE.search(str(text or "")))
+
+
 # A sentence that opens by saying no ("no, I live in Lisbon now", "nope, Tuesdays"). On its own it
 # is no verdict on the whole answer ("No I think you're right" opens agreement), so it never settles
 # a reply (is_answer_correction leaves it out); it denies what the rest of the message speaks of,
@@ -348,3 +464,35 @@ def shortcut_text(text: str) -> str:
     upgrade) may read: the user's own words, never pasted ones, and nothing from a long message."""
     own, _pasted = split_pasted(text)
     return own if len(own) <= SHORTCUT_MAX_CHARS else ""
+
+
+# ── what the next message says of the last reply ─────────────────────────────────────────────────
+CORRECTION, COMPLAINT, REDO, ENDORSEMENT, NONE = "correction", "complaint", "redo", "endorsement", "none"
+
+
+def reply_verdict(text: str) -> str:
+    """What this message says of ELI's last reply, from the words above (one reader for every
+    consumer): ``correction`` (it was wrong: is_answer_correction, a dispute of the model ELI said
+    it runs, or of when something was), ``redo`` (do it, or do it again: is_redo_directive),
+    ``complaint`` (about how ELI did it: complains_about_eli, a lost thread, a news fetch it made
+    up, a timestamp it could not read, a challenge), ``endorsement`` (it was right) or ``none``
+    (anything else: a new request, the user's own news, a question)."""
+    s = str(text or "")
+    if not s.strip():
+        return NONE
+    if (is_answer_correction(s) or MODEL_IDENTITY_DISPUTE_RE.search(s)
+            or (TEMPORAL_CORRECTION_RE.search(s) and re.search(r"\b(?:you|eli|wrong|not)\b", s, re.I))):
+        return CORRECTION
+    if is_redo_directive(s):
+        return REDO
+    if (complains_about_eli(s) or is_continuity_complaint(s) or is_news_fetch_complaint(s)
+            or META_CAPABILITY_COMPLAINT_RE.search(s) or is_user_challenge(s)):
+        return COMPLAINT
+    if is_endorsement(s):
+        return ENDORSEMENT
+    return NONE
+
+
+def rejects_reply(text: str) -> bool:
+    """The message says the last reply was wrong, or not done, or not done well."""
+    return reply_verdict(text) in (CORRECTION, REDO, COMPLAINT)

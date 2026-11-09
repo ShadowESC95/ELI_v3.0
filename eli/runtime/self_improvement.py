@@ -515,9 +515,8 @@ def note_turn_anomalies(facts: Dict[str, Any], action: str, outcome: str) -> Lis
     if not said or facts.get("parent_request_id"):
         return []
     kinds: List[tuple] = []
-    from eli.cognition.self_claims import complains_about_eli
-    from eli.cognition.correction_patterns import is_correction_query
-    if complains_about_eli(said) or is_correction_query(said):
+    from eli.cognition.correction_patterns import rejects_reply
+    if rejects_reply(said):
         try:
             from eli.runtime import orchestrator_audit_ledger as oal
             last = next((r for r in oal.recent_turns(4) if not r.get("parent_request_id")), None)

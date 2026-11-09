@@ -243,3 +243,33 @@ def test_the_token_recorder_settles_each_chosen_token_one_step_later():
     assert s["tokens"] == 2 and s["min_logprob"] == pytest.approx(1.0 - lse) and s["max_logprob" if False else "mean_logprob"] < 0
     assert s["low_share"] == 0.5 and s["first_entropy"] == pytest.approx(s["mean_entropy"])
     assert _TokenConfidence().summary() == {}
+
+
+
+def test_one_reader_says_what_a_message_says_of_the_last_reply():
+    """correction_patterns is the one reader: the complaint (self_claims), redo (action_commitment)
+    and challenge (diagnostic_patterns) words live there, and those modules hand on to it."""
+    from eli.cognition import correction_patterns as cp
+    cases = {"no, that's not true": cp.CORRECTION, "you're not qwen": cp.CORRECTION,
+             "you misunderstood me": cp.CORRECTION, "you did not open the player": cp.REDO,
+             "try that again": cp.REDO, "you keep forgetting things": cp.COMPLAINT,
+             "what the hell": cp.COMPLAINT, "you lost the thread": cp.COMPLAINT,
+             "thanks, spot on": cp.ENDORSEMENT, "what is the weather like": cp.NONE, "": cp.NONE,
+             "thanks, but you did not open it": cp.REDO}
+    assert {said: cp.reply_verdict(said) for said in cases} == cases
+    import eli.cognition.self_claims as sc
+    import eli.runtime.action_commitment as ac
+    import eli.runtime.diagnostic_patterns as dp
+    assert sc.complains_about_eli is cp.complains_about_eli
+    assert ac.is_redo_directive is cp.is_redo_directive and ac._REDO_RE is cp.REDO_RE
+    assert dp.is_user_challenge is cp.is_user_challenge
+    for mod in (sc, ac, dp):
+        assert not hasattr(mod, "_COMPLAINT_RE") and not hasattr(mod, "_USER_CHALLENGE_RE")
+
+
+def test_the_tone_profile_counts_corrections_with_the_same_reader():
+    """Its own list read 'actually' or 'i said' anywhere as a correction."""
+    from eli.cognition.tone_analyzer import analyze_turns
+    sig = analyze_turns(["actually I think tea is nicer", "i said that to my friend", "you misunderstood me",
+                         "try that again"])
+    assert sig["correction_rate"] == 0.5

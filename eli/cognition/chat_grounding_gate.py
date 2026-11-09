@@ -92,6 +92,12 @@ def count_verified_memory_lines(memory_context: str) -> int:
     return len(lines)
 
 
+# The path a reply that went out unhedged took (the engine's default reply_path), and the one a
+# reply this gate hedged is marked with instead.
+UNHEDGED_PATH = "synthesis"
+HEDGED_PATH = "grounding_hedge"
+
+
 def _floor_stands() -> bool:
     """The grounding floor is a line, not a measure. It holds until the settled replies say that
     replies grounded under it proved no worse than those above it (eli/cognition/epistemics.worse_below,
@@ -99,7 +105,9 @@ def _floor_stands() -> bool:
     the reply. Shown nothing, or shown they do worse, it holds as it did."""
     try:
         from eli.cognition.epistemics import ANSWER, worse_below
-        verdict = worse_below(ANSWER, "grounding", _GROUNDING_FLOOR)
+        # judged by the replies that went out as the model's own answer, not the ones this gate
+        # hedged (eli/kernel/stages/generation._maybe_fail_closed_chat marks those) or the fast path
+        verdict = worse_below(ANSWER, "grounding", _GROUNDING_FLOOR, where={"reply_path": UNHEDGED_PATH})
     except (OSError, ValueError, ImportError) as failure:
         log.debug("grounding evidence unavailable: %s", failure)
         verdict = None

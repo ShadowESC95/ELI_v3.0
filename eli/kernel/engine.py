@@ -2244,7 +2244,8 @@ def _fast_path_stands(aggregated: float) -> bool:
         return True
     try:
         from eli.cognition.epistemics import ANSWER, worse_below
-        verdict = worse_below(ANSWER, "aggregated", _FAST_PATH_LINE, class_="grounded")
+        # judged by the replies that took the fast path, not the ones it had already turned away
+        verdict = worse_below(ANSWER, "aggregated", _FAST_PATH_LINE, class_="grounded", where={"bus_fast": True})
     except (OSError, ValueError, ImportError) as failure:
         log.debug("fast-path evidence unavailable: %s", failure)
         verdict = None
@@ -2258,6 +2259,17 @@ def _result_shown_as_is(action: Any, reasoning_mode: Any, result: Any) -> bool:
         return _shown_as_is(action, reasoning_mode, result)
     except TypeError:                     # a fast_actions that does not take the result yet
         return _shown_as_is(action, reasoning_mode)
+
+
+def _reply_label(user_input: str) -> str:
+    """What the user's next message says of the last reply: correction, complaint, redo,
+    endorsement or none (eli/cognition/correction_patterns.reply_verdict, the one reader).
+
+    The seam for the model-judged label the learning loop is to put here (a constrained judgement
+    of the message against the reply: disputes / accepts / neither, with its confidence), with
+    these words kept as its features. Everything _settle_recall_outcome settles reads this."""
+    from eli.cognition.correction_patterns import reply_verdict
+    return reply_verdict(user_input)
 
 
 def _conversation_figure(field: str, doc: str) -> property:
@@ -3954,6 +3966,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if score is not None and request_id and str(result_action or "CHAT") == "CHAT":
             try:
                 from eli.cognition import epistemics as _epistemics
+                from eli.cognition.chat_grounding_gate import UNHEDGED_PATH as _UNHEDGED_PATH
                 from eli.kernel.request_context import turn_facts_var as _turn_facts
                 # the model's own confidence in the tokens of this reply (gguf_inference._TokenConfidence)
                 _facts = _turn_facts.get() or {}
@@ -3973,7 +3986,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                               "grounding": grounding_confidence,
                               # the path the reply took and the figures the gates read, so the gates'
                               # lines can be checked against what became of replies under them
-                              "reply_path": str(_facts.get("reply_path") or "synthesis"),
+                              "reply_path": str(_facts.get("reply_path") or _UNHEDGED_PATH),
                               "bus_fast": str(_facts.get("reply_path") or "") == "bus_fast",
                               "aggregated": _facts.get("bus_aggregated"),
                               "memory_ctx": bool(_facts.get("memory_ctx")),
@@ -4561,14 +4574,14 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             asked_p = float(getattr(self, "_pending_assessment_p", 0.5) or 0.5)
             route, self._pending_route = getattr(self, "_pending_route", None), None
             claims, self._pending_claims = getattr(self, "_pending_claims", None), None
-        from eli.cognition.correction_patterns import is_answer_correction, is_endorsement
-        corrected = is_answer_correction(user_input)
+        from eli.cognition.correction_patterns import CORRECTION, ENDORSEMENT
+        verdict = _reply_label(user_input)
+        corrected, endorsed = verdict == CORRECTION, verdict == ENDORSEMENT
         if ids:
             try:
                 self.memory.record_recall_outcome(ids, helped=not corrected)
             except Exception:
                 log.debug("recall outcome not settled", exc_info=True)
-        endorsed = is_endorsement(user_input)
         from eli.cognition import epistemics, thoughts
         if request_id:
             how = "correction" if corrected else ("endorsement" if endorsed else "")
@@ -4592,19 +4605,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                   user_id=str(getattr(self, "user_id", "") or ""))
                 except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                     log.debug("correction surprise not noted", exc_info=True)
-        # The route the last sentence was read as (kind route, _assess_route): a correction, a
-        # complaint about ELI or a redo settles it wrong; any other next turn is the user moving on,
-        # which settles it right. A misroute draws a complaint; a right route draws the next request.
-        if route:
+        # The route the last sentence was read as (kind route, _assess_route): a correction settles
+        # it wrong and an endorsement right. Anything else leaves it open: the user moving on to a
+        # new request says nothing of how the last one was read (a misroute is often just let go),
+        # and a complaint about how something was done or a redo is about the doing, not the reading.
+        if route and (corrected or endorsed):
             try:
-                from eli.cognition.correction_patterns import is_continuity_complaint
-                from eli.cognition.self_claims import complains_about_eli
-                from eli.runtime.action_commitment import is_redo_directive
-                wrong = bool(corrected or is_continuity_complaint(user_input) or is_redo_directive(user_input)
-                             or complains_about_eli(user_input))
-                how = "correction" if wrong else "moved on"
-                epistemics.settle(f"route:{route[0]}", not wrong, how=how, kind=epistemics.ROUTE)
-                thoughts.settle(f"route:{route[0]}", "wrong" if wrong else "right", how=how)
+                how = "correction" if corrected else "endorsement"
+                epistemics.settle(f"route:{route[0]}", endorsed, how=how, kind=epistemics.ROUTE)
+                thoughts.settle(f"route:{route[0]}", "right" if endorsed else "wrong", how=how)
             except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                 log.debug("route not settled", exc_info=True)
         # The claims about the user the last reply rested on: an endorsement settles them all right; a

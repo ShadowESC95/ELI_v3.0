@@ -61,53 +61,9 @@ _OWN_BEHAVIOUR_RE = re.compile(
     re.I)
 
 
-# Saying what ELI just did: "then you just stopped spotify", "you just maximised your GUI, not the
-# browser". Live, the first was answered with "a background housekeeping routine misfired ... I have
-# isolated the media player handler", none of which was checked: no pattern took it for a complaint.
-_YOU_JUST_DID = (r"\byou\s+(?:(?:just|then|only|also|somehow|suddenly|actually|even|literally|fucking|bloody|damn)\s+)+"
-                 # a past form, not a present one that happens to end the same way
-                 r"(?!(?:need|want|feed|speed|proceed|exceed|could|should|would|point|count|print)\b)\w+(?:ed|pt|ld|nt)\b"
-                 r"|\bthen\s+you\s+(?!(?:can|could|should|will|would|may|might|need|want|have|just)\b)\w+")
-
-# A complaint aimed at ELI. The worst invented diagnosis on record ("the embedding model decayed
-# the context window's relevance") answered one of these, not a question.
-_COMPLAINT_RE = re.compile(
-    r"\byou\s+(?:do\s+not|don'?t|did\s+not|didn'?t)\s+(?:need|have)\s+to\b"
-    r"|\byou\s+should(?:\s+not|n'?t)?\s+(?:have|be|know|check|remember|log|stop)\b"
-    r"|\byou\s+(?:keep|kept|still|always|never)\s+(?:\w+ing|get|got|forget|ignore|search|answer|remember|listen|say|do|make)\b"
-    r"|\b(?:stop|quit)\s+(?:search\w*|lying|making|guessing|inventing|hallucinat\w+|ignoring)\b"
-    r"|\byou(?:'re|’re| are| were)\s+(?:wrong|lying|making|not listening|useless|broken|ignoring)\b"
-    r"|\byou\s+(?:forgot|ignored|missed|lied|made\s+(?:that|it|this|shit|stuff)\s+up|got\s+(?:that|it|this)\s+wrong|hallucinat\w+)\b"
-    r"|\bthat(?:'s|’s| is| was)\s+(?:wrong|incorrect|bullshit|not\s+(?:right|true|what\s+i\s+(?:asked|said)))\b"
-    r"|\bi\s+asked\s+you\b|\bwhy\s+the\s+(?:fuck|hell)\b"
-    r"|\bi\s+(?:\w+\s+)?(?:told|gave|sent)\s+you\b"
-    # an insult aimed at ELI is a complaint about its last reply ("you fucking idiot, you are talking shit")
-    r"|\byou(?:'re|’re| are)?\s+(?:\w+\s+){0,2}(?:idiot|moron|stupid|useless|dumb|incompetent|clueless|clown|slow)\b"
-    r"|\b(?:talking|talk|spouting|chatting)\s+(?:shit|bollocks|nonsense|rubbish|crap|garbage)\b"
-    # a correction of what ELI answered: "I did not ask about RAM", "I asked why it took so long"
-    r"|\bi\s+(?:did\s+not|didn'?t|never|was\s+not|wasn'?t)\s+ask(?:ed|ing)?\b"
-    r"|\bi\s+(?:only\s+|just\s+)?asked\s+(?:you\s+)?(?:why|what|how|about|for|if|whether|when|where)\b"
-    r"|\b(?:are|were)\s+you\s+(?:just\s+)?making\s+(?:that|this|it|stuff|things|shit)\s+up\b"
-    r"|\byou\s+(?:did\s+not|didn'?t|have\s+not|haven'?t)\s+(?:actually\s+|even\s+)?\w+"
-    r"|\byou\s+never\s+(?!know\b)\w+"
-    r"|" + _YOU_JUST_DID,
-    re.I)
-
-
-# "you didn't burn the house down while I was away, did you?" is banter ending on a tag question; on
-# its own the generic "you didn't <verb>" is not a complaint then (it got the audit rows as a footer)
-_GENERIC_DIDNT_RE = re.compile(r"\byou\s+(?:did\s+not|didn'?t|have\s+not|haven'?t)\s+(?:actually\s+|even\s+)?\w+", re.I)
-_TAG_QUESTION_RE = re.compile(r",?\s*\b(?:did|have|were|would|could|do)\s+you\s*\?+\W*$", re.I)
-
-
-def complains_about_eli(text: Any) -> bool:
-    t = str(text or "")
-    found = [m.group(0) for m in _COMPLAINT_RE.finditer(t)]
-    if not found:
-        return False
-    if _TAG_QUESTION_RE.search(t) and all(_GENERIC_DIDNT_RE.fullmatch(f) for f in found):
-        return False
-    return True
+# A complaint aimed at ELI ("you keep ...", "you did not ...", "you just ...ed"): one reader,
+# eli/cognition/correction_patterns, for every turn that is about ELI's last reply.
+from eli.cognition.correction_patterns import _YOU_JUST_DID, complains_about_eli  # noqa: E402,F401
 
 
 # Words that name nothing: a message made only of these ("what the hell is going on!?", "seriously??",

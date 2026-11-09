@@ -89,6 +89,43 @@ def test_a_gate_is_judged_by_the_replies_that_took_its_path(db):
         "no reply under the line kept its context: nothing is known of that path"
 
 
+def _settle_answers(db, prefix, n, right, *, class_="", **features):
+    for i in range(n):
+        ep.assess(ep.ANSWER, 0.8, request_id=f"{prefix}{i}", class_=class_, features=dict(features), db_path=db)
+        ep.settle(f"{prefix}{i}", i < right, db_path=db)
+
+
+def test_the_fast_path_and_the_grounding_floor_are_judged_by_the_replies_that_took_them(db):
+    """Both gates were judged by every reply under their line, the ones they had turned away included:
+    replies the fast path never took, and replies the grounding gate had already hedged."""
+    from eli.cognition import chat_grounding_gate as cgg
+    from eli.kernel.engine import _FAST_PATH_LINE, _fast_path_stands
+    under = _FAST_PATH_LINE / 2
+    _settle_answers(db, "fast-hi", 150, 135, class_="grounded", aggregated=0.95, bus_fast=True)
+    _settle_answers(db, "fast-lo", 150, 138, class_="grounded", aggregated=under, bus_fast=True)
+    _settle_answers(db, "slow-lo", 150, 20, class_="grounded", aggregated=under, bus_fast=False)
+    assert _fast_path_stands(under) is True, "the fast path's own replies under the line did as well"
+    floor = cgg._GROUNDING_FLOOR
+    _settle_answers(db, "said-hi", 150, 135, grounding=min(1.0, floor * 2), reply_path=cgg.UNHEDGED_PATH)
+    _settle_answers(db, "said-lo", 150, 138, grounding=floor / 2, reply_path=cgg.UNHEDGED_PATH)
+    _settle_answers(db, "hedged-lo", 150, 20, grounding=floor / 2, reply_path=cgg.HEDGED_PATH)
+    assert cgg._floor_stands() is False, "the replies that went out under the floor did as well"
+
+
+def test_a_reply_the_grounding_gate_hedged_is_marked_so(monkeypatch):
+    from eli.kernel.engine import CognitiveEngine
+    from eli.kernel import request_context as rc
+    import eli.cognition.chat_grounding_gate as cgg
+    monkeypatch.setattr(cgg, "evaluate_chat_grounding_gate", lambda *a, **k: "Nothing on that in verified memory.")
+    eng = SimpleNamespace(_say_in_own_words=lambda said, fact: fact)
+    token = rc.turn_facts_var.set({})
+    try:
+        CognitiveEngine._maybe_fail_closed_chat(eng, "what is my favourite food")
+        assert rc.turn_facts_var.get().get("reply_path") == cgg.HEDGED_PATH
+    finally:
+        rc.turn_facts_var.reset(token)
+
+
 def test_several_figures_of_one_turn_are_assessed_at_once_and_settled_by_prefix_and_age(db):
     probs = ep.assess_many(ep.RECALL, [("recall:t1:1", 0.6, {"accessibility": 0.5}), ("recall:t1:2", 0.3, {})], db_path=db)
     assert [round(p.p, 3) for p in probs] == [0.6, 0.3] and all(p.kind == ep.RECALL for p in probs)
@@ -136,7 +173,12 @@ def test_a_route_is_assessed_where_it_is_decided_and_settled_by_the_next_turn(db
     finally:
         rc.request_id_var.reset(token)
     CognitiveEngine._settle_recall_outcome(_engine(_pending_route=fake._pending_route), "what is the weather like", "user")
-    assert sorted(y for _s, y, _f in ep.outcomes(ep.ROUTE, db_path=db)) == [0.0, 1.0], "moving on settles a route right"
+    assert len(ep.outcomes(ep.ROUTE, db_path=db)) == 1, "moving on says nothing of how the last one was read"
+    for said in ("you keep forgetting things", "try that again"):     # about the doing, not the reading
+        CognitiveEngine._settle_recall_outcome(_engine(_pending_route=fake._pending_route), said, "user")
+    assert len(ep.outcomes(ep.ROUTE, db_path=db)) == 1
+    CognitiveEngine._settle_recall_outcome(_engine(_pending_route=fake._pending_route), "thanks, spot on", "user")
+    assert sorted(y for _s, y, _f in ep.outcomes(ep.ROUTE, db_path=db)) == [0.0, 1.0], "an endorsement settles it right"
     CognitiveEngine._settle_recall_outcome(_engine(_pending_route=("req-9", "CHAT")), "anything", "habit_scheduler")
     assert len(ep.outcomes(ep.ROUTE, db_path=db)) == 2, "an autonomous turn settles nothing"
 

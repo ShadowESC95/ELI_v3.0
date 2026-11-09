@@ -79,44 +79,9 @@ _FAKE_THEATRE_RE = re.compile(
 )
 
 
-# User directives/challenges that mean "actually (re-)do the task": the caller re-runs the last real
-# action instead of letting ELI chat or defend itself. Requires "again / it / that" or a doubt ("are
-# you actually ...ing") so a fresh request ("check the news") isn't treated as a redo.
-_REDO_RE = re.compile(
-    r"\b(?:"
-    r"(?:do|run|check|fetch|search|look)\s+(?:it|that)\s+again|"
-    r"(?:check|fetch|search|run|look)\s+(?:it|that|again)|"
-    r"re-?(?:run|check|fetch|do|try)\b|"
-    r"try\s+(?:that\s+|it\s+)?again|"
-    r"(?:are|were)\s+you\s+(?:actually|even|really)\s+\w+ing|"
-    r"did\s+you\s+(?:actually|even|really)\s+\w+|"
-    r"go\s+(?:on|ahead)\s+(?:then|and\s+\w+)|"
-    r"actually\s+(?:do|run|check|fetch|search)\s+it|"
-    # It didn't happen: "you did not open spotify", "spotify didn't open", "nothing happened".
-    # Live: "You did not open spotify again!!!" got a made-up account of checking the logs.
-    r"you\s+(?:did\s*n[o']?t|didn'?t|never|have\s*n[o']?t|haven'?t)\s+(?:actually\s+|even\s+|really\s+)?\w+|"
-    # The same, asked: "why did you not fetch the real story", "why didn't you open it".
-    r"(?:did\s+you\s+not|didn'?t\s+you|have\s*n'?t\s+you)\s+(?:actually\s+|even\s+|really\s+)?\w+|"
-    r"\b(?!(?:i|we)\b)\w+\s+(?:did\s*n[o']?t|didn'?t|never|has\s*n[o']?t|hasn'?t|won'?t)\s+"
-    r"(?:open|opened|play|played|start|started|launch|launched|load|loaded|work|worked|happen|happened)|"
-    r"nothing\s+(?:happened|opened|played|started|is\s+playing)"
-    r")\b",
-    re.I,
-)
-
-
-def is_redo_directive(text: str) -> bool:
-    """True when the user is telling ELI to actually (re-)perform the task —
-    so the caller can re-run the LAST real action rather than route to chat."""
-    s = str(text or "")
-    m = _REDO_RE.search(s)
-    if not m:
-        return False
-    # Exclude "I'll check it myself" — the USER doing it, not a directive to ELI.
-    pre = s[max(0, m.start() - 25):m.start()].lower()
-    if "myself" in s.lower() or re.search(r"\b(?:i|i'?ll|i'?m|we|we'?ll)\b", pre):
-        return False
-    return True
+# The user telling ELI to actually (re-)do the task ("try that again", "you did not open spotify"):
+# one reader, eli/cognition/correction_patterns, for every turn that is about ELI's last reply.
+from eli.cognition.correction_patterns import REDO_RE as _REDO_RE, is_redo_directive  # noqa: E402,F401
 
 
 # Re-running the last action on "did you actually X?" is only right when X is

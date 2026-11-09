@@ -31,6 +31,8 @@ turns since the last write, and at most once per WRITE_INTERVAL seconds.
 from __future__ import annotations
 
 import re
+
+from eli.cognition.correction_patterns import CORRECTION, REDO, reply_verdict
 import time
 import logging
 from typing import Any, Dict, List, Optional
@@ -62,14 +64,10 @@ _TECHNICAL = re.compile(
     re.I,
 )
 
-_CORRECTION = re.compile(
-    r"\b(no[,.]?\s+that|wrong|incorrect|not (what|right)|that'?s not|"
-    r"i meant|i said|i asked for|that wasn'?t|stop doing|don'?t do that|"
-    r"no wait|actually[,\s]|that'?s wrong|not quite|missed the point|"
-    r"you misunderstood|not what i|try again|that'?s incorrect|"
-    r"you got it wrong|that'?s not it|no no)\b",
-    re.I,
-)
+# How often the user corrects ELI is read by the one reader of what a message says of ELI's last
+# reply (eli/cognition/correction_patterns.reply_verdict): a correction, or a "do it (again)".
+# This module's own list of correction words read "actually" or "i said" anywhere as one.
+
 
 _DEPTH_MORE = re.compile(
     r"\b(more detail|elaborate|expand|go deeper|in depth|tell me more|"
@@ -150,7 +148,7 @@ def analyze_turns(user_turns: List[str]) -> Dict[str, Any]:
 
         casual_hits      += sum(1 for w in words if w in _CASUAL)
         tech_hits        += len(_TECHNICAL.findall(text))
-        correction_hits  += 1 if _CORRECTION.search(text) else 0
+        correction_hits  += 1 if reply_verdict(text) in (CORRECTION, REDO) else 0
         depth_more_hits  += 1 if _DEPTH_MORE.search(text) else 0
         depth_less_hits  += 1 if _DEPTH_LESS.search(text) else 0
         humor_hits       += 1 if _HUMOR_ENGAGE.search(text) else 0

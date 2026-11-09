@@ -26,17 +26,9 @@ _IMAGE_STATUS_RE = re.compile(
     r")\b"
 )
 
-_USER_CHALLENGE_RE = re.compile(
-    r"(?is)\b(?:"
-    r"i\s+did(?:n'?t| not)\s+ask"
-    r"|not\s+what\s+i\s+asked"
-    r"|stop\s+talking\s+about"
-    r"|what\s+(?:the\s+)?(?:fuck|hell|heck)"
-    r"|do\s+you\s+not\s+understand"
-    r"|what\s+is\s+going\s+on\s+with\s+you"
-    r"|what\s+is\s+happening\s+with\s+you"
-    r")\b"
-)
+# A message challenging ELI ("what the hell", "not what i asked"): one reader,
+# eli/cognition/correction_patterns.
+from eli.cognition.correction_patterns import is_user_challenge  # noqa: E402,F401
 
 _POISONED_ASSISTANT_TURN_RE = re.compile(
     r"(?is)\b(?:"
@@ -62,10 +54,6 @@ def is_vague_dynamic_status_claim(text: Any) -> bool:
 def is_image_status_claim(text: Any) -> bool:
     value = str(text or "")
     return bool(_IMAGE_STATUS_RE.search(value) and _VAGUE_DYNAMIC_STATUS_RE.search(value))
-
-
-def is_user_challenge(text: Any) -> bool:
-    return bool(_USER_CHALLENGE_RE.search(str(text or "")))
 
 
 def should_exclude_turn_from_prompt(role: Any, content: Any) -> bool:
