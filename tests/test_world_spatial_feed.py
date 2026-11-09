@@ -288,13 +288,13 @@ def test_version_two_adds_how_things_look_his_own_room_and_what_he_did(monkeypat
 
 # ── the routes (clean lane only) ─────────────────────────────────────────────
 
-def _client(monkeypatch, *, ws_allowed=True, world=None, chat=None):
+def _client(monkeypatch, *, ws_allowed=True, world=None, chat=None, remember=None):
     try:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         app = FastAPI()
         app.include_router(spatial_feed.build_router(lambda: None, lambda: "the owner",
-                                                     lambda ws: ws_allowed, chat=chat))
+                                                     lambda ws: ws_allowed, chat=chat, remember=remember))
         client = TestClient(app)
     except Exception as e:  # mocked pydantic under the suite conftest
         pytest.skip(f"fastapi not usable in-process ({type(e).__name__}); run with --noconftest")
@@ -649,3 +649,49 @@ def test_elis_thoughts_hang_as_sheets_in_the_rooms_they_belong_to(monkeypatch, t
     assert note["name"] == "note: Look before saying where things are." and note["form"]["colour"] == shown.THOUGHT_COLOURS["note"]
     assert spatial_feed.spatial_state(WORLD, version=2)["objects"][-1]["kind"] == "thought"
     shown.forget()
+
+
+def test_a_sentence_the_world_answered_is_kept_with_its_vr_session(monkeypatch):
+    """Built or set as a game, a sentence said in VR left no turn and no action row: recall and the
+    period log could not show it. Only sentences that fell through to chat were recorded."""
+    remembered, ledger = [], []
+    client, _ = _client(monkeypatch, chat=lambda *a: "chat", remember=lambda *a: remembered.append(a))
+    from eli.world import composer
+    import eli.runtime.evidence_ledger as evidence_ledger
+    monkeypatch.setattr(evidence_ledger, "record_event", lambda kind, **kw: ledger.append((kind, kw)) or 1)
+    monkeypatch.setattr(composer, "compose", lambda text, scene: {
+        "kind": "build", "text": "There, by the window.", "room": "workshop",
+        "results": [{"op": "create", "name": "Lamp", "ok": True},
+                    {"op": "remove", "name": "Throne", "ok": False, "reason": "there is no 'Throne' here"}],
+        "refused": []})
+    out = client.post("/v1/world/say", json={"text": "build a lamp and remove the throne",
+                                              "session_id": "eli-vr-42"}).json()
+    assert out["text"] == "There, by the window."
+    assert remembered == [("build a lamp and remove the throne", "There, by the window.", "the owner", "eli-vr-42")]
+    (kind, row), = ledger
+    assert kind == "executor_action" and row["action"] == "WORLD_EDIT" and row["session_id"] == "eli-vr-42"
+    assert row["outcome"] == "ok" and "remove Throne (not done: there is no 'Throne' here)" in row["content"]
+
+
+def test_the_world_link_closing_ends_the_bodys_session(monkeypatch):
+    """The world WebSocket's disconnect was ignored: no VR session since one day had an end."""
+    import time as _time
+    client, _ = _client(monkeypatch)
+    from eli.world import embodiment
+    monkeypatch.setattr(embodiment, "_remember", lambda title, text: True)
+    monkeypatch.setattr(embodiment, "_measure_headset", lambda: None)
+    embodiment.forget()
+    with client.websocket_connect("/v1/world/ws") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "hello", "surface": "eli_vr", "session": "eli-vr-link", "protocol_versions": [1, 2]})
+        assert ws.receive_json()["type"] == "welcome"
+        assert client.post("/v1/world/scene", json={"scene": {"surface": "eli_vr", "session": "eli-vr-link",
+                                                              "room": "workshop"}}).status_code == 200
+        assert [b["session"] for b in embodiment.present()] == ["eli-vr-link"]
+    for _ in range(100):                       # the server side finishes the closed socket on its own thread
+        if not embodiment.present():
+            break
+        _time.sleep(0.02)
+    assert embodiment.present() == []
+    ended = [s for s in embodiment.sessions_between(0, _time.time() + 1) if s["session"] == "eli-vr-link"]
+    assert ended and ended[-1]["end"] == "its world link closed"

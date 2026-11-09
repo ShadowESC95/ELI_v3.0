@@ -153,17 +153,44 @@ def test_what_cannot_be_done_says_so(world):
     assert "Lantern" in _standing(world())
 
 
-def test_the_things_the_world_makes_itself_are_not_the_buildings_to_remove(world):
+def test_the_user_may_take_away_what_the_world_made_and_eli_alone_may_not(world):
+    """'Delete the sample cluster' was refused with "that one belongs to the world itself": the owner
+    may take away anything standing in his world, whoever made it. ELI's own building hand still
+    takes away only what it built."""
     from eli.world.core.schemas import WorldEvent
-    local_world_bridge._get_engine().ingest_event(
-        WorldEvent("task_opened", "test", "Task opened: A", {"goal_id": "ga", "title": "Paper"}))
-    out = building.apply([{"op": "remove", "name": "Paper"}], actor="user", asked=True)
-    assert not out["ok"] and "belongs to the world itself" in out["results"][0]["reason"]
-    # but it has a look and a steady place like anything else, and may be moved
+    engine = local_world_bridge._get_engine()
+    engine.ingest_event(WorldEvent("task_opened", "test", "Task opened: A", {"goal_id": "ga", "title": "Paper"}))
+    out = building.apply([{"op": "remove", "name": "Paper"}], actor="eli")
+    assert not out["ok"] and "only the user takes those away" in out["results"][0]["reason"]
+    # it has a look and a steady place like anything else, and may be moved
     paper = next(o for o in world().objects.values() if o.name == "Paper")
     assert building.form_of(paper.__dict__)["shape"] == "table"
-    assert building.form_of(paper.__dict__)["pos"] == building.form_of(paper.__dict__)["pos"]
     assert building.apply([{"op": "move", "name": "Paper", "at": [2, 2]}], actor="user")["ok"]
+    out = building.apply([{"op": "remove", "name": "Paper"}], actor="eli", asked=True)     # said in VR
+    assert out["ok"], out
+    assert "Paper" not in _standing(world(), room=paper.room)
+    engine.ingest_event(WorldEvent("task_opened", "test", "Task opened: A", {"goal_id": "ga", "title": "Paper"}))
+    assert "Paper" not in _standing(world(), room=paper.room), "the world made again what the user took away"
+    assert building.apply([{"op": "undo"}], actor="user", asked=True)["ok"]
+    assert "Paper" in _standing(world(), room=paper.room), "taking it away can be taken back"
+
+
+def test_naming_a_thing_standing_in_the_room_is_heard_as_building(world):
+    """'delete the sample cluster' has no shape word in it: it went to chat, where nothing can touch a
+    world object. The room's contents are read: a making word with a standing thing's name is building."""
+    from eli.world.core.schemas import WorldEvent
+    local_world_bridge._get_engine().ingest_event(WorldEvent(
+        "reasoning_stage", "test", "stage", {"mode": "self_consistency", "stage": 1, "total_stages": 4,
+                                             "stage_name": "sample_generation"}))
+    state = world().to_dict()
+    cluster = next(o for o in state["objects"].values() if o["name"] == "Sample Cluster")
+    scene = {"room": cluster["room"]}
+    assert composer.wants_building("delete the sample cluster", scene, state)
+    assert composer.wants_building("could you get rid of the Sample Cluster please", scene, state)
+    assert not composer.wants_building("what is the sample cluster for", scene, state), "a question is talk"
+    assert not composer.wants_building("delete the sample cluster", {"room": "workshop"}, state), \
+        "nothing of that name stands where the user is"
+    assert not composer.wants_building("delete the email draft", scene, state)
 
 
 def test_a_room_fills_up(world, monkeypatch):
@@ -260,8 +287,8 @@ def test_a_scene_goes_stale_and_a_leaving_client_is_forgotten(monkeypatch):
     embodiment.forget()
     embodiment.report({**SCENE, "eli": {"visible": False}})
     assert "You are not in that room" in embodiment.context_block()
-    clock = embodiment.time.monotonic()
-    monkeypatch.setattr(embodiment.time, "monotonic", lambda: clock + embodiment.FRESH_SECONDS + 1)
+    clock = embodiment._now()
+    monkeypatch.setattr(embodiment, "_now", lambda: clock + embodiment.FRESH_SECONDS + 1)
     assert embodiment.context_block() == ""
     for bad in ("a string", {"seen_as": "x" * 5000}):
         with pytest.raises(ValueError):

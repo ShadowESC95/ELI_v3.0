@@ -36,7 +36,7 @@ A mind large enough is also offered everything: things made part by part and a
 sky painted its own way, not only the named shapes. A small one keeps to the
 named shapes, which it can manage.
 
-    wants_building(text)     does this sound like a request to change the place
+    wants_building(text, scene)  does this sound like a request to change the place
     grammar_text(...)        the shape the model's answer is held to
     mindset(state)           what is on its mind, from its records
     compose(text, scene)     ask the model, apply the edits, say what happened
@@ -50,8 +50,10 @@ import random
 import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from eli.utils.log import get_logger
 from eli.world import building, embodiment
 
+log = get_logger(__name__)
 SAY_MAX = 400
 MAX_TOKENS = 700
 ALL_OPS = ("create", "move", "change", "remove", "room", "note", "undo")
@@ -99,11 +101,32 @@ _QUESTION = re.compile(r"^\W*(what|why|how|who|when|where|which|do you|did you|a
                        r"have you|tell me|describe|explain)\b", re.IGNORECASE)
 
 
-def wants_building(text: str) -> bool:
+_MAKING_WORD = re.compile(rf"\b({_MAKING})\b", re.IGNORECASE)
+
+
+def wants_building(text: str, scene: Optional[Dict[str, Any]] = None,
+                   state: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether a sentence asks for the place to be changed: a making word with a kind of thing, or a
+    making word with the name of something standing in the room the user is in ("delete the sample
+    cluster", "move the letterbox"). The room's own contents are read, not only a list of shapes, so
+    a thing with a name of its own can be taken away or changed by saying its name."""
     text = str(text or "")
     if _UNDO.match(text):
         return True
-    return bool(_REQUEST.search(text)) and not _NOT_THE_PLACE.search(text) and not _QUESTION.match(text)
+    if _NOT_THE_PLACE.search(text) or _QUESTION.match(text):
+        return False
+    if _REQUEST.search(text):
+        return True
+    room = str((scene or {}).get("room") or "")
+    if not room or not _MAKING_WORD.search(text):
+        return False
+    try:
+        world = state if state is not None else _load_world()
+    except Exception:  # noqa: BLE001 - an unreadable world names nothing
+        log.debug("the room's contents could not be read", exc_info=True)
+        return False
+    return any(re.search(rf"\b{re.escape(t['name'].lower())}\b", text.lower())
+               for t in _standing(world, room) if t["name"])
 
 
 class ComposeError(RuntimeError):

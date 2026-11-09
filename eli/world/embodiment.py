@@ -19,16 +19,35 @@ are we" or "what am I looking at" from what is actually the case.
     context_block()     the lines for the prompt, or "" when nobody is there
 
 Plain text on purpose: it reads the same to any local model, and asks nothing
-of a model's own tool or vision format. Nothing here is written to disk, and
-nothing is kept once the client stops reporting.
+of a model's own tool or vision format.
+
+Presence is kept per session, on disk in the world folder, so every ELI v3 process
+on this data folder agrees on who is here (ELI VR may be served by a headless ELI
+of its own while the desktop window runs beside it):
+
+    presence.json     the bodies here now, one per (surface, session), with the
+                      last scene each reported and when
+    sessions.jsonl    the bodies that were here: surface, session, when it came
+                      and left, the rooms it was in, and why it ended
+
+A session ends when its client says so (vr_session_ended), when its world link
+closes, when the same surface starts a new session, or when no scene has come
+for FRESH_SECONDS; it ends at the last moment it was seen.
+
+    present()                 the bodies here now
+    end(surface, session, why)  a session over: its client said so, or its link closed
+    sessions_between(a, b)    the sessions that overlap a period, for recall
 """
 from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from eli.utils.log import get_logger
 
@@ -40,7 +59,6 @@ HELD_LINES = 8             # what a held sheet says, line by line, as a body rep
 log = get_logger(__name__)
 PROPS_MAX = 400            # real things one body may offer
 _lock = threading.Lock()
-_scenes: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _body: Dict[str, Any] = {}       # the last body that said what it can draw
 
 
@@ -105,8 +123,15 @@ def _clean(scene: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-_present: Dict[str, Dict[str, Any]] = {}     # surface -> when it came and where, while it is here
 BODY_NAMES = {"eli_vr": "ELI VR", "spatial_client": "a spatial client"}
+
+PRESENCE_FILE = "presence.json"      # the bodies here now, each with its last scene
+SESSIONS_FILE = "sessions.jsonl"     # the bodies that were here, one line per finished session
+_presence_lock = threading.RLock()
+
+
+def _now() -> float:
+    return time.time()
 
 
 def _body_name(surface: str, headset: bool) -> str:
@@ -134,32 +159,127 @@ def _remember(title: str, text: str) -> bool:
     return kept > 0
 
 
-def _came(clean: Dict[str, Any]) -> None:
-    surface = clean["surface"]
-    if surface in _present:
-        return
-    now = time.time()
-    room = clean.get("room_name") or clean.get("room") or "its rooms"
-    _present[surface] = {"since": now, "room": room, "headset": bool(clean.get("headset"))}
-    _remember("A body arrived", f"{_body_name(surface, bool(clean.get('headset')))} joined ELI in {room} at "
-              f"{time.strftime('%H:%M on %a %d %b %Y', time.localtime(now))}.")
+def _presence_files():
+    from eli.world.persistence import storage
+    folder = storage.world_dir()
+    return folder / PRESENCE_FILE, folder / SESSIONS_FILE
 
 
-def _went(surface: str) -> None:
-    was = _present.pop(surface, None)
-    if not was:
-        return
-    now = time.time()
-    minutes = max(1, int(round((now - float(was["since"])) / 60.0)))
-    _remember("A body left", f"{_body_name(surface, bool(was.get('headset')))} left at "
-              f"{time.strftime('%H:%M on %a %d %b %Y', time.localtime(now))}, after {minutes} minute"
-              f"{'s' if minutes != 1 else ''} with ELI (it came in {was['room']}).")
+@contextmanager
+def _file_held(path):
+    """`path` (a lock file) held against every other process on this computer."""
+    with open(path, "a+b") as fh:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _read_open(path) -> Dict[str, Dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    found = data.get("open") if isinstance(data, dict) else None
+    return {k: v for k, v in (found or {}).items() if isinstance(v, dict)}
+
+
+def _write_open(path, open_: Dict[str, Dict[str, Any]]) -> None:
+    fd, scratch = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"open": open_}, fh, ensure_ascii=False, default=str)
+    os.replace(scratch, path)
+
+
+Change = Callable[[Dict[str, Dict[str, Any]], float], Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]
+
+
+def _change_presence(change: Change) -> Dict[str, Dict[str, Any]]:
+    """Run `change(open, now)` on the bodies here now, held against this process's other threads and
+    every other ELI v3 process on this data folder; write back what it changed, file the sessions it
+    ended in the history, and then (with nothing held) remember each arrival and departure. Gives
+    back the bodies here now."""
+    path, history = _presence_files()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _presence_lock, _file_held(path.with_name(path.name + ".lock")):
+            open_ = _read_open(path)
+            before = json.dumps(open_, sort_keys=True, default=str)
+            arrived, left = change(open_, _now())
+            if json.dumps(open_, sort_keys=True, default=str) != before:
+                _write_open(path, open_)
+            if left:
+                with history.open("a", encoding="utf-8") as fh:
+                    for ended in left:
+                        fh.write(json.dumps(ended, ensure_ascii=False, default=str) + "\n")
+                from eli.world.persistence import storage
+                storage._trim_jsonl(history)
+    except OSError:
+        log.warning("who is in ELI's world could not be kept on disk", exc_info=True)
+        return {}
+    # a memory write may embed and index: never while presence is held (scenes and prompts wait on it)
+    for entry in left:
+        _remember("A body left", _departure_words(entry))
+    for entry in arrived:
+        _remember("A body arrived", _arrival_words(entry))
+    return open_
+
+
+def _when(ts: float) -> str:
+    return time.strftime("%H:%M on %a %d %b %Y", time.localtime(float(ts)))
+
+
+def _arrival_words(entry: Dict[str, Any]) -> str:
+    room = (entry.get("rooms") or ["its rooms"])[0]
+    return f"{_body_name(entry['surface'], bool(entry.get('headset')))} joined ELI in {room} at {_when(entry['started'])}."
+
+
+def _departure_words(entry: Dict[str, Any]) -> str:
+    rooms = list(entry.get("rooms") or [])
+    minutes = max(1, int(round((float(entry["ended"]) - float(entry["started"])) / 60.0)))
+    words = (f"{_body_name(entry['surface'], bool(entry.get('headset')))} left at {_when(entry['ended'])}, after "
+             f"{minutes} minute{'s' if minutes != 1 else ''} with ELI (it came in {rooms[0] if rooms else 'its rooms'}).")
+    later = [r for r in dict.fromkeys(rooms[1:]) if r != (rooms[0] if rooms else "")]
+    if later:
+        words += f" It was also in {', '.join(later)}."
+    return words
+
+
+def _ended(entry: Dict[str, Any], why: str) -> Dict[str, Any]:
+    """A session over, at the last moment it was seen."""
+    done = {k: v for k, v in entry.items() if k != "scene"}
+    done["ended"] = float(entry.get("last_seen") or entry.get("started") or _now())
+    done["end"] = why
+    return done
+
+
+def _end_stale(open_: Dict[str, Dict[str, Any]], now: float, max_age: float) -> List[Dict[str, Any]]:
+    gone = [k for k, e in open_.items() if now - float(e.get("last_seen") or 0.0) > max_age]
+    return [_ended(open_.pop(k), "no longer seen") for k in gone]
+
+
+def _key(surface: str, session: str) -> str:
+    return f"{surface}|{session}"
 
 
 def present() -> List[Dict[str, Any]]:
-    """The bodies here now: [{"surface", "since", "room", "headset"}]."""
-    with _lock:
-        return [{"surface": s, **dict(v)} for s, v in _present.items()]
+    """The bodies here now: [{"surface", "session", "since", "room" (where it came in), "rooms",
+    "headset", "last_seen"}]. One no scene has come from for FRESH_SECONDS has left."""
+    open_ = _change_presence(lambda o, now: ([], _end_stale(o, now, FRESH_SECONDS)))
+    return [{"surface": e["surface"], "session": e.get("session", ""), "since": e["started"],
+             "room": (e.get("rooms") or [""])[0], "rooms": list(e.get("rooms") or []),
+             "headset": bool(e.get("headset")), "last_seen": e.get("last_seen")} for e in open_.values()]
 
 
 def report(scene: Any) -> Dict[str, Any]:
@@ -170,11 +290,65 @@ def report(scene: Any) -> Dict[str, Any]:
     if len(json.dumps(scene, default=str)) > SCENE_MAX:
         raise ValueError("the scene is too large")
     clean = _clean(scene)
-    with _lock:
-        _scenes[clean["surface"]] = (time.monotonic(), clean)
-        _came(clean)
+
+    def change(open_, now):
+        left = _end_stale(open_, now, FRESH_SECONDS)
+        surface, session = clean["surface"], clean["session"]
+        key = _key(surface, session)
+        if session:          # the same surface on a new session: the old one is over
+            for other in [k for k, e in open_.items() if e.get("surface") == surface and k != key]:
+                left.append(_ended(open_.pop(other), "a new session began"))
+        room = clean.get("room_name") or clean.get("room") or ""
+        entry, arrived = open_.get(key), []
+        if entry is None:
+            entry = {"surface": surface, "session": session, "started": now, "rooms": [room] if room else []}
+            open_[key] = entry
+            arrived.append(entry)
+        elif room and (not entry.get("rooms") or entry["rooms"][-1] != room):
+            entry.setdefault("rooms", []).append(room)
+        entry["headset"] = bool(clean.get("headset"))
+        entry["last_seen"] = now
+        entry["scene"] = clean
+        return arrived, left
+
+    _change_presence(change)
     _measure_headset()
     return clean
+
+
+def end(surface: Optional[str] = None, session: str = "", why: str = "the session ended") -> None:
+    """A session over: its client said so, or its world link closed. With a session id, that session;
+    with only a surface, every session of it; with neither, everyone."""
+    def change(open_, now):
+        gone = [k for k, e in open_.items()
+                if (surface is None or e.get("surface") == surface) and (not session or e.get("session") == session)]
+        return [], [_ended(open_.pop(k), why) for k in gone]
+    _change_presence(change)
+
+
+def sessions_between(since: float, until: float) -> List[Dict[str, Any]]:
+    """The sessions that overlap [since, until), oldest first: {"surface", "session", "headset",
+    "started", "ended" (None while it is still here), "rooms", "end"}. What recall reads for a
+    period: who came into ELI's world, when, where, and when they left."""
+    _, history = _presence_files()
+    found: List[Dict[str, Any]] = []
+    try:
+        with history.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict) and "started" in entry:
+                    found.append(entry)
+    except OSError:
+        pass
+    for entry in present():
+        found.append({"surface": entry["surface"], "session": entry["session"], "headset": entry["headset"],
+                      "started": entry["since"], "ended": None, "rooms": entry["rooms"], "end": ""})
+    out = [e for e in found if float(e["started"]) < until
+           and (e.get("ended") is None or float(e["ended"]) >= since)]
+    return sorted(out, key=lambda e: float(e["started"]))
 
 
 def _measure_headset() -> None:
@@ -222,15 +396,13 @@ def props() -> List[Dict[str, Any]]:
 
 
 def live(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
-    """The freshest scene any client reported, or None once all have gone stale."""
-    now = time.monotonic()
-    with _lock:
-        for surface in [s for s, (at, _) in _scenes.items() if now - at > max_age]:
-            del _scenes[surface]
-            _went(surface)
-        if not _scenes:
-            return None
-        return dict(max(_scenes.values(), key=lambda item: item[0])[1])
+    """The freshest scene any client reported, or None once all have gone stale. Read from the
+    presence record, so any ELI v3 process on this data folder sees the body another one serves."""
+    open_ = _change_presence(lambda o, now: ([], _end_stale(o, now, max_age)))
+    scenes = [e for e in open_.values() if isinstance(e.get("scene"), dict)]
+    if not scenes:
+        return None
+    return dict(max(scenes, key=lambda e: float(e.get("last_seen") or 0.0))["scene"])
 
 
 def forget_body() -> None:
@@ -240,14 +412,7 @@ def forget_body() -> None:
 
 def forget(surface: Optional[str] = None) -> None:
     """A client leaving, or (with no name) everyone."""
-    with _lock:
-        if surface is None:
-            _scenes.clear()
-            for gone in list(_present):
-                _went(gone)
-        else:
-            _scenes.pop(surface, None)
-            _went(surface)
+    end(surface, why="the session ended")
 
 
 def held(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:

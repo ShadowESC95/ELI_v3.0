@@ -44,6 +44,10 @@ import hashlib
 import json
 from typing import Any, Callable, Dict, List, Optional
 
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
 FEED_VERSION = 1                       # what a client that never said hello is given
 PROTOCOL_VERSIONS = (1, 2)
 MESSAGE_TYPE = "eli_world_state"
@@ -273,9 +277,11 @@ def _digest(message: Dict[str, Any]) -> str:
 
 
 def record_client_event(event_type: str, summary: str = "",
-                        payload: Optional[Dict[str, Any]] = None) -> None:
+                        payload: Optional[Dict[str, Any]] = None,
+                        who: Optional[Dict[str, str]] = None) -> None:
     """Hand a client's report to the world. Raises ValueError for anything not
-    on the list, or too large to be a status line."""
+    on the list, or too large to be a status line. `who`: the surface and session the client named
+    in its hello, when it came over the world link."""
     if event_type not in CLIENT_EVENTS:
         raise ValueError(f"unknown spatial event {event_type!r}")
     payload = payload or {}
@@ -283,39 +289,75 @@ def record_client_event(event_type: str, summary: str = "",
         raise ValueError("spatial event payload is too large")
     if event_type == "vr_session_ended":
         from eli.world import embodiment
-        embodiment.forget()
+        if who and who.get("session"):
+            embodiment.end(who.get("surface") or None, who["session"], why="its client ended the session")
+        else:
+            embodiment.forget()
     from eli.world.world_event_bus import fire_world_event
     fire_world_event(event_type, "spatial_client", str(summary)[:_SUMMARY_MAX], payload)
 
 
-def say(text: str, chat: Optional[Callable[[str], str]] = None) -> Dict[str, Any]:
+def say(text: str, chat: Optional[Callable[[str], str]] = None, *, session_id: str = "",
+        remember: Optional[Callable[[str, str], Any]] = None) -> Dict[str, Any]:
     """One sentence to ELI from inside the world. If it asks for a game, ELI sets one; if it asks
     for the place to be changed, ELI changes it and says so; otherwise it is an ordinary turn of
-    conversation, with where ELI is in mind (see eli/world/embodiment.py)."""
+    conversation, with where ELI is in mind (see eli/world/embodiment.py).
+
+    A sentence the game or the building answered is kept as the chat path keeps its turns: what
+    was done (or refused) is an action row in the evidence ledger with this VR session's id, which
+    the period log reads, and the sentence and ELI's answer go to `remember(said, answer)`, the
+    server's own turn store, when it gives one. Only chat used to leave a trace."""
     from eli.world import composer, embodiment, games
     text = str(text or "").strip()[:_SAY_MAX]
     if not text:
         raise ValueError("nothing was said")
     scene = embodiment.live()
     if games.wants_stop(text) and games.current((scene or {}).get("room", "")):
-        return games.stop((scene or {}).get("room", ""), said=text)
+        return _kept(games.stop((scene or {}).get("room", ""), said=text), "STOP_GAME", text, session_id, remember)
     if games.wants_game(text):
-        return games.compose(text, scene)
-    if composer.wants_building(text):
-        return composer.compose(text, scene)
+        return _kept(games.compose(text, scene), "PLAY_GAME", text, session_id, remember)
+    if composer.wants_building(text, scene):
+        return _kept(composer.compose(text, scene), "WORLD_EDIT", text, session_id, remember)
     if chat is None:
         raise RuntimeError("conversation is not available on this server")
     return {"kind": "chat", "text": str(chat(text) or "").strip(), "results": [], "refused": []}
 
 
+def _kept(result: Dict[str, Any], action: str, said: str, session_id: str,
+          remember: Optional[Callable[[str, str], Any]]) -> Dict[str, Any]:
+    """Record a sentence the world answered without the chat path (see say) and give back its result."""
+    results = [r for r in result.get("results") or [] if isinstance(r, dict)]
+    worked = any(r.get("ok") for r in results) or bool(result.get("stopped") or result.get("ok"))
+    done = "; ".join(f"{r.get('op', '')} {r.get('name', '')}".strip() + ("" if r.get("ok") else
+                     f" (not done: {r.get('reason', 'refused')})") for r in results)
+    try:
+        from eli.runtime.evidence_ledger import record_event
+        record_event("executor_action", source="world.say", action=action, subject=str(result.get("room") or ""),
+                     content=(str(result.get("text") or "") + (f" [{done}]" if done else "")).strip(),
+                     payload={"said": said, "results": results, "refused": result.get("refused") or []},
+                     severity="info" if worked else "warning", outcome="ok" if worked else "failed",
+                     session_id=str(session_id or ""))
+    except Exception:  # noqa: BLE001 - the answer still goes back; the record is said to be missing
+        log.warning("what the world did for %r was not recorded", said[:80], exc_info=True)
+    if remember is not None:
+        try:
+            remember(said, str(result.get("text") or ""))
+        except Exception:  # noqa: BLE001
+            log.warning("the world's turn was not kept in the conversation", exc_info=True)
+    return result
+
+
 def build_router(require_read: Callable[..., Any], require_act: Callable[..., Any],
                  ws_allowed: Callable[[Any], bool],
                  chat: Optional[Callable[[str, Any, str], str]] = None,
-                 require_admin: Optional[Callable[..., Any]] = None):
+                 require_admin: Optional[Callable[..., Any]] = None,
+                 remember: Optional[Callable[[str, str, Any, str], Any]] = None):
     """The routes, gated by the server's own checks. ``ws_allowed`` gets the
     WebSocket and answers whether its handshake may proceed. ``chat`` is the
     server's own conversation: (text, principal, session) -> ELI's reply.
-    ``require_admin`` gates choosing the model, as it does in the server."""
+    ``require_admin`` gates choosing the model, as it does in the server.
+    ``remember`` is the server's turn store: (said, answer, principal, session), for a sentence the
+    game or the building answered."""
     from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
     from pydantic import BaseModel
 
@@ -433,7 +475,10 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
     def world_say(body: Said, principal: Any = Depends(require_act)):
         """A sentence to ELI from inside the world: ELI answers, or builds."""
         try:
-            return say(body.text, (lambda text: chat(text, principal, body.session_id)) if chat else None)
+            return say(body.text, (lambda text: chat(text, principal, body.session_id)) if chat else None,
+                       session_id=body.session_id,
+                       remember=(lambda said, answer: remember(said, answer, principal, body.session_id))
+                       if remember else None)
         except Exception as e:  # noqa: BLE001 - every failure leaves as a typed problem
             raise _problem(e)
 
@@ -513,6 +558,7 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         await ws.accept()
         version = FEED_VERSION
         sent = ""
+        who: Dict[str, str] = {}       # the surface and session the client named in its hello
         try:
             while True:
                 message = await asyncio.to_thread(spatial_state, None, version)
@@ -531,6 +577,9 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
                 if not isinstance(incoming, dict):
                     continue
                 if incoming.get("type") == "hello":
+                    if str(incoming.get("session") or "").strip():
+                        who = {"surface": str(incoming.get("surface") or "spatial_client")[:32],
+                               "session": str(incoming["session"]).strip()[:64]}
                     answer = negotiate(incoming)
                     await ws.send_text(json.dumps(answer))
                     if answer["type"] == "incompatible":
@@ -543,10 +592,17 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
                             str(incoming.get("event_type", "")),
                             str(incoming.get("summary", "")),
                             incoming.get("payload") if isinstance(incoming.get("payload"), dict) else {},
+                            who=who or None,
                         )
                     except (ValueError, TypeError):
                         pass  # a malformed or unlisted report is dropped, never fatal
         except WebSocketDisconnect:
             pass
+        finally:
+            # The link is the body's: once it closes, the session it named is over (ELI VR closed by
+            # its window, stopped by its launcher or crashed sends nothing else).
+            if who:
+                from eli.world import embodiment
+                await asyncio.to_thread(embodiment.end, who["surface"], who["session"], "its world link closed")
 
     return router

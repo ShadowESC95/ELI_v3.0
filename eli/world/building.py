@@ -653,6 +653,11 @@ def _pin_note(text: str, event: WorldEvent, actor: str) -> None:
         log.debug("a note was not kept as a thought", exc_info=True)
 
 
+def _the_user_asked(event: WorldEvent, actor: str) -> bool:
+    """Whether this edit is the user's: done by their hand, or asked for in their words."""
+    return actor == "user" or bool(event.payload.get("asked"))
+
+
 def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) -> Dict[str, Any]:
     op, room = edit["op"], str(edit.get("room") or OWN_ROOM)
     actor = str(event.payload.get("actor") or "eli")
@@ -751,9 +756,14 @@ def _carry_out(state: EliWorldState, edit: Dict[str, Any], event: WorldEvent) ->
     form = form_of(obj.__dict__)
 
     if op == "remove":
-        if obj.object_type not in (BUILT, GAME):
+        # The user may take away anything standing in the world (the rooms themselves are not
+        # objects): what was built, a game, and what ELI's world made of its own accord (a reasoning
+        # stage's Sample Cluster, a fault marker). Taken away, a world-made thing keeps its id, so
+        # the world does not make it again. ELI on its own takes away only what it built.
+        if obj.object_type not in (BUILT, GAME) and not _the_user_asked(event, actor):
             return {"op": op, "ok": False, "name": obj.name,
-                    "reason": "that one belongs to the world itself, not to the building"}
+                    "reason": f"{obj.name} was made by ELI's world ({obj.object_type.replace('_', ' ')}), "
+                              f"not built, and only the user takes those away"}
         obj.retired = True
         return {"op": op, "ok": True, "id": obj.object_id, "name": obj.name, "room": obj.room,
                 "inverse": {"op": "restore", "id": obj.object_id, "room": obj.room}}
