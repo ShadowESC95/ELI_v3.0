@@ -129,3 +129,40 @@ def test_recent_observations_of_one_kind(tmp_path):
     assert [o["observation"] for o in mem.get_recent_observations(limit=5, category="cpu_load")] == ["cpu at 55%", "cpu at 40%"]
     assert {o["category"] for o in mem.get_recent_observations(limit=5, category=["battery", "network"])} == {"battery", "network"}
     assert len(mem.get_recent_observations(limit=10)) == 4
+
+
+def test_patterns_observations_and_habits_are_each_user_s_own(two_users):
+    """user_patterns, observations and habits had no owner column: a member's rows were the owner's
+    and a reader that tried to scope them could show a member none of their own."""
+    import sqlite3
+    mem = two_users
+    c = sqlite3.connect(mem.db_path)
+    cols = {t: {r[1] for r in c.execute(f"PRAGMA table_info({t})")} for t in ("memories", "user_patterns", "observations", "habits", "habit_events")}
+    c.close()
+    assert all("user_id" in v for v in cols.values()), cols
+    mem.add_observation("cpu_load", "owner's cpu at 40%")
+    mem.log_habit_event("command_result", {"action": "TAKE_SCREENSHOT", "ok": True})
+    with _as("member-7"):
+        mem.add_observation("cpu_load", "member's cpu at 90%")
+        for _ in range(3):
+            mem.log_habit_event("command_result", {"action": "TAKE_SCREENSHOT", "ok": True})
+        assert [o["observation"] for o in mem.get_recent_observations(limit=5)] == ["member's cpu at 90%"]
+        assert mem.get_requested_action_log(min_count=1)[0]["count"] == 3
+    assert [o["observation"] for o in mem.get_recent_observations(limit=5)] == ["owner's cpu at 40%"]
+    assert mem.get_requested_action_log(min_count=1)[0]["count"] == 1
+
+
+def test_rows_from_before_the_owner_column_are_the_owner_s(tmp_path):
+    import sqlite3
+    from eli.memory.memory import Memory
+    db = tmp_path / "user.sqlite3"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, content TEXT, timestamp REAL, ts REAL)")
+    c.execute("INSERT INTO observations (source, content, timestamp, ts) VALUES ('battery', 'an older row', 1, 1)")
+    c.commit()
+    c.close()
+    mem = Memory(db_path=db)
+    assert [o["content"] for o in mem.get_recent_observations(limit=5)] == ["an older row"]
+    c = sqlite3.connect(db)
+    assert c.execute("SELECT user_id FROM observations").fetchall() == [("",)]
+    c.close()

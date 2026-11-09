@@ -423,6 +423,30 @@ def _ensure_policy_schema(conn) -> None:
         log.debug("[MEMORY] policy tables not created", exc_info=True)
 
 
+# Tables whose rows are one user's (eli/memory/policy.owner_key): '' is the owner, so every row from
+# before the column existed is the owner's. memories gets its column with the policy columns
+# (_POLICY_COLUMNS), so its archive table carries it too.
+_OWNED_TABLES = ("user_patterns", "observations", "habits", "habit_events")
+
+
+def _ensure_owner_columns(conn) -> None:
+    for table in _OWNED_TABLES:
+        try:
+            if _eli_table_exists(conn, table):
+                _add_column_if_missing(conn, table, "user_id", "TEXT DEFAULT ''")
+        except Exception:
+            log.debug("[MEMORY] owner column not added to %s", table, exc_info=True)
+
+
+def _owned_scope(conn, table: str, user_id=None) -> tuple:
+    """(" AND ...", params) keeping the turn's user's rows of one of _OWNED_TABLES; nothing when the
+    table has no owner column yet."""
+    if "user_id" not in _memory_table_columns(conn, table):
+        return "", ()
+    from eli.memory import policy as _policy
+    return _policy.scope_sql("user_id", _policy.owner_key(user_id))
+
+
 def _ensure_memory_indexes(conn) -> None:
     """Create the recall indexes. Called LAST, after every table exists.
 
@@ -659,7 +683,6 @@ def _ensure_memory_schema(conn):
         ("command", "TEXT"),
         ("count", "INTEGER DEFAULT 0"),
         ("timestamp", "REAL"),
-        ("user_id", "TEXT DEFAULT ''"),       # whose action it was (eli/memory/policy.owner_key)
     ]:
         _add_column_if_missing(conn, "habit_events", name, decl)
 
@@ -940,6 +963,7 @@ def _ensure_memory_schema(conn):
     for name, decl in [("session_id", "TEXT"), ("summary", "TEXT"), ("content", "TEXT"), ("timestamp", "REAL"), ("ts", "REAL")]:
         _add_column_if_missing(conn, "session_summaries", name, decl)
 
+    _ensure_owner_columns(conn)
     _ensure_memory_indexes(conn)
 
 def _table_columns(conn, table):
@@ -1237,7 +1261,7 @@ def _ensure_full_memory_schema(conn):
     for n, d in [
         ("event_type", "TEXT"), ("event", "TEXT"), ("details", "TEXT"), ("data", "TEXT"),
         ("timestamp", "REAL"), ("ts", "REAL"), ("name", "TEXT"), ("cmd", "TEXT"),
-        ("method", "TEXT"), ("command", "TEXT"), ("user_id", "TEXT DEFAULT ''")
+        ("method", "TEXT"), ("command", "TEXT")
     ]:
         _add_memory_column(conn, "habit_events", n, d)
 
@@ -1460,6 +1484,7 @@ def _ensure_full_memory_schema(conn):
         ("occurrence_count", "INTEGER DEFAULT 1"), ("first_seen", "REAL"), ("last_seen", "REAL")
     ]:
         _add_memory_column(conn, "error_tracking", n, d)
+    _ensure_owner_columns(conn)
 
 def _memory_table_columns(conn, table):
     try:
@@ -1601,9 +1626,8 @@ def _get_habit_events_window(self, event_type=None, days=14, user_key=None):
     try:
         sql = "SELECT id, COALESCE(event_type, event, name, ''), COALESCE(details, data, ''), COALESCE(timestamp, ts, 0) FROM habit_events WHERE COALESCE(timestamp, ts, 0) >= ?"
         params = [window]
-        if user_key is not None and "user_id" in _memory_table_columns(conn, "habit_events"):
-            from eli.memory import policy as _policy
-            frag, frag_params = _policy.scope_sql("user_id", user_key)
+        if user_key is not None:
+            frag, frag_params = _owned_scope(conn, "habit_events", user_key)
             sql += frag
             params.extend(frag_params)
         if event_type:
@@ -1696,6 +1720,7 @@ def _ensure_profile_schema(conn):
         ("ts", "REAL"),
     ]:
         _add_memory_column(conn, "user_patterns", n, d)
+    _ensure_owner_columns(conn)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS learning_replay (
@@ -4918,10 +4943,11 @@ class Memory(metaclass=_MemoryMeta):
             })
 
             key_name, key_cmd = _habit_key(event_type, details)
+            mine, mine_params = _owned_scope(conn, "habits")
 
             row = conn.execute(
-                "SELECT id, COALESCE(count, 0) FROM habits WHERE COALESCE(name,'') = ?",
-                (key_name,),
+                "SELECT id, COALESCE(count, 0) FROM habits WHERE COALESCE(name,'') = ?" + mine,
+                (key_name, *mine_params),
             ).fetchone()
             if row:
                 conn.execute(
@@ -4938,6 +4964,7 @@ class Memory(metaclass=_MemoryMeta):
                     "ts": now,
                     "command": key_cmd,
                     "enabled": 1,
+                    "user_id": _policy.owner_key(),
                 })
 
             # Deliberately no `habit_rules` row here. Rules are time-scheduled and only come from the
@@ -4958,14 +4985,15 @@ class Memory(metaclass=_MemoryMeta):
         try:
             if _has_table(conn, "user_patterns"):
                 window = _profile_now_ts() - float(days) * 86400.0
+                mine, mine_params = _owned_scope(conn, "user_patterns")
                 rows = conn.execute(
                     """
                     SELECT id, pattern_data, COALESCE(timestamp, ts, 0)
                     FROM user_patterns
-                    WHERE pattern_type = 'app_cmd' AND COALESCE(timestamp, ts, 0) >= ?
+                    WHERE pattern_type = 'app_cmd' AND COALESCE(timestamp, ts, 0) >= ?""" + mine + """
                     ORDER BY COALESCE(timestamp, ts, 0) ASC
                     """,
-                    (window,),
+                    (window, *mine_params),
                 ).fetchall()
                 derived = []
                 for rid, pdata, ts in rows:
@@ -5473,12 +5501,13 @@ class Memory(metaclass=_MemoryMeta):
         try:
             conn = self._get_connection()
             try:
+                mine, mine_params = _owned_scope(conn, "habits")
                 rows = conn.execute(
                     "SELECT COALESCE(name,''), COALESCE(count,0), "
                     "COALESCE(timestamp, ts, 0) FROM habits "
-                    "WHERE COALESCE(enabled,1)=1 AND COALESCE(count,0) >= ? "
+                    "WHERE COALESCE(enabled,1)=1 AND COALESCE(count,0) >= ?" + mine + " "
                     "ORDER BY COALESCE(count,0) DESC, COALESCE(timestamp, ts, 0) DESC",
-                    (int(min_count),),
+                    (int(min_count), *mine_params),
                 ).fetchall()
             finally:
                 conn.close()
@@ -5796,6 +5825,7 @@ class Memory(metaclass=_MemoryMeta):
         content_value = _norm_text(named_content).strip() if named_content is not None else (second or "")
 
         now = _now_ts()
+        from eli.memory import policy as _policy
         conn = self._get_connection()
         try:
             payload = {
@@ -5807,6 +5837,7 @@ class Memory(metaclass=_MemoryMeta):
                 "details": content_value or observation,
                 "timestamp": now,
                 "ts": now,
+                "user_id": _policy.owner_key(),
             }
             rid = _insert_payload(conn, "observations", payload)
             conn.commit()
@@ -6083,8 +6114,8 @@ class Memory(metaclass=_MemoryMeta):
             conn.close()
 
     def get_recent_observations(self, limit=20, category=None):
-        """The newest observations, or only those of `category` (one name or several): a trend is
-        compared like with like, not against the newest rows of any kind."""
+        """The turn's user's newest observations, or only those of `category` (one name or several):
+        a trend is compared like with like, not against the newest rows of any kind."""
         conn = self._get_connection()
         try:
             if not _has_table(conn, "observations"):
@@ -6096,16 +6127,17 @@ class Memory(metaclass=_MemoryMeta):
             source_expr = "source" if "source" in cols else "'runtime'"
             time_expr = "COALESCE(timestamp, ts, id)"
             kinds = [category] if isinstance(category, str) else [str(c) for c in (category or ())]
-            only = f"WHERE {category_expr} IN ({','.join('?' * len(kinds))})" if kinds else ""
+            only = f" AND {category_expr} IN ({','.join('?' * len(kinds))})" if kinds else ""
+            mine, mine_params = _owned_scope(conn, "observations")
             rows = conn.execute(
                 f"""
                 SELECT {category_expr}, {obs_expr}, {content_expr}, {source_expr}, {time_expr}
                 FROM observations
-                {only}
+                WHERE 1=1{only}{mine}
                 ORDER BY {time_expr} DESC
                 LIMIT ?
                 """,
-                (*kinds, int(limit)),
+                (*kinds, *mine_params, int(limit)),
             ).fetchall()
             return [
                 {
