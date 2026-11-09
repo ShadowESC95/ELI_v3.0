@@ -58,3 +58,96 @@ def test_eval_harness_has_cases():
     """Guard: the harness must actually discover cases (catches a broken
     cases.yaml or import path that would otherwise silently skip everything)."""
     assert _ROUTER_CASES, "router eval cases failed to load — check tools/eval/cases.yaml"
+
+
+# ── the eval never changes the network or the data for the rest of ELI ─────────
+def _driver():
+    import sys
+    if str(_REPO) not in sys.path:
+        sys.path.insert(0, str(_REPO))
+    from tools.eval import eli_driver
+    return eli_driver
+
+
+def test_a_cases_network_state_is_seen_only_by_the_case(monkeypatch):
+    """Swapping config.network_allowed for the whole process opened the network against Net-off
+    for every thread while a case ran (the proactive news fetch, the self-upgrade check)."""
+    import threading
+    import eli.core.config as C
+
+    D = _driver()
+    monkeypatch.setattr(C, "network_allowed", lambda: False)        # the user's setting: off
+    seen = {}
+    with D._network(True):
+        from eli.core.config import network_allowed
+        seen["case"] = network_allowed()
+        t = threading.Thread(target=lambda: seen.setdefault("elsewhere", C.network_allowed()))
+        t.start()
+        t.join()
+    assert seen == {"case": True, "elsewhere": False}
+    assert C.network_allowed() is False
+
+
+def test_a_case_that_needs_the_network_the_user_turned_off_is_skipped(monkeypatch):
+    import eli.core.config as C
+
+    D = _driver()
+    monkeypatch.setattr(C, "network_allowed", lambda: False)
+    ran = []
+    monkeypatch.setattr("eli.execution.executor_enhanced.execute_action", lambda *a: ran.append(a) or {})
+    res = D.run_executor("GET_TIME", {}, network=True)
+    assert res.get("skipped") and "network" in res["reason"] and not ran
+
+
+def test_engine_cases_run_only_in_a_throwaway_copy_of_elis_folders(monkeypatch):
+    """Every engine prompt was stored as a turn the user typed in the real memory."""
+    D = _driver()
+    monkeypatch.setattr(D, "SANDBOX", None)
+    monkeypatch.setattr(D, "get_engine", lambda: (_ for _ in ()).throw(AssertionError("engine built")))
+    res = D.run_engine("hello there")
+    assert res.get("skipped") and "throwaway" in res["reason"]
+
+
+def test_cases_that_act_on_the_desktop_run_only_when_asked_for(monkeypatch):
+    """'minimize firefox' minimised the user's browser, 'open github.com' opened a tab and
+    'what's on my screen' read the real screen during an unattended run."""
+    import sys
+    if str(_REPO) not in sys.path:
+        sys.path.insert(0, str(_REPO))
+    from tools.eval.run_eval import _load_cases, _run_case
+
+    D = _driver()
+    marked = {c["id"] for c in _load_cases(_CASES) if c.get("desktop")}
+    assert {"minimize_no_fabricated_done", "open_domain_engine_is_url", "screen_question_uses_vision"} <= marked
+    ran = []
+    monkeypatch.setattr(D, "run_engine", lambda *a, **k: ran.append(a) or {"text": "ok"})
+    case = {"id": "x", "target": "engine", "desktop": True, "prompt": "minimize firefox"}
+    assert _run_case(case).get("skipped") and not ran
+    assert _run_case(case, desktop=True) == {"text": "ok"} and ran
+
+
+_SANDBOXED = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from tools.eval import eli_driver as D
+box = D.enter_sandbox()
+from eli.core import paths
+print(json.dumps({"box": str(box), "real": str(D.REAL_DATA_DIR), "paths": [str(p) for p in (
+    paths.data_dir(), paths.config_dir(), paths.user_db_path(), paths.agent_db_path(),
+    paths.persona_auto_path(), paths.notebook_dir(), paths.learning_dir(), paths.cache_dir())]}))
+"""
+
+
+def test_the_sandbox_holds_every_place_eli_keeps_state():
+    import json
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-c", _SANDBOXED, str(_REPO)], cwd=str(_REPO),
+                         capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr[-1500:]
+    got = json.loads(out.stdout.strip().splitlines()[-1])
+    box = Path(got["box"])
+    assert not box.exists(), "the throwaway folder outlived the run"
+    assert all(box in Path(p).parents for p in got["paths"]), got
+    assert box not in Path(got["real"]).parents, "the history would be thrown away with it"

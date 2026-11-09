@@ -42,10 +42,13 @@ def _net(case):
     return str(v).strip().lower() in ("on", "true", "1", "yes")
 
 
-def _run_case(case):
+def _run_case(case, *, desktop: bool = False):
     target = str(case.get("target") or "router").lower()
     prompt = str(case.get("prompt") or "")
     net = _net(case)
+    if case.get("desktop") and not desktop:
+        return {"skipped": True, "reason": "acts on your desktop or reads your screen; "
+                                           "run with --desktop to include it"}
     if target == "router":
         return D.route_only(prompt, network=net)
     if target == "executor":
@@ -56,7 +59,8 @@ def _run_case(case):
 
 
 def run_board(target: str = "router", *, cases_path=None, coding_cases_path=None,
-              case_filter: str = "", smoke: bool = False, on_case=None) -> dict:
+              case_filter: str = "", smoke: bool = False, on_case=None,
+              desktop: bool = False) -> dict:
     """Run the eval board and RETURN the results instead of printing them.
 
     Extracted verbatim from main() so the harness has a programmatic entry point —
@@ -94,7 +98,7 @@ def run_board(target: str = "router", *, cases_path=None, coding_cases_path=None
             except Exception:
                 pass
         try:
-            res = _run_case(c)
+            res = _run_case(c, desktop=desktop)
         except Exception as e:
             failed += 1
             records.append({"id": cid, "status": "error", "error": str(e),
@@ -141,14 +145,19 @@ def main(argv=None) -> int:
     ap.add_argument("--json", default="")
     ap.add_argument("--smoke", action="store_true",
                     help="fast subset: all router cases + engine cases tagged 'smoke: true'")
+    ap.add_argument("--desktop", action="store_true",
+                    help="also run the cases marked desktop: true, which act on this desktop "
+                         "(minimise a window, open a page) or read its screen")
     ap.add_argument("--history", action="store_true",
                     help="append a timestamped record + trend line under artifacts/eval/history/ "
                          "and write artifacts/eval/regressions.json on any failure")
     args = ap.parse_args(argv)
 
+    if args.target in ("engine", "all"):
+        D.enter_sandbox()       # before eli is imported (see eli_driver)
     board = run_board(args.target, cases_path=args.cases,
                       coding_cases_path=args.coding_cases, case_filter=args.filter,
-                      smoke=args.smoke)
+                      smoke=args.smoke, desktop=args.desktop)
     records = board["records"]
     passed, failed, skipped = board["passed"], board["failed"], board["skipped"]
 
@@ -203,7 +212,8 @@ def _write_history(records, target, passed, failed, skipped) -> None:
     import datetime
     try:
         from eli.core.paths import get_paths
-        evdir = Path(get_paths().artifacts_dir) / "eval"
+        # a sandboxed run keeps its history with the real data, not in the folder thrown away
+        evdir = Path(D.REAL_DATA_DIR or get_paths().artifacts_dir) / "eval"
     except Exception:
         evdir = Path("artifacts/eval")
     hist = evdir / "history"

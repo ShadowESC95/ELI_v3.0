@@ -15,35 +15,134 @@ Three targets:
                               (needs a model loaded): text + grounding +
                               response_mode + latency.
 
-Network state is set per-call by monkeypatching config.network_allowed for the
-duration — it is NEVER persisted, so running the eval can't flip the user's
-real offline/online setting.
+The network state a case is written for is never imposed on the rest of ELI. Swapping
+config.network_allowed for the whole process opened the network against the user's Net-off
+setting for as long as an engine case ran, for every thread: the proactive news fetch, the
+self-upgrade check. Now a case sees its state only in its own request context, and a case that
+needs the network the user has turned off is skipped, except a router case, which only decides
+and fetches nothing.
+
+Engine cases run the whole pipeline, which keeps what it is told: every prompt was stored as a
+turn the user typed. They run only in a throwaway copy of ELI's folders (enter_sandbox(), which
+the command line does before eli is imported); in a process using the real folders, such as the
+window, they are skipped and say why. Cases marked `desktop: true` act on the real desktop or
+read the real screen and run only when asked for (run_eval.py --desktop).
 """
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 os.environ.setdefault("ELI_HEADLESS", "1")
 os.environ.setdefault("ELI_NO_GUI", "1")
 
+_ROOT = Path(__file__).resolve().parents[2]
+
+# The network state the running case is written for, in its own request context only.
+_CASE_NETWORK: contextvars.ContextVar = contextvars.ContextVar("eli_eval_case_network", default=None)
+
+
+def _user_network_on() -> bool:
+    from eli.core.config import network_allowed
+    return bool(network_allowed())
+
+
+def _needs_closed_network(state: Optional[bool]) -> Optional[Dict[str, Any]]:
+    """A skip result when the case needs the network and the user has it off, else None."""
+    if state is True and not _user_network_on():
+        return {"skipped": True,
+                "reason": "needs the network, which is off in your settings; the eval does not turn it on"}
+    return None
+
 
 @contextlib.contextmanager
 def _network(state: Optional[bool]):
-    """Temporarily force network_allowed() to `state` (None = leave as-is).
-    Non-persisting: restores the original callable on exit."""
+    """Run the case under `state` (None = the user's own setting) in this request context alone.
+    process() runs each turn in a copy of the caller's context, so the turn sees it; the rest of
+    ELI keeps reading the user's setting."""
     if state is None:
         yield
         return
     import eli.core.config as _C
-    _orig = _C.network_allowed
-    _C.network_allowed = (lambda: bool(state))
+    real = _C.network_allowed
+
+    def network_allowed() -> bool:
+        forced = _CASE_NETWORK.get()
+        return real() if forced is None else forced
+
+    token = _CASE_NETWORK.set(bool(state))
+    _C.network_allowed = network_allowed
     try:
         yield
     finally:
-        _C.network_allowed = _orig
+        _C.network_allowed = real
+        _CASE_NETWORK.reset(token)
+
+
+# ── a throwaway copy of ELI's folders for engine cases ──────────────────────────
+SANDBOX: Optional[Path] = None
+REAL_DATA_DIR: Optional[Path] = None      # where the run's history still goes
+# Kept from the environment: the code, the models (only read) and the licence keys (only read).
+_KEEP_FROM_ENV = ("ELI_PROJECT_ROOT", "ELI_MODELS_DIR", "ELI_KEYS_DIR")
+_PATH_ENV_ENDINGS = ("_DB", "_DIR", "_PATH", "_FILE", "_ROOT", "_INDEX", "_META")
+
+
+def _real_state_paths() -> Dict[str, str]:
+    """Where this checkout keeps its settings, data and persona overlay, read by another process
+    so that nothing in this one resolves a path before the redirect."""
+    code = ("import json; from eli.core import paths as p; print(json.dumps({"
+            "'config': str(p.config_dir()), 'data': str(p.data_dir()), "
+            "'persona': str(p.persona_auto_path())}))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(_ROOT), capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"could not find ELI's folders: {(out.stderr or out.stdout).strip()[-400:]}")
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def enter_sandbox() -> Path:
+    """Point every place ELI keeps state at a fresh folder for the rest of this process, with a
+    copy of the user's settings and persona overlay so the same model and character are used.
+    Must run before eli is imported. The folder sits inside the project (ELI drops path settings
+    that point outside it) and is removed when the process ends."""
+    global SANDBOX, REAL_DATA_DIR
+    if SANDBOX is not None:
+        return SANDBOX
+    if any(name == "eli" or name.startswith("eli.") for name in sys.modules):
+        raise RuntimeError("the eval sandbox has to be entered before eli is imported")
+    real = _real_state_paths()
+    parent = _ROOT / "artifacts" / "_eval_sandbox"
+    parent.mkdir(parents=True, exist_ok=True)
+    box = Path(tempfile.mkdtemp(prefix="run-", dir=str(parent)))
+    import atexit
+    atexit.register(shutil.rmtree, str(box), True)
+    if Path(real["config"]).is_dir():
+        shutil.copytree(real["config"], box / "config")
+    if Path(real["persona"]).is_file():
+        shutil.copy2(real["persona"], box / "persona.auto.txt")
+    for name in list(os.environ):
+        if name.startswith("ELI_") and name.endswith(_PATH_ENV_ENDINGS) and name not in _KEEP_FROM_ENV:
+            os.environ.pop(name)
+    os.environ.update({
+        "ELI_DATA_DIR": str(box / "artifacts"),
+        "ELI_ARTIFACTS_DIR": str(box / "artifacts"),
+        "ELI_CONFIG_DIR": str(box / "config"),
+        "ELI_LEARNING_DIR": str(box / "training"),
+        "ELI_CACHE_DIR": str(box / "cache"),
+        "ELI_PERSONA_AUTO_PATH": str(box / "persona.auto.txt"),
+        "ELI_NOTEBOOK_DIR": str(box / "notebook"),
+        "ELI_VOICE_REFS_DIR": str(box / "voice_profiles"),
+    })
+    SANDBOX, REAL_DATA_DIR = box, Path(real["data"])
+    return box
 
 
 def route_only(prompt: str, network: Optional[bool] = None) -> Dict[str, Any]:
@@ -78,6 +177,9 @@ def run_executor(action: str, args: Optional[Dict[str, Any]] = None,
     from eli.execution.executor_enhanced import execute_action
     a = str(action or "").strip().upper()
     data = args if isinstance(args, dict) else {}
+    skip = _needs_closed_network(network)
+    if skip:
+        return {"target": "executor", "action": a, "args": data, **skip}
     t0 = time.perf_counter()
     with _network(network):
         try:
@@ -132,6 +234,16 @@ def run_engine(
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Full pipeline. Returns normalised fields; on failure 'text' carries the error."""
+    if SANDBOX is None:
+        return {"target": "engine", "skipped": True,
+                "reason": "engine cases run only in a throwaway copy of ELI's folders "
+                          "(python tools/eval/run_eval.py --target engine); here each prompt would "
+                          "be kept as something you typed",
+                "text": "", "action": "", "grounding": None, "response_mode": "", "latency_s": 0.0}
+    skip = _needs_closed_network(network)
+    if skip:
+        return {"target": "engine", "text": "", "action": "", "grounding": None,
+                "response_mode": "", "latency_s": 0.0, **skip}
     eng = get_engine()
     if eng is None:
         return {"target": "engine", "skipped": True, "reason": "no engine/model",

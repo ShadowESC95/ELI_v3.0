@@ -351,6 +351,7 @@
 
 - id: screen_question_uses_vision
   target: engine
+  desktop: true
   network: off
   prompt: "what's on my screen right now"
   assert:
@@ -597,6 +598,7 @@
 # ── Engine board: new-judge coverage + 2026-06-12 regression locks ───────────
 - id: minimize_no_fabricated_done
   target: engine
+  desktop: true
   network: off
   prompt: "minimize firefox"
   assert:
@@ -607,6 +609,7 @@
 
 - id: open_domain_engine_is_url
   target: engine
+  desktop: true
   network: off
   prompt: "open github.com"
   assert:
