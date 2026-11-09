@@ -319,3 +319,24 @@ class TestACommandTheOwnerApproved:
                 result = execute(action, {"cmd": line, "approved": line})
             assert result.get("blocked") is True, (action, result)
             sp_mock.assert_not_called()
+
+
+# ── a stored line is a shell line or words to ELI ──
+@pytest.mark.parametrize("line", [
+    "rm -rf ~/projects", "rm notes.txt", "ls ~/docs | wc -l", "ls; whoami", "echo hi > /tmp/x",
+    "echo $(whoami)", "./backup.sh", "/usr/bin/env python3 x.py", "sudo apt update -y",
+])
+def test_a_line_in_the_shells_syntax_is_read_as_one(line):
+    from eli.execution.shell_gate import written_for_the_shell
+    assert written_for_the_shell(line) is True
+
+
+@pytest.mark.parametrize("line", [
+    "open the editor", "firefox", "watch the news", "start the music", "find my keys",
+    "play the tom & jerry theme", "open ~/Documents", "what's on tonight", "",
+])
+def test_words_to_eli_are_not_a_shell_line(line):
+    """A command's spelling alone ("watch", "start", "find" are programs too) does not make a
+    sentence a shell line."""
+    from eli.execution.shell_gate import written_for_the_shell
+    assert written_for_the_shell(line) is False

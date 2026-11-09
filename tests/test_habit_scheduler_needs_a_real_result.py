@@ -56,6 +56,24 @@ def test_a_habit_the_shell_gate_refuses_is_reported_and_never_run(monkeypatch, t
     assert ran == ["open the editor"], "an ordinary habit was stopped by the gate"
 
 
+def test_a_habit_is_a_sentence_for_eli_and_only_a_shell_line_meets_the_gate(monkeypatch, tmp_path, capsys):
+    """A habit's command is a sentence the engine reads; the gate's only-reads rule refused every
+    ordinary one. A line written for the shell is still checked, and one it lets through goes on."""
+    s = _scheduler(monkeypatch, tmp_path)
+    ran = []
+    monkeypatch.setitem(sys.modules, "eli.kernel.engine",
+                        SimpleNamespace(get_engine=lambda: SimpleNamespace(
+                            process=lambda cmd, source="": ran.append((cmd, source)) or {"ok": True})))
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "")
+    for i, cmd in enumerate(["watch the news", "start the music", "firefox", "ls ~/notes | wc -l"]):
+        s._execute_rule({"name": f"h{i}", "command": cmd, "id": i})
+    assert ran == [("watch the news", "habit"), ("start the music", "habit"), ("firefox", "habit"),
+                   ("ls ~/notes | wc -l", "habit")]
+    s._execute_rule({"name": "push", "command": "git push --force", "id": 9})
+    assert len(ran) == 4 and "Refused" in capsys.readouterr().out
+
+
 def test_the_proactive_daemon_no_longer_fires_habits_itself():
     """Every habit ran twice: at its minute through the engine, and again by the daemon's tick as a
     raw shell line within five minutes of it."""

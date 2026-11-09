@@ -576,6 +576,36 @@ def only_reads(argv: Sequence[str]) -> bool:
     return _reads(rule, [str(w) for w in argv[1:]])
 
 
+def written_for_the_shell(line: str) -> bool:
+    """Whether a line is written in the shell's own syntax rather than as words to ELI.
+
+    A stored line is one or the other: a habit's "open the editor" or "firefox" is a sentence ELI
+    reads (the engine routes it and its actions keep their own rules), while "rm -rf ~/x",
+    "ls ~/docs | wc -l" or "./backup.sh" is a line a shell would run. A line is the shell's when, as
+    ``read_line`` reads it, it joins commands with ``;`` ``|`` ``&&`` or ``||``, writes a file by
+    redirection, holds a substitution, passes an option word (``-x``, ``--x``), runs a program by
+    its path, or its program is one of the denylisted executables. Ordinary words whose spelling
+    is also a command ("watch the news", "start the music", "find my keys") stay ELI's. A line the
+    shell could not read (an open quote, as in "what's on") is not one it would run."""
+    text = str(line or "").strip()
+    read = read_line(text) if text else None
+    if read is None:
+        return False
+    commands, writes = read
+    if writes or not commands:
+        return bool(writes)
+    if len(commands) > 1 and re.search(r"[;|]|&&", text):
+        return True
+    for argv in commands:
+        if any(_UNKNOWN in w for w in argv):
+            return True
+        if re.search(r"[\\/]", argv[0]) or _command_name(argv[0]) in _DENIED_EXECUTABLES:
+            return True
+        if any(re.match(r"--?[A-Za-z0-9]", w) for w in argv[1:]):
+            return True
+    return False
+
+
 def _owner_allows(argv0: str) -> bool:
     """The owner's own allowlist (ELI_ALLOWED_CMDS) through the security manager every
     effector's subprocess already answers to; fail-closed when neither can be read."""
