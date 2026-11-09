@@ -9,6 +9,8 @@ fallbacks instead of falling through to Linux-only binaries.
 
 import os
 import re
+import threading
+import time
 from datetime import datetime
 import subprocess
 import shutil
@@ -37,14 +39,35 @@ def _check_tool(tool: str) -> bool:
 def _screenshot_path(prefix: str = "Screenshot", *, keep: bool = True) -> str:
     """Where a screenshot goes: the user's Pictures folder when they asked for one, ELI's own data
     folder when ELI takes it to read the screen (finding a button by its label filled Pictures)."""
-    if keep:
-        folder = platform.user_pictures_dir()
-    else:
-        from eli.core.paths import data_dir
-        folder = data_dir() / "screens"
+    folder = platform.user_pictures_dir() if keep else _own_captures_dir()
     folder.mkdir(parents=True, exist_ok=True)
     filename = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
     return str(folder / filename)
+
+
+def _own_captures_dir():
+    from eli.core.paths import data_dir
+    return data_dir() / "screens"
+
+
+_STARTED = time.time()
+
+
+def _prune_own_captures(keep_path: str = "") -> None:
+    """Pictures ELI took for its own reading (keep=False) are kept for this run of ELI only: those
+    from an earlier run are removed, so the folder is not a growing archive of everything that was
+    on screen."""
+    folder = _own_captures_dir()
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if str(entry) != keep_path and entry.is_file() and entry.stat().st_mtime < _STARTED:
+                entry.unlink()
+        except OSError:
+            log.debug("could not remove an earlier capture %s", entry, exc_info=True)
 
 
 def _written(path: str) -> bool:
@@ -60,94 +83,417 @@ def _saved(path: str) -> Dict[str, Any]:
     return {"ok": True, "path": path, "content": f"Screenshot saved: {path}", "response": f"Screenshot saved: {path}"}
 
 
-def _capture_with_tool(cmd: list, path: str, timeout: float = 30.0) -> bool:
-    """Run a capture program with a time limit; True when it wrote the picture."""
+def _screenshot_folders() -> list:
+    """Where screenshots land on this machine: the (localised) Pictures folder, its Screenshots
+    folder, and the Desktop."""
+    found: list = []
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired):
-        log.debug("screenshot tool %s did not finish", cmd[0], exc_info=True)
-        return False
-    return done.returncode == 0 and _written(path)
+        dirs = platform.user_dirs()
+        named = [dirs.get("pictures"), dirs.get("desktop")]
+    except Exception:
+        named = []
+    for folder in [platform.user_pictures_dir(), *named]:
+        if not folder:
+            continue
+        folder = os.path.expanduser(str(folder))
+        for candidate in (folder, os.path.join(folder, "Screenshots")):
+            if candidate not in found and os.path.isdir(candidate):
+                found.append(candidate)
+    return found
 
 
-def _capture_with_imagegrab(path: str) -> Dict[str, Any] | None:
+PORTAL_PICTURE_NAME = re.compile(r"^Screenshot(?:-\d+)?\.png$")
+"""How the desktop's portal names the picture it saves in the Pictures folder (GNOME's portal:
+Screenshot.png, Screenshot-1.png, ...). ELI's own captures and the desktop's own screenshot tool use
+other names, so a picture the user took is never mistaken for the portal's."""
+
+
+def latest_screenshot(since: Optional[float] = None, folders: Optional[list] = None,
+                      name: Optional["re.Pattern"] = None) -> Optional[str]:
+    """The newest screenshot-named picture (png or jpg) in `folders` (default: where screenshots land
+    on this machine), or None. `since`: only one written at or after that time, which is how a
+    picture the desktop's portal saved for a request is told from older ones. `name`: only files
+    whose name matches it."""
+    import glob
+    candidates = set()
+    for folder in (folders if folders is not None else _screenshot_folders()):
+        for pattern in ("*creenshot*.png", "*creenshot*.jpg"):
+            candidates.update(c for c in glob.glob(os.path.join(str(folder), pattern))
+                              if name is None or name.match(os.path.basename(c)))
+    best, best_time = None, None
+    for candidate in candidates:
+        try:
+            written = os.path.getmtime(candidate)
+        except OSError:
+            continue
+        if since is not None and written < since:
+            continue
+        if best_time is None or written > best_time:
+            best, best_time = candidate, written
+    return best
+
+
+# ----------------------------------------------------------------------
+# How long each way of capturing may take: measured on this desktop
+# ----------------------------------------------------------------------
+FIRST_TRY_CEILING_S = 120.0
+"""The longest ELI waits for a way of capturing it has not seen work on this desktop, and the bound
+on one whole capture. The desktop's portal may be showing its own permission question and an area
+capture waits for the user to drag a box, so this is the time a person needs to answer one dialog.
+Once a way has worked here, its own measured times set its limit."""
+
+STALL_FACTOR = 10.0
+"""A way that has taken this many times its usual time here has stalled: load slows a capture by a
+few times, not by ten."""
+
+TIMES_KEPT = 8
+"""How many recent successful times are kept for a way: enough to see this machine's spread, few
+enough that one slow first run (a permission dialog answered) ages out."""
+
+_RECORD_LOCK = threading.Lock()
+
+
+def _desktop_key() -> str:
+    """Which desktop a record is for: the OS, the session type and the desktop's name."""
+    if WINDOWS:
+        return "windows"
+    if MACOS:
+        return "macos"
+    return f"linux|{SESSION_TYPE or '?'}|{DESKTOP or '?'}"
+
+
+def _record_file():
+    from eli.core.paths import data_dir
+    return data_dir() / "runtime" / "screen_capture.json"
+
+
+def _load_record() -> Dict[str, Any]:
+    import json
+    try:
+        data = json.loads(_record_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ways_record(kind: str) -> Dict[str, Any]:
+    """{way: {"times": [seconds of recent successes], "last": status, "at": time}} for this desktop."""
+    entry = _load_record().get(_desktop_key(), {})
+    return entry.get(kind, {}) if isinstance(entry, dict) else {}
+
+
+def _note_outcome(kind: str, outcome: Dict[str, Any]) -> None:
+    """Keep what a way did on this desktop: its time when it worked, and its last status."""
+    import json
+    import tempfile
+    if outcome.get("status") in ("unavailable", "skipped", "cancelled"):
+        return        # not tried, or the user said no: neither says whether the way works here
+    with _RECORD_LOCK:
+        data = _load_record()
+        desktop = data.setdefault(_desktop_key(), {})
+        ways = desktop.setdefault(kind, {})
+        way = ways.setdefault(outcome["way"], {"times": []})
+        if outcome["status"] == "ok":
+            way["times"] = (list(way.get("times") or []) + [round(float(outcome["seconds"]), 3)])[-TIMES_KEPT:]
+        way["last"] = outcome["status"]
+        way["at"] = time.time()
+        target = _record_file()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, scratch = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=1)
+            os.replace(scratch, target)
+        except OSError:
+            log.debug("could not keep the screen-capture record", exc_info=True)
+
+
+def _limit_for(record: Dict[str, Any]) -> float:
+    """A way's time limit here: STALL_FACTOR times the median of its recent successes, at most the
+    first-try ceiling; the ceiling itself when it has not worked here yet or last ran out of time
+    (it may have been waiting on a dialog)."""
+    times = sorted(float(t) for t in (record or {}).get("times") or [] if float(t) >= 0)
+    if not times or (record or {}).get("last") == "timeout":
+        return FIRST_TRY_CEILING_S
+    middle = len(times) // 2
+    median = times[middle] if len(times) % 2 else (times[middle - 1] + times[middle]) / 2
+    return min(FIRST_TRY_CEILING_S, max(median, 1e-3) * STALL_FACTOR)
+
+
+def _rank(record: Dict[str, Any]) -> tuple:
+    """Order of trying on this desktop: what last worked here (most recent first), then ways not
+    tried yet, then ways that worked once but failed last, then ways that have never worked here."""
+    if not record:
+        return (1, 0.0)
+    if record.get("last") == "ok":
+        return (0, -float(record.get("at") or 0.0))
+    return (2 if record.get("times") else 3, float(record.get("at") or 0.0))
+
+
+def _outcome(way: str, status: str, seconds: float, detail: str = "", exit_code: Optional[int] = None,
+             limit: Optional[float] = None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"way": way, "status": status, "seconds": round(float(seconds), 3)}
+    if detail:
+        out["detail"] = detail
+    if exit_code is not None:
+        out["exit_code"] = exit_code
+    if limit is not None:
+        out["limit_s"] = round(float(limit), 1)
+    return out
+
+
+def _capture_with_tool(way: str, cmd: list, path: str, limit: float) -> Dict[str, Any]:
+    """Run a capture program within `limit` seconds: ok when it wrote the picture, otherwise why not
+    (its exit code and what it said, or that it ran out of time)."""
+    started = time.monotonic()
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return _outcome(way, "timeout", time.monotonic() - started, f"no picture within {limit:.0f} s", limit=limit)
+    except OSError as exc:
+        return _outcome(way, "failed", time.monotonic() - started, str(exc))
+    took = time.monotonic() - started
+    if done.returncode == 0 and _written(path):
+        return _outcome(way, "ok", took)
+    said = " ".join(((done.stderr or "") + " " + (done.stdout or "")).split())[-300:]
+    if done.returncode == 0:
+        return _outcome(way, "failed", took, "exited without writing a picture" + (f": {said}" if said else ""), 0)
+    return _outcome(way, "failed", took, said or f"exited with {done.returncode}", done.returncode)
+
+
+def _capture_with_imagegrab(path: str) -> Dict[str, Any]:
     """Pillow's capture: GDI on Windows (every monitor), XCB on X11, screencapture on macOS. Not on
     Wayland, where it sees only XWayland's windows and falls back to a tool it runs without a time
     limit."""
-    if IS_WAYLAND and LINUX:
-        return None
+    started = time.monotonic()
     try:
         from PIL import ImageGrab  # type: ignore
 
         img = ImageGrab.grab(all_screens=True) if WINDOWS else ImageGrab.grab()
         img.save(path)
-    except Exception:
+    except Exception as exc:
         log.debug("Pillow screen grab failed", exc_info=True)
-        return None
-    return _saved(path) if _written(path) else None
+        return _outcome("Pillow", "failed", time.monotonic() - started, f"{type(exc).__name__}: {exc}")
+    took = time.monotonic() - started
+    return _outcome("Pillow", "ok", took) if _written(path) else _outcome("Pillow", "failed", took, "no picture came back")
 
 
-def _capture_with_portal(path: str, *, interactive: bool = False, timeout: float = 90.0) -> bool:
-    """The desktop's own screenshot service on Linux (xdg-desktop-portal: GNOME, KDE, wlroots
-    compositors through xdg-desktop-portal-wlr, Hyprland, and X11 desktops that run it), asked
-    through gdbus. The first time, the desktop asks the user whether ELI may take screenshots; the
-    wait is for that answer and is bounded. True when the picture was written to `path`."""
-    import selectors
-    import time
-    import urllib.parse
-    gdbus = shutil.which("gdbus")
-    if not gdbus or not LINUX:
-        return False
-    token = f"eli_{os.getpid()}_{int(time.time() * 1000)}"
-    dest = "org.freedesktop.portal.Desktop"
+# ----------------------------------------------------------------------
+# The desktop portal (xdg-desktop-portal): asked and answered on one D-Bus connection
+# ----------------------------------------------------------------------
+PORTAL_BUS = "org.freedesktop.portal.Desktop"
+PORTAL_PATH = "/org/freedesktop/portal/desktop"
+_PORTAL_REQUEST = "org.freedesktop.portal.Request"
+_PORTAL_TOKENS = __import__("itertools").count(1)
+
+PORTAL_POLL_S = 0.25
+"""How often the Pictures folder is looked at for a picture the portal saved, when there is no D-Bus
+library to hear its answer: below what a person notices."""
+
+
+async def _session_bus():
+    """A connection to the session bus (dbus-fast). Tests put a stand-in here."""
+    from dbus_fast import BusType
+    from dbus_fast.aio import MessageBus
+    return await MessageBus(bus_type=BusType.SESSION).connect()
+
+
+def _request_path(unique_name: str, token: str) -> str:
+    """Where the portal answers a request: its Request object for this connection and token."""
+    return f"{PORTAL_PATH}/request/{unique_name.lstrip(':').replace('.', '_')}/{token}"
+
+
+def portal_request(interface: str, method: str, signature: str, body: list, options: Dict[str, Any],
+                   *, limit: float) -> Dict[str, Any]:
+    """Ask the desktop portal for something and wait for its answer, on ONE D-Bus connection in this
+    process. The portal sends its Response signal to the connection that made the request, on the
+    Request object named from that connection and the handle_token, so the match for it is set up
+    on the same connection before the call goes out (as ELI VR's portal bridge does). Asking with a
+    `gdbus call` process and listening with a separate `gdbus monitor` never heard the answer: every
+    screen read on GNOME waited 90 s and failed although the portal had taken the picture.
+
+    `options` maps option names to dbus_fast Variants; handle_token is added here. Returns
+    {"status": "answered" | "timeout" | "refused" | "unavailable", "code": the portal's response
+    (0 done, 1 cancelled by the user, 2 ended another way), "results": {name: value},
+    "seconds": float, "detail": str, "version": the interface's version}."""
+    import asyncio
+    started = time.monotonic()
+
+    def _done(status: str, detail: str = "", **extra) -> Dict[str, Any]:
+        out = {"status": status, "seconds": round(time.monotonic() - started, 3), "detail": detail}
+        out.update(extra)
+        return out
+
     try:
-        monitor = subprocess.Popen([gdbus, "monitor", "--session", "--dest", dest],
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    except OSError:
-        return False
-    picker = selectors.DefaultSelector()
-    picker.register(monitor.stdout, selectors.EVENT_READ)
+        from dbus_fast import Message, MessageType, Variant
+    except ImportError as exc:
+        return _done("unavailable", f"no D-Bus library in this Python ({exc})")
+    token = f"eli_{os.getpid()}_{next(_PORTAL_TOKENS)}"
+    stage = {"now": "connecting to the session bus"}
 
-    def _line(deadline: float) -> Optional[str]:
-        left = deadline - time.monotonic()
-        if left <= 0 or not picker.select(left):
-            return None
-        return monitor.stdout.readline()
-
-    try:
-        if _line(time.monotonic() + 5.0) is None:          # listening before the request goes out
-            return False
-        options = f"{{'handle_token': <'{token}'>, 'interactive': <{'true' if interactive else 'false'}>}}"
-        call = subprocess.run([gdbus, "call", "--session", "--dest", dest, "--object-path", "/org/freedesktop/portal/desktop",
-                               "--method", "org.freedesktop.portal.Screenshot.Screenshot", "", options],
-                              capture_output=True, text=True, timeout=15)
-        if call.returncode != 0:
-            log.debug("screenshot portal refused the request: %s", (call.stderr or "").strip()[:200])
-            return False
-        deadline = time.monotonic() + timeout
-        while True:
-            line = _line(deadline)
-            if line is None:
-                return False
-            if token not in line or "Request.Response" not in line:
-                continue
-            answer = re.search(r"\(uint32 (\d+),", line)
-            uri = re.search(r"'uri': <'([^']+)'>", line)
-            if not answer or answer.group(1) != "0" or not uri:
-                return False                                  # declined or cancelled
-            source = urllib.parse.unquote(urllib.parse.urlparse(uri.group(1)).path)
-            if os.path.abspath(source) != os.path.abspath(path):
-                shutil.move(source, path)
-            return _written(path)
-    except (OSError, subprocess.TimeoutExpired, shutil.Error):
-        log.debug("screenshot portal failed", exc_info=True)
-        return False
-    finally:
-        monitor.terminate()
+    async def _ask() -> Dict[str, Any]:
+        bus = await _session_bus()
         try:
-            monitor.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            monitor.kill()
+            answer = asyncio.get_running_loop().create_future()
+            handle = _request_path(bus.unique_name, token)
+            watched = {handle}
+
+            def _on_message(msg):
+                if (msg.message_type == MessageType.SIGNAL and msg.interface == _PORTAL_REQUEST
+                        and msg.member == "Response" and msg.path in watched and not answer.done()):
+                    answer.set_result(list(msg.body))
+                return None
+
+            async def _match(path: str) -> None:
+                rule = f"type='signal',interface='{_PORTAL_REQUEST}',member='Response',path='{path}'"
+                await bus.call(Message(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
+                                       interface="org.freedesktop.DBus", member="AddMatch",
+                                       signature="s", body=[rule]))
+
+            bus.add_message_handler(_on_message)
+            stage["now"] = "asking the portal"
+            await _match(handle)
+            got = await bus.call(Message(destination=PORTAL_BUS, path=PORTAL_PATH,
+                                         interface="org.freedesktop.DBus.Properties", member="Get",
+                                         signature="ss", body=[interface, "version"]))
+            if got.message_type == MessageType.ERROR:
+                why = f"{got.error_name}: {got.body[0] if got.body else ''}".strip(": ")
+                return _done("unavailable", f"the desktop's portal has no {interface.rsplit('.', 1)[-1]} "
+                                            f"interface ({why})")
+            version = got.body[0].value if got.body else None
+            asked = dict(options or {})
+            asked["handle_token"] = Variant("s", token)
+            reply = await bus.call(Message(destination=PORTAL_BUS, path=PORTAL_PATH, interface=interface,
+                                           member=method, signature=signature, body=list(body) + [asked]))
+            if reply.message_type == MessageType.ERROR:
+                why = f"{reply.error_name}: {reply.body[0] if reply.body else ''}".strip(": ")
+                return _done("refused", why, version=version)
+            returned = str(reply.body[0]) if reply.body else handle
+            if returned not in watched:            # portals before 0.9 name the request themselves
+                watched.add(returned)
+                await _match(returned)
+            stage["now"] = "waiting for the portal's answer"
+            code, results = await answer
+            values = {k: getattr(v, "value", v) for k, v in dict(results or {}).items()}
+            return _done("answered", code=int(code), results=values, version=version)
+        finally:
+            bus.disconnect()
+
+    async def _bounded() -> Dict[str, Any]:
+        try:
+            return await asyncio.wait_for(_ask(), timeout=max(0.0, limit))
+        except asyncio.TimeoutError:
+            return _done("timeout", f"no answer within {limit:.0f} s while {stage['now']}")
+        except (OSError, EOFError) as exc:
+            return _done("unavailable", f"no session bus ({type(exc).__name__}: {exc})")
+        except Exception as exc:              # dbus-fast's own errors (auth, a closed bus)
+            return _done("unavailable", f"the session bus failed ({type(exc).__name__}: {exc})")
+
+    # Its own event loop on its own thread: the caller may be inside one already (the API's).
+    box: Dict[str, Any] = {}
+
+    def _run() -> None:
+        box["out"] = asyncio.run(_bounded())
+
+    worker = threading.Thread(target=_run, name="eli-portal-request", daemon=True)
+    worker.start()
+    worker.join()
+    return box.get("out") or _done("unavailable", "the portal request did not run")
+
+
+def _take_portal_file(source: str, path: str) -> bool:
+    """Move the picture the portal saved to `path`; True when it is there."""
+    try:
+        if os.path.abspath(source) != os.path.abspath(path):
+            shutil.move(source, path)
+    except (OSError, shutil.Error):
+        log.debug("could not move the portal's picture %s", source, exc_info=True)
+        return False
+    return _written(path)
+
+
+def _capture_with_portal(path: str, *, interactive: bool, limit: float) -> Dict[str, Any]:
+    """The desktop's own screenshot service on Linux (xdg-desktop-portal: GNOME, KDE, wlroots
+    compositors through xdg-desktop-portal-wlr, Hyprland, and X11 desktops that run it). The first
+    time, the desktop may ask the user whether ELI may take screenshots. The picture it saves is
+    moved to `path`."""
+    way = "the desktop's screenshot portal"
+    asked_at = time.time()
+    try:
+        from dbus_fast import Variant
+    except ImportError:
+        return _capture_with_portal_gdbus(path, interactive=interactive, limit=limit)
+    out = portal_request("org.freedesktop.portal.Screenshot", "Screenshot", "sa{sv}", [""],
+                         {"interactive": Variant("b", bool(interactive))}, limit=limit)
+    seconds = float(out.get("seconds") or 0.0)
+    if out["status"] == "answered":
+        code = out.get("code")
+        if code == 0:
+            uri = str((out.get("results") or {}).get("uri") or "")
+            import urllib.parse
+            source = urllib.parse.unquote(urllib.parse.urlparse(uri).path) if uri else ""
+            if source and _take_portal_file(source, path):
+                return _outcome(way, "ok", seconds)
+            return _outcome(way, "failed", seconds, f"the portal answered but its picture is not there ({uri or 'no uri'})")
+        if code == 1:
+            return _outcome(way, "cancelled", seconds, "the screenshot was cancelled on the desktop")
+        return _outcome(way, "failed", seconds, f"the portal ended the request (response {code})")
+    late = _portal_picture_since(asked_at)
+    if late and _take_portal_file(late, path):          # it saved the picture after all
+        return _outcome(way, "ok", seconds, "the picture was found in the Pictures folder")
+    status = {"timeout": "timeout", "refused": "refused", "unavailable": "unavailable"}.get(out["status"], "failed")
+    return _outcome(way, status, seconds, str(out.get("detail") or ""), limit=limit if status == "timeout" else None)
+
+
+def _portal_folders() -> list:
+    """Where the portal saves a screenshot: the top of the (localised) Pictures folder."""
+    found: list = []
+    try:
+        named = platform.user_dirs().get("pictures")
+    except Exception:
+        named = None
+    for folder in (named, platform.user_pictures_dir()):
+        folder = os.path.expanduser(str(folder or ""))
+        if folder and folder not in found and os.path.isdir(folder):
+            found.append(folder)
+    return found
+
+
+def _portal_picture_since(asked_at: float) -> Optional[str]:
+    """A picture the portal saved in the Pictures folder at or after `asked_at`."""
+    return latest_screenshot(since=asked_at, folders=_portal_folders(), name=PORTAL_PICTURE_NAME)
+
+
+def _capture_with_portal_gdbus(path: str, *, interactive: bool, limit: float) -> Dict[str, Any]:
+    """Without a D-Bus library: ask through `gdbus call`. Its answer goes to the gdbus process, which
+    has left by then, so the picture is taken from where the portal saves it: the newest screenshot
+    in the Pictures folder written after the request."""
+    way = "the desktop's screenshot portal"
+    gdbus = shutil.which("gdbus")
+    if not gdbus:
+        return _outcome(way, "unavailable", 0.0, "no D-Bus library in this Python and no gdbus program")
+    started, asked_at = time.monotonic(), time.time()
+    token = f"eli_{os.getpid()}_{next(_PORTAL_TOKENS)}"
+    options = f"{{'handle_token': <'{token}'>, 'interactive': <{'true' if interactive else 'false'}>}}"
+    try:
+        call = subprocess.run([gdbus, "call", "--session", "--dest", PORTAL_BUS, "--object-path", PORTAL_PATH,
+                               "--method", "org.freedesktop.portal.Screenshot.Screenshot", "", options],
+                              capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return _outcome(way, "timeout", time.monotonic() - started, f"gdbus got no reply within {limit:.0f} s", limit=limit)
+    except OSError as exc:
+        return _outcome(way, "failed", time.monotonic() - started, str(exc))
+    if call.returncode != 0:
+        said = " ".join((call.stderr or "").split())[-300:]
+        status = "unavailable" if "UnknownMethod" in said or "ServiceUnknown" in said or "No such interface" in said else "refused"
+        return _outcome(way, status, time.monotonic() - started, said or f"gdbus exited with {call.returncode}")
+    deadline = started + limit
+    while time.monotonic() < deadline:
+        late = _portal_picture_since(asked_at)
+        if late and _take_portal_file(late, path):
+            return _outcome(way, "ok", time.monotonic() - started)
+        time.sleep(PORTAL_POLL_S)
+    return _outcome(way, "timeout", time.monotonic() - started, f"no picture within {limit:.0f} s", limit=limit)
 
 
 def _macos_screen_recording_allowed() -> Optional[bool]:
@@ -163,11 +509,12 @@ def _macos_screen_recording_allowed() -> Optional[bool]:
         return None
 
 
-def _capture_windows_area(path: str, wait: float = 60.0) -> Dict[str, Any] | None:
+def _capture_windows_area(path: str, limit: float) -> Dict[str, Any]:
     """Windows: the user picks the area with Windows' own snip overlay (ms-screenclip:), which puts
-    the picture on the clipboard; it is saved from there. None when no new picture arrives."""
+    the picture on the clipboard; it is saved from there."""
+    way = "Windows' snip overlay"
+    started = time.monotonic()
     try:
-        import time
         from PIL import ImageGrab  # type: ignore
 
         def _clip_bytes():
@@ -176,111 +523,195 @@ def _capture_windows_area(path: str, wait: float = 60.0) -> Dict[str, Any] | Non
 
         before = _clip_bytes()
         os.startfile("ms-screenclip:")  # type: ignore[attr-defined]
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            time.sleep(0.5)
+        while time.monotonic() - started < limit:
+            time.sleep(PORTAL_POLL_S)
             img = ImageGrab.grabclipboard()
             if hasattr(img, "save") and img.tobytes() != before:
                 img.save(path)
-                return {"ok": True, "path": path, "content": f"Screenshot saved: {path}",
-                        "response": f"Screenshot saved: {path}"}
-    except Exception:
+                return _outcome(way, "ok", time.monotonic() - started)
+    except Exception as exc:
         log.debug("Windows area capture failed", exc_info=True)
-    return None
+        return _outcome(way, "failed", time.monotonic() - started, f"{type(exc).__name__}: {exc}")
+    return _outcome(way, "timeout", time.monotonic() - started, f"no area was snipped within {limit:.0f} s", limit=limit)
 
 
 # ----------------------------------------------------------------------
 # Screenshot — every OS, every Linux desktop (X11 and Wayland)
 # ----------------------------------------------------------------------
+_PORTAL_BACKENDS = (("gnome", "xdg-desktop-portal-gnome"), ("kde", "xdg-desktop-portal-kde"),
+                    ("hyprland", "xdg-desktop-portal-hyprland"), ("sway", "xdg-desktop-portal-wlr"),
+                    ("river", "xdg-desktop-portal-wlr"), ("wayfire", "xdg-desktop-portal-wlr"),
+                    ("labwc", "xdg-desktop-portal-wlr"), ("xfce", "xdg-desktop-portal-gtk"),
+                    ("cinnamon", "xdg-desktop-portal-xapp"), ("mate", "xdg-desktop-portal-xapp"))
+
+
+def _capture_ways(path: str, area: bool) -> list:
+    """(name, the program it needs or None, run(limit) -> outcome) for this OS and desktop."""
+    def tool(name: str, cmd: list):
+        return (name, cmd[0], lambda limit: _capture_with_tool(name, cmd, path, limit))
+
+    if WINDOWS:
+        if area:
+            return [("Windows' snip overlay", None, lambda limit: _capture_windows_area(path, limit))]
+        return [("Pillow", None, lambda limit: _capture_with_imagegrab(path))]
+    if MACOS:
+        ways = [tool("screencapture", ["screencapture", "-x"] + (["-i"] if area else []) + [path])]
+        if not area:
+            ways.append(("Pillow", None, lambda limit: _capture_with_imagegrab(path)))
+        return ways
+
+    portal = ("the desktop's screenshot portal", None,
+              lambda limit: _capture_with_portal(path, interactive=area, limit=limit))
+
+    def grim(limit: float) -> Dict[str, Any]:
+        if not area:
+            return _capture_with_tool("grim", ["grim", path], path, limit)
+        if not _check_tool("slurp"):
+            return _outcome("grim", "unavailable", 0.0, "an area needs slurp, which is not installed")
+        started = time.monotonic()
+        try:
+            pick = subprocess.run(["slurp"], capture_output=True, text=True, timeout=limit)
+        except subprocess.TimeoutExpired:
+            return _outcome("grim", "timeout", time.monotonic() - started, f"no area was picked within {limit:.0f} s", limit=limit)
+        except OSError as exc:
+            return _outcome("grim", "failed", time.monotonic() - started, str(exc))
+        geometry = (pick.stdout or "").strip()
+        if pick.returncode != 0 or not geometry:
+            return _outcome("grim", "cancelled", time.monotonic() - started, "no area was picked")
+        left = max(0.0, limit - (time.monotonic() - started))
+        return _capture_with_tool("grim", ["grim", "-g", geometry, path], path, left)
+
+    spectacle = tool("spectacle", ["spectacle", "-b", "-n", "-r" if area else "-f", "-o", path])
+    gnome = tool("gnome-screenshot", ["gnome-screenshot"] + (["-a"] if area else []) + ["-f", path])
+    if IS_WAYLAND:
+        return [portal, ("grim", "grim", grim), spectacle, gnome]
+    ways = []
+    if not area:
+        ways.append(("Pillow", None, lambda limit: _capture_with_imagegrab(path)))
+    ways += [tool("scrot", ["scrot"] + (["-s"] if area else []) + [path]),
+             tool("maim", ["maim"] + (["-s"] if area else []) + [path]),
+             tool("import", ["import"] + ([] if area else ["-window", "root"]) + [path]),
+             spectacle, gnome, portal]
+    return ways
+
+
+def _attempt_words(outcome: Dict[str, Any]) -> str:
+    detail = str(outcome.get("detail") or "")
+    status = outcome.get("status")
+    if status == "timeout":
+        return f"{outcome['way']} timed out ({detail or 'no picture in time'})"
+    if status == "cancelled":
+        return f"{outcome['way']}: {detail or 'cancelled'}"
+    if status == "unavailable":
+        return f"{outcome['way']} is not available ({detail})" if detail else f"{outcome['way']} is not available"
+    return f"{outcome['way']} failed ({detail})" if detail else f"{outcome['way']} failed"
+
+
+def _missing_advice(attempts: list, installed: list) -> str:
+    """Advice only about what is actually missing here: the portal backend for this desktop when the
+    portal has no Screenshot interface, or a capture program when none is installed."""
+    portal_missing = any(a["way"] == "the desktop's screenshot portal" and a["status"] == "unavailable"
+                         and "interface" in str(a.get("detail") or "") for a in attempts)
+    tips = []
+    if portal_missing:
+        backend = next((name for key, name in _PORTAL_BACKENDS if key in DESKTOP), "")
+        tips.append(f"the desktop's portal has no screenshot service; installing {backend} would give it one"
+                    if backend else "the desktop's portal has no screenshot service; its backend for this "
+                                    "desktop is not installed")
+    if LINUX and not IS_WAYLAND and not installed:
+        tips.append("no capture program is installed (scrot or maim would do)")
+    return "; ".join(tips)
+
+
 def take_screenshot(region: str = "full", *, keep: bool = True) -> Dict[str, Any]:
     """Take a screenshot: region "full" (every screen) or "area" (the user picks one).
     `keep`: a screenshot the user asked for goes to their Pictures folder; one ELI takes to read
-    the screen goes to its own data folder. Returns {ok, path, error}.
+    the screen goes to its own data folder, kept for this run of ELI only. Returns
+    {ok, path, error, attempts}: `attempts` is what each way did (status, seconds, exit code, what it
+    said), and the error is built from it, so a way that timed out is reported as a timeout.
 
-    Each OS and desktop has an ordered list of ways, each with a time limit and counted only when
-    it wrote the picture:
+    The ways for each OS and desktop:
       Windows   Pillow (GDI, all monitors); an area through Windows' own snip overlay.
       macOS     screencapture, then Pillow; says so when screen recording is not allowed.
       Linux     on Wayland (GNOME, KDE, Sway, Hyprland, any compositor): the desktop's screenshot
                 portal, then grim (+slurp for an area), spectacle, gnome-screenshot.
                 On X11 (any desktop): Pillow (XCB), then scrot, maim, ImageMagick's import,
                 spectacle, gnome-screenshot, then the portal.
+    A record per desktop keeps which way worked and how long it took: that way is tried first, ways
+    that never worked here last, each way's time limit comes from its own measured times, and the
+    whole capture is bounded by FIRST_TRY_CEILING_S.
     """
     area = (region or "full").lower() != "full"
+    kind = "area" if area else "full"
     path = _screenshot_path("Screenshot_area" if area else "Screenshot", keep=keep)
-
-    if WINDOWS:
-        result = _capture_windows_area(path) if area else _capture_with_imagegrab(path)
-        if result:
-            return result
-        why = ("No area was snipped (Windows' snip overlay closed without a picture)." if area
-               else "Windows did not give ELI a picture of the screen.")
-        return {"ok": False, "error": why, "content": "Screenshot failed", "response": "Screenshot failed"}
-
-    if MACOS:
-        if _capture_with_tool(["screencapture", "-x"] + (["-i"] if area else []) + [path], path,
-                              timeout=120 if area else 30) or (not area and _capture_with_imagegrab(path)):
-            out = _saved(path)
-            if _macos_screen_recording_allowed() is False:
-                out["note"] = ("macOS has not allowed ELI to record the screen, so the picture shows the desktop "
-                               "without its windows: allow ELI in System Settings › Privacy & Security › Screen "
-                               "Recording.")
-            return out
-        return {"ok": False, "error": "screencapture did not produce a picture", "content": "Screenshot failed",
-                "response": "Screenshot failed"}
-
-    tried: list = []
-    def _slurp_then_grim() -> bool:
-        try:
-            pick = subprocess.run(["slurp"], capture_output=True, text=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        geometry = (pick.stdout or "").strip()
-        return pick.returncode == 0 and bool(geometry) and _capture_with_tool(["grim", "-g", geometry, path], path)
-
-    if IS_WAYLAND:
-        ways = [
-            ("the desktop's screenshot portal", lambda: _capture_with_portal(path, interactive=area)),
-            ("grim", lambda: (_slurp_then_grim() if _check_tool("slurp") else False) if area
-                     else _capture_with_tool(["grim", path], path)),
-            ("spectacle", lambda: _capture_with_tool(["spectacle", "-b", "-n", "-r" if area else "-f", "-o", path],
-                                                     path, timeout=120 if area else 30)),
-            ("gnome-screenshot", lambda: _capture_with_tool(
-                ["gnome-screenshot"] + (["-a"] if area else []) + ["-f", path], path, timeout=120 if area else 30)),
-        ]
-        tools = {"grim": "grim", "spectacle": "spectacle", "gnome-screenshot": "gnome-screenshot"}
-    else:
-        ways = [
-            ("Pillow", lambda: (not area) and bool(_capture_with_imagegrab(path))),
-            ("scrot", lambda: _capture_with_tool(["scrot"] + (["-s"] if area else []) + [path], path,
-                                                 timeout=120 if area else 30)),
-            ("maim", lambda: _capture_with_tool(["maim"] + (["-s"] if area else []) + [path], path,
-                                                timeout=120 if area else 30)),
-            ("import", lambda: _capture_with_tool(["import"] + ([] if area else ["-window", "root"]) + [path], path,
-                                                  timeout=120 if area else 30)),
-            ("spectacle", lambda: _capture_with_tool(["spectacle", "-b", "-n", "-r" if area else "-f", "-o", path],
-                                                     path, timeout=120 if area else 30)),
-            ("gnome-screenshot", lambda: _capture_with_tool(
-                ["gnome-screenshot"] + (["-a"] if area else []) + ["-f", path], path, timeout=120 if area else 30)),
-            ("the desktop's screenshot portal", lambda: _capture_with_portal(path, interactive=area)),
-        ]
-        tools = {"scrot": "scrot", "maim": "maim", "import": "import", "spectacle": "spectacle",
-                 "gnome-screenshot": "gnome-screenshot"}
-    for name, way in ways:
-        if name in tools and not _check_tool(tools[name]):
+    if not keep:
+        _prune_own_captures(keep_path=path)
+    record = _ways_record(kind)
+    ways = sorted(_capture_ways(path, area), key=lambda w: _rank(record.get(w[0]) or {}))
+    deadline = time.monotonic() + FIRST_TRY_CEILING_S
+    attempts: list = []
+    installed: list = []
+    portal_asked_at = None
+    for name, needs, run in ways:
+        if needs and not _check_tool(needs):
+            attempts.append(_outcome(name, "unavailable", 0.0, f"{needs} is not installed"))
             continue
-        tried.append(name)
-        if way():
-            return _saved(path)
+        if needs:
+            installed.append(needs)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            attempts.append(_outcome(name, "skipped", 0.0, "the capture's time was used up"))
+            continue
+        if name == "the desktop's screenshot portal":
+            portal_asked_at = time.time()
+        outcome = run(min(_limit_for(record.get(name) or {}), left))
+        attempts.append(outcome)
+        _note_outcome(kind, outcome)
+        if outcome["status"] == "ok":
+            _collect_late_portal_picture(portal_asked_at, path, keep_as=None)
+            result = _saved(path)
+            result["way"] = name
+            result["attempts"] = attempts
+            if MACOS and _macos_screen_recording_allowed() is False:
+                result["note"] = ("macOS has not allowed ELI to record the screen, so the picture shows the desktop "
+                                  "without its windows: allow ELI in System Settings › Privacy & Security › Screen "
+                                  "Recording.")
+            return result
 
-    if IS_WAYLAND:
-        advice = ("install your desktop's portal backend (xdg-desktop-portal-gnome, -kde, -wlr or -hyprland), "
-                  "or grim on wlroots compositors")
-    else:
-        advice = "install scrot or maim"
-    error = (f"No screenshot was taken ({'tried ' + ', '.join(tried) if tried else 'no capture tool was found'}); "
-             f"{advice}.")
-    return {"ok": False, "error": error, "content": "Screenshot failed", "response": "Screenshot failed"}
+    if _collect_late_portal_picture(portal_asked_at, path, keep_as=path):
+        attempts.append(_outcome("the desktop's screenshot portal", "ok", 0.0,
+                                 "its picture arrived after the wait and was found in the Pictures folder"))
+        result = _saved(path)
+        result["way"] = "the desktop's screenshot portal"
+        result["attempts"] = attempts
+        return result
+
+    tried = [a for a in attempts if a["status"] not in ("unavailable", "skipped")]
+    said = "; ".join(_attempt_words(a) for a in (tried or attempts)) or "no way of capturing the screen was found"
+    advice = _missing_advice(attempts, installed)
+    error = f"No screenshot was taken: {said}" + (f". {advice[0].upper() + advice[1:]}" if advice else "") + "."
+    return {"ok": False, "error": error, "attempts": attempts,
+            "content": "Screenshot failed", "response": "Screenshot failed"}
+
+
+def _collect_late_portal_picture(asked_at: Optional[float], path: str, *, keep_as: Optional[str]) -> bool:
+    """A portal that did not answer in time may still save its picture in the Pictures folder. That
+    full-screen picture of whatever was on screen is not left there unannounced: it becomes the
+    capture (`keep_as`), or, when another way already gave one, it goes into ELI's own captures
+    folder, which is cleared on the next run. True when it became the capture."""
+    if asked_at is None:
+        return False
+    late = _portal_picture_since(asked_at)
+    if not late or os.path.abspath(late) == os.path.abspath(path):
+        return False
+    if keep_as:
+        return _take_portal_file(late, keep_as)
+    try:
+        _own_captures_dir().mkdir(parents=True, exist_ok=True)
+        shutil.move(late, str(_own_captures_dir() / os.path.basename(late)))
+    except (OSError, shutil.Error):
+        log.debug("could not move a late portal picture out of Pictures", exc_info=True)
+    return False
 
 
 # ----------------------------------------------------------------------
