@@ -154,7 +154,9 @@ DEFAULTS: Dict[str, Any] = {
     "device_custom_names": {},
     "mic_enabled": False,
     "auto_save": True,
-    "log_to_file": False,
+    # The session log ELI can read back ("the issues in your terminal logs"): kept in ELI's own data
+    # folder, rotating, local only. Off, ELI could not see a line of what the terminal showed.
+    "log_to_file": True,
     "auto_load": True,
     "first_run_complete": False,
     "theme": "dark",
@@ -431,9 +433,17 @@ def _tuner_threads_to_auto(out: Dict[str, Any]) -> None:
         out["n_threads"] = 0
 
 
+def _session_log_on(out: Dict[str, Any]) -> None:
+    """The session log was off by default, and the settings page saved that default with everything
+    else: a file that says off was written before it could be read back. On once; switched off after
+    this, it stays off."""
+    if out.get("log_to_file") is False:
+        out["log_to_file"] = True
+
+
 # One-time changes to a saved file, in order; the file records how many it has had, so a value the
 # user sets afterwards is left alone.
-_REVISIONS = (_tuner_threads_to_auto,)
+_REVISIONS = (_tuner_threads_to_auto, _session_log_on)
 
 
 def _migrate_legacy_keys(data: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:

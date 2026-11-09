@@ -483,3 +483,16 @@ def test_valid_settings_file_is_not_flagged_as_corrupt(tmp_path, monkeypatch):
     settings = rs._load_settings_unsanitized(apply_env_overlay=False)
     assert settings["n_gpu_layers"] == 17
     assert rs.settings_file_was_corrupt_on_last_load() is False
+
+
+def test_the_session_log_eli_reads_back_is_on_by_default_and_can_be_switched_off(tmp_settings_file, monkeypatch):
+    """Off by default, ELI could not see a line of what its terminal had shown when asked about it."""
+    import json as _json
+    from eli.core.runtime_settings import DEFAULTS, _bring_up_to_date, load_settings, save_settings
+    assert DEFAULTS["log_to_file"] is True
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(tmp_settings_file))
+    tmp_settings_file.write_text(_json.dumps({"log_to_file": False, "settings_revision": 1}))
+    assert load_settings()["log_to_file"] is True, "the old default the settings page saved is on once"
+    save_settings({"log_to_file": False})
+    assert load_settings()["log_to_file"] is False, "switched off after that, it stays off"
+    assert _bring_up_to_date({"settings_revision": 1})[0].get("log_to_file") is None
