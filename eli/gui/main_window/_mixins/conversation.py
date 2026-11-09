@@ -1312,9 +1312,8 @@ class ConversationMixin:
         except Exception:
             return False
 
-    # Surfaces by the session ids they use: ELI VR says "eli-vr-<time>"; the web page and other API
-    # clients are the rest. This window's own sessions are never shown twice.
-    _SURFACE_NAMES = (("eli-vr-", "in VR"), ("web-", "on the web page"))
+    # Where a turn was said is read from its session id by the one map, eli.world.surfaces. This
+    # window's own sessions are never shown twice.
 
     def _own_session_ids(self) -> set:
         own = {"gui-direct", "voice_direct"}
@@ -1340,7 +1339,8 @@ class ConversationMixin:
             if when <= self._other_turns_seen or session in own or not content:
                 continue
             newest = max(newest, when)
-            where = next((name for prefix, name in self._SURFACE_NAMES if session.startswith(prefix)), "elsewhere")
+            from eli.world.surfaces import where as _where_said
+            where = _where_said(session) or "elsewhere"
             who = "you" if str(row.get("role") or "") == "user" else "ELI"
             self.chat_response_signal.emit(f"🗨️ {who} ({where}, {_time.strftime('%H:%M', _time.localtime(when))}): {content}")
         self._other_turns_seen = newest

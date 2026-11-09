@@ -4,6 +4,35 @@ from eli.gui.main_window._common import *  # noqa: F401,F403
 from eli.gui.main_window.widgets import _MiniTelemetryGraph
 
 
+def reset_outcome(s: dict, *, name_kept: bool) -> tuple:
+    """(wiped, title, text) of a memory reset (eli.core.memory_reset.run_reset's summary) for the Clear
+    Memory dialog. A reset that wiped nothing (its backup failed, so nothing was touched) is a failure,
+    with why and where the incomplete backup is: it was announced as "Memory cleared"."""
+    if not s.get("wiped"):
+        why = "; ".join(str(e) for e in (s.get("errors") or [])) or "the reset did not run"
+        text = f"Nothing was wiped: {why}."
+        if s.get("backup_incomplete"):
+            text += f"\n\nThe incomplete backup is at {s['backup_incomplete']}."
+        return False, "Memory not cleared", text
+    rb = s.get("rebuild") or {}
+    text = (
+        f"Wiped {s.get('db_rows', 0)} memory rows.\n"
+        f"Reset {s.get('faiss_reset', 0)} vector-index file(s).\n"
+        f"Removed {s.get('profiles_removed', 0)} profile file(s), "
+        f"{s.get('conversations_removed', 0)} conversation log(s), "
+        f"{s.get('runtime_wiped', 0)} runtime cache file(s), "
+        f"{s.get('files_removed', 0)} other file(s).\n"
+        f"Persona overlay {'reset' if s.get('persona_overlay_reset') else 'unchanged'}.\n"
+        f"Name {'kept' if name_kept else 'cleared'}.\n"
+        f"DB architecture rebuilt ({rb.get('init_steps', 0)} steps).\n\n"
+        f"Backup: {s.get('backup') or '(none)'}\n\n"
+        "Please restart ELI now for a clean slate."
+    )
+    if s.get("errors"):
+        text += f"\n\nNote: {s['errors']}"
+    return True, "Memory cleared", text
+
+
 class FeaturesMixin:
     def _on_gaze_toggled(self, checked: bool):
         """Start/stop the webcam gaze engine. When on, voice clicks act where
@@ -675,22 +704,11 @@ class FeaturesMixin:
             QMessageBox.critical(self, "Reset failed", f"Could not clear memory:\n{e}")
             return
 
-        rb = s.get("rebuild") or {}
-        msg = (
-            f"Wiped {s.get('db_rows', 0)} memory rows.\n"
-            f"Reset {s.get('faiss_reset', 0)} vector-index file(s).\n"
-            f"Removed {s.get('profiles_removed', 0)} profile file(s), "
-            f"{s.get('conversations_removed', 0)} conversation log(s), "
-            f"{s.get('runtime_wiped', 0)} runtime cache file(s).\n"
-            f"Persona overlay {'reset' if s.get('persona_overlay_reset') else 'unchanged'}.\n"
-            f"Name {'kept' if keep_profile.isChecked() else 'cleared'}.\n"
-            f"DB architecture rebuilt ({rb.get('init_steps', 0)} steps).\n\n"
-            f"Backup: {s.get('backup') or '(none)'}\n\n"
-            "Please restart ELI now for a clean slate."
-        )
-        if s.get("errors"):
-            msg += f"\n\nNote: {s['errors']}"
-        QMessageBox.information(self, "Memory cleared", msg)
+        wiped, title, msg = reset_outcome(s, name_kept=keep_profile.isChecked())
+        if not wiped:
+            QMessageBox.critical(self, title, msg)
+            return
+        QMessageBox.information(self, title, msg)
         try:
             self.status_label.setText("🧹 Memory cleared — restart ELI for a clean slate")
         except Exception:

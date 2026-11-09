@@ -204,3 +204,21 @@ def test_a_reset_leaves_none_of_the_user_s_words_and_keeps_the_installation(tmp_
         assert c.execute("SELECT text FROM memories").fetchall() == [(f"play {marker} on repeat",)]
     finally:
         c.close()
+
+
+def test_a_reset_that_wiped_nothing_is_shown_as_a_failure(tmp_path, monkeypatch):
+    """A backup that failed left everything in place, and the dialog still said "Memory cleared"."""
+    pytest = __import__("pytest")
+    pytest.importorskip("PySide6")
+    from eli.gui.main_window._mixins.features import reset_outcome
+    base, _config = _sandbox(tmp_path, monkeypatch)
+    base.chmod(0o500)                # the backup folder cannot be made: nothing is wiped
+    try:
+        s = mr.run_reset(rebuild=False)
+    finally:
+        base.chmod(0o700)
+    wiped, title, text = reset_outcome(s, name_kept=False)
+    assert wiped is False and title == "Memory not cleared"
+    assert text.startswith("Nothing was wiped: backup") and s["backup_incomplete"] in text
+    wiped, title, text = reset_outcome({"wiped": True, "ok": True, "db_rows": 4, "files_removed": 3}, name_kept=True)
+    assert wiped and title == "Memory cleared" and "3 other file(s)" in text and "Name kept" in text
