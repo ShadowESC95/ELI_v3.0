@@ -1,8 +1,6 @@
 """ConversationMixin — 25 EliMainWindow methods (v3 GUI mixin split)."""
 from __future__ import annotations
 from eli.gui.main_window._common import *  # noqa: F401,F403
-from eli.gui.main_window._common import _backend_context
-from eli.gui.main_window.adapters import _GUIEngineAdapter
 
 
 class ConversationMixin:
@@ -913,19 +911,8 @@ class ConversationMixin:
                 max_tokens  = self.max_tokens_input.value()
                 temperature = self.temperature_input.value()
                 reasoning_mode = getattr(self, '_reasoning_mode', 'quick')
-                n_ctx = _backend_context(backend)
 
                 # ── CognitiveEngine-first runtime path ──
-                adapter = _GUIEngineAdapter(
-                    backend          = backend,
-                    memory           = self._central_memory,
-                    max_tokens       = max_tokens,
-                    temperature      = temperature,
-                    n_ctx            = n_ctx,
-                    inference_lock   = self.__class__._inference_lock,
-                    cognitive_engine = getattr(self, '_cognitive_engine', None),
-                )
-
                 _ce = getattr(self, '_cognitive_engine', None)
                 _ce_ok = False
                 _orchestrator_ok = False
@@ -1028,31 +1015,30 @@ class ConversationMixin:
                         system_prompt += "\n\n" + memory_context
                     messages = [{'role': 'system', 'content': system_prompt}]
                     messages.extend(self.conversation_history[-10:])
-                    with self.__class__._inference_lock:
-                        if hasattr(backend, 'chat_stream'):
-                            first_token = True
-                            for token in backend.chat_stream(
-                                    messages, max_tokens=max_tokens, temperature=temperature):
-                                if _generation_cancelled():
-                                    _was_cancelled = True
-                                    break
-                                full_tokens.append(token)
-                                if first_token:
-                                    self.chat_response_signal.emit('__STREAM_START__')
-                                    first_token = False
-                                self.chat_response_signal.emit(token)
-                            if _was_cancelled:
-                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
-                            else:
-                                self.chat_response_signal.emit('__STREAM_END__')
-                            _response_streamed = True
-                            response = ''.join(full_tokens)
+                    if hasattr(backend, 'chat_stream'):
+                        first_token = True
+                        for token in backend.chat_stream(
+                                messages, max_tokens=max_tokens, temperature=temperature):
+                            if _generation_cancelled():
+                                _was_cancelled = True
+                                break
+                            full_tokens.append(token)
+                            if first_token:
+                                self.chat_response_signal.emit('__STREAM_START__')
+                                first_token = False
+                            self.chat_response_signal.emit(token)
+                        if _was_cancelled:
+                            self.chat_response_signal.emit('__STREAM_CANCELLED__')
                         else:
-                            response = backend.chat(
-                                messages=messages,
-                                max_tokens=max_tokens,
-                                temperature=temperature,
-                            )
+                            self.chat_response_signal.emit('__STREAM_END__')
+                        _response_streamed = True
+                        response = ''.join(full_tokens)
+                    else:
+                        response = backend.chat(
+                            messages=messages,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        )
 
                 # ── Identity / persona guardrails ──
                 low = response.lower()

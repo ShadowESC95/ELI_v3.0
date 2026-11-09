@@ -520,18 +520,6 @@ def _eli_prompt_floor_tokens() -> int:
     return persona + answer
 
 
-def _backend_context(backend) -> int:
-    """The context the active backend runs at: its own figure, else what loaded."""
-    try:
-        n = int(getattr(backend, "n_ctx", 0) or 0)
-        if n > 0:
-            return n
-        from eli.cognition.gguf_inference import context_window
-        return int(context_window() or 0)
-    except Exception:
-        return 0
-
-
 def recommend_optimal_settings(sysinfo: Dict[str, Any]) -> Dict[str, Any]:
     """Auto-detect sensible defaults from the current machine's hardware.
 

@@ -1619,8 +1619,7 @@ class ChromeIoMixin:
                      "What should I focus on next?"},
                 ]
                 temp = self.temperature_input.value() if hasattr(self, "temperature_input") else 0.5
-                with self.__class__._inference_lock:
-                    response = backend.chat(messages=messages, max_tokens=640, temperature=temp)
+                response = backend.chat(messages=messages, max_tokens=640, temperature=temp)
 
                 src_note = (f"<small>Sources: {len(g['memories'])} memory hits · "
                             f"{len(g['daemon_patterns'])} patterns · "
@@ -1680,8 +1679,7 @@ class ChromeIoMixin:
                     {"role": "user",   "content": user_content},
                 ]
                 temp = self.temperature_input.value() if hasattr(self, "temperature_input") else 0.4
-                with self.__class__._inference_lock:
-                    response = backend.chat(messages=messages, max_tokens=700, temperature=temp)
+                response = backend.chat(messages=messages, max_tokens=700, temperature=temp)
 
                 self.proactive_summary_signal.emit(
                     f"<b>📝 Conversation Summary</b> "
@@ -1761,8 +1759,7 @@ class ChromeIoMixin:
                     {"role": "user",   "content": f"RUNTIME STATE:\n{grounded}"},
                 ]
                 temp = self.temperature_input.value() if hasattr(self, "temperature_input") else 0.6
-                with self.__class__._inference_lock:
-                    response = backend.chat(messages=messages, max_tokens=700, temperature=temp)
+                response = backend.chat(messages=messages, max_tokens=700, temperature=temp)
 
                 self.proactive_insights_signal.emit(
                     f"<b>🔬 ELI Runtime Analysis</b> "

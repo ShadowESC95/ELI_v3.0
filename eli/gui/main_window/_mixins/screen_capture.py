@@ -195,8 +195,7 @@ class ScreenCaptureMixin:
                         f"SCREEN TEXT:\n{_ocr[:3000]}\n\n"
                         "Analysis:"
                     )
-                    with self.__class__._inference_lock:
-                        resp = backend.generate(prompt=prompt, max_tokens=512, temperature=0.6)
+                    resp = backend.generate(prompt=prompt, max_tokens=512, temperature=0.6)
                 self._sc_eli_done_sig.emit(resp)
             except Exception as exc:
                 self._sc_eli_done_sig.emit(f"❌ Error: {exc}")

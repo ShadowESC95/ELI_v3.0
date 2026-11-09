@@ -1,8 +1,6 @@
 """ImageMixin — 20 EliMainWindow methods (v3 GUI mixin split)."""
 from __future__ import annotations
 from eli.gui.main_window._common import *  # noqa: F401,F403
-from eli.gui.main_window._common import _backend_context
-from eli.gui.main_window.adapters import _GUIEngineAdapter
 
 
 class ImageMixin:
@@ -308,16 +306,9 @@ class ImageMixin:
                     except Exception as _e:
                         reply = f"[CE error: {_e}]"
                 else:
-                    adapter = _GUIEngineAdapter(
-                        backend=backend,
-                        memory=self._central_memory,
-                        max_tokens=-1,
-                        temperature=self.temperature_input.value(),
-                        n_ctx=_backend_context(backend),
-                        inference_lock=self.__class__._inference_lock,
-                        cognitive_engine=None,
-                    )
-                    reply = adapter.generate(context)
+                    # No engine: the loaded backend answers (the adapter this called had no generate)
+                    reply = backend.generate(prompt=context, max_tokens=-1,
+                                             temperature=self.temperature_input.value())
                 self._image_chat_sig.emit(reply.strip())
             except Exception as e:
                 self._image_chat_sig.emit(f"Error: {e}")

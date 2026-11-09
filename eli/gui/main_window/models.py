@@ -134,18 +134,23 @@ class LocalModelManager:
             gc.collect()
             return False
 
+    # The window's own generations (proactive suggestions, screen text, the self-improvement plan)
+    # run on the model gguf_inference loaded, so they go through gguf_inference: llama.cpp's one
+    # lock (eli/runtime/native_locks.py), Stop, and the user's priority over background work hold
+    # for them as for every other call. They called the Llama object directly under a lock of the
+    # window's own, alongside the engine's and the embedder's calls on the same native model.
+    @staticmethod
+    def _call_args(messages) -> Dict[str, Any]:
+        return {"prompt": messages} if isinstance(messages, str) else {"messages": list(messages or [])}
+
     def chat(self, messages: List[Dict[str, str]], max_tokens: int = 2048,
              temperature: float = 0.7) -> str:
-        if not self.is_loaded or not self.model:
+        if not self.is_loaded:
             return "❌ Model not loaded"
         try:
-            response = self.model.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=0.9,
-            )
-            return response['choices'][0]['message']['content'].strip()
+            from eli.cognition import gguf_inference as _gg
+            return str(_gg.chat_completion(**self._call_args(messages), max_tokens=max_tokens,
+                                           temperature=temperature) or "").strip()
         except Exception as e:
             return f"❌ Chat error: {str(e)}"
     def generate(self, prompt: str, max_tokens: int = 2048,
@@ -156,20 +161,14 @@ class LocalModelManager:
         ]
         return self.chat(messages, max_tokens=max_tokens, temperature=temperature)
     def chat_stream(self, messages, max_tokens=4096, temperature=0.7):
-        if not self.is_loaded or not self.model:
+        if not self.is_loaded:
             yield "❌ Model not loaded"
             return
         try:
-            stream = self.model.create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=0.9,
-                stream=True,
-            )
-            for chunk in stream:
-                delta = chunk['choices'][0].get('delta', {})
-                token = delta.get('content', '')
+            from eli.cognition import gguf_inference as _gg
+            for chunk in _gg.generate(**self._call_args(messages), max_tokens=max_tokens,
+                                      temperature=temperature, stream=True):
+                token = chunk.get("response", "") if isinstance(chunk, dict) else str(chunk or "")
                 if token:
                     yield token
         except Exception as e:

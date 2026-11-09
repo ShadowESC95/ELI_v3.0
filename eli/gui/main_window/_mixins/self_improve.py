@@ -109,8 +109,7 @@ class SelfImproveMixin:
                         f"(file path + what to change or add). Be concrete."
                     )
                     try:
-                        with self.__class__._inference_lock:
-                            resp = backend.generate(prompt=prompt, max_tokens=400, temperature=0.4)
+                        resp = backend.generate(prompt=prompt, max_tokens=400, temperature=0.4)
                         lines.append("\n=== AI Action Plan ===")
                         lines.append(resp.strip())
                     except Exception as _ai_err:

@@ -161,8 +161,6 @@ from eli.gui.main_window._mixins.tabs import TabsMixin
 class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin, ImageMixin, QuickActionsMixin, ScreenCaptureMixin, SelfImproveMixin, SettingsModelMixin, TabsMixin):
     stt_transcript = pyqtSignal(str)
 
-    _inference_lock = __import__('threading').Lock()  # llama_cpp is NOT thread-safe
-
     log_signal = pyqtSignal(str)
 
     status_signal = pyqtSignal(str)
