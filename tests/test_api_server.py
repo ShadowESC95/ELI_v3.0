@@ -834,3 +834,19 @@ def test_jsq_turns_any_device_id_into_a_literal_that_cannot_end_anything():
         assert got["ok"], value          # nothing that ends the attribute or the tag
         assert got["back"] == value      # and the handler receives exactly the id
         assert "'" not in got["html"] and '"' not in got["html"]
+
+
+def test_accepting_a_suggestion_automates_what_was_suggested(tokenless_client, monkeypatch):
+    """The page sent every suggestion as command "on" at the hour, and the model defaulted the command
+    to "on": a lamp switched off at 23:40 most nights became an automation turning it on at 23:00."""
+    from types import SimpleNamespace
+    added = []
+    monkeypatch.setattr(srv, "_device_server", lambda: SimpleNamespace(
+        add_automation=lambda **k: added.append(k) or {"ok": True}))
+    body = {"device": "lamp-1", "command": "off", "value": None, "hour": 23, "minute": 40, "name": "Lamp"}
+    assert tokenless_client.post("/v1/home/suggestions/accept", json=body).status_code == 200
+    assert added == [{"device": "lamp-1", "command": "off", "time_str": "23:40", "value": None, "name": "Lamp"}]
+    no_command = {k: v for k, v in body.items() if k != "command"}
+    assert tokenless_client.post("/v1/home/suggestions/accept", json=no_command).status_code == 422
+    page = tokenless_client.get("/").text
+    assert "command:x.command" in page and "minute:x.minute" in page and "command:'on'" not in page

@@ -2672,11 +2672,11 @@ _WEB_UI = """<!doctype html>
     Promise.all([api('/v1/home/suggestions'),api('/v1/home/automations')]).then(function(res){
       const box=$('#home-sugg'); if(!box)return;
       const s=(res[0]&&res[0].suggestions)||[], autos=(res[1]&&res[1].automations)||[];
-      let h='';
+      let h=''; _suggs=[];
       if(s.length){
         h+='<div class="syscard" style="margin-bottom:14px"><h4>&#10024; ELI suggests</h4>';
         s.forEach(x=>{h+='<div class="src"><div class="sh"><span class="sx">'+esc(x.text)+'</span>'+
-          '<button class="roombtn sugg-accept" data-dev="'+esc(x.device)+'" data-hour="'+(x.hour||0)+'" data-name="'+esc(x.name||'')+'">Automate</button></div></div>';});
+          '<button class="roombtn sugg-accept" data-idx="'+_suggs.length+'">Automate</button></div></div>';_suggs.push(x);});
         h+='</div>';
       }
       if(autos.length){
@@ -2686,12 +2686,15 @@ _WEB_UI = """<!doctype html>
         h+='</div>';
       }
       box.innerHTML=h;
-      box.querySelectorAll('.sugg-accept').forEach(b=>b.onclick=()=>acceptSugg(b.dataset.dev,+b.dataset.hour,b.dataset.name));
+      box.querySelectorAll('.sugg-accept').forEach(b=>b.onclick=()=>acceptSugg(_suggs[+b.dataset.idx]));
       box.querySelectorAll('.auto-toggle').forEach(c=>c.onchange=()=>toggleAuto(c.dataset.id,c.checked));
       box.querySelectorAll('.auto-rm').forEach(r=>r.onclick=()=>removeAuto(r.dataset.id));
     }).catch(()=>{});
   }
-  function acceptSugg(device,hour,name){api('/v1/home/suggestions/accept',{method:'POST',body:JSON.stringify({device:device,command:'on',hour:hour,name:name})}).then(()=>loadHomeSuggestions()).catch(()=>{});}
+  // the suggestion as it was made: its own command, value and minute (it was sent as "on" at the hour,
+  // so a lamp switched off at 23:40 most nights became an automation turning it on at 23:00)
+  let _suggs=[];
+  function acceptSugg(x){if(!x)return;api('/v1/home/suggestions/accept',{method:'POST',body:JSON.stringify({device:x.device,command:x.command,value:(x.value===undefined?null:x.value),hour:x.hour||0,minute:x.minute||0,name:x.name||''})}).then(()=>loadHomeSuggestions()).catch(()=>{});}
   function toggleAuto(id,en){api('/v1/home/automations/toggle',{method:'POST',body:JSON.stringify({id:id,enabled:en})}).catch(()=>{});}
   function removeAuto(id){api('/v1/home/automations/remove',{method:'POST',body:JSON.stringify({id:id})}).then(()=>loadHomeSuggestions()).catch(()=>{});}
   window.renderDevConfig=renderDevConfig; window.saveDevConfig=saveDevConfig; window.ctlDev=ctlDev; window.addDevicePrompt=addDevicePrompt; window.addDevice=addDevice; window.loadDevices=loadDevices; window.ctlRoom=ctlRoom; window.moveDevice=moveDevice; window.discoverDevices=discoverDevices; window.useBroker=useBroker; window.openDiscover=openDiscover; window.addDiscovered=addDiscovered; window.pairDialog=pairDialog;
@@ -3452,9 +3455,13 @@ class AutomationRef(BaseModel):
     enabled: Optional[bool] = None
 
 class SuggestionAccept(BaseModel):
+    """One of ELI's automation suggestions as it was made (eli/runtime/home_intel.suggestions): its
+    command is required, never assumed to be "on"."""
     device: str
-    command: str = "on"
+    command: str
+    value: Optional[Any] = None
     hour: int
+    minute: int = 0
     name: str = ""
 
 class SceneAction(BaseModel):
@@ -4715,9 +4722,9 @@ def home_suggestions_ep():
 @app.post("/v1/home/suggestions/accept", tags=["Devices"], dependencies=[Depends(require_member)])
 def home_suggestion_accept(req: SuggestionAccept):
     """Turn one of ELI's suggestions into a real recurring automation."""
-    hm = f"{int(req.hour) % 24:02d}:00"
+    hm = f"{int(req.hour) % 24:02d}:{int(req.minute) % 60:02d}"
     return _device_server().add_automation(device=req.device, command=req.command,
-                                          time_str=hm, name=req.name)
+                                          time_str=hm, value=req.value, name=req.name)
 
 @app.get("/v1/home/automations", tags=["Devices"], dependencies=[Depends(_require_token)])
 def home_automations_list():
