@@ -103,6 +103,14 @@ def main() -> int:
     if not launch_allowed(allow_gui_prompt=True):
         return 1
 
+    # ELI's console in a file of its own, which it can read back (eli/utils/log.py)
+    try:
+        from eli.utils.log import keep_console_log
+        keep_console_log()
+    except Exception:
+        import logging
+        logging.getLogger("eli.boot").debug("console log not kept", exc_info=True)
+
     # ── First-run/boot DB + machine-inventory bootstrap (idempotent) ─────────
     # Ensures the full schema exists and the app index is populated even when ELI
     # was not launched via install.sh (copied tree / portable bundle / bare run).
