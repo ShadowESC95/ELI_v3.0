@@ -31,6 +31,7 @@ def _build_prompt(request: str, actions: List[str], *, prev_code: str = "", erro
         "api.summarize_file(path)\n"
         "api.check_job(job_id)\n"
         "api.background_jobs()\n"
+        "wait(seconds)   # pause before checking again; the program has a time limit\n"
     )
     catalogue = ("\nAvailable actions (subset): " + ", ".join(actions[:40])) if actions else ""
     base = (

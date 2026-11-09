@@ -17,16 +17,32 @@ Safety here is therefore STATIC + NAMESPACE based, not process isolation, AND ga
   3. RESTRICTED NAMESPACE — exec runs with `__builtins__` replaced by the safe set and only
      `api` + `execute` injected, so even a missed static check fails closed (NameError).
 
+  4. BOUNDED RUN — the program runs under a trace function on its own frames that stops it at a
+     wall-clock deadline (eli.coding.budget.Deadline, which also expires at shutdown), so a loop
+     that never ends cannot keep the turn's thread. Its `print` is a bounded one of its own (the
+     process-wide sys.stdout is never swapped, so other threads' output is not captured), and
+     `wait(seconds)` is the one way to pause, bounded by the same deadline, for polling a job.
+     A call into `api` (or one builtin call such as sum over a huge range) runs to its own end;
+     the deadline is checked on the program's next line.
+
 This module is the gate + static validator + runner only; per-call risk classification
 composes the existing `approval_engine` at the call site if desired.
 """
 from __future__ import annotations
 
 import ast
-import contextlib
-import io
+import sys
+import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+from eli.coding.budget import DEFAULT_SOLVE_BUDGET_S, Deadline
+
+_PROGRAM_FILENAME = "<eli-code-mode>"
+
+
+class ProgramStopped(Exception):
+    """Raised inside a code-mode program that ran past its deadline (or ELI is shutting down)."""
 
 # ── Safe builtins exposed to the program (curated; nothing introspective/dangerous) ──
 _SAFE_BUILTINS: Dict[str, Any] = {
@@ -115,17 +131,71 @@ def validate_program(code: str, *, allowed_roots=("api", "execute")) -> Optional
     return None
 
 
+def _bounded_print(sink: List[str], limit: int, meta: Dict[str, Any]) -> Callable[..., None]:
+    """A print() for the program: collects at most `limit` characters, notes when more was dropped."""
+    used = [0]
+
+    def _print(*args: Any, sep: str = " ", end: str = "\n", **_ignored: Any) -> None:
+        text = str(sep).join(str(a) for a in args) + str(end)
+        room = limit - used[0]
+        if room <= 0:
+            meta["stdout_truncated"] = True
+            return
+        if len(text) > room:
+            text = text[:room]
+            meta["stdout_truncated"] = True
+        sink.append(text)
+        used[0] += len(text)
+    return _print
+
+
+def _wait_helper(deadline: Deadline) -> Callable[[float], float]:
+    """wait(seconds): pause the program, never past its deadline. Returns the seconds waited."""
+    def wait(seconds: Any = 0) -> float:
+        try:
+            want = max(0.0, float(seconds))
+        except (TypeError, ValueError):
+            want = 0.0
+        start = time.monotonic()
+        until = start + min(want, deadline.remaining())
+        while not deadline.expired():
+            left = until - time.monotonic()
+            if left <= 0:
+                break
+            time.sleep(min(left, deadline.remaining()))
+        if deadline.expired():
+            raise ProgramStopped("the program ran past its time and was stopped")
+        return round(time.monotonic() - start, 3)
+    return wait
+
+
+def _deadline_tracer(deadline: Deadline) -> Callable:
+    """sys.settrace function: traces only the program's own frames and stops it at the deadline."""
+    def _local(frame, event, arg):
+        if event == "line" and deadline.expired():
+            raise ProgramStopped("the program ran past its time and was stopped")
+        return _local
+
+    def _global(frame, event, arg):
+        if frame.f_code.co_filename == _PROGRAM_FILENAME:
+            return _local
+        return None
+    return _global
+
+
 def run_restricted(
     code: str,
     *,
     api: Any = None,
     execute: Optional[Callable] = None,
     max_stdout: int = 8000,
+    deadline: "Deadline | float | None" = None,
 ) -> RestrictedResult:
-    """Gate → validate → run `code` in a restricted in-process namespace.
+    """Gate → validate → run `code` in a restricted in-process namespace, bounded by `deadline`
+    (a Deadline or seconds; default the coding agent's DEFAULT_SOLVE_BUDGET_S).
 
     The program should assign its answer to a variable named `result`. `api` and (if given)
-    `execute` are the only injected names besides safe builtins.
+    `execute` are the only injected names besides safe builtins, `print` and `wait`.
     """
     # 1) Full Control gate — the master switch the user flips in the GUI.
     try:
@@ -146,25 +216,36 @@ def run_restricted(
     if err is not None:
         return RestrictedResult(ok=False, validation_error=err)
 
-    # 3) Restricted namespace — only safe builtins + api/execute.
-    ns: Dict[str, Any] = {"__builtins__": dict(_SAFE_BUILTINS)}
+    # 3) Restricted namespace — only safe builtins + api/execute + the bounded print and wait.
+    limit = Deadline.coerce(deadline if deadline is not None else DEFAULT_SOLVE_BUDGET_S, label="code_mode")
+    out: List[str] = []
+    meta: Dict[str, Any] = {}
+    builtins = dict(_SAFE_BUILTINS)
+    builtins["print"] = _bounded_print(out, int(max_stdout), meta)
+    ns: Dict[str, Any] = {"__builtins__": builtins, "wait": _wait_helper(limit)}
     if api is not None:
         ns["api"] = api
     if execute is not None:
         ns["execute"] = execute
 
-    buf = io.StringIO()
+    previous = sys.gettrace()
     try:
-        compiled = compile(ast.parse(code, mode="exec"), "<eli-code-mode>", "exec")
-        with contextlib.redirect_stdout(buf):
-            exec(compiled, ns)  # noqa: S102 — bounded: gated + AST-whitelisted + restricted ns
+        compiled = compile(ast.parse(code, mode="exec"), _PROGRAM_FILENAME, "exec")
+        sys.settrace(_deadline_tracer(limit))
+        try:
+            exec(compiled, ns)  # noqa: S102 — gated + AST-whitelisted + restricted ns + deadline
+        finally:
+            sys.settrace(previous)
+    except ProgramStopped as e:
+        return RestrictedResult(ok=False, runtime_error=f"stopped: {e}", stdout="".join(out),
+                                meta={**meta, "stopped": True})
     except Exception as e:  # the program raised
         return RestrictedResult(
             ok=False, runtime_error=f"{type(e).__name__}: {e}",
-            stdout=buf.getvalue()[:max_stdout],
+            stdout="".join(out), meta=meta,
         )
     return RestrictedResult(
         ok=True, result=ns.get("result"),
-        stdout=buf.getvalue()[:max_stdout],
-        meta={"had_result": "result" in ns},
+        stdout="".join(out),
+        meta={**meta, "had_result": "result" in ns},
     )

@@ -7,6 +7,7 @@ These tests pin that ELI catches all four at install time, and that a failed
 install leaves the config untouched.
 """
 import json
+import os
 import sys
 import textwrap
 
@@ -165,3 +166,37 @@ def test_a_server_that_declares_network_gets_it(server_script):
         [sys.executable, str(server_script)], allow_network=True)
     assert "network:isolated" not in plan["applied"]
     assert any("network" in n for n in plan["notes"])
+
+
+def test_the_sandbox_module_imports_where_resource_does_not_exist(monkeypatch):
+    """`resource` is Unix-only; a top-level import made every MCP launch fail on Windows."""
+    import importlib.util
+    import eli.plugins.subprocess_sandbox as real
+    monkeypatch.setitem(sys.modules, "resource", None)       # import resource -> ImportError
+    spec = importlib.util.spec_from_file_location("_ss_without_resource", real.__file__)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert callable(mod.build_command) and callable(mod.capabilities)
+
+
+def test_a_child_gets_no_session_addresses(monkeypatch):
+    """The session bus, the ssh agent and the display were handed to every 'contained' child."""
+    from eli.plugins import subprocess_sandbox
+    env = {"PATH": "/usr/bin", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus",
+           "SSH_AUTH_SOCK": "/run/user/0/agent", "XDG_RUNTIME_DIR": "/run/user/0", "DISPLAY": ":0",
+           "WAYLAND_DISPLAY": "wayland-0", "AWS_SHARED_CREDENTIALS_FILE": "/x", "MY_API_TOKEN": "t"}
+    out = subprocess_sandbox.scrub_env(env)
+    assert out == {"PATH": "/usr/bin"}
+
+
+def test_the_session_sockets_are_masked_in_the_sandbox():
+    from eli.plugins import subprocess_sandbox
+    caps = subprocess_sandbox.capabilities()
+    if not caps.get("bubblewrap"):
+        pytest.skip("no bubblewrap on this machine")
+    plan = subprocess_sandbox.build_command([sys.executable, "-c", "pass"], allow_network=False)
+    argv = plan["argv"]
+    masked = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--tmpfs"]
+    for d in ("/run/user", "/run/dbus"):
+        if os.path.isdir(d):
+            assert os.path.realpath(d) in masked, f"{d} is reachable inside the sandbox"

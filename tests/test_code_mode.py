@@ -98,3 +98,45 @@ def test_code_mode_blocked_without_full_control(monkeypatch):
     from eli.coding.code_mode import run_code_mode
     out = run_code_mode("do it", lambda p: "result = 1", api=type("A", (), {"actions": lambda s: []})())
     assert out["ok"] is False and out["blocked"] is True
+
+
+# ── a program cannot keep the turn's thread ─────────────────────────────────
+def test_a_loop_that_never_ends_is_stopped_at_its_deadline(monkeypatch):
+    """`while` is allowed and nothing bounded the run: a polling or runaway loop hung the turn's
+    thread for good."""
+    import threading
+    monkeypatch.setattr(fc, "is_full_control", lambda: True)
+    box = {}
+    t = threading.Thread(target=lambda: box.update(r=R.run_restricted("while True:\n    pass", api=object(),
+                                                                       deadline=0.5)), daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive(), "the program was never stopped"
+    assert box["r"].ok is False and box["r"].runtime_error.startswith("stopped")
+
+
+def test_output_is_bounded_and_the_process_stdout_is_never_swapped(monkeypatch):
+    import sys
+    monkeypatch.setattr(fc, "is_full_control", lambda: True)
+    seen = []
+
+    class API:
+        def probe(self):
+            seen.append(sys.stdout)
+            return 1
+    before = sys.stdout
+    r = R.run_restricted("n = 0\nwhile n < 5000:\n    print('x' * 50)\n    n += 1\nresult = api.probe()",
+                         api=API(), max_stdout=200)
+    assert r.ok and len(r.stdout) == 200 and r.meta.get("stdout_truncated") is True
+    assert seen == [before], "another thread's prints would have gone into the program's buffer"
+
+
+def test_wait_is_bounded_by_the_deadline(monkeypatch):
+    import time
+    monkeypatch.setattr(fc, "is_full_control", lambda: True)
+    t0 = time.monotonic()
+    r = R.run_restricted("waited = wait(60)\nresult = waited", api=object(), deadline=0.3)
+    assert r.ok is False and r.runtime_error.startswith("stopped")
+    assert time.monotonic() - t0 < 5
+    ok = R.run_restricted("result = wait(0.01)", api=object())
+    assert ok.ok and ok.result >= 0

@@ -127,36 +127,50 @@ def _symtable_undefined_lines(code: str) -> list[tuple[int, str]]:
     return sorted(set(hits))
 
 
-def _static_lint(code: str) -> tuple[list[str], list[str]]:
-    """Run pyflakes on `code` → (errors, warnings). 'errors' are correctness problems
-    (undefined name, redefinition, duplicate arg, bad f-string) that PASS syntax AND run
-    clean in isolation but break callers — the bad-patch class execution alone misses
-    (e.g. `import tempfile as t` then using `tempfile`). Falls back to symtable when
-    pyflakes is unavailable so redistribution installs still catch the bad-patch class.
-    Same invocation as code_examiner._tier2_pyflakes (Advancement B)."""
+def pyflakes_messages(source: str, filename: str = "<candidate>") -> Optional[list[tuple[int, str]]]:
+    """pyflakes' findings for `source` as (line, message), or None when pyflakes is not installed
+    or could not check it. Star-import noise ("may be undefined, or defined from star imports",
+    "unable to detect undefined names") is dropped: a file using `from X import *` makes pyflakes
+    flag every unresolved name, and those are not bugs. The one pyflakes wrapper (the code
+    examiner's tier-2 lint reads the same)."""
     try:
         from pyflakes.api import check as _pf_check
         from pyflakes.reporter import Reporter
     except Exception:
-        fallback = [f"line {ln}: undefined name '{name}'"
-                    for ln, name in _symtable_undefined_lines(code)]
-        return fallback, []
+        return None
     import io as _io
     out, err = _io.StringIO(), _io.StringIO()
     try:
-        _pf_check(code, "<candidate>", Reporter(out, err))
+        _pf_check(source, filename, Reporter(out, err))
     except Exception:
-        return [], []
-    errors, warnings = [], []
+        return None
+    found: list[tuple[int, str]] = []
     for line in (out.getvalue() or "").splitlines():
-        m = re.match(r"<candidate>:(\d+):(?:\d+:)?\s*(.+)", line)
+        m = re.match(rf"{re.escape(filename)}:(\d+):(?:\d+:)?\s*(.+)", line)
         if not m:
             continue
         msg = m.group(2).strip()
         if ("may be undefined, or defined from star imports" in msg
                 or "unable to detect undefined names" in msg):
-            continue  # star-import false-positive noise (per code_examiner)
-        entry = f"line {m.group(1)}: {msg}"
+            continue
+        found.append((int(m.group(1)), msg))
+    return found
+
+
+def _static_lint(code: str) -> tuple[list[str], list[str]]:
+    """Run pyflakes on `code` → (errors, warnings). 'errors' are correctness problems
+    (undefined name, redefinition, duplicate arg, bad f-string) that PASS syntax AND run
+    clean in isolation but break callers — the bad-patch class execution alone misses
+    (e.g. `import tempfile as t` then using `tempfile`). Falls back to symtable when
+    pyflakes is unavailable so redistribution installs still catch the bad-patch class."""
+    found = pyflakes_messages(code)
+    if found is None:
+        fallback = [f"line {ln}: undefined name '{name}'"
+                    for ln, name in _symtable_undefined_lines(code)]
+        return fallback, []
+    errors, warnings = [], []
+    for ln, msg in found:
+        entry = f"line {ln}: {msg}"
         if any(k in msg for k in ("undefined name", "redefinition", "duplicate argument",
                                   "used prior to global", "f-string")):
             errors.append(entry)
@@ -190,11 +204,12 @@ def verify_candidate(cand: Candidate, *, tests: Optional[str] = None,
     else:
         cand.syntax_ok = None
 
-    # Gate 2 — execution feedback (mandatory)
+    # Gate 2 — execution feedback (mandatory). Tri-state: an inconclusive run (timeout, budget kill,
+    # nothing could start it) is neither a pass nor a crash, and earns no execution credit.
     if require_run:
         res = run_code(cand.code, cand.language, timeout=run_timeout)
         cand.run_result = res
-        cand.runs_clean = res.clean
+        cand.runs_clean = {"passed": True, "failed": False}.get(res.verdict)
         if res.crashed:
             cand.gate_failed = "execution"
             cand.diagnosis = classify_bug(traceback_text=res.traceback_tail,
@@ -238,6 +253,8 @@ def score_candidate(cand: Candidate) -> float:
     if cand.syntax_ok is False:
         return 0.05
     syntax = 1.0 if cand.syntax_ok else 0.5
+    # None = the run showed nothing (inconclusive / not run): half credit, so without tests such a
+    # candidate stays well below a clean exit and can never reach a "solved" target.
     runs = 1.0 if cand.runs_clean else (0.0 if cand.runs_clean is False else 0.5)
     quality = _quality_signals(cand.code)
 
@@ -290,6 +307,40 @@ def _deterministic_smoke_harness() -> str:
     )
 
 
+# Appended to a model-written harness that never reports its own count: it runs every test_*
+# function the harness defines (those that take no arguments) and prints the REAL pass/total.
+_ELI_TEST_RUNNER = (
+    "\n\n# --- ELI test runner: the harness did not report a count ---\n"
+    "import inspect as _eli_inspect, sys as _eli_sys, traceback as _eli_tb\n"
+    "_eli_tests = [_f for _n, _f in list(globals().items())\n"
+    "              if _n.startswith('test') and _eli_inspect.isfunction(_f)\n"
+    "              and not [_q for _q in _eli_inspect.signature(_f).parameters.values()\n"
+    "                       if _q.default is _q.empty and _q.kind in (_q.POSITIONAL_ONLY, _q.POSITIONAL_OR_KEYWORD)]]\n"
+    "_eli_passed = 0\n"
+    "for _eli_f in _eli_tests:\n"
+    "    try:\n"
+    "        _eli_f()\n"
+    "        _eli_passed += 1\n"
+    "    except Exception:\n"
+    "        _eli_tb.print_exc()\n"
+    "print(f'ELI_TESTS: {_eli_passed}/{len(_eli_tests)}')\n"
+    "_eli_sys.exit(0 if _eli_tests and _eli_passed == len(_eli_tests) else 1)\n"
+)
+
+
+def _runnable_test_functions(harness: str) -> list:
+    """Names of the top-level test_* functions a harness defines that can be called with no
+    arguments (pytest fixtures cannot be supplied here)."""
+    names = []
+    for node in ast.parse(harness).body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test"):
+            a = node.args
+            required = len(a.posonlyargs) + len(a.args) - len(a.defaults)
+            if required <= 0:
+                names.append(node.name)
+    return names
+
+
 def synthesize_tests(task: str, code: str, generate: Optional[GenerateFn] = None,
                      *, max_tokens: int = 1200) -> str:
     """Produce an executable test harness for `code`. Uses the LLM `generate`
@@ -306,9 +357,14 @@ def synthesize_tests(task: str, code: str, generate: Optional[GenerateFn] = None
         raw = generate(prompt, system="You are a meticulous test engineer.",
                        max_tokens=max_tokens, temperature=0.1)
         harness = re.sub(r"^```[a-z]*\n?|\n?```$", "", (raw or "").strip(), flags=re.MULTILINE).strip()
-        if "ELI_TESTS:" not in harness:
-            harness += "\n\nimport sys as _s\nprint('ELI_TESTS: 1/1')\n_s.exit(0)\n"
         ast.parse(harness)  # must be valid Python
+        if "ELI_TESTS:" not in harness:
+            # Never a constant pass: run the tests it defines and count them, or, when it defines
+            # none that can run here, use the smoke harness instead.
+            if not _runnable_test_functions(harness):
+                log.debug("[VERIFICATION] harness has no runnable tests and no count; smoke harness used")
+                return _deterministic_smoke_harness()
+            harness += _ELI_TEST_RUNNER
         return harness
     except Exception as exc:
         log.debug(f"[VERIFICATION] test synthesis fell back to smoke harness: {exc}")

@@ -17,6 +17,12 @@ root, no daemon, no kernel module to install:
     so ssh keys, cloud credentials, browser stores and wallets are simply not there.
     Paths the server declared are bound back explicitly, read-only unless it asked
     for write.
+  * **Session**: the per-user runtime directories (`/run/user/*`: the session bus,
+    the ssh and gpg agents, the PipeWire and Wayland sockets) and the system bus
+    are masked too, and their addresses are taken out of the child's environment.
+    A path-based Unix socket stays connectable through a read-only bind and is not
+    touched by `--unshare-net`; through the session bus a child could ask systemd to
+    start a command outside the sandbox.
   * **Process**: `--unshare-pid` hides other processes, `--die-with-parent` means it
     cannot outlive ELI, `--new-session` detaches it from the terminal so it cannot
     inject keystrokes via TIOCSTI.
@@ -32,7 +38,6 @@ from __future__ import annotations
 
 import os
 import platform
-import resource
 import shutil
 import subprocess
 import sys
@@ -134,13 +139,16 @@ def capabilities() -> Dict[str, Any]:
     return caps
 
 
-def _make_preexec(new_session: bool):
+def _make_preexec(new_session: bool, cpu_seconds: Optional[int] = None):
     """Applied in the child between fork and exec. POSIX only.
 
     `new_session` is False when bubblewrap is doing it via --new-session; calling
     setsid twice is harmless but calling it when bwrap has not yet run detaches the
-    wrong process.
+    wrong process. `cpu_seconds` is the caller's CPU budget for the child (the default
+    is DEFAULT_RLIMITS's runaway backstop).
     """
+    import resource   # POSIX only; this module is imported on Windows too
+    cpu_limit = int(cpu_seconds) if cpu_seconds else DEFAULT_RLIMITS["cpu_seconds"]
     def _warn(message: str) -> None:
         # This runs between fork and exec. The logging module can deadlock there —
         # a lock held by another thread at fork time is never released in the child
@@ -158,7 +166,7 @@ def _make_preexec(new_session: bool):
             ctypes.CDLL("libc.so.6", use_errno=True).prctl(38, 1, 0, 0, 0)
         except Exception as exc:
             _warn(f"could not set no-new-privs: {exc!r}")
-        for name, limit in (("RLIMIT_CPU", DEFAULT_RLIMITS["cpu_seconds"]),
+        for name, limit in (("RLIMIT_CPU", cpu_limit),
                             ("RLIMIT_NOFILE", DEFAULT_RLIMITS["open_files"])):
             try:
                 which = getattr(resource, name)
@@ -174,15 +182,34 @@ def _make_preexec(new_session: bool):
     return _preexec
 
 
-def _executable_paths(argv: Sequence[str]) -> List[str]:
-    """Directories the child needs bound back after $HOME is masked.
+def _session_dirs() -> List[str]:
+    """Directories holding the user's session sockets: every per-user runtime directory and the
+    system bus. Masked in the sandbox; only the ones that exist here."""
+    out: List[str] = []
+    for d in ("/run/user", os.environ.get("XDG_RUNTIME_DIR") or "", "/run/dbus", "/var/run/dbus"):
+        if d and os.path.isdir(d):
+            real = os.path.realpath(d)
+            if real not in out and not any(real.startswith(o + os.sep) for o in out):
+                out.append(real)
+    return out
 
-    Covers the two cases that actually bite: a virtualenv interpreter under the
-    user's home, and a user-local runtime (nvm's node, uv's tool dir) that a
-    home-wide tmpfs would otherwise erase.
+
+def _masked_roots() -> List[str]:
+    home = os.path.expanduser("~")
+    return [r for r in (home if home and home != "/" else "", "/tmp", *_session_dirs()) if r]
+
+
+def _executable_paths(argv: Sequence[str]) -> List[str]:
+    """Directories the child needs bound back after $HOME, /tmp and the session directories are
+    masked.
+
+    Covers the cases that actually bite: a virtualenv interpreter under the user's home, a
+    user-local runtime (nvm's node, uv's tool dir) that a home-wide tmpfs would otherwise erase,
+    and ELI's own bundle when the interpreter is ELI itself (an AppImage is mounted under /tmp).
     """
     out: List[str] = []
     home = os.path.expanduser("~")
+    masked = _masked_roots()
 
     def add(path: Optional[str]) -> None:
         if not path:
@@ -191,7 +218,9 @@ def _executable_paths(argv: Sequence[str]) -> List[str]:
             real = os.path.realpath(path)
         except Exception:
             return
-        if real.startswith(home + os.sep) and real not in out:
+        if real in out or real in ("/", os.sep):
+            return
+        if any(real == m or real.startswith(m + os.sep) for m in masked):
             out.append(real)
 
     # Any argument that IS an existing path is something the child was told to use:
@@ -215,9 +244,16 @@ def _executable_paths(argv: Sequence[str]) -> List[str]:
         parent = os.path.dirname(os.path.dirname(os.path.realpath(exe)))
         if parent and os.path.isdir(os.path.join(parent, "lib")):
             add(parent)
-    # The running interpreter's prefix, for `sys.executable`-style launches.
+    # The running interpreter's prefix, for `sys.executable`-style launches, and the bundle a
+    # frozen ELI runs from.
     add(getattr(sys, "prefix", None))
     add(getattr(sys, "base_prefix", None))
+    try:
+        from eli.core.host_env import bundle_roots
+        for root in bundle_roots():
+            add(root)
+    except Exception:
+        log.debug("[SANDBOX] bundle roots unavailable", exc_info=True)
     # Common user-local runtime roots, bound only if they exist (--ro-bind-try).
     for candidate in (".nvm", ".local/share/uv", ".local/bin", ".npm", ".cache/uv",
                       ".bun", ".deno"):
@@ -257,6 +293,10 @@ def build_command(argv: Sequence[str], *, allow_network: bool = False,
         home = os.path.expanduser("~")
         if home and home != "/":
             cmd += ["--tmpfs", home]
+        # The session sockets: session and system bus, ssh/gpg agents, PipeWire, Wayland.
+        for d in _session_dirs():
+            cmd += ["--tmpfs", d]
+            applied.append(f"session:masked:{d}")
 
         # Masking $HOME also hides anything installed there — a venv interpreter, a
         # user-local node, an npm cache. Bind the program's own tree back read-only,
@@ -303,6 +343,25 @@ def build_command(argv: Sequence[str], *, allow_network: bool = False,
     return {"argv": argv, "applied": applied, "notes": notes, "contained": False}
 
 
+# Names that carry a secret ELI holds; not the child's business.
+_SECRET_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "CREDENTIAL")
+# Addresses of the user's session: a child holding one can reach the session bus, an ssh or gpg
+# agent, the sound server or the display, whatever the filesystem masks say.
+SESSION_ENV = ("DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+               "GPG_AGENT_INFO", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY",
+               "PULSE_SERVER", "PIPEWIRE_REMOTE")
+
+
+def scrub_env(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """A child's environment without ELI's secrets or the addresses of the user's session."""
+    child_env = dict(env or os.environ)
+    for key in list(child_env):
+        upper = key.upper()
+        if upper in SESSION_ENV or any(t in upper for t in _SECRET_MARKERS):
+            child_env.pop(key, None)
+    return child_env
+
+
 def popen(argv: Sequence[str], *, allow_network: bool = False,
           read_paths: Optional[Sequence[str]] = None,
           write_paths: Optional[Sequence[str]] = None,
@@ -311,12 +370,7 @@ def popen(argv: Sequence[str], *, allow_network: bool = False,
     """`subprocess.Popen` with the sandbox applied and the environment scrubbed."""
     plan = build_command(argv, allow_network=allow_network, read_paths=read_paths,
                          write_paths=write_paths, cwd=cwd)
-    child_env = dict(env or os.environ)
-    # Secrets ELI holds are not the child's business.
-    for key in list(child_env):
-        upper = key.upper()
-        if any(t in upper for t in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "APIKEY")):
-            child_env.pop(key, None)
+    child_env = scrub_env(env)
     if not plan["contained"]:
         log.warning("[SANDBOX] launching %s WITHOUT containment: %s",
                     argv[0], "; ".join(plan["notes"]) or "no sandbox available")
@@ -346,4 +400,5 @@ def describe(allow_network: bool = False) -> str:
     return "It will run with " + ", ".join(parts) + "."
 
 
-__all__ = ["capabilities", "build_command", "popen", "describe", "DEFAULT_RLIMITS"]
+__all__ = ["capabilities", "build_command", "popen", "describe", "scrub_env", "SESSION_ENV",
+           "DEFAULT_RLIMITS"]
