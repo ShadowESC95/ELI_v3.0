@@ -1128,6 +1128,10 @@ def weights_present(model: str) -> bool:
     return False
 
 
+# The VAE scale of the Stable Diffusion family, for a pipeline that does not say its own.
+_SD_VAE_SCALE = 8
+
+
 class DiffusionBackend:
     """Optional local model backend.
 
@@ -1183,19 +1187,41 @@ class DiffusionBackend:
             if hasattr(self.pipe, "enable_attention_slicing"):
                 self.pipe.enable_attention_slicing()
 
+    def size_multiple(self) -> int:
+        """The multiple the loaded pipeline needs its width and height in: its VAE's scale factor,
+        doubled where the pipeline packs latents in 2x2 patches (Flux). The SD/SDXL pipelines refuse
+        anything else ("height and width have to be divisible by 8"), and the GUI's default 900 is not."""
+        factor = int(getattr(self.pipe, "vae_scale_factor", 0) or _SD_VAE_SCALE)
+        packs = hasattr(self.pipe, "_pack_latents") or "flux" in type(self.pipe).__name__.lower()
+        return factor * (2 if packs else 1)
+
+    def native_size(self) -> tuple[int, int] | None:
+        """The resolution the model was trained at (its UNet's sample size in latents, times the VAE's
+        scale), or None when the pipeline does not say."""
+        sample = getattr(getattr(getattr(self.pipe, "unet", None), "config", None), "sample_size", None)
+        factor = int(getattr(self.pipe, "vae_scale_factor", 0) or 0)
+        if isinstance(sample, int) and factor:
+            return sample * factor, sample * factor
+        return None
+
     def generate(self, spec: SceneSpec) -> Image.Image:
         generator = self.torch.Generator(device=self.device).manual_seed(spec.seed)
         prompt = f"{spec.prompt}, {spec.style} style, professional composition, rich lighting, coherent detail"
+        m = self.size_multiple()
+        width, height = max(m, spec.width // m * m), max(m, spec.height // m * m)
         image = self.pipe(
             prompt=prompt,
             negative_prompt=spec.negative_prompt,
-            width=spec.width,
-            height=spec.height,
+            width=width,
+            height=height,
             num_inference_steps=self.steps,
             guidance_scale=self.guidance,
             generator=generator,
-        ).images[0]
-        return image.convert("RGB")
+        ).images[0].convert("RGB")
+        if image.size != (spec.width, spec.height):
+            # made at the nearest size the model takes, given back at the size asked for
+            image = image.resize((spec.width, spec.height), Image.Resampling.LANCZOS)
+        return image
 
 
 def build_backend(args: argparse.Namespace) -> ProceduralBackend | DiffusionBackend:
@@ -1419,7 +1445,8 @@ def validate_args(args: argparse.Namespace) -> argparse.Namespace:
     if args.backend == "diffusion" and not args.model:
         raise ValueError("--model is required when --backend diffusion is selected")
     if args.width % 8 != 0 or args.height % 8 != 0:
-        logging.warning("Width and height are best when divisible by 8.")
+        logging.info("A diffusion model makes the image at the nearest size it takes, "
+                     "then gives it back at %sx%s.", args.width, args.height)
     return args
 
 

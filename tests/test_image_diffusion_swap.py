@@ -5,6 +5,8 @@ Deterministic — no real model load; generate_batch and the GGUF loader are moc
 """
 from __future__ import annotations
 
+import pytest
+
 
 from eli.tools.image_engine.image_engine.visual_core import weights_present
 from eli.tools.image_engine import gui_bridge as GB
@@ -68,3 +70,51 @@ def test_no_swap_for_procedural(tmp_path, monkeypatch):
     generate_images(req, settings={"image_auto_personalize": False})
     assert "unload" not in calls and "reload" not in calls
     assert calls == ["generate"]
+
+
+# ── a size the model does not take ──────────────────────────────────────────────
+class _Pipe:
+    """Stands in for a diffusers pipeline: it refuses a size off its multiple, as SD/SDXL do."""
+    vae_scale_factor = 8
+
+    def __init__(self):
+        self.asked = None
+
+    def __call__(self, *, width, height, **_):
+        from types import SimpleNamespace
+        from PIL import Image
+        m = 8 * (2 if hasattr(self, "_pack_latents") else 1)
+        if width % m or height % m:
+            raise ValueError(f"`height` and `width` have to be divisible by {m}")
+        self.asked = (width, height)
+        return SimpleNamespace(images=[Image.new("RGB", (width, height))])
+
+
+class _FluxLikePipe(_Pipe):
+    def _pack_latents(self):
+        return None
+
+
+def _backend(pipe):
+    import types
+    from eli.tools.image_engine.image_engine import visual_core as vc
+    b = object.__new__(vc.DiffusionBackend)
+    b.pipe, b.steps, b.guidance, b.device = pipe, 1, 1.0, "cpu"
+    b.torch = types.SimpleNamespace(Generator=lambda device: types.SimpleNamespace(manual_seed=lambda s: None))
+    return b
+
+
+def _spec(width, height):
+    from eli.tools.image_engine.image_engine import visual_core as vc
+    return vc.SceneSpec(prompt="a lighthouse", negative_prompt="", scene_type="landscape", style="painted",
+                        title="t", width=width, height=height, seed=1, variant=0, supersample=1,
+                        palette=None, project_tags=[], output_format="png")
+
+
+@pytest.mark.parametrize("pipe,made", [(_Pipe, (1400, 896)), (_FluxLikePipe, (1392, 896))])
+def test_the_default_size_is_made_at_a_size_the_model_takes(pipe, made):
+    """The GUI's default 1400x900 is not a multiple of 8, and every SDXL job ended in
+    'Image generation failed'."""
+    p = pipe()
+    image = _backend(p).generate(_spec(1400, 900))
+    assert p.asked == made and image.size == (1400, 900)
