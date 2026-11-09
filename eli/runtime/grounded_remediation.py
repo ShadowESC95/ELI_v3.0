@@ -49,8 +49,8 @@ def is_affirmation(text: str) -> bool:
 
 
 def is_negation(text: str) -> bool:
-    """True if `text` is a no/decline, tolerant of extra words. NOTE: callers
-    should test affirmation first — a "yes" beats a "no" when both appear."""
+    """True if `text` holds a no/decline, tolerant of extra words. A message that holds a no is
+    never consent, whatever yes-like word stands beside it ("no, don't do it" holds "do it")."""
     raw = (text or "").strip()
     if not raw:
         return False
@@ -1574,15 +1574,20 @@ def try_handle_query(text: str) -> str | None:
         return None
 
     # Pending-repair confirmation intercept: consume YES/NO answers against pending repair state
-    # before falling through to open/check/install dispatch. Uses exact match (YES_RE/NO_RE) and
-    # fuzzy word-in-input matching (is_affirmation/is_negation) to tolerate STT noise like
-    # "confirmed yes".
+    # before falling through to open/check/install dispatch. A repair changes the machine, so a
+    # yes is a message that agrees and says nothing else (pending_proposal.is_consent, the one
+    # reader of consent): "yes please", "go ahead", "do it". A yes-like word inside anything more
+    # is not one: "no, don't do it", "I'm not sure", "ok, never mind" and "go away" each hold one.
+    # A decline is read the lenient way, and a no is never outweighed by a yes word beside it.
     pending = get_pending()
     if pending:
+        from eli.runtime.pending_proposal import is_consent
         stage = str(pending.get("stage") or "").strip().lower()
-        _is_yes = is_affirmation(raw)
-        _is_no  = is_negation(raw)
-        # YES takes priority over NO when both appear (e.g. "yes no wait")
+        _is_yes = bool(YES_RE.match(raw)) or is_consent(raw)
+        _is_no = is_negation(raw)
+        if _is_no and stage in {"offered", "previewed", "pending", "proposed"}:
+            clear_pending()
+            return "Cancelled."
         if _is_yes and stage in {"offered", "pending", "proposed"}:
             plan = pending.get("plan") or {}
             # Media-tool installs already asked "download/install it?", so the first yes must run
@@ -1597,9 +1602,6 @@ def try_handle_query(text: str) -> str | None:
             return render_repair_preview(plan)
         if _is_yes and stage == "previewed":
             return execute_pending_plan()
-        if _is_no and stage in {"offered", "previewed", "pending", "proposed"}:
-            clear_pending()
-            return "Cancelled."
 
     # "install X" / "download X" explicit commands: (a) the user confirming a pending offer by
     # naming the app ("install netflix" after ELI asked about it), and (b) a fresh direct install
