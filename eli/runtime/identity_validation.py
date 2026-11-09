@@ -5,18 +5,6 @@ import unicodedata
 from typing import Any, Dict
 
 
-# Imperative command verbs. A captured name almost never opens with one; a
-# multi-word candidate whose FIRST word is a command verb is a command, not a
-# name (see normalize_identity_candidate). Single-word overlaps are left alone.
-_COMMAND_VERBS = frozenset({
-    "pause", "play", "resume", "stop", "skip", "next", "previous", "rewind",
-    "open", "close", "launch", "start", "quit", "exit", "run", "execute",
-    "mute", "unmute", "turn", "set", "show", "hide", "toggle", "switch",
-    "tell", "give", "make", "create", "delete", "remove", "add", "send",
-    "search", "find", "go", "put", "take", "get", "download", "install",
-    "increase", "decrease", "raise", "lower", "volume", "brightness",
-})
-
 _INVALID_SINGLE_TOKENS = {
     "",
     "a",
@@ -80,6 +68,17 @@ _INVALID_SINGLE_TOKENS = {
     "definitely", "never", "fucking", "fuckin", "bloody", "damn", "effing",
 }
 
+# Words that say how or where someone is, not who: "I'm Tired", "I'm Home", "I'm Back" typed with a
+# capital were names (the router reads a name after "I'm" only when capitalised). Said alone, as the
+# whole name: a family name may be one of them ("Early", "Good"). Common words that are also given
+# names (Joy, Hope, Grace, Faith, Will, May) are not here; "fine", "ok", "here" are refused above.
+_HOW_OR_WHERE = frozenset("""
+tired bored sleepy hungry thirsty sick ill sad upset angry annoyed stressed exhausted knackered shattered
+good great alright busy free ready done finished back home out away late early outside inside
+upstairs downstairs alone awake asleep cold hot warm confused stuck worried nervous anxious excited
+curious drunk broke gutted sorry glad sure serious kidding joking leaving off over through bushed
+""".split())
+
 # Imperative command verbs. A captured name almost never opens with one (a session logged
 # "pause spotify" as the user's name, so every self-report greeted them that way). A multi-word
 # candidate whose first word is a command verb is a command, not a name. Single-word overlaps
@@ -138,6 +137,8 @@ def normalize_identity_candidate(value: Any, *, max_words: int = 3) -> str:
         return ""
     if any(w.lower() in _INVALID_SINGLE_TOKENS for w in words):
         return ""
+    if len(words) == 1 and words[0].lower() in _HOW_OR_WHERE:
+        return ""
     # "pause spotify" / "open chrome": a multi-word candidate that opens with an
     # imperative command verb is a command, not a name. A real session logged
     # "pause spotify" as the user's name (the first thing typed), so every
@@ -146,10 +147,6 @@ def normalize_identity_candidate(value: Any, *, max_words: int = 3) -> str:
     if len(words) > 1 and words[0].lower() in _COMMAND_VERBS:
         return ""
     if len(words) == 1 and words[0].lower().endswith("ing") and len(words[0]) > 4:
-        return ""
-    # "pause spotify" / "open chrome": a multi-word candidate that opens with an
-    # imperative command verb is a command, not a name.
-    if len(words) > 1 and words[0].lower() in _COMMAND_VERBS:
         return ""
 
     return candidate

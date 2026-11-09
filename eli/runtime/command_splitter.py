@@ -307,13 +307,15 @@ def _asks_rather_than_tells(sentence: str) -> bool:
             and not (_REQUEST.match(said) or is_request(said) or starts_with_command(said)))
 
 
-# "no dude, orbit and northwind", "i meant the other one": what a correction starts with, before what
-# it names
+# "no dude, orbit and northwind", "i meant the other one", "i clearly meant ~/notes": what a correction
+# starts with, before what it names. An adverb may come between "i" and its verb ("i clearly meant",
+# "i obviously said"): without it the whole sentence was read as the thing named.
+_I_MEANT = r"i\s+(?:\w+ly\s+)?(?:meant|said|asked\s+(?:about|for))\b[\s,:-]*"
 _CORRECTION_LEAD = re.compile(
     r"^\s*(?:(?:no+|nope|nah|not\s+(?:that|this|it)|wrong)\b[\s,.!:-]*"
     r"(?:(?:dude|man|mate|bro|buddy|bud|pal|eli|mister|sir)\b[\s,.!:-]*)?"
-    r"(?:i\s+(?:meant|said|asked\s+(?:about|for))\b[\s,:-]*)?"
-    r"|i\s+(?:meant|said|asked\s+(?:about|for))\b[\s,:-]*)", re.I)
+    rf"(?:{_I_MEANT})?"
+    rf"|{_I_MEANT})", re.I)
 
 
 def correction(text: str) -> str:

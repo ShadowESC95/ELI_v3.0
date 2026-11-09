@@ -354,3 +354,13 @@ def test_it_is_the_place_the_executor_found_and_a_recall_does_not_replace_it(tmp
     assert not CognitiveEngine._kept_as_last_command("MEMORY_RECALL")
     assert not CognitiveEngine._kept_as_last_command("CHAT")
     assert CognitiveEngine._kept_as_last_command("OPEN_FILE_SYSTEM")
+
+
+def test_a_correction_with_an_adverb_in_its_lead_is_still_a_correction():
+    """"i clearly meant ~/notes" was not read as a correction: the lead allowed nothing between "i"
+    and "meant", so the whole sentence was taken as what was named."""
+    from eli.runtime.command_splitter import correction, without_correction_lead
+    assert correction("i clearly meant ~/notes") == "~/notes"
+    assert correction("no, i obviously said the other one") == "the other one"
+    assert without_correction_lead("i meant the second file") == "the second file"
+    assert correction("i really like this song") == ""

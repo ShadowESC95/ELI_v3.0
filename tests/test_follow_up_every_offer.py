@@ -852,3 +852,15 @@ def test_i_am_with_a_word_the_name_validator_rejects_sets_nothing(proposals):
     """The router read "I'm X" past the one name validator every identity path uses."""
     from eli.execution.router_enhanced import route
     assert route("I'm Unknown")["action"] != "SET_USER_NAME"
+
+
+@pytest.mark.parametrize("said", ["I'm Tired", "I'm Home", "I'm Back", "I'm Busy", "I'm Bored"])
+def test_how_or_where_i_am_typed_with_a_capital_is_not_my_name(proposals, said):
+    """'I'm Tired' typed in Title Case passed the name validator: it had no words for how or where
+    someone is, so the capital alone made it a name."""
+    from eli.execution.router_enhanced import route
+    from eli.runtime.identity_validation import normalize_identity_candidate
+    assert route(said)["action"] != "SET_USER_NAME"
+    assert normalize_identity_candidate(said.split()[-1]) == ""
+    for name in ("Joy", "Will", "May", "Sam Early"):
+        assert normalize_identity_candidate(name) == name
