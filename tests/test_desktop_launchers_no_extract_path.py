@@ -218,3 +218,22 @@ def test_appimage_integration_touches_only_its_own_entries_and_command(tmp_path)
     assert not generic.exists()
     for name, body in others.items():
         assert (apps / name).read_text(encoding="utf-8") == "[Desktop Entry]\n" + body, name
+
+
+def test_the_windows_uninstaller_removes_v3s_shortcuts_by_what_they_run(monkeypatch):
+    """scripts/uninstall.ps1 deleted v2's own "ELI v2.0" shortcut and the labels every ELI version
+    shares, by name, and never removed v3's own "ELI v3.0" shortcut. A shortcut is v3's when it
+    runs v3's launcher; its label decides nothing."""
+    import re
+    import sys
+
+    text = (Path(dl.__file__).resolve().parents[2] / "scripts" / "uninstall.ps1").read_text(encoding="utf-8-sig")
+    monkeypatch.setattr(dl, "product_line", lambda: "v2")
+    assert f"{dl._display_name()}.lnk" not in text, "another ELI version's own shortcut is named"
+    monkeypatch.setattr(dl, "product_line", lambda: "v3")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
+    launcher = dl._eli_run_path()
+    assert launcher.name in text and dl._share_dirname() in text
+    assert re.search(r"CreateShortcut\([^)]*\)\.TargetPath", text), "the shortcut's target is not read"
+    assert not re.search(r"Remove-Item[^\r\n]*\.lnk", text), "a shortcut is removed by its name"

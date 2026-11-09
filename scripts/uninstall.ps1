@@ -35,10 +35,26 @@ try {
 }
 Write-Host ""
 
-foreach ($n in @("ELI v2.0.lnk","ELI Server (Web App).lnk","ELI Setup.lnk","ELI Uninstall.lnk","ELI Pro.lnk")) {
-    Remove-Item -Force -Path (Join-Path $Programs $n) -ErrorAction SilentlyContinue
+# A Start Menu shortcut is ELI v3's when it runs v3's own launcher, eli-run.cmd in
+# %LOCALAPPDATA%\ELI_v3 (eli/runtime/desktop_launchers.py writes them). Labels are no guide:
+# "ELI Server (Web App)" and "ELI Uninstall" are the same for every ELI version, and another
+# version's shortcuts run its own launcher, so they are left alone.
+$V3Launcher = Join-Path (Join-Path $env:LOCALAPPDATA "ELI_v3") "eli-run.cmd"
+$Shell = New-Object -ComObject WScript.Shell
+$Removed = @()
+Get-ChildItem -Path $Programs -Filter *.lnk -File | ForEach-Object {
+    $Target = ""
+    try { $Target = $Shell.CreateShortcut($_.FullName).TargetPath } catch { }
+    if ($Target -and [string]::Equals($Target, $V3Launcher, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -Force -LiteralPath $_.FullName
+        if (-not (Test-Path -LiteralPath $_.FullName)) { $Removed += $_.BaseName }
+    }
 }
-Write-Host "  [OK] Removed ELI Start Menu shortcuts."
+if ($Removed.Count -gt 0) {
+    Write-Host "  [OK] Removed ELI v3's Start Menu shortcuts: $($Removed -join ', ')"
+} else {
+    Write-Host "  [OK] No ELI v3 Start Menu shortcuts were found."
+}
 
 Write-Host ""
 Write-Host "  Your data (chats, memory, models) lives under: $Root"
