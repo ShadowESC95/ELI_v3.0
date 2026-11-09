@@ -91,3 +91,31 @@ def test_an_unknown_context_changes_nothing(settings_sized_for_the_tuner, bad):
     """Called before a successful load, this must be a no-op, not a reset."""
     assert resize_budgets_to_effective_ctx(bad) == {}
     assert settings_sized_for_the_tuner["max_tokens"] == 2048
+
+
+def test_only_the_budgets_are_saved_not_the_whole_settings_view(monkeypatch):
+    """load_settings() is a view: defaults, one-session environment overrides and derived values.
+    Handed back whole, every one of them was written into the file after a model load."""
+    view = {"n_ctx": 2048, "temperature": 0.7, "model_dirs": "", "max_tokens": 1,
+            "mode_presets": {}}
+    saved = []
+    import eli.core.runtime_settings as rs
+    monkeypatch.setattr(rs, "load_settings", lambda *a, **k: dict(view))
+    monkeypatch.setattr(rs, "save_settings", lambda s: saved.append(dict(s)))
+    resize_budgets_to_effective_ctx(EFFECTIVE_CTX)
+    assert len(saved) == 1
+    assert set(saved[0]) == {"max_tokens", "mode_presets", "mode_presets_ctx"}
+
+
+def test_budgets_follow_the_context_the_model_can_use_not_one_built_past_its_training(
+        settings_sized_for_the_tuner, monkeypatch):
+    """A model trained on 32768 loaded at 39168 is given 32768: budgets for the rest are budgets
+    for tokens it never sees."""
+    import eli.cognition.gguf_inference as gi
+    store = settings_sized_for_the_tuner
+    trained = 8192
+    assert TUNER_CTX < trained < EFFECTIVE_CTX
+    monkeypatch.setattr(gi, "current_context_limit", lambda: trained)
+    resize_budgets_to_effective_ctx(EFFECTIVE_CTX)
+    assert store["max_tokens"] == max_tokens_from_ctx(trained)
+    assert store["mode_presets_ctx"] == trained

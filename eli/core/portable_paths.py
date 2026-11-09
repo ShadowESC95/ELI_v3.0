@@ -99,12 +99,16 @@ def resolve_path_value(value: Any, root: str | Path | None = None) -> Any:
 
 def make_portable_path_value(value: Any, root: str | Path | None = None) -> Any:
     """
-    Convert machine-specific absolute ELI paths into repo-relative paths.
+    A path inside this install becomes relative to it, so the install can move; every other
+    path is the user's and is kept exactly as given.
 
     Example:
-        <ELI_PROJECT_ROOT>/models/x.gguf
-    becomes:
-        models/x.gguf
+        <ELI_PROJECT_ROOT>/models/x.gguf   ->  models/x.gguf
+        /data/llm/models/x.gguf            ->  /data/llm/models/x.gguf
+
+    A path that merely looked like an ELI layout (a 'models/' folder anywhere, a folder named
+    ELI-something under a home) used to be cut down to that tail and then looked for inside this
+    install: a model kept in another program's models folder, or in another ELI product's, was lost.
     """
     if not isinstance(value, str):
         return value
@@ -114,36 +118,16 @@ def make_portable_path_value(value: Any, root: str | Path | None = None) -> Any:
         return value
 
     root_path = Path(root or PROJECT_ROOT).resolve()
-    root_s = str(root_path).replace("\\", "/")
+    root_s = str(root_path).replace("\\", "/").rstrip("/")
     norm = s.replace("\\", "/")
+    # Windows compares names without case (normcase); elsewhere case is part of the name.
+    same = os.path.normcase
 
-    if norm == root_s:
+    if same(norm) == same(root_s):
         return "."
 
-    if norm.startswith(root_s + "/"):
+    if same(norm).startswith(same(root_s + "/")):
         return norm[len(root_s) + 1:]
-
-    # Strip Linux/macOS absolute project prefixes from any user's machine.
-    # Match any ELI/Eli checkout folder name (v2, v3, staging, etc.).
-    m = re.search(
-        r"[/\\](?:home|Users)[/\\][^/\\]+[/\\](?:Desktop|Documents|Downloads)?[/\\]?"
-        r"(?:Eli|ELI)[^/\\]*[/\\](.+)$",
-        s,
-        flags=re.I,
-    )
-    if m:
-        return m.group(1).replace("\\", "/")
-
-    # Fallback: if the path embeds a standard ELI repo layout, keep from that root.
-    for marker in ("models/", "artifacts/", "config/", "eli/", "voices/", "plugins/"):
-        pos = norm.find(marker)
-        if pos > 0:
-            return norm[pos:]
-
-    # Strip temporary staging prefix.
-    m = re.search(r"[/\\]ELI_MKXI_github_stage[/\\](.+)$", s)
-    if m:
-        return m.group(1).replace("\\", "/")
 
     return value
 

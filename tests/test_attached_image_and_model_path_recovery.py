@@ -160,3 +160,48 @@ def test_a_failed_reload_does_not_destroy_a_loaded_model(no_configured_model, mo
     with pytest.raises(FileNotFoundError):
         gi.load_model(force_reload=True)
     assert gi._llm is sentinel, "a working model was destroyed by a reload that could not run"
+
+
+def _loaded(monkeypatch, path):
+    """A model loaded in this process from `path`, as _load_model_now leaves it."""
+    monkeypatch.setattr(gi, "_llm", object(), raising=False)
+    monkeypatch.setattr(gi, "_ELI_EFFECTIVE_RUNTIME_REPORT", {"model_path": str(path)}, raising=False)
+
+
+def test_a_missing_configured_path_still_answers_with_the_model_that_is_loaded(
+        no_configured_model, image, tmp_path, monkeypatch):
+    """ELI_GGUF_MODEL_PATH named a file in a folder the model is not in, the model was loaded from
+    where it is kept, and every 'which model' question had None for the whole session."""
+    monkeypatch.setenv("ELI_GGUF_MODEL_PATH", str(tmp_path / "elsewhere" / "gone.gguf"))
+    _loaded(monkeypatch, image)
+    assert _resolve() == image
+    assert gi.loaded_model_path() == image
+
+
+def test_a_missing_configured_path_is_said_once_not_on_every_lookup(
+        no_configured_model, image, tmp_path, monkeypatch, caplog):
+    import logging
+    monkeypatch.setenv("ELI_GGUF_MODEL_PATH", str(tmp_path / "said-once.gguf"))
+    _loaded(monkeypatch, image)
+    with caplog.at_level(logging.WARNING, logger=gi.log.name):
+        for _ in range(5):
+            _resolve()
+    said = [r for r in caplog.records if "said-once.gguf" in r.getMessage()]
+    assert len(said) == 1
+
+
+def test_with_nothing_loaded_a_missing_configured_path_is_no_model(no_configured_model, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELI_GGUF_MODEL_PATH", str(tmp_path / "gone.gguf"))
+    monkeypatch.setattr(gi, "_llm", None, raising=False)
+    assert _resolve() is None
+
+
+def test_a_load_of_a_missing_configured_model_fails_and_does_not_reload_the_old_one(
+        no_configured_model, image, tmp_path, monkeypatch):
+    """A swap to a file that is not there must fail with its name, not reload what is loaded and
+    call that done."""
+    missing = tmp_path / "chosen-but-gone.gguf"
+    monkeypatch.setenv("ELI_GGUF_MODEL_PATH", str(missing))
+    _loaded(monkeypatch, image)
+    with pytest.raises(FileNotFoundError, match="chosen-but-gone.gguf"):
+        gi._load_model_now()

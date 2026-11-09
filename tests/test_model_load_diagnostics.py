@@ -349,3 +349,23 @@ def test_runtime_hook_honours_the_opt_out():
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "ELI_DISABLE_GPU_PACK" in code, "there is no way to bypass a stale GPU pack"
     assert "not _pack_off" in code, "the opt-out does not actually gate activation"
+
+
+def test_a_gguf_named_file_that_is_no_model_is_one_quiet_line_and_read_once(tmp_path, caplog, monkeypatch):
+    """Four-byte stubs another program left behind printed a traceback each, on every scan."""
+    import logging
+    from eli.cognition import model_load_diagnostics as mld
+    stub = tmp_path / "stub.gguf"
+    stub.write_bytes(b"GGUF")
+    cut = tmp_path / "cut-off.gguf"
+    cut.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 16 + b"\x05")   # header, then cut mid-key
+    opened = []
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda f, *a, **k: (opened.append(str(f)), real_open(f, *a, **k))[1])
+    with caplog.at_level(logging.DEBUG, logger=mld.log.name):
+        for _ in range(3):
+            assert mld.gguf_metadata(stub) == {}
+            mld.gguf_metadata(cut)
+    assert not [r for r in caplog.records if r.exc_info], "no traceback for a file that is not a model"
+    assert str(stub.resolve()) not in opened, "a file shorter than a header is not opened"
+    assert opened.count(str(cut.resolve())) == 1, "read once, then remembered"

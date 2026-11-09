@@ -48,3 +48,15 @@ def test_save_and_load_custom_name(tmp_path, monkeypatch):
 
     dn.save_custom_name("bt:B9:08:A1:EF:CD:23", "")
     assert "bt:B9:08:A1:EF:CD:23" not in dn.load_custom_names()
+
+
+def test_a_name_is_saved_without_the_rest_of_the_settings_view(monkeypatch):
+    """The whole load_settings() view handed back wrote every default and one-session override into
+    the file; only the names change here."""
+    view = {"device_custom_names": {}, "temperature": 0.7, "n_ctx": 2048, "audio_output_aliases": {}}
+    saved = []
+    monkeypatch.setattr("eli.core.runtime_settings.load_settings", lambda: dict(view))
+    monkeypatch.setattr("eli.core.runtime_settings.save_settings", lambda d: saved.append(dict(d)))
+    assert dn.save_custom_name("sink:B9:08:A1:EF:CD:23", "Desk speaker")["ok"] is True
+    assert saved and set(saved[0]) <= {"device_custom_names", "audio_output_aliases"}
+    assert saved[0]["device_custom_names"] == {"sink:B9:08:A1:EF:CD:23": "Desk speaker"}

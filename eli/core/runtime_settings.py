@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict
 
@@ -485,10 +486,27 @@ def _portable_settings_for_storage(settings: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _model_folders_for(settings: Dict[str, Any]) -> list:
+    """Every model folder (eli/core/model_folders), read from the settings being loaded: the folders
+    the user named are where a model that moved is most likely to be."""
+    try:
+        from eli.core.model_folders import model_folders
+        return list(model_folders(settings, include_loaded=False))
+    except (ImportError, OSError, RuntimeError, ValueError) as failure:   # ELI's own folders are still searched
+        log.debug("[SETTINGS] model folders unavailable to the path healer: %s", failure)
+        return []
+
+
+# Stale values already searched for in this process, with the folders they were searched in: a
+# path that is nowhere is not searched for again on every settings read until a folder is added.
+_HEAL_MISSES: set = set()
+
+
 def _heal_model_paths(settings: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
     """
     Detect stale absolute paths (e.g. from a different machine) and relocate
-    them by searching for the same filename under the current project root.
+    them by searching for the same filename under the current project root and
+    in every model folder the user named (eli/core/model_folders).
     Returns (healed_settings, changed).
     """
     global _HEAL_LOGGED
@@ -504,6 +522,7 @@ def _heal_model_paths(settings: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
 
     changed = False
     out = dict(settings)
+    folders = None
 
     for key in _MODEL_PATH_KEYS:
         val = out.get(key, "")
@@ -516,8 +535,13 @@ def _heal_model_paths(settings: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
         filename = p.name
         if not filename:
             continue
+        if folders is None:
+            folders = _model_folders_for(settings)
+        miss = (key, val, tuple(str(f) for f in folders))
+        if miss in _HEAL_MISSES:
+            continue
 
-        dirs = image_search if key == "image_model_path" else gguf_search
+        dirs = (image_search if key == "image_model_path" else gguf_search) + folders
         found: str | None = None
 
         for d in dirs:
@@ -540,6 +564,8 @@ def _heal_model_paths(settings: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
                 log.debug(f"[SETTINGS] Healed stale path '{key}': {val} → {found}")
             out[key] = found
             changed = True
+        else:
+            _HEAL_MISSES.add(miss)
 
     # Re-sync model_path if it's now stale but a sibling key was healed
     mp = out.get("model_path", "")
@@ -585,7 +611,8 @@ def _load_settings_unsanitized(*, apply_env_overlay: bool = True) -> Dict[str, A
         try:
             settings_file.parent.mkdir(parents=True, exist_ok=True)
             from eli.core.secure_io import secure_write_text as _secure_write
-            _secure_write(settings_file, json.dumps(migrated_data, indent=2, ensure_ascii=False), mode=0o600)
+            with _FILE_LOCK:
+                _secure_write(settings_file, json.dumps(migrated_data, indent=2, ensure_ascii=False), mode=0o600)
             if not _MIGRATION_LOGGED:
                 log.debug(f"[SETTINGS] Migrated {len(migrated_keys)} legacy keys: {migrated_keys}")
                 _MIGRATION_LOGGED = True
@@ -635,6 +662,11 @@ def _load_settings_unsanitized(*, apply_env_overlay: bool = True) -> Dict[str, A
 
 def _persist_healed_paths(settings: Dict[str, Any], settings_file: Path) -> None:
     """Write healed model paths back into the settings file."""
+    with _FILE_LOCK:
+        _persist_healed_paths_locked(settings, settings_file)
+
+
+def _persist_healed_paths_locked(settings: Dict[str, Any], settings_file: Path) -> None:
     existing: Dict[str, Any] = {}
     if settings_file.exists():
         try:
@@ -663,8 +695,22 @@ def _harden_perms(path) -> None:
         log.debug("suppressed exception", exc_info=True)
 
 
+# One read-merge-write of the settings file at a time: two threads saving different keys each read
+# the file, and the second write dropped the first one's keys.
+_FILE_LOCK = threading.RLock()
+
+
 def save_settings(settings: Dict[str, Any]) -> None:
-    """Merge-save: read current file, apply updates, strip legacy keys, write back."""
+    """Merge-save: read current file, apply updates, strip legacy keys, write back.
+
+    Pass only the keys being changed. A whole load_settings() view handed back writes every
+    default, every one-session environment override (ELI_N_CTX, ELI_MODEL_PATH...) and every
+    derived value into the file as if the user had chosen them."""
+    with _FILE_LOCK:
+        _save_settings_locked(settings)
+
+
+def _save_settings_locked(settings: Dict[str, Any]) -> None:
     settings_file = _settings_file()
 
     # Start from whatever is on disk (NOT defaults — so we don't reintroduce defaults
@@ -895,6 +941,17 @@ def apply_env(settings=None):
     return s
 
 # --- ELI portability runtime path guard: BEGIN ---
+# The settings that name this install itself, and the ones that name a part of it (its databases,
+# its state files). A copied install brings the old machine's absolute values for these, which are
+# moved onto this install when they are read. Every other path in the settings is the user's own
+# choice (a model, a model folder, a project folder, a GPU profile file) and is kept as given.
+_ROOT_KEYS = ("project_root", "root", "base_dir", "base_path")
+_INSTALL_PATH_KEYS = (
+    "artifacts_dir", "config_dir", "runtime_snapshot", "state", "user_profile", "world_model",
+    "last_trace", "user_db", "agent_db", "memory_db", "models_dir",
+)
+
+
 def _eli_runtime_physical_project_root():
     """
     Resolve this install's project root from this file's physical location.
@@ -961,8 +1018,10 @@ def _eli_runtime_external_path_to_current_install(candidate, root):
         "models", "blueprints", "reports", "test_reports",
     }
 
-    for i, part in enumerate(parts):
-        if part in project_tops:
+    # The last of the install's own top folders on the way to the file: the first one could be a
+    # folder of the same name above the old install (a home folder's own 'eli' or 'models').
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] in project_tops:
             try:
                 return root / Path(*parts[i:])
             except Exception:
@@ -1021,7 +1080,7 @@ def _eli_runtime_sanitize_path_string(key: str, value: str):
         return ""
 
     # Explicit project-root style keys must point to this install.
-    if key_l in {"project_root", "root", "base_dir", "base_path"}:
+    if key_l in _ROOT_KEYS:
         return str(root)
 
     mapped = _eli_runtime_external_path_to_current_install(resolved, root)
@@ -1030,25 +1089,6 @@ def _eli_runtime_sanitize_path_string(key: str, value: str):
 
     # External non-model path with no safe mapping. Clear it.
     return ""
-
-
-def _eli_runtime_sanitize_obj(obj, key_hint=""):
-    if isinstance(obj, dict):
-        return {
-            k: _eli_runtime_sanitize_obj(v, str(k))
-            for k, v in obj.items()
-        }
-
-    if isinstance(obj, list):
-        return [_eli_runtime_sanitize_obj(v, key_hint) for v in obj]
-
-    if isinstance(obj, tuple):
-        return tuple(_eli_runtime_sanitize_obj(v, key_hint) for v in obj)
-
-    if isinstance(obj, str):
-        return _eli_runtime_sanitize_path_string(key_hint, obj)
-
-    return obj
 
 
 def _eli_runtime_clear_stale_env_paths():
@@ -1126,14 +1166,21 @@ def _eli_portability_load_settings(*args, **kwargs):
     explicit_settings_file = bool(
         str(os.environ.get("ELI_SETTINGS_FILE") or os.environ.get("ELI_SETTINGS_PATH") or "").strip()
     )
-    if not explicit_settings_file:
-        settings = _eli_runtime_sanitize_obj(settings)
+    if not explicit_settings_file and isinstance(settings, dict):
+        # Only the settings that name a part of this install are moved onto it. Every key whose
+        # name merely contained 'model', 'dir', 'file' and the like went through here as one path:
+        # the model folder list (several folders joined) and any folder or file the user chose
+        # outside the install were blanked at every read, and the next save made it permanent.
+        for key in _INSTALL_PATH_KEYS:
+            val = settings.get(key)
+            if isinstance(val, str) and val.strip():
+                settings[key] = _eli_runtime_sanitize_path_string(key, val)
 
     # Final authoritative install-local path correction for common root keys.
     try:
         root = _eli_runtime_physical_project_root()
         if isinstance(settings, dict):
-            for k in ("project_root", "root", "base_dir", "base_path"):
+            for k in _ROOT_KEYS:
                 if k in settings:
                     settings[k] = str(root)
     except Exception:
@@ -1191,20 +1238,7 @@ def _eli_final_sanitize_loaded_settings(settings):
 
     # Remove stale project-local path authority keys if they point outside this install.
     root = _eli_final_project_root().resolve()
-    for key in (
-        "project_root",
-        "artifacts_dir",
-        "config_dir",
-        "runtime_snapshot",
-        "state",
-        "user_profile",
-        "world_model",
-        "last_trace",
-        "user_db",
-        "agent_db",
-        "memory_db",
-        "models_dir",
-    ):
+    for key in ("project_root",) + _INSTALL_PATH_KEYS:
         if key not in settings:
             continue
 

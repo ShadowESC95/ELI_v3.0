@@ -150,3 +150,104 @@ def test_a_path_inherited_from_another_install_is_dropped_at_start(tmp_path, mon
     monkeypatch.setenv("ELI_CONFIG_DIR", str(tmp_path / "another-install" / "config"))
     rs.load_settings()
     assert "ELI_CONFIG_DIR" not in os.environ
+
+
+@pytest.fixture()
+def product_settings(tmp_path, monkeypatch):
+    """Settings read the way the installed app reads them: no ELI_SETTINGS_FILE, so every guard the
+    app's settings pass through runs (the test sandbox's ELI_SETTINGS_FILE switches them off)."""
+    import json
+    from eli.core import runtime_settings as rs
+    for name in ("ELI_ALLOW_EXTERNAL_MODEL_PATHS", "ELI_SETTINGS_FILE", "ELI_SETTINGS_PATH", "ELI_GGUF_MODEL_PATH",
+                 "ELI_MODEL_PATH", "ELI_CUSTOM_MODEL_PATH", "ELI_BUNDLED_MODEL_PATH", "ELI_GGUF_MODEL",
+                 "ELI_MODEL_DIRS", "ELI_N_CTX", "ELI_GGUF_N_CTX"):
+        monkeypatch.delenv(name, raising=False)
+    root = tmp_path / "ELI_v3"
+    (root / "config").mkdir(parents=True)
+    monkeypatch.setenv("ELI_CONFIG_DIR", str(root / "config"))
+    for fn in ("_eli_runtime_physical_project_root", "_eli_final_project_root"):
+        monkeypatch.setattr(rs, fn, lambda: root)
+    monkeypatch.setattr(rs, "PROJECT_ROOT", root)
+    path = root / "config" / "settings.json"
+
+    def write(data):
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def read():
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    return root, write, read
+
+
+def test_several_model_folders_and_other_folders_of_the_users_survive_a_settings_read(product_settings, tmp_path):
+    """Every key whose name held 'model', 'dir', 'file'... was read as one path: the model folder
+    list (folders joined with the path separator) and a folder chosen outside the install came back
+    blank, and the next save wrote the blank."""
+    from eli.core import runtime_settings as rs
+    root, write, read = product_settings
+    one, two = tmp_path / "models-a", tmp_path / "models-b"
+    one.mkdir()
+    two.mkdir()
+    projects = tmp_path / "Pictures" / "projects"
+    profiles = tmp_path / "gpu_profiles.json"
+    joined = os.pathsep.join([str(one), str(two)])
+    write({"model_dirs": joined, "image_default_project_path": str(projects),
+           "gpu_profiles_file": str(profiles)})
+    loaded = rs.load_settings()
+    assert loaded["model_dirs"] == joined
+    assert loaded["image_default_project_path"] == str(projects)
+    assert loaded["gpu_profiles_file"] == str(profiles)
+    from eli.core import model_folders
+    third = tmp_path / "models-c"
+    third.mkdir()
+    assert model_folders.add_model_folder(third) is True
+    assert read()["model_dirs"] == os.pathsep.join([str(one), str(two), str(third)])
+
+
+def test_a_database_path_from_a_copied_install_still_moves_onto_this_one(product_settings, tmp_path):
+    """Moved by the last of the install's own folders on the way: a folder named like one of them
+    above the old install (here 'eli') is not where the install's part starts."""
+    from eli.core import runtime_settings as rs
+    root, write, _read = product_settings
+    write({"user_db": str(tmp_path / "eli" / "old-machine" / "ELI" / "artifacts" / "db" / "user.sqlite3")})
+    assert rs.load_settings()["user_db"] == str(root / "artifacts" / "db" / "user.sqlite3")
+
+
+def test_a_model_chosen_in_another_programs_models_folder_keeps_its_path_after_a_restart(product_settings, tmp_path):
+    """Saved as 'models/<name>' and looked for in ELI's own folder, it was gone at the next start."""
+    from eli.core import runtime_settings as rs
+    root, _write, read = product_settings
+    other = tmp_path / "OtherApp" / "models" / "org"
+    other.mkdir(parents=True)
+    model = other / "Chosen.gguf"
+    model.write_bytes(b"GGUF")
+    rs.save_settings({"model_path": str(model)})
+    assert read()["model_path"] == str(model)
+    rs._HEAL_MISSES.clear()
+    assert rs.load_settings()["model_path"] == str(model)
+
+
+def test_a_model_that_moved_into_a_named_model_folder_is_found_there(product_settings, tmp_path):
+    from eli.core import runtime_settings as rs
+    root, write, read = product_settings
+    named = tmp_path / "my-models"
+    named.mkdir()
+    (named / "Moved.gguf").write_bytes(b"GGUF")
+    write({"model_dirs": str(named), "model_path": str(tmp_path / "old-place" / "Moved.gguf")})
+    rs._HEAL_MISSES.clear()
+    assert rs.load_settings()["model_path"] == str(named / "Moved.gguf")
+    assert read()["model_path"] == str(named / "Moved.gguf"), "healed once, kept"
+
+
+def test_two_threads_saving_different_keys_keep_both(product_settings):
+    from eli.core import runtime_settings as rs
+    _root, write, read = product_settings
+    write({})
+    keys = [f"probe_key_{i}" for i in range(16)]
+    threads = [threading.Thread(target=rs.save_settings, args=({k: i},)) for i, k in enumerate(keys)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    saved = read()
+    assert all(saved.get(k) == i for i, k in enumerate(keys))

@@ -1785,11 +1785,16 @@ def discover_models(models_dir: Optional[Path] = None,
     when callers genuinely want every .gguf on disk (e.g. a diagnostic
     inventory)."""
     if models_dir is None:
-        try:
-            from eli.core.paths import project_root
-            models_dir = project_root() / "models"
-        except Exception:
-            models_dir = Path.cwd() / "models"
+        # Every model folder (eli/core/model_folders): ELI's own, the folders of the models the
+        # settings name, the loaded model's and the ones the user named. Only <root>/models was
+        # searched, so a model kept anywhere else was "no model" to the recommendation.
+        from eli.core.model_folders import model_folders
+        out_all: List[Dict[str, Any]] = []
+        for folder in model_folders():
+            for found in discover_models(Path(folder), include_embedders=include_embedders):
+                if found["path"] not in {m["path"] for m in out_all}:
+                    out_all.append(found)
+        return out_all
 
     out: List[Dict[str, Any]] = []
     if not models_dir.is_dir():
@@ -2996,38 +3001,35 @@ def _recommend_from_plan(rec: ModelRecommendation, hw: HardwareProfile, chosen: 
 
 
 def apply_recommendation(rec: ModelRecommendation) -> Dict[str, Any]:
-    """Write the recommendation to config/settings.json.
+    """Write the recommendation to the settings, and say what was written.
 
-    Hardware-computed runtime-tune values (n_ctx, n_gpu_layers, batch_size)
-    are written to hw_profile_* keys only — the canonical keys are the user's
-    domain and must not be auto-overwritten.  All other fields (model_path,
-    n_threads, cache_type_k/v, mode_presets, etc.) are safe to write.
+    Hardware-computed runtime-tune values (n_ctx, n_gpu_layers, batch_size) are written to
+    hw_profile_* keys only, with the cache types the fit assumed. The user's own settings
+    (temperature, the reply ceiling, the reasoning-mode budgets, the provider) are theirs and are
+    not touched. The model is written only when the recommendation found one: with no model in any
+    model folder the recommendation's path is empty, and writing it wiped the user's choice.
+
+    Returns {ok, written: {key: value}, model_written, error?}.
     """
+    delta: Dict[str, Any] = {
+        "hw_profile_n_gpu_layers": rec.n_gpu_layers,
+        "hw_profile_n_ctx": rec.n_ctx,
+        "hw_profile_batch_size": rec.batch_size,
+        "cache_type_k": rec.cache_type_k,
+        "cache_type_v": rec.cache_type_v,
+    }
+    chosen = str(rec.model_path or "").strip()
+    model_written = bool(chosen) and Path(chosen).expanduser().is_file()
+    if model_written:
+        for key in ("model_path", "bundled_model_path", "custom_model_path", "gguf_model_path"):
+            delta[key] = chosen
     try:
-        from eli.core.runtime_settings import load_settings, save_settings
-        settings = load_settings()
-        settings["model_path"] = rec.model_path
-        settings["bundled_model_path"] = rec.model_path
-        settings["custom_model_path"] = rec.model_path
-        settings["gguf_model_path"] = rec.model_path
-        # Hardware-computed values stored under isolated keys only.
-        settings["hw_profile_n_gpu_layers"] = rec.n_gpu_layers
-        settings["hw_profile_n_ctx"] = rec.n_ctx
-        settings["hw_profile_batch_size"] = rec.batch_size
-        settings["max_tokens"] = rec.max_tokens
-        settings["temperature"] = rec.temperature
-        settings["use_mmap"] = rec.use_mmap
-        settings["use_mlock"] = rec.use_mlock
-        settings["provider"] = rec.provider
-        settings["cache_type_k"] = rec.cache_type_k
-        settings["cache_type_v"] = rec.cache_type_v
-        settings["mode_presets"] = dict(rec.mode_presets)
-        save_settings(settings)
-
-
-        return {"ok": True, "settings_updated": True}
+        from eli.core.runtime_settings import save_settings
+        save_settings(delta)
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "written": {}, "model_written": False,
+                "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "written": delta, "model_written": model_written}
 
 
 def run_benchmark() -> Dict[str, Any]:
@@ -3221,7 +3223,9 @@ def enforce_hardware_authority(*, force: bool = False) -> Dict[str, Any]:
     before = {k: settings.get(k) for k in (
         "hw_profile_n_ctx", "hw_profile_n_gpu_layers", "hw_profile_batch_size", "model_path"
     )}
-    new_settings = dict(settings)
+    # Only the keys written here go to the file: the whole load_settings() view handed back wrote
+    # every default and every one-session environment override into it.
+    new_settings: Dict[str, Any] = {}
 
     # Hardware-computed recommendation stored under hw_profile_* only.
     # n_ctx / n_gpu_layers / batch_size (canonical keys) are NOT touched —
@@ -3236,8 +3240,9 @@ def enforce_hardware_authority(*, force: bool = False) -> Dict[str, Any]:
     if rec.mode_presets:
         new_settings["mode_presets"] = dict(rec.mode_presets)
 
-    # Model path: preserve user selection unless it was invalid.
-    if model_invalid:
+    # Model path: preserve user selection unless it was invalid, and then only for a model the
+    # recommendation found (an empty path is no choice, and it wiped the user's).
+    if model_invalid and str(rec.model_path or "").strip():
         new_settings["model_path"] = rec.model_path
         new_settings["bundled_model_path"] = rec.model_path
         new_settings["custom_model_path"] = rec.model_path
@@ -3260,7 +3265,7 @@ def enforce_hardware_authority(*, force: bool = False) -> Dict[str, Any]:
 
     diffs = []
     for k, before_v in before.items():
-        after_v = new_settings.get(k)
+        after_v = new_settings.get(k, before_v)
         if str(before_v) != str(after_v):
             diffs.append(f"{k}: {before_v} → {after_v}")
     banner = "Hardware profile updated. " + primary_reason

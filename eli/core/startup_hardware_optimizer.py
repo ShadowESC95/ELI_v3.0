@@ -152,6 +152,16 @@ def resize_budgets_to_effective_ctx(effective_ctx: int) -> Dict[str, Any]:
     ctx = int(effective_ctx or 0)
     if ctx <= 0:
         return {}
+    # The model attends no further than it was trained to, whatever context was built for it:
+    # budgets sized from a context past that were budgets for tokens the model is never given.
+    try:
+        from eli.cognition.gguf_inference import current_context_limit
+        limit = int(current_context_limit() or 0)
+        if 0 < limit < ctx:
+            ctx = limit
+    except Exception:
+        log.debug("the loaded model's context limit is unknown; budgets follow the loaded context",
+                  exc_info=True)
 
     from eli.core.runtime_settings import load_settings as _load, save_settings as _save
 
@@ -167,11 +177,11 @@ def resize_budgets_to_effective_ctx(effective_ctx: int) -> Dict[str, Any]:
     if not delta:
         return {}
 
-    settings.update(delta)
-    # Record what the budgets were sized against, so a later reader can tell
+    # Only what changed is saved: the whole load_settings() view handed back wrote every default,
+    # every one-session environment override and every derived value into the file.
+    # mode_presets_ctx records what the budgets were sized against, so a later reader can tell
     # whether they still match the running context without recomputing.
-    settings["mode_presets_ctx"] = ctx
-    _save(settings)
+    _save({**delta, "mode_presets_ctx": ctx})
     return delta
 
 

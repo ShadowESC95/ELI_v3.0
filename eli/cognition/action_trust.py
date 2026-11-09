@@ -38,6 +38,9 @@ _COMMANDS_NEEDED = len(_COMMANDS) - 1
 
 _lock = threading.Lock()
 _measuring: set = set()
+# Verdicts for a loaded model whose file cannot be named (moved or deleted after it loaded): kept
+# for as long as that model stays loaded, never written down.
+_unsaved: Dict[str, Any] = {}
 
 
 def _record_path() -> Path:
@@ -55,11 +58,35 @@ def _records() -> Dict[str, Any]:
         return {}
 
 
+_UNSAVED_PREFIX = "loaded-model-without-a-file:"
+
+
 def _model_key() -> Optional[str]:
+    """The loaded model's own key (its file's name and size): the model that answers is the one
+    measured, whatever the settings or the environment name. Keyed by the configured path, a path
+    that was missing gave no key all session, so the loaded model was never asked and never chose.
+    A loaded model whose file cannot be read is keyed for this load alone (_unsaved). None when no
+    model is loaded."""
     from eli.cognition import gguf_inference
     from eli.core.gguf_sizes import _model_key as key
-    path = gguf_inference.get_model_path()
-    return key(path) if path else None
+    path = gguf_inference.loaded_model_path()
+    if path is None:
+        if not gguf_inference.is_loaded():
+            return None
+        path = gguf_inference.get_model_path()
+    named = key(path) if path else None
+    if named:
+        return named
+    llm = getattr(gguf_inference, "_llm", None)
+    return f"{_UNSAVED_PREFIX}{id(llm)}" if llm is not None else None
+
+
+def _verdict_for(key: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not key:
+        return None
+    if key.startswith(_UNSAVED_PREFIX):
+        return _unsaved.get(key)
+    return _records().get(key)
 
 
 class _NotAnswered(RuntimeError):
@@ -95,7 +122,11 @@ def measure(choose=None) -> Dict[str, Any]:
     verdict = {"trusted": talk_right == len(_TALK) and commands_right >= _COMMANDS_NEEDED,
                "talk": f"{talk_right}/{len(_TALK)}", "commands": f"{commands_right}/{len(_COMMANDS)}",
                "at": time.time(), "picked": picked}
-    if key:
+    if key and key.startswith(_UNSAVED_PREFIX):
+        with _lock:
+            _unsaved.clear()                 # one loaded model at a time: an earlier one's is gone
+            _unsaved[key] = verdict
+    elif key:
         with _lock:
             kept = _records()
             kept[key] = verdict
@@ -132,7 +163,7 @@ def may_choose_actions() -> bool:
     if not is_loaded():
         return True     # nothing to ask, and nothing that could choose
     key = _model_key()
-    verdict = _records().get(key) if key else None
+    verdict = _verdict_for(key)
     if verdict is not None:
         return bool(verdict.get("trusted"))
     with _lock:

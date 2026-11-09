@@ -78,7 +78,9 @@ def save_custom_name(key: str, name: str) -> Dict[str, Any]:
             names[key] = name[:64]
         else:
             names.pop(key, None)
-        settings["device_custom_names"] = names
+        # Only the keys changed here are saved: the whole load_settings() view handed back wrote
+        # every default and one-session environment override into the file.
+        delta: Dict[str, Any] = {"device_custom_names": names}
         # Keep audio_output_aliases in sync for sink:* keys (voice router compat).
         if key.startswith("sink:") or key.startswith("sinkid:"):
             aliases = dict(settings.get("audio_output_aliases") or {})
@@ -96,8 +98,8 @@ def save_custom_name(key: str, name: str) -> Dict[str, Any]:
                     aliases[sid] = name[:64]
                 else:
                     aliases.pop(sid, None)
-            settings["audio_output_aliases"] = aliases
-        save_settings(settings)
+            delta["audio_output_aliases"] = aliases
+        save_settings(delta)
         return {"ok": True, "key": key, "name": name}
     except Exception as e:
         return {"ok": False, "error": str(e)}

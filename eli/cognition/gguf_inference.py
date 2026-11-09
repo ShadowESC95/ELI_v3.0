@@ -162,11 +162,35 @@ def _requested_ctx(settings: Dict[str, Any], model_path) -> int:
 
 _last_error: Optional[str] = None
 _last_params: Dict[str, Any] = {}
+# ELI_GGUF_MODEL_PATH values already reported missing: said once each, not on every one of the
+# thousand lookups a session makes.
+_MISSING_ENV_PATHS_SAID: set = set()
+
+
+def loaded_model_path() -> Optional[Path]:
+    """The file the model loaded in this process was built from; None when none is loaded.
+
+    The answer to every "which model is this" question. The configured path can name a file that
+    is not there (a value cut down to another install's folder) while the model that answers is
+    loaded from where the user keeps it: asked by the configured path, ELI had "no model" all
+    session with a model loaded."""
+    llm = globals().get("_llm")
+    if llm is None:
+        return None
+    for src in (globals().get("_ELI_EFFECTIVE_RUNTIME_REPORT"), globals().get("_last_params"),
+                globals().get("_live_runtime_params")):
+        p = str((src or {}).get("model_path") or "").strip()
+        if p:
+            return Path(p)
+    p = str(getattr(llm, "model_path", "") or "").strip()
+    return Path(p) if p else None
+
 
 def get_model_path() -> Optional[Path]:
     from eli.core.paths import resolve_runtime_path
 
-    # Strongest override: explicit file path. If explicitly set and missing, do not silently fall back.
+    # Strongest override: explicit file path. If explicitly set and missing, no other model is
+    # chosen in its place; the model already loaded here is still the model loaded.
     from eli.core.gguf_sizes import first_part
     env_path = os.environ.get("ELI_GGUF_MODEL_PATH")
     env_path = str(first_part(env_path)) if env_path else env_path
@@ -174,8 +198,12 @@ def get_model_path() -> Optional[Path]:
         p = resolve_runtime_path(env_path)
         if p.exists():
             return p
-        log.debug(f"[GGUF] Warning: ELI_GGUF_MODEL_PATH={p} does not exist")
-        return None
+        loaded = loaded_model_path()
+        if str(p) not in _MISSING_ENV_PATHS_SAID:
+            _MISSING_ENV_PATHS_SAID.add(str(p))
+            log.warning(f"[GGUF] ELI_GGUF_MODEL_PATH={p} does not exist"
+                        + (f"; the loaded model {loaded} is the model in use" if loaded else ""))
+        return loaded
 
     if os.getenv("PYTEST_CURRENT_TEST"):
         return None
@@ -247,7 +275,24 @@ def get_model_path() -> Optional[Path]:
     return None
 
 
+def _model_path_to_load() -> Optional[Path]:
+    """The model a load with no request loads: the configured one. An ELI_GGUF_MODEL_PATH that names
+    a missing file fails the load with that name; get_model_path() answers with the model loaded
+    now, which a settings swap to a missing file would otherwise have reloaded as a success."""
+    from eli.core.gguf_sizes import first_part
+    from eli.core.paths import resolve_runtime_path
+    env_path = os.environ.get("ELI_GGUF_MODEL_PATH")
+    if env_path:
+        p = resolve_runtime_path(str(first_part(env_path)))
+        if not p.exists():
+            raise FileNotFoundError(f"GGUF model not found: {p}")
+    return get_model_path()
+
+
 def _loaded_model_path_str() -> str:
+    loaded = loaded_model_path()
+    if loaded:
+        return str(loaded)
     _ov = globals().get("_live_runtime_override") or globals().get("_live_runtime_params") or {}
     path = str(_ov.get("model_path") or _ov.get("model_name") or "").strip()
     if path:
@@ -1014,7 +1059,7 @@ def _load_model_now(request=None):
     # Resolve the path before dropping the handle: a reload that can't succeed must not destroy the
     # model that is loaded.
     settings = _load_runtime_settings()
-    model_path = request.model_path if request is not None else get_model_path()
+    model_path = request.model_path if request is not None else _model_path_to_load()
     if not model_path:
         raise FileNotFoundError("No GGUF model path configured")
     model_path = _Path(model_path).expanduser().resolve()
@@ -1829,7 +1874,7 @@ def _model_train_ctx(model_path=None) -> int:
     """
     try:
         from eli.core.startup_hardware_optimizer import train_ctx_for_model as _tc
-        mp = model_path or get_model_path()
+        mp = model_path or loaded_model_path() or get_model_path()
         if mp:
             v = int(_tc(str(mp)))
             return v if v > 0 else 0

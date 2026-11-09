@@ -354,3 +354,40 @@ def test_the_stop_reads_only_every_so_often_and_ends_a_runaway():
     stop = g._runaway_stop(Llm())
     results = [stop(list(range(600)), None) for _ in range(g._RUNAWAY_TOKENS)]
     assert results[-1] is True and not any(results[:-1]) and Llm.reads == 1
+
+
+def test_the_model_that_is_loaded_is_measured_even_when_the_configured_path_is_missing(tmp_path, monkeypatch):
+    """The configured path named a file that was not there while the model was loaded from where it
+    is kept: no key, so the loaded model was never asked and never chose an action all session."""
+    from eli.cognition import action_trust as at, gguf_inference
+    model = tmp_path / "Loaded-Model.gguf"
+    model.write_bytes(b"GGUF" + b"\0" * 60)
+    monkeypatch.setattr(at, "_record_path", lambda: tmp_path / "trust.json")
+    monkeypatch.setenv("ELI_GGUF_MODEL_PATH", str(tmp_path / "elsewhere" / "Loaded-Model.gguf"))
+    monkeypatch.delenv("ELI_MODEL_CHOOSES_ACTIONS", raising=False)
+    monkeypatch.setattr(gguf_inference, "_llm", object(), raising=False)
+    monkeypatch.setattr(gguf_inference, "_ELI_EFFECTIVE_RUNTIME_REPORT", {"model_path": str(model)}, raising=False)
+    assert at._model_key() == f"Loaded-Model.gguf|{model.stat().st_size}"
+    started = []
+    monkeypatch.setattr(at.threading, "Thread", lambda **kw: types.SimpleNamespace(
+        start=lambda: started.append(kw["args"])))
+    monkeypatch.setattr(at, "_measuring", set())
+    assert at.may_choose_actions() is False          # not measured yet: rules and chat this turn
+    assert started == [(at._model_key(),)], "the loaded model is asked"
+
+
+def test_a_loaded_model_whose_file_cannot_be_read_is_still_measured_for_this_load(tmp_path, monkeypatch):
+    from eli.cognition import action_trust as at, gguf_inference
+    monkeypatch.setattr(at, "_record_path", lambda: tmp_path / "trust.json")
+    monkeypatch.setattr(gguf_inference, "_llm", object(), raising=False)
+    monkeypatch.setattr(gguf_inference, "_ELI_EFFECTIVE_RUNTIME_REPORT",
+                        {"model_path": str(tmp_path / "moved-away.gguf")}, raising=False)
+    monkeypatch.setattr(at, "_unsaved", {})
+    key = at._model_key()
+    assert key and key.startswith(at._UNSAVED_PREFIX)
+    answers = dict((t, a[0]) for t, a in at._COMMANDS)
+    assert at.measure(lambda text: {"action": answers.get(text, "CHAT")})["trusted"] is True
+    assert not (tmp_path / "trust.json").exists(), "nothing written for a file that cannot be named"
+    monkeypatch.setattr(gguf_inference, "is_loaded", lambda: True)
+    monkeypatch.delenv("ELI_MODEL_CHOOSES_ACTIONS", raising=False)
+    assert at.may_choose_actions() is True

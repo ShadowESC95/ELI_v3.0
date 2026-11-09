@@ -135,3 +135,40 @@ def test_the_api_lists_chat_models_from_every_folder(own, settings, tmp_path, mo
     from api.server import _list_chat_models
     listed = {m["name"]: m for m in _list_chat_models()}
     assert listed["Other.gguf"]["path"] == str(named / "Other.gguf") and listed["Other.gguf"]["size_gb"] == 0.0
+
+
+def test_a_bare_file_name_in_a_setting_is_read_under_elis_root_not_where_eli_was_started(
+        own, settings, tmp_path, monkeypatch):
+    """Started from a terminal in the home folder, a bare name in a model setting made the home
+    folder a model folder, and every file named *.gguf beneath it a model."""
+    import eli.core.paths as paths
+    root = tmp_path / "eli-root"
+    root.mkdir()
+    started_in = tmp_path / "started-in"
+    started_in.mkdir()
+    monkeypatch.setattr(paths, "_active_root", lambda: root)
+    monkeypatch.chdir(started_in)
+    settings["model_path"] = "Bare.gguf"
+    folders = [f.resolve() for f in mf.model_folders()]
+    assert started_in.resolve() not in folders
+    assert root.resolve() in folders
+
+
+def test_the_home_and_temporary_folders_and_what_holds_them_are_never_model_folders(
+        own, settings, tmp_path, monkeypatch):
+    home = tmp_path / "home" / "someone"
+    temp = home / "tmp"
+    temp.mkdir(parents=True)
+    kept = home / "models"
+    kept.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("TMPDIR", str(temp))
+    settings[mf.SETTING] = os.pathsep.join([str(home), str(temp), str(home.parent), str(kept)])
+    folders = mf.model_folders()
+    assert kept in folders
+    for refused in (home, temp, home.parent):
+        assert refused not in folders
+        assert mf.refused_as_folder(refused)
+    with pytest.raises(ValueError, match="home folder"):
+        mf.add_model_folder(home)
+    assert mf.remember_folder_of(home / "loose.gguf") is False

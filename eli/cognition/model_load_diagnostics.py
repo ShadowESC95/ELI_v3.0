@@ -28,6 +28,7 @@ never heard of gets the same treatment.
 from __future__ import annotations
 
 import ctypes
+import os
 import inspect
 import struct
 import threading
@@ -142,13 +143,24 @@ def _read_gguf_value(f, vtype: int) -> Any:
     return None
 
 
+# The fixed start of every GGUF file: magic, version, tensor count, metadata count (4+4+8+8 bytes).
+_GGUF_HEADER_BYTES = struct.calcsize("<4sIQQ")
+
+
 def gguf_metadata(path) -> dict[str, Any]:
-    """Read scalar/string GGUF header metadata. No weights, no llama.cpp."""
+    """Read scalar/string GGUF header metadata. No weights, no llama.cpp. A file that is not a
+    whole GGUF header (a stub, a cut-off download) has none, said in one line and kept: each such
+    file printed a full traceback every time a folder was scanned."""
     key = str(Path(path).expanduser().resolve())
     if key in _METADATA_CACHE:
         return dict(_METADATA_CACHE[key])
     out: dict[str, Any] = {}
     try:
+        size = os.path.getsize(key)
+        if size < _GGUF_HEADER_BYTES:
+            log.debug("not a GGUF model (%d bytes, shorter than a GGUF header): %s", size, key)
+            _METADATA_CACHE[key] = out
+            return dict(out)
         with open(key, "rb") as f:
             if f.read(4) != b"GGUF":
                 _METADATA_CACHE[key] = out
@@ -162,6 +174,10 @@ def gguf_metadata(path) -> dict[str, Any]:
                 val = _read_gguf_value(f, vtype)
                 if val is not None:
                     out[k] = val
+    except (struct.error, EOFError, UnicodeDecodeError, ValueError, OverflowError, MemoryError) as failure:
+        log.debug("GGUF header unreadable (%s: %s): %s", type(failure).__name__, failure, key)
+    except OSError as failure:
+        log.debug("GGUF file unreadable (%s): %s", failure, key)
     except Exception:
         log.debug("gguf metadata read failed for %s", path, exc_info=True)
     _METADATA_CACHE[key] = out
