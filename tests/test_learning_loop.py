@@ -336,7 +336,7 @@ def test_repair_pressure_and_curiosity_are_measured_over_the_sitting():
     from eli.world.core.schemas import EliWorldState, WorldEvent
     engine = EliWorldAutonomyEngine.__new__(EliWorldAutonomyEngine)
     state = EliWorldState()
-    state.awareness.timestamp = time.time()
+    state.awareness.timestamp -= 30 * 24 * 3600.0      # made long ago, as a world on disk is: each event moves it
     state.awareness.repair_pressure = 0.0
     for kind in ("error_detected", "task_completed", "task_completed", "task_completed"):
         engine._update_awareness_from_event(state, WorldEvent(event_type=kind, source="executor", summary="x", payload={"action": "X"}))

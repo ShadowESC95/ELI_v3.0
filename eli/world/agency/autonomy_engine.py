@@ -411,6 +411,11 @@ class EliWorldAutonomyEngine:
                     )
             except Exception:
                 log.debug("autonomy_engine journal entry skipped", exc_info=True)
+        # This event is the sitting's latest: the quiet gap that starts a fresh sitting (and decays the
+        # pacing signals) is measured from it. Nothing moved the stamp before, so every event once the
+        # world was five minutes old took the fresh-sitting branch: the means over the sitting were the
+        # last event alone (one failed tool run set repair pressure to 1.0).
+        a.timestamp = time()
 
     def _stable_object_id(self, template_id: str, room: str) -> str:
         digest = sha1(f"{template_id}:{room}".encode("utf-8")).hexdigest()[:10]

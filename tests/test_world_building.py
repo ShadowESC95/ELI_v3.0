@@ -631,21 +631,48 @@ def test_the_models_beside_the_chosen_one_and_in_named_folders_are_offered_too(m
     assert {"Chosen.gguf", "Spare.gguf", "Other.gguf"} <= set(names)
 
 
-def test_how_sure_eli_is_of_what_it_says_is_the_mean_chance_its_replies_were_right():
+def _awareness_clock(monkeypatch, start: float):
+    import eli.world.agency.autonomy_engine as ae
+    clock = {"now": start}
+    monkeypatch.setattr(ae, "time", lambda: clock["now"])
+    return clock
+
+
+def test_how_sure_eli_is_of_what_it_says_is_the_mean_chance_its_replies_were_right(monkeypatch):
     """The rooms' Measures console and the world panel show evidence confidence and uncertainty:
-    the means of the calibrated chances of this sitting's replies, not steps up and down by event."""
+    the means of the calibrated chances of this sitting's replies, not steps up and down by event.
+    The sitting is measured on the clock, from a world whose awareness was made long ago, as the
+    one on disk was (its stamp was never moved after it was made)."""
     from eli.world.agency.autonomy_engine import EliWorldAutonomyEngine
     from eli.world.core.schemas import EliWorldState, WorldEvent
     engine = EliWorldAutonomyEngine.__new__(EliWorldAutonomyEngine)
     state = EliWorldState()
+    clock = _awareness_clock(monkeypatch, state.awareness.timestamp + 30 * 24 * 3600.0)
     for p in (0.9, 0.5, 0.7):
         engine._update_awareness_from_event(state, WorldEvent("answer_assessed", "epistemics", "assessed", {"p": p}))
+        clock["now"] += 20.0                    # replies a few seconds apart: one sitting
     a = state.awareness
     assert a.answers == 3 and a.evidence_confidence == pytest.approx(0.7) and a.uncertainty == pytest.approx(0.3)
     # a sitting that went quiet starts the mean over with its next reply
-    a.timestamp -= 3600.0
+    clock["now"] += 3600.0
     engine._update_awareness_from_event(state, WorldEvent("answer_assessed", "epistemics", "assessed", {"p": 0.2}))
     assert a.answers == 1 and a.evidence_confidence == pytest.approx(0.2) and a.uncertainty == pytest.approx(0.8)
+
+
+def test_one_failed_tool_run_in_a_busy_sitting_is_its_share_not_all_of_it(monkeypatch):
+    """With the stamp never moved, every event took the fresh-sitting branch: one failure after
+    many runs that worked set repair pressure to 1.0 and put "an unresolved fault" in the prompt."""
+    from eli.world.agency.autonomy_engine import EliWorldAutonomyEngine
+    from eli.world.core.schemas import EliWorldState, WorldEvent
+    engine = EliWorldAutonomyEngine.__new__(EliWorldAutonomyEngine)
+    state = EliWorldState()
+    clock = _awareness_clock(monkeypatch, state.awareness.timestamp + 7 * 24 * 3600.0)
+    for _ in range(9):
+        engine._update_awareness_from_event(state, WorldEvent("task_completed", "executor", "ran"))
+        clock["now"] += 10.0
+    engine._update_awareness_from_event(state, WorldEvent("error_detected", "executor", "failed"))
+    assert state.awareness.tools == 10
+    assert state.awareness.repair_pressure == pytest.approx(0.1)
 
 
 # ── anything at all ──────────────────────────────────────────────────────────
