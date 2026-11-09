@@ -232,13 +232,21 @@ def handoff(tmp_path, monkeypatch):
     sandbox.reset_session_grants()
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-def test_a_thread_a_plugin_starts_is_the_plugins(handoff, tmp_path):
+def test_a_thread_a_plugin_starts_is_the_plugins(handoff, tmp_path, monkeypatch):
     """threading.Thread(target=<builtin>) ran with no plugin frame on its stack and was attributed
-    to ELI: an undeclared plugin could write files or run programs without consent."""
+    to ELI: an undeclared plugin could write files or run programs without consent.
+
+    The refusal is read from the thread's own exception hook, not silenced with a warnings
+    marker: the project's pytest.ini turns the warnings plugin off, and the marker it registers
+    is then unknown under --strict-markers, so this file failed to collect in any run that
+    uses the ini (self-improvement's targeted runs among them)."""
+    import threading
+    raised = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: raised.append(args.exc_type))
     target = tmp_path / "from_thread.txt"
     handoff.via_thread(str(target))
     assert not target.exists()
+    assert raised == [PermissionError]
 
 
 def test_a_callable_a_plugin_submits_to_a_pool_is_the_plugins(handoff, tmp_path):
