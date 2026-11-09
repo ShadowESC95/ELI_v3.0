@@ -7,22 +7,27 @@ from __future__ import annotations
 
 import re
 
-CORRECTION_QUERY_RE = re.compile(
-    r"\b("
+# Words that say the last answer was wrong: it answered something not asked, or said what is not so.
+_DISPUTES = (
     r"i did not ask|i didn't ask|not what i asked|that's not what i asked|"
     r"that is not what i asked|what are you talking about|what are you talking bout|"
     r"answer properly|"
     r"data dump|stop giving me data|why did you send|did not ask for|"
-    r"what do you mean|what wild night|what night|i never|didn't have|"
-    r"did not have|that's not true|that is not true|i didn't say|"
+    r"that's not true|that is not true|i didn't say|"
     r"i did not say|where did you get|why do you say|never said|"
     r"never told you|didn't mention|did not mention|"
     r"why did you lie|you lied|that was a lie|why did you say|"
     r"that was a question|that is a question|that's a question|"
     r"what is your problem|what's your problem"
-    r")\b",
-    re.IGNORECASE,
 )
+# Words that open a challenge as often as a plain question or the user's own news ("what do you mean
+# by entropy here?", "I never knew that", "I didn't have time to try it"). They mark a turn for the
+# kernel to look at what was said (routing, is_correction_query), never a verdict that the last
+# answer was wrong (is_answer_correction): every one of those settled a reply wrong and noted a
+# surprise in what ELI learns from.
+_ALSO_QUESTIONS = r"what do you mean|what wild night|what night|i never|didn't have|did not have"
+
+CORRECTION_QUERY_RE = re.compile(rf"\b({_DISPUTES}|{_ALSO_QUESTIONS})\b", re.IGNORECASE)
 
 # Meta-conversation: user is challenging ELI's prior reply or asking ELI to
 # elaborate on something ELI just said (not a new factual lookup).
@@ -111,16 +116,18 @@ MODEL_IDENTITY_DISPUTE_RE = re.compile(
     re.I,
 )
 
-BIOGRAPHICAL_DISPUTE_RE = re.compile(
-    r"\b("
-    r"what do you mean|what wild night|what night|i never|didn't have|"
-    r"did not have|that's not true|that is not true|i didn't say|"
+# The user saying what ELI said of them is not so.
+_BIOGRAPHICAL_DISPUTES = (
+    r"that's not true|that is not true|i didn't say|"
     r"i did not say|where did you get|why do you say|what are you talking about|"
-    r"never said|never told you|didn't mention|did not mention|"
-    r"been through|you said i|waking up late|wild night"
-    r")\b",
+    r"never said|never told you|didn't mention|did not mention|you said i"
+)
+BIOGRAPHICAL_DISPUTE_RE = re.compile(
+    rf"\b({_BIOGRAPHICAL_DISPUTES}|{_ALSO_QUESTIONS}|been through|waking up late|wild night)\b",
     re.IGNORECASE,
 )
+# What says the last answer was wrong, and nothing that is as often a question or the user's news.
+_ANSWER_DISPUTE_RE = re.compile(rf"\b(?:{_DISPUTES}|{_BIOGRAPHICAL_DISPUTES})\b", re.IGNORECASE)
 
 
 NEWS_FETCH_COMPLAINT_RE = re.compile(
@@ -142,32 +149,44 @@ def is_news_fetch_complaint(text: str) -> bool:
         r"\b(?:news|story|stories|article|headline|fetch|deeper|briefing)\b", s, re.I))
 
 
-FACT_CORRECTION_RE = re.compile(r"(?:^|[.!?]\s+)(?:no|nope|nah)[,.!]?\s+(?:the|that|it|those|this|i)\b", re.I)
+# "No, the ...", "nope, that ...": a correction of what was said. Not "no, I ...", which opens agreement
+# as often ("No I think you're right").
+FACT_CORRECTION_RE = re.compile(r"(?:^|[.!?]\s+)(?:no|nope|nah)[,.!]?\s+(?:the|that|it|those|this)\b", re.I)
 
 
 def is_answer_correction(text: str) -> bool:
-    """The user is telling ELI its last answer was wrong (not a complaint about the app itself)."""
+    """The user is telling ELI its last answer was wrong (not a complaint about the app itself).
+    This settles what ELI learns from (the reply's chance, the memories shown, the claims about the
+    user), so it reads only what says so: a clarifying question or the user's own news is not it."""
     s = str(text or "")
-    return bool(CORRECTION_QUERY_RE.search(s) or RUNTIME_RECHECK_CORRECTION_RE.search(s)
-                or is_biographical_dispute(s) or FACT_CORRECTION_RE.search(s))
+    return bool(_ANSWER_DISPUTE_RE.search(s) or RUNTIME_RECHECK_CORRECTION_RE.search(s)
+                or FACT_CORRECTION_RE.search(s))
 
 
 # The user saying the last answer was right: thanks, or plain agreement, at the start of their next
 # message. Read at the start only, so "thanks, now search for X" counts and a long message that
 # happens to contain "right" is read for what it is. What is NOT here on purpose: "ok"/"yes" alone,
 # which answer a question as often as they endorse an answer (eli/runtime/grounded_remediation.py).
+# The whole list is also what a closing remark is made of (eli/cognition/chat_grounding_gate.py).
 ENDORSEMENT_WORDS = (
     r"thanks|thank you|thankyou|ta|cheers|great|perfect|brilliant|excellent|spot on|exactly|"
     r"that's right|that is right|correct|that's it|that's the one|nice one|lovely|good answer|well done|"
     r"got it|cool|nice|yes,?\s+(?:that's|that is)\s+(?:right|it|correct)"
 )
-ENDORSEMENT_RE = re.compile(rf"^\s*(?:ok(?:ay)?[,.!\s]+)?(?:{ENDORSEMENT_WORDS})\b", re.IGNORECASE)
+ENDORSEMENT_RE = re.compile(rf"^\s*(?:ok(?:ay)?[,.!\s]+)?(?P<word>{ENDORSEMENT_WORDS})\b", re.IGNORECASE)
+# Of those, the ones that open a new request, a sarcastic aside or a remark as often as a verdict
+# ("cool, what's the weather tomorrow", "great, another wrong answer", "got it wrong again", "ta-da"):
+# a closing remark, never a sign that the last answer was right.
+_ACKNOWLEDGING_ONLY = frozenset({"ta", "great", "got it", "cool", "nice"})
 
 
 def is_endorsement(text: str) -> bool:
     """True when the message opens by saying the previous answer was right."""
     s = str(text or "").strip()
-    return bool(s) and bool(ENDORSEMENT_RE.match(s)) and not is_answer_correction(s)
+    m = ENDORSEMENT_RE.match(s) if s else None
+    if m is None or m.group("word").lower() in _ACKNOWLEDGING_ONLY:
+        return False
+    return not is_answer_correction(s)
 
 
 def is_correction_query(text: str) -> bool:

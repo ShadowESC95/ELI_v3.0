@@ -160,10 +160,26 @@ def test_the_scoring_rules_and_the_entropy_of_a_vote():
 
 def test_the_next_turn_says_whether_the_last_answer_was_right():
     from eli.cognition.correction_patterns import is_answer_correction, is_endorsement
-    for said in ("thanks", "Thanks, now search for the other one", "perfect", "yes that's right", "spot on", "ok great"):
+    for said in ("thanks", "Thanks, now search for the other one", "perfect", "yes that's right", "spot on"):
         assert is_endorsement(said) and not is_answer_correction(said), said
     for said in ("no, that's not true", "yes", "ok", "what about the other one", "right, so what is the capital"):
         assert not is_endorsement(said), said
+
+
+def test_an_aside_a_new_request_or_the_users_news_settles_nothing():
+    """These settle every figure ELI learns from: an opening 'cool' or 'great' (sarcastic, or a new
+    request) settled the last reply right, and plain sentences settled it wrong with a surprise."""
+    from eli.cognition.correction_patterns import is_answer_correction, is_endorsement
+    for said in ("ok great", "great, another wrong answer", "cool, what's the weather tomorrow",
+                 "got it wrong again didn't you", "nice try", "ta-da, finished the essay",
+                 "got it, now play some music"):
+        assert not is_endorsement(said), said
+    for said in ("Thanks! I never knew that", "I didn't have time to try it yet", "I've been through a lot today",
+                 "what do you mean by entropy here?", "No I think you're right"):
+        assert not is_answer_correction(said), said
+    for said in ("that's not what I asked", "no, the river is longer than that", "I never said that",
+                 "where did you get that from?", "you lied"):
+        assert is_answer_correction(said), said
 
 
 # ── the model's own confidence in the tokens of a reply, read beside the score ──────────────────
