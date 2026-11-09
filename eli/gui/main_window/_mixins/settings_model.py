@@ -1623,7 +1623,10 @@ class SettingsModelMixin:
         form.addRow("", self.auto_save_checkbox)
 
         self.log_to_file_checkbox = QCheckBox("Write session log to file")
-        self.log_to_file_checkbox.setChecked(False)
+        # the setting's own default (runtime_settings.DEFAULTS): the box said off while the log was on,
+        # and a save then wrote it off
+        from eli.core.runtime_settings import DEFAULTS as _settings_defaults
+        self.log_to_file_checkbox.setChecked(bool(_settings_defaults.get("log_to_file")))
         self.log_to_file_checkbox.setStyleSheet("color:#c8d0e0;")
         form.addRow("", self.log_to_file_checkbox)
 
@@ -2683,7 +2686,8 @@ class SettingsModelMixin:
         # GUI-local flags + theme
         try:
             self.auto_save_checkbox.setChecked(bool(s.get("auto_save", True)))
-            self.log_to_file_checkbox.setChecked(bool(s.get("log_to_file", False)))
+            from eli.core.runtime_settings import DEFAULTS as _settings_defaults
+            self.log_to_file_checkbox.setChecked(bool(s.get("log_to_file", _settings_defaults.get("log_to_file"))))
             if hasattr(self, "web_safe_search_checkbox"):
                 self.web_safe_search_checkbox.setChecked(bool(s.get("web_safe_search", True)))
             self.auto_load_checkbox.setChecked(bool(s.get("auto_load", True)))

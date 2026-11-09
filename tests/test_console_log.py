@@ -62,3 +62,22 @@ def test_a_file_grows_to_a_share_of_the_free_disk(kept):
     L.keep_console_log(kept)
     room = shutil.disk_usage(str(kept.parent)).free * L._LOG_SHARE_OF_FREE_DISK
     assert abs(L._console["handler"].maxBytes - room) <= max(room * 0.01, 1)
+
+
+def test_the_window_shows_the_session_log_setting_as_it_is_by_default():
+    """The log is on by default (runtime_settings.DEFAULTS), and the Settings page's box started off and
+    read a missing key as off: a save from that page then wrote the log off."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from eli.core.runtime_settings import DEFAULTS
+    from eli.gui.main_window._mixins.settings_model import SettingsModelMixin
+
+    class _Page(SettingsModelMixin):
+        def toggle_theme(self):
+            pass
+    page = _Page()
+    widget = page._build_settings_app_page()       # kept, or Qt deletes the boxes with it
+    assert page.log_to_file_checkbox.isChecked() is bool(DEFAULTS["log_to_file"]) is True
+    text = __import__("pathlib").Path(__import__("eli.gui.main_window._mixins.settings_model",
+                                                fromlist=["x"]).__file__).read_text(encoding="utf-8")
+    assert 's.get("log_to_file", False)' not in text
