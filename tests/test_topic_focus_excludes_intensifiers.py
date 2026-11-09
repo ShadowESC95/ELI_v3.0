@@ -95,3 +95,15 @@ def test_stopwords_stay_lowercase_and_apostrophe_free():
     for word in TOPIC_STOPWORDS:
         assert word == word.lower(), f"{word!r} would never match"
         assert "'" not in word, f"{word!r} would never match"
+
+
+def test_the_verb_a_command_is_given_with_is_not_a_topic_what_it_is_about_is():
+    """Focus areas were led by 'play', 'pause', 'close' and 'resume': every command verb of four
+    letters or more counted as something the user talks about."""
+    from eli.runtime.reflection import topic_words
+    assert topic_words("pause spotify") == {"spotify"}
+    assert topic_words("resume") == set()
+    assert topic_words("close the browser and play some rainstorm sounds") == {"browser", "rainstorm", "sounds"}
+    assert "play" not in topic_words("could you play the harbour documentary please")
+    assert "harbour" in topic_words("could you play the harbour documentary please")
+    assert "rivers" in topic_words("I keep reading about rivers and deltas")

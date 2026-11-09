@@ -4,6 +4,7 @@ Uses unified memory system. Stores reflections back into memory for future conte
 """
 from __future__ import annotations
 
+import re
 import time
 from collections import Counter
 from typing import Dict, Any, List, Optional
@@ -134,14 +135,29 @@ def contributes_topics(text: str) -> bool:
 
 
 def topic_words(text: str) -> set:
-    """Distinct topic-bearing words in one message ('' when it is small talk)."""
+    """Distinct topic-bearing words in one message ('' when it is small talk). In an instruction
+    ("play ...", "pause spotify", "close the browser") the verb it is given with is not a topic, only
+    what it is about: every 4-letter command verb counted, so the user's "focus areas" were led by
+    'play', 'pause', 'close' and 'resume'. The verbs are the one list of what a command starts with
+    (eli/runtime/command_splitter.COMMAND_VERBS), read off each instruction the message holds."""
     if not contributes_topics(text):
         return set()
+    try:
+        from eli.runtime.command_splitter import COMMAND_VERBS, read_message
+        verbs = frozenset(COMMAND_VERBS)
+        parts = [(str(p.get("tells") or p.get("said") or ""), bool(p.get("tells")))
+                 for p in read_message(str(text), chains=True)]
+    except (ImportError, AttributeError, TypeError, ValueError, re.error) as failure:
+        log.debug("reflection: instructions not told apart from talk: %s", failure)
+        verbs, parts = frozenset(), [(str(text), False)]
     out = set()
-    for w in str(text).lower().split():
-        clean = "".join(c for c in w if c.isalnum())
-        if len(clean) >= 4 and clean not in TOPIC_STOPWORDS:
-            out.add(clean)
+    for part, tells in parts:
+        words = ["".join(c for c in w if c.isalnum()) for w in part.lower().split()]
+        while tells and words and words[0] in verbs:
+            words = words[1:]                      # "turn up", "play" ...: the command, not its subject
+        for clean in words:
+            if len(clean) >= 4 and clean not in TOPIC_STOPWORDS:
+                out.add(clean)
     return out
 
 
