@@ -53,8 +53,12 @@ def main() -> int:
         return print_license()
 
     # ── ELI as an MCP server ──────────────────────────────────────────────────
-    # Before any GUI/engine import: the protocol owns stdout.
+    # Before any GUI/engine import: the protocol owns stdout. Behind the licence gate like
+    # every other way in, with no prompt, since the protocol owns stdin too.
     if "--mcp-server" in args:
+        from eli.licensing.launch_gate import launch_allowed
+        if not launch_allowed(allow_gui_prompt=False):
+            return 1
         from eli.integrations.mcp.server import main as _mcp_main
         return _mcp_main()
     if "--mcp-config" in args:
@@ -95,11 +99,8 @@ def main() -> int:
             return 1
 
     # ── Commercial license gate (retail / ELI_REQUIRE_LICENSE builds) ────────
-    try:
-        from eli.licensing.activation import LicenseRequiredError, assert_launch_allowed
-        assert_launch_allowed()
-    except LicenseRequiredError as exc:
-        print(exc, file=sys.stderr)
+    from eli.licensing.launch_gate import launch_allowed
+    if not launch_allowed(allow_gui_prompt=True):
         return 1
 
     # ── First-run/boot DB + machine-inventory bootstrap (idempotent) ─────────

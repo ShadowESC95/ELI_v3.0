@@ -45,12 +45,12 @@ def _notify(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def _announce_trial(days: int, reference: str) -> None:
+def _announce_trial(days: int, reference: str, *, allow_gui_prompt: bool = True) -> None:
     _notify(
         f"ELI v3 — {days}-day trial started (ref {reference}).\n"
         f"  Purchase a full license any time: {PURCHASE_URL} · {PURCHASE_EMAIL}"
     )
-    if not gui_prompt_available():
+    if not allow_gui_prompt or not gui_prompt_available():
         return
     try:
         from eli.gui.license_dialog import show_trial_started
@@ -124,7 +124,8 @@ def ensure_license_or_exit(*, allow_gui_prompt: bool = True) -> None:
         state = ensure_trial_activation()
         if state is not None:
             if fresh:
-                _announce_trial(trial_duration_days(), state.customer_ref or "")
+                _announce_trial(trial_duration_days(), state.customer_ref or "",
+                                allow_gui_prompt=allow_gui_prompt)
             if validate_activation().active:
                 return
 
@@ -149,3 +150,17 @@ def ensure_license_or_exit(*, allow_gui_prompt: bool = True) -> None:
                     return
 
     raise _requirement_error(reason, expired=expired)
+
+
+def launch_allowed(*, allow_gui_prompt: bool = True) -> bool:
+    """Whether this run may go on. Every way into ELI asks here (the window, the terminal, the
+    phone/web server, the MCP server): one left out served the whole engine with no licence.
+    When the answer is no, why and what to do is written to stderr."""
+    from eli.licensing.activation import LicenseRequiredError
+
+    try:
+        ensure_license_or_exit(allow_gui_prompt=allow_gui_prompt)
+    except LicenseRequiredError as exc:
+        _notify(str(exc))
+        return False
+    return True

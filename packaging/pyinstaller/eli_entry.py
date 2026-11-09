@@ -1069,6 +1069,17 @@ def _gui_singleton_or_exit() -> None:
     atexit.register(_unlock)
 
 
+def _serve() -> int:
+    """The phone/web server (and the "ELI Server" menu entry), behind the same licence gate as
+    the window: without it the whole engine was served with no licence or an expired trial."""
+    sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--server"]
+    from eli.licensing.launch_gate import launch_allowed
+    if not launch_allowed(allow_gui_prompt=True):
+        return 1
+    from api.server import main as server_main
+    return server_main()
+
+
 def _mode() -> str:
     argv = sys.argv[1:]
     if "--selftest" in argv:
@@ -1125,9 +1136,7 @@ if __name__ == "__main__":
         print(f"[gpu-pack] removed {_gpu}; ELI runs on CPU and will offer GPU again at next launch")
         sys.exit(0)
     elif mode == "server":
-        sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--server"]
-        from api.server import main as server_main
-        sys.exit(server_main())
+        sys.exit(_serve())
     elif mode == "fresh-start":
         sys.exit(_fresh_start(sys.argv[1:]))
     elif mode == "integrate":
