@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
+import re
 import textwrap
 from collections import OrderedDict
 from pathlib import Path
@@ -31,6 +33,27 @@ except Exception:
     ELI_ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = ELI_ROOT / "capability_manifest.json"
 OUT = ELI_ROOT / "blueprints" / "capabilities_and_actions.md"
+
+
+def out_path() -> Path:
+    """Where the table is written: the tracked blueprint, or ELI_CAPABILITIES_DOC. The test sandbox
+    sets that, so a test that starts an engine (which regenerates this) never rewrites the checkout's
+    blueprint."""
+    named = os.environ.get("ELI_CAPABILITIES_DOC", "").strip()
+    return Path(named).expanduser() if named else OUT
+
+
+_DATE_LINE = re.compile(r"^(\*Auto-generated )\d{4}-\d{2}-\d{2}( from)", re.M)
+
+
+def _same_but_for_the_date(path: Path, text: str) -> bool:
+    """A new date over an unchanged table is not an update: written anyway, the tracked file was
+    changed in git by every start (the manifest beside it follows the same rule)."""
+    try:
+        old = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _DATE_LINE.sub(r"\1\2", old) == _DATE_LINE.sub(r"\1\2", text)
 
 # action -> (category, description, [phrases]). Edit here when adding an action.
 _C: "OrderedDict[str, Tuple[str, str, List[str]]]" = OrderedDict()
@@ -394,15 +417,17 @@ def generate_capabilities_doc() -> Dict:
         out.append(f"- ⚠️ New/undocumented (need a curated phrase): {', '.join(needs_phrase)}")
     out.append("")
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text("\n".join(out), encoding="utf-8")
+    text, path = "\n".join(out), out_path()
+    if not _same_but_for_the_date(path, text):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
     return {
         "ok": True,
         "total": len(all_actions),
         "routable": len(routable),
         "documented": len(routable & set(_C)),
         "needs_phrase": needs_phrase,
-        "path": str(OUT),
+        "path": str(path),
     }
 
 

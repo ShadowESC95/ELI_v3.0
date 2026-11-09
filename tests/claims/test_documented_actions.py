@@ -25,3 +25,33 @@ def test_documented_action_is_reachable(action):
     cap = _CAP_BY_ACTION[action]
     assert cap.get("routable") or cap.get("in_supported_list") or cap.get("plugin"), (
         f"{action} is documented but neither routable, supported, nor plugin-backed")
+
+
+# ── regenerating the table ──────────────────────────────────────────────────────
+def test_a_test_never_rewrites_the_checkouts_blueprint():
+    """Every engine start regenerates the table; a test that built an engine rewrote
+    blueprints/capabilities_and_actions.md in the checkout."""
+    from pathlib import Path
+    from eli.tools.registry import capabilities_doc as cd
+
+    before = cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None
+    written = Path(cd.generate_capabilities_doc()["path"])
+    assert written != cd.OUT and written.is_file()
+    assert (cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None) == before
+
+
+def test_a_new_date_over_an_unchanged_table_is_not_written(tmp_path, monkeypatch):
+    import re
+    from eli.tools.registry import capabilities_doc as cd
+
+    target = tmp_path / "capabilities_and_actions.md"
+    monkeypatch.setenv("ELI_CAPABILITIES_DOC", str(target))
+    cd.generate_capabilities_doc()
+    dated_earlier = re.sub(r"Auto-generated \d{4}-\d{2}-\d{2}", "Auto-generated 2000-01-01",
+                           target.read_text(encoding="utf-8"))
+    target.write_text(dated_earlier, encoding="utf-8")
+    cd.generate_capabilities_doc()
+    assert target.read_text(encoding="utf-8") == dated_earlier, "rewritten for its date alone"
+    target.write_text(dated_earlier.replace("| `", "| `CHANGED_", 1), encoding="utf-8")
+    cd.generate_capabilities_doc()
+    assert "CHANGED_" not in target.read_text(encoding="utf-8"), "a real change was not written"

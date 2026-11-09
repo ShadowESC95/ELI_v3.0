@@ -53,6 +53,9 @@ os.environ["ELI_CONFIG_DIR"] = str(SANDBOX / "config")
 os.environ["ELI_GPU_PACK_LOG"] = str(SANDBOX / "gpu-pack.log")   # it would go beside the checkout's runtime/
 os.environ["ELI_VOICE_REFS_DIR"] = str(SANDBOX / "voice_profiles")   # and a cloned voice beside its models/
 os.environ["ELI_KEYS_DIR"] = str(SANDBOX / "eli-keys")   # licence keys every ELI product shares (~/.config/eli-keys)
+# Starting an engine regenerates the capabilities table, which lives in blueprints/: a test that
+# built one rewrote the checkout's blueprint.
+os.environ["ELI_CAPABILITIES_DOC"] = str(SANDBOX / "capabilities_and_actions.md")
 
 
 def _fresh_config() -> None:
