@@ -13,7 +13,6 @@ import os
 import re
 import sys
 import time
-import subprocess
 import json
 
 # Logger for safety-wrapper suppressed-exception reporting (used before the
@@ -24,7 +23,7 @@ _SWLOG = _swlog_logging.getLogger(__name__)
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
 import threading
 import queue
 from eli.core.paths import get_paths
@@ -46,8 +45,54 @@ from eli.memory import (
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-def _foreground_busy(window: float = 45.0) -> bool:
-    """True when a user turn is running, or ran recently enough to defer chores.
+BASE_WINDOW_S = 45.0
+"""How long after a turn chores wait before any pause of the owner's has been measured, and the
+least they ever wait."""
+PACE_QUANTILE = 0.75
+"""Which of the owner's own pauses between turns sets how long chores wait after one: most of them
+(three in four). The longest is a real break, and waiting that long every time would hold chores
+off for good."""
+PACE_GAPS_KEPT = 20
+"""How many of those pauses are kept: about one sitting's worth."""
+
+
+class _OwnerPace:
+    """The owner's pace in this session, read off the model's foreground calls each daemon tick: the
+    quiet between one turn's end and the next turn's start. Chores waited a fixed 45 s (or the last
+    call's length), so self-repair's model calls started between the owner's commands every time
+    and were mid-call when the next one came."""
+
+    def __init__(self) -> None:
+        self.gaps: list = []
+        self._quiet: Optional[float] = None
+
+    def observe(self) -> None:
+        try:
+            from eli.cognition.inference_broker import foreground_in_progress, seconds_since_foreground
+            busy, since = foreground_in_progress(), seconds_since_foreground()
+        except Exception:
+            return
+        if self._quiet is not None and (busy or since < self._quiet) and self._quiet < 1e8:
+            self.gaps = (self.gaps + [round(self._quiet, 1)])[-PACE_GAPS_KEPT:]
+        self._quiet = None if busy else since
+
+    def usual(self) -> float:
+        """The PACE_QUANTILE of the kept pauses; BASE_WINDOW_S until one is measured, and never less."""
+        if not self.gaps:
+            return BASE_WINDOW_S
+        ordered = sorted(self.gaps)
+        return max(BASE_WINDOW_S, ordered[int(PACE_QUANTILE * (len(ordered) - 1))])
+
+    def longest(self) -> float:
+        return max([BASE_WINDOW_S, *self.gaps])
+
+
+_PACE = _OwnerPace()
+
+
+def _foreground_busy(window: Optional[float] = None) -> bool:
+    """True when a user turn is running, or ran recently enough to defer chores: within the owner's
+    usual pause between turns this session (_OwnerPace), unless `window` says otherwise.
 
     Re-queried at EVERY guard rather than snapshotted once per tick. The blocks
     this gates each run multi-minute LLM work, so a reading taken at the top of
@@ -59,9 +104,15 @@ def _foreground_busy(window: float = 45.0) -> bool:
     """
     try:
         from eli.cognition.inference_broker import foreground_recently_active as _fra
-        return bool(_fra(window))
+        return bool(_fra(_PACE.usual() if window is None else window))
     except Exception:
         return False
+
+
+def _owner_away() -> bool:
+    """Quiet for longer than any pause the owner has taken between turns this session: the only time
+    a job of many model calls (self-repair) starts, so it is not caught mid-call by their next turn."""
+    return not _foreground_busy(_PACE.longest())
 
 
 class ProactiveDaemon:
@@ -535,12 +586,39 @@ class ProactiveDaemon:
             except Exception:
                 _SWLOG.debug("suppressed exception", exc_info=True)
 
+        # --- Trend detection: compare against the previous tick's focus ---
+        self._trend_patterns(patterns)
+
+        # Persist current patterns as an observation for future trend comparison
+        try:
+            _obs_payload = json.dumps({
+                "patterns": [{"type": p.get("type"), "topics": p.get("topics", [])} for p in patterns],
+                "ts": time.time(),
+            })
+            _obs_mem = self.agent_mem or self.user_mem
+            if _obs_mem:
+                _obs_mem.add_observation("proactive_pattern_tick", _obs_payload)
+        except Exception:
+            _SWLOG.debug("suppressed exception", exc_info=True)
+
+        log.debug(f"[PROACTIVE] Pattern analysis: {len(patterns)} signals ({', '.join(p['type'] for p in patterns)})")
+        return patterns
+
+    def _trend_patterns(self, patterns: List[Dict[str, Any]]) -> None:
+        """Topics that came into or left the user's focus since the previous tick, added to `patterns`."""
         # --- Trend detection: compare against last stored observation ---
         # This closes the loop: patterns are not just logged once, they're
         # compared to past patterns to surface rising/falling trends.
         try:
-            _last_obs = self.agent_mem.get_recent_observations(limit=5) if self.agent_mem else []
-            _past_topics: set = set()
+            # The previous tick's focus, kept by this daemon. Read back from the newest observations
+            # it was not found at all: this tick writes others first (the pattern summary, habits),
+            # so the same five topics were "not seen in prior ticks" tick after tick. Only the first
+            # tick after a start reads the stored rows, and with no prior focus found nothing is
+            # called emerging or fading.
+            _prior = getattr(self, "_last_focus", None)
+            _last_obs = [] if _prior is not None else (
+                self.agent_mem.get_recent_observations(limit=5) if self.agent_mem else [])
+            _past_topics: set = set(_prior or ())
             for _obs in _last_obs:
                 _obs_content = str(_obs.get("content") or _obs.get("notes") or "")
                 if "topic_focus" in _obs_content:
@@ -569,9 +647,10 @@ class ProactiveDaemon:
             for _pat in patterns:
                 if _pat.get("type") == "topic_focus":
                     _cur_topics = set(str(t).lower() for t in _pat.get("topics", []))
+                    self._last_focus = set(_cur_topics)
                     _new_topics = _cur_topics - _past_topics
                     _dropped = _past_topics - _cur_topics
-                    if _new_topics:
+                    if _new_topics and _past_topics:
                         patterns.append({
                             "type": "trend_emerging",
                             "topics": list(_new_topics),
@@ -587,20 +666,6 @@ class ProactiveDaemon:
         except Exception:
             _SWLOG.debug("suppressed exception", exc_info=True)
 
-        # Persist current patterns as an observation for future trend comparison
-        try:
-            _obs_payload = json.dumps({
-                "patterns": [{"type": p.get("type"), "topics": p.get("topics", [])} for p in patterns],
-                "ts": time.time(),
-            })
-            _obs_mem = self.agent_mem or self.user_mem
-            if _obs_mem:
-                _obs_mem.add_observation("proactive_pattern_tick", _obs_payload)
-        except Exception:
-            _SWLOG.debug("suppressed exception", exc_info=True)
-
-        log.debug(f"[PROACTIVE] Pattern analysis: {len(patterns)} signals ({', '.join(p['type'] for p in patterns)})")
-        return patterns
 
     def analyze_code_quality(self) -> List[Dict[str, Any]]:
         """
@@ -680,7 +745,11 @@ class ProactiveDaemon:
             except Exception:
                 _SWLOG.debug("suppressed exception", exc_info=True)
 
-        # Primary self-maintenance: unified failure analysis (propose-only from daemon).
+        # Primary self-maintenance: unified failure analysis (propose-only from daemon). It makes
+        # several model calls in a row: held until the owner is away, not just between two turns.
+        if not _owner_away():
+            log.debug("[PROACTIVE] self-maintenance held: the owner is within their own pause between turns")
+            return improvements
         try:
             from eli.runtime.self_improvement import get_self_improvement
             _si = get_self_improvement()
@@ -696,59 +765,28 @@ class ProactiveDaemon:
 
         return improvements
 
-    def execute_habit(self, rule: dict) -> dict:
-        """
-        Execute a habit rule's shell command. Only runs if command is non-empty.
-        Returns {"ok": bool, "output": str, "returncode": int}.
-        """
-        name = rule.get("name", "unnamed")
-        cmd = (rule.get("command") or "").strip()
-        if not cmd:
-            return {"ok": False, "error": "No command defined"}
-        # Kill switch: habit commands run via the shell (pipes, &&). That's fine for a user's own
-        # habits, but a redistributed or imported habit DB is untrusted, so let deployments disable
-        # shell habits. Default on; ELI_NO_HABIT_SHELL=1 or habit_shell_enabled=false turns it off.
-        _habit_shell_on = os.environ.get("ELI_NO_HABIT_SHELL", "0") != "1"
-        if _habit_shell_on:
-            try:
-                from eli.core import config as _cfg
-                _habit_shell_on = bool(_cfg.get("habit_shell_enabled", True))
-            except Exception:
-                _SWLOG.debug("suppressed exception", exc_info=True)
-        if not _habit_shell_on:
-            return {"ok": False, "error": "Shell habits are disabled (habit_shell_enabled=false)"}
-        try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=30
-            )
-            out = (result.stdout or result.stderr or "").strip()[:500]
-            status = "✓" if result.returncode == 0 else f"✗ (rc={result.returncode})"
-            log.debug(f"[PROACTIVE] Habit executed '{name}': {status} — {out[:120]}")
-            self.suggestion_queue.put(("habit_result", {
-                "type": "habit_result",
-                "name": name,
-                "command": cmd,
-                "ok": result.returncode == 0,
-                "suggestion": f"{status} Habit '{name}' ran: {out[:120] or 'done'}"
-            }))
-            # Log to agent DB
-            try:
-                self.agent_mem.add_observation(
-                    category="habit_executed",
-                    observation=f"{name}: rc={result.returncode}",
-                    content=out[:500],
-                )
-            except Exception:
-                _SWLOG.debug("suppressed exception", exc_info=True)
-            return {"ok": result.returncode == 0, "output": out, "returncode": result.returncode}
-        except subprocess.TimeoutExpired:
-            msg = f"Habit '{name}' timed out after 30s"
-            log.debug(f"[PROACTIVE] {msg}")
-            return {"ok": False, "error": msg}
-        except Exception as exc:
-            msg = str(exc)
-            log.debug(f"[PROACTIVE] Habit execution error '{name}': {msg}")
-            return {"ok": False, "error": msg}
+    def _note_tick_failures(self, ticks: dict) -> None:
+        """A tick that failed says why, at warning: the daemon logged only its ok flag, and the
+        scheduler raised on every run for five days unseen. The same failure on the next tick as on
+        this one is an attention item too, so a tick that keeps failing is not left in the log."""
+        seen = getattr(self, "_tick_failures", {})
+        for name, result in ticks.items():
+            error = str((result or {}).get("error") or "") if not (result or {}).get("ok") else ""
+            if not error:
+                seen.pop(name, None)
+                continue
+            log.warning("[PROACTIVE] the %s failed: %s", name, error)
+            if seen.get(name) == error:
+                try:
+                    from eli.planning.attention_queue import append_attention
+                    append_attention(kind="autonomy_tick_failing", title=f"The {name} keeps failing: {error[:160]}",
+                                     state="failed", severity="high", source="proactive_daemon",
+                                     metadata={"tick": name, "error": error[:2000]},
+                                     suppression_key=f"tick_failing:{name}")
+                except Exception:
+                    log.warning("[PROACTIVE] the %s failure could not be filed for attention", name, exc_info=True)
+            seen[name] = error
+        self._tick_failures = seen
 
     def track_error(self, error_type: str, error_message: str, context: str):
         """
@@ -1021,6 +1059,7 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
 
         while self.running:
             try:
+                _PACE.observe()
                 if self.paused:
                     time.sleep(5)
                     continue
@@ -1048,6 +1087,7 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
                             "[PROACTIVE] autonomy tick: source files changed since last check=%s goal_ok=%s sched_ok=%s",
                             (_at.get("code_monitor") or {}).get("has_changes"),
                             _gt.get("ok"), _st.get("ok"))
+                        self._note_tick_failures({"goal tick": _gt, "scheduler tick": _st})
                     except Exception as _auto_err:
                         log.debug(f"[PROACTIVE] autonomy tick skipped: {_auto_err}")
 
@@ -1155,39 +1195,10 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
                         except Exception as _ho:
                             log.debug(f"[PROACTIVE] habit offer skipped: {_ho}")
 
-                        from datetime import datetime as _dt
-                        _now = _dt.now()
-                        _cur_h, _cur_m = _now.hour, _now.minute
-                        _mem = self.user_mem or self.agent_mem
-                        if _mem and hasattr(_mem, 'get_habit_rules'):
-                            for rule in (_mem.get_habit_rules(enabled_only=True) or []):
-                                if not isinstance(rule, dict):
-                                    try:
-                                        rule = dict(rule)
-                                    except Exception:
-                                        continue
-                                _rh = int(rule.get("hour", -1))
-                                _rm = int(rule.get("minute", -1))
-                                _name = rule.get("name", "scheduled action")
-                                _cmd = (rule.get("command") or "").strip()
-                                # Within 5-minute window of scheduled time
-                                if _rh == _cur_h and abs(_rm - _cur_m) <= 5:
-                                    log.debug(f"[PROACTIVE] Habit triggered: '{_name}' @ {_rh:02d}:{_rm:02d}")
-                                    if _cmd:
-                                        # Execute and report result via queue
-                                        threading.Thread(
-                                            target=self.execute_habit,
-                                            args=(rule,),
-                                            daemon=True,
-                                        ).start()
-                                    else:
-                                        # No command — notify user
-                                        self.suggestion_queue.put(("habit", {
-                                            "type": "habit_trigger",
-                                            "name": _name,
-                                            "command": "",
-                                            "suggestion": f"Scheduled time for '{_name}' — no command configured"
-                                        }))
+                        # Enabled habits are fired by HabitScheduler alone, once, at their minute and
+                        # through the engine (eli/planning/habits_scheduler.py). This loop also ran each
+                        # one within five minutes of its time as a raw shell line, with no routing, no
+                        # approval and no shell gate: an app opened twice, a sentence ran as a command.
                     except Exception as _he:
                         log.debug(f"[PROACTIVE] Habit detection error: {_he}")
 

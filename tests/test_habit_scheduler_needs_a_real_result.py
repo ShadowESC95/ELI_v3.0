@@ -38,3 +38,28 @@ def test_run_keys_survive_a_restart(monkeypatch, tmp_path):
     s._fired_keys = {(3, "202609251200")}
     s._save_fired()
     assert (3, "202609251200") in s._load_fired()
+
+
+def test_a_habit_the_shell_gate_refuses_is_reported_and_never_run(monkeypatch, tmp_path, capsys):
+    """An imported habit store is not the user's own word: its commands meet the same shell gate as
+    a typed command, and one it refuses never reaches the engine."""
+    s = _scheduler(monkeypatch, tmp_path)
+    ran, recorded = [], []
+    monkeypatch.setitem(sys.modules, "eli.kernel.engine",
+                        SimpleNamespace(get_engine=lambda: SimpleNamespace(process=lambda cmd, source="": ran.append(cmd))))
+    s.memory = SimpleNamespace(record_habit_run=lambda *a, **k: recorded.append(a))
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    s._execute_rule({"name": "tidy", "command": "rm -rf ~/projects", "id": 7})
+    assert ran == [] and recorded == [], "a refused habit ran"
+    assert "Refused" in capsys.readouterr().out
+    s._execute_rule({"name": "editor", "command": "open the editor", "id": 8})
+    assert ran == ["open the editor"], "an ordinary habit was stopped by the gate"
+
+
+def test_the_proactive_daemon_no_longer_fires_habits_itself():
+    """Every habit ran twice: at its minute through the engine, and again by the daemon's tick as a
+    raw shell line within five minutes of it."""
+    import inspect
+    from eli.planning import proactive_daemon
+    assert not hasattr(proactive_daemon.ProactiveDaemon, "execute_habit")
+    assert "shell=True" not in inspect.getsource(proactive_daemon)

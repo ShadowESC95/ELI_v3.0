@@ -115,6 +115,17 @@ class HabitScheduler:
                       f"'{rule.get('name','?')}' (command={_cmd!r} is not a routine)")
             return
 
+        # A habit's command is checked by the one shell gate before anything runs it: an imported or
+        # redistributed habit store is not the user's own word, and a line the gate refuses (under the
+        # same Full Control policy as a typed command) is reported, never run.
+        from eli.execution.shell_gate import check_command
+        refused = check_command(_cmd)
+        if refused:
+            why = str(refused.get("content") or "refused by the shell gate")
+            log.warning("[SCHEDULER] habit '%s' was not run: %s", rule.get("name", "?"), why)
+            print(f"   ⛔ Refused: habit '{rule.get('name', '?')}' was not run ({why})")
+            return
+
         log.debug(f"[SCHEDULER] Executing habit '{rule.get('name', '?')}': {command}")
 
         # Try to parse as a natural language command – use cognitive engine
