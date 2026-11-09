@@ -1326,21 +1326,16 @@ class ChromeIoMixin:
         backend = self.get_active_backend()
         if backend and getattr(backend, 'is_loaded', False):
             return backend
+        # While the model loads a message waits for it (ConversationMixin._take_message); this
+        # answered it with "Still loading the model" and dropped it.
         if notify:
             try:
                 _eli_color = getattr(self, '_eli_text_color', '#88c0d0')
-                if getattr(self, '_model_loading', False):
-                    self.chat_display.append(
-                        f'\n<b><span style="color:{_eli_color};">ELI:</span></b>'
-                        f'<br>Still loading the model — give me just a moment. '
-                        f'Once the status bar turns green I\'ll be ready to go.<br>'
-                    )
-                else:
-                    self.chat_display.append(
-                        f'\n<b><span style="color:{_eli_color};">ELI:</span></b>'
-                        f'<br>No model is loaded yet. Open the <b>Settings</b> tab '
-                        f'or use the <b>Model</b> menu to load one.<br>'
-                    )
+                self.chat_display.append(
+                    f'\n<b><span style="color:{_eli_color};">ELI:</span></b>'
+                    f'<br>No model is loaded yet. Open the <b>Settings</b> tab '
+                    f'or use the <b>Model</b> menu to load one.<br>'
+                )
             except Exception:
                 log.debug('[WARN] Model not loaded')
         return None
@@ -2078,15 +2073,22 @@ class ChromeIoMixin:
     def _update_status(self, message: str):
         if message == 'Send enabled':
             self.send_btn.setEnabled(True)
-            self.send_btn.setText('Send')
             self.send_btn.setStyleSheet(getattr(self, '_send_btn_style', ''))
-            self.send_btn.setToolTip("Send message (Enter). While generating, becomes Stop.")
+            self._note_waiting()
             return
         if message == 'Generating':
+            # Send stays Send (a message meanwhile runs at once or waits its turn); Stop is its own
             self.send_btn.setEnabled(True)
-            self.send_btn.setText('Stop')
-            self.send_btn.setStyleSheet(getattr(self, '_stop_btn_style', ''))
-            self.send_btn.setToolTip("Stop the current model response (Esc also works)")
+            if getattr(self, "stop_btn", None) is not None:
+                self.stop_btn.show()
+            return
+        if message == 'Turn ended':
+            if getattr(self, "stop_btn", None) is not None:
+                self.stop_btn.hide()
+            self._on_turn_ended()
+            return
+        if message == 'Take next message':     # the model has finished loading (or failed to)
+            self._drain_waiting()
             return
         if message == 'Send disabled':
             self.send_btn.setEnabled(False)
@@ -2111,7 +2113,7 @@ class ChromeIoMixin:
         elif message.startswith('🔴 Model:'):
             self.model_info_label.setText(message)
             self.send_btn.setEnabled(True)
-            self.send_btn.setText('Send')
+            self._note_waiting()
             self.status_label.setText("🔴 No model")
             return
         self.status_label.setText(message)

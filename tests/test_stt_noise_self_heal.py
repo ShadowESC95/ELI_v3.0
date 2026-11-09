@@ -148,18 +148,25 @@ def test_the_speaking_lock_holds_for_as_long_as_the_voice_speaks(tmp_path):
 
 
 def test_a_voice_command_said_during_a_reply_is_sent_after_it(monkeypatch):
-    """"computer, one more" said while a reply was coming was dropped."""
+    """"computer, one more" said while a reply was coming was dropped. It now waits its turn like a
+    typed message and is sent when the reply has ended; it never goes through the chat box, so
+    what is being typed there stays."""
     import types
-    import eli.gui.main_window._mixins.conversation as gui
     from eli.gui.main_window._mixins.conversation import ConversationMixin as _Window
-    later, sent = [], []
-    monkeypatch.setattr(gui.QTimer, "singleShot", lambda ms, fn: later.append(fn))
-    box = types.SimpleNamespace(text="", setPlainText=lambda t: setattr(box, "text", t))
-    win = types.SimpleNamespace(is_generating=True, _voice_waiting=["one more"], chat_input=box,
-                                send_message=lambda: sent.append(box.text))
-    win._send_waiting_voice = lambda: _Window._send_waiting_voice(win)
-    _Window._send_waiting_voice(win)
-    assert sent == [] and later, "waits while the reply is coming"
-    win.is_generating = False
-    later.pop()()
-    assert sent == ["one more"] and win._voice_waiting == []
+    started = []
+
+    class _W(_Window):
+        _turn_running, _model_loading, _running_now, send_btn = True, False, 0, None
+        status_signal = types.SimpleNamespace(emit=lambda message: None)
+        chat_input = types.SimpleNamespace(toPlainText=lambda: "a draft being typed")
+
+        def _start_turn(self, text, *, spoken=False):
+            started.append((text, spoken))
+
+    monkeypatch.setattr(_Window, "_needs_no_model", staticmethod(lambda text: False))
+    win = _W()
+    win._take_message("one more", spoken=True)
+    assert started == [] and [m["text"] for m in win._waiting_messages] == ["one more"]
+    win._turn_running = False
+    win._drain_waiting()                      # what the reply's 'Turn ended' runs
+    assert started == [("one more", True)] and win._waiting_messages == []

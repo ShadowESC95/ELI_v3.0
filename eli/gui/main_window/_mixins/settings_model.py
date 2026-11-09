@@ -2393,11 +2393,10 @@ class SettingsModelMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         self.status_signal.emit("🔄 Loading model...")
-        self.status_signal.emit("Send disabled")
-        try:
-            self.send_btn.setText("Loading...")
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+        # Send stays open while the model loads: a command that needs no model runs at once and
+        # anything else waits for the model (ConversationMixin._take_message). Set before the
+        # thread starts, so a message typed the moment Load is pressed waits too.
+        self._model_loading = True
 
         def load_worker():
             self._model_loading = True
@@ -2477,6 +2476,7 @@ class SettingsModelMixin:
             finally:
                 self._model_loading = False
                 self.status_signal.emit("Ready")
+                self.status_signal.emit("Take next message")   # what waited for the model goes now
 
         threading.Thread(target=load_worker, daemon=True).start()
 

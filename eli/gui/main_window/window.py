@@ -199,6 +199,9 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
     _conf_meta_update_sig = pyqtSignal()
 
+    # A command run at once while ELI answers or the model loads: its reply (worker → main thread)
+    _ran_now_sig = pyqtSignal(str)
+
     # Screen control: OCR / "ask ELI" results (worker → main thread) — was
     # QTimer.singleShot(0, ...) called FROM the worker thread, which has no
     # guaranteed event loop and is not the safe cross-thread marshalling
@@ -231,6 +234,10 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.is_generating = False
         self._cancel_stream_requested = False
         self._model_loading = False
+        self._turn_running = False      # a turn's worker is running (until its 'Turn ended')
+        self._running_now = 0           # commands that need no model, running at once
+        self._waiting_messages = []     # messages waiting their turn
+        self._held_chat = []            # transcript lines held while a reply is being written
         self.conversation_history = []
         self.current_theme = "dark"
         self._user_text_color = "#a3be8c"  # user message colour (changeable via picker)
@@ -284,6 +291,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.wizard_say_signal.connect(self._wizard_display_message, Qt.ConnectionType.QueuedConnection)
         self._mem_refresh_sig.connect(self.refresh_memory_stats, Qt.ConnectionType.QueuedConnection)
         self._conf_meta_update_sig.connect(self._update_confidence_meta_label, Qt.ConnectionType.QueuedConnection)
+        self._ran_now_sig.connect(self._on_ran_now, Qt.ConnectionType.QueuedConnection)
         self._image_chat_sig.connect(self._on_image_chat_response, Qt.ConnectionType.QueuedConnection)
         self._generated_artifact_open_sig.connect(
             self._open_generated_artifact_from_result,
@@ -551,9 +559,18 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
             "QPushButton:hover { background-color:#e53935; }"
         )
         self.send_btn.setStyleSheet(self._send_btn_style)
-        self.send_btn.setToolTip("Send message (Enter). While generating, becomes Stop.")
-        self.send_btn.clicked.connect(self._on_send_or_stop)
+        self.send_btn.clicked.connect(self.send_message)
         btn_layout.addWidget(self.send_btn)
+
+        # Stop is its own button, shown while ELI answers. Send used to turn into Stop, so
+        # clicking it to send a correction stopped the reply and sent nothing.
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setStyleSheet(self._stop_btn_style)
+        self.stop_btn.setToolTip("Stop the reply ELI is writing (Esc also works). Typing never stops it.")
+        self.stop_btn.clicked.connect(self.stop_generation)
+        self.stop_btn.hide()
+        btn_layout.addWidget(self.stop_btn)
+        self._note_waiting()
 
         clear_btn = QPushButton("Clear")
         clear_btn.setStyleSheet(
@@ -971,15 +988,16 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
     def eventFilter(self, obj, event):
         if obj == self.chat_input and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Escape and getattr(self, "is_generating", False):
+            if event.key() == Qt.Key.Key_Escape and (getattr(self, "is_generating", False)
+                                                     or getattr(self, "_turn_running", False)):
                 self.stop_generation()
                 return True
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 mods = event.modifiers()
                 if mods & Qt.KeyboardModifier.ShiftModifier:
                     return False  # Shift+Enter — let Qt insert a newline
-                if getattr(self, "is_generating", False):
-                    return True  # Enter does nothing while generating — use Stop or Esc
+                # While ELI answers it runs at once (needs no model) or waits its turn; it never
+                # stops the answer (send_message / _take_message).
                 self.send_message()
                 return True
         return super().eventFilter(obj, event)
@@ -1133,7 +1151,6 @@ def main():
 
     window.status_label.setText('🔴 Model not loaded')
     window.model_info_label.setText('🔴 Model: Not loaded')
-    window.send_btn.setEnabled(False)
 
     _rc = app.exec()
     # The Qt event loop has ended (window closed). All ELI state is flushed by the

@@ -338,24 +338,10 @@ class ConversationMixin:
                 return
         except Exception as _direct_e:
             log.debug(f"[GUI_DIRECT_EXEC][FALLBACK] {type(_direct_e).__name__}: {_direct_e}")
-        # Avoid queueing open-ended chat through the 35B path while a turn is still
-        # generating — voice media commands should stay instant; chat can wait.
-        try:
-            from eli.cognition.inference_broker import foreground_recently_active
-            if foreground_recently_active(window=8.0) and len(str(text or "").split()) <= 6:
-                # Said after the wake word while a reply is still coming: sent when it has finished.
-                # Dropped, "computer, one more" was lost; sent now, it would stop the reply.
-                self._voice_waiting = getattr(self, "_voice_waiting", [])
-                self._voice_waiting.append(text)
-                log.debug("[STT→GUI] held until the reply finishes: %r", text)
-                if len(self._voice_waiting) == 1:
-                    QTimer.singleShot(500, self._send_waiting_voice)
-                return
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        self.chat_input.setPlainText(text)
-        self._spoken_send = True
-        self.send_message()
+        # Said while a reply is still coming, it waits for its turn like a typed message
+        # (_take_message); it is never dropped and never stops the reply. It does not go through
+        # the chat box, so what is being typed there is left alone.
+        self._take_message(text, spoken=True)
 
     def _populate_mic_device_combo(self, restore: bool = False):
         """Populate mic selector with ALSA devices + PulseAudio/PipeWire BT sources."""
@@ -479,20 +465,6 @@ class ConversationMixin:
             self.wake_word_btn.setText("Wake: ON" if self.wake_word_btn.isChecked() else "Wake: OFF")
             self.wake_word_btn.blockSignals(False)
         self.save_settings(silent=True)
-
-    def _send_waiting_voice(self):
-        """The next voice command held while a reply was coming, once it has finished."""
-        waiting = getattr(self, "_voice_waiting", [])
-        if not waiting:
-            return
-        if getattr(self, "is_generating", False):
-            QTimer.singleShot(500, self._send_waiting_voice)
-            return
-        self.chat_input.setPlainText(waiting.pop(0))
-        self._spoken_send = True
-        self.send_message()
-        if waiting:
-            QTimer.singleShot(500, self._send_waiting_voice)
 
     def _stt_toggle(self, checked: bool):
         if checked:
@@ -649,11 +621,11 @@ class ConversationMixin:
         normal send flow. Used by the Test & Review option buttons."""
         try:
             text = str(text or "").strip()
-            if not text or getattr(self, "is_generating", False):
+            if not text:
                 return
             self.tabs.setCurrentIndex(0)            # Chat is the first/main tab
-            self.chat_input.setPlainText(text)
-            self.send_message()
+            # While a reply is coming it waits its turn; it was dropped without a word.
+            self._take_message(text)
         except Exception as e:
             log.debug(f"[GUI] send_to_chat failed: {e}")
 
@@ -804,15 +776,10 @@ class ConversationMixin:
             QMessageBox.warning(self, "TTS test failed", str(ex))
 
 
-    def _on_send_or_stop(self):
-        if getattr(self, "is_generating", False):
-            self.stop_generation()
-        else:
-            self.send_message()
-
     def stop_generation(self):
-        """Abort the in-flight model response so a new message can be sent."""
-        if not getattr(self, "is_generating", False):
+        """Stop the reply in progress: the Stop button and Esc, and nothing else (a message typed
+        meanwhile waits its turn, _take_message)."""
+        if not (getattr(self, "is_generating", False) or getattr(self, "_turn_running", False)):
             return
         self._request_generation_cancel()
         self.status_signal.emit("Stopping generation…")
@@ -836,12 +803,6 @@ class ConversationMixin:
         if not user_message:
             return
 
-        # Auto reasoning-mode selection (toggle on the bottom row controls it)
-        try:
-            self._maybe_auto_select_reasoning_mode(user_message)
-        except Exception as _amx:
-            log.debug(f"[GUI] auto reasoning-mode selection failed: {_amx}")
-
         # Resolve any drag-and-drop attachments into inline context
         dropped_paths = list(getattr(self.chat_input, "_dropped_paths", []))
         if dropped_paths or any(t in user_message for t in ("[Image:", "[File:", "[PDF:")):
@@ -849,13 +810,172 @@ class ConversationMixin:
             if hasattr(self.chat_input, "_dropped_paths"):
                 self.chat_input._dropped_paths.clear()
 
-        _uc = getattr(self, '_user_text_color', '#a3be8c')
-        self.chat_display.append(
-            f'\n<b><span style="color:{_uc};">🧑 You [{now_hms()}]:</span></b>'
-            f'<br>{user_message}<br>'
-        )
         self.chat_input.clear()
-        self.conversation_history.append({'role': 'user', 'content': user_message})
+        spoken = bool(getattr(self, "_spoken_send", False))
+        self._spoken_send = False
+        self._take_message(user_message, spoken=spoken)
+
+    # ── A message while ELI is answering or the model is loading ────────────────
+    # It is never refused, dropped or allowed to stop the reply in progress (Stop does that). A
+    # command that needs no model runs at once; anything else waits its turn and is sent when the
+    # reply has ended or the model has loaded. Enter did nothing while ELI answered, the only
+    # button was Send turned into Stop (so sending a correction stopped the reply and sent
+    # nothing), and while the model loaded a typed "play ..." was answered with a note and dropped.
+
+    def _busy_for_messages(self) -> bool:
+        return bool(getattr(self, "_turn_running", False) or getattr(self, "_model_loading", False)
+                    or getattr(self, "_running_now", 0))
+
+    @staticmethod
+    def _needs_no_model(text: str) -> bool:
+        """The router reads `text` as an action whose executor result is the answer: the engine
+        runs those with no model (eli/kernel/stages/fast_actions.py, _PHASE45_DIRECT_FAST_ACTIONS)."""
+        try:
+            from eli.execution.router_enhanced import route
+            from eli.kernel.stages.fast_actions import _PHASE45_DIRECT_FAST_ACTIONS
+            action = str((route(text) or {}).get("action") or "").strip().upper()
+        except Exception:
+            log.debug("[GUI] message not read for a command that needs no model", exc_info=True)
+            return False
+        return action in _PHASE45_DIRECT_FAST_ACTIONS
+
+    def _waiting(self) -> list:
+        if getattr(self, "_waiting_messages", None) is None:
+            self._waiting_messages = []
+        return self._waiting_messages
+
+    def _take_message(self, text: str, *, spoken: bool = False) -> None:
+        text = str(text or "").strip()
+        if not text:
+            return
+        if not self._busy_for_messages():
+            self._start_turn(text, spoken=spoken)
+            return
+        if self._needs_no_model(text) and self._run_now(text, spoken=spoken):
+            return
+        self._waiting().append({"text": text, "spoken": spoken})
+        log.debug("[GUI] message waits its turn: %r", text)
+        self._note_waiting(say=True)
+
+    def _note_waiting(self, *, say: bool = False) -> None:
+        """How many messages wait, on the Send button, and once in the status bar."""
+        waiting = self._waiting()
+        button = getattr(self, "send_btn", None)
+        if button is not None:
+            button.setText(f"Send · {len(waiting)} waiting" if waiting else "Send")
+            button.setToolTip(
+                ("Waiting to be sent, in order:\n" + "\n".join(f"• {w['text']}" for w in waiting))
+                if waiting else
+                "Send (Enter). While ELI is answering, a command that needs no model runs at once "
+                "and anything else is sent when the answer has ended.")
+        if say and waiting:
+            until = ("the model has loaded" if getattr(self, "_model_loading", False)
+                     else "ELI has finished answering")
+            self.status_signal.emit(f"⏳ {len(waiting)} waiting: sent when {until}")
+
+    def _drain_waiting(self) -> None:
+        """The window can take the next message: what waited to be shown is shown, then the first
+        message that waited its turn is sent."""
+        if not (getattr(self, "_turn_running", False) or getattr(self, "_streaming", False)):
+            held, self._held_chat = list(getattr(self, "_held_chat", None) or []), []
+            for kind, text in held:
+                self._draw_chat(kind, text)
+        waiting = self._waiting()
+        while waiting and not self._busy_for_messages():
+            item = waiting.pop(0)
+            self._start_turn(item["text"], spoken=item["spoken"])
+        self._note_waiting()
+
+    def _on_turn_ended(self) -> None:
+        """A turn's worker has finished (its last word, status 'Turn ended')."""
+        self._turn_running = False
+        if getattr(self, "_streaming", False):     # a turn that ended with its reply still open
+            self._append_chat_response("__STREAM_END__")
+        self._drain_waiting()
+
+    def _run_now(self, text: str, *, spoken: bool) -> bool:
+        """A command that needs no model, while a reply is coming or the model loads: through the
+        engine like any message, on its own thread, at once. What it did shows in the status bar
+        now and in the transcript after the reply in progress."""
+        _ce = getattr(self, "_cognitive_engine", None)
+        if _ce is None:
+            return False
+        self._running_now = int(getattr(self, "_running_now", 0) or 0) + 1
+        self._chat_put("user", text)
+        mode = getattr(self, "_reasoning_mode", "quick")
+
+        def worker():
+            if not spoken:
+                try:
+                    from eli.kernel.request_context import input_channel_var
+                    input_channel_var.set("typed")
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
+            try:
+                result = _ce.process(text, stream=False, reasoning_mode=mode)
+                if isinstance(result, dict):
+                    try:
+                        self._generated_artifact_open_sig.emit(dict(result))
+                    except Exception:
+                        log.debug("[GUI] generated artifact open signal failed", exc_info=True)
+                reply = _eli_gui_visible_text(result)
+            except Exception as e:
+                log.debug("[GUI] command run at once failed", exc_info=True)
+                reply = f"❌ Error: {e}"
+            self._ran_now_sig.emit(str(reply or ""))
+
+        self.status_signal.emit(f"⚡ Running now: {text}")
+        threading.Thread(target=worker, daemon=True, name="eli-command-now").start()
+        return True
+
+    def _on_ran_now(self, reply: str) -> None:
+        self._running_now = max(0, int(getattr(self, "_running_now", 0) or 0) - 1)
+        reply = str(reply or "").strip().strip("\u200b")
+        first = next((ln.strip() for ln in reply.splitlines() if ln.strip()), "")
+        if first:
+            self.status_signal.emit(f"⚡ {first}")
+        if reply:
+            self._chat_put("eli", reply)
+        try:
+            self._mem_refresh_sig.emit()
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        self._drain_waiting()
+
+    def _chat_put(self, kind: str, text: str) -> None:
+        """A line for the transcript: drawn now, or, while a reply is being written, as soon as it
+        has ended, so the transcript keeps the order things were said in and a reply in progress
+        is never split by another line."""
+        if getattr(self, "_turn_running", False) or getattr(self, "_streaming", False):
+            if getattr(self, "_held_chat", None) is None:
+                self._held_chat = []
+            self._held_chat.append((kind, text))
+            return
+        self._draw_chat(kind, text)
+
+    def _draw_chat(self, kind: str, text: str) -> None:
+        if kind == "user":
+            _uc = getattr(self, '_user_text_color', '#a3be8c')
+            self.chat_display.append(
+                f'\n<b><span style="color:{_uc};">🧑 You [{now_hms()}]:</span></b>'
+                f'<br>{text}<br>'
+            )
+            self.conversation_history.append({'role': 'user', 'content': text})
+            return
+        self.conversation_history.append({'role': 'assistant', 'content': text})
+        self._last_eli_response = text
+        self._append_chat_response(text)
+        if getattr(self, '_tts_auto', False):
+            self._speak_response(text)
+
+    def _start_turn(self, user_message: str, *, spoken: bool = False) -> None:
+        # Auto reasoning-mode selection (toggle on the bottom row controls it)
+        try:
+            self._maybe_auto_select_reasoning_mode(user_message)
+        except Exception as _amx:
+            log.debug(f"[GUI] auto reasoning-mode selection failed: {_amx}")
+
+        self._chat_put("user", user_message)
 
         # ── Agent wizard intercept ──────────────────────────────────────────
         if self._agent_wizard_state is not None:
@@ -882,6 +1002,7 @@ class ConversationMixin:
             self._request_generation_cancel()
             _prior_thread.join(timeout=2.0)
 
+        self._turn_running = True
         self.is_generating = True
         self._cancel_stream_requested = False
         try:
@@ -897,8 +1018,7 @@ class ConversationMixin:
         self.status_signal.emit('Generating')
         self.status_signal.emit('🔄 Generating response...')
 
-        _typed = not getattr(self, "_spoken_send", False)
-        self._spoken_send = False
+        _typed = not spoken
 
         def generate_worker():
             if _typed:
@@ -952,6 +1072,17 @@ class ConversationMixin:
                     except Exception:
                         return False
 
+                def _ended_why(cancelled: bool) -> str:
+                    try:
+                        from eli.cognition import gguf_inference as _ggi
+                        if _ggi.is_shutting_down():
+                            return "ELI is shutting down"
+                    except Exception:
+                        log.debug("suppressed exception", exc_info=True)
+                    if cancelled:
+                        return "stopped (Stop or Esc)"
+                    return "the engine gave no text (a silent action, or nothing came back)"
+
                 import types as _types
 
                 if (_ce_ok or _orchestrator_ok) and result is not None:
@@ -976,13 +1107,20 @@ class ConversationMixin:
                                 self.chat_response_signal.emit('__STREAM_START__')
                                 first_token = False
                             self.chat_response_signal.emit(token)
+                        if _was_cancelled and hasattr(result, "close"):
+                            # Closed now, the turn's record says it was stopped and the model is
+                            # let go at once, not when this thread's frame is collected.
+                            try:
+                                result.close()
+                            except Exception:
+                                log.debug("[GUI] stopped stream did not close cleanly", exc_info=True)
                         if first_token:
-                            # The engine's _stream_chat() handles all internal
-                            # recovery (Stage 11 → direct GGUF fallback → fault message).
-                            # A zero-token generator here means a truly silent action
-                            # (e.g. VOLUME) that intentionally produces no visible output.
-                            # Do NOT re-call process() — that would execute the action twice.
-                            log.debug("[GUI] Stream generator produced zero tokens (silent action or suppressed output).")
+                            # Nothing was shown. Do NOT re-call process(): an action would run
+                            # twice. A turn stopped before its first word shows it was stopped,
+                            # as its history says ("[Generation stopped.]"); it showed nothing.
+                            log.debug("[GUI] reply ended before its first word: %s", _ended_why(_was_cancelled))
+                            if _was_cancelled:
+                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
                             response = ""
                             _response_streamed = True
                             _storage_handled = True
@@ -1040,21 +1178,10 @@ class ConversationMixin:
                             temperature=temperature,
                         )
 
-                # ── Identity / persona guardrails ──
-                low = response.lower()
-                banned = [
-                    'i am an ai model', 'as an ai assistant', 'trained on',
-                    "memory is part of my training data",
-                    "i don't retain new information",
-                    'each interaction is independent',
-                    'i am a large language model',
-                    'i do not retain personal data',
-                    "i don't have memory of past conversations",
-                    'i cannot remember previous interactions',
-                ]
-                if any(b in low for b in banned):
-                    response = "⚠️ Empty response from backend."
-
+                # The reply is kept as ELI wrote it. Any reply that merely contained "trained on"
+                # or "as an ai assistant" was replaced here by a made-up "Empty response from
+                # backend" in the history, the saved conversation and what was spoken; persona
+                # drift is the engine's output stage's (eli/kernel/stages/output_text.py).
                 try:
                     from eli.cognition.reasoning_modes import apply_final_reasoning_contract as _rm_final
                     response = _rm_final(response)
@@ -1126,6 +1253,7 @@ class ConversationMixin:
                     log.debug("[GUI] thinking-state clear failed", exc_info=True)
                 self.status_signal.emit('Send enabled')
                 self.status_signal.emit('🟢 Ready')
+                self.status_signal.emit('Turn ended')        # last: the next message may go
 
         self._generate_thread = threading.Thread(target=generate_worker, daemon=True)
         self._generate_thread.start()
@@ -1224,6 +1352,8 @@ class ConversationMixin:
             return
 
         if text == "__STREAM_END__":
+            if not getattr(self, "_streaming", False):
+                return                      # nothing was opened (a reply with no words)
             self._streaming = False
             self._stream_buffer = []
             self._render_rich_reply(getattr(self, "_stream_body_start", None), _ELI_BODY_COLOR)
@@ -1235,6 +1365,9 @@ class ConversationMixin:
             return
 
         if text == "__STREAM_CANCELLED__":
+            if not getattr(self, "_streaming", False):
+                # Stopped before its first word: ELI's line is drawn so the stop shows under it.
+                self._append_chat_response("__STREAM_START__")
             self._streaming = False
             self._stream_buffer = []
             cursor = self.chat_display.textCursor()
