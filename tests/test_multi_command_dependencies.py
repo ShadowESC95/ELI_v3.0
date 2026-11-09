@@ -92,3 +92,24 @@ def test_skipped_step_is_marked_not_done_and_retried_on_resume():
     resumed = start_or_resume("two chained commands", cmds)
     # neither the failed step nor the step skipped because of it counts as done
     assert resumed["done_ok"] == {}
+
+
+def test_a_step_that_did_nothing_is_not_there_for_its_dependent(monkeypatch):
+    # a play that played nothing said ok; the step that needed it ran anyway
+    from eli.execution import router_enhanced
+    from eli.execution.effectors import load_all, registry
+
+    load_all()
+    ran = []
+    monkeypatch.setitem(registry._HANDLERS, "NEWS_FETCH", lambda a, args: ran.append(a) or {
+        "ok": True, "action": a, "effect": False, "response": "Nothing came back for that."})
+    monkeypatch.setitem(registry._HANDLERS, "WEB_SEARCH", lambda a, args: ran.append(a) or {
+        "ok": True, "action": a, "response": "Searched."})
+    routes = {"find the first thing": "NEWS_FETCH", "go on from what it found": "WEB_SEARCH"}
+    monkeypatch.setattr(router_enhanced, "route", lambda text, *a, **k: {"action": routes[text], "args": {"query": text}})
+    monkeypatch.setenv("ELI_EVIDENCE_PLANNER", "0")
+    cmds = list(routes)
+    with patch("eli.execution.command_dependency_graph.infer_dependencies", return_value={1: [0]}):
+        r = execute("MULTI_COMMAND", {"commands": cmds, "raw": "two steps where the second needs the first"})
+    assert ran == ["NEWS_FETCH"]
+    assert "skipped — depends on step 0 which failed" in r["content"] and r["ok"] is False

@@ -5306,7 +5306,10 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                         sa, sargs = "CHAT", {"message": c}
                     r = execute(sa, sargs)
                     txt = (r.get("response") or r.get("content") or "") if isinstance(r, dict) else str(r)
-                    ok = not (isinstance(r, dict) and r.get("ok") is False)
+                    # Done is what the step really did: a play that played nothing or a search
+                    # that found nothing is not there for a step that depends on it.
+                    from eli.runtime.evidence_ledger import execution_outcome as _step_outcome
+                    ok = not (isinstance(r, dict) and (r.get("ok") is False or _step_outcome(r) in ("failed", "no_effect")))
                     if not ok:
                         all_ok = False
                 except Exception as e:
