@@ -131,3 +131,42 @@ def test_evidence_planner_channels_are_known():
 def test_report_pipeline_default_enabled():
     from eli.runtime.report_pipeline import enabled
     assert enabled() is True
+
+
+# ── the test suite itself: every marker it uses is registered ────────────────
+# One unregistered marker is a collection error under strict markers, and that one error
+# stops every run that collects tests/, including the targeted `pytest tests/ -k <module>`
+# runs ELI uses to check its own patches (a failed run there reads as a regression).
+def _markers_used_under_tests() -> dict:
+    import ast
+    used: dict = {}
+    for path in sorted((H.REPO / "tests").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            # pytest.mark.<name>, whatever pytest was imported as
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "mark"):
+                used.setdefault(node.attr, []).append(f"{path.relative_to(H.REPO)}:{node.lineno}")
+    return used
+
+
+def test_every_marker_the_suite_uses_is_registered(pytestconfig):
+    known = {line.split(":")[0].split("(")[0].strip() for line in pytestconfig.getini("markers")}
+    unknown = {name: where for name, where in _markers_used_under_tests().items()
+               if name not in known}
+    assert not unknown, f"markers used but not registered under `markers` in pytest.ini: {unknown}"
+
+
+def test_the_project_config_makes_an_unregistered_marker_an_error(tmp_path):
+    import subprocess
+    import sys
+    (tmp_path / "test_marked.py").write_text(
+        "import pytest\n\n@pytest.mark.not_a_registered_marker\ndef test_x():\n    pass\n",
+        encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-c", str(H.REPO / "pytest.ini"), "--rootdir", str(tmp_path),
+         "-p", "no:cacheprovider", "-q", str(tmp_path / "test_marked.py")],
+        cwd=str(tmp_path), capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0 and "not_a_registered_marker" in out, (
+        "pytest.ini's strict markers did not take effect for this pytest version:\n" + out[-800:])
