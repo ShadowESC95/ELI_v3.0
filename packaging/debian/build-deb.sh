@@ -40,30 +40,14 @@ for ic in "$ROOT/packaging/desktop/eli-256.png" "$ROOT/packaging/desktop/Eli_Ico
   [ -f "$ic" ] && { cp "$ic" "$PKGDIR/usr/share/icons/hicolor/256x256/apps/eli-v3.png"; break; }
 done
 
+# The install and upgrade of the per-user copy are packaging/linux/per_user_install.sh, the same
+# script the source AppImage runs: a newer package brings the copy's code up to date on its first
+# launch, and leaves the user's config, memory, models and environment as they are.
 cat > "$PKGDIR/usr/bin/eli-v3" <<'LAUNCH'
 #!/usr/bin/env bash
 set -euo pipefail
 PAYLOAD="/opt/eli-v3"
-INSTALL_ROOT="${ELI_INSTALL_ROOT:-$HOME/.local/share/ELI_v3}"
-MARKER="$INSTALL_ROOT/.eli_deb_ready"
-LOG="$INSTALL_ROOT/setup.log"
-mkdir -p "$INSTALL_ROOT"
-export ELI_PROJECT_ROOT="$INSTALL_ROOT"
-export ELI_DATA_DIR="${ELI_DATA_DIR:-$INSTALL_ROOT/artifacts}"
-export ELI_CONFIG_DIR="${ELI_CONFIG_DIR:-$INSTALL_ROOT/config}"
-export ELI_MODELS_DIR="${ELI_MODELS_DIR:-$INSTALL_ROOT/models}"
-export ELI_CACHE_DIR="${ELI_CACHE_DIR:-$HOME/.cache/ELI_v3}"
-export PYTHONPATH="$INSTALL_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-if [ ! -f "$MARKER" ]; then
-  echo "First launch — preparing ELI v3 (per-user venv build, a few minutes)…"
-  rsync -a --exclude=.venv "$PAYLOAD/" "$INSTALL_ROOT/" 2>/dev/null || cp -a "$PAYLOAD/." "$INSTALL_ROOT/"
-  if   [ -x "$INSTALL_ROOT/ELI_Setup.sh" ];   then bash "$INSTALL_ROOT/ELI_Setup.sh"   >>"$LOG" 2>&1
-  elif [ -x "$INSTALL_ROOT/INSTALL_ELI.sh" ]; then bash "$INSTALL_ROOT/INSTALL_ELI.sh" >>"$LOG" 2>&1
-  else bash "$INSTALL_ROOT/install.sh" --yes  >>"$LOG" 2>&1; fi
-  touch "$MARKER"
-fi
-cd "$INSTALL_ROOT"
-exec "$INSTALL_ROOT/RUN_ELI.sh" "$@"
+exec bash "$PAYLOAD/packaging/linux/per_user_install.sh" "$PAYLOAD" .eli_deb_ready "$@"
 LAUNCH
 chmod 0755 "$PKGDIR/usr/bin/eli-v3"
 

@@ -396,11 +396,72 @@ def test_install_backend_routes_android_profile(monkeypatch, tmp_path):
     assert ib.build_install_command()[0] == "bash"
 
 
-def test_appimage_syncs_when_bundled_version_changes():
-    text = (Path(__file__).resolve().parents[1]
-            / "packaging" / "linux" / "build-appimage.sh").read_text(encoding="utf-8")
-    apprun = text[text.index("cat > \"$APPDIR/AppRun\" <<'APPRUN_EOF'"):]
-    assert "_bundle_version" in apprun
-    assert "_installed_version" in apprun
-    assert 'printf \'%s\\n\' "$_BUNDLE_VER" >"$MARKER"' in apprun
-    assert "touch \"$MARKER\"" not in apprun, "marker must store version, not just exist"
+_REPO = Path(__file__).resolve().parents[1]
+_PER_USER = _REPO / "packaging" / "linux" / "per_user_install.sh"
+
+
+def test_the_appimage_and_the_deb_share_one_per_user_install():
+    """The .deb's launcher copied the payload on its first launch only, so upgrading the package
+    left the user running the first version; the AppImage had the upgrade. Both now run one script."""
+    appimage = (_REPO / "packaging" / "linux" / "build-appimage.sh").read_text(encoding="utf-8")
+    deb = (_REPO / "packaging" / "debian" / "build-deb.sh").read_text(encoding="utf-8")
+    apprun = appimage[appimage.index("cat > \"$APPDIR/AppRun\" <<'APPRUN_EOF'"):appimage.index("\nAPPRUN_EOF\n")]
+    launcher = deb[deb.index("cat > \"$PKGDIR/usr/bin/eli-v3\" <<'LAUNCH'"):deb.index("\nLAUNCH\n")]
+    for body in (apprun, launcher):
+        assert "packaging/linux/per_user_install.sh" in body and "rsync" not in body
+
+
+def _payload(folder: Path, version: str, code: str) -> Path:
+    (folder / "eli").mkdir(parents=True)
+    (folder / "config").mkdir()
+    (folder / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n', encoding="utf-8")
+    (folder / "eli" / "code.py").write_text(code, encoding="utf-8")
+    (folder / "config" / "settings.json").write_text('{"shipped": "%s"}' % version, encoding="utf-8")
+    (folder / "config" / f"added-in-{version}.json").write_text("{}", encoding="utf-8")
+    (folder / "install.sh").write_text('echo setup >> "$ELI_PROJECT_ROOT/setups"\n', encoding="utf-8")
+    run = folder / "RUN_ELI.sh"
+    run.write_text('#!/bin/sh\necho "ran $*"\n', encoding="utf-8")
+    run.chmod(0o755)
+    return folder
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Linux launchers")
+@pytest.mark.parametrize("marker,old_marker", [
+    (".eli_deb_ready", ""),              # what every .deb before this wrote: a bare touch
+    (".eli_deb_ready", None),
+    (".eli_appimage_ready", None),
+])
+def test_a_newer_payload_brings_the_per_user_copy_up_to_date(tmp_path, marker, old_marker):
+    import os
+
+    home, quiet = tmp_path / "home", tmp_path / "quiet-bin"
+    root = home / ".local" / "share" / "ELI_v3"
+    quiet.mkdir()
+    zenity = quiet / "zenity"                # never a dialog on the desktop running the tests
+    zenity.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    zenity.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+    env.update(HOME=str(home), ELI_INSTALL_ROOT=str(root), PATH=f"{quiet}:{env.get('PATH', '')}")
+    run = lambda payload, *args: subprocess.run(  # noqa: E731
+        ["bash", str(_PER_USER), str(payload), marker, *args], env=env,
+        capture_output=True, text=True, timeout=120)
+
+    first = run(_payload(tmp_path / "v1", "3.0.1", "first"), "--one")
+    assert first.returncode == 0 and "ran --one" in first.stdout, first.stdout + first.stderr
+    assert (root / "eli" / "code.py").read_text(encoding="utf-8") == "first"
+    assert (root / marker).read_text(encoding="utf-8").strip() == "3.0.1"
+    # what the user made of it since
+    (root / "config" / "settings.json").write_text('{"mine": true}', encoding="utf-8")
+    (root / "artifacts").mkdir()
+    (root / "artifacts" / "memory.sqlite3").write_text("kept", encoding="utf-8")
+    if old_marker is not None:
+        (root / marker).write_text(old_marker, encoding="utf-8")
+
+    second = run(_payload(tmp_path / "v2", "3.0.2", "second"))
+    assert second.returncode == 0 and "ran" in second.stdout, second.stdout + second.stderr
+    assert (root / "eli" / "code.py").read_text(encoding="utf-8") == "second", "still the first version's code"
+    assert (root / "config" / "settings.json").read_text(encoding="utf-8") == '{"mine": true}'
+    assert (root / "config" / "added-in-3.0.2.json").is_file()
+    assert (root / "artifacts" / "memory.sqlite3").read_text(encoding="utf-8") == "kept"
+    assert (root / marker).read_text(encoding="utf-8").strip() == "3.0.2"
+    assert (root / "setups").read_text(encoding="utf-8").count("setup") == 1, "setup ran again"
