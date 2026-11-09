@@ -17,10 +17,15 @@ def _someone_there() -> bool:
     return bool(embodiment.present())
 
 
+# "stop the game" names what it stops and asks for it whatever is on (ELI then says whether a game
+# was); "i give up", "game over" are remarks that stop a game only while one is on.
+_NAMES_THE_GAME = re.compile(r"\b(?:the|this|that|our|your)\s+(?:game|round|range)\b", re.I)
+
+
 def route_world_games(text: str, raw: str, low: str, text_l: str):
     from eli.world import games
     said = raw or ""
-    if games.wants_stop(said) and (_someone_there() or games.current()):
+    if games.wants_stop(said) and (_NAMES_THE_GAME.search(said) or _someone_there() or games.current()):
         return _mk("STOP_GAME", {}, 0.9, matched_by="world.stop_game", meta_extra={"spoken_as_remark": True})
     if games.wants_game(said) and (_IN_THE_ROOMS.search(said) or _someone_there()):
         return _mk("PLAY_GAME", {"text": said.strip(), "kind": games.kind_named(said)}, 0.9, matched_by="world.play_game",

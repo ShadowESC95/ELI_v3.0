@@ -141,15 +141,38 @@ def _normalise_media_service(target: str) -> str:
 
 
 def _known_media_service(target: str) -> bool:
-    """Whether a phrase names a media service ELI knows (Spotify, YouTube, a streaming site)."""
+    """Whether a phrase names a place to play from: a media service ELI knows (Spotify, YouTube, a
+    streaming site) or a site ("example.ch", a site ELI knows by name)."""
     key = re.sub(r"\s+", " ", _clean_target(target).lower()).strip()
     if key in _MEDIA_SERVICE_ALIASES:
         return True
     try:
         from eli.execution.media_runtime import normalize_streaming_target
-        return bool(normalize_streaming_target(key))
+        if normalize_streaming_target(key):
+            return True
     except Exception:
-        return False
+        pass
+    return bool(site_named(key))
+
+
+# What kind of thing a play asks for, when its words say: "the album X", "songs similar to X", "the
+# film X", "episode 3 of X". The effector searches for that kind. None when they do not say.
+_MEDIA_KIND = re.compile(
+    r"^(?:the\s+|an?\s+|some\s+)?(?P<kind>album|track|song|artist|episode|film|movie|genre)\b"
+    r"|\b(?P<similar>similar\s+to|(?:songs?|music|tracks?|stuff)\s+like)\b", re.I)
+_MEDIA_KINDS = {"song": "track", "movie": "film"}
+
+
+def media_kind(query: str) -> Optional[str]:
+    """The kind of thing a play's query asks for (track, album, artist, episode, film, genre,
+    similar), or None."""
+    m = _MEDIA_KIND.search(str(query or ""))
+    if not m:
+        return None
+    if m.group("similar"):
+        return "similar"
+    kind = m.group("kind").lower()
+    return _MEDIA_KINDS.get(kind, kind)
 
 
 # Words that signal the utterance is a question/instruction about an app, not
@@ -711,13 +734,13 @@ def try_route(text: str) -> Optional[dict]:
             pass
         target = _normalise_media_service(m.group(2))
         # "no, play it on youtube": "it" is what was last asked to play, not a title to search for
-        from eli.execution.routing.command_parser import _PRONOUN, _last_command
-        if _PRONOUN.match(query.strip()):
-            query = str(((_last_command().get("args") or {}).get("query")) or "").strip()
+        from eli.execution.routing.command_parser import what_was_played
+        query = what_was_played(query)
     if m and query:
+        _kind = media_kind(query)
         return {
             "action": "PLAY_MEDIA",
-            "args": {"query": query, "target": target, "service": target},
+            "args": {"query": query, "target": target, "service": target, **({"kind": _kind} if _kind else {})},
             "confidence": 0.995,
             "meta": {"matched_by": "portable_intent_contract.play_query_on_target"},
         }

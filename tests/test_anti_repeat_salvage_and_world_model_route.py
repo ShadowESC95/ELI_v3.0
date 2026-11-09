@@ -35,7 +35,7 @@ from eli.kernel.engine import (
     _strip_repeated_opening,
     _stream_holding_back_repeats,
 )
-from eli.execution.router_enhanced import _RUNTIME_STATUS_RE
+from eli.execution.routing._helpers import _RUNTIME_STATUS_RE
 
 # Turn 2, verbatim from the transcript.
 PRIOR = (

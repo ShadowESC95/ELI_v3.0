@@ -421,4 +421,20 @@ _RUNTIME_STATUS_RE = re.compile(
 )
 
 
-__all__ = ['_RUNTIME_STATUS_RE', 'COMMON_DIRS', '_known_dir_path', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']
+
+def runtime_status_asked(text: str):
+    """The runtime-status words a message asks about (a match of _RUNTIME_STATUS_RE), or None. "what's
+    the best model for coding" and "which model has the biggest context window" ask about models in
+    general: a bare "what/which ... model" is ELI's when asked of ELI (route_contracts.asks_about_eli) or of
+    the model running now ("what model is loaded")."""
+    low = str(text or "").lower()
+    m = _RUNTIME_STATUS_RE.search(low)
+    if (m and re.fullmatch(r"(?:what|which|whats|what's)(?:\s+\w+){0,4}\s+model", m.group(0))
+            and not re.search(r"\b(?:loaded|running|in use|being used|mounted|this)\b", low)):
+        from eli.execution.route_contracts import asks_about_eli
+        if not asks_about_eli(text):
+            return None
+    return m
+
+
+__all__ = ['_RUNTIME_STATUS_RE', 'runtime_status_asked', 'COMMON_DIRS', '_known_dir_path', '_mk', '_normalize_text', '_is_likely_url', '_normalize_url', '_is_likely_path', '_extract_path_from_text', '_extract_pdf_paths', '_extract_pdf_path', '_extract_int']

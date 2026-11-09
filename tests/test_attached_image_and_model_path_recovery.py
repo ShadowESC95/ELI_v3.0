@@ -230,3 +230,10 @@ def test_the_latest_screenshot_is_the_capture_reader_s(monkeypatch, tmp_path):
     monkeypatch.setattr(oc, "latest_screenshot", lambda *a, **k: str(shot), raising=False)
     got = route("analyse the recent screenshot")
     assert got["action"] == "ANALYZE_IMAGE" and got["args"]["path"] == str(shot)
+
+
+def test_the_intent_model_does_not_take_an_attached_image_marker_as_a_request():
+    """The engine sends "[Attached image: ... path: ...]" to image analysis itself; the intent model's
+    plain-statement test had a branch of its own for the marker."""
+    from eli.cognition.llm_intent import is_plain_statement
+    assert is_plain_statement("love this one [Attached image: shot.png — path: /home/u/Pictures/shot.png]")

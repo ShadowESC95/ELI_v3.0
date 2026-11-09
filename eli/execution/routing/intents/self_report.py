@@ -67,7 +67,7 @@ def _pm_asks_something(low: str) -> bool:
         return True
     return bool(_ASKING_RE.search(t))
 
-from eli.execution.routing._helpers import _RUNTIME_STATUS_RE, _mk, _is_wallclock_question
+from eli.execution.routing._helpers import _mk, _is_wallclock_question, runtime_status_asked
 from eli.execution.routing.memory_runtime import (
     _eli_activity_question_is_about_dev_work,
     _eli_memory_runtime_route_lock_should_trigger,
@@ -280,9 +280,9 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     ):
         return _mk("SELF_REPORT", {}, 0.99, matched_by="router.self_report_with_runtime", allow_chat_without_evidence=False)
 
-    # The runtime sense of each word (routing/_helpers._RUNTIME_STATUS_RE): bare "threads", "batch" and
+    # The runtime sense of each word (routing/_helpers.runtime_status_asked): bare "threads", "batch" and
     # "provider" sent "who's the best internet provider in my area" here.
-    _runtime = _RUNTIME_STATUS_RE.search(low) or re.search(r"\bruntime\s+status\b", low)
+    _runtime = runtime_status_asked(raw) or re.search(r"\bruntime\s+status\b", low)
     if _runtime and "model" in _runtime.group(0):
         return _mk("RUNTIME_STATUS", {"question": raw}, 0.99, matched_by="router.runtime_status_model_query",
                    allow_chat_without_evidence=False)
@@ -351,7 +351,10 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(who are you|what are you(?!\s+\w)|what is your name|what's your name|tell me about yourself|what is your purpose)\b", low) and not re.search(r"\b(model|running on|provider|context|gpu|llm|specs?|technical|runtime|layers|threads|batch)\b", low):
         return _mk("CHAT", {"message": raw}, 0.99, matched_by="router.identity_persona_chat", allow_chat_without_evidence=True)
     # Technical model/runtime queries → RUNTIME_STATUS (live mounted model evidence).
-    if re.search(r"\b(what model(?: are you| do you use| is this)?|which model(?: are you| do you use| is this)?|what llm|which llm|what are you running on|what are you actually)\b", low):
+    # ELI's own model, asked of ELI: "which model has the biggest context window" is about models.
+    from eli.execution.route_contracts import asks_about_eli
+    if re.search(r"\b(what model(?: are you| do you use| is this)|which model(?: are you| do you use| is this)|what are you running on|what are you actually)\b", low) or (
+            re.search(r"\b(what model|which model|what llm|which llm)\b", low) and asks_about_eli(raw)):
         return _mk("RUNTIME_STATUS", {"question": raw}, 0.99, matched_by="router.runtime_status_model_query", allow_chat_without_evidence=False)
     # --- end explicit grounded speech-act route authority ---
 

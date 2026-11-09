@@ -846,3 +846,9 @@ def test_i_am_with_a_name_still_sets_it_typed_or_asked_for(proposals):
     got = route("i'm alex")                                     # speech arrives in lower case
     assert got["action"] == "SET_USER_NAME" and got["args"]["name"].lower() == "alex"
     assert got["meta"]["declared_by"] == "answer_to_name_question"
+
+
+def test_i_am_with_a_word_the_name_validator_rejects_sets_nothing(proposals):
+    """The router read "I'm X" past the one name validator every identity path uses."""
+    from eli.execution.router_enhanced import route
+    assert route("I'm Unknown")["action"] != "SET_USER_NAME"

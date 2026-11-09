@@ -289,3 +289,28 @@ def test_a_step_not_said_is_the_effectors_own():
     """The router set 15 and the effector 10: with no number said the route names none."""
     assert "delta" not in route("volume down")["args"] and "delta" not in route("vol up")["args"]
     assert route("lower the price of milk")["action"] != "VOLUME"
+
+
+@pytest.mark.parametrize("asked", ["current volume?", "what's the vol at", "how loud is it", "what is the volume",
+                                   "volume level"])
+def test_asking_what_the_volume_is_reads_it(asked):
+    """"current volume?" went to chat, which guessed; the effector reads the level back."""
+    got = route(asked)
+    assert (got["action"], got["args"].get("direction")) == ("VOLUME", "get"), got
+
+
+def test_this_folder_and_these_files_are_read_from_what_was_just_listed(tmp_path):
+    from eli.kernel.request_context import turn_facts_var
+    (tmp_path / "notes.txt").write_text("x")
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    (papers / "a.pdf").write_bytes(b"%PDF")
+    for folder, action, key in ((tmp_path, "SUMMARIZE_FILE", "path"), (papers, "ANALYZE_PDF_FOLDER", "folder")):
+        token = turn_facts_var.set({"request_id": "t", "last_command": {
+            "action": "LIST_DIR", "args": {"path": str(folder)}, "ts": time.time()}})
+        try:
+            for said in ("read this folder", "analyse these files"):
+                got = route(said)
+                assert (got["action"], got["args"].get(key)) == (action, str(folder)), (said, got)
+        finally:
+            turn_facts_var.reset(token)

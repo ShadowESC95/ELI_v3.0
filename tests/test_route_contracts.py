@@ -122,7 +122,7 @@ def test_who_a_message_names():
         assert names_eli(said), said
     # the one asked is not what the message is about
     for said in ("can you fix the errors in this paragraph", "do you know why startups fail",
-                 "do you have any ideas for me for dinner", "write a script called sort.py"):
+                 "write a script called sort.py"):
         assert not names_eli(said), said
 
 

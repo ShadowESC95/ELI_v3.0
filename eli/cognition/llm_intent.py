@@ -137,6 +137,7 @@ _FEW_SHOT = (
     '{"q":"what day is it","action":"DATE","args":{},"confidence":0.95}\n'
     '{"q":"set the volume to 40 percent","action":"VOLUME",'
     '"args":{"level":40},"confidence":0.95}\n'
+    '{"q":"how loud is it now","action":"VOLUME","args":{"direction":"get"},"confidence":0.9}\n'
     '{"q":"open the communication hub","action":"OPEN_COMMUNICATION_HUB",'
     '"args":{},"confidence":0.9}\n'
     '{"q":"solve /home/u/x.py","action":"CODE_SOLVE",'
@@ -242,17 +243,13 @@ def is_plain_statement(text: str) -> bool:
     waited 24 s on a 35B model for the answer CHAT. It is resolved now only when it has a word in
     common with something ELI can do ("fire up spotify").
     """
-    t = " ".join(str(text or "").split())
+    from eli.runtime.command_splitter import without_correction_lead
+    # "i said play X", "no, i meant open downloads": the instruction is what follows the correction's lead
+    t = " ".join(without_correction_lead(str(text or "")).split())
     if not t or "?" in t:
         return False
     if any(tag in t for tag in ("[Image:", "[File:", "[PDF:")):
         return False
-    try:
-        from eli.execution.router_enhanced import _attachment_marker_path
-        if _attachment_marker_path(t):
-            return False
-    except Exception:
-        pass
     from eli.runtime.command_splitter import is_request, sentences, starts_with_command
     if re.search(r"\bplease\b", t, re.I) or any(
             is_request(part) or starts_with_command(part, after_lead=True) for part in sentences(t)):

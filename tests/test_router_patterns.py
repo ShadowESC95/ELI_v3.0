@@ -343,3 +343,47 @@ def test_a_provider_or_threads_of_the_world_is_not_runtime_status(text):
 @pytest.mark.parametrize("text", ["what model are you running", "how many threads are you using", "runtime status"])
 def test_runtime_questions_still_get_runtime_status(text):
     assert action(text) == "RUNTIME_STATUS"
+
+
+def test_the_coding_agents_language_is_read_by_the_one_reader():
+    """A bare word list read "go through" as the Go language."""
+    got = route("use the coding agent to go through the list and sort it")
+    assert got["action"] == "CODE_SOLVE" and got["args"]["language"] != "go"
+    assert route("implement quicksort in go and make sure it passes tests")["args"]["language"] == "go"
+
+
+def test_a_file_is_replaced_only_when_the_request_says_so():
+    assert "overwrite" not in route("create a file called notes.txt with hello")["args"]
+    assert route("overwrite the file notes.txt with hello")["args"].get("overwrite") is True
+
+
+def test_a_diff_of_two_named_files_names_them():
+    got = route("show me the changes between a.py and b.py")
+    assert got["action"] == "SHOW_DIFF" and got["args"].get("paths") == ["a.py", "b.py"]
+    assert route("show the diff")["args"] == {}
+
+
+def test_a_diagnostic_report_needs_the_question_to_be_about_eli(monkeypatch):
+    """"how many memories can a human brain hold" got ELI's memory count and "which model has the biggest
+    context window" its runtime report."""
+    from eli.cognition import self_claims
+    monkeypatch.setattr(self_claims, "about_eli", lambda text, **k: False, raising=False)
+    for asked in ("how many memories can a human brain hold", "which model has the biggest context window",
+                  "what's the best model for coding", "how much ram does a raspberry pi have"):
+        assert action(asked) not in ("MEMORY_STATUS", "RUNTIME_STATUS", "EXPLAIN_COGNITION_RUNTIME"), asked
+    assert action("how many memories do you have") == "MEMORY_STATUS"
+    assert action("what is your context window") == "EXPLAIN_COGNITION_RUNTIME"
+    assert action("what model is loaded") == "RUNTIME_STATUS"
+    # ELI's own doing, as the reader of the record says, counts too
+    monkeypatch.setattr(self_claims, "about_eli", lambda text, **k: True, raising=False)
+    assert action("how many memories are there") == "MEMORY_STATUS"
+
+
+def test_a_correction_lead_stands_in_front_of_the_instruction():
+    """"i said play X" was read as a statement about what was said, and the play never ran."""
+    got = route("i said play golden hour by jvke")
+    assert got["action"] == "PLAY_MEDIA" and got["args"]["query"].lower() == "golden hour by jvke"
+    assert route("no, i meant open the downloads folder")["action"] in ("OPEN_FILE_SYSTEM", "OPEN_APP")
+    assert action("i said it's raining") == "CHAT"
+    from eli.cognition.llm_intent import is_plain_statement
+    assert not is_plain_statement("i said play golden hour by jvke")

@@ -282,7 +282,7 @@ _ADDRESSED = re.compile(r"\b(?:you|your|yours|yourself|eli|eli's|eli’s)\b"
 _ASKING_FRAME = re.compile(
     r"\b(?:can|could|would|will|won'?t)\s+you\b(?:\s+(?:please|kindly|just|maybe|possibly|now|also|quickly))*"
     r"|\b(?:do|did|does|would|could|can)\s+you\s+(?:(?:please|just|actually|really|even|ever|happen\s+to)\s+)*"
-    r"(?:think|know|reckon|believe|suppose|guess|feel|mind|have|got)\b|\bhave\s+you\s+got\b"
+    r"(?:think|know|reckon|believe|suppose|guess|feel|mind)\b"
     r"|\bi(?:'d|\s+would)\s+(?:like|love)\s+(?:you|for\s+you)\s+to\b|\bi\s+(?:want|need)\s+you\s+to\b"
     r"|\b(?:thank|thanks)\s+you\b|\bare\s+you\s+able\s+to\b",
     re.I)
@@ -316,6 +316,21 @@ def names_eli(text: Any) -> bool:
         if m.group(1) is None or m.group(1).lower() in names:
             return True
     return any(m.group(0).lower() in names for m in _IDENTIFIER.finditer(said))
+
+
+def asks_about_eli(text: Any) -> bool:
+    """Whether a question is about ELI itself, for the rules of ELI's diagnostic reports: ELI is named
+    in it (`names_eli`), or it is about ELI's own doing (self_claims.about_eli, which also reads what
+    ELI just did). "how many memories can a human brain hold" and "which model has the biggest
+    context window" are about the world, and got ELI's memory count and runtime report."""
+    if names_eli(text):
+        return True
+    try:
+        from eli.cognition import self_claims
+        reader = getattr(self_claims, "about_eli", None)
+        return bool(reader(text)) if callable(reader) else False
+    except (ImportError, OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 # A yes/no question about what was done: "did you inspect any of those files?", "have you run the
@@ -359,4 +374,4 @@ def asks_where_the_name_comes_from(text: Any) -> bool:
 
 
 __all__ += ["TARGET_ARGS", "is_command", "changes_something", "has_what_it_needs", "fits",
-            "does_work", "names_eli", "asks_what_was_done", "asks_where_the_name_comes_from"]
+            "does_work", "names_eli", "asks_about_eli", "asks_what_was_done", "asks_where_the_name_comes_from"]

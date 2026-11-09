@@ -181,3 +181,21 @@ def test_shuffle_on_or_off_asks_for_that_state(said, mode):
 
 def test_a_bare_shuffle_still_toggles():
     assert "mode" not in _route("shuffle")["args"]
+
+
+@pytest.mark.parametrize("said,target", [("play golden hour in example.ch", "example.ch"),
+                                         ("play golden hour at example.ch", "example.ch")])
+def test_a_site_named_after_in_or_at_is_where_to_play(said, target):
+    out = _route(said)
+    assert out["action"] == "PLAY_MEDIA" and out["args"]["target"] == target and out["args"]["query"] == "golden hour"
+
+
+@pytest.mark.parametrize("said,kind", [("play the album random access memories on spotify", "album"),
+                                       ("play songs similar to golden hour on spotify", "similar"),
+                                       ("play the film arrival on netflix", "film")])
+def test_what_kind_of_thing_a_play_asks_for_is_passed_on(said, kind):
+    assert _route(said)["args"].get("kind") == kind
+
+
+def test_a_play_that_names_no_kind_says_none():
+    assert "kind" not in _route("play golden hour on spotify")["args"]

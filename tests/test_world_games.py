@@ -466,7 +466,9 @@ def test_from_the_desktop_a_game_needs_the_rooms_or_someone_in_them(world):
     route = lambda s: route_world_games(s, s, s.lower(), s.lower())  # noqa: E731
     embodiment.forget()
     assert route("let's play a game") is None, "nobody in a room: conversation"
-    assert route("stop the game") is None
+    # naming the game asks for it to stop whatever is on: ELI then says there is no game on
+    assert route("stop the game")["action"] == "STOP_GAME"
+    assert route("I give up") is None, "a remark stops a game only while one is on"
     assert route("let's play a game in VR")["action"] == "PLAY_GAME"
     assert route("set up a catch game in your room")["args"]["kind"] == "catch"
     assert route("play some music in vr") is None

@@ -175,6 +175,16 @@ def _last_command() -> Dict[str, Any]:
     return last
 
 
+def what_was_played(query: str) -> str:
+    """A play's query with a pronoun for what was last asked to play ("play it on youtube", "no,
+    play that one again"): that query, or "" when nothing was. Any other query as it is."""
+    said = str(query or "").strip()
+    if not _PRONOUN.match(_AGAIN.sub("", said).strip()):
+        return said
+    last = _last_command()
+    return str(((last.get("args") or {}).get("query")) or "").strip() if "PLAY" in str(last.get("action") or "") else ""
+
+
 def last_object() -> str:
     """What the last command was about: the app, address, path or query in its arguments."""
     args = _last_command().get("args") or {}
@@ -545,11 +555,25 @@ _VOLUME_SAID = re.compile(
 _LOUDER = re.compile(r"^(?:(?:a\s+)?(?:bit|little|touch|tad)\s+)?(louder|quieter)(?:\s+(?:please|now|thanks))*\s*[.!]*$", re.I)
 
 
+# Asking what the volume is: "current volume?", "what's the vol at", "how loud is it", "volume level".
+_VOLUME_ASKED = re.compile(
+    rf"^(?:(?:what(?:'s|\s+is)|whats|check|tell\s+me|show(?:\s+me)?)\s+)?(?:the\s+|my\s+)?(?:current\s+)?{_VOLUME_NOUN}"
+    r"(?:\s+(?:level|status|now|set\s+to|at))*\s*[?.!]*$"
+    rf"|^(?:what(?:'s|\s+is)|whats)\s+(?:the\s+|my\s+)?(?:current\s+)?{_VOLUME_NOUN}\s+(?:level|at|set\s+to)\b.*$"
+    r"|^how\s+loud\s+(?:is\s+(?:it|the\s+(?:sound|music|volume|audio))|am\s+i|are\s+you)(?:\s+(?:now|set))?\s*[?.!]*$",
+    re.I)
+
+
 def volume_said(text: str) -> Optional[Dict[str, Any]]:
     """The VOLUME route for a message that names the volume and what to do with it, or None.
     Absolute when a level is named without a direction ({"level", "percent", "mode": "absolute"}),
-    relative with a direction ({"direction", "delta"?})."""
+    relative with a direction ({"direction", "delta"?}), a reading when it asks what the volume is
+    ({"direction": "get"}: the effector reads the level back)."""
     said = _instruction(text) or str(text or "").strip()
+    if _VOLUME_ASKED.match(said) and not re.search(r"\d", said):
+        # a reading, asked as a question by nature: the fit test for a change does not apply
+        return _mk("VOLUME", {"direction": "get"}, 0.95, matched_by="parser.volume_get", entities={"said": said},
+                   meta_extra={"spoken_as_remark": True})
     louder = _LOUDER.match(said)
     if louder:
         return _mk("VOLUME", {"direction": "up" if louder.group(1).lower() == "louder" else "down"}, 0.95,
@@ -667,4 +691,4 @@ def route_command_tail(text: str, raw: str, low: str, text_l: str) -> Optional[D
 
 
 __all__ = ["Command", "FRAMES", "Frame", "SAID_FOR", "clock_time", "duration_seconds", "in_digits", "last_object",
-           "place_referred_to", "volume_said", "literals", "read", "route_command", "route_command_strict", "route_command_tail"]
+           "place_referred_to", "volume_said", "what_was_played", "literals", "read", "route_command", "route_command_strict", "route_command_tail"]

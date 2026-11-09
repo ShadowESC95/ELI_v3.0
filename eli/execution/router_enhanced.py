@@ -175,6 +175,15 @@ from eli.execution.routing._helpers import (  # noqa: F401
 # its source files): the rules for ELI's own reports ask it before taking a common word as theirs.
 from eli.execution.route_contracts import names_eli as _names_eli  # noqa: E402
 
+
+from eli.execution.route_contracts import asks_about_eli as _eli_about_eli  # noqa: E402
+
+
+def _eli_this_one(term: str, low: str) -> bool:
+    """Whether a thing is named as the one in front of us ("the context window", "my batch size"):
+    ELI's own. "a context window" and "the biggest context window" are anyone's."""
+    return bool(re.search(rf"\b(?:the|my|our|your|this)\s+{term}\b", low))
+
 DESKTOP_APP_PRIORITY = {
     "spotify", "steam", "discord", "slack", "code", "vscode", "codium",
     "thunderbird", "paraview", "powerview", "rhythmbox", "vlc", "mpv",
@@ -708,12 +717,17 @@ def _eli_resolve_known_eli_file(low: str):
     the real file instead of confabulating."""
     try:
         from pathlib import Path as _P
+        from eli.core.paths import persona_auto_path, persona_path
         root = _P(__file__).resolve().parents[2]  # project root
         candidates = []
         if re.search(r"persona\.?\s*auto|auto\.txt|persona overlay|auto[- ]persona", low):
-            candidates.append(root / "eli" / "cognition" / "persona.auto.txt")
+            # Where the overlay lives is eli.core.paths' to say (the config folder in an install, the
+            # source tree in development); a fixed source-tree path found nothing in an install. The
+            # overlay is ELI's own file whether or not it has been written yet: asked to read it,
+            # SUMMARIZE_FILE says what is there, or that it is not there.
+            return str(persona_auto_path())
         if "persona" in low and "auto" not in low:
-            candidates.append(root / "eli" / "cognition" / "persona.txt")
+            candidates.append(persona_path())
         if "settings.json" in low or re.search(r"\bsettings\s+(file|json)\b", low):
             candidates.append(root / "config" / "settings.json")
         if re.search(r"capability[\s_]manifest", low):
@@ -960,6 +974,10 @@ def _route_set_user_name(raw: str, low: str) -> Optional[Dict[str, Any]]:
             # this "Dublin", "Tuesday" or "Pizza", typed in reply to anything, renamed the user.
             if i == 1 and not _asked:
                 continue
+            # the one validator of a name every identity path uses (runtime/identity_validation)
+            from eli.runtime.identity_validation import normalize_identity_candidate
+            if not normalize_identity_candidate(candidate, max_words=1):
+                continue
             if _clow not in _bad and len(candidate) >= 3 and _has_vowel:
                 return _mk(
                     "SET_USER_NAME",
@@ -1092,7 +1110,7 @@ def _pm_asks_something(low: str) -> bool:
 
 # Technical runtime questions: routing/_helpers._RUNTIME_STATUS_RE (one owner; the self-report
 # stage reads the same one).
-from eli.execution.routing._helpers import _RUNTIME_STATUS_RE  # noqa: E402
+from eli.execution.routing._helpers import runtime_status_asked  # noqa: E402
 
 
 # The GUI turns an attached image into a marker: [Attached image: shot.png — path: /home/u/
@@ -1133,7 +1151,7 @@ def _route_grounded_runtime_intent(
     _is_identity = any(p in low for p in _identity_phrases)
     _has_system_kw = any(k in low for k in _memory_system_keywords)
 
-    if _RUNTIME_STATUS_RE.search(raw):
+    if runtime_status_asked(raw):
         return _mk("RUNTIME_STATUS", {"question": raw}, 0.99,
                    matched_by="runtime.status.identity_grounded_chat", allow_chat_without_evidence=False)
 
@@ -1941,7 +1959,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         r"\b(response time|slow response|decrease latency|reduce latency|speed (?:it|you|this|replies) up)\b", low)
     _asks_ram = re.search(
         r"\b(how much ram\b|how much memory\b|ram\b.{0,30}\butili[sz]|memory\b.{0,30}\bfor (?:the )?model)\b",
-        low)
+        low) and (_eli_about_eli(raw) or not re.search(r"\bhow much (?:ram|memory)\b", low))
     if not _explain_prior_claim and (_asks_speed_up or _asks_ram) and not re.search(
             r"\b(memories|sqlite|database|faiss|embedder|remember me)\b", low):
         return _mk(
@@ -2010,9 +2028,13 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             task_family="grounded_audit",
         )
 
-    if not _explain_prior_claim and re.search(
-        r"\b(current inference|inference issues|gguf issues|prompt overflow|context overflow|context window|sacrificing reasoning|sacrifice reasoning|model slow|llama slow|gpu_layers|gpu layers|max_tokens|n_ctx|batch size|llama_context)\b",
-        low,
+    # ELI's inference runtime: its own terms, or a common one ("context window", "batch size") said of
+    # ELI or of the one in front of us ("the context window", "my batch size").
+    _generic_runtime = re.search(r"\b(context window|model slow|gpu layers|batch size)\b", low)
+    if not _explain_prior_claim and (
+        re.search(r"\b(current inference|inference issues|gguf issues|prompt overflow|context overflow|sacrificing reasoning|"
+                  r"sacrifice reasoning|llama slow|gpu_layers|max_tokens|n_ctx|llama_context)\b", low)
+        or (_generic_runtime and (_eli_about_eli(raw) or _eli_this_one(_generic_runtime.group(1), low)))
     ):
         return _mk(
             "EXPLAIN_COGNITION_RUNTIME",
@@ -2579,7 +2601,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                  r"|\bmemor(?:y|ies)\W{0,4}how(?:'s|\s+is|\s+are)\s+(?:that|it|they)\s+(?:doing|holding|working|going|getting|coming)\b"
                  r"|\bis\s+(?:your|the)\s+memory\s+(?:ok|okay|fine|good|working|back|alright|holding)\b", low):
         return _mk("MEMORY_STATUS", {"memory_scope": "health", "question": raw}, 0.97, matched_by="memory.health")
-    if re.search(r"memory\s*(status|stats|report|info|summary|check|usage|count|size|total)|how many memories|memories (do you have|count|total)", low):
+    # "how many memories" is ELI's count only asked of ELI: a brain's memories are not (_eli_about_eli).
+    if (re.search(r"memory\s*(status|stats|report|info|summary|check|usage|count|size|total)|memories (do you have|count|total)", low)
+            or (re.search(r"how many memories", low) and _eli_about_eli(raw))):
         try:
             from eli.runtime.inference_footprint import is_inference_ram_question
             if is_inference_ram_question(raw):
@@ -2876,11 +2900,11 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         r"|verified\s+(?:code|solution|implementation)"
         r"|use\s+the\s+coding\s+agent)\b", re.I)
     if not _GENERATION_COMPLAINT and _CODE_SOLVE_RE.search(raw):
-        _cs_lang = "python"
-        _cs_lm = re.search(r"\b(bash|shell|javascript|js|typescript|ts|ruby|go|golang|lua)\b", low)
-        if _cs_lm:
-            _cs_lang = {"js": "javascript", "ts": "typescript", "golang": "go",
-                        "shell": "bash"}.get(_cs_lm.group(1), _cs_lm.group(1))
+        # the language from the one reader of it (portable_intent_contract.infer_script_language): a bare
+        # word list read "go through" as Go
+        from eli.execution.portable_intent_contract import infer_script_language
+        _cs_lang = infer_script_language(raw)
+        _cs_lang = "python" if _cs_lang in ("", "auto") else _cs_lang
         return _mk("CODE_SOLVE", {"description": raw, "language": _cs_lang}, 0.95,
                    matched_by="dev.code_solve")
 
@@ -2890,7 +2914,11 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
 
     if re.search(
             r"(show|open|view|display)\s+.{0,20}?(diff|changes?|what.{0,10}fixed)", low):
-        return _mk("SHOW_DIFF", {}, 0.9, matched_by="dev.show_diff")
+        # "diff a.py and b.py": the files named are what to compare
+        _diff_paths = [m.group(0) for m in re.finditer(r"(?<![\w:/])(?:~|\.{1,2})?/?[\w./-]*[\w-]\.[A-Za-z0-9]{1,8}\b", raw)
+                       if not m.group(0).lower().startswith("www.")]
+        return _mk("SHOW_DIFF", {"paths": _diff_paths[:2]} if len(_diff_paths) >= 2 else {}, 0.9,
+                   matched_by="dev.show_diff")
 
     # fixed regex (no hidden control char nonsense)
     if re.search(
@@ -3202,9 +3230,16 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             return _mk("PLAY_MEDIA", {}, 0.9, matched_by="media.play_legacy")
 
     # "play X by Y" / "play X from Z" / "play some jazz" / "play movie soundtrack"
+    # the service or site follows "on", or "in" / "at" / "from" when it names one ("play X in
+    # youtube", "play X at example.ch"; "play songs from the eighties" keeps its words)
     _play_specific_m = re.match(
         r"^play\s+(?:me\s+|my\s+|some\s+|the\s+)?(.+?)(?:\s+on\s+(.+))?$", raw, re.I
     )
+    _play_from_m = re.match(r"^play\s+(?:me\s+|my\s+|some\s+|the\s+)?(.+?)\s+(?:in|at|from)\s+(.+)$", raw, re.I)
+    if _play_from_m and not (_play_specific_m and _play_specific_m.group(2)):
+        from eli.execution.portable_intent_contract import _known_media_service
+        if _known_media_service(_play_from_m.group(2)):
+            _play_specific_m = _play_from_m
     if _play_specific_m:
         query = _play_specific_m.group(1).strip()
         target = (_play_specific_m.group(2) or "").strip() or None
@@ -3229,6 +3264,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             _args = {"query": query, "target": target}
             if browser:
                 _args["browser"] = True
+            from eli.execution.portable_intent_contract import media_kind
+            if media_kind(query):
+                _args["kind"] = media_kind(query)
             return _mk("PLAY_MEDIA", _args, 0.92,
                        matched_by="media.play_specific",
                        entities={"query": query, "target": target})
@@ -3306,7 +3344,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     # CREATE_FILE: "create/make/write/save a file called PATH containing CONTENT [, then read it
     # back]". Needs the word 'file' and a path with an extension so it can't steal "write a
     # function/script". Before DATE so "...containing today's date..." doesn't return a bare date.
-    if re.search(r"\b(?:create|make|write|save|generate)\s+(?:a\s+|an\s+|the\s+|new\s+)*[a-z]*\s*file\b", low):
+    if re.search(r"\b(?:create|make|write|save|generate|overwrite|replace)\s+(?:a\s+|an\s+|the\s+|new\s+)*[a-z]*\s*file\b", low):
         _cf_path_m = (
             re.search(r"(?:called|named|at|to|in)\s+[\"']?([~/]?[\w./\-]+\.[A-Za-z0-9]{1,8})", raw)
             or re.search(r"([~/][\w./\-]*\.[A-Za-z0-9]{1,8})", raw)
@@ -3332,8 +3370,11 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                 r"(?:,?\s*(?:then|and\s+(?:then\s+)?read|and\s+read\s+it\s+back)\b|[.!?]?\s*$)",
                 raw, re.IGNORECASE)
             _cf_content = (_cf_content_m.group(1).strip() if _cf_content_m else "")
-            return _mk("CREATE_FILE", {"path": _cf_path, "content": _cf_content},
-                       0.96, matched_by="fs.create_file")
+            _cf_args = {"path": _cf_path, "content": _cf_content}
+            # an existing file is replaced only when the request says so
+            if re.search(r"\b(?:overwrite|overwriting|replace|replacing)\b", low):
+                _cf_args["overwrite"] = True
+            return _mk("CREATE_FILE", _cf_args, 0.96, matched_by="fs.create_file")
 
     # "What date is it, and how many days ago was 09-09-2026?" asks for arithmetic as well; DATE
     # answered only the date. Chat answers both, with the days worked out for it (date facts).
@@ -4021,7 +4062,20 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         # or listed. Taken as a topic, it was looked up in memory and old messages came back.
         from eli.execution.routing.command_parser import place_referred_to
         _place = place_referred_to(target)
+        if _place is None:
+            # "read this folder": the "this" the verb's pattern passed over is the pointer
+            _place = place_referred_to(re.sub(rf"^.*?\b(?:{_DOC_VERBS})\b[,\s]+(?:(?:and\s+)?(?:{_DOC_VERBS})[,\s]+)*",
+                                              "", raw, count=1, flags=re.I))
         if _place:
+            # a folder of PDFs is read as papers (ANALYZE_PDF_FOLDER); any other place by its files
+            try:
+                _names = [n for n in os.listdir(_place) if not n.startswith(".")] if os.path.isdir(_place) else []
+            except OSError:
+                _names = []
+            if _names and all(n.lower().endswith(".pdf") for n in _names if os.path.isfile(os.path.join(_place, n))) \
+                    and any(n.lower().endswith(".pdf") for n in _names):
+                return _mk("ANALYZE_PDF_FOLDER", {"folder": _place, "recursive": True, "instruction": raw}, 0.9,
+                           matched_by="analyze.pdf_folder_referred", entities={"folder": _place, "said": target})
             return _mk("SUMMARIZE_FILE", {"path": _place, "instruction": raw}, 0.9,
                        matched_by="analyze.summarize_referred", entities={"path": _place, "said": target})
         if _place == "":
@@ -4851,8 +4905,11 @@ def _eli_self_improvement_phrase_guard(text):
         re.search(r"\b(prove|proof|evidence|timestamps?|wiring|hooks?)\b", low)
         and re.search(r"\b(gui|runtime|wiring|pipeline|hooks?)\b", low)
     )
+    # a diff of files is SHOW_DIFF's (core router), not an examination of them
+    _asks_a_diff = bool(re.search(r"\b(?:diff|differences?\s+between|changes\s+between|compare)\b", low))
     if (
         not _runtime_audit_proof
+        and not _asks_a_diff
         and (
         re.search(
             r"\b(examine|review|inspect|scan|audit)\b[^.?!]*"
@@ -5160,10 +5217,14 @@ def _eli_is_full_profile_dump(low):
 # direct-return; non-quick modes synthesise from compact evidence and validate the answer.
 
 def _eli_is_memory_count_question(text):
+    """A count of ELI's own memories: its store's words ("memory rows", "stored memories"), or
+    "memories" asked of ELI ("how many memories do you have"). "how many memories can a human brain
+    hold" is not one."""
     import re
     low = str(text or "").strip().lower()
     return bool(
-        re.search(r"\b(how many|number of|count)\b.{0,80}\b(memories|memory entries|stored memories|memory rows)\b", low)
+        re.search(r"\b(how many|number of|count)\b.{0,80}\b(memory entries|stored memories|memory rows)\b", low)
+        or (re.search(r"\b(how many|number of|count)\b.{0,80}\bmemories\b", low) and _eli_about_eli(text))
         or re.fullmatch(r"(memory count|count memories|count memory|memories count|memory rows)", low)
     )
 
@@ -5978,9 +6039,14 @@ def _eli_media_contract_post(raw, result):
             ))
 
         def _play(target: str, query: str, matched_by: str):
-            args = {"target": _target(target), "query": str(query or "").strip()}
+            # "play it on youtube": what was last played, or nothing to search for
+            from eli.execution.routing.command_parser import what_was_played
+            args = {"target": _target(target), "query": what_was_played(query)}
             if _wants_browser_target(target):
                 args["browser"] = True
+            from eli.execution.portable_intent_contract import media_kind
+            if media_kind(args["query"]):
+                args["kind"] = media_kind(args["query"])
             return _mk(
                 "PLAY_MEDIA",
                 args,
@@ -7330,7 +7396,9 @@ try:
         def _eli_fits(text, candidate):
             try:
                 from eli.execution.route_contracts import fits
-                return fits(text, candidate)
+                from eli.runtime.command_splitter import without_correction_lead
+                # "i said play X", "no, i meant open downloads": the instruction is behind the lead
+                return fits(without_correction_lead(text), candidate)
             except Exception:
                 _SWLOG.debug("fits check failed", exc_info=True)
                 return True
@@ -7498,6 +7566,17 @@ try:
                 return None
 
         def _eli_priority_route(raw="", *args, **kwargs):
+            # "i said play X", "no, i meant open downloads": a correction's lead stands in front of the
+            # instruction it repeats, which is routed as said (command_splitter.correction). A reply
+            # to something ELI left open is read whole ("no, do it later" declines).
+            try:
+                from eli.runtime.command_splitter import correction, starts_with_command
+                from eli.runtime.pending_proposal import get_follow_up
+                _repeated = correction(str(raw or ""))
+                if _repeated and starts_with_command(_repeated, after_lead=True) and not get_follow_up():
+                    raw = _repeated
+            except Exception:
+                _SWLOG.debug("correction lead not read", exc_info=True)
             whole = _eli_route_with_courtesy(raw, *args, **kwargs)
             return (_eli_instructions_and_talk(str(raw or ""), whole, *args, **kwargs)
                     or _eli_misspelt_command(str(raw or ""), whole, *args, **kwargs)
