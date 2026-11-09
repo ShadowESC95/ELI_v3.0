@@ -22,9 +22,9 @@ Options:
   --chunk-size SIZE   split size, default 1900m.
   -h, --help          Show help.
 
-Default archive set:
-  models/
-  tts_piper/
+Default archive set (what dist/github_assets/asset_manifest.json marks for upload):
+  models/     the models ELI's catalog names
+  tts_piper/  voices, without the restricted ones
   dist/github_assets/asset_manifest.json
 EOF
 }
@@ -55,34 +55,51 @@ mkdir -p "$OUT_DIR"
 echo "[asset] Writing ignored-file manifest"
 python3 "$ROOT/scripts/github_asset_manifest.py" --output "$ROOT/dist/github_assets/asset_manifest.json"
 
-make_split_tar() {
+# Packs the files given NUL-separated on stdin into $OUT_DIR/<name>.tar.gz.part-*.
+make_split_tar_from_list() {
   local name="$1"
-  shift
-  local paths=("$@")
   local prefix="$OUT_DIR/${name}.tar.gz.part-"
-
-  local existing=0
-  for p in ${paths[@]+"${paths[@]}"}; do
-    if [ -e "$ROOT/$p" ]; then
-      existing=1
-    fi
-  done
-  if [ "$existing" -eq 0 ]; then
-    echo "[asset] Skip $name: none of ${paths[*]-} exists"
+  local list="$OUT_DIR/.${name}.files"
+  cat >"$list"
+  rm -f "$prefix"*
+  if [ ! -s "$list" ]; then
+    echo "[asset] Skip $name: nothing to publish"
+    rm -f "$list"
     return 0
   fi
-
   echo "[asset] Creating split archive: $name"
-  rm -f "$prefix"*
   (
     cd "$ROOT"
-    tar -czf - ${paths[@]+"${paths[@]}"} 2>/tmp/eli_asset_tar_${name}.log | split -b "$CHUNK_SIZE" - "$prefix"
+    tar -czf - --null -T "$list" 2>"$OUT_DIR/${name}.tar.log" | split -b "$CHUNK_SIZE" - "$prefix"
   )
+  rm -f "$list"
   ls -lh "$prefix"*
 }
 
-make_split_tar "eli-model-assets" "models"
-make_split_tar "eli-voice-assets" "tts_piper"
+make_split_tar() {
+  local name="$1"
+  shift
+  local p
+  for p in "$@"; do
+    if [ -e "$ROOT/$p" ]; then printf '%s\0' "$p"; fi
+  done | make_split_tar_from_list "$name"
+}
+
+# The model and voice archives hold what the manifest marks for upload, and nothing else: the same
+# rule as the direct-file upload (scripts/asset_release_policy.py), so restricted voices and the
+# person's own recordings, wake words and adapters under models/ are never packed.
+manifest_files() {
+  python3 - "$ROOT/dist/github_assets/asset_manifest.json" "$1" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+for row in manifest["files"]:
+    if row["category"] == sys.argv[2] and row["upload_recommended"]:
+        sys.stdout.write(row["path"] + "\0")
+PY
+}
+
+manifest_files model_asset | make_split_tar_from_list "eli-model-assets"
+manifest_files voice_asset | make_split_tar_from_list "eli-voice-assets"
 
 if [ "$INCLUDE_RUNTIME" -eq 1 ]; then
   make_split_tar "eli-runtime-private-state" "artifacts"

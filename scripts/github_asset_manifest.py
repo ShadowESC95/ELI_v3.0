@@ -9,11 +9,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-try:
-    from asset_release_policy import is_excluded_voice_filename
-except ImportError:
-    def is_excluded_voice_filename(name: str) -> bool:  # type: ignore
-        return False
+# The release policy is required: without it every voice and every file under models/ was marked
+# for upload, restricted voices and the person's own recordings included.
+from asset_release_policy import (
+    catalog_model_filenames,
+    is_excluded_voice_filename,
+    is_private_user_asset,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,11 +70,31 @@ def _classify(rel: str) -> Dict[str, Any]:
             "upload_recommended": False,
             "reason": "recreated by install scripts; huge and machine-specific",
         }
-    if rel.startswith("models/"):
+    if is_private_user_asset(rel):
         return {
-            "category": "model_asset",
-            "upload_recommended": True,
-            "reason": "required for offline local model/image operation",
+            "category": "private_user_asset",
+            "upload_recommended": False,
+            "reason": "made from the person's own voice or conversations, or a recording, log or "
+                      "partial download: never published",
+        }
+    if rel.startswith("models/"):
+        name = Path(rel).name
+        if name.endswith((".onnx", ".onnx.json")) and is_excluded_voice_filename(name):
+            return {
+                "category": "voice_asset_excluded",
+                "upload_recommended": False,
+                "reason": "excluded from public bundles (NC-SA / license review — see models/MODEL_LICENSES.md)",
+            }
+        if name in catalog_model_filenames():
+            return {
+                "category": "model_asset",
+                "upload_recommended": True,
+                "reason": "required for offline local model/image operation",
+            }
+        return {
+            "category": "model_unlisted",
+            "upload_recommended": False,
+            "reason": "not a model ELI's catalog names (eli/core/model_download.py); add it there to publish it",
         }
     if rel.startswith("tts_piper/"):
         if is_excluded_voice_filename(Path(rel).name):
