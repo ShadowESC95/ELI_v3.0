@@ -639,7 +639,7 @@ def escalate(
         log.debug(f"[ESCALATION] self-action/state claim grounding={grounding:.2f} "
                   f"< floor → honest hedge (no confabulated status/path)")
         _note_escalation(f"declined to guess about its own action or state (grounding {grounding:.2f})")
-        return _result(_hedge("local", _online), grounded=False,
+        return _result(_in_own_words(engine, user_input, _hedge("local", _online), reasoning_mode), grounded=False,
                        mode=_canon_mode(reasoning_mode), trace=trace)
 
     # Ongoing session narrative (device, travel plans, corrections) — answer from
@@ -814,16 +814,11 @@ def escalate(
 
             if tier == "hedge":
                 msg = _hedge(domain, online, searched=web_searched)
-                _own = getattr(engine, "_say_in_own_words", None)
                 # The hedge is a fact to convey, not a question to answer: the model's wording of it
                 # keeps only sentences that add nothing to it (no file, name, figure or place the hedge
                 # and the question do not hold). Live, rewordings invented a folder's contents and a
                 # failed tool call.
-                said = (_own(user_input, msg, reasoning_mode=reasoning_mode) if _own else "") or ""
-                if said:
-                    from eli.cognition.self_claims import only_what_it_was_given
-                    said = only_what_it_was_given(said, msg, user_input)
-                msg = said or msg
+                msg = _in_own_words(engine, user_input, msg, reasoning_mode)
                 _note_escalation(
                     ("searched the web, the results did not match the question, so declined to guess"
                      if web_searched else
@@ -859,6 +854,18 @@ def _redispatch_broad(engine: Any, user_input: str, intent: Dict[str, Any],
     except Exception as e:
         log.debug(f"[ESCALATION] broad re-dispatch failed: {e}")
         return None
+
+
+def _in_own_words(engine: Any, user_input: str, hedge: str, reasoning_mode: Optional[str]) -> str:
+    """The hedge in the model's words (engine._say_in_own_words), keeping only sentences that add
+    nothing to it (self_claims.only_what_it_was_given); the hedge as written only when no model can
+    say it or nothing of its wording holds."""
+    _own = getattr(engine, "_say_in_own_words", None)
+    said = (_own(user_input, hedge, reasoning_mode=reasoning_mode) if _own else "") or ""
+    if said:
+        from eli.cognition.self_claims import only_what_it_was_given
+        said = only_what_it_was_given(said, hedge, user_input)
+    return said or hedge
 
 
 def _note_escalation(what: str) -> None:

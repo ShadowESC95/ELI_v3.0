@@ -1266,3 +1266,9 @@ def test_a_table_eli_makes_is_known_before_this_install_has_made_it(monkeypatch)
         assert "runtime_events" in sc.known_identifiers() and "orchestrator_audit" in sc.known_identifiers()
     finally:
         sc.known_identifiers.cache_clear()
+
+
+def test_describing_the_screen_from_an_ambient_glance_stands(chat_turn):
+    reply = "Here is what is on the screen: a terminal on the right and a browser on the left."
+    glance = "[Ambient screen glance — use for context; do not invent unseen details]\na terminal and a browser"
+    assert sc.drop_invented_self_claims(reply, evidence=glance) == reply

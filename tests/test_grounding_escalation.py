@@ -475,3 +475,12 @@ def test_the_hedge_in_the_models_words_adds_nothing_to_the_hedge(monkeypatch):
     r = G.escalate(_Speaks(), "who is the founder of Acme Dynamics Ltd", {"action": "CHAT"}, _FakeBus(0.20))
     assert r["meta"]["response_mode"] == "ungrounded_hedge"
     assert r["content"] == "Looked it up and nothing out there answers it, so I won't guess."
+
+
+def test_the_hedge_about_its_own_action_is_said_in_its_own_words_too(monkeypatch):
+    class _Speaks(_FakeEngine):
+        def _say_in_own_words(self, said, fact, reasoning_mode=None):
+            return "I've got nothing that shows I saved it, so I won't say I did. Point me at the file."
+
+    r = G.escalate(_Speaks(), "did you save the report to my desktop?", {"action": "CHAT"}, _FakeBus(0.0))
+    assert r is not None and r["content"].startswith("I've got nothing that shows I saved it")

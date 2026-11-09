@@ -1447,8 +1447,9 @@ class _Check:
         return bool(re.search(r"\b" + re.escape(state) + r"\b", where))
 
     def _looked(self) -> bool:
-        """Whether anything looked at the screen or a picture this turn (or in the rest of the message)."""
-        return any(_LOOKED.search(a) for a in self._ran()) or bool(self._facts.get("_glance"))
+        """Whether anything looked at the screen or a picture this turn (or in the rest of the message),
+        or an ambient glance is in what the model was given (runtime.conversation_thread labels it)."""
+        return any(_LOOKED.search(a) for a in self._ran()) or "ambient screen glance" in self._evidence
 
     def drop(self, unit: str) -> None:
         """A unit dropped before it was fed (a patch presented from a reply): a "Done." held back
