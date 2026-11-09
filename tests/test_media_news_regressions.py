@@ -886,3 +886,103 @@ def test_a_question_or_by_the_way_is_not_a_song_request(said):
 @pytest.mark.parametrize("said", ["bohemian rhapsody by queen", "by the way by red hot chili peppers"])
 def test_a_title_by_an_artist_still_plays(said):
     assert route(said)["action"] == "PLAY_MEDIA", said
+
+
+# ── a held "play X" is never lost, and the command the gate chose is the one handed on ──
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def time(self):
+        return self.now
+
+    def sleep(self, _s):
+        pass
+
+
+def _gate_on_clock(monkeypatch):
+    import eli.perception.audio_stt as stt
+    clock = _Clock()
+    monkeypatch.setattr(stt, "time", clock)
+    return stt.VoiceGate(), clock
+
+
+def test_stt_held_play_goes_on_as_it_stands_when_the_window_closes(monkeypatch):
+    """'computer, play some jazz' was held for its service and nothing ever released it."""
+    gate, clock = _gate_on_clock(monkeypatch)
+    assert gate.classify("computer play some jazz")[0] == "arm_incomplete"
+    assert gate.release_due() is None, "released before the user could finish it"
+    clock.now += gate.wake_timeout_sec + 1
+    assert gate.release_due() == "play some jazz"
+    assert gate.release_due() is None, "released twice"
+
+
+def test_stt_held_play_waits_for_this_users_own_pause(monkeypatch):
+    gate, clock = _gate_on_clock(monkeypatch)
+    gate.classify("computer play some jazz")
+    clock.now += 2.0                                         # this user finishes after 2 s
+    assert gate.classify("on spotify") == ("dispatch", "play some jazz on spotify", None)
+    clock.now += 30
+    gate.classify("computer play some blues")
+    clock.now += 2.0
+    assert gate.release_due() is None, "released inside the user's own pause"
+    clock.now += 2.0 * gate.CONTINUATION_SLACK
+    assert gate.release_due() == "play some blues"
+
+
+def test_stt_words_that_do_not_finish_a_held_play_let_it_go_on(monkeypatch):
+    gate, _clock = _gate_on_clock(monkeypatch)
+    gate.classify("computer play some jazz")
+    assert gate.classify("what was that noise")[0] == "ignore_unarmed"
+    assert gate.release_due() == "play some jazz", "the held command was dropped with the fragment"
+
+
+def test_stt_a_new_wake_word_lets_a_held_play_go_on_unless_it_is_said_again(monkeypatch):
+    gate, clock = _gate_on_clock(monkeypatch)
+    gate.classify("computer play some jazz")
+    clock.now += 1
+    gate.classify("computer pause")
+    assert gate.release_due() == "play some jazz"
+    gate.classify("computer play some jazz")
+    clock.now += 1
+    assert gate.classify("computer play some jazz on spotify")[1] == "play some jazz on spotify"
+    assert gate.release_due() is None, "a command said again was run twice"
+
+
+def _listener(monkeypatch):
+    """The listen loop's handling of one heard utterance, on a listener with no microphone."""
+    import queue
+    import eli.perception.audio_stt as stt
+    import eli.perception.local_whisper_stt as whisper
+    sent = []
+    for name in ("_eli_media_probably_audible", "_eli_echo_like_assistant_output"):
+        monkeypatch.setattr(stt, name, lambda *_a, **_k: False)
+    for name in ("_eli_duck_output", "media_player_duck_pause", "_eli_restore_duck"):
+        monkeypatch.setattr(stt, name, lambda *_a, **_k: None)
+    monkeypatch.setattr(whisper, "heard_clearly", lambda _t: True)
+    monkeypatch.setattr("eli.perception.voice_intent.on_partial_transcript", lambda *_a, **_k: None)
+    monkeypatch.setattr("eli.cognition.tone_adaptor.note_user_text", lambda *_a, **_k: None)
+    ear = object.__new__(stt.ELIAudioSTT)
+    ear._voice_gate = stt.VoiceGate()
+    ear._eli_duck_snapshot = None
+    ear.audio_queue = queue.Queue()
+    ear.callback = sent.append
+    return ear, sent
+
+
+def test_stt_the_loop_hands_on_the_joined_command_not_the_last_fragment(monkeypatch):
+    ear, sent = _listener(monkeypatch)
+    ear._act_on_transcript("computer, play some jazz")
+    assert sent == []
+    ear._act_on_transcript("on spotify.")
+    assert sent == ["play some jazz on spotify"], "only the last fragment reached the router"
+
+
+def test_stt_the_loop_hands_on_the_command_without_the_wake_word(monkeypatch):
+    ear, sent = _listener(monkeypatch)
+    ear._act_on_transcript("computer, pause.")
+    assert sent == ["pause"], "the wake word went to the router with the command"

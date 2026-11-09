@@ -1057,8 +1057,9 @@ def _is_potentially_incomplete_media_play(text: str) -> bool:
     if t.endswith((" by", " on", " from", " album by", " song by")):
         return True
 
-    # If there is no explicit service, hold it briefly so the user can finish:
-    # "by artist on spotify". This prevents accidental YouTube launches.
+    # If there is no explicit service, hold it so the user can finish: "by artist on spotify". This
+    # prevents accidental YouTube launches. VoiceGate.release_due hands it on as it stands once the
+    # user's turn is over.
     return True
 
 
@@ -1227,12 +1228,60 @@ def speaking_lock_held(path) -> bool:
 
 
 class VoiceGate:
+    CONTINUATION_SLACK = 1.5
+    """A held command is the user's whole turn once they have been quiet for half again as long as
+    the slowest pause after which they finished one before ("play X" ... "on spotify")."""
+    CONTINUATIONS_KEPT = 8
+    """How many of those pauses are remembered: enough to see this person's spread, few enough that
+    one long pause long ago stops setting the wait."""
+
     def __init__(self, wake_timeout_sec: float = WAKE_ARM_TIMEOUT):
         self.wake_timeout_sec = wake_timeout_sec
         self._guarded_until = 0.0
         self._last_wake_ts = 0.0
         self._pending_prefix = ""  # accumulated incomplete command prefix
         self._pending_started = 0.0
+        self._released = ""        # a held command a follow-up could not complete, to go on as it stands
+        self._continuations: list = []   # seconds from a held command to the words that finished it
+
+    def _hold(self, text: str) -> None:
+        self._pending_prefix = text
+        self._pending_started = time.monotonic()
+
+    def _release_for_new_turn(self, said: str) -> None:
+        """A new wake word starts a new turn: a command still held goes on as it stands (release_due),
+        unless what follows re-says it ("play X" held, then "computer, play X on spotify")."""
+        held = self._pending_prefix
+        if not held:
+            return
+        verb = held.split()[0]
+        if not (said and said.startswith(verb + " ")):
+            self._released = held
+        self._pending_prefix = ""
+        self._pending_started = 0.0
+
+    def end_of_turn_gap(self) -> float:
+        """How long after a held command this user may still finish it, from their own pauses before
+        finishing one; until one has been seen, the armed window alone decides."""
+        if not self._continuations:
+            return float("inf")
+        return max(self._continuations) * self.CONTINUATION_SLACK
+
+    def release_due(self) -> Optional[str]:
+        """The held command, to be handed on as it stands now (the router then chooses the service):
+        when the words after it could not complete it, when the user has been quiet past their
+        end-of-turn gap, or when the armed window has closed. None while it may still be finished.
+        A held "play some jazz" was never released before: it waited for good."""
+        if self._released:
+            held, self._released = self._released, ""
+            return held
+        if not self._pending_prefix:
+            return None
+        if self.armed() and time.monotonic() - self._pending_started < self.end_of_turn_gap():
+            return None
+        held = self._pending_prefix
+        self.clear()
+        return held
 
     def arm(self) -> None:
         self._guarded_until = time.monotonic() + self.wake_timeout_sec
@@ -1241,6 +1290,7 @@ class VoiceGate:
     def clear(self) -> None:
         self._guarded_until = 0.0
         self._pending_prefix = ""
+        self._pending_started = 0.0
 
     def armed(self) -> bool:
         return time.monotonic() < self._guarded_until
@@ -1302,18 +1352,17 @@ class VoiceGate:
             if (now - self._last_wake_ts) < WAKE_DEBOUNCE_S:
                 return "ignore", None, wake
             self._last_wake_ts = now
-            self._pending_prefix = ""
-            self._pending_started = 0.0
+            self._release_for_new_turn("")
             self.arm()
             return "arm", None, wake
 
         # Wake word plus command in same utterance.
         if wake and remainder:
+            self._release_for_new_turn(remainder)
             # Check if remainder is incomplete (e.g., bare "open" without target)
             if _is_incomplete_command(remainder) or _is_potentially_incomplete_media_play(remainder):
                 print(f"🔄 [AUDIO] Incomplete command '{remainder}' — waiting for target/service...")
-                self._pending_prefix = remainder
-                self._pending_started = time.monotonic()
+                self._hold(remainder)
                 self.arm()  # re-arm to wait for the target/service
                 return "arm_incomplete", None, wake
             self.clear()
@@ -1323,10 +1372,14 @@ class VoiceGate:
         if self.armed():
             if self._pending_prefix:
                 if not _eli_pending_media_can_complete(self._pending_prefix, text):
+                    # The words after it do not finish it: the held command goes on as it stands
+                    # (release_due) and the fragment is dropped, as before.
                     print(f"🧯 [AUDIO] Dropped non-completing fragment for pending command: '{self._pending_prefix}' + '{text}'")
-                    self._pending_prefix = ""
+                    self._released = self._pending_prefix
                     self.clear()
                     return "ignore_unarmed", None, None
+                self._continuations = (self._continuations
+                                       + [time.monotonic() - self._pending_started])[-self.CONTINUATIONS_KEPT:]
 
                 # If the user re-said the full command (text already self-contained and
                 # complete), use text directly rather than prepending the pending prefix
@@ -1343,8 +1396,7 @@ class VoiceGate:
             # Check if this utterance itself is an incomplete command
             if _is_incomplete_command(text) or _is_potentially_incomplete_media_play(text):
                 print(f"🔄 [AUDIO] Incomplete command '{text}' — waiting for target/service...")
-                self._pending_prefix = text
-                self._pending_started = time.monotonic()
+                self._hold(text)
                 # Stay armed, don't clear
                 return "arm_incomplete", None, None
             self.clear()
@@ -2009,6 +2061,157 @@ class ELIAudioSTT:
         self._eli_ignore_reason = "post_command_echo_gate"
         log.debug(f"[AUDIO_ECHO_GATE] ignoring mic for {gate_s:.1f}s after command dispatch")
 
+    def _act_on_transcript(self, transcript: str) -> None:
+        """What a heard utterance does: the echo and bleed gates, then the voice gate, and on a
+        dispatch the command the gate chose is handed on: the wake word taken off, a held "play X"
+        joined to the "on spotify" that finished it, an alias repaired. The raw latest utterance went
+        on instead, so "play X" + "on spotify" reached the router as "on spotify" alone."""
+        transcript_display = _eli_fast_command_alias(transcript)
+        transcript_route = _collapse_repeated_phrase(transcript_display, strip_punctuation=True)
+        # Speaker-bleed filter: when media is audible and the transcript
+        # looks like a song-loop capture (high token-repetition density),
+        # drop it. Real commands rarely have >60% repetition.
+        try:
+            _words = transcript_route.split()
+            if len(_words) >= 4 and _eli_media_probably_audible():
+                _unique = len(set(_words))
+                _rep_ratio = 1.0 - (_unique / len(_words))
+                if _rep_ratio >= 0.5:
+                    _vprint(
+                        f"🎵 [AUDIO_BLEED_FILTER] dropped likely-music transcript "
+                        f"(rep_ratio={_rep_ratio:.2f}): {transcript_display!r}",
+                        flush=True,
+                    )
+                    return
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+        _heard_preview = (
+            transcript_display if len(transcript_display) <= 80
+            else (transcript_display[:77] + "...")
+        )
+        _vprint(f"👂 [AUDIO] Heard ({len(transcript_display)} chars): '{_heard_preview}'", flush=True)
+
+        # Drop mic input during short post-command cooldown.
+        try:
+            now_mono = __import__("time").monotonic()
+            if now_mono < getattr(self, "_eli_ignore_until", 0.0):
+                left = getattr(self, "_eli_ignore_until", 0.0) - now_mono
+                _vprint(
+                    f"🛡️ [AUDIO_ECHO_GATE] ignored during cooldown "
+                    f"({left:.1f}s left): {transcript_display!r}",
+                    flush=True,
+                )
+                return
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        # Drop obvious assistant/TTS echo.
+        try:
+            if _eli_echo_like_assistant_output(transcript_route):
+                _vprint(f"🛡️ [AUDIO_ECHO_GATE] ignored assistant echo: {transcript_display!r}", flush=True)
+                return
+        except Exception:
+            log.debug("suppressed exception", exc_info=True)
+
+        self.audio_queue.put(transcript_display)
+
+        # Restore volume if we took a duck snapshot but the gate
+        # expired without ever dispatching a command (e.g. arm →
+        # arm_incomplete → user went silent → gate timed out).
+        if self._eli_duck_snapshot is not None and not self._voice_gate.armed():
+            try:
+                _eli_restore_duck(self._eli_duck_snapshot)
+                self._eli_duck_snapshot = None
+                log.debug("[AUDIO_DUCK] Gate expired without dispatch — volume restored")
+            except Exception as _re:
+                log.debug(f"[AUDIO_DUCK][RESTORE_ERROR] {_re}")
+
+        # A command held for its service ("play some jazz", waiting for "on spotify") goes on as it
+        # stands once its time is up, and before anything said later is acted on.
+        self._emit_released()
+        action, payload, wake = self._voice_gate.classify(transcript_route)
+        self._emit_released()
+
+        if action == "arm":
+            print(f"🔊 [AUDIO] Wake word detected: '{wake}'")
+            print("🎧 [AUDIO] Guarded command window armed")
+            try:
+                # Only snapshot+duck if not already ducked.
+                # Re-arm (user says wake word twice) must NOT overwrite
+                # the original pre-duck volume with the ducked level.
+                if self._eli_duck_snapshot is None:
+                    self._eli_duck_snapshot = _eli_duck_output()
+                    media_player_duck_pause()
+                else:
+                    log.debug("[AUDIO_DUCK] Already ducked — keeping existing snapshot")
+            except Exception as e:
+                log.debug(f"[AUDIO_DUCK][ERROR] {e}")
+            return
+
+        if action == "arm_incomplete":
+            print(f"🔄 [AUDIO] Waiting for command target...")
+            # Keep listening — volume already ducked, window already armed
+            return
+
+        if action == "guarded_without_wake":
+            print("⚠️ [AUDIO] guarded — wake word required", flush=True)
+            return
+
+        if action == "ignore_unarmed":
+            _vprint("🫥 [AUDIO] ignored — no wake word", flush=True)
+            # _vprint is stdout-only and off unless ELI_STT_VERBOSE=1, so a correctly heard command dropped
+            # for lack of a wake word left no trace, indistinguishable from a dead microphone (which is how
+            # a working mic got reported broken).
+            _now_hint = time.monotonic()
+            if _now_hint - getattr(self, "_last_wake_hint_ts", 0.0) >= 45.0:
+                _pw = primary_wake_word()
+                print(
+                    f"💡 [AUDIO] Heard speech but no wake word — say "
+                    f"{_pw!r} first (e.g. \"{_pw}, pause music\"). "
+                    f"Set ELI_DISABLE_WAKE_WORD=1 to disable.",
+                    flush=True,
+                )
+                self._last_wake_hint_ts = _now_hint
+            log.debug(
+                f"[AUDIO] dropped (no wake word; say {primary_wake_word()!r} first, "
+                f"or enable direct chat): {transcript_display!r}"
+            )
+            return
+
+        if action == "ignore_too_short":
+            _vprint(
+                f"🫥 [AUDIO] ignored — too short "
+                f"({_word_count(transcript_route)} words, need {MIN_DIRECT_CHAT_WORDS})",
+                flush=True,
+            )
+            return
+
+        if action == "ignore":
+            return
+
+        if action == "dispatch" and payload:
+            # A command the decoder was not sure of is not carried out or chatted about: the
+            # window opens again so it can just be said again.
+            from eli.perception.local_whisper_stt import heard_clearly
+            if not heard_clearly(transcript_display):
+                print(f"❓ [AUDIO] not sure of what was said: {transcript_display!r}; say it again",
+                      flush=True)
+                self._voice_gate.arm()
+                _unclear = getattr(self, "on_unclear", None)
+                if callable(_unclear):
+                    try:
+                        _unclear(transcript_display)
+                    except RuntimeError:      # the window it reports to has closed
+                        log.warning("[AUDIO] the unclear-command notice had nowhere to go", exc_info=True)
+                return
+            self._emit(payload)
+
+    def _emit_released(self) -> None:
+        held = self._voice_gate.release_due()
+        if held:
+            print(f"⏱️ [AUDIO] Held command goes on as it stands: '{held}'", flush=True)
+            self._emit(held)
+
     def _listen_loop(self):
         try:
             _suppress_alsa()
@@ -2183,6 +2386,7 @@ class ELIAudioSTT:
                                 phrase_time_limit=_active_phrase_limit,
                             )
                     except sr.WaitTimeoutError:
+                        self._emit_released()       # quiet: a held command whose time is up goes on
                         if self._voice_gate.armed() and self._eli_duck_snapshot is not None:
                             self._voice_gate.touch_arm()
                         # Restore duck if the gate expired while we were waiting
@@ -2416,142 +2620,8 @@ class ELIAudioSTT:
                     # Update user voice profile for next time's threshold bias.
                     self._record_voice_sample(audio)
 
-                    transcript_display = _eli_fast_command_alias(transcript)
-                    transcript_route = _collapse_repeated_phrase(transcript_display, strip_punctuation=True)
-                    # Speaker-bleed filter: when media is audible and the transcript
-                    # looks like a song-loop capture (high token-repetition density),
-                    # drop it. Real commands rarely have >60% repetition.
-                    try:
-                        _words = transcript_route.split()
-                        if len(_words) >= 4 and _eli_media_probably_audible():
-                            _unique = len(set(_words))
-                            _rep_ratio = 1.0 - (_unique / len(_words))
-                            if _rep_ratio >= 0.5:
-                                _vprint(
-                                    f"🎵 [AUDIO_BLEED_FILTER] dropped likely-music transcript "
-                                    f"(rep_ratio={_rep_ratio:.2f}): {transcript_display!r}",
-                                    flush=True,
-                                )
-                                continue
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                    _heard_preview = (
-                        transcript_display if len(transcript_display) <= 80
-                        else (transcript_display[:77] + "...")
-                    )
-                    _vprint(f"👂 [AUDIO] Heard ({len(transcript_display)} chars): '{_heard_preview}'", flush=True)
-
-                    # Drop mic input during short post-command cooldown.
-                    try:
-                        now_mono = __import__("time").monotonic()
-                        if now_mono < getattr(self, "_eli_ignore_until", 0.0):
-                            left = getattr(self, "_eli_ignore_until", 0.0) - now_mono
-                            _vprint(
-                                f"🛡️ [AUDIO_ECHO_GATE] ignored during cooldown "
-                                f"({left:.1f}s left): {transcript_display!r}",
-                                flush=True,
-                            )
-                            continue
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-
-                    # Drop obvious assistant/TTS echo.
-                    try:
-                        if _eli_echo_like_assistant_output(transcript_route):
-                            _vprint(f"🛡️ [AUDIO_ECHO_GATE] ignored assistant echo: {transcript_display!r}", flush=True)
-                            continue
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-
-                    self.audio_queue.put(transcript_display)
-
-                    # Restore volume if we took a duck snapshot but the gate
-                    # expired without ever dispatching a command (e.g. arm →
-                    # arm_incomplete → user went silent → gate timed out).
-                    if self._eli_duck_snapshot is not None and not self._voice_gate.armed():
-                        try:
-                            _eli_restore_duck(self._eli_duck_snapshot)
-                            self._eli_duck_snapshot = None
-                            log.debug("[AUDIO_DUCK] Gate expired without dispatch — volume restored")
-                        except Exception as _re:
-                            log.debug(f"[AUDIO_DUCK][RESTORE_ERROR] {_re}")
-
-                    action, payload, wake = self._voice_gate.classify(transcript_route)
-
-                    if action == "arm":
-                        print(f"🔊 [AUDIO] Wake word detected: '{wake}'")
-                        print("🎧 [AUDIO] Guarded command window armed")
-                        try:
-                            # Only snapshot+duck if not already ducked.
-                            # Re-arm (user says wake word twice) must NOT overwrite
-                            # the original pre-duck volume with the ducked level.
-                            if self._eli_duck_snapshot is None:
-                                self._eli_duck_snapshot = _eli_duck_output()
-                                media_player_duck_pause()
-                            else:
-                                log.debug("[AUDIO_DUCK] Already ducked — keeping existing snapshot")
-                        except Exception as e:
-                            log.debug(f"[AUDIO_DUCK][ERROR] {e}")
-                        continue
-
-                    if action == "arm_incomplete":
-                        print(f"🔄 [AUDIO] Waiting for command target...")
-                        # Keep listening — volume already ducked, window already armed
-                        continue
-
-                    if action == "guarded_without_wake":
-                        print("⚠️ [AUDIO] guarded — wake word required", flush=True)
-                        continue
-
-                    if action == "ignore_unarmed":
-                        _vprint("🫥 [AUDIO] ignored — no wake word", flush=True)
-                        # _vprint is stdout-only and off unless ELI_STT_VERBOSE=1, so a correctly heard command dropped
-                        # for lack of a wake word left no trace, indistinguishable from a dead microphone (which is how
-                        # a working mic got reported broken).
-                        _now_hint = time.monotonic()
-                        if _now_hint - getattr(self, "_last_wake_hint_ts", 0.0) >= 45.0:
-                            _pw = primary_wake_word()
-                            print(
-                                f"💡 [AUDIO] Heard speech but no wake word — say "
-                                f"{_pw!r} first (e.g. \"{_pw}, pause music\"). "
-                                f"Set ELI_DISABLE_WAKE_WORD=1 to disable.",
-                                flush=True,
-                            )
-                            self._last_wake_hint_ts = _now_hint
-                        log.debug(
-                            f"[AUDIO] dropped (no wake word; say {primary_wake_word()!r} first, "
-                            f"or enable direct chat): {transcript_display!r}"
-                        )
-                        continue
-
-                    if action == "ignore_too_short":
-                        _vprint(
-                            f"🫥 [AUDIO] ignored — too short "
-                            f"({_word_count(transcript_route)} words, need {MIN_DIRECT_CHAT_WORDS})",
-                            flush=True,
-                        )
-                        continue
-
-                    if action == "ignore":
-                        continue
-
-                    if action == "dispatch" and payload:
-                        # A command the decoder was not sure of is not carried out or chatted about: the
-                        # window opens again so it can just be said again.
-                        from eli.perception.local_whisper_stt import heard_clearly
-                        if not heard_clearly(transcript_display):
-                            print(f"❓ [AUDIO] not sure of what was said: {transcript_display!r}; say it again",
-                                  flush=True)
-                            self._voice_gate.arm()
-                            _unclear = getattr(self, "on_unclear", None)
-                            if callable(_unclear):
-                                try:
-                                    _unclear(transcript_display)
-                                except RuntimeError:      # the window it reports to has closed
-                                    log.warning("[AUDIO] the unclear-command notice had nowhere to go", exc_info=True)
-                            continue
-                        self._emit(transcript_display)
-                        continue
+                    self._act_on_transcript(transcript)
+                    continue
         finally:
             try:
                 _tts_mon_stop.set()
