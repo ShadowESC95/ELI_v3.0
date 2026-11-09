@@ -3737,6 +3737,7 @@ class Memory(metaclass=_MemoryMeta):
             cols = _memory_table_columns(conn, "memories")
             if "origin" not in cols:
                 return out
+            out.update(self._relabel_origins(conn, dry_run))
             todo = conn.execute(
                 "SELECT id, COALESCE(text, content, value, ''), COALESCE(tags, ''), source, kind, "
                 "COALESCE(timestamp, ts, 0), COALESCE(provenance_kind, ''), COALESCE(verification_status, '') "
@@ -3789,6 +3790,38 @@ class Memory(metaclass=_MemoryMeta):
             return out
         finally:
             conn.close()
+
+    def _relabel_origins(self, conn, dry_run: bool) -> Dict[str, int]:
+        """Rows labelled by an older classify_origin get today's label, once per policy.ORIGIN_VERSION.
+        A row that is no longer the user's own words loses the claims read from it as if it were,
+        and its verified-as-said tier with them."""
+        from eli.memory import claims as _claims
+        from eli.memory import policy as _policy
+        from eli.runtime.memory_provenance import resolve_write_provenance
+        if self._meta_get(conn, "origin_version") == _policy.ORIGIN_VERSION:
+            return {}
+        changed = []
+        for rid, text, tags, source, kind, origin, prov in conn.execute(
+                "SELECT id, COALESCE(text, content, ''), COALESCE(tags, ''), COALESCE(source, 'user'), "
+                "COALESCE(kind, 'memory'), origin, COALESCE(provenance_kind, '') FROM memories "
+                "WHERE origin IS NOT NULL AND origin != ''").fetchall():
+            now_origin = _policy.classify_origin(source, kind, tags, text)
+            if now_origin != origin:
+                changed.append((rid, text, tags, source, kind, origin, prov, now_origin))
+        if dry_run:
+            return {"would_relabel_origin": len(changed)}
+        withdrawn = 0
+        for rid, text, tags, source, kind, origin, prov, now_origin in changed:
+            conn.execute("UPDATE memories SET origin = ? WHERE id = ?", (now_origin, rid))
+            if origin == _policy.ORIGIN_USER:
+                withdrawn += _claims.retract_from_memory(conn, rid)
+                if prov == "user_verbatim":
+                    v, p = resolve_write_provenance(source=source, kind=kind, tags=tags, text=text)
+                    conn.execute("UPDATE memories SET verification_status = ?, provenance_kind = ? WHERE id = ?",
+                                 (v, p, rid))
+        self._meta_set(conn, "origin_version", _policy.ORIGIN_VERSION)
+        conn.commit()
+        return {"origin_relabelled": len(changed), "claims_withdrawn": withdrawn}
 
     def _meta_get(self, conn, key: str) -> Optional[str]:
         try:

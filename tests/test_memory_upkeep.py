@@ -136,6 +136,24 @@ def test_legacy_rows_get_labelled_and_their_true_date_recovered(mem):
     assert _rows(mem, "select provenance_kind from memories where source='eli_reflection'") == [("system_generated",)]
 
 
+def test_rows_an_older_rule_called_the_users_are_labelled_again(mem):
+    """An unknown source was the user's: ELI's own insight sat as user_said and its claims stood."""
+    from eli.memory import claims
+    row = mem.store_memory("I work nights at the depot, ELI noticed.", source="eli_world", kind="insight")
+    c = sqlite3.connect(mem.db_path)
+    c.execute("UPDATE memories SET origin='user_said', provenance_kind='user_verbatim', verification_status='verified' "
+              "WHERE id=?", (row["id"],))
+    claims.record_from_text(c, "I work nights", source_memory_id=row["id"])
+    c.execute("DELETE FROM memory_meta WHERE key='origin_version'")
+    c.commit()
+    c.close()
+    out = mem.backfill_policy_fields()
+    assert out["origin_relabelled"] == 1 and out["claims_withdrawn"] == 1
+    assert _rows(mem, "select origin, verification_status from memories where id=?", row["id"]) == [("eli_said", "hypothesis")]
+    assert _rows(mem, "select status from memory_claims") == [("retracted",)]
+    assert mem.backfill_policy_fields().get("origin_relabelled") is None      # once per rule version
+
+
 def test_repeated_revisions_and_inflated_corroboration_are_tidied(mem):
     from eli.cognition.stance_store import ensure_tables, record_revision
 

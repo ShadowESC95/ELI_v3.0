@@ -27,6 +27,27 @@ def test_what_the_user_said_is_the_user_s():
     assert P.classify_origin("assistant", "memory", ["user_confirmed"]) == P.ORIGIN_USER
 
 
+def test_what_eli_or_a_tool_wrote_is_never_the_user_s():
+    """An unknown source counted as the user's own words: ELI's proactive insights, its session
+    digests quoting the last message, VR body events and document text were stored as user_said."""
+    assert P.classify_origin("eli_world", "insight", ["eli_autonomy"]) == P.ORIGIN_ELI
+    assert P.classify_origin("eli_session", "session_context", ["session_digest", "auto"]) == P.ORIGIN_ELI
+    assert P.classify_origin("proactive_daemon", "briefing", ["morning_report"]) != P.ORIGIN_USER
+    assert P.classify_origin("a_source_nobody_named", "memory", []) == P.ORIGIN_ELI
+    assert P.classify_origin("document_reader", "document", ["document", "pdf"]) == P.ORIGIN_TOOL
+    assert P.classify_origin("embodiment", "event", ["embodiment", "body", "vr"]) == P.ORIGIN_TOOL
+    assert P.classify_origin("working_memory", "fact", ["working_memory", "executor", "session_pin"]) == P.ORIGIN_TOOL
+    assert P.classify_origin("working_memory", "fact", ["working_memory", "auto", "session_pin"]) == P.ORIGIN_ELI
+
+
+def test_every_way_the_user_s_words_are_stored_stays_theirs():
+    for source in ("user", "chat", "conversation", "voice_direct", "user_correction", "onboarding_interview",
+                   "runtime_identity_extractor", "runtime_relational_extractor"):
+        assert P.classify_origin(source, "memory", []) == P.ORIGIN_USER, source
+    for pin in ("identity", "identity_extract", "session_context", "relation", "auto_preference", "memory_recall"):
+        assert P.classify_origin("working_memory", "fact", ["working_memory", pin, "session_pin"]) == P.ORIGIN_USER, pin
+
+
 def test_only_the_users_words_are_evidence_about_the_user():
     assert P.counts_as_evidence_about_user(P.ORIGIN_USER)
     for o in (P.ORIGIN_ELI, P.ORIGIN_TELEMETRY, P.ORIGIN_NEWS, P.ORIGIN_TOOL):

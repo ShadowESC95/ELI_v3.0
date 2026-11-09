@@ -1,6 +1,7 @@
 """Storage policy: who produced a row, how strong it stays, when it is archived. Pure functions.
 
-Origins: user_said (never archived), eli_said, telemetry, news, tool. Strength is a forgetting
+Origins: user_said (never archived), eli_said, telemetry, news, tool. Only a known user source is
+user_said; anything else is eli_said. Strength is a forgetting
 curve reinforced by use; the half-life comes from how often this person actually uses ELI.
 """
 from __future__ import annotations
@@ -19,9 +20,25 @@ ORIGIN_NEWS = "news"
 ORIGIN_TOOL = "tool"
 
 _NEWS = {"news_synthesis", "news", "briefing", "news_reflection", "news_digest"}
-_TOOL = {"tool", "executor", "observation"}
+# What a tool read or the world layer saw: document text, the body arriving in ELI's rooms, a game's
+# result. Recorded as seen, never as the user's words.
+_TOOL = {"tool", "executor", "observation", "document_reader", "document", "embodiment", "games"}
 _ELI = {"assistant", "eli"}
 _USER_TAGS = {"user_confirmed", "user_explicit"}
+# The user's own words, by the source that stored them: a turn they typed or spoke, what they asked
+# ELI to keep ("chat" is the MEMORY_STORE effector's), a correction, their onboarding answers, and
+# what ELI pinned from their message this session. Everything else ELI wrote itself: an unknown
+# source used to count as the user's own words, so "ELI noticed a pattern" insights, session digests
+# quoting the last message and document text were stored as things the user said.
+_USER = {"user", "chat", "conversation", "voice_direct", "user_correction", "user_explicit",
+         "onboarding_interview", "identity", "identity_extract", "session_context", "relation",
+         "runtime_identity_extractor", "runtime_relational_extractor"}
+# A working-memory row carries the source of the pin it was flushed from among its tags. Besides the
+# user sources above, a pin of a recalled memory ("memory_recall", no longer flushed; the older rows
+# are the user's statements recalled) and one the turn's fact reader took from the user's message
+# ("auto_<kind>", eli/kernel/stages/memory_commit) are the user's words.
+_PIN_TAGS = {"working_memory", "session_pin"}
+_USER_PINS = {"memory_recall"}
 
 DEFAULT_HALF_LIFE_DAYS = 30.0
 MIN_HALF_LIFE_DAYS = 14.0
@@ -47,11 +64,21 @@ def classify_origin(source: str = "user", kind: str = "memory", tags=None, text:
         return ORIGIN_USER
     if src in _NEWS or knd in _NEWS or "news_reflection" in tg:
         return ORIGIN_NEWS
-    if src in _TOOL or "tool_observation" in tg:
+    if src in _TOOL or knd == "document" or "tool_observation" in tg:
         return ORIGIN_TOOL
     if is_bookkeeping_memory({"kind": knd, "source": src, "tags": ",".join(tg)}):
         return ORIGIN_TELEMETRY
-    return ORIGIN_ELI if src in _ELI else ORIGIN_USER
+    if src == "working_memory":
+        pinned_from = tg - _PIN_TAGS
+        if pinned_from & (_USER | _USER_PINS) or any(t.startswith("auto_") for t in pinned_from):
+            return ORIGIN_USER
+        return ORIGIN_TOOL if pinned_from & _TOOL else ORIGIN_ELI
+    return ORIGIN_USER if src in _USER else ORIGIN_ELI
+
+
+# Bumped when classify_origin changes, so rows labelled by an older rule are labelled again
+# (Memory.backfill_policy_fields).
+ORIGIN_VERSION = "2"
 
 
 KEY_VERSION = "2"
