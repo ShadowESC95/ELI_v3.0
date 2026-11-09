@@ -94,3 +94,22 @@ def test_a_layer_handing_the_same_run_back_to_execute_is_still_one_run(ledger, m
 def test_a_run_through_the_base_is_recorded_once(ledger):
     EX.execute("TIME", {})
     assert sorted(e["event_type"] for e in _runs_of(ledger, "TIME")) == ["executor_action", "tool_execution"]
+
+
+def test_what_each_run_said_is_on_the_turn(ledger, monkeypatch):
+    """A claim about the state a run left ("shuffle is off now") is held to what the run said; the
+    turn kept only the action names, so the check had nothing to read."""
+    from eli.kernel import request_context as rc
+    said = {"TILE_WINDOWS": {"ok": True, "action": "TILE_WINDOWS", "response": "Tiled 2 windows."},
+            "PLAY_MEDIA": {"ok": True, "action": "PLAY_MEDIA", "played": False, "content": "Opened the search only."}}
+    monkeypatch.setattr(EX, "_ELI_EXECUTOR_CANONICAL_BASE", lambda action, args=None, *a, **k: dict(said[action]))
+    facts = {}
+    token = rc.turn_facts_var.set(facts)
+    try:
+        EX.execute("TILE_WINDOWS", {})
+        EX.execute("PLAY_MEDIA", {"query": "a song"})
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert facts["action_results"] == [
+        {"action": "TILE_WINDOWS", "ok": True, "said": "Tiled 2 windows."},
+        {"action": "PLAY_MEDIA", "ok": False, "said": "Opened the search only."}]

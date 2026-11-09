@@ -5938,6 +5938,13 @@ def _action_post_dispatch(
         _turn = _rc_exec.turn_facts_var.get()
         if _turn is not None:
             _turn.setdefault("executed_actions", []).append(str(action or "").upper())
+            # What each run said, so a claim about a state it left ("shuffle is off now") is held to
+            # the result's own words (self_claims._state_on_record). `ok` is the ledger's reading of it.
+            from eli.runtime.evidence_ledger import execution_outcome as _outcome_of
+            _res = result if isinstance(result, dict) else {}
+            _turn.setdefault("action_results", []).append({
+                "action": str(action or "").upper(), "ok": _outcome_of(result) == "ok",
+                "said": str(_res.get("response") or _res.get("content") or _res.get("error") or "")})
             if isinstance(result, dict) and result.get("listed") and result.get("follow_up"):
                 _turn["listed"] = {"action": str(action or "").upper(),
                                    "items": list(result["listed"]),
