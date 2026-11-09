@@ -189,6 +189,24 @@ def _run(cmd: str, timeout: int = 30) -> dict:
         "err": (proc.stderr or "").strip(),
     }
 
+def _refused(cmd: str) -> str:
+    """Why a repair command may not run, or "": the one shell gate (eli/execution/shell_gate,
+    with ELI Full Control lifting its floor), then the user's own allowlist of programs
+    (ELI_ALLOWED_CMDS, read as it stands now), as every other command ELI runs is held to."""
+    from eli.execution.shell_gate import check_command
+    gate = check_command(cmd)
+    if gate is not None:
+        return str(gate.get("response") or gate.get("content") or gate.get("error") or "refused by the shell gate")
+    try:
+        program = (shlex.split(str(cmd)) or [""])[0]
+    except ValueError:
+        program = (str(cmd).split() or [""])[0]
+    from eli.execution.effectors._base import _allow_or_block
+    if program and not _allow_or_block(program):
+        return f"{program} is not among the commands allowed to run here (ELI_ALLOWED_CMDS)"
+    return ""
+
+
 def _needs_privileged_terminal(cmd: str) -> bool:
     """True when a command must run in a visible, elevated terminal. Unix: any
     `sudo`. Windows: choco always needs admin and winget machine-scope does too,
@@ -1326,6 +1344,12 @@ def execute_pending_plan() -> str:
     set_busy(True)
     try:
         for cmd in plan.get("commands", []):
+            # A step the shell gate refuses is reported as refused and never run.
+            why = _refused(cmd)
+            if why:
+                runs.append({"cmd": cmd, "rc": 1, "out": "", "err": f"Not run: {why}", "handoff": "refused",
+                             "blocked": True})
+                continue
             if _needs_privileged_terminal(cmd):
                 run_result = _run_in_terminal(cmd)
                 run_result["handoff"] = "terminal"
