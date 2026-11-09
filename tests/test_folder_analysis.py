@@ -187,3 +187,30 @@ def test_a_checkout_leaves_out_what_its_gitignore_ignores(tmp_path):
         pytest.skip("git is not installed")
     order = [f.relative_to(folder).as_posix() for f in fa.folder_files(folder)]
     assert "build/out.txt" not in order and "README.md" in order
+
+
+def test_a_folder_with_no_pdfs_is_counted_by_its_files_for_the_background_job(tmp_path, monkeypatch):
+    """Only PDFs were counted: a folder of code and notes was "0 PDFs", read inline while the turn
+    waited, and a mixed one was worded as PDFs. The count is of what the analysis reads."""
+    from eli.execution import executor_enhanced as ex
+    from eli.runtime import background_tasks
+    folder = _project(tmp_path)
+    for n in range(3):
+        (folder / "garden" / f"bed{n}.txt").write_text(f"Bed {n}: tomatoes.\n")
+    submitted = []
+
+    class _Jobs:
+        def submit(self, name, fn, *a, **k):
+            submitted.append(name)
+            return 7
+
+    monkeypatch.setattr(background_tasks, "get_background_tasks", lambda: _Jobs())
+    monkeypatch.delenv("ELI_FILE_ANALYSIS_BACKGROUND", raising=False)
+    monkeypatch.setenv("ELI_FILE_ANALYSIS_BG_THRESHOLD", "5")
+    out = ex._maybe_background_file_analysis("ANALYZE_PDF_FOLDER", {"folder": str(folder)})
+    assert out and out["background"] is True and out["job_id"] == 7, out
+    assert out["content"].startswith("That folder has 6 files, so I've started on them in the background")
+    assert "PDF" not in out["content"].split(", then one")[0]
+    assert submitted == ["Analyse 6 files: garden_tool"]
+    assert fa.files_to_read(folder, ordered=False)[1] is True
+    assert sorted(fa.files_to_read(folder, ordered=False)[0]) == sorted(fa.folder_files(folder))

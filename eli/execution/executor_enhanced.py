@@ -2405,18 +2405,24 @@ def _maybe_background_file_analysis(action, args):
         targets = targets or ([folder] if folder else [])
         if not targets:
             return None
-        from pathlib import Path as _PB
         exps = [os.path.expanduser(t) for t in targets]
         if len(exps) == 1 and not os.path.isdir(exps[0]):
             return None  # single file is fast enough inline
+        # Counted as the analysis will read them (folder_analysis.files_to_read): a folder's PDFs, or
+        # for a folder with none its own files. Only PDFs were counted, so a folder of code or notes
+        # was "0 PDFs" and read inline, holding up the turn.
         try:
-            _n_pdfs = sum(1 if not os.path.isdir(e) else sum(1 for _ in _PB(e).rglob("*.pdf")) for e in exps)
+            from eli.runtime.folder_analysis import files_to_read
+            _found, _of_files = files_to_read(exps, recursive=True, ordered=False)
+            _n_files = len(_found)
         except Exception:
-            _n_pdfs = 0
+            log.debug("[FILE_BG] folder count failed", exc_info=True)
+            _n_files, _of_files = 0, False
+        _kind = "files" if _of_files else "PDFs"
         _threshold = int(os.environ.get("ELI_FILE_ANALYSIS_BG_THRESHOLD", "5") or 5)
-        # Background when there are enough PDFs to be slow, OR the user asked.
+        # Background when there are enough files to be slow, OR the user asked.
         _asked = bool(args.get("_force_background"))
-        if _n_pdfs < _threshold and not _asked and len(exps) == 1:
+        if _n_files < _threshold and not _asked and len(exps) == 1:
             return None
         from eli.runtime.background_tasks import get_background_tasks
         bt = get_background_tasks()
@@ -2428,12 +2434,14 @@ def _maybe_background_file_analysis(action, args):
         _label = (f"{len(targets)} folders" if len(targets) > 1
                   else os.path.basename(targets[0].rstrip("/")) or targets[0])
         _whole = _wants_analysis(args.get("instruction"))
-        jid = bt.submit(f"Analyse {_n_pdfs} PDFs: {_label}",
+        jid = bt.submit(f"Analyse {_n_files} {_kind}: {_label}",
                         lambda: execute("ANALYZE_PDF_FOLDER", _bg_args),
                         meta={"action": "ANALYZE_PDF_FOLDER", "targets": targets, "tell": True})
         _there = f"Those {len(targets)} folders have" if len(targets) > 1 else "That folder has"
-        msg = (f"{_there} {_n_pdfs} PDFs, so I've started on them in the background as job "
-               f"#{jid}: each one goes into the document index, then one "
+        _each = ("each one is read (a document goes into the document index)" if _of_files
+                 else "each one goes into the document index")
+        msg = (f"{_there} {_n_files} {_kind}, so I've started on them in the background as job "
+               f"#{jid}: {_each}, then one "
                f"{'analysis of the whole text' if _whole else 'summary covering all of them'} is "
                f"saved as a PDF. I'll tell you when it ends; ask how it's going any time, or say “check job {jid}”.")
         return {"ok": True, "action": "ANALYZE_PDF_FOLDER", "background": True, "job_id": jid,

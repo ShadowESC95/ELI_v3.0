@@ -98,12 +98,9 @@ def _listed_by_git(root: Path) -> Optional[List[Path]]:
     return [root / name for name in done.stdout.decode("utf-8", "replace").split("\0") if name]
 
 
-def folder_files(root: Any, recursive: bool = True) -> List[Path]:
-    """The files that make up a folder with no PDFs, those that define it first: the readable files (its
-    .gitignore honoured in a checkout, hidden files and installed software left out), shallowest first,
-    then those the other files name most (an import, an include, a link), then by name."""
+def _readable_files(root: Path, recursive: bool) -> List[Path]:
+    """The readable files of a folder with no PDFs, in no particular order (see folder_files)."""
     from eli.memory.document_index import _not_documents
-    root = Path(str(root)).expanduser()
     found = _listed_by_git(root)
     if found is None:
         found = []
@@ -117,6 +114,15 @@ def folder_files(root: Any, recursive: bool = True) -> List[Path]:
             continue
         if f.is_file() and _is_text(f):
             kept.append(f)
+    return kept
+
+
+def folder_files(root: Any, recursive: bool = True) -> List[Path]:
+    """The files that make up a folder with no PDFs, those that define it first: the readable files (its
+    .gitignore honoured in a checkout, hidden files and installed software left out), shallowest first,
+    then those the other files name most (an import, an include, a link), then by name."""
+    root = Path(str(root)).expanduser()
+    kept = _readable_files(root, recursive)
     texts = {}
     for f in kept:
         try:
@@ -129,6 +135,25 @@ def folder_files(root: Any, recursive: bool = True) -> List[Path]:
         return sum(1 for other, text in texts.items() if other != f and word and word.search(text))
 
     return sorted(kept, key=lambda f: (len(f.relative_to(root).parts), -named_by(f), str(f)))
+
+
+def files_to_read(folder: Any, recursive: bool = True, ordered: bool = True) -> tuple:
+    """What analyse reads of `folder` (one path or several): (files, of_files). A file is itself; a
+    folder its PDFs; a folder with none its own files (folder_files), and then `of_files` is True.
+    `ordered=False` leaves out putting the defining files first (it reads every file), for a count."""
+    from eli.memory.document_index import document_files
+    picked = []
+    for root in _named(folder):
+        if root.is_file():
+            picked.append(([root], False))
+            continue
+        pdfs = document_files(root, (".pdf",), recursive)
+        if pdfs:
+            picked.append((pdfs, False))
+        else:
+            picked.append((folder_files(root, recursive) if ordered else _readable_files(root, recursive), True))
+    files = list(dict.fromkeys(f for found, _ in picked for f in found))
+    return files, any(read_files for _, read_files in picked)
 
 
 def _model():
@@ -236,7 +261,7 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
     """`folder` is one path or several. `whole`: read all of every document and weigh them against
     each other, not the opening of each. `progress` defaults to the background job this runs in (its
     "check job" answer and ETA)."""
-    from eli.memory.document_index import _PASSAGE_CHARS, document_files, get_document_index, indexable
+    from eli.memory.document_index import _PASSAGE_CHARS, get_document_index, indexable
     from eli.runtime.background_tasks import report as job_report
     from eli.runtime.rich_document import write_document
 
@@ -259,15 +284,7 @@ def analyse(folder: Any, *, recursive: bool = True, limit: Optional[int] = None,
             return f"{root.name}/{inside}" if len(roots) > 1 else inside
         return Path(path).name
 
-    def _files_of(root):
-        if root.is_file():
-            return [root], False
-        pdfs = document_files(root, (".pdf",), recursive)
-        return (pdfs, False) if pdfs else (folder_files(root, recursive), True)
-
-    picked = [_files_of(root) for root in roots]
-    of_files = any(read_files for _, read_files in picked)
-    files = list(dict.fromkeys(f for found, _ in picked for f in found))
+    files, of_files = files_to_read(roots, recursive)
     if limit:
         files = files[: int(limit)]
     call, room = _model()
