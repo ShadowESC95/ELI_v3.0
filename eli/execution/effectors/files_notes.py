@@ -164,19 +164,23 @@ def _eli_safe_read_file(args=None):
 
 
 def _eli_safe_write_note(args=None):
-    from pathlib import Path
     from datetime import datetime
     _args = args or {}
     txt = str(_args.get("text") or "").rstrip()
     if not txt:
         return {"ok": False, "action": "WRITE_NOTE", "content": "Missing note text."}
-    nb = Path("eli_notebook")
+    # The day's notes go where every other note is (notes.notes_folder), so "list my notes" and
+    # "search my notes" find them. A folder named relative to wherever ELI was started was shared
+    # with ELI v2, and nothing ever read it back.
+    from eli.execution.effectors.notes import notes_folder
+    nb = notes_folder()
     nb.mkdir(parents=True, exist_ok=True)
     daily = nb / f"{datetime.now().strftime('%Y-%m-%d')}.md"
     prefix = "" if not daily.exists() or not daily.read_text(encoding="utf-8", errors="ignore").strip() else "\n"
     stamp = datetime.now().strftime("%H:%M:%S")
     payload = f"{prefix}- [{stamp}] {txt}\n"
-    daily.write_text(daily.read_text(encoding="utf-8", errors="ignore") + payload if daily.exists() else payload, encoding="utf-8")
+    with daily.open("a", encoding="utf-8") as fh:
+        fh.write(payload)
     return {
         "ok": True,
         "action": "WRITE_NOTE",

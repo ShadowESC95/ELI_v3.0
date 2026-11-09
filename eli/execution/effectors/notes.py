@@ -1,18 +1,32 @@
-"""Notes effector — LIST_NOTES, NEW_NOTE, SEARCH_NOTES (config-dir note files)."""
+"""Notes effector — LIST_NOTES, NEW_NOTE, SEARCH_NOTES, and the folder WRITE_NOTE writes into.
+
+One place holds the person's notes: core.paths.notes_dir() (or ELI_NOTES_DIR when it is set), the
+folder the document index also reads, so a note written one way is found every other way.
+"""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
 
+def notes_folder() -> Path:
+    """The folder the person's notes live in: ELI_NOTES_DIR when it is set, else core.paths.notes_dir().
+    An unset variable read as Path("") is the current directory, and that was where notes went:
+    README.md and every other markdown file there was listed and searched as a note."""
+    override = (os.environ.get("ELI_NOTES_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    from eli.core.paths import notes_dir
+    return Path(notes_dir())
+
+
 def _h_list_notes(a, args):
     try:
-        from pathlib import Path as _P
-        from eli.core.paths import config_dir as _cd
-        notes_dir = _P(os.environ.get("ELI_NOTES_DIR", "")) or (_cd() / "notes")
+        notes_dir = notes_folder()
         notes_dir.mkdir(parents=True, exist_ok=True)
 
         if a == "NEW_NOTE":
@@ -22,8 +36,14 @@ def _h_list_notes(a, args):
             fname = (title[:40].replace(" ", "_").replace("/", "_") or
                      _nt.strftime("note_%Y%m%d_%H%M%S")) + ".md"
             note_path = notes_dir / fname
-            note_path.write_text(f"# {title or fname}\n\n{content}\n", encoding="utf-8")
-            msg = f"Note saved: {note_path}"
+            if note_path.exists():
+                # A note of that name is there already: what is new goes under it, nothing is lost.
+                with note_path.open("a", encoding="utf-8") as fh:
+                    fh.write(f"\n{content}\n")
+                msg = f"Added to the note {note_path}"
+            else:
+                note_path.write_text(f"# {title or fname}\n\n{content}\n", encoding="utf-8")
+                msg = f"Note saved: {note_path}"
             return {"ok": True, "action": a, "path": str(note_path), "content": msg, "response": msg}
 
         if a == "LIST_NOTES":
