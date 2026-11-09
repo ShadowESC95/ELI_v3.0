@@ -127,3 +127,77 @@ class TestSecurityGateNoSubprocess:
         with patch("subprocess.run") as sp_mock:
             _run_cmd("rm /etc/hosts")
         sp_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SHELL_EXEC: the whole line is read as the shell reads it
+# ---------------------------------------------------------------------------
+
+def _shell_exec(command: str):
+    from eli.execution.executor_enhanced import execute
+    return execute("SHELL_EXEC", {"cmd": command})
+
+
+def _ran(mock_proc_out: str = ""):
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = mock_proc_out
+    mock_proc.stderr = ""
+    return mock_proc
+
+
+@pytest.fixture
+def _no_owner_allowlist(monkeypatch):
+    """No ELI_ALLOWED_CMDS: only commands that only read may run."""
+    import eli.execution.effectors._base as _base
+    monkeypatch.delenv("ELI_ALLOWED_CMDS", raising=False)
+    monkeypatch.setattr(_base, "_get_security_manager", lambda: None)
+
+
+class TestShellExecReadsEveryCommand:
+
+    @pytest.mark.parametrize("line", [
+        "ls ~; rm -rf ~/Documents",          # a second command after ;
+        "ls && rm -rf $HOME",                # after &&
+        "echo x | rm -rf ~/x",               # in a pipe
+        "ls $(rm -rf ~/x)",                  # inside a substitution
+        "echo \"`rm -rf ~/x`\"",             # inside backticks in quotes
+        "env rm -rf ~/x",                    # behind a word that runs another command
+        "find ~ -name '*.txt' -delete",      # a read-only command told to delete
+        "cat /dev/null > ~/.bashrc",         # a file written by redirection
+        "echo hi; touch ~/probe_file",       # a command that is not one that only reads
+        "ls 'unclosed",                      # a line the shell could not read either
+    ])
+    def test_a_line_that_would_change_something_never_reaches_the_shell(self, line, _no_owner_allowlist):
+        with patch("subprocess.run") as sp_mock:
+            result = _shell_exec(line)
+        assert result.get("ok") is False and result.get("blocked") is True, result
+        sp_mock.assert_not_called()
+
+    def test_a_line_of_commands_that_only_read_runs_under_the_shell(self, _no_owner_allowlist):
+        with patch("subprocess.run", return_value=_ran("3\n")) as sp_mock:
+            result = _shell_exec("grep -rn needle ~/notes 2>/dev/null | wc -l")
+        assert result.get("ok") is True, result
+        argv = sp_mock.call_args[0][0]
+        assert argv[-1] == "grep -rn needle ~/notes 2>/dev/null | wc -l"
+
+    def test_a_command_the_owner_allowed_by_name_runs(self, monkeypatch):
+        import eli.execution.effectors._base as _base
+
+        class _Owner:
+            def is_command_allowed(self, name):
+                return name == "git"
+        monkeypatch.setattr(_base, "_get_security_manager", lambda: _Owner())
+        with patch("subprocess.run", return_value=_ran()) as sp_mock:
+            assert _shell_exec("git status && ls").get("ok") is True
+        assert sp_mock.called
+        with patch("subprocess.run") as sp_mock:
+            assert _shell_exec("git status; touch x").get("blocked") is True
+        sp_mock.assert_not_called()
+
+    def test_full_control_still_lifts_the_floor(self, monkeypatch):
+        import eli.core.full_control as _fc
+        monkeypatch.setattr(_fc, "is_full_control", lambda: True)
+        with patch("subprocess.run", return_value=_ran()) as sp_mock:
+            assert _shell_exec("echo hi; touch ~/probe_file").get("ok") is True
+        assert sp_mock.called

@@ -34,12 +34,11 @@ def _h_run_cmd(a, args):
             _cmd_str = str(cmd)
         _cmd_low = _cmd_str.lower().strip()
 
-        # ── SECURITY GATE — centralised, protected denylist ──
-        # Destructive-pattern + dangerous-executable denylist lives in
+        # ── SECURITY GATE — centralised, protected ──
         # eli/execution/shell_gate.py (a protected file apply_code_patch refuses to
-        # auto-edit), so a self-improvement patch can't quietly strip it. Behaviour
-        # is identical to the former inline gate: returns a block result unless ELI
-        # Full Control is on, in which case the hard safety floor is lifted.
+        # auto-edit) reads the line the way the shell will and checks every command in
+        # it: the denylist, files written, and whether each one only reads or is on the
+        # owner's ELI_ALLOWED_CMDS. Full Control lifts the floor.
         from eli.execution.shell_gate import check_command as _shell_gate_check
         _gate = _shell_gate_check(cmd)
         if _gate is not None:

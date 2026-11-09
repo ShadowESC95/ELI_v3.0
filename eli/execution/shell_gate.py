@@ -6,10 +6,18 @@ module instead of buried in a 14k-line file — where a self-improvement patch c
 quietly strip it. ``self_improvement.apply_code_patch`` lists this file in its
 protected-path set, so the self-modifier can never auto-edit the shell denylist.
 
-Behaviour is identical to the previous inline gate:
+What it checks:
   - ELI Full Control (the GUI toggle, default off) lifts the hard safety floor — when
-    on, the destructive-pattern block and the executable denylist both step aside.
-  - Otherwise, a destructive command pattern OR a denylisted ``argv[0]`` is refused.
+    on, everything below steps aside.
+  - Otherwise the line is read the way the shell reads it (``read_line``): every command
+    in it — after ``;`` ``&&`` ``||`` ``|`` ``&`` or a newline, inside ``( )``, and inside
+    ``$( )``, backticks, ``<( )`` and ``>( )`` — and every file a ``>`` writes. The line is
+    refused when a destructive pattern matches, when any of its commands is a denylisted
+    executable, when it writes a file, or when any of its commands is not one that only
+    reads (``only_reads``) and the owner has not allowed it by name in ELI_ALLOWED_CMDS
+    (``eli.runtime.security``, the same fail-closed allowlist every other effector's
+    subprocess goes through). Checking only the first word let ``ls; rm -rf ~/x`` and
+    ``find ~ -delete`` through.
 
 100% local, deterministic, never raises. ``check_command`` returns a block-result
 dict (the caller adds ``action``) when the command must be refused, else ``None``.
@@ -18,8 +26,7 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 # ── Destructive / dangerous command patterns — block outright ──
 _BLOCKED_PATTERNS = [
@@ -82,6 +89,273 @@ _DENIED_EXECUTABLES = {
     "osascript",                                 # scripting engine
 }
 
+# ── Commands that only read, each with the arguments that would make it change something ──
+# The one list of what runs without Full Control or the owner's allowlist (shell_followup and
+# the router's "run that command" take theirs from here). A command not named here changes
+# something, or might.
+_READ_ONLY_COMMANDS: Dict[str, frozenset] = {
+    name: frozenset() for name in (
+        "cat", "head", "tail", "grep", "wc", "ls", "pwd", "stat", "echo", "uname", "uptime",
+        "whoami", "id", "df", "du", "free", "diff", "which", "file", "nproc", "lscpu", "lsblk",
+        "ps", "basename", "dirname", "realpath", "readlink", "test", "[", "true", "false", "printf",
+        # Windows' own read-only commands
+        "dir", "type", "where", "findstr", "ver", "systeminfo", "tasklist",
+    )
+}
+_READ_ONLY_COMMANDS.update({
+    "date": frozenset({"-s", "--set"}),
+    "find": frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir",
+                       "-fprint", "-fprint0", "-fprintf", "-fls"}),
+    "hostname": frozenset({"-F", "--file", "-b", "--boot"}),
+    "timedatectl": frozenset(),
+})
+# Commands that read when given no operand (or only these) and set what they are given otherwise:
+# ``hostname box`` renames the machine, ``timedatectl set-time`` sets the clock.
+_READ_ONLY_OPERANDS: Dict[str, frozenset] = {
+    "hostname": frozenset(),
+    "timedatectl": frozenset({"status", "show", "list-timezones", "timesync-status", "show-timesync"}),
+}
+
+# Words that run the rest of their command as a command of its own (``env rm ...``, ``sudo rm ...``).
+_RUNS_ANOTHER = frozenset({
+    "env", "sudo", "doas", "su", "runuser", "pkexec", "nohup", "nice", "ionice", "time", "timeout",
+    "command", "builtin", "exec", "eval", "xargs", "stdbuf", "setsid", "chrt", "taskset", "watch",
+    "strace", "ltrace", "unbuffer", "flock", "chroot", "start", "call",
+})
+
+# Reserved words that open or close a compound command; the command is what follows them.
+_SHELL_KEYWORDS = frozenset({"!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done",
+                             "while", "until", "esac"})
+# A loop or case header runs nothing itself (its words are a variable and a list).
+_SHELL_HEADERS = frozenset({"for", "select", "case", "function"})
+
+# Where a redirection may send output without writing anything.
+_DISCARD_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "nul"})
+
+# Stands in for what a substitution or expansion produces: no command is named by it.
+_UNKNOWN = "\x00"
+
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+
+
+def read_line(line: str, posix: Optional[bool] = None) -> Optional[Tuple[List[List[str]], List[str]]]:
+    """The commands a shell line runs, each as its words, and the files it writes by redirection.
+
+    Commands joined by ``;`` ``&`` ``&&`` ``||`` ``|`` or a newline, inside ``( )`` and inside
+    ``$( )``, backticks, ``<( )`` and ``>( )``, each come out as a command of their own; a
+    substitution inside a word leaves ``_UNKNOWN`` in its place. Leading ``NAME=value``
+    assignments and compound-command keywords are not the command. None when the line cannot
+    be read: an open quote or an unclosed bracket.
+
+    ``posix`` is the shell's own quoting (default: this OS's). cmd.exe has no single quotes, its
+    backslash is a path separator, and its escape is ``^``.
+    """
+    posix = (os.name != "nt") if posix is None else bool(posix)
+    commands: List[List[str]] = []
+    writes: List[str] = []
+    s = str(line or "")
+    n = len(s)
+
+    def read(i: int, closer: Optional[str]) -> Optional[int]:
+        words: List[str] = []
+        word: Optional[List[str]] = None
+        redirect: List[Optional[str]] = [None]   # "write" | "read" for the word that follows
+
+        def end_word() -> None:
+            nonlocal word
+            if word is None:
+                return
+            w = "".join(word)
+            word = None
+            kind, redirect[0] = redirect[0], None
+            if kind == "write":
+                writes.append(w)
+            elif kind is None:
+                words.append(w)
+
+        def end_command() -> None:
+            end_word()
+            argv = list(words)
+            words.clear()
+            while argv and argv[0] in _SHELL_KEYWORDS:
+                argv.pop(0)
+            if argv and argv[0] in _SHELL_HEADERS:
+                return
+            while argv and _ASSIGNMENT_RE.match(argv[0]):
+                argv.pop(0)
+            if argv:
+                commands.append(argv)
+
+        def add(text: str) -> None:
+            nonlocal word
+            if word is None:
+                word = []
+            word.append(text)
+
+        def sub(j: int, close: str) -> Optional[int]:
+            # a substitution: its commands are commands of the line; the word gets _UNKNOWN
+            k = read(j, close)
+            if k is None:
+                return None
+            add(_UNKNOWN)
+            return k
+
+        while i < n:
+            c = s[i]
+            if closer is not None and c == closer:
+                end_command()
+                return i + 1
+            if c in " \t":
+                end_word()
+                i += 1
+            elif c == "#" and word is None:
+                while i < n and s[i] != "\n":
+                    i += 1
+            elif c == ("\\" if posix else "^"):
+                if i + 1 < n and s[i + 1] != "\n":
+                    add(s[i + 1])
+                i += 2
+            elif c == "'" and posix:
+                k = s.find("'", i + 1)
+                if k < 0:
+                    return None
+                add(s[i + 1:k])
+                i = k + 1
+            elif c == '"':
+                i += 1
+                add("")
+                while True:
+                    if i >= n:
+                        return None
+                    d = s[i]
+                    if d == '"':
+                        i += 1
+                        break
+                    if d == "\\" and posix and i + 1 < n:
+                        add(s[i + 1])
+                        i += 2
+                    elif d == "$" and i + 1 < n and s[i + 1] == "(":
+                        k = sub(i + 2, ")")
+                        if k is None:
+                            return None
+                        i = k
+                    elif d == "`":
+                        k = sub(i + 1, "`")
+                        if k is None:
+                            return None
+                        i = k
+                    else:
+                        add(d)
+                        i += 1
+            elif c == "`":
+                k = sub(i + 1, "`")
+                if k is None:
+                    return None
+                i = k
+            elif c == "$" and i + 1 < n and s[i + 1] == "(":
+                k = sub(i + 2, ")")
+                if k is None:
+                    return None
+                i = k
+            elif c == "$":
+                add(_UNKNOWN)   # $NAME / ${NAME}: what it expands to is not known here
+                add(c)
+                i += 1
+            elif c in "<>" and i + 1 < n and s[i + 1] == "(":
+                k = sub(i + 2, ")")
+                if k is None:
+                    return None
+                i = k
+            elif c == "(":
+                end_command()
+                k = read(i + 1, ")")
+                if k is None:
+                    return None
+                i = k
+            elif c == ")":
+                end_command()       # a stray one (a case pattern): the command before it ends
+                i += 1
+            elif c in ";\n|":
+                end_command()
+                i += 1
+            elif c == "&" and not (i + 1 < n and s[i + 1] == ">"):
+                end_command()
+                i += 1
+            elif c in "<>&":
+                # an fd number right before the operator (2>) is not a word of the command
+                if word is not None and "".join(word).isdigit():
+                    word = None
+                end_word()
+                op = c
+                i += 1
+                while i < n and s[i] in "<>&|":
+                    op += s[i]
+                    i += 1
+                if op.endswith("&") or (op.startswith(">&") or op.startswith("<&")):
+                    # >&2, 2>&1, <&0: a copy of a descriptor, no file; >&file is a write
+                    j = i
+                    while j < n and s[j] in " \t":
+                        j += 1
+                    if j < n and (s[j].isdigit() or s[j] == "-"):
+                        while j < n and (s[j].isdigit() or s[j] == "-"):
+                            j += 1
+                        i = j
+                        continue
+                if op in ("<", "<<", "<<<", "<<-"):
+                    redirect[0] = "read"
+                else:
+                    redirect[0] = "write"
+            else:
+                add(c)
+                i += 1
+        if closer is not None:
+            return None
+        end_command()
+        return i
+
+    if read(0, None) is None:
+        return None
+    return commands, writes
+
+
+def _command_name(word: str) -> str:
+    """The bare name a command word runs: no directory, no Windows suffix, lower case."""
+    base = re.split(r"[\\/]", str(word or ""))[-1].lower()
+    return re.sub(r"\.(?:exe|com|bat|cmd)$", "", base)
+
+
+def only_reads(argv: Sequence[str]) -> bool:
+    """True when this one command, as written, only reads: it is a read-only command and none of
+    its arguments is one that makes it change something."""
+    if not argv:
+        return False
+    name = _command_name(argv[0])
+    acting = _READ_ONLY_COMMANDS.get(name)
+    if acting is None or _UNKNOWN in argv[0]:
+        return False
+    rest = [str(w) for w in argv[1:]]
+    for w in rest:
+        if any(w == flag or w.startswith(flag + "=") for flag in acting):
+            return False
+    if name in _READ_ONLY_OPERANDS:
+        reads = _READ_ONLY_OPERANDS[name]
+        if any(not w.startswith("-") and w not in reads for w in rest):
+            return False
+    return True
+
+
+def _owner_allows(argv0: str) -> bool:
+    """The owner's own allowlist (ELI_ALLOWED_CMDS) through the security manager every
+    effector's subprocess already answers to; fail-closed when neither can be read."""
+    try:
+        from eli.execution.effectors._base import _get_security_manager, _shell_command_allowed_fallback
+        sm = _get_security_manager()
+        if sm is not None:
+            return bool(sm.is_command_allowed(argv0))
+        return bool(_shell_command_allowed_fallback(argv0))
+    except Exception:
+        return False
+
 
 def _full_control() -> bool:
     try:
@@ -98,10 +372,12 @@ def _blocked_result(msg: str) -> Dict[str, Any]:
 
 def check_command(cmd: Union[str, Sequence[Any]],
                   full_control: Optional[bool] = None) -> Optional[Dict[str, Any]]:
-    """Evaluate a shell command against the safety denylist.
+    """Evaluate a command line against the safety floor.
 
     Returns a block-result dict (caller should set ``["action"]``) when the command
     must be refused, otherwise ``None``. ``full_control=None`` queries the live toggle.
+    A list is one command's own argv (no shell reads it); a string is read as the shell
+    reads it, every command in it checked.
     """
     # When cmd is a list, join to a string for pattern matching so that
     # ["bash", "-c", "..."] cannot bypass regex checks via str(list) repr.
@@ -119,18 +395,37 @@ def check_command(cmd: Union[str, Sequence[Any]],
         if re.search(pat, cmd_low):
             return _blocked_result(f"Blocked dangerous command: {cmd_str[:60]}")
 
-    try:
-        if isinstance(cmd, (list, tuple)):
-            argv0 = str(cmd[0]) if cmd else ""
-        else:
-            argv0 = (shlex.split(cmd_str, posix=os.name != "nt") or [""])[0].strip('"')
-        # either separator and no Windows suffix: C:\\Windows\\System32\\cmd.exe is cmd
-        argv0_base = re.split(r"[\\\\/]", argv0)[-1].lower()
-        argv0_base = re.sub(r"\.(?:exe|com|bat|cmd)$", "", argv0_base)
-    except Exception:
-        argv0_base = ""
-    if argv0_base in _DENIED_EXECUTABLES:
+    if isinstance(cmd, (list, tuple)):
+        argv = [str(x) for x in cmd if str(x).strip() != ""]
+        commands, writes = ([argv] if argv else []), []
+    else:
+        read = read_line(cmd_str)
+        if read is None:
+            return _blocked_result(
+                f"Not run: the line could not be read the way the shell reads it "
+                f"(an open quote or bracket): {cmd_str[:60]}")
+        commands, writes = read
+
+    for argv in commands:
+        name = _command_name(argv[0])
+        named = [name] + ([_command_name(w) for w in argv[1:]] if name in _RUNS_ANOTHER else [])
+        denied = next((w for w in named if w in _DENIED_EXECUTABLES), "")
+        if denied:
+            return _blocked_result(
+                f"Execution of '{denied}' is not permitted via RUN_CMD for security reasons.")
+
+    for target in writes:
+        if target.strip().lower() not in _DISCARD_TARGETS:
+            return _blocked_result(
+                f"Not run: it writes to {target[:60]} and Full Control is off, so commands "
+                f"may not write files.")
+
+    for argv in commands:
+        if only_reads(argv) or (_UNKNOWN not in argv[0] and _owner_allows(argv[0])):
+            continue
+        name = _command_name(argv[0]).replace(_UNKNOWN, "") or argv[0].replace(_UNKNOWN, "$")
         return _blocked_result(
-            f"Execution of '{argv0_base}' is not permitted via RUN_CMD for security reasons.")
+            f"Not run: '{name}' is not a command that only reads, Full Control is off and "
+            f"ELI_ALLOWED_CMDS does not list it.")
 
     return None
