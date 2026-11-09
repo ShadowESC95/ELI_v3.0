@@ -96,8 +96,9 @@ def _link_stance_to_claim(cur: sqlite3.Cursor, topic_n: str, position: str,
     """
     try:
         from eli.memory import claims as _claims
+        # ELI's own position: under its own subject, never among what is known about the user
         claim_id = _claims.record(
-            cur, topic_n, position, single_valued=True, origin=provenance, now=now)
+            cur, topic_n, position, subject=_claims.SUBJECT_ELI, single_valued=True, origin=provenance, now=now)
         if claim_id is not None:
             cur.execute(
                 "UPDATE eli_stances SET claim_id = ? "

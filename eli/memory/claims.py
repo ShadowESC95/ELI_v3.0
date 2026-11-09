@@ -43,6 +43,12 @@ CREATE INDEX IF NOT EXISTS idx_claims_rel ON memory_claims(subject, relation, st
 
 _KEY = re.compile(r"\s+")
 
+# Who a claim is about. SUBJECT_USER is the owner of this install; ELI's own positions (its stances,
+# eli/cognition/stance_store) are SUBJECT_ELI and never stand among the user's facts. They used to be
+# recorded under the default subject and came back as things known about the user.
+SUBJECT_USER = "user"
+SUBJECT_ELI = "eli"
+
 # What the user is doing at the moment. These change often, so a newer value replaces the old one
 # whoever reported it, instead of the two standing side by side as a dispute.
 CHANGES_OFTEN = frozenset({"watching", "playing", "reading", "listening_to"})
@@ -179,6 +185,24 @@ def retire(conn, relation: str, *, subject: str = "user", at: Optional[float] = 
     at = float(at if at is not None else now)
     cur = conn.execute("UPDATE memory_claims SET status = 'superseded', valid_to = ?, superseded_at = ? "
                        "WHERE subject = ? AND relation = ? AND status = 'current'", (at, now, subject, relation))
+    return int(cur.rowcount or 0)
+
+
+def move_stance_claims(conn) -> int:
+    """Stances recorded before they had their own subject: the claims eli_stances points at, whose
+    relation and value are the stance's topic and position, become ELI's. Returns how many moved."""
+    ensure_schema(conn)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(eli_stances)")}
+    except Exception:
+        return 0
+    if "claim_id" not in cols:
+        return 0
+    cur = conn.execute(
+        "UPDATE memory_claims SET subject = ? WHERE subject = ? AND id IN ("
+        "  SELECT s.claim_id FROM eli_stances s WHERE s.claim_id IS NOT NULL"
+        "   AND lower(s.topic) = lower(memory_claims.relation) AND s.position = memory_claims.value)",
+        (SUBJECT_ELI, SUBJECT_USER))
     return int(cur.rowcount or 0)
 
 

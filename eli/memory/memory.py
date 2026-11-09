@@ -3607,7 +3607,9 @@ class Memory(metaclass=_MemoryMeta):
 
     def claims_disputed(self):
         from eli.memory import claims as _c
-        return self._claims_query(lambda conn: _c._rows(conn, f"SELECT {_c._COLS} FROM memory_claims WHERE status = 'disputed' ORDER BY id", ()))
+        return self._claims_query(lambda conn: _c._rows(
+            conn, f"SELECT {_c._COLS} FROM memory_claims WHERE subject = ? AND status = 'disputed' ORDER BY id",
+            (_c.SUBJECT_USER,)))
 
     def claim_conflicts(self):
         from eli.memory import claims as _c
@@ -3847,6 +3849,15 @@ class Memory(metaclass=_MemoryMeta):
                     conn.execute("DELETE FROM runtime_events WHERE source = 'memory.log_learning_event'")
                     conn.commit()
             from eli.cognition.stance_store import compact_revisions
+            if _eli_table_exists(conn, "eli_stances") and _eli_table_exists(conn, "memory_claims"):
+                from eli.memory import claims as _claims
+                if dry_run:
+                    out["stance_claims_moved"] = conn.execute(
+                        "SELECT COUNT(DISTINCT c.id) FROM memory_claims c JOIN eli_stances s ON s.claim_id = c.id "
+                        "WHERE c.subject = ? AND lower(s.topic) = lower(c.relation) AND s.position = c.value",
+                        (_claims.SUBJECT_USER,)).fetchone()[0]
+                else:
+                    out["stance_claims_moved"] = _claims.move_stance_claims(conn)
             if _eli_table_exists(conn, "belief_revisions"):
                 dup = conn.execute("SELECT COUNT(*) - COUNT(DISTINCT kind || '|' || topic || '|' || old_value || '|' || new_value) "
                                    "FROM belief_revisions").fetchone()[0]

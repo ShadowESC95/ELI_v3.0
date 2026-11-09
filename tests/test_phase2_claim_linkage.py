@@ -101,10 +101,12 @@ def test_a_new_stance_gets_a_real_linked_claim(cur):
     ).fetchone()
     assert row and row[0] is not None
 
-    current = claims.current(cur)
+    current = claims.current(cur, subject=claims.SUBJECT_ELI)
     assert current[0]["relation"] == "machine consciousness"
     assert current[0]["value"] == "I don't have subjective experience"
     assert current[0]["id"] == row[0]
+    # ELI's own position is never among what is known about the user
+    assert claims.current(cur) == []
 
 
 def test_reinforcing_the_same_stance_keeps_the_same_claim_id(cur):
@@ -119,7 +121,8 @@ def test_reinforcing_the_same_stance_keeps_the_same_claim_id(cur):
     ).fetchone()[0]
 
     assert first == second
-    assert len(claims.current(cur)) == 1
+    assert len(claims.current(cur, subject=claims.SUBJECT_ELI)) == 1
+    assert claims.current(cur) == []
 
 
 def test_revising_a_stance_supersedes_the_old_claim_and_links_the_new_one(cur):
@@ -130,13 +133,35 @@ def test_revising_a_stance_supersedes_the_old_claim_and_links_the_new_one(cur):
 
     revise_stance(cur, "machine consciousness", "I am conscious", reason="cornered in argument")
 
-    history = claims.history(cur, "machine consciousness")
+    history = claims.history(cur, "machine consciousness", subject=claims.SUBJECT_ELI)
     assert [h["status"] for h in history] == ["superseded", "current"]
     assert history[0]["id"] == old_claim_id
+    assert claims.history(cur, "machine consciousness") == []
 
     new_row = cur.execute(
         "SELECT claim_id FROM eli_stances WHERE topic = 'machine consciousness' "
         "AND superseded_by IS NULL"
     ).fetchone()
     assert new_row[0] != old_claim_id
-    assert new_row[0] == claims.current(cur)[0]["id"]
+    assert new_row[0] == claims.current(cur, subject=claims.SUBJECT_ELI)[0]["id"]
+
+
+def test_a_stance_cannot_supersede_the_user_s_own_claim(cur):
+    """Under one subject a stance on a topic that was also one of the user's relations disputed it."""
+    claims.record(cur, "favourite season", "autumn", origin="user_said")
+    record_stance(cur, "favourite season", "I have no seasons, I run indoors")
+    assert [(c["value"], c["contested"]) for c in claims.current(cur)] == [("autumn", 0)]
+    assert claims.open_conflicts(cur) == []
+
+
+def test_stances_recorded_as_the_user_s_move_to_eli(cur):
+    """Rows written before stances had their own subject are moved by the upkeep."""
+    cid = claims.record(cur, "machine consciousness", "I am not conscious", origin="inferred")
+    cur.execute("INSERT INTO eli_stances (topic, position, provenance, corroboration, confidence, first_held, "
+                "last_held, claim_id) VALUES ('machine consciousness', 'I am not conscious', 'inferred', 1, 0.8, 0, 0, ?)",
+                (cid,))
+    claims.record(cur, "employer", "Acme Corp", origin="user_said")
+    assert claims.move_stance_claims(cur) == 1
+    assert [c["relation"] for c in claims.current(cur)] == ["employer"]
+    assert [c["id"] for c in claims.current(cur, subject=claims.SUBJECT_ELI)] == [cid]
+    assert claims.move_stance_claims(cur) == 0
