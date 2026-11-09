@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextvars
 import hashlib
 import shlex
 import sqlite3
@@ -2219,7 +2220,7 @@ def _record_tool_execution(action: str, args: Any, result: Any) -> None:
         if outcome in ("failed", "no_effect"):
             try:
                 from eli.runtime.action_outcomes import cause_of
-                cause = cause_of(result, action)
+                cause = cause_of(result, action, args if isinstance(args, dict) else None)
             except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                 log.debug("cause not classified", exc_info=True)
     record_event(
@@ -5326,7 +5327,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 mark_step(seq_id, i, ok, parts[i])
         finish(seq_id, all_ok)
         msg = ("\n" if (args or {}).get("results_only") else "\n\n").join(parts)
-        return {"ok": all_ok, "action": a, "content": msg, "response": msg,
+        return {"ok": all_ok, "action": a, "content": msg, "response": msg, "of_steps": True,
                 "meta": {"commands": cmds, "resumed": seq["resumed"], "dependencies": deps}}
 
     if a == "SET_COMMUNICATION_STYLE":
@@ -5854,7 +5855,7 @@ _DOCUMENT_PATH_KEYS = ("path", "file", "output", "output_path", "saved_to", "pdf
 _REMEDIATION_ACTIONS = frozenset(("CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION"))
 
 
-def _outcome_facts(action: str, result: "Dict[str, Any]") -> "Dict[str, Any]":
+def _outcome_facts(action: str, result: "Dict[str, Any]", args: "Optional[Dict[str, Any]]" = None) -> "Dict[str, Any]":
     """The cause of a failed run and whether a run was checked, for the record it is learned from."""
     if not isinstance(result, dict):
         return {}
@@ -5864,7 +5865,7 @@ def _outcome_facts(action: str, result: "Dict[str, Any]") -> "Dict[str, Any]":
     if not result.get("ok", True) or result.get("effect") is False or result.get("played") is False:
         try:
             from eli.runtime.action_outcomes import cause_of
-            out["cause"] = cause_of(result, action)
+            out["cause"] = cause_of(result, action, args)
         except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
             log.debug("cause not classified", exc_info=True)
     return out
@@ -5899,6 +5900,19 @@ def _checked_result(action: str, args: "Optional[Dict[str, Any]]", result: "Dict
         result["error"] = f"did not take effect: {how}"
         result["content"] = result["response"] = f"⚡ That did not take effect: {how}."
     return result
+
+
+def _finish_run(action: str, args: "Optional[Dict[str, Any]]", result: Any, started: float) -> Any:
+    """What every run goes through once it has come back, whichever layer answered it: checked
+    against the world where that can be seen, recorded in the evidence ledger, and post-dispatched
+    (its executor_action row, the turn's record of what ran, and what is learned of a failure)."""
+    result = _normalize_result(result) if not isinstance(result, dict) else result
+    result = _checked_result(action, args, result, started)
+    try:
+        _record_tool_execution(action, args, result)
+    except Exception:
+        log.debug("tool execution not recorded", exc_info=True)
+    return _action_post_dispatch(action, args, result)
 
 
 def _action_post_dispatch(
@@ -5937,7 +5951,7 @@ def _action_post_dispatch(
             ),
             content=str((result or {}).get("content") or (result or {}).get("response") or (result or {}).get("error") or ""),
             payload={"args": args or {}, "result": result or {},
-                     **(_outcome_facts(action, result))},
+                     **(_outcome_facts(action, result, args))},
             severity="error" if execution_outcome(result) == "failed" else "info",
             outcome=execution_outcome(result),
             reusable=True,
@@ -6081,19 +6095,24 @@ def _action_post_dispatch(
         repeat_hint = ""
 
     # What ELI has learned of such failures (runtime/action_outcomes): the cause, how this has fared
-    # here, and what worked instead. An alternative proven on this very target, safe to run unasked and
-    # likelier than another go is tried now, and the reply says so; otherwise the reply says what has
-    # worked. Either way the failure is a thought, in the Debug Basement, with its reasons.
+    # here, and what worked instead. Only an action that does the same deed for this same thing by
+    # other means, proven on it, writing and destroying nothing and likelier than another go, is tried
+    # now, built from this request's own arguments; the reply keeps what the failed run itself said and
+    # adds what was tried and what came of it. Otherwise the reply says what has worked. Either way the
+    # failure is a thought, in the Debug Basement, with its reasons. A run made of steps (MULTI_COMMAND)
+    # failed in its steps, and each step's own note already says so: it adds none of its own.
     advice_words = ""
-    if isinstance(result, dict) and not bool(result.get("ok", True)) and str(action or "").upper() not in _remediation_actions:
+    if (isinstance(result, dict) and not bool(result.get("ok", True)) and str(action or "").upper() not in _remediation_actions
+            and not result.get("of_steps")):
         try:
             from eli.runtime import action_outcomes as _ao
+            from eli.runtime.evidence_ledger import execution_outcome as _outcome
             _ao.forget()
             _advice = _ao.advice(str(action or "").upper(), args or {}, result)
-            advice_words = _ao.said(_advice)
             _attempt = _advice.get("attempt")
             _instead = execute(_attempt["action"], _attempt["args"]) if _attempt else None
-            _worked = isinstance(_instead, dict) and bool(_instead.get("ok"))
+            _worked = isinstance(_instead, dict) and _outcome(_instead) == "ok"
+            advice_words = _ao.said(_advice, tried=_instead)
             try:
                 from eli.cognition.thoughts import record as _thought
                 from eli.kernel import request_context as _rc_t
@@ -6110,15 +6129,17 @@ def _action_post_dispatch(
                          ref=f"action:{_rid}:{str(action or '').upper()}", user_id=str(_rc_t.user_id_var.get() or ""))
             except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                 log.debug("action thought not kept", exc_info=True)
-            if _worked:
-                _instead = dict(_instead)
-                _instead["instead_of"] = {"action": str(action or "").upper(), "error": str(result.get("error") or ""),
-                                          "cause": _advice["cause"]}
-                _note = (f"{_ao.plain(action)} did not work ({_advice['cause_words']}); "
-                         f"{_ao.plain(_attempt['action'])} worked instead. ")
-                _instead["response"] = _note + str(_instead.get("response") or _instead.get("content") or "")
-                _instead["content"] = _instead["response"]
-                return _instead
+            if isinstance(_instead, dict):
+                _own = str(result.get("response") or result.get("content") or result.get("error") or "").strip()
+                _theirs = str(_instead.get("response") or _instead.get("content") or _instead.get("error") or "").strip()
+                if _worked:
+                    _instead = dict(_instead)
+                    _instead["instead_of"] = {"action": str(action or "").upper(), "error": str(result.get("error") or ""),
+                                              "cause": _advice["cause"], "response": _own}
+                    _instead["response"] = _instead["content"] = "\n\n".join(t for t in (_own, advice_words, _theirs) if t)
+                    return _instead
+                result["alternative"] = {"action": _attempt["action"], "ok": False, "response": _theirs}
+                advice_words = "\n\n".join(t for t in (advice_words, _theirs) if t)
         except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
             log.debug("learned alternatives skipped", exc_info=True)
 
@@ -6262,10 +6283,12 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     action = action if isinstance(action, str) else ""
     a = action.upper().strip()
 
-    # Pre-dispatch action overrides (formerly applied via monkey-patch wrappers).
+    # Pre-dispatch action overrides (formerly applied via monkey-patch wrappers). Every run, whichever
+    # layer answers it, is checked, recorded and post-dispatched once, by the outermost execute
+    # (_eli_recording_execute at the end of this module).
     _override = _action_pre_dispatch(action, args, **kwargs)
     if _override is not None:
-        return _action_post_dispatch(action, args, _override)
+        return _override
     if a == 'USER_IDENTITY_SUMMARY':
         _question = str((args or {}).get("question") or (args or {}).get("query") or "who am i")
         try:
@@ -6538,14 +6561,8 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     if isinstance(args, dict):
         merged.update(args)
     merged.update(kwargs or {})
-    _started = time.time()
     res = _execute_impl(action=str(a), args=merged)
     __eli_ret = _normalize_result(res)
-    __eli_ret = _checked_result(str(a), merged, __eli_ret, _started)
-    try:
-        _record_tool_execution(str(a), merged, __eli_ret)
-    except Exception:
-        log.debug("tool execution not recorded", exc_info=True)
     # Normalize LIST_CAPABILITIES top-level content/response (pipeline expects table here)
     try:
         if isinstance(__eli_ret, dict) and __eli_ret.get('action') == 'LIST_CAPABILITIES':
@@ -6557,8 +6574,7 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
                     __eli_ret['response'] = table
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-    # Post-dispatch failure capture (formerly in GROUNDED EXECUTOR WRAPPER).
-    return _action_post_dispatch(action, args, __eli_ret)
+    return __eli_ret
 
 
 # Alias for compatibility with tests
@@ -9810,3 +9826,53 @@ try:
     _load_effectors_at_import()
 except Exception:
     log.debug("[EXECUTOR] effector modules failed to load", exc_info=True)
+
+
+# The one place a run is finished (_finish_run): the outermost execute. The layers below it (the
+# middleware table, the generated-script guard, the personal-memory, second-layer, reasoning-mode,
+# portable, voice, schema and media wrappers, and the base execute with its inline status answers)
+# each return their result here, so a run answered by any of them is checked, recorded and
+# post-dispatched once. A layer that hands the same run back to execute() is part of that run.
+_ELI_RUNS_UNDER_WAY: "contextvars.ContextVar[frozenset]" = contextvars.ContextVar(
+    "eli_executor_runs_under_way", default=frozenset())
+
+
+def _eli_run_key(action: Any, args: Any, kwargs: Dict[str, Any]) -> "Tuple[str, Dict[str, Any], str]":
+    if isinstance(action, dict):
+        args = action.get("args", args) or args
+        action = action.get("action", "")
+    name = (action if isinstance(action, str) else "").upper().strip()
+    merged: Dict[str, Any] = dict(args) if isinstance(args, dict) else {}
+    merged.update(kwargs or {})
+    try:
+        sig = json.dumps(merged, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        sig = repr(sorted(merged.items(), key=lambda kv: str(kv[0])))
+    return name, merged, f"{name}\x00{sig}"
+
+
+def _eli_install_recording(inner):
+    if getattr(inner, "_eli_records_runs", False):
+        return inner
+
+    def execute(action, args=None, *pargs, **kwargs):  # type: ignore[no-redef]
+        name, merged, key = _eli_run_key(action, args, kwargs)
+        under_way = _ELI_RUNS_UNDER_WAY.get()
+        if key in under_way:
+            return inner(action, args, *pargs, **kwargs)
+        token = _ELI_RUNS_UNDER_WAY.set(under_way | {key})
+        started = time.time()
+        try:
+            out = inner(action, args, *pargs, **kwargs)
+        finally:
+            _ELI_RUNS_UNDER_WAY.reset(token)
+        return _finish_run(name, merged, out, started)
+
+    execute._eli_records_runs = True  # type: ignore[attr-defined]
+    execute.__wrapped__ = inner  # type: ignore[attr-defined]
+    return execute
+
+
+execute = _eli_install_recording(execute)
+execute_action = execute
+_eli_recording_execute = execute

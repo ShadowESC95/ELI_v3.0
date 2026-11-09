@@ -249,14 +249,50 @@ def test_a_proven_alternative_is_tried_when_an_action_fails_and_the_failure_is_a
     ran = []
     monkeypatch.setattr(ex, "execute", lambda action, args=None, **k: ran.append((action, args)) or
                         {"ok": True, "action": action, "response": "Opened URL: https://open.spotify.com"})
-    out = ex._action_post_dispatch("OPEN_APP", {"name": "spotify"}, {"ok": False, "error": "not found"})
+    out = ex._action_post_dispatch("OPEN_APP", {"name": "spotify"}, {"ok": False, "error": "not found",
+                                                                     "response": "Spotify did not start."})
     assert ran == [("OPEN_URL", {"url": "https://open.spotify.com", "_alternative_of": "OPEN_APP"})]
-    assert out["ok"] and out["instead_of"]["action"] == "OPEN_APP" and out["response"].startswith("open app did not work")
+    # what the failed run said stays first; then what was tried, and what came of it
+    assert out["ok"] and out["instead_of"]["action"] == "OPEN_APP" and out["response"].startswith("Spotify did not start.")
+    assert "open url worked instead before, so I tried that" in out["response"]
+    assert out["response"].endswith("Opened URL: https://open.spotify.com")
     kept = th.recent(5, kinds=["action"])[0]
     assert kept["decision"] == "tried" and kept["room"] == "debug_basement" and kept["chance"] == pytest.approx(0.2)
     advice["attempt"] = None
     out = ex._action_post_dispatch("OPEN_APP", {"name": "spotify"}, {"ok": False, "error": "not found", "response": "⚡ not found"})
     assert out["ok"] is False and len(ran) == 1 and th.recent(5, kinds=["action"])[0]["decision"] == "advised"
+
+
+def test_a_failed_play_after_paused_music_runs_nothing_and_keeps_what_the_player_said(db, monkeypatch):
+    # the real post-dispatch on a real ledger: songs asked of Spotify failed and the music was paused
+    # after each; the next failed song must not pause it again, nor lose what the player said
+    from eli.execution import executor_enhanced as ex
+    from eli.runtime import action_outcomes as ao
+    from eli.runtime import grounded_remediation as gr
+    from eli.kernel import request_context as rc
+    now = time.time()
+    for k in range(3):
+        for action, args, ok in (("PLAY_MEDIA", {"target": "spotify", "query": f"song {k}"}, False),
+                                 ("STOP_MEDIA", {"target": "spotify"}, True)):
+            result = {"ok": ok, **({} if ok else {"played": False, "mismatch": True})}
+            led.record_event("executor_action", source="executor.post_dispatch", action=action,
+                             subject=ao.subject_of(action, args), content=f"{action} {k}",
+                             payload={"args": args, "result": result}, outcome="ok" if ok else "failed",
+                             session_id="s1", timestamp=now - 600 + 60 * k + (20 if ok else 0))
+    ran = []
+    monkeypatch.setattr(ex, "execute", lambda action, args=None, **k: ran.append(action) or {"ok": True})
+    monkeypatch.setattr(gr, "capture_executor_failure", lambda *a, **k: None)
+    said = "Spotify is playing another track, not the one asked for."
+    token = rc.session_id_var.set("s1")
+    try:
+        out = ex._action_post_dispatch("PLAY_MEDIA", {"target": "spotify", "query": "a new song"},
+                                       {"ok": False, "played": False, "mismatch": True, "response": said})
+    finally:
+        rc.session_id_var.reset(token)
+    ao.forget()
+    assert ran == [], "nothing runs of ELI's own accord"
+    assert out["ok"] is False and out["response"].startswith(said)
+    assert "stop media" not in out["response"] and "error inside ELI" not in out["response"]
 
 
 # ── the user's interest and ELI's curiosity, measured ─────────────────────────────────────────────

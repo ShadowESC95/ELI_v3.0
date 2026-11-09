@@ -51,3 +51,46 @@ def test_chat_and_the_off_switch_record_nothing(ledger, monkeypatch):
 def test_execute_itself_records_the_call(ledger):
     EX.execute("TIME", {})
     assert any(e["action"] == "TIME" for e in _events(ledger))
+
+
+def _runs_of(db, action):
+    return [e for e in led.recent_events(limit=50, db_path=db)
+            if e.get("event_type") in ("tool_execution", "executor_action") and e.get("action") == action]
+
+
+def test_a_run_answered_above_the_base_is_recorded_once_and_is_on_the_turn(ledger, monkeypatch):
+    # the portable, voice, schema, media and middleware layers answer some actions themselves; whichever
+    # layer answers, the run is checked, recorded and post-dispatched once, by the outermost execute
+    from eli.kernel import request_context as rc
+    monkeypatch.setattr(EX, "_ELI_EXECUTOR_CANONICAL_BASE",
+                        lambda action, args=None, *a, **k: {"ok": True, "action": action, "response": "Tiled 2 windows."})
+    facts = {}
+    token = rc.turn_facts_var.set(facts)
+    try:
+        out = EX.execute("TILE_WINDOWS", {})
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert out["ok"] is True
+    kinds = sorted(e["event_type"] for e in _runs_of(ledger, "TILE_WINDOWS"))
+    assert kinds == ["executor_action", "tool_execution"]
+    assert facts.get("executed_actions") == ["TILE_WINDOWS"]
+
+
+def test_a_layer_handing_the_same_run_back_to_execute_is_still_one_run(ledger, monkeypatch):
+    calls = []
+
+    def layer(action, args=None, *a, **k):
+        calls.append(action)
+        if len(calls) == 1:
+            return EX.execute(action, args)
+        return {"ok": True, "action": action, "response": "Tiled."}
+
+    monkeypatch.setattr(EX, "_ELI_EXECUTOR_CANONICAL_BASE", layer)
+    EX.execute("TILE_WINDOWS", {"layout": "grid"})
+    assert len(calls) == 2
+    assert sorted(e["event_type"] for e in _runs_of(ledger, "TILE_WINDOWS")) == ["executor_action", "tool_execution"]
+
+
+def test_a_run_through_the_base_is_recorded_once(ledger):
+    EX.execute("TIME", {})
+    assert sorted(e["event_type"] for e in _runs_of(ledger, "TIME")) == ["executor_action", "tool_execution"]

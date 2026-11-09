@@ -37,7 +37,11 @@ def test_the_kind_of_target_a_run_was_about():
     assert ao.target_class("OPEN_FILE_SYSTEM", {"path": "/tmp/a"}) == "path:folder"
     assert ao.target_class("WEB_SEARCH", {"query": "tide times"}) == "query"
     assert ao.target_class("DATE", {}) == ""
-    assert ao.subject_of("PLAY_MEDIA", {"query": "jazz", "target": "spotify"}) == "spotify"
+    # an item asked of a service is the item, judged with the service's other items: every song asked
+    # of Spotify is not "the same request" as every other
+    assert ao.subject_of("PLAY_MEDIA", {"query": "jazz", "target": "spotify"}) == "jazz"
+    assert ao.target_class("PLAY_MEDIA", {"query": "jazz", "target": "spotify"}) == "service:spotify"
+    assert ao.subject_of("STOP_MEDIA", {"target": "spotify"}) == "spotify"
 
 
 def test_a_written_file_is_checked_and_a_search_that_brought_nothing_had_no_effect(tmp_path):
@@ -62,6 +66,22 @@ def test_why_a_run_failed_by_the_one_taxonomy():
     assert ao.cause_of({"ok": True, "verified": False, "verified_how": "the file x is not there"}) == ao.UNVERIFIED
     assert ao.cause_of({"ok": True}) == ""
     assert ao.cause_words("dependency") == "something it needs is not installed"
+
+
+def test_the_cause_is_read_from_what_the_run_says_before_its_text_and_is_never_invented():
+    # another song played: the result says so, whatever its words are
+    played_other = {"ok": False, "played": False, "mismatch": True, "target": "spotify",
+                    "response": "Spotify is playing a different track, not the one asked for."}
+    assert ao.cause_of(played_other, "PLAY_MEDIA") == ao.MISMATCH
+    assert ao.cause_words(ao.MISMATCH) == "what came up was not what was asked for"
+    # the cause an effector names is taken as it is
+    assert ao.cause_of({"ok": False, "cause": "missing_resource", "response": "no player"}, "MEDIA_CONTROL") == "missing_resource"
+    # a program's action handed a site
+    assert ao.cause_of({"ok": False, "response": "nothing matches"}, "CLOSE_APP", {"name": "example.org"}) == "not_a_program"
+    # nothing explains it: the cause is not known, not "an error inside ELI"
+    unknown = ao.cause_of({"ok": False, "response": "the light stayed on"}, "SMART_HOME")
+    assert unknown == ao.UNKNOWN_CAUSE and "error inside ELI" not in ao.cause_words(unknown)
+    assert "error inside ELI" not in ao.cause_words("no such category")
 
 
 def test_the_chance_rests_on_the_target_then_the_action_then_every_action(ledger):
@@ -107,15 +127,79 @@ def test_a_proven_safe_likelier_alternative_is_tried_and_the_rest_is_advised(led
     # the alternative itself is never retried as an alternative
     again = ao.advice("OPEN_URL", {"url": "https://open.spotify.com", "_alternative_of": "OPEN_APP"}, {"ok": False}, now=NOW)
     assert again["attempt"] is None
-    # a destructive or explicit-only action is advised at most, never run unasked
+    # an action that destroys, writes or undoes is not the same request tried another way: it is
+    # neither run unasked nor offered
     for k in (1, 0):
         t = NOW - 3600 * (k + 1)
         _ran("READ_FILE", {"path": "/tmp/x.txt"}, False, t, error="No such file", cause="missing_resource")
         _ran("DELETE_FILE", {"path": "/tmp/x.txt"}, True, t + 10)
+        _ran("CREATE_FILE", {"path": "/tmp/x.txt", "content": "old words"}, True, t + 20)
+        _ran("OPEN_APP", {"name": "firefox"}, False, t + 30, error="not found")
+        _ran("CLOSE_APP", {"name": "firefox"}, True, t + 40)
     ao.forget()
     risky = ao.advice("READ_FILE", {"path": "/tmp/x.txt"}, {"ok": False, "error": "No such file"}, now=NOW)
-    assert risky["alternatives"] and risky["alternatives"][0]["action"] == "DELETE_FILE" and risky["attempt"] is None
-    assert "say so if you want me to try that" in ao.said(risky)
+    assert risky["alternatives"] == [] and risky["attempt"] is None
+    assert "instead" not in ao.said(risky)
+    undone = ao.advice("OPEN_APP", {"name": "firefox"}, {"ok": False, "error": "not found"}, now=NOW)
+    assert undone["alternatives"] == [] and undone["attempt"] is None
+
+
+def test_every_deed_group_writes_sends_destroys_and_undoes_nothing():
+    from eli.cognition.llm_intent import _EXPLICIT_ONLY_ACTIONS
+    from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+    for group in ao.SAME_DEED:
+        assert len(group) > 1
+        for name in group:
+            assert name in SUPPORTED_ACTIONS and ao._safe_on_its_own(name) and name not in _EXPLICIT_ONLY_ACTIONS
+    assert not ao.same_deed("PLAY_MEDIA", "STOP_MEDIA") and not ao.same_deed("PLAY_MEDIA", "PAUSE_MEDIA")
+    assert not ao.same_deed("OPEN_APP", "CLOSE_APP") and not ao.same_deed("READ_FILE", "CREATE_FILE")
+    assert not ao.same_deed("PLAY_MEDIA", "MEDIA_CONTROL") and ao.same_deed("OPEN_APP", "OPEN_URL")
+
+
+def test_a_pause_after_a_failed_play_is_never_what_worked_instead(ledger):
+    # the live pattern: a song asked of Spotify does not play, the music is paused, again and again
+    for k in range(4):
+        t = NOW - 3600 + 60 * k
+        _ran("PLAY_MEDIA", {"target": "spotify", "query": f"song {k}"}, False, t,
+             extra={"played": False, "mismatch": True, "target": "spotify"})
+        _ran("STOP_MEDIA", {"target": "spotify"}, True, t + 20)
+        _ran("MEDIA_CONTROL", {"command": "pause", "target": "spotify"}, True, t + 30)
+    asked = {"target": "spotify", "query": "a song never asked before"}
+    advice = ao.advice("PLAY_MEDIA", asked, {"ok": False, "played": False, "mismatch": True}, now=NOW)
+    assert advice["attempt"] is None and advice["alternatives"] == []
+    told = ao.said(advice)
+    # the rate is over every song asked of Spotify, and says so; it is not this request's record
+    assert told.startswith("play media on spotify has failed every time (4) here lately")
+    assert "a song never asked before" not in told and "stop media" not in told
+    assert "what came up was not what was asked for" in told
+    # a play of an earlier item is no alternative for a later one either
+    _ran("MEDIA_CONTROL", {"command": "play", "target": "youtube"}, False, NOW - 120, session="s3", error="not found")
+    _ran("PLAY_MEDIA", {"target": "youtube", "query": "an earlier video"}, True, NOW - 100, session="s3")
+    ao.forget()
+    again = ao.advice("MEDIA_CONTROL", {"command": "play", "target": "youtube"}, {"ok": False, "error": "not found"}, now=NOW)
+    assert again["attempt"] is None and again["alternatives"] == []
+
+
+def test_elis_own_tries_are_not_evidence_and_each_later_run_counts_once(ledger):
+    t = NOW - 3000
+    for k in range(3):     # three failures in a row, then one success that answered them all
+        _ran("OPEN_APP", {"name": "spotify"}, False, t + 10 * k, error=f"not found ({k})")
+    _ran("OPEN_URL", {"url": "https://open.spotify.com"}, True, t + 40)
+    # ELI's own try of the alternative, after a later failure, recorded as such
+    _ran("OPEN_APP", {"name": "spotify"}, False, t + 100, error="not found")
+    _ran("OPEN_URL", {"url": "https://open.spotify.com", "_alternative_of": "OPEN_APP"}, True, t + 101)
+    (only,) = ao.alternatives("OPEN_APP", {"name": "spotify"}, now=NOW)
+    assert only["action"] == "OPEN_URL" and only["n"] == 1
+    assert ao.chance("OPEN_APP", {"name": "spotify"}, now=NOW)["n"] == 4
+    assert ao.advice("OPEN_APP", {"name": "spotify"}, {"ok": False}, now=NOW)["runs_lately"] == 4
+
+
+def test_an_alternative_is_tried_with_this_requests_item_never_an_old_runs():
+    proven = {"url": "https://example.org/search", "query": "an old search", "text": "old words"}
+    assert ao._attempt_args(proven, {"query": "what was asked now"}, "WEB_SEARCH") == {
+        "url": "https://example.org/search", "query": "what was asked now"}
+    assert ao._attempt_args({"url": "https://open.spotify.com"}, {"name": "spotify"}, "OPEN_APP") == {
+        "url": "https://open.spotify.com"}
 
 
 def test_the_record_told_what_worked_and_what_did_not(ledger):

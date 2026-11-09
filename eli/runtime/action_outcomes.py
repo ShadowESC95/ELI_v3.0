@@ -22,11 +22,13 @@ the same thing the same way. This reads the record back as knowledge ELI acts on
                                     of this target class, shrunk toward the action's rate and that toward
                                     every action's, each run weighted by its recency as the ledger's
                                     reliability is; with how many runs it rests on and at which level
-    alternatives(action, args)      what has worked instead: an action that succeeded for the same
-                                    target soon after this one failed, ranked by how often it did
+    alternatives(action, args)      what has worked instead: an action that does the same deed by other
+                                    means (SAME_DEED) and succeeded for the same thing soon after this
+                                    one failed, ranked by how often it did; ELI's own tries are not
+                                    evidence, and each later run counts once
     advice(action, args, result)    for a failed run: the cause, the chance, how often this has failed
-                                    lately, the alternatives, and the one to try now when one is safe,
-                                    likelier, and proven on this very target
+                                    lately, the alternatives proven for this very thing, and the one to
+                                    try now when one is likelier, built from this request's own words
     said(advice)                    the advice in words, for the reply
     report(days, action)            what worked and did not, by action and target, with the causes and
                                     what worked instead: ELI's own record of its abilities, as data and
@@ -52,8 +54,8 @@ HALF_LIFE_DAYS = 7.0            # a run's weight halves each week, as action_rel
 # A target class with this many runs stands half on its own against its action's rate, and an action
 # with this many against every action's: the usual pseudo-count shrinkage, no more.
 SHRINK_RUNS = 3.0
-# A success within this long of a failure in the same session, for the same target, is the same
-# request tried another way: what worked instead.
+# A success within this long of a failure in the same session, for the same thing, by an action that
+# does the same deed, is the same request tried another way: what worked instead.
 ALTERNATIVE_WINDOW_S = 600.0
 CACHE_SECONDS = 30.0            # the ledger is read again after this long, as the agent bus reads it
 NOTHING_FOUND = "nothing_found"
@@ -68,7 +70,25 @@ _APPS = frozenset({"OPEN_APP", "CLOSE_APP", "FOCUS_APP", "MAXIMISE_WINDOW", "MIN
 _PATH_KEYS = ("path", "file", "folder", "doc_path", "filename", "output_path", "dest")
 _URL_KEYS = ("url", "href", "link")
 _NAME_KEYS = ("app", "name", "target")
-_QUERY_KEYS = ("query", "topic", "q", "instruction", "text", "message")
+# The item asked for: a song asked of a service is the song, so it comes before the service's name.
+_ITEM_KEYS = ("query", "topic", "q")
+_QUERY_KEYS = _ITEM_KEYS + ("instruction", "text", "message")
+# What a run carries as content, never replayed from an old run into a new one.
+_CONTENT_KEYS = ("text", "content", "body", "message", "instruction", "code")
+
+# Actions that do the same deed by other means. When one of a group fails, another of the same group
+# done for the same thing soon after is the same request tried another way; nothing else is. This is
+# declared, not read from the names: two actions that share a word need not do the same thing
+# (PLAY_MEDIA and PLAY_GAME, READ_FILE and DELETE_FILE), and an action that undoes another (CLOSE_APP
+# after OPEN_APP, STOP_MEDIA or PAUSE_MEDIA after PLAY_MEDIA) or writes, sends or destroys is never in
+# a group with it (tests/test_action_outcomes.py holds every group to that). An action in no group has
+# no alternative: its failure is told as it is.
+SAME_DEED: Tuple[frozenset, ...] = (
+    frozenset({"OPEN_APP", "OPEN_URL", "FOCUS_APP"}),        # bring a program or a site up
+    frozenset({"WEB_SEARCH", "NEWS_FETCH"}),                 # find out about something
+    frozenset({"MINIMIZE_APP", "MINIMISE_APP"}),             # the same deed, spelt two ways
+    frozenset({"MINIMIZE_WINDOW", "MINIMISE_WINDOW"}),
+)
 
 # What a cause means, in words (the taxonomy's categories, plus the two read from a result's shape).
 CAUSE_WORDS = {
@@ -83,10 +103,15 @@ CAUSE_WORDS = {
     "interface": "an error inside ELI",
     "correctness": "an error inside ELI",
     "concurrency": "something else held what it needed",
-    "stability": "an error inside ELI",
+    "stability": "the cause is not known",
     NOTHING_FOUND: "nothing came back",
     UNVERIFIED: "nothing changed that ELI could see",
+    "mismatch": "what came up was not what was asked for",
+    "not_a_program": "what it was pointed at is a site, not a program",
 }
+# The taxonomy's word for a failure nothing explains: its cause is not asserted.
+UNKNOWN_CAUSE = "stability"
+MISMATCH = "mismatch"
 
 
 # ── what a run was about ──────────────────────────────────────────────────────────────────────────
@@ -104,26 +129,35 @@ def _is_url(text: str) -> bool:
 
 
 def subject_of(action: str, args: Optional[Dict[str, Any]]) -> str:
-    """The thing a run was about, as said: the app, the address, the path or the query."""
+    """The thing a run was about, as said: the address, the path, the item asked for (a song asked of
+    Spotify is the song, not Spotify), the app, or the query."""
     args = dict(args or {})
-    return (_first(args, _URL_KEYS) or _first(args, _PATH_KEYS) or _first(args, _NAME_KEYS)
-            or _first(args, _QUERY_KEYS))
+    return (_first(args, _URL_KEYS) or _first(args, _PATH_KEYS) or _first(args, _ITEM_KEYS)
+            or _first(args, _NAME_KEYS) or _first(args, _QUERY_KEYS))
+
+
+def _host(text: str) -> str:
+    text = str(text or "").strip()
+    host = urlparse(text if text.startswith(("http://", "https://")) else "http://" + text).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 def target_class(action: str, args: Optional[Dict[str, Any]]) -> str:
     """The kind of target a run was about, so runs that are alike are judged together: "app:spotify",
-    "site:example.org", "path:.pdf" (or "path:folder"), "query", or "" for an action alone."""
+    "site:example.org", "path:.pdf" (or "path:folder"), "service:spotify" for an item asked of a
+    service (every song asked of Spotify), "query", or "" for an action alone."""
     args = dict(args or {})
     url = _first(args, _URL_KEYS)
     name = _first(args, _NAME_KEYS)
     if url or (name and _is_url(name)):
-        host = urlparse(url or name if (url or name).startswith(("http://", "https://")) else "http://" + (url or name)).netloc
-        host = host.lower()[4:] if host.lower().startswith("www.") else host.lower()
+        host = _host(url or name)
         return f"site:{host}" if host else "query"
     path = _first(args, _PATH_KEYS)
     if path:
         ext = os.path.splitext(path)[1].lower()
         return f"path:{ext}" if ext else "path:folder"
+    if name and _first(args, _ITEM_KEYS) and str(action or "").upper() not in _APPS:
+        return f"service:{name.lower()}"
     if name and (str(action or "").upper() in _APPS or "app" in args):
         try:
             from eli.execution.app_aliases import APP_ALIASES
@@ -175,27 +209,37 @@ def verify(action: str, args: Optional[Dict[str, Any]], result: Any, *, started:
     return None, ""
 
 
-def cause_of(result: Any, action: str = "") -> str:
-    """Why a run failed: the taxonomy's category for its error, NOTHING_FOUND for a search that came
-    back empty, UNVERIFIED for an effect ELI could not see; "" for a run that worked."""
+def cause_of(result: Any, action: str = "", args: Optional[Dict[str, Any]] = None) -> str:
+    """Why a run failed, from what the run itself says first: the cause its effector named, MISMATCH
+    when something other than what was asked came up, NOTHING_FOUND for a search that came back
+    empty, UNVERIFIED for an effect ELI could not see, "not_a_program" for a program's action handed
+    a site; then the taxonomy's category for its error text, which is UNKNOWN_CAUSE when nothing
+    explains it. "" for a run that worked."""
     if not isinstance(result, dict):
         return ""
     if result.get("verified") is False:
         return NOTHING_FOUND if "came back" in str(result.get("verified_how") or "") else UNVERIFIED
     if result.get("ok", False) and result.get("played") is not False and result.get("effect") is not False:
         return ""
+    named = str(result.get("cause") or "")
+    if named in CAUSE_WORDS:
+        return named
+    if result.get("mismatch"):
+        return MISMATCH
     if result.get("effect") is False:
         return NOTHING_FOUND
+    if args and str(action or "").upper() in _APPS and target_class(action, args).startswith("site:"):
+        return "not_a_program"
     text = " ".join(str(result.get(k) or "") for k in ("error", "message", "response", "content"))
     try:
         from eli.runtime.failure_taxonomy import classify_category
         return classify_category(text, str(action or ""))
     except ImportError:
-        return "stability"
+        return UNKNOWN_CAUSE
 
 
 def cause_words(cause: str) -> str:
-    return CAUSE_WORDS.get(str(cause or ""), "an error inside ELI")
+    return CAUSE_WORDS.get(str(cause or ""), CAUSE_WORDS[UNKNOWN_CAUSE])
 
 
 # ── the record, read once ─────────────────────────────────────────────────────────────────────────
@@ -226,7 +270,7 @@ def _runs(*, days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
             continue
         out.append({**row, "args": args, "result": result, "worked": outcome == "ok",
                     "class": target_class(row["action"], args), "subject": subject_of(row["action"], args),
-                    "cause": str(payload.get("cause") or cause_of(result, row["action"]) or ""),
+                    "cause": str(payload.get("cause") or cause_of(result, row["action"], args) or ""),
                     "alternative_of": str(args.get("_alternative_of") or "")})
     _cache.update({"at": now, "runs": out, "where": where, "days": days})
     return out
@@ -235,6 +279,12 @@ def _runs(*, days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
 def forget() -> None:
     """Read the ledger again on the next question (a run was just recorded)."""
     _cache["at"] = 0.0
+
+
+def _asked(*, days: float, db_path=None) -> List[Dict[str, Any]]:
+    """The runs the user asked for: an alternative ELI tried of its own accord is not evidence that
+    it works, or each try would raise the case for the next."""
+    return [r for r in _runs(days=days, db_path=db_path) if not r["alternative_of"]]
 
 
 def _weight(ts: float, now: float) -> float:
@@ -258,7 +308,7 @@ def chance(action: str, args: Optional[Dict[str, Any]] = None, *, days: float = 
     now = time.time() if now is None else now
     name = str(action or "").upper()
     cls = target_class(name, args)
-    every = _runs(days=days, db_path=db_path)
+    every = _asked(days=days, db_path=db_path)
     p_all, _n_all, _w = _rate(every, now, 0.5, 2.0)
     mine = [r for r in every if r["action"] == name]
     p_action, n_action, _w = _rate(mine, now, p_all, SHRINK_RUNS)
@@ -275,37 +325,56 @@ def chance(action: str, args: Optional[Dict[str, Any]] = None, *, days: float = 
     return {"p": p_all, "n": 0, "by": "all", "class": cls, "action_p": p_action, "action_n": 0, "cause": ""}
 
 
+def _norm(text: str) -> str:
+    return re.sub(r"[\W_]+", "", str(text or "").lower())
+
+
+def same_deed(one: str, other: str) -> bool:
+    """Whether two different actions do the same deed by other means (SAME_DEED)."""
+    a, b = str(one or "").upper(), str(other or "").upper()
+    return a != b and any(a in group and b in group for group in SAME_DEED)
+
+
 def _same_aim(failed: Dict[str, Any], later: Dict[str, Any]) -> bool:
-    """Whether a later run was the same request tried another way: the same target class with the
-    same subject, or a subject that names the failed one ("spotify" in "open.spotify.com")."""
-    a, b = failed["subject"].lower(), later["subject"].lower()
-    if failed["class"] and failed["class"] == later["class"] and a == b:
+    """Whether a later run was the same request tried another way: an action that does the same deed
+    for the same thing, said the same way ("It's okay" is "its okay") or as an address whose host
+    names it ("spotify" is open.spotify.com; "code" is not leetcode.com)."""
+    if not same_deed(failed["action"], later["action"]):
+        return False
+    a, b = _norm(failed["subject"]), _norm(later["subject"])
+    if not a:
+        return False
+    if a == b:
         return True
-    core = re.sub(r"[^a-z0-9]+", "", a)
-    return bool(core) and len(core) >= 3 and core in re.sub(r"[^a-z0-9]+", "", b)
+    return bool(_is_url(later["subject"])) and a in {_norm(label) for label in _host(later["subject"]).split(".")}
 
 
 def alternatives(action: str, args: Optional[Dict[str, Any]] = None, *, days: float = DAYS, db_path=None,
                  now: Optional[float] = None) -> List[Dict[str, Any]]:
-    """What has worked instead: each action that succeeded for the same aim within
-    ALTERNATIVE_WINDOW_S of a failure of this action, with the chance it works after such a failure
-    (Beta over the times it was tried that way), how many times, the last time, and whether it was
-    proven after a failure on this very target (`same_target`). Likeliest first."""
+    """What has worked instead: each action that does the same deed (SAME_DEED) and was asked for the
+    same thing within ALTERNATIVE_WINDOW_S of a failure of this action in the same session, with the
+    chance it works after such a failure (Beta over the times it was tried that way), how many times,
+    the last time, and whether it was proven after a failure on this very thing (`same_target`).
+    Each later run answers the one failure nearest before it, so it counts once; ELI's own tries do
+    not count. Likeliest first."""
     now = time.time() if now is None else now
     name = str(action or "").upper()
+    if not any(name in group for group in SAME_DEED):
+        return []
     cls = target_class(name, args)
-    subject = subject_of(name, args).lower()
-    every = _runs(days=days, db_path=db_path)
+    subject = _norm(subject_of(name, args))
+    every = _asked(days=days, db_path=db_path)
     found: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for i, run in enumerate(every):
-        if run["action"] != name or run["worked"] or (cls and run["class"] != cls):
+    for j, later in enumerate(every):
+        if not same_deed(name, later["action"]):
             continue
-        for later in every[i + 1:]:
+        for run in reversed(every[:j]):
             if later["ts"] - run["ts"] > ALTERNATIVE_WINDOW_S:
                 break
-            if later["session_id"] != run["session_id"] or later["action"] == name or not _same_aim(run, later):
+            if (run["action"] != name or run["worked"] or (cls and run["class"] != cls)
+                    or run["session_id"] != later["session_id"] or not _same_aim(run, later)):
                 continue
-            key = (later["action"], later["subject"].lower())
+            key = (later["action"], _norm(later["subject"]))
             slot = found.setdefault(key, {"action": later["action"], "args": dict(later["args"]), "ok": 0.0,
                                           "tried": 0.0, "n": 0, "last": 0.0, "subject": later["subject"],
                                           "on_this": False})
@@ -313,9 +382,10 @@ def alternatives(action: str, args: Optional[Dict[str, Any]] = None, *, days: fl
             slot["tried"] += w
             slot["n"] += 1
             slot["last"] = max(slot["last"], later["ts"])
-            slot["on_this"] = slot["on_this"] or run["subject"].lower() == subject
+            slot["on_this"] = slot["on_this"] or (bool(subject) and _norm(run["subject"]) == subject)
             if later["worked"]:
                 slot["ok"] += w
+            break
     out = []
     for slot in found.values():
         p = (slot["ok"] + 1.0) / (slot["tried"] + 2.0)
@@ -328,7 +398,7 @@ def alternatives(action: str, args: Optional[Dict[str, Any]] = None, *, days: fl
 
 def _safe_on_its_own(action: str) -> bool:
     name = str(action or "").upper()
-    if not name or name == "CHAT" or _NEVER_ON_ITS_OWN.search(name):
+    if not name or name == "CHAT" or _NEVER_ON_ITS_OWN.search(name) or _WRITES.search(name):
         return False
     try:
         from eli.cognition.llm_intent import _EXPLICIT_ONLY_ACTIONS
@@ -339,30 +409,43 @@ def _safe_on_its_own(action: str) -> bool:
     return True
 
 
+def _attempt_args(proven: Dict[str, Any], asked: Dict[str, Any], action: str) -> Dict[str, Any]:
+    """The arguments to try an alternative with now: how it reached the thing when it worked (its
+    address, its app), with the item this request asked for; never an old run's content or item."""
+    out = {k: v for k, v in proven.items() if not k.startswith("_") and k not in _CONTENT_KEYS}
+    item = _first(asked, _ITEM_KEYS) or subject_of(action, asked)
+    for key in _ITEM_KEYS:
+        if key in out:
+            out[key] = item
+    return out
+
+
 def advice(action: str, args: Optional[Dict[str, Any]], result: Any, *, days: float = DAYS, db_path=None,
            now: Optional[float] = None) -> Dict[str, Any]:
     """For a failed run: its cause, the chance a run like it works here, how many of its recent runs
-    failed, what has worked instead, and `attempt`: the alternative to try now, or None. One is tried
-    of ELI's own accord only when it is safe to run unasked, it was proven on this very target, and its
-    chance is better than this action's own."""
+    failed (over its target class, named in `class`), the alternatives proven for this very thing, and
+    `attempt`: the one to try now, or None. One is tried of ELI's own accord only when it does the same
+    deed for this same thing, it was proven on it, it writes, sends and destroys nothing, and its chance
+    is better than this action's own; it is built from this request's own arguments."""
     now = time.time() if now is None else now
     name = str(action or "").upper()
     args = dict(args or {})
-    cause = cause_of(result, name)
+    cause = cause_of(result, name, args)
     odds = chance(name, args, days=days, db_path=db_path, now=now)
-    others = alternatives(name, args, days=days, db_path=db_path, now=now)
+    others = [o for o in alternatives(name, args, days=days, db_path=db_path, now=now) if o["same_target"]]
     cls = target_class(name, args)
-    recent = [r for r in _runs(days=days, db_path=db_path) if r["action"] == name and (not cls or r["class"] == cls)]
+    recent = [r for r in _asked(days=days, db_path=db_path) if r["action"] == name and (not cls or r["class"] == cls)]
     failed_lately = sum(1 for r in recent if not r["worked"])
     attempt = None
     if not args.get("_alternative_of"):
         for other in others:
-            if other["same_target"] and other["p"] > odds["p"] and _safe_on_its_own(other["action"]):
-                attempt = {"action": other["action"], "args": {**other["args"], "_alternative_of": name}}
+            if other["p"] > odds["p"] and _safe_on_its_own(other["action"]):
+                attempt = {"action": other["action"],
+                           "args": {**_attempt_args(other["args"], args, name), "_alternative_of": name}}
                 break
-    return {"action": name, "subject": subject_of(name, args), "cause": cause, "cause_words": cause_words(cause),
-            "chance": odds, "failed_lately": failed_lately, "runs_lately": len(recent),
-            "alternatives": others, "attempt": attempt}
+    return {"action": name, "subject": subject_of(name, args), "class": cls, "cause": cause,
+            "cause_words": cause_words(cause), "chance": odds, "failed_lately": failed_lately,
+            "runs_lately": len(recent), "alternatives": others, "attempt": attempt}
 
 
 def plain(action: str) -> str:
@@ -383,25 +466,43 @@ def _rate_words(ok: int, n: int) -> str:
     return f"worked {ok} of {n} times"
 
 
-def said(advice_: Dict[str, Any]) -> str:
-    """The advice in words: what failed and why, how it has fared here, and what has worked instead,
-    with what ELI is doing about it. "" with nothing to say."""
+def _population(action: str, cls: str) -> str:
+    """What a rate is over, in words: the runs of this action for that kind of target ("play media on
+    spotify" is every song asked of Spotify, not the one asked now)."""
+    name = _plain(action)
+    kind, _, what = str(cls or "").partition(":")
+    if kind == "service" and what:
+        return f"{name} on {what}"
+    if kind in ("app", "site") and what:
+        return f"{name} for {what}"
+    if kind == "path" and what:
+        return f"{name} for folders" if what == "folder" else f"{name} for {what} files"
+    return name
+
+
+def said(advice_: Dict[str, Any], tried: Any = None) -> str:
+    """The advice in words: how runs like this have fared here (and over which runs), why this one
+    failed when that is known, and what has worked instead, with what ELI did about it: `tried` is
+    what came of the alternative it tried. "" with nothing to say."""
     if not advice_:
         return ""
-    name = _plain(advice_.get("action", ""))
-    subject = str(advice_.get("subject") or "").strip()
-    about = f"{name} for {subject}" if subject else name
     parts: List[str] = []
     n, failed = int(advice_.get("runs_lately") or 0), int(advice_.get("failed_lately") or 0)
     if n > 1:
+        about = _population(advice_.get("action", ""), str(advice_.get("class") or ""))
         parts.append(f"{about} has {_rate_words(n - failed, n)} here lately")
     cause = str(advice_.get("cause_words") or "")
-    if cause:
+    if cause and str(advice_.get("cause") or "") != UNKNOWN_CAUSE:
         parts.append(("this time " if n > 1 else "") + cause)
     others = [o for o in (advice_.get("alternatives") or []) if o.get("p", 0) > 0.5]
     attempt = advice_.get("attempt")
     if attempt:
-        parts.append(f"{_plain(attempt['action'])} worked instead before, so I am trying that now")
+        what = f"{_plain(attempt['action'])} worked instead before, so I "
+        if not isinstance(tried, dict):
+            parts.append(what + "am trying that now")
+        else:
+            from eli.runtime.evidence_ledger import execution_outcome
+            parts.append(what + ("tried that" if execution_outcome(tried) == "ok" else "tried that, and it failed too"))
     elif others:
         o = others[0]
         when = f"{o['n']} time{'s' if o['n'] != 1 else ''}"
@@ -417,13 +518,11 @@ def report(days: float = DAYS, action: str = "", *, limit: int = 12, db_path=Non
     failures and what worked instead, as data and in words. Actions with failures first, then by
     how often they ran. `action` keeps it to one."""
     now = time.time() if now is None else now
-    every = _runs(days=days, db_path=db_path)
+    every = _asked(days=days, db_path=db_path)
     want = str(action or "").upper()
     by_action: Dict[str, Dict[str, Any]] = {}
     for run in every:
         if want and run["action"] != want:
-            continue
-        if run["alternative_of"]:
             continue
         slot = by_action.setdefault(run["action"], {"action": run["action"], "n": 0, "ok": 0, "causes": {},
                                                     "targets": {}, "last": 0.0})
@@ -437,7 +536,7 @@ def report(days: float = DAYS, action: str = "", *, limit: int = 12, db_path=Non
         t["ok"] += 1 if run["worked"] else 0
     rows = []
     for slot in by_action.values():
-        p, n, _w = _rate([r for r in every if r["action"] == slot["action"] and not r["alternative_of"]], now, 0.5, 2.0)
+        p, n, _w = _rate([r for r in every if r["action"] == slot["action"]], now, 0.5, 2.0)
         slot["p"] = p
         worst = min(slot["targets"].items(), key=lambda kv: (kv[1]["ok"] + 1.0) / (kv[1]["n"] + 2.0)) if slot["targets"] else None
         slot["worst_target"] = worst[0] if worst and worst[1]["ok"] < worst[1]["n"] else ""
@@ -477,6 +576,6 @@ def words(days: float = DAYS, *, limit: int = 6, db_path=None) -> str:
     return "\n".join(report(days, limit=limit, db_path=db_path)["lines"])
 
 
-__all__ = ["ALTERNATIVE_WINDOW_S", "CAUSE_WORDS", "DAYS", "NOTHING_FOUND", "SHRINK_RUNS", "UNVERIFIED", "advice",
-           "alternatives", "cause_of", "cause_words", "chance", "forget", "plain", "report", "said", "subject_of",
-           "target_class", "verify", "words"]
+__all__ = ["ALTERNATIVE_WINDOW_S", "CAUSE_WORDS", "DAYS", "MISMATCH", "NOTHING_FOUND", "SAME_DEED", "SHRINK_RUNS",
+           "UNKNOWN_CAUSE", "UNVERIFIED", "advice", "alternatives", "cause_of", "cause_words", "chance", "forget",
+           "plain", "report", "said", "same_deed", "subject_of", "target_class", "verify", "words"]
