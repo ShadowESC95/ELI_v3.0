@@ -453,15 +453,31 @@ _LEAK_HEADING_RE = re.compile(
     r")\s*.*$"
 )
 
+# A section under one of ELI's own private-pass labels (the names its multi-pass prompts and mode
+# instructions use), to the final answer or the end.
 _LEAK_SECTION_RE = re.compile(
     r"(?is)(?:^|\n)\s*(?:"
     r"\[?REASONING MODE\s*:[^\n\]]*\]?\s*"
     r"|ACTIVE REASONING MODE[^\n]*\n"
     r"|REASONING MODE SELF-AWARENESS\s*:\s*"
     r"|(?:here(?:'s| is)\s+)?(?:my\s+)?(?:chain[- ]of[- ]thought|reasoning chain|private reasoning|internal reasoning|scratchpad)\s*[:\-]\s*"
-    r"|(?:tree[- ]of[- ]thoughts?|branches?|candidate approaches?|branch scores?)\s*[:\-]\s*"
-    r"|(?:self[- ]consistency|samples?|majority vote|selection stage)\s*[:\-]\s*"
-    r"|(?:constitutional critique|draft critique|critique pass|revision pass)\s*[:\-]\s*"
+    r"|tree[- ]of[- ]thoughts?\s*[:\-]\s*"
+    r"|self[- ]consistency(?:\s+samples?)?\s*[:\-]\s*"
+    r"|constitutional(?:\s+ai)?\s+(?:critique|draft|revision)\s*[:\-]\s*"
+    r")"
+    r".*?"
+    r"(?=(?:\n\s*(?:final answer|final|answer|result|therefore|so)\s*[:\-])|\Z)"
+)
+# The same for the words a private pass's parts go by ("Branches:", "Samples:", "Majority vote:",
+# "Sample 2:", "Path 1:"). Ordinary answers use these words too ("You have three git branches.\n
+# Branches: main, dev", "Path 1: /home/a.txt", "Sample 1: 40 people"), so they are taken out only
+# from a reply that shows it is a private pass's output (_PRIVATE_PASS), never in Quick mode, which
+# has no private pass to leak.
+_PASS_PART_SECTION_RE = re.compile(
+    r"(?is)(?:^|\n)\s*(?:"
+    r"(?:branches?|candidate approaches?|branch scores?)\s*[:\-]\s*"
+    r"|(?:samples?|majority vote|selection stage)\s*[:\-]\s*"
+    r"|(?:draft critique|critique pass|revision pass)\s*[:\-]\s*"
     r")"
     r".*?"
     r"(?=(?:\n\s*(?:final answer|final|answer|result|therefore|so)\s*[:\-])|\Z)"
@@ -469,7 +485,22 @@ _LEAK_SECTION_RE = re.compile(
 
 _SAMPLE_BLOCK_RE = re.compile(
     r"(?is)(?:^|\n)\s*(?:candidate|sample|branch|path)\s*\d+\s*[:\-].*?"
-    r"(?=(?:\n\s*(?:candidate|sample|branch|path)\s*\d+\s*[:\-])|(?:\n\s*(?:final answer|answer|result)\s*[:\-])|\Z)"
+    r"(?=(?:\n\s*(?:candidate|sample|branch|path)\s*\d+\s*[:\-])"
+    r"|(?:\n\s*(?:final answer|final|answer|result|therefore|so)\s*[:\-])|\Z)"
+)
+# ELI's own sample label (kernel/stages/reasoning_modes.py writes "=== SAMPLE n ===" into the
+# selection prompt): a block under it is a private pass's, whatever else the reply holds.
+_OWN_SAMPLE_BLOCK_RE = re.compile(
+    r"(?is)(?:^|\n)\s*===\s*sample\s+\d+\s*===.*?"
+    r"(?=(?:\n\s*===\s*sample\s+\d+\s*===)|(?:\n\s*(?:final answer|final|answer|result)\s*[:\-])|\Z)"
+)
+# What shows a reply is a private pass's output: one of the pass names above, ELI's own sample
+# label, or a "Final answer:" line, which is how a leaked pass marks where its answer starts.
+_PRIVATE_PASS_RE = re.compile(
+    r"(?is)chain[- ]of[- ]thought|reasoning chain|scratchpad|tree[- ]of[- ]thoughts?|self[- ]consistency"
+    r"|constitutional (?:ai\s+)?(?:critique|draft|revision)|active reasoning mode|reasoning mode self-awareness"
+    r"|private reasoning|internal reasoning|===\s*sample\s+\d+\s*==="
+    r"|(?:^|\n)\s*final answer\s*[:\-]"
 )
 
 _FINAL_LABEL_RE = re.compile(r"(?im)^\s*(?:final answer|final|answer|result)\s*[:\-]\s*")
@@ -485,10 +516,21 @@ def _strip_outer_debug_fence(text: str) -> str:
     return s
 
 
-def strip_reasoning_leaks(text: object) -> str:
+def strip_reasoning_leaks(text: object, mode: object = None) -> str:
+    """The reply without what a private reasoning pass leaked into it. `mode` is the turn's reasoning
+    mode when the caller knows it: Quick has no private pass, so only ELI's own labels are taken out."""
     s = _strip_outer_debug_fence(str(text or ""))
     if not s.strip():
         return ""
+    if mode is None:
+        # inside a turn, the turn's own mode (eli/kernel/request_context.py); None outside one
+        try:
+            from eli.kernel.request_context import reasoning_mode_var
+            mode = reasoning_mode_var.get()
+        except (ImportError, LookupError):
+            mode = None
+    quick = mode is not None and canonical_mode(mode) == "quick"
+    private_pass = not quick and bool(_PRIVATE_PASS_RE.search(s))
 
     # If a private reasoning section is followed by an explicit final marker,
     # keep the final section first, before broad section-stripping regexes run.
@@ -498,7 +540,10 @@ def strip_reasoning_leaks(text: object) -> str:
             s = s[matches[-1].end():].strip()
 
     s = _LEAK_SECTION_RE.sub("\n", s)
-    s = _SAMPLE_BLOCK_RE.sub("\n", s)
+    s = _OWN_SAMPLE_BLOCK_RE.sub("\n", s)
+    if private_pass:
+        s = _PASS_PART_SECTION_RE.sub("\n", s)
+        s = _SAMPLE_BLOCK_RE.sub("\n", s)
     s = _LEAK_HEADING_RE.sub("", s)
     s = _FINAL_LABEL_RE.sub("", s)
 
@@ -520,7 +565,9 @@ def strip_reasoning_leaks(text: object) -> str:
         r"(?i)^I(?:'ll| will)\s+(?:use|choose|select|apply|take)\s+(?:approach|candidate|option|path|branch)\s*(?:number\s+)?\d+\b[^.!?]*[.!?]\s*",
         r"(?i)^I(?:'ll| will)\s+(?:use|choose|select|apply|try)\s+(?:the\s+)?(?:first|second|third|best|top)\s+(?:approach|candidate|option|path|branch)\b[^.!?]*[.!?]\s*",
     ]
-    for pat in phrases:
+    # The last four are a branch being chosen: there is none to choose in Quick mode, where "I'll go
+    # with the blue one." is the answer.
+    for pat in (phrases[:-4] if quick else phrases):
         s = re.sub(pat, "", s)
 
     s = re.sub(r"\n{3,}", "\n\n", s)
@@ -529,7 +576,7 @@ def strip_reasoning_leaks(text: object) -> str:
 
 
 def apply_final_reasoning_contract(text: object, mode: object = None) -> str:
-    cleaned = strip_reasoning_leaks(text)
+    cleaned = strip_reasoning_leaks(text, mode)
     return cleaned.strip()
 
 

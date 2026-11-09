@@ -64,3 +64,42 @@ def test_output_governor_and_sanitizer_apply_contract():
     assert govern_output(raw) == "Visible final."
     assert sanitize_assistant_text(raw) == "Visible final."
     assert normalize_assistant_text("question", raw) == "Visible final."
+
+
+# Words a private pass's parts go by are ordinary words too: an answer that lists branches, paths,
+# samples or candidates keeps them. Only a reply that shows it is a private pass's output loses them.
+ORDINARY_LABELLED = [
+    "You have three git branches.\nBranches: main, dev, feature-x\nThe current one is dev.",
+    "Here are the two files:\nPath 1: /home/user/a.txt\nPath 2: /home/user/b.txt\nBoth exist.",
+    "The survey had two groups.\nSample 1: 40 people\nSample 2: 35 people\nSo 75 in total.",
+    "Majority vote: the committee passed it 7 to 2. It goes to the floor next.",
+    "Candidate 1: a short commute\nCandidate 2: a bigger garden\nSo: the bigger garden wins.",
+]
+
+
+@pytest.mark.parametrize("raw", ORDINARY_LABELLED)
+@pytest.mark.parametrize("mode", [None, "quick", "chain_of_thought"])
+def test_an_ordinary_labelled_list_is_not_taken_for_a_private_pass(raw, mode):
+    assert apply_final_reasoning_contract(raw, mode=mode) == raw
+
+
+@pytest.mark.parametrize("raw", ORDINARY_LABELLED)
+def test_every_governed_reply_keeps_an_ordinary_labelled_list(raw):
+    assert govern_output(raw) == raw
+
+
+def test_a_leaked_pass_still_loses_its_parts():
+    raw = "SELF-CONSISTENCY SAMPLES:\nSample 1: hidden\nSample 2: hidden\nAnswer: Patch engine.py."
+    assert apply_final_reasoning_contract(raw, mode="self_consistency") == "Patch engine.py."
+    own = "=== SAMPLE 1 ===\nhidden one\n=== SAMPLE 2 ===\nhidden two\nFinal answer: Patch engine.py."
+    assert apply_final_reasoning_contract(own, mode="quick") == "Patch engine.py."
+
+
+def test_in_quick_mode_choosing_one_is_the_answer():
+    from eli.kernel.request_context import reasoning_mode_var
+    token = reasoning_mode_var.set("quick")
+    try:
+        assert govern_output("I'll go with the blue one. It matches the curtains.") == \
+            "I'll go with the blue one. It matches the curtains."
+    finally:
+        reasoning_mode_var.reset(token)
