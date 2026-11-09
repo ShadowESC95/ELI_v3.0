@@ -1272,3 +1272,31 @@ def test_describing_the_screen_from_an_ambient_glance_stands(chat_turn):
     reply = "Here is what is on the screen: a terminal on the right and a browser on the left."
     glance = "[Ambient screen glance — use for context; do not invent unseen details]\na terminal and a browser"
     assert sc.drop_invented_self_claims(reply, evidence=glance) == reply
+
+
+@pytest.mark.parametrize("reply", ["[EXTRACT_LOG]", "[RUN_CMD: ls -la ~/logs]", "extract_log(path='app.log')",
+                                   '{"action": "EXTRACT_LOG", "args": {}}', "[SCREENSHOT]"])
+def test_a_reply_that_is_only_a_tool_call_written_out_is_dropped_and_says_nothing_ran(reply):
+    """Asked to do what it has no action for, the model wrote "[EXTRACT_LOG]", and that bracket was
+    served as the whole reply, as if something had been done."""
+    token = rc.turn_facts_var.set({"user_input": "extract that log now"})
+    try:
+        out = sc.drop_invented_self_claims(reply)
+        assert reply not in out and out == "Nothing was carried out in this turn."
+        streamed = "".join(sc.gate_stream(reply[i:i + 4] for i in range(0, len(reply), 4)))
+        assert reply not in streamed and "Nothing was carried out in this turn." in streamed
+    finally:
+        rc.turn_facts_var.reset(token)
+
+
+def test_a_source_tag_or_a_written_call_the_user_asked_for_is_not_a_tool_call():
+    token = rc.turn_facts_var.set({"user_input": "what is new today?"})
+    try:
+        assert sc.drop_invented_self_claims("Rain moves in tonight.\n[BBC]").endswith("[BBC]")
+    finally:
+        rc.turn_facts_var.reset(token)
+    token = rc.turn_facts_var.set({"user_input": "write the call that reads the config file"})
+    try:
+        assert "read_config(path)" in sc.drop_invented_self_claims("read_config(path)")
+    finally:
+        rc.turn_facts_var.reset(token)

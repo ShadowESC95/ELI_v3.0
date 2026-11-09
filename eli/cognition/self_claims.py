@@ -1161,6 +1161,26 @@ def _names_one_of_its_acts(sentence: str) -> bool:
         {w for w in words if len(w) > 2}, {v for v in verbs if len(v) > 2})
 
 
+# A unit that is only a tool call written out: "[EXTRACT_LOG]", "[RUN_CMD: ls -la]", "extract_log(path=x)",
+# {"action": "EXTRACT_LOG"}. A model with no tool for what it was asked writes one; it is not an answer,
+# and nothing ran because of it. ALL_CAPS words joined by underscores in brackets, or one of ELI's
+# action names; a snake_case call; a JSON object naming an action, tool or function.
+_TOOL_CALL_SHAPE = re.compile(
+    r"^\s*(?:\[\s*(?P<name>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)\s*(?:[:(][^\]\n]*)?\]"
+    r"|[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\s*\([^()\n]*\)"
+    r"|\{\s*\"(?:action|tool|tool_name|function|name)\"\s*:[^\n]*\})\s*[.;]?\s*$")
+
+
+def is_a_pretend_tool_call(unit: str) -> bool:
+    """Whether the unit is only a tool call written out (_TOOL_CALL_SHAPE): a bracketed name has to be
+    two or more words joined by underscores or one of ELI's actions ("[BBC]" is a source tag)."""
+    m = _TOOL_CALL_SHAPE.match(str(unit or ""))
+    if not m:
+        return False
+    name = m.group("name")
+    return name is None or "_" in name or name in _catalogue_actions()
+
+
 class _Check:
     """One turn's claim check, fed a reply one unit (sentence or line) at a time."""
 
@@ -1333,6 +1353,10 @@ class _Check:
         s = str(unit or "")
         if not s.strip():
             return ""
+        if not self._writing and is_a_pretend_tool_call(s):
+            # dropped, and the turn says nothing was carried out unless something did run
+            self.claimed_acting = self.claimed_acting or not self._ran()
+            return "is a tool call written out, and nothing ran because of it"
         maker = self._invented_maker(s)
         if maker:
             return f"names {maker} as its maker, and the licence names someone else"
