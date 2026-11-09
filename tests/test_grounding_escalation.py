@@ -395,3 +395,83 @@ def test_a_question_about_tonight_is_not_a_lookup_because_a_film_is_playing(monk
     G.escalate(_FakeEngine(), "what should I cook tonight?", {"action": "CHAT"}, _FakeBus(0.18),
                reasoning_mode="quick", recent_turns=_PLAYING)
     assert "WEB_SEARCH" not in searched
+
+
+# ── local or outside is decided by what the question is about in this conversation ───────────────
+import time as _time
+
+from eli.cognition import self_claims as _sc
+from eli.kernel import request_context as _rc
+
+
+@pytest.fixture()
+def turn_after(monkeypatch):
+    """A pipeline turn with the record of the turns before it."""
+    tokens = []
+
+    def start(said, *recorded):
+        rows = [dict({"ts": _time.time() - 30, "ok": True, "outcome": "ok", "elapsed_ms": 900.0, "asked": ""}, **r)
+                for r in recorded]
+        monkeypatch.setattr(_sc, "recent_turn_rows", lambda *a, **k: list(rows))
+        tokens.append(_rc.turn_facts_var.set({"user_input": said, "request_id": "req-test"}))
+    yield start
+    for t in reversed(tokens):
+        _rc.turn_facts_var.reset(t)
+
+
+def _no_web(monkeypatch):
+    monkeypatch.setattr(C, "network_allowed", lambda: True)
+    import eli.execution.executor_enhanced as E
+    searched = []
+    monkeypatch.setattr(E, "execute", lambda a, args=None: searched.append(a) or {
+        "web_grounded": True, "results": [{"title": "Unrelated", "body": "nothing"}], "content": "x"})
+    return searched
+
+
+def test_a_question_about_what_was_just_read_is_not_a_web_search(monkeypatch, turn_after):
+    searched = _no_web(monkeypatch)
+    said = "can you analyse and summarise what this collection of files and folders are, please?"
+    turn_after(said, {"action": "READ_FILE", "asked": "/home/someone/Desktop/project"})
+    assert G.escalate(_FakeEngine(), said, {"action": "CHAT"}, _FakeBus(0.07), reasoning_mode="quick") is None
+    assert "WEB_SEARCH" not in searched
+
+
+def test_a_question_about_the_capture_that_just_failed_is_answered_from_the_record(monkeypatch, turn_after):
+    searched = _no_web(monkeypatch)
+    said = "i seen you take a screenshot, so what is the actual issue?"
+    turn_after(said, {"action": "SCREEN_READ_ANALYZE", "ok": False, "outcome": "failed"})
+    assert G.escalate(_FakeEngine(), said, {"action": "CHAT"}, _FakeBus(0.18), reasoning_mode="quick") is None
+    assert "WEB_SEARCH" not in searched
+
+
+def test_a_follow_up_on_a_local_question_stays_local(monkeypatch, turn_after):
+    searched = _no_web(monkeypatch)
+    said = "where are the timestamps, logs, and actions taken and results per line?"
+    turn_after(said)
+    recent = [{"role": "user", "content": "where are my results from job 1 ?!"},
+              {"role": "assistant", "content": "The job wrote nothing yet."}]
+    assert G.escalate(_FakeEngine(), said, {"action": "CHAT"}, _FakeBus(0.26), reasoning_mode="quick",
+                      recent_turns=recent) is None
+    assert "WEB_SEARCH" not in searched
+
+
+def test_a_question_about_the_world_after_an_action_still_goes_out(monkeypatch, turn_after):
+    searched = _no_web(monkeypatch)
+    said = "who is the founder of Acme Dynamics Ltd"
+    turn_after(said, {"action": "PLAY_MEDIA", "asked": "play harbour bells by orlo"})
+    G.escalate(_FakeEngine(), said, {"action": "CHAT"}, _FakeBus(0.20), reasoning_mode="quick")
+    assert "WEB_SEARCH" in searched
+
+
+def test_the_hedge_in_the_models_words_adds_nothing_to_the_hedge(monkeypatch):
+    """Live, the reworded hedge invented an evidence ledger at a made-up path."""
+    _no_web(monkeypatch)
+
+    class _Speaks(_FakeEngine):
+        def _say_in_own_words(self, said, fact, reasoning_mode=None):
+            return ("Looked it up and nothing out there answers it, so I won't guess. "
+                    "Your records live in /…/evidence.jsonl and the Audit Trail is signed.")
+
+    r = G.escalate(_Speaks(), "who is the founder of Acme Dynamics Ltd", {"action": "CHAT"}, _FakeBus(0.20))
+    assert r["meta"]["response_mode"] == "ungrounded_hedge"
+    assert r["content"] == "Looked it up and nothing out there answers it, so I won't guess."

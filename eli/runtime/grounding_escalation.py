@@ -359,6 +359,33 @@ from eli.cognition.supplied_in_message import corrected_earlier as _corrected_ea
 from eli.cognition.supplied_in_message import holds_its_own_answer as _holds_its_own_answer  # noqa: E402
 
 
+def _about_what_is_here(text: str, engine: Any, recent_turns: Optional[Any]) -> bool:
+    """Whether a question classed as an outside fact is about something of this conversation: it names
+    what an action ELI just ran was about ("this collection of files and folders" after a file was
+    read), or it goes on with a question about something local in the same words ("where are the
+    timestamps and results per line?" after "where are my results from job 1?"). Live, all three such
+    questions in one session were searched on the web, and the hedge that followed was reworded into
+    an invented account."""
+    try:
+        from eli.cognition import self_claims
+        from eli.kernel.request_context import turn_facts_var
+        facts = turn_facts_var.get() or {}
+        rows = list(((facts.get("_about_eli") or {}).get("rows")) or [])
+        if not rows and facts.get("request_id"):
+            rows = self_claims.recent_turn_rows(getattr(engine, "memory", None),
+                                                user_id=str(getattr(engine, "user_id", "") or ""))
+        if rows and self_claims.names_a_recent_action(text, rows):
+            return True
+        from eli.runtime.conversation_thread import recent_turns_from_context
+        said = [t["content"] for t in recent_turns_from_context(recent_turns) if t["role"] == "user"
+                and t["content"].strip() != str(text or "").strip()]
+        if said and classify_factual(said[-1])[1] == "local":
+            return self_claims._shares_a_word(self_claims._words_of(text), self_claims._words_of(said[-1]))
+    except Exception:
+        log.debug("[ESCALATION] conversation referent check skipped", exc_info=True)
+    return False
+
+
 def classify_factual(text: str) -> Tuple[bool, str]:
     """Return (is_checkable_fact, domain) where domain ∈ {"external","local","none"}."""
     raw = (text or "").strip()
@@ -567,11 +594,14 @@ def escalate(
     # Why ELI did something, or a complaint about it, is answered from its own audit record.
     # Nothing on the web explains it: "why did it take you so long to answer that?" was searched.
     try:
-        from eli.cognition.self_claims import asks_about_own_behaviour as _about_eli, turn_record_lines
+        from eli.cognition.self_claims import about_eli as _about_eli, turn_record_lines
         # "did you save it?" is answered from the record when there is one; with none, the hedge below.
+        # Whether it is about ELI is read from its words and from what ELI had just done: "i seen you
+        # take a screenshot, so what is the actual issue?" after a capture failed was searched.
         _memory = getattr(engine, "memory", None)
         _unsure = bool(_SELF_ACTION_STATE_RE.search((user_input or "").lower())) and grounding < _self_claim_floor()
-        if _about_eli(user_input) and (not _unsure or (_memory is not None and turn_record_lines(_memory, limit=1))):
+        if _about_eli(user_input, mem=_memory, user_id=str(getattr(engine, "user_id", "") or "")) and (
+                not _unsure or (_memory is not None and turn_record_lines(_memory, limit=1))):
             log.debug("[ESCALATION] question about ELI's own behaviour: answered from the turn record")
             return None
         # Telling ELI something is not asking it to look something up: "the corner bakery shuts at six"
@@ -634,6 +664,9 @@ def escalate(
     except Exception:
         log.debug("phatic check failed", exc_info=True)
     is_fact, domain = classify_factual(user_input)
+    if is_fact and domain == "external" and _about_what_is_here(user_input, engine, recent_turns):
+        domain = "local"
+        log.debug("[ESCALATION] the question is about something of this conversation: local")
     web_candidate = classify_web_candidate(user_input)
 
     # Entertainment-thread continuation: user is discussing a show/film and the
@@ -782,7 +815,15 @@ def escalate(
             if tier == "hedge":
                 msg = _hedge(domain, online, searched=web_searched)
                 _own = getattr(engine, "_say_in_own_words", None)
-                msg = (_own(user_input, msg, reasoning_mode=reasoning_mode) if _own else "") or msg
+                # The hedge is a fact to convey, not a question to answer: the model's wording of it
+                # keeps only sentences that add nothing to it (no file, name, figure or place the hedge
+                # and the question do not hold). Live, rewordings invented a folder's contents and a
+                # failed tool call.
+                said = (_own(user_input, msg, reasoning_mode=reasoning_mode) if _own else "") or ""
+                if said:
+                    from eli.cognition.self_claims import only_what_it_was_given
+                    said = only_what_it_was_given(said, msg, user_input)
+                msg = said or msg
                 _note_escalation(
                     ("searched the web, the results did not match the question, so declined to guess"
                      if web_searched else
