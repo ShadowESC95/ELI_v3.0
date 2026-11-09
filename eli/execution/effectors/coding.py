@@ -196,6 +196,46 @@ def _h_code_solve(a, args):
 
 
 
+def _verify_python_module_apis(_code: str) -> str | None:
+    """Verify <module>.<attr> references actually exist in the installed library.
+    Catches hallucinated APIs like nx.is_clique, nx.graph_clique_number, np.bool, etc.
+    Only checks fast-to-import libs to keep latency low."""
+    import importlib as _il
+    # alias -> module name (only checked if alias is used as module.attr)
+    _ALIAS_DEFAULT = {
+        "nx": "networkx", "np": "numpy", "pd": "pandas",
+        "sp": "scipy", "sk": "sklearn", "sym": "sympy",
+    }
+    _SKIP_HEAVY = {"matplotlib", "matplotlib.pyplot", "torch", "tensorflow", "cv2"}
+    _aliases = dict(_ALIAS_DEFAULT)
+    for _m in re.finditer(r"^\s*import\s+([\w.]+)\s+as\s+(\w+)", _code, re.MULTILINE):
+        _aliases[_m.group(2)] = _m.group(1)
+    for _m in re.finditer(r"^\s*import\s+([\w.]+)\s*$", _code, re.MULTILINE):
+        _aliases[_m.group(1).split(".")[0]] = _m.group(1)
+    _bad = []
+    for _alias, _modname in _aliases.items():
+        if _modname in _SKIP_HEAVY:
+            continue
+        if not re.search(rf"\b{re.escape(_alias)}\.[a-zA-Z_]", _code):
+            continue
+        try:
+            _mod = _il.import_module(_modname)
+        except Exception:
+            continue
+        for _m in re.finditer(rf"\b{re.escape(_alias)}\.([a-zA-Z_]\w*)", _code):
+            _attr = _m.group(1)
+            if not hasattr(_mod, _attr):
+                ref = f"{_alias}.{_attr}"
+                if ref not in _bad:
+                    _bad.append(ref)
+    if _bad:
+        return (
+            f"code references non-existent module APIs: {', '.join(_bad[:5])}. "
+            "Use only attributes that actually exist in the installed library."
+        )
+    return None
+
+
 def _h_generate_script(a, args):
     desc = (args.get("description") or args.get("text") or args.get("prompt") or "").strip()
     if not desc:
@@ -356,45 +396,6 @@ def _h_generate_script(a, args):
         + _extra_req_block + "\n\n"
         f"Request: {desc}"
     )
-
-    def _verify_python_module_apis(_code: str) -> str | None:
-        """Verify <module>.<attr> references actually exist in the installed library.
-        Catches hallucinated APIs like nx.is_clique, nx.graph_clique_number, np.bool, etc.
-        Only checks fast-to-import libs to keep latency low."""
-        import importlib as _il
-        # alias -> module name (only checked if alias is used as module.attr)
-        _ALIAS_DEFAULT = {
-            "nx": "networkx", "np": "numpy", "pd": "pandas",
-            "sp": "scipy", "sk": "sklearn", "sym": "sympy",
-        }
-        _SKIP_HEAVY = {"matplotlib", "matplotlib.pyplot", "torch", "tensorflow", "cv2"}
-        _aliases = dict(_ALIAS_DEFAULT)
-        for _m in re.finditer(r"^\s*import\s+([\w.]+)\s+as\s+(\w+)", _code, re.MULTILINE):
-            _aliases[_m.group(2)] = _m.group(1)
-        for _m in re.finditer(r"^\s*import\s+([\w.]+)\s*$", _code, re.MULTILINE):
-            _aliases[_m.group(1).split(".")[0]] = _m.group(1)
-        _bad = []
-        for _alias, _modname in _aliases.items():
-            if _modname in _SKIP_HEAVY:
-                continue
-            if not re.search(rf"\b{re.escape(_alias)}\.[a-zA-Z_]", _code):
-                continue
-            try:
-                _mod = _il.import_module(_modname)
-            except Exception:
-                continue
-            for _m in re.finditer(rf"\b{re.escape(_alias)}\.([a-zA-Z_]\w*)", _code):
-                _attr = _m.group(1)
-                if not hasattr(_mod, _attr):
-                    ref = f"{_alias}.{_attr}"
-                    if ref not in _bad:
-                        _bad.append(ref)
-        if _bad:
-            return (
-                f"code references non-existent module APIs: {', '.join(_bad[:5])}. "
-                "Use only attributes that actually exist in the installed library."
-            )
-        return None
 
     def _quality_reject_reason(_code: str) -> str | None:
         """Return rejection reason or None if code passes quality bar."""
@@ -780,42 +781,6 @@ def _h_fix_file(a, args):
     # code) vs correct errors. Both go through the verified CodeAgent below.
     _improve = str(args.get("mode") or "").strip().lower() == "improve"
     _verb = "Improve" if _improve else "Fix"
-    def _verify_python_apis_ff(_code: str) -> str | None:
-        """Same as the GENERATE_SCRIPT path verifier — checks <module>.<attr> against installed libs."""
-        import importlib as _il
-        _ALIAS_DEFAULT = {
-            "nx": "networkx", "np": "numpy", "pd": "pandas",
-            "sp": "scipy", "sk": "sklearn", "sym": "sympy",
-        }
-        _SKIP_HEAVY = {"matplotlib", "matplotlib.pyplot", "torch", "tensorflow", "cv2"}
-        _aliases = dict(_ALIAS_DEFAULT)
-        for _m in _re_ff.finditer(r"^\s*import\s+([\w.]+)\s+as\s+(\w+)", _code, _re_ff.MULTILINE):
-            _aliases[_m.group(2)] = _m.group(1)
-        for _m in _re_ff.finditer(r"^\s*import\s+([\w.]+)\s*$", _code, _re_ff.MULTILINE):
-            _aliases[_m.group(1).split(".")[0]] = _m.group(1)
-        _bad = []
-        for _alias, _modname in _aliases.items():
-            if _modname in _SKIP_HEAVY:
-                continue
-            if not _re_ff.search(rf"\b{_re_ff.escape(_alias)}\.[a-zA-Z_]", _code):
-                continue
-            try:
-                _mod = _il.import_module(_modname)
-            except Exception:
-                continue
-            for _m in _re_ff.finditer(rf"\b{_re_ff.escape(_alias)}\.([a-zA-Z_]\w*)", _code):
-                _attr = _m.group(1)
-                if not hasattr(_mod, _attr):
-                    ref = f"{_alias}.{_attr}"
-                    if ref not in _bad:
-                        _bad.append(ref)
-        if _bad:
-            return (
-                f"code references non-existent module APIs: {', '.join(_bad[:5])}. "
-                "Use only attributes that actually exist."
-            )
-        return None
-
     base_fix_prompt = (
         f"{'Improve' if _improve else 'Fix'} the following {lang} file. Return ONLY the "
         "complete " + ("improved" if _improve else "corrected") + " source code — "
@@ -951,7 +916,7 @@ def _h_fix_file(a, args):
             except SyntaxError as _se:
                 ff_reject_reason = f"corrected code has SyntaxError: {_se}"
                 continue
-            _api_bad = _verify_python_apis_ff(_candidate)
+            _api_bad = _verify_python_module_apis(_candidate)
             if _api_bad:
                 ff_reject_reason = _api_bad
                 log.debug(f"[FIX_FILE] attempt {_ff_attempt + 1} rejected: {_api_bad}")
@@ -961,6 +926,21 @@ def _h_fix_file(a, args):
     if not fixed_code:
         msg = f"Fix failed after retries: {ff_reject_reason or 'unknown reason'}"
         return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
+    # One of ELI's own modules goes through the one path ELI's source is changed by
+    # (self_improvement.apply_code_patch: protected files, exactly-once, parse, backup, import and
+    # targeted tests, roll back on any failure). This action wrote it with a check set of its own.
+    from eli.runtime.self_improvement import _dotted_module_for_path, get_self_improvement
+    if pp.suffix.lower() == ".py" and _dotted_module_for_path(pp):
+        applied = get_self_improvement().apply_code_patch(
+            {"file": str(pp), "old": original, "new": fixed_code,
+             "description": f"{_verb} {pp.name} (asked for)" + (f": {extra_error[:120]}" if extra_error else "")},
+            verify=True)
+        if not applied.get("applied"):
+            msg = f"The {_verb.lower()} for {pp.name} was not applied: {applied.get('message') or 'refused'}"
+            return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg,
+                    "path": str(pp), "patch": applied}
+        backup = applied.get("backup")
+        return _fixed_file_result(pp, lang, fixed_code, backup, verification=applied.get("verification"))
     try:
         _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup = pp.with_suffix(pp.suffix + f".bak.{_ts}")
@@ -969,44 +949,12 @@ def _h_fix_file(a, args):
         msg = f"FIX_FILE aborted: could not write backup for {pp}: {_bak_err}"
         return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg}
 
-    # Differential import baseline — while `pp` still holds the original,
-    # check it imports cleanly. Only blame a broken import on THIS fix if
-    # it was clean beforehand (same approach self_improvement.py uses).
-    _ff_dotted = None
-    _ff_pre_ok = False
-    if pp.suffix.lower() == ".py":
-        try:
-            from eli.runtime.self_improvement import _dotted_module_for_path, _smoke_import_module
-            _ff_dotted = _dotted_module_for_path(pp)
-            if _ff_dotted:
-                _ff_pre_ok, _ = _smoke_import_module(_ff_dotted)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
+    # The user's own file (not one of ELI's modules): written with the backup beside it.
     pp.write_text(fixed_code, encoding="utf-8")
+    return _fixed_file_result(pp, lang, fixed_code, backup)
 
-    # Behavioural verification — a fix can compile and still break the
-    # module at import time. Reuses self_improvement.py's smoke-import +
-    # targeted-test + rollback functions rather than a second implementation.
-    if pp.suffix.lower() == ".py" and _ff_dotted and _ff_pre_ok:
-        try:
-            from eli.runtime.self_improvement import _smoke_import_module, _run_targeted_tests
-            _imp_ok, _imp_detail = _smoke_import_module(_ff_dotted)
-            if not _imp_ok:
-                pp.write_text(original, encoding="utf-8")
-                msg = f"Fix broke module import (reverted to original): {_imp_detail}"
-                return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg,
-                        "backup": str(backup)}
-            if os.environ.get("ELI_SELFPATCH_VERIFY_TESTS", "1").strip().lower() not in ("0", "false", "no", "off"):
-                _t_ran, _t_passed, _t_detail = _run_targeted_tests(pp)
-                if _t_ran and not _t_passed:
-                    pp.write_text(original, encoding="utf-8")
-                    msg = f"Fix broke targeted tests (reverted to original): {_t_detail[:300]}"
-                    return {"ok": False, "action": a, "error": msg, "content": msg, "response": msg,
-                            "backup": str(backup)}
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
 
+def _fixed_file_result(pp, lang: str, fixed_code: str, backup, *, verification=None) -> dict:
     evt = {
         "event": "artifact_generated",
         "kind": "script",
@@ -1019,7 +967,7 @@ def _h_fix_file(a, args):
         "can_run": True,
     }
     evt_json = json.dumps(evt, ensure_ascii=False, default=str)
-    return {
+    out = {
         "ok": True,
         "action": "FIX_FILE",
         "code": fixed_code,
@@ -1030,6 +978,9 @@ def _h_fix_file(a, args):
         "response": evt_json,
         "open_in_ide": True,
     }
+    if verification is not None:
+        out["verification"] = verification
+    return out
 
 
 

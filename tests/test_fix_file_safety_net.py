@@ -191,3 +191,37 @@ def test_fix_file_never_saves_the_model_failure_as_the_file(workspace, monkeypat
     r = EX.execute("FIX_FILE", {"path": str(f), "_no_background": True})
     assert r.get("ok") is False
     assert f.read_text() == "echo start\n"
+
+
+def test_a_fix_to_one_of_elis_own_modules_goes_through_the_one_gated_write(workspace, monkeypatch):
+    """FIX_FILE wrote ELI's own modules with a whole-file write and a check set of its own beside
+    self_improvement's. ELI's modules now go through apply_code_patch (protected files, exactly once,
+    parse, backup, import and tests, roll back); the user's own files keep the backup and the write."""
+    import eli.coding.agent as ca
+    from eli.execution import executor_enhanced as EX
+    import eli.runtime.self_improvement as si
+    original = "def main():\n    print('before')\n"
+    good_fix = "def main():\n    print('after')\n"
+    monkeypatch.setattr(ca, "solve", lambda task, **kw: {"code": good_fix, "score": 0.9, "solved": True})
+    patched = []
+
+    class _SI:
+        def apply_code_patch(self, patch, verify=True):
+            patched.append((patch, verify))
+            return {"ok": False, "applied": False, "message": "Patch broke module import of mod.py (all reverted): x"}
+    monkeypatch.setattr(si, "get_self_improvement", lambda: _SI())
+    monkeypatch.setattr(si, "_dotted_module_for_path", lambda p: "eli.fake_module" if p.name == "mod.py" else None)
+    mod = workspace / "mod.py"
+    mod.write_text(original)
+    r = EX.execute("FIX_FILE", {"path": str(mod), "_no_background": True})
+    assert patched and patched[0][0]["old"] == original and patched[0][0]["new"].strip() == good_fix.strip()
+    assert patched[0][1] is True
+    assert r["ok"] is False and "all reverted" in r["error"] and mod.read_text() == original
+    mine = workspace / "mine.py"
+    mine.write_text(original)
+    patched.clear()
+    r = EX.execute("FIX_FILE", {"path": str(mine), "_no_background": True})
+    assert r["ok"] is True and patched == [] and mine.read_text().strip() == good_fix.strip()
+    assert list(workspace.glob("mine.py.bak.*")), "the user's file keeps its backup"
+    import eli.execution.effectors.coding as coding_effector
+    assert not hasattr(coding_effector, "_verify_python_apis_ff")
