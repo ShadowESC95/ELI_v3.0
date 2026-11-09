@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from eli.coding.repo_index import RepoIndex
-from eli.coding.patches import compute_line_patches, is_repo_edit_task
+from eli.coding.patches import compute_line_patches, propose_file_patch
 from eli.coding.sandbox import capabilities, run_code
 
 
@@ -37,9 +37,74 @@ def test_compute_line_patches_minimal_hunk():
     assert patches[0]["new"] == "beta = 99\n"
 
 
-def test_is_repo_edit_task_detects_fix_verb():
-    assert is_repo_edit_task("fix the bug in eli/coding/verification.py") is True
-    assert is_repo_edit_task("hello there") is False
+def _apply_in_order(text, patches):
+    """Apply hunks the way the gated applier does: each old must occur exactly once."""
+    for p in patches:
+        assert text.count(p["old"]) == 1, f"ambiguous hunk: {p['old']!r}"
+        text = text.replace(p["old"], p["new"], 1)
+    return text
+
+
+def test_a_change_to_a_repeated_line_lands_where_it_was_made():
+    old = "def a():\n    x = 1\n    return x\n\n\ndef b():\n    x = 1\n    return x\n"
+    new = "def a():\n    x = 1\n    return x\n\n\ndef b():\n    x = 2\n    return x\n"
+    patches = compute_line_patches("pkg/demo.py", old, new)
+    assert patches and _apply_in_order(old, patches) == new
+
+
+def test_an_insertion_at_the_top_of_a_file_is_kept():
+    old = "a = 1\nb = 2\n"
+    new = "import os\na = 1\nb = 2\n"
+    patches = compute_line_patches("pkg/demo.py", old, new)
+    assert patches and _apply_in_order(old, patches) == new
+
+
+def test_a_deletion_is_a_hunk_with_an_empty_new():
+    old = "a = 1\nb = 2\nc = 3\n"
+    new = "a = 1\nc = 3\n"
+    patches = compute_line_patches("pkg/demo.py", old, new)
+    assert patches and _apply_in_order(old, patches) == new
+    assert any(p["new"] == "" for p in patches)
+
+
+def test_mixed_edits_reproduce_the_new_file():
+    old = "".join(f"line{i} = {i}\n" for i in range(12)) + "line3 = 3\n"
+    new = "header = 0\n" + "".join(f"line{i} = {i * 10 if i % 4 == 3 else i}\n" for i in range(12) if i != 6) + "line3 = 3\n"
+    patches = compute_line_patches("pkg/demo.py", old, new)
+    assert patches and _apply_in_order(old, patches) == new
+
+
+@pytest.fixture
+def in_tree_module():
+    from eli.core.paths import source_root
+    d = Path(tempfile.mkdtemp(prefix="propose_", dir=str(Path(source_root()) / "artifacts")))
+    f = d / "target_mod.py"
+    f.write_text("def keep_me(a):\n    return a - 1\n\n\ndef other():\n    return 2\n", encoding="utf-8")
+    yield f
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_standalone_program_is_not_proposed_as_the_files_new_version(in_tree_module):
+    """The coding agent writes a standalone runnable program; diffed into the named file it replaced
+    that file's contents. It is refused because it drops the file's public names."""
+    before = in_tree_module.read_text()
+    program = "def main():\n    print(1)\n\n\nif __name__ == '__main__':\n    main()\n"
+    res = propose_file_patch(in_tree_module, program)
+    assert res["ok"] is False and res["applied"] is False
+    assert "keep_me" in " ".join(res["problems"]) and "other" in " ".join(res["problems"])
+    assert in_tree_module.read_text() == before
+
+
+def test_a_new_version_of_the_file_is_proposed_not_applied(in_tree_module):
+    before = in_tree_module.read_text()
+    fixed = before.replace("return a - 1", "return a + 1")
+    res = propose_file_patch(in_tree_module, fixed)
+    assert res["ok"] and res["applied"] is False
+    assert res["old"] == before and res["new"] == fixed and res["hunks"]
+    assert res["file"].endswith("target_mod.py")
+    assert in_tree_module.read_text() == before
+    assert not list(in_tree_module.parent.glob("*.eli_bak*"))
 
 
 def test_sandbox_capabilities_reports_platform():

@@ -52,6 +52,13 @@ _PROTECTED_PATCH_PATHS = {
     "eli/runtime/evidence_ledger.py",     # the record calibration and reliability are judged from
     "eli/runtime/lessons.py",             # decides which lessons survive
     "eli/runtime/failure_taxonomy.py",    # classifies what failed
+    # what contains and judges model-written code: a candidate cannot loosen its own sandbox
+    "eli/coding/sandbox.py",
+    "eli/coding/verification.py",
+    "eli/coding/restricted_exec.py",
+    "eli/plugins/sandbox.py",
+    "eli/plugins/subprocess_sandbox.py",
+    "eli/plugins/permissions.py",
 }
 # A candidate may change the code under test, never what tests it or what counts as passing.
 _PROTECTED_PATCH_PREFIXES = ("tests/", "tools/eval/", "conftest.py", "pytest.ini")
@@ -221,6 +228,8 @@ def _ensure_failure_tables(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_columns(conn, "failures", {
+        "source": "TEXT",
+        "status": "TEXT",
         "command": "TEXT",
         "error": "TEXT",
         "context": "TEXT",
@@ -229,22 +238,6 @@ def _ensure_failure_tables(conn: sqlite3.Connection) -> None:
         "first_seen": "REAL",
         "last_seen": "REAL",
         "confidence": "REAL DEFAULT 0.0",
-    })
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS error_tracking (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            error_type TEXT,
-            details TEXT,
-            timestamp REAL
-        )
-        """
-    )
-    _ensure_columns(conn, "error_tracking", {
-        "occurrence_count": "INTEGER DEFAULT 1",
-        "first_seen": "REAL",
-        "last_seen": "REAL",
     })
 
     conn.execute(
@@ -304,6 +297,84 @@ def _actions_for_patch_file(file_path: str) -> List[str]:
     return sorted(a for a, meta in caps.items() if meta.get("plugin") == plugin_name)
 
 
+def _failure_context(failure: Dict[str, Any]) -> Dict[str, Any]:
+    ctx = failure.get("context")
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except (ValueError, TypeError):
+            ctx = {}
+    return ctx if isinstance(ctx, dict) else {}
+
+
+def _traceback_location(error: str) -> Optional[Tuple[Path, int]]:
+    """The deepest traceback frame that is a file in ELI's source tree: where the error happened."""
+    root = _patch_root()
+    found: Optional[Tuple[Path, int]] = None
+    for m in re.finditer(r'File "([^"]+\.py)", line (\d+)', error or ""):
+        p = Path(m.group(1))
+        try:
+            p = (root / p if not p.is_absolute() else p).resolve()
+            p.relative_to(root)
+        except (ValueError, OSError):
+            continue
+        if p.is_file():
+            found = (p, int(m.group(2)))
+    return found
+
+
+def _error_summary(error: str) -> str:
+    """The exception line of a traceback (its last line), or the error as it is."""
+    lines = [ln.strip() for ln in str(error or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def repair_evidence(failure: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """What a coding task may be built from, or None when the failure is not a fault in ELI's code.
+
+    A repair needs a reproducible failure: the error with a traceback into ELI's own source (the
+    code location), plus the action and arguments that ran when they were recorded. Rows from
+    note_turn_anomalies (source 'anomaly': the person complained, corrected ELI, or a reply was
+    caught claiming or promising what did not happen) are evidence for calibration, not code
+    defects, and the person's own words never become a coding task. A failure with no location in
+    ELI's source gives the agent nothing to change, and an environmental one (offline, a timeout,
+    a missing device) is not a code defect either (failure_taxonomy.is_actionable).
+    """
+    if str(failure.get("source") or "").strip().lower() == "anomaly":
+        return None
+    error = _safe_str(failure.get("error")).strip()
+    if not error:
+        return None
+    where = _traceback_location(error)
+    if where is None:
+        return None
+    ctx = _failure_context(failure)
+    intent = ctx.get("intent") if isinstance(ctx.get("intent"), dict) else {}
+    capsule = ctx.get("capsule") if isinstance(ctx.get("capsule"), dict) else {}
+    action = str(ctx.get("action") or intent.get("action") or capsule.get("action") or "").upper()
+    args = next((a for a in (ctx.get("args"), intent.get("args"), capsule.get("args")) if isinstance(a, dict)), {})
+    try:
+        from eli.runtime.failure_taxonomy import classify, is_actionable
+        if not is_actionable(classify(error, action)["category"]):
+            return None
+    except (ImportError, KeyError, TypeError, ValueError):
+        log.debug("failure not classified for repair", exc_info=True)
+    path, line = where
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    from eli.runtime.code_examiner import _build_fix_context, _max_file_chars
+    ev: Dict[str, Any] = {"action": action, "args": args, "error": error, "line": line,
+                          "file": path.relative_to(_patch_root()).as_posix(),
+                          "whole_file": len(source) <= _max_file_chars()}
+    if ev["whole_file"]:
+        ev["source"] = source
+    else:
+        ev["context"] = _build_fix_context(source, line)
+    return ev
+
+
 def failure_capsule(action: str, args: Any, result: Any, *, request_id: str = "") -> Dict[str, Any]:
     """Everything needed to look at a failure again: input, versions, model, error class and the error itself."""
     from eli.runtime.failure_taxonomy import classify
@@ -355,13 +426,26 @@ def _make_workspace(root: Path, dest: Path) -> Path:
     return dest
 
 
+def _replace_exactly_once(text: str, old: str, new: str) -> Tuple[Optional[str], str]:
+    """``text`` with ``old`` replaced by ``new``, or (None, why) when ``old`` is not there exactly
+    once. A patch whose text occurs twice does not say which place it means, and replacing the
+    first one rewrote the wrong function."""
+    count = text.count(old) if old else 0
+    if count == 1:
+        return text.replace(old, new, 1), ""
+    if count == 0:
+        return None, "old_code not found verbatim (the patch is stale or incorrect)"
+    return None, f"old_code occurs {count} times, so the patch does not say which one it changes"
+
+
 def _change_in_workspace(path: Path, old: str, new: str) -> bool:
     """Replace text in a workspace file without touching the original it is linked to."""
     text = path.read_text(encoding="utf-8")
-    if old not in text:
+    changed, _why = _replace_exactly_once(text, old, new)
+    if changed is None:
         return False
     path.unlink()
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    path.write_text(changed, encoding="utf-8")
     return True
 
 
@@ -473,35 +557,22 @@ class SelfImprovementEngine:
                 ctx["capsule"] = failure_capsule(ctx.get("action"), ctx.get("args"), ctx.get("result") or {"error": error})
             except Exception:
                 log.debug("failure capsule not built", exc_info=True)
-        now = time.time()
+        # One failure store: the failures table (Memory.log_failure), which self-analysis, self-repair
+        # and lessons all read. Its occurrence count is the recurrence the escalation below counts.
         try:
-            self.memory.log_failure(input_text, error=error, confidence=confidence, context=ctx)
+            row_id = self.memory.log_failure(input_text, error=error, confidence=confidence, context=ctx)
         except Exception:
-            log.debug("suppressed exception", exc_info=True)
+            log.debug("failure not recorded", exc_info=True)
+            return
+        if row_id is None:
+            return                      # not an actionable failure (Memory._NON_ACTIONABLE_FAILURE_PATTERNS)
+        error_type = _safe_str(error) or _safe_str(input_text)
         conn = self.memory._get_connection()
         try:
-            _ensure_failure_tables(conn)
-            error_type = _safe_str(error) or _safe_str(input_text)
-            details = json.dumps(ctx, ensure_ascii=False) if isinstance(ctx, dict) else _safe_str(ctx)
-            row = conn.execute(
-                "SELECT id, occurrence_count FROM error_tracking WHERE error_type = ? AND details = ?",
-                (error_type, details),
-            ).fetchone()
-            new_count = 1
-            if row:
-                new_count = (row[1] or 1) + 1
-                conn.execute(
-                    "UPDATE error_tracking SET occurrence_count = occurrence_count + 1, last_seen = ?, timestamp = ? WHERE id = ?",
-                    (now, now, row[0]),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO error_tracking (error_type, details, timestamp, occurrence_count, first_seen, last_seen) VALUES (?,?,?,?,?,?)",
-                    (error_type, details, now, 1, now, now),
-                )
-            conn.commit()
+            row = conn.execute("SELECT occurrence_count FROM failures WHERE id = ?", (int(row_id),)).fetchone()
         finally:
             conn.close()
+        new_count = int((row or [1])[0] or 1)
 
         # Escalation: >=5x notices next turn, >=10x also attempts self-resolution.
         # Skips fault=False (user-input/clarification, not real faults).
@@ -671,9 +742,10 @@ class SelfImprovementEngine:
     ) -> List[Dict[str, Any]]:
         conn = self.memory._get_connection()
         try:
+            _ensure_failure_tables(conn)
             since = time.time() - (days * 86400)
             cur = conn.execute(
-                """SELECT user_input, command, error, context, occurrence_count, timestamp, id
+                """SELECT user_input, command, error, context, occurrence_count, timestamp, id, source
                    FROM failures
                    WHERE timestamp >= ?
                      AND COALESCE(status, 'open') NOT IN ('resolved', 'closed')
@@ -838,7 +910,9 @@ class SelfImprovementEngine:
                         "objective": (
                             f"A {vtag} for the recurring failure '{fail[:120]}' is ready"
                             + (f" — approach: {approach[:120]}" if approach else "")
-                            + ". Review and apply if sound."
+                            + (f" (candidate {pr['candidate_id']} for {pr.get('file')}, applied only when approved "
+                               "and a copy of the tree shows it fixes the failure)." if pr.get("candidate_id")
+                               else " (not a new version of the failing file: nothing to apply).")
                         ),
                         "priority": 0.6 if verified else 0.45,
                         "autonomy_mode": "proposal_only",
@@ -856,57 +930,74 @@ class SelfImprovementEngine:
     # ─────────────────────────────────────────────────────────────────────────
     # Coding-agent route — decompose → solve → VERIFY (propose-only)
     # ─────────────────────────────────────────────────────────────────────────
-    def _build_fix_task(self, failure: dict, max_file_chars: int = 4000) -> str:
-        """Turn a recorded failure into a coding task for the agent, with the offending
-        file inlined as context when the traceback names one in-project."""
-        err = _safe_str(failure.get("error", ""))
-        ui = _safe_str(failure.get("user_input", ""))
-        cmd = _safe_str(failure.get("command", ""))
-        file_ref, file_content = "", ""
-        m = re.search(r'File "([^"]+\.py)"', err)
-        if m:
-            cand = Path(m.group(1))
-            try:
-                cand.relative_to(_patch_root())
-                if cand.exists() and cand.stat().st_size < max_file_chars * 3:
-                    file_content = cand.read_text(encoding="utf-8")[:max_file_chars]
-                    file_ref = str(cand.relative_to(_patch_root()))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-        parts = [f"Fix the bug that causes this failure: {err[:500]}"]
-        if cmd:
-            parts.append(f"Triggered by command: {cmd[:150]}")
+    def _build_fix_task(self, failure: dict, evidence: Optional[dict] = None) -> str:
+        """A coding task built from a reproducible failure: the action that failed, its arguments,
+        the error and the code location. Never from what the person said — a complaint or a
+        correction is evidence for calibration, not a description of a bug.
+
+        The file the error points at is inlined whole when it fits the model's window, and the task
+        then asks for that file back; otherwise the code around the failing line is shown and the
+        task asks for the corrected code only (it is then not a whole-file candidate)."""
+        ev = evidence if evidence is not None else repair_evidence(failure)
+        if not ev:
+            return ""
+        parts = [f"Fix the bug that causes this failure: {ev['error'][:500]}"]
+        if ev.get("action"):
+            parts.append(f"The action that failed: {ev['action']}"
+                         + (f" with arguments {json.dumps(ev.get('args') or {}, default=str, ensure_ascii=False)[:300]}"
+                            if ev.get("args") else ""))
             # what the record says of this action: how it has fared here, the causes, what worked instead
             try:
                 from eli.runtime.action_outcomes import report as _outcomes
-                told = _outcomes(action=cmd.split()[0] if cmd.split() else cmd).get("lines") or []
+                told = _outcomes(action=ev["action"]).get("lines") or []
                 if told:
                     parts.append("What ELI's own record says of this action: " + " ".join(told))
             except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                 log.debug("action record unavailable to the fix task", exc_info=True)
-        if ui:
-            parts.append(f"User input: {ui[:150]}")
-        if file_content:
-            parts.append(f"Correct this file ({file_ref}) and return the fixed version:\n"
-                         f"```python\n{file_content}\n```")
+        if ev.get("whole_file"):
+            parts.append(f"Correct this file ({ev['file']}) and return the complete fixed version:\n"
+                         f"```python\n{ev['source']}\n```")
         else:
-            parts.append("Propose a minimal corrected implementation.")
+            parts.append(f"The code around line {ev.get('line') or '?'} of {ev['file']}:\n"
+                         f"```python\n{ev['context']}\n```\nPropose a minimal corrected implementation.")
         return "\n".join(parts)
+
+    def _repairable_failures(self, max_items: int) -> List[Tuple[dict, dict]]:
+        """(failure, evidence) for the newest failures a code change could fix, most frequent first."""
+        out: List[Tuple[dict, dict]] = []
+        for f in self.analyze_failures(limit=25, min_cluster_size=1):
+            ev = repair_evidence(f)
+            if ev:
+                out.append((f, ev))
+            if len(out) >= max_items:
+                break
+        return out
 
     def propose_via_agent(self, max_items: int = 3, run_timeout: float = 20.0,
                           budget_s: Optional[float] = None) -> Dict[str, Any]:
-        """Route self-improvement through the CODING AGENT: per recent failure, the
-        agent decomposes → solves → VERIFIES a fix (its tree-search + execution gate).
-        Propose-only — nothing is applied.
+        """Route self-improvement through the CODING AGENT: per recent failure that names a code
+        location in ELI's source, the agent decomposes → solves → VERIFIES a fix (its tree-search +
+        execution gate). Propose-only: nothing is applied. A candidate that is a new version of the
+        failing file is kept in the candidate archive (record_candidate) for the owner to approve;
+        approve_candidate is the only way it reaches the source.
 
         `run_timeout` is the SANDBOX subprocess timeout for executing candidate code.
         `budget_s` is the WALL-CLOCK budget shared across every failure in this call —
         without it this method is unbounded (the 2-hour freeze).
         """
-        failures = [f for f in self.analyze_failures(limit=10, min_cluster_size=1)
-                    if _safe_str(f.get("error")) or _safe_str(f.get("user_input"))][:max_items]
-        if not failures:
-            return {"ok": True, "proposals": [], "reason": "no recent failures to fix"}
+        picked = self._repairable_failures(max_items)
+        if not picked:
+            return {"ok": True, "proposals": [],
+                    "reason": "no recent failure names a code location in ELI's source"}
+        try:
+            from eli.coding.sandbox import containment
+            if not containment().get("contained"):
+                return {"ok": True, "proposals": [],
+                        "reason": "model-written code cannot be contained on this machine "
+                                  f"({'; '.join(containment().get('notes') or []) or 'no sandbox available'}), "
+                                  "so self-repair does not run it"}
+        except Exception as exc:
+            return {"ok": False, "proposals": [], "error": f"the code sandbox could not be checked: {exc}"}
         try:
             from eli.core.dag import Task, run_graph
             from eli.coding.agent import CodeAgent
@@ -920,36 +1011,54 @@ class SelfImprovementEngine:
                 label="self_repair",
             )
 
-            def _mk(failure):
+            def _mk(failure, ev):
                 def _run(ctx):
-                    # run_graph spawns FRESH threads and the background marker is
-                    # thread-local, so it must be set here, not on the caller. This
-                    # is what makes these calls preemptible by a foreground turn and
-                    # stops them stamping _last_foreground_ts (which starved daemons).
+                    # The calls are background work (preemptible by a foreground turn, and they must
+                    # not stamp _last_foreground_ts). run_graph may run this on the caller's own
+                    # thread, so the marker is restored afterwards: the caller's later calls are not
+                    # background calls.
                     try:
-                        from eli.cognition.gguf_inference import set_background_inference
-                        set_background_inference(True)
+                        from eli.cognition.gguf_inference import is_background_inference, set_background_inference
                     except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-                    cr = agent.solve(self._build_fix_task(failure),
-                                     run_timeout=run_timeout, deadline=deadline)
-                    return {
-                        "failure": (_safe_str(failure.get("user_input"))
-                                    or _safe_str(failure.get("error")))[:140],
+                        is_background_inference = set_background_inference = None
+                    was_bg = bool(is_background_inference()) if is_background_inference else False
+                    if set_background_inference:
+                        set_background_inference(True)
+                    try:
+                        cr = agent.solve(self._build_fix_task(failure, ev), run_timeout=run_timeout, deadline=deadline,
+                                         target_file=(_patch_root() / ev["file"]) if ev.get("whole_file") else None)
+                    finally:
+                        if set_background_inference:
+                            set_background_inference(was_bg)
+                    label = f"{ev.get('action') or ev['file']}: {_error_summary(ev['error'])}"[:140]
+                    proposal = {
+                        "failure": label,
+                        "file": ev["file"],
                         "verified": bool(getattr(cr, "solved", False)),
                         "score": round(float(getattr(cr, "score", 0.0) or 0.0), 2),
                         "approach": (getattr(cr, "plan", {}) or {}).get("approach"),
                         "message": getattr(cr, "message", ""),
                         "code": (getattr(cr, "code", "") or "")[:1500],
                     }
+                    patch = getattr(cr, "patch", None)
+                    if isinstance(patch, dict) and patch.get("ok"):
+                        proposal["candidate_id"] = self.record_candidate(
+                            {"file": patch["file"], "old": patch["old"], "new": patch["new"],
+                             "description": f"coding-agent fix for {label}"[:300],
+                             "failure_ref": label},
+                            hypothesis=str(proposal["approach"] or "")[:400])
+                        proposal["hunks"] = len(patch.get("hunks") or [])
+                    elif isinstance(patch, dict):
+                        proposal["not_a_patch"] = "; ".join(patch.get("problems") or [])
+                    return proposal
                 return _run
 
-            tasks = [Task(id=f"fix_{i}", run=_mk(f), critical=False)
-                     for i, f in enumerate(failures)]
+            tasks = [Task(id=f"fix_{i}", run=_mk(f, ev), critical=False)
+                     for i, (f, ev) in enumerate(picked)]
             # Serial on purpose: there is ONE model behind a single call lock
-            # (gguf_inference._LLM_CALL_LOCK), so extra workers bought scheduling
-            # noise, not throughput — while each fresh thread lost the thread-local
-            # background marker. The shared deadline bounds the total either way.
+            # (gguf_inference._LLM_CALL_LOCK), so extra workers buy scheduling noise, not
+            # throughput. With one worker and no task timeout run_graph runs the tasks on this
+            # thread (see _run above). The shared deadline bounds the total either way.
             report = run_graph(tasks, max_workers=1)
             proposals = [o.result for _tid, o in report.outcomes.items() if o.ok and o.result]
             return {"ok": True, "proposals": proposals, "count": len(proposals),
@@ -961,391 +1070,138 @@ class SelfImprovementEngine:
     # Code Patching — generate → validate → apply
     # ─────────────────────────────────────────────────────────────────────────
 
-    def generate_code_patch(self, failure: dict, max_file_chars: int = 5000) -> dict:
+    def generate_code_patch(self, failure: dict) -> dict:
+        """A targeted {file, old, new, description} patch for a recorded failure.
+
+        The failure must be one repair_evidence accepts (a traceback into ELI's own source, not a
+        complaint or an environmental fault); the patch itself is generated, validated and retried
+        by the code examiner's one patch generator (code_examiner.generate_fix_patch), given the
+        error, the action that failed and any prior fix for the same bug class.
         """
-        Use the inference broker to generate a targeted old→new code patch for a failure.
-        Returns {"ok": bool, "file": str, "old": str, "new": str, "description": str}
-        """
-        err = _safe_str(failure.get("error", ""))
-        cmd = _safe_str(failure.get("command", ""))
-        ui = _safe_str(failure.get("user_input", ""))
-
-        if not err and not ui:
-            return {"ok": False, "error": "Insufficient failure context to generate a repair"}
-
-        # Extract Python file reference from the error traceback
-        file_ref = ""
-        file_content = ""
-        full_src = ""        # complete file text — used to VALIDATE the patch (verbatim + parse)
-        file_match = re.search(r'File "([^"]+\.py)"', err)
-        if file_match:
-            candidate = Path(file_match.group(1))
-            try:
-                candidate.relative_to(_patch_root())
-                if candidate.exists() and candidate.stat().st_size < max_file_chars * 3:
-                    full_src = candidate.read_text(encoding="utf-8")
-                    file_ref = str(candidate.relative_to(_patch_root()))
-                    # Give the model the enclosing scope around the failing line (plus the file's imports) instead
-                    # of just the head, the same scope-aware context the code examiner uses, so it can write a
-                    # verbatim in-scope fix. The deepest traceback frame for this file is the error site.
-                    _frames = re.findall(
-                        rf'File "[^"]*{re.escape(candidate.name)}", line (\d+)', err)
-                    _err_line = int(_frames[-1]) if _frames else None
-                    try:
-                        from eli.runtime.code_examiner import _build_fix_context as _bfc
-                        file_content = _bfc(full_src, _err_line)
-                    except Exception:
-                        file_content = full_src[:max_file_chars]
-            except (ValueError, Exception):
-                log.debug("suppressed exception", exc_info=True)
-
-        # Only patch failures we can ground to a real in-project file. Without a file from the
-        # traceback the model invents a path (phantom api_client.py / command_handler.py for the 11434
-        # and "No commands" errors) and apply_code_patch fails "File not found". Skip honestly, these go
-        # to goal-based/self-heal handling instead of a hallucinated patch.
-        if not file_ref or not file_content:
+        ev = repair_evidence(failure)
+        if not ev:
+            ui = _safe_str(failure.get("user_input", ""))
+            err = _safe_str(failure.get("error", ""))
             return {
                 "ok": False,
                 "error": "no_groundable_file",
-                "reason": ("This failure has no in-project file traceback, so it is not "
-                           "code-patchable from its error text — routed to goal/self-heal "
+                "reason": ("This failure has no traceback into ELI's own source (or is not a code defect), so "
+                           "it is not code-patchable from its error text — routed to goal/self-heal "
                            "surfacing instead of guessing a file."),
                 "failure_ref": f"{ui[:60]} → {err[:60]}",
             }
-
-        prompt_parts = [
-            "You are ELI's self-improvement code-patch engine.",
-            f"A recurring error has been detected (occurred {failure.get('occurrence_count', 1)}× time(s)).",
-            f"Error: {err[:600]}",
-        ]
-        if cmd:
-            prompt_parts.append(f"Command: {cmd[:200]}")
-        if ui:
-            prompt_parts.append(f"User input: {ui[:200]}")
-        if file_content:
-            prompt_parts.append(f"\nSource file ({file_ref}):\n```python\n{file_content}\n```")
-
-        prompt_parts += [
-            "\nGenerate a minimal, targeted fix. Respond with ONLY valid JSON in this exact format:",
-            f'{{"file": "{file_ref}", "old": "exact original code (verbatim)", "new": "corrected replacement", "description": "what this fixes"}}',
-            "Rules:",
-            f"- 'file' MUST be exactly \"{file_ref}\" — the file shown above; never invent or change the path",
-            "- 'old' must be character-for-character identical to text in the file shown above",
-            "- 'new' must fix only this specific error",
-            "- Make the smallest possible change",
-            "- If no safe patch can be generated, return: {\"ok\": false, \"reason\": \"explanation\"}",
-        ]
-
-        # Route self-upgrade through the coding engine's long-term bug memory:
-        # classify this failure and inject any prior fix for the same bug class
-        # so repeated bugs are repaired the way they were before. Guarded.
+        message = [ev["error"][:600]]
+        if ev.get("action"):
+            message.append(f"The action that failed: {ev['action']}")
+        # Self-upgrade through the coding engine's long-term bug memory: a prior fix for the same bug
+        # class is the approach to try first.
         try:
             from eli.coding.bug_memory import classify_bug, get_bug_memory
-            _dg = classify_bug(traceback_text=err, code=file_content)
+            _dg = classify_bug(traceback_text=ev["error"], code=ev.get("source") or ev.get("context") or "")
             _recalls = get_bug_memory().recall(_dg, limit=2)
             if _recalls:
-                _known = "\n".join(f"- ({r.bug_class}, used {r.success_count}×) {r.fix_summary}" for r in _recalls)
-                prompt_parts.append(
-                    f"\nThis looks like a {_dg.bug_class.value} bug. Prior fixes that worked for "
-                    f"this class (reuse the approach where applicable):\n{_known}")
+                message.append(f"This looks like a {_dg.bug_class.value} bug. Prior fixes that worked for this class: "
+                               + "; ".join(f"({r.bug_class}, used {r.success_count}x) {r.fix_summary}" for r in _recalls))
         except Exception as _bm_e:
             log.debug(f"[SELF-IMPROVE] bug-memory recall skipped: {_bm_e}")
-
-        # Validate-and-retry: a patch is returned only once 'old' is a verbatim substring of the real
-        # file and applying it still parses (the same pre-flight the code examiner uses), so the
-        # autonomous loop stops handing apply_code_patch syntax-broken patches. On rejection the specific
-        # error is fed back and the model retries. apply_code_patch still import-verifies and
-        # auto-reverts after.
-        try:
-            from eli.runtime.code_examiner import _validate_patch as _vp
-        except Exception:
-            _vp = None
-        _base = "\n".join(prompt_parts)
-        _attempts = 3
-        _last = "no attempt made"
-        try:
-            broker = get_broker()
-        except Exception as exc:
-            return {"ok": False, "error": f"LLM inference unavailable: {exc}"}
-        for _i in range(1, _attempts + 1):
-            _p = _base if _i == 1 else (
-                _base + f"\n\nYour previous attempt FAILED: {_last}. Return corrected JSON — "
-                "'old' must be copied EXACTLY (character-for-character) from the code shown.")
-            try:
-                raw = broker.infer(_p, max_tokens=700, temperature=0.05)
-            except Exception as exc:
-                _last = f"inference failed: {exc}"
-                continue
-            json_match = re.search(r'\{[\s\S]+\}', raw or "")
-            if not json_match:
-                _last = "LLM did not return valid JSON"
-                continue
-            try:
-                patch = json.loads(json_match.group(0))
-            except json.JSONDecodeError as exc:
-                _last = f"JSON parse failed: {exc}"
-                continue
-            if patch.get("ok", True) is False and patch.get("reason"):
-                return {"ok": False, "error": patch["reason"]}   # explicit decline = terminal
-            if not all(k in patch for k in ("file", "old", "new")):
-                _last = "Patch JSON missing required fields (file/old/new)"
-                continue
-            if _vp is not None and full_src:
-                _verr = _vp(full_src, patch)
-                if _verr:
-                    _last = _verr
-                    log.debug(f"[SELF-IMPROVE] {file_ref}: attempt {_i}/{_attempts} rejected — {_verr}")
-                    continue
-            patch["ok"] = True
+        from eli.runtime.code_examiner import generate_fix_patch
+        patch = generate_fix_patch({"file": ev["file"], "line": ev.get("line"),
+                                    "kind": f"recurring runtime failure ({failure.get('occurrence_count', 1)}x)",
+                                    "message": "\n".join(message)})
+        if patch.get("ok"):
             patch.setdefault("description", "self-improvement patch")
-            patch["failure_ref"] = f"{ui[:60]} → {err[:60]}"
-            if _i > 1:
-                log.debug(f"[SELF-IMPROVE] {file_ref}: valid patch on attempt {_i}/{_attempts}")
-            return patch
-        return {"ok": False, "error": f"no valid patch after {_attempts} attempts: {_last}"}
+            patch["failure_ref"] = f"{ev.get('action') or ev['file']}: {_error_summary(ev['error'])}"[:140]
+        return patch
 
     def apply_code_patch(self, patch: dict, verify: bool = True) -> dict:
+        """Apply one ``{file, old, new}`` patch through the gated applier (apply_patch_set).
+
+        Returns {"ok", "applied", "file", "backup", "reloaded", "verification", "message"}.
         """
-        Apply a code patch: replace `old` with `new` in the target file.
-        Validates Python syntax before and after writing, then (when ``verify``)
-        smoke-imports the patched module in an isolated subprocess so a patch
-        that compiles but breaks the module at import time is reverted instead of
-        kept. Creates a timestamped backup (plus a canonical `.eli_bak` for
-        revert_patch) and reverts on any failure.
-        Returns {"ok": bool, "applied": bool, "message": str}
-        """
-        file_str = (patch.get("file") or "").strip()
-        old_code = patch.get("old", "")
-        new_code = patch.get("new", "")
-        description = patch.get("description", "self-improvement patch")
-
-        if not file_str or not old_code or not new_code:
-            return {"ok": False, "applied": False, "message": "Patch missing required fields (file/old/new)"}
-        if old_code == new_code:
-            return {"ok": False, "applied": False, "message": "old and new are identical — no change"}
-
-        # Resolve path
-        p = Path(file_str)
-        _root = _patch_root()
-        if not p.is_absolute():
-            p = _root / p
-        p = p.resolve()
-
-        # Safety guard — only patch files inside project
-        try:
-            p.relative_to(_root)
-        except ValueError:
-            return {"ok": False, "applied": False, "message": f"Refused: {p} is outside source root"}
-
-        # Protected-path guard: the self-improver must never auto-patch the safety guardrails (or
-        # itself), since a faulty or adversarial patch to them would disable the gates that contain it
-        # (network fail-closed, shell denylist, Full Control, grounding, the patcher). Shared with
-        # FIX_FILE (executor_enhanced.py) so both patch paths enforce the same list, see
-        # is_protected_patch_path.
-        if is_protected_patch_path(p):
-            try:
-                _rel = p.relative_to(_root).as_posix()
-            except Exception:
-                _rel = p.as_posix()
-            return {"ok": False, "applied": False,
-                    "message": f"Refused: {_rel} is a protected safety guardrail and cannot be auto-patched"}
-
-        if not p.exists():
-            return {"ok": False, "applied": False, "message": f"File not found: {p}"}
-        if p.suffix != ".py":
-            return {"ok": False, "applied": False, "message": "Only .py files can be auto-patched"}
-
-        try:
-            content = p.read_text(encoding="utf-8")
-        except Exception as exc:
-            return {"ok": False, "applied": False, "message": f"Read error: {exc}"}
-
-        if old_code not in content:
-            return {"ok": False, "applied": False,
-                    "message": "old_code not found verbatim in file — patch is stale or incorrect"}
-
-        new_content = content.replace(old_code, new_code, 1)
-
-        # Validate new syntax
-        try:
-            ast.parse(new_content)
-        except SyntaxError as exc:
-            return {"ok": False, "applied": False,
-                    "message": f"Patch introduces syntax error at line {exc.lineno}: {exc.msg}"}
-
-        # Pre-patch import baseline (differential verification). Only attribute a
-        # broken import to THIS patch if the module imported cleanly *before* it;
-        # this tolerates pre-existing missing optional deps without false reverts.
-        verify_dotted = _dotted_module_for_path(p) if verify else None
-        pre_import_ok = False
-        if verify_dotted:
-            pre_import_ok, _ = _smoke_import_module(verify_dotted)
-
-        # Backup — timestamped (keeps history so a second patch can't clobber the
-        # only undo) plus a canonical `.eli_bak` pointing at the latest, which
-        # revert_patch() restores from.
-        ts_backup = p.with_suffix(f".py.eli_bak.{int(time.time())}")
-        backup = p.with_suffix(".py.eli_bak")
-        try:
-            shutil.copy2(str(p), str(ts_backup))
-            shutil.copy2(str(p), str(backup))
-        except Exception as exc:
-            return {"ok": False, "applied": False, "message": f"Could not create backup: {exc}"}
-
-        # Write
-        try:
-            p.write_text(new_content, encoding="utf-8")
-        except Exception as exc:
-            if backup.exists():
-                shutil.copy2(str(backup), str(p))
-            return {"ok": False, "applied": False, "message": f"Write failed (backup restored): {exc}"}
-
-        # Compile-check
-        try:
-            import py_compile
-            py_compile.compile(str(p), doraise=True)
-        except Exception as exc:
-            if backup.exists():
-                shutil.copy2(str(backup), str(p))
-            return {"ok": False, "applied": False,
-                    "message": f"Compile error after patch (reverted): {exc}"}
-
-        # Behavioural verification: a patch can compile and still break the module at import time
-        # (unresolved name, broken top-level statement, bad import). For importable `eli` modules that
-        # imported cleanly before the patch, smoke-import the patched file in an isolated subprocess and
-        # revert if it no longer loads.
-        import_not_run = ""
-        if verify_dotted and pre_import_ok:
-            imp_ok, imp_detail = _smoke_import_module(verify_dotted)
-            if imp_detail.startswith(_NOT_RUN):
-                import_not_run = imp_detail
-            if not imp_ok:
-                if backup.exists():
-                    shutil.copy2(str(backup), str(p))
-                log.debug(f"[SELF-IMPROVE] Patch reverted — import verification failed: {imp_detail}")
-                return {"ok": False, "applied": False,
-                        "message": f"Patch broke module import (reverted): {imp_detail}"}
-
-        # Targeted regression (CI-grade): a patch can compile and import and still break behaviour.
-        # Run the patched module's related tests and revert on a genuine failure. Timeouts, no matching
-        # tests and infra errors are not a pass: the patch stays and is reported unverified, or is
-        # reverted when ELI_SELFPATCH_REQUIRE_TESTS=1. ELI_SELFPATCH_VERIFY_TESTS=0 disables the run.
-        verification = "not run"
-        if verify and os.environ.get("ELI_SELFPATCH_VERIFY_TESTS", "1").strip().lower() not in ("0", "false", "no", "off"):
-            t_ran, t_passed, t_detail = _run_targeted_tests(p)
-            if t_ran and not t_passed:
-                if backup.exists():
-                    shutil.copy2(str(backup), str(p))
-                log.debug(f"[SELF-IMPROVE] Patch reverted — targeted tests failed: {t_detail[:200]}")
-                return {"ok": False, "applied": False,
-                        "message": f"Patch broke targeted tests (reverted): {t_detail[:200]}"}
-            if t_ran:
-                verification = "targeted tests passed"
-            else:
-                verification = f"unverified: {t_detail}"
-                if os.environ.get("ELI_SELFPATCH_REQUIRE_TESTS", "0").strip().lower() in ("1", "true", "yes", "on"):
-                    if backup.exists():
-                        shutil.copy2(str(backup), str(p))
-                    return {"ok": False, "applied": False, "verification": verification,
-                            "message": f"Patch reverted, its tests could not run ({t_detail[:160]})"}
-        if import_not_run:
-            verification = f"unverified: the import check {import_not_run}"
-
-        # Log the applied patch
-        try:
-            rel_path = str(p.relative_to(_root))
-            self.log_improvement(
-                "code_patch",
-                f"Patched {rel_path}: {description}",
-                area="code",
-                code_before=old_code[:500],
-                code_after=new_code[:500],
-            )
-            # Also record in code_patches table
-            conn = self.memory._get_connection()
-            try:
-                _ensure_failure_tables(conn)
-                conn.execute(
-                    "INSERT INTO code_patches (file_path, description, old_code, new_code, status, timestamp, failure_ref) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (rel_path, description, old_code[:1000], new_code[:1000],
-                     "applied" if verification == "targeted tests passed" else "applied_unverified",
-                     time.time(), patch.get("failure_ref", ""))
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        rel = str(p.relative_to(_root))
-        reloaded = _reload_patched_module(verify_dotted) if verify_dotted else False
-        log.debug(f"[SELF-IMPROVE] Patch applied: {rel} — {description}")
-        return {
-            "ok": True,
-            "applied": True,
-            "file": rel,
-            "backup": str(backup),
-            "reloaded": reloaded,
-            "verification": verification,
-            "message": f"Patch applied to {p.name}: {description} ({verification})",
-        }
+        res = self.apply_patch_set([patch], verify=verify)
+        files = res.get("files") or []
+        out = {"ok": bool(res.get("ok")), "applied": bool(res.get("applied")), "message": res.get("message", "")}
+        for key in ("verification", "reloaded"):
+            if key in res:
+                out[key] = res[key]
+        if files:
+            out["file"] = files[0]
+        if res.get("backups"):
+            out["backup"] = res["backups"][0]
+        if isinstance(out.get("reloaded"), list):
+            out["reloaded"] = bool(out["reloaded"])
+        return out
 
     def apply_patch_set(self, patches: list, *, verify: bool = True) -> dict:
-        """Apply a SET of single-file patches ATOMICALLY (Advancement E) — enabling safe
-        COORDINATED multi-file edits (e.g. rename a symbol + update its callers).
+        """The one path by which ELI's own source is changed: a SET of ``{file, old, new}``
+        patches, all or nothing.
 
-        Phases, all-or-nothing:
-          1. Validate ALL in memory — resolve each target (project-scope, existing .py),
-             confirm every `old` is present verbatim, apply it, and ast.parse the result.
-             If ANY patch fails, NOTHING is written.
-          2. Back up every target file (timestamped + canonical `.eli_bak`).
-          3. Write all new contents.
-          4. Compile + (when ``verify``) import-verify every touched module. If ANY fails,
-             ROLL BACK ALL files and report — the repo is never left half-patched.
+          1. In memory, no writes: each target is inside the source tree, is not one of the
+             protected guardrail files, is an existing .py file; each ``old`` occurs exactly once
+             in the text it is applied to (hunks for one file apply in order); the result parses.
+             ``new`` may be empty (a deletion).
+          2. Import baseline of every touched module (only a break this set causes is blamed on it).
+          3. Back up every target (timestamped + canonical ``.eli_bak``), then write.
+          4. Compile; when ``verify``: import every touched module and run each file's targeted
+             tests. ANY failure rolls back EVERY file. Tests that could not run leave the set
+             reported unverified, or rolled back when ELI_SELFPATCH_REQUIRE_TESTS=1.
+          5. Record each file's change (improvements + code_patches) and reload the modules.
 
-        Reuses apply_code_patch's mechanics (path/scope guard, differential import verify,
-        backups). `patches`: [{"file","old","new"[,"description"]}], 1+ per file.
-        Returns {"ok","applied","files":[...],"message"}.
+        Returns {"ok", "applied", "files", "backups", "reloaded", "verification", "message"}.
         """
         if not patches or not isinstance(patches, list):
             return {"ok": False, "applied": False, "message": "no patches supplied"}
 
-        # ── Phase 1: validate ALL in memory (zero writes) ───────────────────────
+        # ── 1: validate ALL in memory (zero writes) ─────────────────────────────
+        _root = _patch_root()
         by_path: Dict[Path, str] = {}
+        original: Dict[Path, str] = {}
         order: List[Path] = []
+        described: Dict[Path, List[dict]] = {}
+        def _at(i: int) -> str:
+            return f"patch {i}: " if len(patches) > 1 else ""
+
         for i, patch in enumerate(patches):
-            file_str = (patch.get("file") or "").strip()
-            old_code, new_code = patch.get("old", ""), patch.get("new", "")
-            if not file_str or not old_code or not new_code:
-                return {"ok": False, "applied": False, "message": f"patch {i}: missing file/old/new"}
+            file_str = (patch.get("file") or "").strip() if isinstance(patch, dict) else ""
+            old_code = patch.get("old") if isinstance(patch, dict) else None
+            new_code = patch.get("new") if isinstance(patch, dict) else None
+            if not file_str or not isinstance(old_code, str) or not old_code or not isinstance(new_code, str):
+                return {"ok": False, "applied": False,
+                        "message": f"{_at(i)}missing required fields (file/old/new)"}
+            if old_code == new_code:
+                return {"ok": False, "applied": False, "message": f"{_at(i)}old and new are identical, no change"}
             p = Path(file_str)
-            _root = _patch_root()
             p = (_root / p if not p.is_absolute() else p).resolve()
             try:
-                p.relative_to(_root)
+                rel = p.relative_to(_root).as_posix()
             except ValueError:
-                return {"ok": False, "applied": False, "message": f"patch {i}: {p} outside source root"}
+                return {"ok": False, "applied": False, "message": f"{_at(i)}Refused: {p} is outside source root"}
+            # The self-improver must never change the guardrails that contain it (network fail-closed,
+            # shell denylist, Full Control, grounding, the patcher, the tests that judge it).
+            if is_protected_patch_path(p):
+                return {"ok": False, "applied": False,
+                        "message": f"{_at(i)}Refused: {rel} is a protected safety guardrail and cannot be auto-patched"}
             if not p.exists() or p.suffix != ".py":
-                return {"ok": False, "applied": False, "message": f"patch {i}: {p} is not an existing .py file"}
+                return {"ok": False, "applied": False, "message": f"{_at(i)}{rel} is not an existing .py file"}
             try:
                 content = by_path[p] if p in by_path else p.read_text(encoding="utf-8")
             except Exception as exc:
-                return {"ok": False, "applied": False, "message": f"patch {i}: read error {exc}"}
-            if old_code not in content:
-                return {"ok": False, "applied": False,
-                        "message": f"patch {i}: old_code not found verbatim in {p.name}"}
-            content = content.replace(old_code, new_code, 1)
+                return {"ok": False, "applied": False, "message": f"{_at(i)}read error {exc}"}
+            if p not in by_path:
+                original[p] = content
+                order.append(p)
+            changed, why = _replace_exactly_once(content, old_code, new_code)
+            if changed is None:
+                return {"ok": False, "applied": False, "message": f"{_at(i)}{why} in {p.name}"}
             try:
-                ast.parse(content)
+                ast.parse(changed)
             except SyntaxError as exc:
                 return {"ok": False, "applied": False,
-                        "message": f"patch {i}: introduces syntax error in {p.name} (line {exc.lineno})"}
-            if p not in by_path:
-                order.append(p)
-            by_path[p] = content
+                        "message": f"{_at(i)}introduces a syntax error in {p.name} (line {exc.lineno}: {exc.msg})"}
+            by_path[p] = changed
+            described.setdefault(p, []).append(patch)
 
-        # Pre-patch import baselines — only blame a broken import on us if it was clean before.
+        # ── 2: import baselines — only blame a broken import on us if it was clean before ─
         dotted: Dict[Path, Optional[str]] = {}
         pre_ok: Dict[Path, bool] = {}
         if verify:
@@ -1354,7 +1210,7 @@ class SelfImprovementEngine:
                 dotted[p] = d
                 pre_ok[p] = _smoke_import_module(d)[0] if d else False
 
-        # ── Phase 2: back up every target ───────────────────────────────────────
+        # ── 3: back up, then write ──────────────────────────────────────────────
         backups: Dict[Path, Path] = {}
         ts = int(time.time())
         try:
@@ -1364,33 +1220,30 @@ class SelfImprovementEngine:
                 shutil.copy2(str(p), str(canon))
                 backups[p] = canon
         except Exception as exc:
-            return {"ok": False, "applied": False, "message": f"backup failed (nothing written): {exc}"}
+            return {"ok": False, "applied": False, "message": f"Could not create backup (nothing written): {exc}"}
 
         def _rollback_all():
-            for _p, _b in backups.items():
+            for _p in order:
                 try:
-                    if Path(_b).exists():
-                        shutil.copy2(str(_b), str(_p))
+                    _p.write_text(original[_p], encoding="utf-8")
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
 
-        # ── Phase 3: write all ──────────────────────────────────────────────────
         try:
             for p in order:
                 p.write_text(by_path[p], encoding="utf-8")
         except Exception as exc:
             _rollback_all()
-            return {"ok": False, "applied": False, "message": f"write failed (all reverted): {exc}"}
+            return {"ok": False, "applied": False, "message": f"Write failed (all reverted): {exc}"}
 
-        # ── Phase 4: verify all (compile + import); roll back ALL on any failure ─
+        # ── 4: verify; roll back ALL on any failure ─────────────────────────────
         import py_compile
         for p in order:
             try:
                 py_compile.compile(str(p), doraise=True)
             except Exception as exc:
                 _rollback_all()
-                return {"ok": False, "applied": False,
-                        "message": f"compile error in {p.name} (all reverted): {exc}"}
+                return {"ok": False, "applied": False, "message": f"Compile error in {p.name} after patch (all reverted): {exc}"}
         unchecked: List[str] = []
         if verify:
             for p in order:
@@ -1398,23 +1251,72 @@ class SelfImprovementEngine:
                 if d and pre_ok.get(p):
                     ok, detail = _smoke_import_module(d)
                     if detail.startswith(_NOT_RUN):
-                        unchecked.append(f"{p.name} ({detail})")
+                        unchecked.append(f"the import check of {p.name} {detail}")
                     if not ok:
                         _rollback_all()
+                        log.debug(f"[SELF-IMPROVE] Patch reverted — import verification failed: {detail}")
                         return {"ok": False, "applied": False,
-                                "message": f"import broke in {p.name} (all reverted): {detail}"}
+                                "message": f"Patch broke module import of {p.name} (all reverted): {detail}"}
+        verification = "not run"
+        if verify and os.environ.get("ELI_SELFPATCH_VERIFY_TESTS", "1").strip().lower() not in ("0", "false", "no", "off"):
+            not_ran: List[str] = []
+            for p in order:
+                t_ran, t_passed, t_detail = _run_targeted_tests(p)
+                if t_ran and not t_passed:
+                    _rollback_all()
+                    log.debug(f"[SELF-IMPROVE] Patch reverted — targeted tests failed: {t_detail[:200]}")
+                    return {"ok": False, "applied": False,
+                            "message": f"Patch broke targeted tests of {p.name} (all reverted): {t_detail[:200]}"}
+                if not t_ran:
+                    not_ran.append(f"{p.name}: {t_detail}")
+            if not not_ran:
+                verification = "targeted tests passed"
+            else:
+                verification = "unverified: " + "; ".join(not_ran)
+                if os.environ.get("ELI_SELFPATCH_REQUIRE_TESTS", "0").strip().lower() in ("1", "true", "yes", "on"):
+                    _rollback_all()
+                    return {"ok": False, "applied": False, "verification": verification,
+                            "message": f"Patch reverted, its tests could not run ({'; '.join(not_ran)[:160]})"}
+        if unchecked:
+            verification = "unverified: " + "; ".join(unchecked)
 
-        files = [str(p.relative_to(_patch_root())) for p in order]
+        # ── 5: record and reload ────────────────────────────────────────────────
+        files = [p.relative_to(_root).as_posix() for p in order]
+        status = "applied" if verification == "targeted tests passed" else "applied_unverified"
+        for p, rel in zip(order, files):
+            for patch in described[p]:
+                description = str(patch.get("description") or "self-improvement patch")
+                try:
+                    self.log_improvement("code_patch", f"Patched {rel}: {description}", area="code",
+                                         code_before=str(patch.get("old"))[:500], code_after=str(patch.get("new"))[:500])
+                except Exception:
+                    log.debug("patch not logged as an improvement", exc_info=True)
+                try:
+                    conn = self.memory._get_connection()
+                    try:
+                        _ensure_failure_tables(conn)
+                        conn.execute(
+                            "INSERT INTO code_patches (file_path, description, old_code, new_code, status, timestamp, failure_ref) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (rel, description, str(patch.get("old"))[:1000], str(patch.get("new"))[:1000], status,
+                             time.time(), str(patch.get("failure_ref") or "")))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                except Exception:
+                    log.debug("patch not recorded in code_patches", exc_info=True)
         reloaded: List[str] = []
         if verify:
             for p in order:
                 d = dotted.get(p)
                 if d and _reload_patched_module(d):
                     reloaded.append(d)
-        log.debug(f"[SELF-IMPROVE] Patch set applied atomically across {len(files)} file(s): {files}")
-        return {"ok": True, "applied": True, "files": files, "reloaded": reloaded,
-                **({"verification": "unverified: import check " + "; ".join(unchecked)} if unchecked else {}),
-                "message": f"Applied {len(patches)} patch(es) across {len(files)} file(s)"}
+        names = ", ".join(p.name for p in order)
+        what = "; ".join(str(pt.get("description") or "self-improvement patch") for pt in patches)
+        log.debug(f"[SELF-IMPROVE] Patch set applied across {len(files)} file(s): {files} — {what}")
+        return {"ok": True, "applied": True, "files": files, "backups": [str(backups[p]) for p in order],
+                "reloaded": reloaded, "verification": verification,
+                "message": f"Patch applied to {names}: {what} ({verification})"}
 
     def verify_in_workspace(self, patch: dict, *, tests: Optional[List[str]] = None, reproducer: Optional[List[str]] = None,
                             timeout: float = 240.0) -> dict:
@@ -1442,8 +1344,10 @@ class SelfImprovementEngine:
         t0 = time.time()
         try:
             _make_workspace(root, ws)
-            if not _change_in_workspace(ws / rel, patch.get("old", ""), patch.get("new", "")):
-                return {"verdict": "rejected", "reason": "the text to replace is not in the file"}
+            _changed, _why = _replace_exactly_once((ws / rel).read_text(encoding="utf-8"),
+                                                   str(patch.get("old") or ""), str(patch.get("new") or ""))
+            if _changed is None or not _change_in_workspace(ws / rel, patch.get("old", ""), patch.get("new", "")):
+                return {"verdict": "rejected", "reason": _why or "the text to replace is not in the file"}
             try:
                 ast.parse((ws / rel).read_text(encoding="utf-8"))
             except SyntaxError as exc:
@@ -1459,22 +1363,74 @@ class SelfImprovementEngine:
                           reproducer: Optional[List[str]] = None, parent_id: Optional[int] = None) -> dict:
         """Evaluate a patch in a workspace and keep the result, whether or not it is adopted."""
         result = self.verify_in_workspace(patch, tests=tests, reproducer=reproducer)
-        status = "verified" if result["verdict"] == "fixed" else "rejected" if result["verdict"] in ("rejected", "regression") else "proposed"
+        result["candidate_id"] = self.record_candidate(patch, hypothesis=hypothesis, parent_id=parent_id)
+        status = self._settle_candidate_check(result["candidate_id"], result)
+        result["status"] = status
+        self._assess_proposal(patch, hypothesis, result, status)
+        return result
+
+    def record_candidate(self, patch: dict, *, hypothesis: str = "", parent_id: Optional[int] = None) -> int:
+        """Keep a candidate patch, unchecked, in the archive (status 'proposed', no verdict yet).
+
+        The old and new text are kept whole: adoption applies exactly what is stored, and a cut-off
+        copy of a whole-file candidate would replace the start of the file with the start of the fix.
+        """
         conn = self.memory._get_connection()
         try:
             _ensure_failure_tables(conn)
             cur = conn.execute(
                 "INSERT INTO code_patches (file_path, description, old_code, new_code, status, timestamp, failure_ref, "
-                "hypothesis, verdict, results, cost_s, parent_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (str(patch.get("file") or ""), str(patch.get("description") or "")[:300], str(patch.get("old", ""))[:4000],
-                 str(patch.get("new", ""))[:4000], status, time.time(), str(patch.get("failure_ref") or ""),
-                 hypothesis[:400], result["verdict"], json.dumps({k: result.get(k) for k in ("baseline", "candidate", "reason")}, default=str)[:6000],
-                 float(result.get("cost_s") or 0.0), parent_id))
+                "hypothesis, parent_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                (str(patch.get("file") or ""), str(patch.get("description") or "")[:300], str(patch.get("old", "")),
+                 str(patch.get("new", "")), "proposed", time.time(), str(patch.get("failure_ref") or ""),
+                 hypothesis[:400], parent_id))
             conn.commit()
-            result["candidate_id"] = int(cur.lastrowid)
+            return int(cur.lastrowid)
         finally:
             conn.close()
-        result["status"] = status
+
+    def _settle_candidate_check(self, candidate_id: int, result: dict) -> str:
+        """Store what the workspace check said of a candidate; returns its status."""
+        verdict = str(result.get("verdict") or "")
+        status = "verified" if verdict == "fixed" else "rejected" if verdict in ("rejected", "regression") else "proposed"
+        conn = self.memory._get_connection()
+        try:
+            conn.execute(
+                "UPDATE code_patches SET status = ?, verdict = ?, results = ?, cost_s = ? WHERE id = ?",
+                (status, verdict, json.dumps({k: result.get(k) for k in ("baseline", "candidate", "reason")}, default=str)[:6000],
+                 float(result.get("cost_s") or 0.0), int(candidate_id)))
+            conn.commit()
+        finally:
+            conn.close()
+        return status
+
+    def approve_candidate(self, candidate_id: int) -> dict:
+        """The owner approved this candidate: check it on a copy of the tree if that has not been
+        done, and apply it through the gated applier only when the check shows it fixes what failed
+        and breaks nothing. Anything else leaves the source as it is and says why."""
+        conn = self.memory._get_connection()
+        try:
+            _ensure_failure_tables(conn)
+            row = conn.execute("SELECT file_path, description, old_code, new_code, status, verdict, hypothesis, failure_ref "
+                               "FROM code_patches WHERE id = ?", (int(candidate_id),)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return {"ok": False, "applied": False, "message": f"there is no candidate {candidate_id}"}
+        if row[4] in ("adopted", "probationary"):
+            return {"ok": False, "applied": False, "message": f"candidate {candidate_id} is already applied ({row[4]})"}
+        if row[5] is None:
+            patch = {"file": row[0], "description": row[1], "old": row[2], "new": row[3], "failure_ref": row[7]}
+            result = self.verify_in_workspace(patch)
+            status = self._settle_candidate_check(candidate_id, result)
+            self._assess_proposal(patch, str(row[6] or ""), {**result, "candidate_id": int(candidate_id)}, status)
+            if result.get("verdict") != "fixed":
+                return {"ok": False, "applied": False, "candidate_id": int(candidate_id), "verdict": result.get("verdict"),
+                        "message": f"Candidate {candidate_id} not applied: {result.get('verdict')}"
+                                   + (f" ({result.get('reason')})" if result.get("reason") else "")}
+        return self.adopt_candidate(candidate_id)
+
+    def _assess_proposal(self, patch: dict, hypothesis: str, result: dict, status: str) -> None:
         # The proposal as a figure (eli/cognition/epistemics, kind proposal: the chance a candidate with
         # this verdict is adopted and holds, fitted on what became of earlier ones) and a thought in
         # the Upgrade Bay; a rejected or regressing candidate is settled wrong at once, the rest when
@@ -1503,7 +1459,6 @@ class SelfImprovementEngine:
                 _settle_thought(f"proposal:{result['candidate_id']}", "rejected", how=verdict)
         except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
             log.debug("proposal not assessed", exc_info=True)
-        return result
 
     def adopt_candidate(self, candidate_id: int) -> dict:
         """Apply a verified candidate to the real tree. Nothing else is adopted; a failed adoption is rolled back and recorded."""

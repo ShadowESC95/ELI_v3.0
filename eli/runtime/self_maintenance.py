@@ -122,8 +122,10 @@ def run_maintenance_cycle(
         result["content"] = "\n".join(lines)
         return result
 
-    # Default: analyze + log improvements (+ optional coding-agent proposals when model ready)
-    improve = engine.analyze_and_improve(repair=True)
+    # Default: analyze + log improvements. The coding agent is tens of sequential model calls and
+    # this runs on the caller's thread (the chat turn), so it never starts here: proposals are the
+    # "propose" mode, which the SELF_IMPROVE action sends to the background job queue.
+    improve = engine.analyze_and_improve(repair=False)
     imps = list(improve.get("improvements") or [])
     result["improvements"] = imps
     result["proposal_count"] = int(improve.get("proposals_made") or 0)

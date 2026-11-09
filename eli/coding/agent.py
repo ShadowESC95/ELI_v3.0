@@ -98,10 +98,15 @@ class CodeAgent:
               beam: Optional[int] = None, max_iterations: Optional[int] = None,
               run_timeout: float = 20.0, target_score: float = 0.95,
               use_dag: Optional[bool] = None,
-              deadline: "Deadline | float | None" = None) -> CodeResult:
+              deadline: "Deadline | float | None" = None,
+              target_file: "str | os.PathLike | None" = None) -> CodeResult:
         """`run_timeout` is the SANDBOX subprocess timeout for executing candidate
         code. `deadline` is the wall-clock budget for the whole solve — one shared
-        absolute instant threaded through the DAG, tree search and critique passes."""
+        absolute instant threaded through the DAG, tree search and critique passes.
+
+        Solving has no side effects on ELI's source. `target_file`, when the task asks for a
+        new version of one file, makes the result carry the change as a proposal (`patch`,
+        never applied here)."""
         if not (task or "").strip():
             return CodeResult(False, False, "", language, 0.0, {}, "", {}, None,
                               "empty task")
@@ -114,6 +119,9 @@ class CodeAgent:
             dag_cr = self._try_dag_solve(task, use_tests=use_tests, run_timeout=run_timeout,
                                          target_score=target_score, deadline=deadline)
             if dag_cr is not None and dag_cr.code.strip() and (dag_cr.solved or dag_cr.score >= 0.5):
+                if target_file is not None:
+                    from eli.coding.patches import propose_file_patch
+                    dag_cr.patch = propose_file_patch(target_file, dag_cr.code)
                 return dag_cr   # else fall through to single-shot
             # A self-repair task rarely composes into a runnable module, so the
             # fall-through is the common case, not the exception — it must not run
@@ -122,7 +130,8 @@ class CodeAgent:
                 return dag_cr
         return self._solve_single(task, language=language, use_tests=use_tests, beam=beam,
                                    max_iterations=max_iterations, run_timeout=run_timeout,
-                                   target_score=target_score, deadline=deadline)
+                                   target_score=target_score, deadline=deadline,
+                                   target_file=target_file)
 
     def _try_dag_solve(self, task: str, *, use_tests: bool, run_timeout: float,
                        target_score: float,
@@ -164,7 +173,8 @@ class CodeAgent:
     def _solve_single(self, task: str, *, language: str = "python", use_tests: bool = True,
                       beam: Optional[int] = None, max_iterations: Optional[int] = None,
                       run_timeout: float = 20.0, target_score: float = 0.95,
-                      deadline: Optional[Deadline] = None) -> CodeResult:
+                      deadline: Optional[Deadline] = None,
+                      target_file: "str | os.PathLike | None" = None) -> CodeResult:
         beam = beam if beam is not None else _env_int("ELI_CODING_BEAM", 3)
         max_iterations = (max_iterations if max_iterations is not None
                           else _env_int("ELI_CODING_MAX_ITERS", 6))
@@ -235,18 +245,13 @@ class CodeAgent:
         msg = (f"solved (score {best.score:.2f})" if solved
                else f"best effort (score {best.score:.2f}, gate: {best.gate_failed or 'none'})")
 
+        # Solving never writes. When the candidate was written as a new version of a named file,
+        # what it would change there comes back as a proposal; applying it is the owner's call,
+        # through the one gated applier (SelfImprovementEngine.apply_patch_set).
         patch_result: Optional[Dict[str, Any]] = None
-        if best.code.strip() and language == "python":
-            try:
-                from eli.coding.patches import is_repo_edit_task, try_apply_repo_fix
-                if is_repo_edit_task(task):
-                    patch_result = try_apply_repo_fix(
-                        task, best.code, verify=best.score >= 0.5,
-                    )
-                    if patch_result.get("applied"):
-                        msg += f"; patched {patch_result.get('patches', 0)} hunk(s) in repo"
-            except Exception as _patch_err:
-                log.debug(f"[CODE_AGENT] repo patch pass skipped: {_patch_err}")
+        if target_file is not None and best.code.strip() and language == "python":
+            from eli.coding.patches import propose_file_patch
+            patch_result = propose_file_patch(target_file, best.code)
 
         return CodeResult(
             ok=bool(best.code.strip()), solved=solved, code=best.code,

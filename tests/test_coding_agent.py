@@ -5,6 +5,7 @@ plan → search → verify → repair → bug-memory loop is exercised against r
 sandbox execution.
 """
 
+import sys
 import tempfile
 from pathlib import Path
 
@@ -28,14 +29,38 @@ def test_sandbox_real_crash_detected():
     assert r.crashed and "IndexError" in r.traceback_tail
 
 
-def test_sandbox_timeout_is_tolerated():
+def test_sandbox_timeout_is_inconclusive_not_clean():
+    """A run that never finished shows nothing about the code: not a crash, and not a pass."""
     r = run_code("import time\nwhile True:\n    time.sleep(0.2)", "python", timeout=2)
-    assert r.clean and r.timed_out and not r.crashed
+    assert r.timed_out and not r.crashed and not r.clean and r.verdict == "inconclusive"
 
 
-def test_sandbox_missing_optional_dep_tolerated():
+def test_sandbox_a_module_the_candidate_imports_that_is_not_here_is_a_failure():
+    """A hallucinated import scored as a clean run, so the candidate could be reported 'solved'."""
     r = run_code("import a_module_that_is_not_installed_xyz", "python", timeout=8)
-    assert r.clean and not r.crashed
+    assert r.crashed and not r.clean and r.verdict == "failed"
+    assert "a_module_that_is_not_installed_xyz" in r.note
+
+
+def test_sandbox_cannot_import_name_from_its_own_module_is_a_failure():
+    r = run_code("import candidate\nprint(candidate.f())", "python", timeout=8,
+                 extra_files={"candidate.py": "from json import no_such_function_xyz\n"},
+                 entry_name="run_tests")
+    assert r.crashed and r.verdict == "failed"
+
+
+def test_a_hallucinated_import_with_no_tests_is_never_solved():
+    c = verify_candidate(Candidate(code="import quantum_widgets_xyz\n\ndef main():\n    return 1\n\nmain()\n"))
+    assert c.runs_clean is False and c.gate_failed == "execution"
+    assert c.score < 0.95
+
+
+def test_an_inconclusive_run_earns_no_execution_credit():
+    c = verify_candidate(Candidate(code="import time\n\ndef main():\n    while True:\n        time.sleep(0.2)\n\nmain()\n"),
+                         run_timeout=2)
+    assert c.runs_clean is None and c.score < 0.95
+    clean = verify_candidate(Candidate(code="def main():\n    return 1\n\nmain()\n"))
+    assert clean.score > c.score
 
 
 # An uncaught sys.exit(n)/os._exit(n) has no traceback but a positive returncode; it must not
@@ -57,11 +82,44 @@ def test_sandbox_sys_exit_zero_is_still_clean():
     assert r.clean and not r.crashed and r.returncode == 0
 
 
-# A genuine signal kill (negative returncode) must stay tolerated.
-def test_sandbox_signal_kill_is_still_tolerated():
+# A kill for the run's budget (SIGKILL: the OOM killer or a hard limit) says nothing about the code.
+def test_sandbox_a_budget_kill_is_inconclusive():
     r = run_code("import os, signal\nos.kill(os.getpid(), signal.SIGKILL)", "python", timeout=8)
-    assert r.clean and not r.crashed
-    assert r.returncode is not None and r.returncode < 0
+    assert not r.crashed and not r.clean and r.verdict == "inconclusive"
+    assert "SIGKILL" in r.note
+
+
+# A crash signal is a crash: it counted as a clean run.
+def test_sandbox_a_crash_signal_is_a_failure():
+    r = run_code("import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)", "python", timeout=8)
+    assert r.crashed and not r.clean and r.verdict == "failed" and "SIGSEGV" in r.note
+
+
+def test_a_candidate_runs_contained_with_no_session_secrets_and_no_stdin(monkeypatch):
+    """Model-written code ran with ELI's stdin, the ssh agent, the session bus and every credential
+    whose name did not contain KEY/TOKEN/SECRET, and with no OS isolation unless an opt-in was set."""
+    import subprocess as sp
+    from eli.coding import sandbox as SB
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/user/0/ssh-agent.sock")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/0/bus")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/home/someone/creds.json")
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["kw"] = list(argv), kw
+        return sp.CompletedProcess(argv, 0, "", "")
+    monkeypatch.setattr(SB.subprocess, "run", fake_run)
+    r = SB.run_code("print(1)", "python", timeout=8)
+    env = seen["kw"]["env"]
+    assert seen["kw"].get("stdin") is sp.DEVNULL
+    for name in ("SSH_AUTH_SOCK", "DBUS_SESSION_BUS_ADDRESS", "GOOGLE_APPLICATION_CREDENTIALS"):
+        assert name not in env
+    assert env["HOME"] == seen["kw"]["cwd"]
+    if SB.containment()["contained"]:
+        assert r.contained and seen["argv"][0] != sys.executable
+        assert "--unshare-net" in seen["argv"] or "-n" in seen["argv"]
+    else:
+        assert not r.contained and "uncontained" in r.note
 
 
 # ── bug classification ─────────────────────────────────────────────────────────
@@ -196,3 +254,76 @@ def test_search_prefers_the_node_whose_refinements_improve():
     visits = {a.id: 3, b.id: 3}
     assert _select_ucb([a, b], visits, 6, 0.95, 0.0, rewards) is b
     assert _select_ucb([a, b], visits, 6, 0.95, 0.0) is a, "with nothing tried yet the scores alone decide"
+
+
+# ── solving never writes ELI's source ────────────────────────────────────────────
+
+@pytest.fixture
+def in_tree_file():
+    """A small module inside ELI's source tree, as a self-repair task would name one."""
+    import shutil
+    from eli.core.paths import source_root
+    d = Path(tempfile.mkdtemp(prefix="agent_nowrite_", dir=str(Path(source_root()) / "artifacts")))
+    f = d / "adder.py"
+    f.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    yield f
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def _fixing_stub(prompt, system="", max_tokens=1000, temperature=0.2, **k):
+    p = prompt.lower()
+    if "only json" in p:
+        return '{"approach":"correct the sign","steps":["return a + b"]}'
+    if "test harness" in p:
+        return ("import candidate, sys\np=0;t=1\n"
+                "try:\n    assert candidate.add(2,3)==5; p+=1\nexcept Exception: pass\n"
+                "print(f'ELI_TESTS: {p}/{t}')\nsys.exit(0 if p==t else 1)\n")
+    return "def add(a, b):\n    return a + b\n"
+
+
+def test_solving_a_fix_task_never_writes_the_named_file(in_tree_file):
+    """Every solve ended with a hidden repo-write pass: a task with a fix verb that named an
+    in-project file had the best candidate diffed into ELI's live source, with no approval, no
+    protected-path check and no tests — including the 'propose-only' self-repair loop."""
+    from eli.core.paths import source_root
+    rel = in_tree_file.relative_to(Path(source_root())).as_posix()
+    before = in_tree_file.read_text()
+    with tempfile.TemporaryDirectory() as td:
+        r = CodeAgent(generate=_fixing_stub, bug_memory=BugMemory(db_path=Path(td) / "bm.sqlite3")).solve(
+            f"Fix the bug in {rel}: add subtracts.", beam=1, max_iterations=1, use_dag=False)
+    assert "a + b" in r.code
+    assert in_tree_file.read_text() == before
+    assert not list(in_tree_file.parent.glob("*.eli_bak*"))
+    assert r.patch is None
+
+
+def test_a_target_file_gets_a_proposal_not_a_write(in_tree_file):
+    before = in_tree_file.read_text()
+    with tempfile.TemporaryDirectory() as td:
+        r = CodeAgent(generate=_fixing_stub, bug_memory=BugMemory(db_path=Path(td) / "bm.sqlite3")).solve(
+            "Correct this file and return the complete fixed version.", beam=1, max_iterations=1,
+            use_dag=False, target_file=in_tree_file)
+    assert r.patch and r.patch["ok"] and r.patch["applied"] is False
+    assert r.patch["old"] == before and "a + b" in r.patch["new"]
+    assert in_tree_file.read_text() == before
+
+
+# ── a harness that does not report its own count ─────────────────────────────────
+
+def test_a_harness_without_a_count_is_run_not_credited():
+    """A model harness that defined test_* functions but never ran them got a constant
+    'ELI_TESTS: 1/1' appended, so every candidate that imported scored as passing its tests."""
+    from eli.coding.verification import synthesize_tests
+    harness = synthesize_tests("f returns 1", "def f():\n    return 2\n",
+                               lambda p, **k: "import candidate\n\ndef test_x():\n    assert candidate.f() == 1\n")
+    cand = verify_candidate(Candidate(code="def f():\n    return 2\n"), tests=harness)
+    assert cand.tests_total == 1 and cand.tests_passed == 0 and cand.gate_failed == "tests"
+    good = verify_candidate(Candidate(code="def f():\n    return 1\n"), tests=harness)
+    assert good.tests_total == 1 and good.tests_passed == 1
+
+
+def test_a_harness_with_nothing_to_run_falls_back_to_the_smoke_harness():
+    from eli.coding.verification import synthesize_tests, _deterministic_smoke_harness
+    harness = synthesize_tests("x", "def f():\n    return 1\n",
+                               lambda p, **k: "import candidate\nprint('looks fine')\n")
+    assert harness == _deterministic_smoke_harness()
