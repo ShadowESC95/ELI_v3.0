@@ -1399,10 +1399,10 @@ class ExtensionsTab(QWidget):
 
         self._set_expose = QCheckBox("Expose ELI's control actions over MCP")
         self._set_expose.setToolTip(
-            "ELI can act as an MCP server itself (python -m eli.integrations.mcp.server), "
-            "offering its own actions to any client. Actions that drive the machine, run "
-            "code, or change ELI are withheld unless you turn this on — that is handing "
-            "an external client the mouse, the shell and the self-upgrade path.")
+            "ELI can act as an MCP server itself (python -m eli.integrations.mcp.server). "
+            "By default an MCP client gets only ELI's read-only status actions. Every other "
+            "action needs this switch on: that hands an external client the mouse, the "
+            "shell and the self-upgrade path.")
         form.addRow(self._set_expose)
         warn = QLabel(
             "<span style='color:%s'>Leaving that off is the safe default. It affects "

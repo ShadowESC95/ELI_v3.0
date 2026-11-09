@@ -188,6 +188,14 @@ def test_extensions_env_override_disables_control_checkbox(qapp, monkeypatch):
     assert "ELI_MCP_ALLOW_CONTROL" in w._set_expose.toolTip()
 
 
+def test_extensions_control_switch_says_what_clients_get_without_it(qapp, monkeypatch):
+    """Off, an MCP client gets only ELI's read-only status actions; the label says so."""
+    monkeypatch.delenv("ELI_MCP_ALLOW_CONTROL", raising=False)
+    from eli.gui.tabs.extensions_tab import ExtensionsTab
+    tip = ExtensionsTab(parent_window=None)._set_expose.toolTip()
+    assert "only ELI's read-only status actions" in tip and "Every other action needs this switch" in tip
+
+
 # --------------------------------------------------------------------------- #
 # AddMcpServerDialog — the form that was missing entirely
 # --------------------------------------------------------------------------- #
