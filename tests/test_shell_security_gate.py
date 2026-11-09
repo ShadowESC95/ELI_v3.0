@@ -201,3 +201,57 @@ class TestShellExecReadsEveryCommand:
         with patch("subprocess.run", return_value=_ran()) as sp_mock:
             assert _shell_exec("echo hi; touch ~/probe_file").get("ok") is True
         assert sp_mock.called
+
+
+class TestSubcommandsThatOnlyRead:
+    """A program like git, systemctl or docker reads or acts by its subcommand: ``git status``
+    changes nothing and runs without Full Control, ``git push`` does not. One table in
+    shell_gate says which."""
+
+    @pytest.mark.parametrize("line", [
+        "git status", "git log --oneline -5", "git -C ~/proj diff HEAD~1", "git show HEAD",
+        "git branch --list 'feat*'", "git branch -a", "git remote -v", "git rev-parse HEAD",
+        "git ls-files", "git blame setup.py", "git config --get user.name", "git stash list",
+        "systemctl status sshd", "systemctl --user list-units", "systemctl is-active sshd",
+        "journalctl -u sshd -n 50", "docker ps -a", "docker images", "docker inspect web",
+        "docker logs --tail 20 web", "docker container ls", "podman ps", "apt list --installed",
+        "apt-cache policy curl", "dpkg -l", "pip list", "pip show requests", "npm ls",
+        "flatpak list", "snap list", "nmcli device status", "nmcli d", "nmcli connection show",
+        "ip addr", "ip -br a", "ip route show", "ip r", "ss -tulpn", "git status | head -5",
+    ])
+    def test_a_subcommand_that_only_reads_runs(self, line, _no_owner_allowlist):
+        with patch("subprocess.run", return_value=_ran()) as sp_mock:
+            result = _shell_exec(line)
+        assert result.get("ok") is True, result
+        assert sp_mock.called
+
+    @pytest.mark.parametrize("line", [
+        "git push", "git commit -m wip", "git checkout main", "git branch newbranch",
+        "git branch -D old", "git branch -rd origin/old", "git stash", "git remote add x y",
+        "git config user.name someone", "git -c core.pager=cat log", "git tag v1",
+        "git log --output=/tmp/out", "git status && git push",
+        "systemctl restart sshd", "systemctl --user stop x", "docker run alpine",
+        "docker rm web", "docker system prune", "docker exec web ls", "apt install curl",
+        "apt -o Foo=1 list", "apt-get install curl", "dpkg -i pkg.deb", "pip install requests",
+        "pip --python /tmp/py list", "npm install", "npm audit fix", "flatpak install app",
+        "snap remove app", "nmcli device disconnect wlan0", "nmcli radio wifi off",
+        "nmcli networking off", "ip addr add 192.0.2.5/24 dev eth0", "ip link set eth0 down",
+        "ip route del default", "ip a flush dev eth0", "ss -K dst 192.0.2.5", "ss -tK",
+        "journalctl --vacuum-time=1d", "date -us 10:00",
+    ])
+    def test_a_subcommand_that_changes_state_still_needs_the_owner(self, line, _no_owner_allowlist):
+        with patch("subprocess.run") as sp_mock:
+            result = _shell_exec(line)
+        assert result.get("ok") is False and result.get("blocked") is True, result
+        sp_mock.assert_not_called()
+
+    def test_the_owner_can_still_allow_a_program_by_name(self, monkeypatch):
+        import eli.execution.effectors._base as _base
+
+        class _Owner:
+            def is_command_allowed(self, name):
+                return name == "git"
+        monkeypatch.setattr(_base, "_get_security_manager", lambda: _Owner())
+        with patch("subprocess.run", return_value=_ran()) as sp_mock:
+            assert _shell_exec("git push").get("ok") is True
+        assert sp_mock.called

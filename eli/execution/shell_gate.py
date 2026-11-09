@@ -89,32 +89,221 @@ _DENIED_EXECUTABLES = {
     "osascript",                                 # scripting engine
 }
 
-# ── Commands that only read, each with the arguments that would make it change something ──
-# The one list of what runs without Full Control or the owner's allowlist (shell_followup and
-# the router's "run that command" take theirs from here). A command not named here changes
-# something, or might.
-_READ_ONLY_COMMANDS: Dict[str, frozenset] = {
-    name: frozenset() for name in (
+# ── Commands that only read ──
+# The one table of what runs without Full Control or the owner's allowlist (shell_followup and the
+# router's "run that command" take theirs from here). A command not named here changes something,
+# or might. Each entry says how the command is read (``_rule``):
+#   acting   options that make it change something (``-x`` / ``--long`` / ``--long=value``)
+#   operands "any", or "none": an operand makes it act (``hostname box``, ``git branch new``)
+#   listing  options under which operands are only patterns to list (``git branch --list 'f*'``)
+#   needs    it reads only with one of these (``git config --get``, ``dpkg -l``)
+#   options  options whose value is the next word (so the value is not taken for an operand)
+#   sub      subcommands that only read, each a rule of its own; any other subcommand acts
+#   bare     with ``sub``: whether the command with no subcommand only reads
+#   order    with ``sub``: the program's own list it matches an abbreviation against, first match
+#            wins (``ip a`` is ``ip address``, ``nmcli d`` is ``nmcli device``)
+#   takes    short options that take their value attached (``-Iseconds``): in a cluster of short
+#            options, the letters after one of these are its value, not options
+#   long1    the program spells long options with one dash (``-name``, ``-brief``): no clusters
+def _rule(acting=(), operands="any", listing=(), needs=(), options=(), sub=None, bare=True,
+          order=(), takes="", long1=False) -> Dict[str, Any]:
+    return {"acting": frozenset(acting), "operands": operands, "listing": frozenset(listing),
+            "needs": frozenset(needs), "options": frozenset(options), "sub": dict(sub or {}),
+            "bare": bool(bare), "order": tuple(order), "takes": frozenset(takes), "long1": bool(long1)}
+
+
+_LEAF = _rule()
+_SHOW_VERBS = {"show": _LEAF, "list": _LEAF, "lst": _LEAF, "ls": _LEAF}
+
+_GIT = _rule(
+    # -c and friends set config for this run (core.pager, alias.x=!cmd...): any command at all
+    acting={"-c", "--config-env", "--exec-path"},
+    options={"-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix"},
+    sub={
+        **{name: _LEAF for name in (
+            "status", "rev-parse", "ls-files", "ls-tree", "blame", "annotate", "shortlog",
+            "describe", "cat-file", "rev-list", "whatchanged", "ls-remote", "count-objects",
+            "show-ref", "for-each-ref", "name-rev", "merge-base", "var", "help", "version",
+            "check-ignore", "check-attr", "cherry", "range-diff")},
+        "log": _rule(acting={"--output"}),
+        "diff": _rule(acting={"--output"}),
+        "show": _rule(acting={"--output"}),
+        "grep": _rule(acting={"-O", "--open-files-in-pager"}),
+        "branch": _rule(
+            acting={"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f",
+                    "--force", "-u", "--set-upstream-to", "--unset-upstream", "--edit-description",
+                    "-t", "--track", "--no-track", "--create-reflog", "--recurse-submodules"},
+            operands="none", listing={"-l", "--list"},
+            options={"--contains", "--no-contains", "--merged", "--no-merged", "--points-at",
+                     "--sort", "--format"}),
+        "tag": _rule(
+            acting={"-a", "--annotate", "-s", "--sign", "-u", "--local-user", "-d", "--delete",
+                    "-f", "--force", "-m", "--message", "-F", "--file", "-e", "--edit"},
+            operands="none", listing={"-l", "--list", "-v", "--verify"},
+            options={"--contains", "--no-contains", "--merged", "--no-merged", "--points-at",
+                     "--sort", "--format", "-n"}),
+        "config": _rule(
+            acting={"--add", "--unset", "--unset-all", "--replace-all", "--rename-section",
+                    "--remove-section", "-e", "--edit"},
+            needs={"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+                   "--get-colorbool", "-l", "--list"}),
+        "remote": _rule(sub={"show": _LEAF, "get-url": _LEAF}),
+        "stash": _rule(sub={"list": _LEAF, "show": _LEAF}, bare=False),
+        "reflog": _rule(sub={"show": _LEAF}),
+        "worktree": _rule(sub={"list": _LEAF}, bare=False),
+        "submodule": _rule(sub={"status": _LEAF, "summary": _LEAF}),
+        "notes": _rule(sub={"list": _LEAF, "show": _LEAF}),
+    })
+
+_SYSTEMCTL = _rule(
+    options={"-H", "--host", "-M", "--machine", "-t", "--type", "--state", "-p", "--property",
+             "-n", "--lines", "-o", "--output", "--root"},
+    sub={name: _LEAF for name in (
+        "status", "show", "cat", "is-active", "is-enabled", "is-failed", "is-system-running",
+        "list-units", "list-unit-files", "list-sockets", "list-timers", "list-jobs",
+        "list-dependencies", "list-machines", "list-automounts", "list-paths", "show-environment",
+        "get-default", "help")})
+
+_LISTS = {"ls": _LEAF, "list": _LEAF, "inspect": _LEAF}
+_CONTAINERS = _rule(
+    # these pick the programs a container engine runs
+    acting={"--runtime", "--conmon", "--network-cmd-path", "--hooks-dir"},
+    options={"-c", "--context", "--connection", "-H", "--host", "--url", "--identity", "--config",
+             "-l", "--log-level", "--root", "--runroot", "--storage-driver", "--tlscacert",
+             "--tlscert", "--tlskey"},
+    sub={
+        **{name: _LEAF for name in (
+            "ps", "images", "inspect", "logs", "version", "info", "stats", "top", "port", "diff",
+            "history", "events", "search", "help")},
+        "container": _rule(sub={**_LISTS, **{n: _LEAF for n in ("ps", "logs", "top", "port", "diff", "stats")}},
+                           bare=False),
+        "image": _rule(sub={**_LISTS, "history": _LEAF}, bare=False),
+        "network": _rule(sub=_LISTS, bare=False),
+        "volume": _rule(sub=_LISTS, bare=False),
+        "pod": _rule(sub={**_LISTS, "ps": _LEAF, "top": _LEAF, "stats": _LEAF}, bare=False),
+        "system": _rule(sub={"df": _LEAF, "info": _LEAF, "events": _LEAF}, bare=False),
+        "compose": _rule(sub={n: _LEAF for n in ("ps", "ls", "logs", "config", "images", "top",
+                                                 "version", "events")}, bare=False),
+    })
+
+# -o / -c hand apt a configuration of the caller's choosing (hooks among it)
+_APT_ACTING = {"-o", "--option", "-c", "--config-file"}
+_APT = _rule(acting=_APT_ACTING, sub={n: _LEAF for n in (
+    "list", "show", "search", "policy", "depends", "rdepends", "showsrc", "changelog", "help")})
+_APT_CACHE = _rule(acting=_APT_ACTING, sub={n: _LEAF for n in (
+    "policy", "show", "search", "depends", "rdepends", "showpkg", "stats", "madison", "pkgnames",
+    "showsrc", "unmet", "dotty", "xvcg")})
+_DPKG = _rule(
+    acting={"-i", "--install", "-r", "--remove", "-P", "--purge", "--configure", "--unpack",
+            "--set-selections", "--clear-selections", "--clear-avail", "--forget-old-unavail",
+            "--update-avail", "--merge-avail", "-A", "--record-avail", "--add-architecture",
+            "--remove-architecture", "--triggers-only"},
+    needs={"-l", "--list", "-L", "--listfiles", "-s", "--status", "-S", "--search", "-p",
+           "--print-avail", "--get-selections", "--print-architecture",
+           "--print-foreign-architectures", "-c", "--contents", "-I", "--info",
+            "--compare-versions", "-C", "--audit", "-V", "--verify", "--version", "--help"},
+    options={"--admindir", "--root", "--instdir"})
+
+_PIP = _rule(
+    # --python runs another interpreter, --log writes a file
+    acting={"--python", "--log", "--log-file"},
+    options={"--cache-dir", "--proxy", "--retries", "--timeout", "--exists-action",
+             "--trusted-host", "--cert", "--client-cert", "--use-feature", "--use-deprecated"},
+    sub={
+        **{n: _LEAF for n in ("list", "show", "freeze", "check", "inspect", "debug", "help")},
+        "index": _rule(sub={"versions": _LEAF}, bare=False),
+        "config": _rule(sub={"list": _LEAF, "get": _LEAF, "debug": _LEAF}, bare=False),
+        "cache": _rule(sub={"dir": _LEAF, "info": _LEAF, "list": _LEAF}, bare=False),
+    })
+
+_NPM = _rule(
+    options={"--prefix", "--userconfig", "--globalconfig", "-w", "--workspace", "--registry",
+             "--cache", "--loglevel"},
+    sub={
+        **{n: _LEAF for n in ("ls", "list", "ll", "la", "view", "v", "info", "show", "outdated",
+                              "search", "find", "s", "se", "explain", "why", "help", "root",
+                              "prefix", "query", "fund")},
+        "config": _rule(sub={"get": _LEAF, "list": _LEAF, "ls": _LEAF}, bare=False),
+        "audit": _rule(sub={"signatures": _LEAF}),
+    })
+
+_FLATPAK = _rule(sub={n: _LEAF for n in (
+    "list", "info", "search", "remotes", "remote-ls", "remote-info", "history", "ps", "documents",
+    "permissions", "help")})
+_SNAP = _rule(sub={n: _LEAF for n in (
+    "list", "info", "find", "search", "version", "services", "changes", "change", "tasks",
+    "connections", "interfaces", "known", "model", "aliases", "warnings", "logs", "get", "help")})
+
+_NMCLI = _rule(
+    options={"-f", "--fields", "-g", "--get-values", "-e", "--escape", "-c", "--colors", "-m",
+             "--mode", "-w", "--wait"},
+    order=("general", "networking", "radio", "connection", "device", "agent", "monitor", "help"),
+    sub={
+        "general": _rule(sub={"status": _LEAF, "permissions": _LEAF,
+                              "hostname": _rule(operands="none"), "logging": _rule(operands="none")}),
+        "networking": _rule(sub={"connectivity": _LEAF}),
+        "radio": _rule(sub={n: _rule(operands="none") for n in ("all", "wifi", "wwan")}),
+        "connection": _rule(sub={"show": _LEAF}),
+        "device": _rule(sub={"status": _LEAF, "show": _LEAF,
+                             "wifi": _rule(sub={"list": _LEAF}), "lldp": _rule(sub={"list": _LEAF})}),
+        "monitor": _LEAF,
+        "help": _LEAF,
+    })
+
+_IP_SHOW = _rule(sub=_SHOW_VERBS)
+_IP_SHOW_GET = _rule(sub={**_SHOW_VERBS, "get": _LEAF})
+_IP = _rule(
+    acting={"-b", "-ba", "-bat", "-batc", "-batch", "-force"},
+    options={"-n", "-netns", "-f", "-family", "-l", "-loops", "-rc", "-rcvbuf"},
+    long1=True,
+    # iproute2's own object table, in its order: an abbreviation is the first it begins
+    order=("address", "addrlabel", "maddress", "route", "rule", "neighbor", "neighbour", "ntable",
+           "ntbl", "link", "l2tp", "fou", "ila", "macsec", "tunnel", "tunl", "tuntap", "tap",
+           "token", "tcpmetrics", "tcp_metrics", "monitor", "xfrm", "mroute", "mrule", "netns",
+           "netconf", "vrf", "sr", "nexthop", "mptcp", "ioam", "help", "stats"),
+    sub={"address": _IP_SHOW, "maddress": _IP_SHOW, "route": _IP_SHOW_GET, "rule": _IP_SHOW,
+         "neighbor": _IP_SHOW_GET, "neighbour": _IP_SHOW_GET, "link": _IP_SHOW,
+         "netconf": _IP_SHOW, "monitor": _LEAF, "help": _LEAF})
+
+_READ_ONLY_COMMANDS: Dict[str, Dict[str, Any]] = {
+    name: _LEAF for name in (
         "cat", "head", "tail", "grep", "wc", "ls", "pwd", "stat", "echo", "uname", "uptime",
         "whoami", "id", "df", "du", "free", "diff", "which", "file", "nproc", "lscpu", "lsblk",
         "ps", "basename", "dirname", "realpath", "readlink", "test", "[", "true", "false", "printf",
+        "dpkg-query",
         # Windows' own read-only commands
         "dir", "type", "where", "findstr", "ver", "systeminfo", "tasklist",
     )
 }
 _READ_ONLY_COMMANDS.update({
-    "date": frozenset({"-s", "--set"}),
-    "find": frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir",
-                       "-fprint", "-fprint0", "-fprintf", "-fls"}),
-    "hostname": frozenset({"-F", "--file", "-b", "--boot"}),
-    "timedatectl": frozenset(),
+    "date": _rule(acting={"-s", "--set"}, takes="dfIr"),
+    "find": _rule(acting={"-delete", "-exec", "-execdir", "-ok", "-okdir",
+                          "-fprint", "-fprint0", "-fprintf", "-fls"}, long1=True),
+    # ``hostname box`` renames the machine
+    "hostname": _rule(acting={"-F", "--file", "-b", "--boot"}, operands="none"),
+    "timedatectl": _rule(options={"-H", "--host", "-M", "--machine", "-p", "--property"},
+                         sub={n: _LEAF for n in ("status", "show", "list-timezones",
+                                                 "timesync-status", "show-timesync")}),
+    "journalctl": _rule(acting={"--vacuum-size", "--vacuum-time", "--vacuum-files", "--rotate",
+                                "--flush", "--sync", "--relinquish-var", "--smart-relinquish-var",
+                                "--setup-keys", "--update-catalog"}),
+    # -K kills the sockets it lists, -D writes a dump file
+    "ss": _rule(acting={"-K", "--kill", "-D", "--diag"}, takes="fAFDN"),
+    "git": _GIT,
+    "systemctl": _SYSTEMCTL,
+    "docker": _CONTAINERS,
+    "podman": _CONTAINERS,
+    "apt": _APT,
+    "apt-cache": _APT_CACHE,
+    "dpkg": _DPKG,
+    "pip": _PIP,
+    "pip3": _PIP,
+    "npm": _NPM,
+    "flatpak": _FLATPAK,
+    "snap": _SNAP,
+    "nmcli": _NMCLI,
+    "ip": _IP,
 })
-# Commands that read when given no operand (or only these) and set what they are given otherwise:
-# ``hostname box`` renames the machine, ``timedatectl set-time`` sets the clock.
-_READ_ONLY_OPERANDS: Dict[str, frozenset] = {
-    "hostname": frozenset(),
-    "timedatectl": frozenset({"status", "show", "list-timezones", "timesync-status", "show-timesync"}),
-}
 
 # Words that run the rest of their command as a command of its own (``env rm ...``, ``sudo rm ...``).
 _RUNS_ANOTHER = frozenset({
@@ -324,24 +513,67 @@ def _command_name(word: str) -> str:
     return re.sub(r"\.(?:exe|com|bat|cmd)$", "", base)
 
 
+def _acts(rule: Dict[str, Any], word: str) -> bool:
+    """Whether this option, as written, is one that makes the command change something."""
+    if any(word == flag or word.startswith(flag + "=") for flag in rule["acting"]):
+        return True
+    if not rule["long1"] and word.startswith("-") and not word.startswith("--") and len(word) > 2:
+        for letter in word[1:]:            # a cluster of short options: -tK, -us
+            if "-" + letter in rule["acting"]:
+                return True
+            if letter in rule["takes"]:     # the rest is that option's value
+                break
+    return False
+
+
+def _named(rule: Dict[str, Any], word: str) -> str:
+    """The subcommand a word names: itself, or for a program that takes abbreviations, the first
+    name in its own list the word begins (what the program itself would run)."""
+    if not rule["order"]:
+        return word
+    return next((name for name in rule["order"] if name.startswith(word)), "")
+
+
+def _reads(rule: Dict[str, Any], words: Sequence[str]) -> bool:
+    flags: List[str] = []
+    operands: List[str] = []
+    i = 0
+    while i < len(words):
+        w = str(words[i])
+        if w == "--":
+            operands.extend(str(x) for x in words[i + 1:])
+            break
+        if w.startswith("-") and w != "-":
+            if _acts(rule, w):
+                return False
+            flags.append(w.split("=", 1)[0])
+            i += 2 if w in rule["options"] else 1
+            continue
+        if rule["sub"]:
+            sub = rule["sub"].get(_named(rule, w)) if _UNKNOWN not in w else None
+            return sub is not None and _reads(sub, words[i + 1:])
+        operands.append(w)
+        i += 1
+    if rule["sub"] and not rule["bare"]:
+        return False
+    if rule["needs"] and not any(f in rule["needs"] for f in flags):
+        return False
+    if operands and rule["operands"] == "none" and not any(f in rule["listing"] for f in flags):
+        return False
+    return True
+
+
 def only_reads(argv: Sequence[str]) -> bool:
-    """True when this one command, as written, only reads: it is a read-only command and none of
-    its arguments is one that makes it change something."""
+    """True when this one command, as written, only reads: the command is in the table of those
+    that only read (``_READ_ONLY_COMMANDS``), and its subcommand, options and operands are ones
+    that only read (``git status`` and ``systemctl status`` do, ``git push`` and ``systemctl
+    restart`` do not)."""
     if not argv:
         return False
-    name = _command_name(argv[0])
-    acting = _READ_ONLY_COMMANDS.get(name)
-    if acting is None or _UNKNOWN in argv[0]:
+    rule = _READ_ONLY_COMMANDS.get(_command_name(argv[0]))
+    if rule is None or _UNKNOWN in argv[0]:
         return False
-    rest = [str(w) for w in argv[1:]]
-    for w in rest:
-        if any(w == flag or w.startswith(flag + "=") for flag in acting):
-            return False
-    if name in _READ_ONLY_OPERANDS:
-        reads = _READ_ONLY_OPERANDS[name]
-        if any(not w.startswith("-") and w not in reads for w in rest):
-            return False
-    return True
+    return _reads(rule, [str(w) for w in argv[1:]])
 
 
 def _owner_allows(argv0: str) -> bool:
