@@ -717,21 +717,114 @@ def test_what_a_reply_says_it_will_do_is_the_offer_when_it_asks_deal(proposals, 
 
 def test_agreeing_to_save_what_eli_wrote_saves_it_as_written(monkeypatch, tmp_path):
     from eli.execution.executor_enhanced import execute
+
+    said = []
+
+    def _create_file(args):
+        # CREATE_FILE's own contract: a file that is there is left as it is, and it says so
+        from pathlib import Path
+        p = Path(args["path"])
+        if p.exists():
+            return {"ok": False, "path": str(p), "response": f"Did not create {p}: a file is already there."}
+        ran = execute("CREATE_FILE", args)
+        said.append(str(ran.get("response") or ran.get("content") or "").strip())
+        return ran
+
     carry, me, seen = _engine(monkeypatch, reply="Here it is:\n```diff\n- answer()\n+ search(); answer()\n```\nversion number stays.")
-    monkeypatch.setattr("eli.kernel.engine.execute_action", lambda action, args=None, *a, **k: execute(action, args))
+    monkeypatch.setattr("eli.kernel.engine.execute_action", lambda action, args=None, *a, **k:
+                        _create_file(args) if action == "CREATE_FILE" else execute(action, args))
     target = tmp_path / "fixes" / "tool_priority.patch"
     out = carry(me, "deal", {"tasks": ["draft the patch"], "saves": [str(target)], "commands": [], "explicit": [], "offer": ""})
     assert target.read_text() == "- answer()\n+ search(); answer()\n", "the code block, word for word"
-    assert out["response"].endswith(f"Saved it to {target}.")
+    assert said[-1] and out["response"].endswith(said[-1]), "what CREATE_FILE said is shown"
     again = carry(me, "deal", {"tasks": ["draft the patch"], "saves": [str(target)], "commands": [], "explicit": [], "offer": ""})
-    assert "already a file" in again["response"], "a file that is there is never written over"
+    assert again["response"].endswith("a file is already there."), "CREATE_FILE's own refusal, not a sentence of the engine's"
 
     streamed_to = tmp_path / "fixes" / "streamed.patch"
     streamed = "".join(str(p) for p in carry(me, "deal", {"tasks": ["draft the patch"], "saves": [str(streamed_to)],
                                                            "commands": [], "explicit": [], "offer": ""}, stream=True))
-    assert streamed_to.exists() and streamed.endswith(f"Saved it to {streamed_to}.")
+    assert streamed_to.exists() and streamed.endswith(said[-1])
 
     written_before = tmp_path / "draft.md"
     out = carry(me, "yes", {"tasks": [], "saves": [str(written_before)], "written": "The plan, in three lines.",
                             "commands": [], "explicit": [], "offer": ""})
     assert written_before.read_text() == "The plan, in three lines.\n" and seen.messages.count("draft the patch") == 3
+
+
+# ── whose offer it is ─────────────────────────────────────────────────────────
+
+def _as(user, session, fn, *a, **k):
+    tokens = [rc.turn_facts_var.set({"request_id": "req-x"})]
+    if user is not None:
+        tokens.append(rc.user_id_var.set(user))
+    if session is not None:
+        tokens.append(rc.session_id_var.set(session))
+    try:
+        return fn(*a, **k)
+    finally:
+        for var, tok in zip((rc.turn_facts_var, rc.user_id_var, rc.session_id_var), tokens):
+            var.reset(tok)
+
+
+def test_an_offer_is_only_open_in_the_conversation_it_was_made_in():
+    """One file for the process: an API caller's 'yes' carried out an offer made on the desktop."""
+    _as("member-a", "s1", pp.set_pending_proposal, "set a reminder for the ferry", from_reply=True)
+    assert _as("member-b", "s2", pp.get_follow_up) is None
+    assert _as("member-b", "s1", pp.get_follow_up) is None
+    assert _as(None, None, pp.get_follow_up) is None                       # the desktop's own
+    assert _as("member-a", "s1", pp.get_follow_up)["command"] == "set a reminder for the ferry"
+    _as("member-a", "s1", pp.clear_pending_proposal)
+
+
+def test_elis_own_offer_outside_a_turn_does_not_replace_a_conversations():
+    _as(None, None, pp.set_pending_proposal, "open the tide table", from_reply=True)
+    _as("member-a", "s1", pp.set_pending_proposal, "set a reminder for the ferry", from_reply=True)
+    pp.set_pending_proposal("go for a walk while it is dry", summary="a check-in")   # the daemon, no turn
+    assert _as("member-a", "s1", pp.get_follow_up)["command"] == "set a reminder for the ferry"
+    assert _as(None, None, pp.get_follow_up)["command"] == "go for a walk while it is dry", "the newest thing said there"
+    _as(None, None, pp.set_pending_proposal, "open the tide table", from_reply=True)
+    assert _as(None, None, pp.get_follow_up)["command"] == "open the tide table"
+    for who in ((None, None), ("member-a", "s1")):
+        _as(*who, pp.clear_pending_proposal)
+
+
+def test_an_offer_with_no_action_behind_it_is_not_kept():
+    """'Do you want me to extract that log now?' was kept as a writing task; 'yes!' then ran a chat
+    turn that wrote a pretend tool call."""
+    assert pp.read_reply("Do you want me to extract that log now?")["items"] == []
+    assert pp.read_reply("If you'd like, I can suggest checking the logs for errors.")["items"] == []
+    assert _kinds("Want me to draft the email to the landlord?") == [(None, "task", "draft the email to the landlord")]
+
+
+def test_a_line_that_describes_is_not_a_step_and_a_rhetorical_close_is_not_a_question():
+    reply = ("Here is how the folders are laid out:\n"
+             "- `tools/`, `plugins/`, `integrations/`: external interfaces (web search, file system, API calls)\n"
+             "- `docs/`: the written guides\n\nOr are we done trying to coax a dead dog here?")
+    out = pp.read_reply(reply)
+    assert out == {"items": [], "question": ""}
+    assert pp.read_reply("That's the plan. Want me to keep that state, or are we done here?")["question"]
+    assert pp.read_reply("I've set it. Which day suits you?")["question"] == "Which day suits you?"
+
+
+def test_a_yes_to_a_goal_proposal_confirms_it(monkeypatch):
+    """A goal's proposal waits for the owner's yes (planning.goal_tick.confirm_goal_proposal)."""
+    import eli.planning.goal_tick as gt
+    from eli.kernel.engine import CognitiveEngine
+    confirmed = []
+    monkeypatch.setattr(gt, "confirm_goal_proposal",
+                        lambda pid, **k: confirmed.append(pid) or {"ok": True, "outcome": "done"}, raising=False)
+    _as(None, None, pp.offer_goal_proposals, [{"proposal_id": "p-1", "title": "tidy the seed catalogue"}])
+    eng = CognitiveEngine()
+    monkeypatch.setattr(eng, "_say_in_own_words", lambda *a, **k: "")
+    out = eng.process("yes please", stream=False)
+    assert confirmed == ["p-1"] and out["action"] == "CONFIRM_GOAL_PROPOSAL" and out["ok"] is True
+    assert "tidy the seed catalogue" in out["response"] and _as(None, None, pp.get_follow_up) is None
+    assert eng.process("yes please", stream=False) is not None and confirmed == ["p-1"], "confirmed once"
+
+
+def test_the_task_turn_knows_what_actually_ran_before_it(monkeypatch):
+    carry, me, seen = _engine(monkeypatch)
+    carry(me, "yes", {"tasks": ["write it up"], "commands": ["check my calendar"], "explicit": [], "offer": ""})
+    assert seen.agreed[0]["ran"] == ["MULTI_COMMAND"]
+    carry(me, "yes", {"tasks": ["write it up"], "commands": [], "explicit": [], "offer": ""})
+    assert seen.agreed[1]["ran"] == []

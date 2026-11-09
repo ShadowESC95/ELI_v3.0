@@ -18,8 +18,12 @@ Four things can be open:
 
 Distinct from runtime.grounded_remediation (which handles "install X?" repair offers).
 
-State is a single JSON file, replaced by every reply except for its listing, with a time limit
-so a "yes" long afterwards cannot trigger an old offer.
+State is one JSON file per conversation (the user and session of the turn, _conversation()),
+replaced by every reply except for its listing, with a time limit so a "yes" long afterwards cannot
+trigger an old offer. It used to be one file for the whole process, so one API caller's "yes"
+carried out the offer ELI had made to another. What ELI offers outside any turn (the proactive
+daemon's check-in) is kept in a slot of its own, which only the desktop conversation reads: as one
+file, it replaced whatever a conversation had open.
 """
 
 from __future__ import annotations
@@ -38,14 +42,37 @@ log = get_logger(__name__)
 _TTL_SECONDS = 1800.0
 
 
+_DESKTOP = "\x1f"          # the desktop's own conversation: no user and no session given
+_ELIS_OWN = "proactive"     # what ELI offered outside any turn
+
+
+def _conversation() -> str:
+    """Whose open offer a read or write is about: the user and session of the turn running in this
+    context (an API caller's; the desktop's own when neither is given); outside any turn, ELI's own."""
+    from eli.kernel import request_context as rc
+    if rc.turn_facts_var.get() is None:
+        return _ELIS_OWN
+    return f"{rc.user_id_var.get() or ''}\x1f{rc.session_id_var.get() or ''}"
+
+
 def _path() -> Path:
+    """This conversation's file."""
+    return _path_of(_conversation())
+
+
+def _path_of(key: str) -> Path:
     try:
         from eli.core.paths import get_paths
         base = Path(get_paths().artifacts_dir) / "runtime"
     except Exception:
         base = Path(__file__).resolve().parents[2] / "artifacts" / "runtime"
     base.mkdir(parents=True, exist_ok=True)
-    return base / "pending_proposal.json"
+    if key == _DESKTOP:
+        return base / "pending_proposal.json"        # where the desktop's has always been kept
+    import hashlib
+    own = base / "pending_proposals"
+    own.mkdir(parents=True, exist_ok=True)
+    return own / (hashlib.sha1(key.encode("utf-8")).hexdigest()[:20] + ".json")
 
 
 def set_pending_proposal(command: str, summary: str = "", *, items: Optional[List[Dict[str, Any]]] = None,
@@ -64,7 +91,7 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
     command = (command or "").strip()
     items = [dict(i) for i in (items or []) if isinstance(i, dict) and i.get("command")]
     if not command:
-        first = next((i for i in items if i.get("kind") != "task"), None)
+        first = next((i for i in items if i.get("kind") not in ("task", "goal")), None)
         command = str(first["command"]).strip() if first else ""
     question = " ".join(str(question or "").split())[:400]
     awaiting = dict(awaiting) if isinstance(awaiting, dict) and awaiting.get("command") else None
@@ -72,6 +99,7 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
     if not (command or items or question or awaiting or listed):
         return
     try:
+        _retire_elis_own()
         _path().write_text(
             json.dumps({"command": command, "summary": summary or command, "ts": time.time(),
                         "items": items, "question": question, "awaiting": awaiting,
@@ -89,8 +117,7 @@ def set_pending_proposal(command: str, summary: str = "", *, items: Optional[Lis
         log.debug("[PENDING_PROPOSAL] store failed: %s", e)
 
 
-def _stored() -> Optional[Dict[str, Any]]:
-    p = _path()
+def _read(p: Path) -> Optional[Dict[str, Any]]:
     if not p.exists():
         return None
     try:
@@ -98,6 +125,26 @@ def _stored() -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _stored() -> Optional[Dict[str, Any]]:
+    """This conversation's open state. The desktop conversation also sees what ELI offered outside a
+    turn, when that is the newer: it was the last thing ELI said there."""
+    data = _read(_path())
+    if _conversation() == _DESKTOP:
+        own = _read(_path_of(_ELIS_OWN))
+        if own and not _lapsed(own.get("ts")) and float(own.get("ts") or 0) > float((data or {}).get("ts") or 0):
+            return dict(own, listed=(data or {}).get("listed"))
+    return data
+
+
+def _retire_elis_own() -> None:
+    """A desktop reply after ELI's own offer answers or passes it by."""
+    if _conversation() == _DESKTOP:
+        try:
+            _path_of(_ELIS_OWN).unlink(missing_ok=True)
+        except OSError:
+            log.debug("could not retire ELI's own offer", exc_info=True)
 
 
 def _lapsed(ts: Any) -> bool:
@@ -142,6 +189,7 @@ def clear_pending_proposal() -> None:
     """Close what the last reply offered or asked. A listing stays until the next replaces it."""
     try:
         listed = _current_listing()
+        _retire_elis_own()
         p = _path()
         if listed:
             p.write_text(json.dumps({"command": "", "summary": "", "ts": time.time(), "items": [],
@@ -300,7 +348,9 @@ _MAX_ITEMS = 8
 # "provider: gguf", "context_size: 16128": a field and its value in a listing, not a step. A status
 # dump's "- provider: gguf" was kept as a step for a "yes"; so was a dated record from a memory dump,
 # "[2026-10-08 18:06] Top topics: spotify, play, ...".
-_FIELD_LINE = _re.compile(r"^(?:[a-z][a-z0-9_ ]{0,30}:\s+\S|\[[^\]]{1,40}\]\s)")
+# "`tools/`, `plugins/`: external interfaces (web search, ...)": named things and what they are.
+_FIELD_LINE = _re.compile(r"^(?:[a-z][a-z0-9_ ]{0,30}:\s+\S|\[[^\]]{1,40}\]\s|`[^`]+`(?:\s*(?:,|and|or)\s*`[^`]+`)*\s*[:—–-]\s)",
+                          _re.I)
 _DESCRIBES = _re.compile(
     r"^(?:i(?!'ll\b|\s+will\b|\s+can\b|\s+could\b)\b|i'm|i've|i'd|my|me|we(?!'ll\b|\s+can\b)\b|our|you|"
     r"your|it|its|it's|this|that|these|those|there|here|a|an|the|since|if|when|while|because|"
@@ -334,6 +384,33 @@ _GO_AHEAD_TAG = _re.compile(
     r"(?:does\s+that\s+)?work\s+for\s+you|shall\s+(?:i|we)(?:\s+go\s+ahead)?|go\s+ahead)\W*\?\W*$", _re.I)
 
 _NOT_AN_ACTION = ("", "CHAT", "UNKNOWN", "NOOP")
+# Things on the machine or in its records that only an action can reach: a task with no action
+# that needs one of them is not something ELI can do by writing ("extract that log", "read the
+# terminal output", "check my own logs"). Kept as a writing task, a "yes" to it ran a turn of chat
+# that wrote a pretend tool call ("[EXTRACT_LOG]"), so it is not kept as one.
+_NEEDS_THE_MACHINE = _re.compile(
+    r"\b(?:logs?|log\s+files?|terminal|console|stdout|stderr|shell|command\s+line|traceback|stack\s+trace|"
+    r"files?|folders?|director(?:y|ies)|disk|drives?|partitions?|process(?:es)?|services?|daemons?|registry|"
+    r"database|screen|screenshot|window|browser|tabs?|network|ports?|devices?|sensors?|"
+    r"camera|microphone|clipboard|downloads?|installed|packages?|drivers?)\b", _re.I)
+# A line that introduces a list as what ELI offers to do: "Here's what I can do:", "I could:",
+# "A few options:". Its items are steps as much as a list a closing question points at.
+_OFFERS_THE_LIST = _re.compile(
+    r"\b(?:i|we)\s+(?:can|could|will)\b|\bi['’]ll\b|\blet\s+me\b|\boptions?\b|\bnext\s+steps?\b", _re.I)
+# A question the user is meant to answer: an offer, a question about what to do or a detail of it,
+# or one asked of them outright. "Or are we done trying here?" closing a reply is not one, and a
+# short reply to it was read as its answer.
+_ASKS_THE_USER = _re.compile(
+    r"^\W*(?:what|which|when|where|who|whom|whose|how|why)\b"
+    r"|^\W*(?:do|did|does|would|could|can|should|shall|will|are|were|is|was|have|has)\s+(?:you|i|we|that|this|it)\b",
+    _re.I)
+
+
+def asks_the_user(sentence: str) -> bool:
+    """Whether a reply's closing question asks the user for a decision or a detail."""
+    s = str(sentence or "").strip()
+    return bool(s.endswith("?") and (_ASKS_THE_USER.search(s) or _STRONG_OFFER_RE.search(s)
+                                     or _WEAK_OFFER_RE.search(s) or _GO_AHEAD_TAG.match(s)))
 # What a plain "yes" may run when ELI asked outright ("Want me to check my memory status?"). A
 # status report is fine there; a compound of several commands is not taken from ELI's sentence.
 _NOT_FROM_A_QUESTION = frozenset(("MULTI_COMMAND", "SEQUENCE"))
@@ -412,17 +489,20 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
     is carried out by a turn of its own whose message is the task. Each keeps the number it was
     listed under, so "do 2 and 3" can pick.
 
-    A step with an action is kept wherever ELI names it: an offer, a list item, "I'll check
-    the calendar". A task is kept only where ELI asked for a go-ahead: its own offer ("Want me
-    to walk you through it?"), or the items of a list its question points at ("Shall I go ahead
-    with any of these?"). A list of facts followed by an unrelated offer is not a set of tasks.
+    A step with an action is kept where ELI offers it or says it will do it ("I'll check the
+    calendar"); a list item only when the reply's question points at the list ("Shall I go ahead
+    with any of these?"): a line of a description the router could route ("`tools/`: web search,
+    files") is not a step. A task is kept only where ELI asked for a go-ahead: its own offer ("Want
+    me to walk you through it?"), or the items of a list its question points at, and only when ELI
+    can do it by writing: one that needs something on the machine (_NEEDS_THE_MACHINE) has no
+    action to do it. A list of facts followed by an unrelated offer is not a set of tasks.
     kind "explicit": ELI offered something that changes ELI or the system. A "yes" never runs
     those and never has the model pretend to; the user is told the words to say.
 
     `offers_only` is for the result of an action: "I'll remind you at 19:00" there reports what
     was done, so only a question counts as an offer.
 
-    `question` is the question the reply ends on, if it ends on one."""
+    `question` is the question the reply ends on, when it asks the user something (asks_the_user)."""
     cands: List[Dict[str, Any]] = []
     points_back = False
     number: Optional[int] = None
@@ -435,6 +515,8 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
         if not line.strip():
             continue
         mark = _LIST_MARK.match(line)
+        if not mark and line.rstrip().endswith(":") and _OFFERS_THE_LIST.search(line):
+            points_back = True    # the list below is what ELI offers to do
         if mark:
             if mark.group("n") and not mark.group("indent"):
                 number = int(mark.group("n"))
@@ -497,6 +579,11 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
 
     def _task(c: Dict[str, Any]) -> None:
         text = c["text"]
+        if _NEEDS_THE_MACHINE.search(text) or _NEEDS_THE_MACHINE.search(str(c.get("label") or "")):
+            log.debug("[PENDING_PROPOSAL] not kept, no action of ELI's does it: %r", text[:80])
+            from eli.kernel.request_context import note_turn_fact
+            note_turn_fact("offered_without_action", text[:200])
+            return
         if c.get("label") and c["label"].lower() not in text.lower():
             text = f"{c['label']}: {text}"      # "Write the abstract: about 200 words"
         task = _as_request(text)
@@ -526,7 +613,8 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
             if asked and key not in seen:
                 seen.add(key)
                 items.append({"n": c["n"], "command": _as_request(text), "action": act, "kind": "explicit"})
-        elif (asked and act not in _NOT_FROM_A_QUESTION) or act not in _NOT_OFFERABLE:
+        elif (asked and act not in _NOT_FROM_A_QUESTION) or (
+                act not in _NOT_OFFERABLE and (c["src"] not in ("list", "label") or points_back)):
             key = (act, _re.sub(r"\W+", " ", text.lower()).strip()[:60])
             same_read = (act, "") if act in ("LIST_EVENTS", "NEWS_FETCH") else key
             if key in seen or same_read in seen:
@@ -535,7 +623,7 @@ def read_reply(response_text: str, *, offers_only: bool = False) -> Dict[str, An
             items.append({"n": c["n"], "command": text, "action": act, "kind": "action"})
         if len(items) >= _MAX_ITEMS:
             break
-    return {"items": items, "question": last_sentence if last_sentence.endswith("?") else ""}
+    return {"items": items, "question": last_sentence if asks_the_user(last_sentence) else ""}
 
 
 def actionable_items(response_text: str, *, offers_only: bool = False) -> List[Dict[str, Any]]:
@@ -646,6 +734,25 @@ def _pick(items: List[Dict[str, Any]], reply: str, *, least: int = 2) -> List[Di
     if picked and not _re.sub(r"[\d\-–,.!&/+]+", " ", _PICK_FILLER.sub(" ", low)).strip():
         return _by_number(items, picked)
     return _by_name(items, low)
+
+
+def offer_goal_proposals(proposals: List[Dict[str, Any]]) -> None:
+    """Keep open the goal proposals ELI has just asked the user about (planning.goal_tick's
+    pending_goal_proposals rows), so a yes to them is their confirmation (goals_agreed)."""
+    items = [{"n": n, "command": str(p.get("title") or p.get("objective") or "the goal"), "kind": "goal",
+              "action": "CONFIRM_GOAL_PROPOSAL", "proposal_id": str(p.get("proposal_id") or "")}
+             for n, p in enumerate(proposals or [], 1) if p.get("proposal_id")]
+    if items:
+        set_pending_proposal("", "a goal waiting for the user's yes", items=items)
+
+
+def goals_agreed(reply: str) -> List[Dict[str, Any]]:
+    """The goal proposals a reply says yes to (is_consent, picking by number or name as any offer
+    is picked), or [] when it says yes to none."""
+    prop = get_follow_up() or {}
+    if not any(i.get("kind") == "goal" for i in (prop.get("items") or [])) or not is_consent(reply):
+        return []
+    return [i for i in chosen_items(prop, reply) if i.get("kind") == "goal" and i.get("proposal_id")]
 
 
 def selection(prop: Dict[str, Any], reply: str) -> List[Dict[str, Any]]:
