@@ -283,6 +283,63 @@ def test_a_sentence_the_world_answered_is_a_turn_of_the_owners_conversation(toke
         "with no session named, the engine's own, as a chat turn from VR gets"
 
 
+# ── the three clients, as the window starts the server: its own page, ELI VR, the phone ──────────
+_SAVED_TOKEN = "the-saved-stable-token"
+
+
+def _as_the_window_starts_it(monkeypatch):
+    """The window's "this computer" and "phone" starts both set the saved token and never tokenless."""
+    monkeypatch.setenv("ELI_API_TOKEN", _SAVED_TOKEN)
+    monkeypatch.delenv("ELI_API_ALLOW_TOKENLESS", raising=False)
+    monkeypatch.delenv("ELI_LOOPBACK_ADMIN", raising=False)
+
+
+def test_the_desktop_page_eli_vr_and_the_phone_all_still_connect(monkeypatch):
+    """The window now starts the server with its saved token, and the server refuses other sites' pages:
+    neither may shut out the owner's own page, ELI VR (loopback, no token, a native socket with no
+    Origin) or the phone (the LAN, with the token)."""
+    _as_the_window_starts_it(monkeypatch)
+    own = "http://127.0.0.1:8081"
+    page = TestClient(app, base_url=own, client=("127.0.0.1", 50001))
+    assert page.get("/", headers={"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}).status_code == 200
+    asked = page.get("/v1/world/protocol", headers={"Authorization": f"Bearer {_SAVED_TOKEN}", "Origin": own,
+                                                     "Sec-Fetch-Site": "same-origin"})
+    assert asked.status_code == 200, asked.text
+    vr = TestClient(app, base_url=own, client=("127.0.0.1", 50002))
+    assert vr.get("/v1/world/protocol").status_code == 200, "ELI VR's tokenless loopback call was refused"
+    with vr.websocket_connect(_OWN_WS + "/v1/world/ws") as ws:
+        assert ws.receive_json()["type"]
+    lan = "http://192.168.1.20:8081"
+    phone = TestClient(app, base_url=lan, client=("192.168.1.31", 50003))
+    assert phone.get("/v1/world/protocol", headers={"Authorization": f"Bearer {_SAVED_TOKEN}", "Origin": lan,
+                                                     "Sec-Fetch-Site": "same-origin"}).status_code == 200
+    assert phone.get("/v1/world/protocol", headers={"Origin": lan}).status_code == 401, "the LAN needs the token"
+    with phone.websocket_connect(f"ws://192.168.1.20:8081/v1/world/ws?token={_SAVED_TOKEN}",
+                                 headers={"Origin": lan}) as ws:
+        assert ws.receive_json()["type"]
+
+
+def test_the_link_the_server_opens_on_this_computer_carries_its_token(monkeypatch, capsys):
+    """Started with a token for this computer (the window passes --token), `python -m api.server`
+    still opened its own page with no token in the link: with ELI_LOOPBACK_ADMIN=0 that page could
+    do nothing. Its link carries the token, as the window's does."""
+    import sys
+    opened = []
+    for name in ("ELI_API_HOST", "ELI_API_PORT", "ELI_API_TOKEN", "ELI_API_SCHEME", "ELI_API_ALLOW_TOKENLESS",
+                 "ELI_API_HTTPS", "ELI_API_HTTPS_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(srv.uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(srv, "_open_browser_async", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(sys, "argv", ["api.server", "--port", "8099", "--token", _SAVED_TOKEN])
+    srv.main()
+    assert opened == [f"http://127.0.0.1:8099/#token={_SAVED_TOKEN}"]
+    monkeypatch.delenv("ELI_API_TOKEN", raising=False)
+    monkeypatch.setattr(sys, "argv", ["api.server", "--port", "8099"])
+    opened.clear()
+    srv.main()
+    assert opened == ["http://127.0.0.1:8099/"], "no token, no token in the link"
+
+
 # --------------------------------------------------------------------------- #
 # Static / PWA routes (no auth)
 # --------------------------------------------------------------------------- #

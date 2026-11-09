@@ -5578,8 +5578,13 @@ def main():
 
     # The auth gate fails CLOSED by default; main() relaxes it for the two safe cases ONLY.
     if _is_loopback_host(host):
-        os.environ.setdefault("ELI_API_ALLOW_TOKENLESS", "1")
-        local_url = f"http://127.0.0.1:{port}/"
+        # Started with a token for this computer (the window passes its saved one), it stays asked for,
+        # and the page this opens carries it, as the window's link does; this machine's own clients
+        # (ELI VR) are still let in without one unless ELI_LOOPBACK_ADMIN=0.
+        _local_token = _api_token()
+        if not _local_token:
+            os.environ.setdefault("ELI_API_ALLOW_TOKENLESS", "1")
+        local_url = f"http://127.0.0.1:{port}/" + (f"#token={_local_token}" if _local_token else "")
     else:
         os.environ.pop("ELI_API_ALLOW_TOKENLESS", None)
         token = _api_token()   # explicit --token / ELI_API_TOKEN env wins
