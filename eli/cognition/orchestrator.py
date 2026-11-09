@@ -763,10 +763,10 @@ class AgentOrchestrator:
                 if _held != _text:
                     _text = _held
                     _esc = {**_esc, "response": _text, "content": _text}
-                try:
-                    self.engine._store_assistant_turn(_text)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
+            # Not stored here: what is shown is stored when the turn ends (the engine's backstop),
+            # after the engine's own check before display (the live check on a stream). Stored
+            # here first, the copy kept was this one, and the turn then counted as stored, so the
+            # text that reached the screen was never the one kept.
             wm.trace["grounding_escalation"] = dict(_esc.get("meta") or {})
             log.debug(
                 "[ORCHESTRATOR] grounding escalation short-circuit mode=%s",

@@ -31,8 +31,9 @@ def test_escalation_reads_only_the_current_users_turns():
 
 def _orch(**engine):
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    engine.setdefault("_store_assistant_turn", lambda t: None)
     orch.engine = SimpleNamespace(memory=MagicMock(), user_id="alice", session_id="s-1", _crisis_steering=None,
-                                  _in_orchestrator=True, _store_assistant_turn=lambda t: None, **engine)
+                                  _in_orchestrator=True, **engine)
     return orch
 
 
@@ -74,3 +75,29 @@ def test_an_escalation_answer_is_held_to_the_record_before_it_is_shown(monkeypat
         out = orch._maybe_grounding_escalate(wm, "what's new", {"action": "CHAT"}, stream=False, reasoning_mode="quick")
     assert out["response"] == "held: the answer" and seen["grounded"] is True
     assert "the context it was made from" in seen["evidence"]
+
+
+
+def test_an_escalation_answer_is_stored_as_it_was_shown(monkeypatch):
+    """The escalation stored its text before the engine checked the stream, and the turn then
+    counted as stored: the copy kept was not the one on the screen. It is stored when the turn
+    ends, from what was shown."""
+    from eli.kernel.engine import CognitiveEngine
+    from eli.kernel import request_context as rc
+    from eli.kernel.stages import memory_commit
+    stored = []
+    monkeypatch.setattr("eli.cognition.output_governor.govern_output", lambda text, **k: text)
+    orch = _orch(_store_assistant_turn=lambda t: stored.append(("early", t)),
+                 _yield_text_chunks=lambda text, chunk_size=12: iter([text]))
+    wm = SimpleNamespace(trace={}, bus_result=None, assembled_context="")
+    with patch("eli.runtime.grounding_escalation.escalate",
+               return_value={"response": "The tide is high at noon. I checked it twice.", "meta": {}}):
+        stream = orch._maybe_grounding_escalate(wm, "when is high tide", {"action": "CHAT"},
+                                                stream=True, reasoning_mode="quick")
+    assert stored == [], "stored before it was shown"
+    eng = CognitiveEngine()
+    monkeypatch.setattr(memory_commit.MemoryCommitMixin, "_store_assistant_turn",
+                        lambda self, t: stored.append(("shown", t)) or rc.note_turn_fact("assistant_stored", True))
+    monkeypatch.setattr(eng, "_process_impl", lambda *a, **k: (p for p in stream))
+    shown = "".join(eng.process("when is high tide", stream=True))
+    assert stored == [("shown", shown)]
