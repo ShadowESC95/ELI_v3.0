@@ -220,6 +220,61 @@ def test_valid_json_is_never_filed_as_corrupt(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("*.corrupt_*")), "parseable state filed as corrupt"
 
 
+def _world_engine(p):
+    from eli.world.agency.autonomy_engine import EliWorldAutonomyEngine
+    from eli.world.persistence import storage as st
+    return EliWorldAutonomyEngine(st.EliWorldStorage(state_path=p))
+
+
+def test_a_world_that_could_not_be_rebuilt_is_not_saved_over(tmp_path, monkeypatch):
+    """Kept on disk, then lost one call later: the engine's next save wrote the fresh default world
+    (no objects, goals or habits of the user's) over the intact file."""
+    import json as _json
+    from eli.world.core.schemas import WorldEvent
+    from eli.world.persistence import storage as st
+
+    p = tmp_path / "eli_world_state.json"
+    p.write_text(_json.dumps({"world_name": "mine", "avatar": {"room": "lab"}, "goals": [{"id": "g1"}]}),
+                 encoding="utf-8")
+    before = p.read_bytes()
+    real = st._state_from_dict
+
+    def explode(_data):
+        raise TypeError("a build that cannot map this schema")
+
+    monkeypatch.setattr(st, "_state_from_dict", explode)
+    engine = _world_engine(p)
+    engine.load()
+    engine.ingest_event(WorldEvent("reflection", "test", "thinking"))
+    assert p.read_bytes() == before, "the user's world was overwritten by a default one"
+
+    monkeypatch.setattr(st, "_state_from_dict", real)       # readable again: changes are saved
+    engine.ingest_event(WorldEvent("reflection", "test", "thinking again"))
+    assert _json.loads(p.read_text(encoding="utf-8"))["world_name"] == "mine"
+    assert p.read_bytes() != before
+
+
+def test_a_world_that_could_not_be_read_is_not_saved_over(tmp_path, monkeypatch):
+    import json as _json
+    from pathlib import Path as _P
+    from eli.world.core.schemas import WorldEvent
+
+    p = tmp_path / "eli_world_state.json"
+    p.write_text(_json.dumps({"world_name": "mine", "avatar": {"room": "lab"}}), encoding="utf-8")
+    before = p.read_bytes()
+    real_read = _P.read_text
+
+    def flaky(self, *a, **k):
+        if self == p:
+            raise OSError(5, "Input/output error")
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(_P, "read_text", flaky)
+    _world_engine(p).ingest_event(WorldEvent("reflection", "test", "thinking"))
+    monkeypatch.setattr(_P, "read_text", real_read)
+    assert p.read_bytes() == before, "a momentary read error cost the user their world"
+
+
 def test_unparseable_json_is_still_backed_up(tmp_path):
     """The salvage path must not swallow real corruption silently."""
     from eli.world.persistence import storage as st

@@ -193,13 +193,11 @@ class EliWorldStorage:
             return state
         try:
             raw = self.state_path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
             # A transient read failure is not corruption. Condemning the file
             # here would destroy a healthy world over a momentary EIO/EBUSY.
             log.warning("world state unreadable; keeping the file", exc_info=True)
-            return EliWorldState(identity=get_world_identity(),
-                                 constitution=get_world_constitution(),
-                                 rooms=get_default_rooms())
+            return self._stand_in(f"it could not be read ({type(exc).__name__}: {exc})")
         try:
             data = json.loads(raw)
         except ValueError:
@@ -209,15 +207,13 @@ class EliWorldStorage:
         if data is not None:
             try:
                 return _state_from_dict(data)
-            except Exception:
+            except Exception as exc:
                 # The JSON parsed, so the user's data is intact on disk even if
                 # this build cannot map it. Keep the file and start fresh in
                 # memory rather than renaming their world away.
                 log.warning("world state parsed but could not be rebuilt; leaving "
                             "the file in place", exc_info=True)
-                return EliWorldState(identity=get_world_identity(),
-                                     constitution=get_world_constitution(),
-                                     rooms=get_default_rooms())
+                return self._stand_in(f"this build could not rebuild it ({type(exc).__name__}: {exc})")
         corrupt = self.state_path.with_suffix(f".corrupt_{int(time())}.json")
         try:
             self.state_path.rename(corrupt)
@@ -228,8 +224,18 @@ class EliWorldStorage:
         self.save(state)
         return state
 
-    def save(self, state: EliWorldState) -> None:
-        """Atomically persist the world state.
+    def _stand_in(self, why: str) -> EliWorldState:
+        """A default world to work with in memory while the one on disk cannot be read. It carries
+        where it stands in for, and save() never writes it over that file: the next save after a
+        failed read used to replace the user's rooms, objects, goals and habits with the default."""
+        state = EliWorldState(identity=get_world_identity(), constitution=get_world_constitution(),
+                              rooms=get_default_rooms())
+        object.__setattr__(state, "_stands_in_for", (str(self.state_path), why))
+        return state
+
+    def save(self, state: EliWorldState) -> bool:
+        """Atomically persist the world state. False, with nothing written, for a stand-in world
+        (see _stand_in) while the file it stands in for is still there.
 
         The scratch file is unique per write and the swap is serialised. A
         single fixed ".tmp" name raced: the GUI turn, the proactive daemon and
@@ -239,6 +245,11 @@ class EliWorldStorage:
         FileNotFoundError mid-turn — which in turn knocked out the persona
         handoff's self-status injection.
         """
+        stands_in = getattr(state, "_stands_in_for", None)
+        if stands_in and Path(stands_in[0]).exists():
+            log.warning("the world on disk at %s was not read (%s); it is left as it is and this change "
+                        "is not saved over it", stands_in[0], stands_in[1])
+            return False
         _ensure()
         state.timestamp = time()
         payload = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
@@ -261,6 +272,7 @@ class EliWorldStorage:
                 except Exception:
                     log.debug("world-state scratch cleanup failed", exc_info=True)
                 raise
+        return True
 
     def append_event(self, event: WorldEvent) -> None:
         _ensure()
