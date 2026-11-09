@@ -56,6 +56,58 @@ def test_set_user_name_rejects_a_command(tmp_path, monkeypatch):
     assert not saved.get("name")
 
 
+@pytest.fixture()
+def executor_name_store(tmp_path, monkeypatch):
+    """The executor's SET_USER_NAME with every place it writes kept in memory."""
+    from eli.execution import executor_enhanced as ex
+    from eli.kernel import state
+    stored = {}
+    monkeypatch.setattr(ex, "_load_state", lambda: {})
+    monkeypatch.setattr(ex, "_save_state", lambda st: stored.update(st))
+    monkeypatch.setattr(ex, "_purge_conflicting_identity_patterns", lambda new_name: 0)
+    monkeypatch.setattr(state, "set_user_name", lambda n, **k: stored.__setitem__("profile", n) or n)
+    return ex, stored
+
+
+@pytest.mark.parametrize("name", ["Will", "May", "Can Ozturk"])
+def test_a_name_that_is_also_a_word_is_still_a_name(executor_name_store, name):
+    ex, stored = executor_name_store
+    out = ex.set_user_name(name)
+    assert out["ok"] is True and stored.get("profile") == name
+
+
+def test_the_executor_leaves_a_names_letters_to_the_shared_validator(executor_name_store, monkeypatch):
+    # the executor refused any letter outside A-Z on its own, whatever the shared validator said
+    import eli.runtime.identity_validation as iv
+    ex, stored = executor_name_store
+    monkeypatch.setattr(iv, "normalize_identity_candidate", lambda value, **k: str(value).strip())
+    assert ex.set_user_name("Zoë")["ok"] is True and stored.get("profile") == "Zoë"
+    monkeypatch.setattr(iv, "normalize_identity_candidate", lambda value, **k: "")
+    assert ex.set_user_name("pause spotify")["ok"] is False
+
+
+def test_asking_who_i_am_never_stores_a_name(tmp_path, monkeypatch):
+    # "who am I" with no name stored: the answer used to mine the install-wide learned patterns for
+    # "called X" (another user's name, or a pet's) and store it as this user's name
+    import sqlite3
+    from eli.core import paths
+    from eli.execution import executor_enhanced as ex
+    from eli.kernel import state
+    db = tmp_path / "user.sqlite3"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE user_patterns (id INTEGER PRIMARY KEY, pattern_type TEXT, pattern_data TEXT, ts REAL, timestamp REAL)")
+    con.execute("INSERT INTO user_patterns (pattern_type, pattern_data, ts) VALUES ('identity.name', 'Their dog is called Rex.', 1.0)")
+    con.commit()
+    con.close()
+    monkeypatch.setattr(paths, "user_db_path", lambda *a, **k: db)
+    monkeypatch.setattr(state, "get_user_name", lambda default="", **k: "")
+    wrote = []
+    monkeypatch.setattr(state, "set_user_name", lambda n, **k: wrote.append(n) or n)
+    text = ex._eli_identity_only_response({"identity_scope": "name_only"})
+    assert wrote == [] and "Rex" not in text
+    assert "No confirmed name is stored for the active user." in text
+
+
 # --------------------------------------------------------------------------
 # #3 — explaining a prior claim is conversation, not a runtime dump
 # --------------------------------------------------------------------------

@@ -3691,38 +3691,18 @@ def set_communication_style_action(style: str) -> Dict[str, Any]:
 
 
 def set_user_name(name: str) -> Dict[str, Any]:
-    import re as _re_sun
     n = (name or "").strip()
     if not n:
         msg = "Empty name."
         return {"ok": False, "action": "SET_USER_NAME", "error": "empty_name", "content": msg, "response": msg}
 
-    # --- Validation gate: reject phrase-like or sentence-fragment names ---
-    _NAME_SENTENCE_SIGNALS = frozenset({
-        "my", "by", "your", "the", "a", "an", "is", "was", "are", "were",
-        "be", "been", "am", "not", "no", "yes", "ok", "okay", "it", "its",
-        "this", "that", "which", "what", "who", "how", "why", "when",
-        "will", "would", "could", "should", "can", "may", "might", "do",
-        "does", "did", "have", "has", "had", "i", "me", "we", "you",
-        "they", "he", "she", "and", "or", "but", "so", "if", "then",
-        "to", "for", "of", "in", "on", "at", "with", "about", "just",
-        "name", "call", "called", "calling", "named",
-    })
-    _tokens = n.split()
-    try:
-        from eli.runtime.identity_validation import normalize_identity_candidate as _nic
-        _not_a_name = not _nic(n)
-    except Exception:
-        _not_a_name = False
-    # Reject if: too long (> 25 chars), too many tokens (> 3 words for a name),
-    # any token matches a sentence-signal word, or the shared validator refuses it
-    _is_phrase = (
-        len(n) > 25
-        or len(_tokens) > 3
-        or any(t.lower() in _NAME_SENTENCE_SIGNALS for t in _tokens)
-        or bool(_re_sun.search(r"[^A-Za-z0-9'\-\. ]", n))  # exotic punctuation
-        or _not_a_name
-    )
+    # --- Validation gate: whether this is a name is the shared validator's to say ---
+    # (eli/runtime/identity_validation.normalize_identity_candidate, the one reader of name shape
+    # that every other path that stores a name uses). It is not a second word list here: that
+    # refused "Will", "May" and "Can", and an ASCII-only pattern refused every name with a letter
+    # outside A-Z ("Zoë", "Łukasz", any non-Latin script).
+    from eli.runtime.identity_validation import normalize_identity_candidate as _nic
+    _is_phrase = not _nic(n)
     if _is_phrase:
         log.debug(f"[EXECUTOR] set_user_name: rejected phrase-like name {n!r}")
         msg = "That doesn't look like a name — please say just the name."
@@ -7542,45 +7522,13 @@ except Exception as _eli_gen_guard_err:
 try:
     def _eli_identity_only_name():
         try:
-            from eli.kernel.state import get_user_name, set_user_name
+            from eli.kernel.state import get_user_name
             name = str(get_user_name("") or "").strip()
             if name:
                 return name
-            # Fallback: recover from user_patterns SQLite if profile lacks name.
-            # This handles the case where the user stated their name in a past
-            # session but the profile was never updated from user_patterns.
-            try:
-                import sqlite3 as _sq3, re as _re2
-                from eli.core.paths import user_db_path
-                _db = str(user_db_path())
-                _con = _sq3.connect(_db)
-                _rows = _con.execute(
-                    "SELECT pattern_data FROM user_patterns "
-                    "WHERE pattern_type='identity.name' "
-                    "  AND length(COALESCE(pattern_data,''))>3 "
-                    "ORDER BY COALESCE(ts, timestamp, id) DESC LIMIT 5"
-                ).fetchall()
-                _con.close()
-                for (_pdata,) in _rows:
-                    _m = _re2.search(
-                        r"(?:name is|preferred name is|called|known as)\s+([A-Za-z][A-Za-z' -]{1,29})\b",
-                        str(_pdata or ""), _re2.I,
-                    )
-                    if _m:
-                        _candidate = _m.group(1).strip(" .,;")
-                        if _candidate.lower() not in {
-                            "unknown", "none", "the", "a", "an", "no", "not", "asking", "user",
-                            "screenshot", "name", "unnamed", "anonymous", "guest", "admin",
-                            "root", "system", "default", "test", "sample", "example",
-                            "placeholder", "null", "undefined",
-                        }:
-                            try:
-                                set_user_name(_candidate)  # persist for future sessions
-                            except Exception:
-                                log.debug("suppressed exception", exc_info=True)
-                            return _candidate
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
+            # Only the active user's own confirmed name answers "who am I". Answering never stores
+            # one: the learned patterns are one table for every user of the install (no user_id),
+            # and a summary line such as "the cat is called X" is filed there as a name.
             return ""
         except Exception:
             return ""
