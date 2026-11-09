@@ -203,6 +203,14 @@ def _h_create_file(a, args):
         msg = (f"Refused: {p} is outside allowed roots (home, project, or temp). "
                "Enable ELI Full Control to override.")
         return {"ok": False, "action": a, "error": "path_not_allowed", "content": msg, "response": msg}
+    # A file already there is not created: it is left as it is unless replacing it was asked for
+    # outright ("overwrite"). It used to be written over and reported as "Created", from a typed
+    # request and from a re-plan the model proposed alike.
+    if p.exists() and not bool(args.get("overwrite") or args.get("replace")):
+        _what = "a folder" if p.is_dir() else f"a file ({p.stat().st_size:,} bytes)"
+        msg = f"Did not create {p}: {_what} is already there, and I left it as it is."
+        return {"ok": False, "action": a, "path": str(p), "error": "exists", "exists": True,
+                "created": False, "content": msg, "response": msg}
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
