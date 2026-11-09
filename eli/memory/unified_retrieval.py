@@ -270,10 +270,6 @@ def _tracks_in(rows, lines_fmt) -> str:
     return f"Distinct tracks in those actions ({len(seen)}): {items}."
 
 
-# The session ids ELI VR's turns carry, and the name its sessions go by in the presence record.
-_VR_SESSION = "eli-vr-"
-
-
 def _vr_sessions(since: float, until: float) -> List[Tuple[float, str, bool, str]]:
     """Who came into ELI's world in the period and when they left, from the presence record
     (eli/world/embodiment.sessions_between): asked "were we in VR yesterday?", the period log held
@@ -303,7 +299,10 @@ def _vr_sessions(since: float, until: float) -> List[Tuple[float, str, bool, str
 
 
 def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: int = 6000) -> str:
-    """The period a question asks about, in order: what the user said and what ELI ran.
+    """The period a question asks about, in order: what the user said and where (eli/world/surfaces:
+    "You (in VR): ..."), what ELI ran, and who came into ELI's rooms (the world layer's presence
+    records, retrieval.presence_between). A VR evening read as plain "You:" lines and its arrival
+    was never in it, so ELI said nothing had happened that day.
 
     ELI's own prose replies are left out on purpose (a made-up reply would turn into history);
     each action line is the executor's own report, e.g. "Paused — spotify (Mirelo — Daybreak)".
@@ -313,16 +312,24 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
     if not stats:
         return ""
     import time as _time
+    from eli.world.surfaces import where
     rows: List[Tuple[float, str, bool, str]] = []
     for t in getattr(tr, "conv_hits", None) or []:
         txt = " ".join(str(t.get("content") or t.get("text") or "").split())
         ts = t.get("timestamp") or t.get("ts")
         if txt and ts:
-            # said in ELI VR: its sessions carry ids of their own (eli-vr-...)
-            who = "You (in VR)" if str(t.get("session_id") or "").startswith(_VR_SESSION) else "You"
-            rows.append((float(ts), f"{who}: {txt[:200]}", False, ""))
+            place = where(t.get("session_id"))
+            rows.append((float(ts), f"You{f' ({place})' if place else ''}: {txt[:200]}", False, ""))
+    # Who came into ELI's rooms: the presence record of sessions (arrivals, rooms, departures) where it
+    # holds the period; before that record existed, the presence notes kept among the memories.
     vr = _vr_sessions(float(stats["since"]), float(stats["until"]))
     rows.extend(vr)
+    if not vr:
+        for p in getattr(tr, "presence", None) or []:
+            txt = " ".join(str(p.get("text") or "").split())
+            ts = p.get("event_ts") or p.get("timestamp") or p.get("ts")
+            if txt and ts:
+                rows.append((float(ts), f"Presence: {txt[:200]}", False, ""))
     for a in getattr(tr, "actions", None) or []:
         txt = " ".join(str(a.get("content") or "").split())[:140]
         failed = "" if str(a.get("outcome") or "ok") == "ok" else " (failed)"

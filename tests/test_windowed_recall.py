@@ -190,3 +190,29 @@ def test_without_a_presence_record_the_period_log_is_as_it_was(monkeypatch):
                          conv_hits=[{"content": "hello", "timestamp": start + 60, "session_id": "desk"}])
     out = format_period_log(tr, "what did i say?")
     assert "ELI's world" not in out and "You: hello" in out
+
+
+def test_a_period_says_where_each_turn_was_said_and_who_came_into_the_rooms(engine):
+    """A VR evening read as plain "You:" lines, and the arrival in ELI's rooms was not in the period
+    log at all: ranked among the day's memories, the presence record was cut."""
+    mem = engine.memory
+    now = time.time()
+    arrived = now - 2 * DAY
+    c = sqlite3.connect(mem.db_path)
+    c.execute("insert into conversation_turns (session_id, user_id, role, content, ts, timestamp) "
+              "values ('eli-vr-1786000000', 'default', 'user', 'can you light the fire in here', ?, ?)",
+              (arrived + 60, arrived + 60))
+    c.commit()
+    c.close()
+    for i in range(40):                      # a busy day of stronger memories
+        mem.store_memory(f"the greenhouse tomato row number {i} was watered", importance=0.95,
+                         metadata={"event_ts": arrived + i})
+    mem.store_memory("A body arrived: ELI VR (headset) joined ELI in the Reading Room.", tags=["embodiment", "body", "vr"],
+                     source="embodiment", kind="event", importance=0.1, metadata={"event_ts": arrived})
+    q = "what did we do the past week"
+    _kw, _sem, tr = orchestrator_retrieve(engine, q, q, _plan(q))
+    log_text = format_period_log(tr, q)
+    assert "You (in VR): can you light the fire in here" in log_text
+    assert "Presence: A body arrived: ELI VR (headset) joined ELI in the Reading Room." in log_text
+    lines = log_text.splitlines()
+    assert lines.index(next(l for l in lines if "Presence:" in l)) < lines.index(next(l for l in lines if "in VR" in l))

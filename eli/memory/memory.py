@@ -4824,6 +4824,27 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
+    # The world layer's presence records: a body coming into or leaving ELI's rooms (eli/world/embodiment).
+    _PRESENCE_SOURCE = "embodiment"
+
+    def presence_between(self, since: float, until: float, limit: int = 400,
+                         user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Every presence record in [since, until), oldest first, all of them: ranked among the
+        period's other memories (memories_between keeps the strongest few) they could be cut."""
+        conn = self._get_connection()
+        try:
+            cols = _memory_table_columns(conn, "memories")
+            when = "COALESCE(event_ts, timestamp, ts, 0)" if "event_ts" in cols else "COALESCE(timestamp, ts, 0)"
+            mine, mine_params = _memory_scope(cols, "", user_id)
+            rows = conn.execute(
+                f"SELECT id, {when}, COALESCE(text, ''), COALESCE(tags, '') FROM memories "
+                f"WHERE COALESCE(source, '') = ? AND {when} >= ? AND {when} < ?{mine} ORDER BY {when} LIMIT ?",
+                (self._PRESENCE_SOURCE, float(since), float(until), *mine_params, int(limit))).fetchall()
+            return [{"id": r[0], "event_ts": r[1], "timestamp": r[1], "text": r[2], "tags": r[3],
+                     "source": self._PRESENCE_SOURCE} for r in rows]
+        finally:
+            conn.close()
+
     def get_recent_memories(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Return the most recent memory entries, ordered by timestamp descending."""
         conn = self._get_connection()

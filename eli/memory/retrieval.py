@@ -28,6 +28,9 @@ class TurnRetrievalResult:
     searched: Dict[str, Any] = field(default_factory=dict)
     # With a time window: every action ELI ran in it, from the evidence ledger.
     actions: List[Dict[str, Any]] = field(default_factory=list)
+    # With a time window: the bodies that came and went in ELI's rooms (the world layer's presence
+    # records), whole and in order: ranked among the period's memories they were cut.
+    presence: List[Dict[str, Any]] = field(default_factory=list)
 
 # Per-process turn cache: key → (monotonic_ts, result)
 _TURN_CACHE: Dict[str, tuple[float, TurnRetrievalResult]] = {}
@@ -220,10 +223,14 @@ def retrieve_for_turn(
     conv_hits: List[Dict[str, Any]] = []
     try:
         if window:
-            # what the user said inside the period asked about, oldest first (all of the owner's turns)
-            conv_hits = list(mem.get_recent_conversation(
+            # what the user said inside the period asked about, oldest first: all of the owner's turns
+            # (the install's earlier ids too), only a member's own for a member
+            from eli.memory import policy as _policy
+            member = _policy.is_member(user_id)
+            conv_hits = [t for t in (mem.get_recent_conversation(
                 limit=max(int(conv_limit) * 3, _WINDOW_ROWS), since=window[0], until=window[1],
-                role="user") or [])
+                role="user", user_id=user_id if member else None) or [])
+                if member or not _policy.is_member(t.get("user_id"))]
         else:
             conv_hits = list(mem.search_conversations(q, user_id=user_id, limit=int(conv_limit)) or [])
     except Exception:
@@ -273,6 +280,7 @@ def retrieve_for_turn(
 
     window_stats: Dict[str, Any] = {}
     actions: List[Dict[str, Any]] = []
+    presence: List[Dict[str, Any]] = []
     if window:
         from eli.cognition.evidence_format import row_time
         candidates = len(raw_hits)
@@ -309,10 +317,14 @@ def retrieve_for_turn(
                                       db_path=getattr(mem, "db_path", None))
         except Exception:
             log.debug("action log unavailable", exc_info=True)
+        try:
+            presence = list(mem.presence_between(window[0], window[1], limit=_WINDOW_ROWS, user_id=user_id) or [])
+        except Exception:
+            log.debug("presence records unavailable", exc_info=True)
         window_stats = {"since": window[0], "until": window[1], "candidates": candidates,
                         "added_by_time": added, "in_window": len(raw_hits) - outside,
                         "outside_window": outside, "turns": len(conv_hits),
-                        "actions": len(actions)}
+                        "actions": len(actions), "presence": len(presence)}
         log.debug("[RETRIEVAL] time window %s..%s: %d in window (%d of %d semantic candidates + %d found by time), "
                   "%d turns, %d actions",
                   time.strftime("%Y-%m-%d %H:%M", time.localtime(window[0])),
@@ -357,6 +369,7 @@ def retrieve_for_turn(
         window_stats=window_stats,
         searched=searched,
         actions=actions,
+        presence=presence,
     )
     if use_cache and q:
         _TURN_CACHE[cache_key] = (time.monotonic(), result)
