@@ -1,24 +1,11 @@
-"""A prune must never leave the FAISS index and its metadata out of step.
+"""A prune keeps the FAISS index and its metadata in step, never embeds again, and runs once.
 
-`search()` maps a FAISS position straight to `self._meta[idx]`. The old `_prune()`
-skipped the VECTOR when an embed failed but kept the METADATA row:
-
-    for entry, vec in zip(keep, vecs):
-        if vec is not None:
-            new_index.add(vec)
-    self._index = new_index
-    self._meta  = keep          # ← every row kept
-
-From the first failure onward every position mapped to the wrong entry, so search
-returned a memory whose text did not belong to the matched vector — with a
-confident score — and the misalignment was flushed to disk. `add()` and
-`rebuild_full()` both keep the pair in lockstep; only this path did not.
-
-`search()` guards `idx >= len(self._meta)`, which is the opposite direction and
-cannot see this.
-
-Latent rather than live: MAX_ENTRIES is 50,000, so a prune only happens on a very
-full store — which is exactly why it needs a test rather than a field report.
+`search()` maps a FAISS position straight to `self._meta[idx]`, so a prune moves each vector with
+its own metadata row. The old `_prune()` re-embedded the newest 50,000 texts in the caller's thread
+on every add past the cap: it kept exactly the cap, so the next add was over it again and every
+memory write after that took minutes to hours. Now the kept vectors are copied out of the index,
+deleted memories go first, the index goes PRUNE_HEADROOM under the cap so the next prune is that
+many adds away, and the cap is what fits in INDEX_RAM_SHARE of the machine's RAM.
 """
 import numpy as np
 import pytest
@@ -27,12 +14,7 @@ from eli.memory import vector_store as vs
 
 
 class _FakeIndex:
-    """Minimal stand-in for faiss.IndexFlatL2.
-
-    The suite mocks `faiss` session-wide (tests/conftest.py), so a real index is
-    not available here — and a MagicMock cannot answer `ntotal`, which is the
-    exact quantity this file is about.
-    """
+    """Minimal stand-in for faiss.IndexFlatL2 that can also give its vectors back."""
 
     def __init__(self, dim):
         self.dim = dim
@@ -43,7 +25,11 @@ class _FakeIndex:
         return len(self.rows)
 
     def add(self, arr):
-        self.rows.append(np.asarray(arr, dtype="float32").reshape(-1))
+        for row in np.asarray(arr, dtype="float32").reshape(-1, self.dim):
+            self.rows.append(row.copy())
+
+    def reconstruct_n(self, i0, n):
+        return np.array(self.rows[i0:i0 + n], dtype="float32").reshape(n, self.dim)
 
     def search(self, vec, k):
         q = np.asarray(vec, dtype="float32").reshape(-1)
@@ -54,12 +40,16 @@ class _FakeIndex:
         return np.take_along_axis(d, idx, axis=1), idx.astype("int64")
 
 
+def _vec(text):
+    h = (sum(map(ord, text)) * 7919) % 997
+    return np.full((1, vs.EMBED_DIM), h / 997.0, dtype="float32")
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """A store with a deterministic fake embedder and a tiny prune threshold."""
+    """A store with a deterministic fake embedder and a cap of 6."""
     import threading
 
-    monkeypatch.setattr(vs, "MAX_ENTRIES", 6, raising=False)
     monkeypatch.setattr(vs.faiss, "IndexFlatL2", _FakeIndex, raising=False)
 
     s = vs.VectorStore.__new__(vs.VectorStore)
@@ -70,117 +60,99 @@ def store(tmp_path, monkeypatch):
     s._meta = []
     s._adds_since_save = 0
     s._save_generation = 0
+    s._tombstone_ids = set()
+    s._entry_cap = 6
     s._index_path = str(tmp_path / "idx.faiss")
     s._meta_path = str(tmp_path / "meta.json")
     s._embedder = object()          # non-None so _embed is attempted
-
-    fail_on = set()
+    embedded = []
 
     def fake_embed(text):
-        if text in fail_on:
-            return None
-        h = abs(hash(text)) % 997
-        return np.full((1, vs.EMBED_DIM), h / 997.0, dtype="float32")
+        embedded.append(text)
+        return _vec(text)
 
     monkeypatch.setattr(s, "_embed", fake_embed, raising=False)
     monkeypatch.setattr(s, "_save_async", lambda: None, raising=False)
-    monkeypatch.setattr(s, "flush", lambda: None, raising=False)
-    return s, fail_on
+    monkeypatch.setattr(s, "flush", lambda **k: None, raising=False)
+    return s, embedded
 
 
 def _fill(store, n):
     for i in range(n):
-        store._index.add(store._embed(f"memory {i}"))
-        store._meta.append({"text": f"memory {i}"})
+        store._index.add(_vec(f"memory {i}"))
+        store._meta.append({"text": f"memory {i}", "memory_id": i})
 
 
-def test_prune_keeps_them_aligned_when_every_embed_succeeds(store):
+def test_prune_keeps_index_and_metadata_aligned(store):
     s, _ = store
     _fill(s, 10)
-    s._prune()
-    assert s._index.ntotal == len(s._meta), "index and metadata diverged"
-    assert len(s._meta) == vs.MAX_ENTRIES
+    assert s._prune(6) is True
+    assert s._index.ntotal == len(s._meta) == int(6 * (1 - vs.PRUNE_HEADROOM))
+    assert [e["text"] for e in s._meta] == [f"memory {i}" for i in range(5, 10)]
+    for i, entry in enumerate(s._meta):
+        assert np.allclose(s._index.rows[i], _vec(entry["text"])), "a vector moved away from its text"
 
 
-def test_a_failed_re_embed_drops_the_row_with_its_vector(store):
-    """The bug: the vector was skipped and the row was kept."""
-    s, fail_on = store
+def test_prune_never_embeds_again(store):
+    s, embedded = store
     _fill(s, 10)
-    fail_on.add("memory 5")          # one of the newest six
-    s._prune()
-    assert s._index.ntotal == len(s._meta), (
-        f"index has {s._index.ntotal} vectors but metadata has {len(s._meta)} rows — "
-        "search would return the wrong memory for every position after the failure")
-    assert all(e["text"] != "memory 5" for e in s._meta)
+    s._prune(6)
+    assert embedded == [], f"the prune re-embedded {len(embedded)} texts"
 
 
-def test_several_failures_still_leave_them_aligned(store):
-    s, fail_on = store
-    _fill(s, 12)
-    fail_on.update({"memory 7", "memory 9", "memory 11"})
-    s._prune()
-    assert s._index.ntotal == len(s._meta)
+def test_adds_past_the_cap_prune_once_not_on_every_add(store, monkeypatch):
+    s, embedded = store
+    s._entry_cap = 20
+    _fill(s, 20)
+    prunes = []
+    real = s._prune
+    monkeypatch.setattr(s, "_prune", lambda cap: prunes.append(cap) or real(cap))
+    for i in range(20, 23):
+        assert s.add(f"memory {i}", metadata={"memory_id": i}) is True
+    assert len(prunes) == 1, f"pruned {len(prunes)} times for three adds"
+    assert embedded == [f"memory {i}" for i in range(20, 23)]     # each new memory once, nothing else
+    assert s._index.ntotal == len(s._meta) == 20
+
+
+def test_deleted_memories_go_before_live_ones(store):
+    s, _ = store
+    _fill(s, 8)
+    s._tombstone_ids = {6, 7}
+    s._prune(6)
+    kept = [e["memory_id"] for e in s._meta]
+    assert 6 not in kept and 7 not in kept
+    assert kept == [1, 2, 3, 4, 5]
 
 
 def test_search_returns_the_text_that_matches_the_vector(store):
-    """End to end: the point of alignment is that a hit means what it says."""
-    s, fail_on = store
-    _fill(s, 10)
-    fail_on.add("memory 6")
-    s._prune()
-
-    target = s._meta[-1]["text"]
-    hits = s.search(target, top_k=1)
-    assert hits, "no results after prune"
-    assert hits[0]["text"] == target, (
-        f"search matched the vector for {target!r} but returned {hits[0]['text']!r}")
-
-
-def test_every_failure_leaves_an_empty_but_consistent_store(store):
-    s, fail_on = store
-    _fill(s, 8)
-    fail_on.update(f"memory {i}" for i in range(8))
-    s._prune()
-    assert s._index.ntotal == 0 and s._meta == []
-
-
-def test_prune_does_not_hold_the_store_lock_while_embedding(store):
-    """The lock must be free during inference — its own comment always said so,
-    and the CALL SITE used to defeat it.
-
-    Probed from ANOTHER thread on purpose. `self._lock` is an RLock, so the
-    thread that owns it can re-acquire it freely; asking "is it held?" from the
-    embedding thread itself answers yes either way and proves nothing. Driven
-    through add(), because calling _prune() directly bypasses the caller that
-    used to hold the lock.
-    """
-    import threading
-
     s, _ = store
-    _fill(s, vs.MAX_ENTRIES)          # next add() tips it over and triggers a prune
+    _fill(s, 10)
+    s._prune(6)
+    target = s._meta[-1]["text"]
+    hits = s.search(target, top_k=1, min_ratio=0)
+    assert hits and hits[0]["text"] == target
 
-    free_when_embedding = []
-    real_embed = s._embed
 
-    def probe_from_other_thread():
-        got = s._lock.acquire(blocking=False)
-        free_when_embedding.append(bool(got))
-        if got:
-            s._lock.release()
+def test_rebuild_takes_only_what_fits(store, monkeypatch):
+    s, embedded = store
+    monkeypatch.setattr(vs, "entry_cap", lambda meta=None: 4)
+    entries = [{"text": f"memory {i}", "memory_id": i} for i in range(10)]
+    assert s.rebuild_full(entries) is True
+    assert [e["memory_id"] for e in s._meta] == [6, 7, 8, 9]
+    assert len(embedded) == 4
 
-    def watching_embed(text):
-        t = threading.Thread(target=probe_from_other_thread)
-        t.start()
-        t.join()
-        return real_embed(text)
 
-    s._embed = watching_embed
-    assert s.add("one more memory") is True
-    assert s._index.ntotal == len(s._meta)
-    assert free_when_embedding, "no embedding happened — the prune did not run"
-    assert all(free_when_embedding), (
-        "another thread could not take the store lock while prune was embedding — "
-        "memory reads and writes are blocked for the whole rebuild")
+def test_the_cap_follows_the_machine(monkeypatch):
+    import eli.core.hardware_profile as hp
+    meta = [{"text": "x" * 100}] * 10
+    monkeypatch.setattr(hp, "system_ram_gib", lambda: (32.0, 16.0))
+    big = vs.entry_cap(meta)
+    monkeypatch.setattr(hp, "system_ram_gib", lambda: (8.0, 4.0))
+    small = vs.entry_cap(meta)
+    assert big == pytest.approx(4 * small, rel=0.01)
+    assert big == int(32 * (1 << 30) * vs.INDEX_RAM_SHARE / (vs.EMBED_DIM * 4 + 100))
+    monkeypatch.setattr(hp, "system_ram_gib", lambda: (0.0, 0.0))
+    assert vs.entry_cap(meta) == 0, "RAM unknown: nothing is pruned rather than a made-up cap"
 
 
 def _user_db(tmp_path, monkeypatch, texts):

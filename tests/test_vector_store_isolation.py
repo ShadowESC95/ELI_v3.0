@@ -85,3 +85,55 @@ def test_paths_never_raise_when_the_target_is_unwritable(tmp_path, monkeypatch):
         assert p.name == "index.faiss"
     finally:
         blocked.chmod(0o700)
+
+
+def _checkout_with_an_index(tmp_path):
+    root = tmp_path / "checkout"
+    legacy = root / "artifacts" / "vectors"
+    legacy.mkdir(parents=True)
+    (legacy / "index.faiss").write_bytes(b"THE-DEVELOPERS-OWN-INDEX")
+    (legacy / "meta.json").write_text('[{"text": "a memory of the developer"}]', encoding="utf-8")
+    return root
+
+
+def test_a_redirected_store_starts_empty_while_the_checkout_has_an_index(tmp_path, monkeypatch):
+    """The legacy-location copy filled every redirected vectors folder (the test sandbox, a tmp_path)
+    with the checkout's real index and its memories' text, so tests searched the developer's memories."""
+    import eli.memory.vector_store as vs
+    root = _checkout_with_an_index(tmp_path)
+    target = tmp_path / "sandbox"
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(target))
+    monkeypatch.setattr(vs, "_project_root", lambda: root)
+    index_path, meta_path = vs._get_index_paths()
+    assert Path(index_path).parent == (target / "vectors").resolve()
+    assert not Path(index_path).exists() and not Path(meta_path).exists(), "the checkout's index was copied in"
+    for env in ("ELI_ARTIFACTS_DIR", "ELI_DATA_DIR"):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv("ELI_DATA_DIR", str(tmp_path / "other"))
+    index_path, meta_path = vs._get_index_paths()
+    assert not Path(index_path).exists() and not Path(meta_path).exists()
+
+
+def test_the_installation_s_own_folder_still_takes_the_old_index(tmp_path, monkeypatch):
+    """What the copy is for: an installed build whose index used to live inside the installation."""
+    import eli.memory.vector_store as vs
+    root = _checkout_with_an_index(tmp_path)
+    own = tmp_path / "installed_data"
+    for env in ("ELI_ARTIFACTS_DIR", "ELI_DATA_DIR", "ELI_TEST_MODE"):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setattr(vs, "_project_root", lambda: root)
+    monkeypatch.setattr("eli.core.paths.artifacts_dir", lambda: own)
+    index_path, _ = vs._get_index_paths()
+    assert Path(index_path).read_bytes() == b"THE-DEVELOPERS-OWN-INDEX"
+
+
+def test_tests_never_take_the_checkout_s_index(tmp_path, monkeypatch):
+    import eli.memory.vector_store as vs
+    root = _checkout_with_an_index(tmp_path)
+    for env in ("ELI_ARTIFACTS_DIR", "ELI_DATA_DIR"):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setenv("ELI_TEST_MODE", "1")
+    monkeypatch.setattr(vs, "_project_root", lambda: root)
+    monkeypatch.setattr("eli.core.paths.artifacts_dir", lambda: tmp_path / "data")
+    index_path, _ = vs._get_index_paths()
+    assert not Path(index_path).exists()

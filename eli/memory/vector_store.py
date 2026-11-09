@@ -65,9 +65,33 @@ try:
 except ImportError:
     FAISS_AVAILABLE = False
 
-MAX_ENTRIES  = 50_000
 SAVE_EVERY   = 50
 EMBED_DIM    = 768
+# How much of the machine's RAM the semantic index may take, vectors and their metadata together.
+# An IndexFlat holds every vector in RAM and searches them all, so the cap on entries is what fits
+# in this share (a 32 GiB PC: about 100,000 memories; an 8 GiB phone: a quarter of that). It was a
+# fixed 50,000 whatever the machine.
+INDEX_RAM_SHARE = 0.01
+# A prune takes the index this far under its cap, so the next one is this many adds away. Pruning to
+# exactly the cap made every add after it prune again.
+PRUNE_HEADROOM = 0.10
+_VECTOR_BYTES = EMBED_DIM * 4      # float32
+
+
+def entry_cap(meta: Optional[List[Dict[str, Any]]] = None) -> int:
+    """How many entries the index may hold on this machine: INDEX_RAM_SHARE of its RAM over what
+    one entry takes (its vector and its text as the index's own entries measure it). 0 when the
+    RAM cannot be read: then nothing is pruned, rather than a cap made up."""
+    try:
+        from eli.core.hardware_profile import system_ram_gib
+        total_gib = float(system_ram_gib()[0] or 0.0)
+    except Exception:
+        total_gib = 0.0
+    if total_gib <= 0:
+        return 0
+    texts = [len(str(e.get("text") or "").encode("utf-8")) for e in (meta or [])[-1000:]]
+    per_entry = _VECTOR_BYTES + (sum(texts) / len(texts) if texts else 0.0)
+    return max(1, int(total_gib * (1 << 30) * INDEX_RAM_SHARE / per_entry))
 
 _store: Optional["VectorStore"] = None
 _store_lock = threading.Lock()
@@ -136,6 +160,13 @@ def _entry_id(entry: Dict[str, Any]) -> Any:
     """The memory row an index entry belongs to. add() stores it as memory_id and the rebuild
     stored it as id; tombstones only ever read id, so 483 deleted memories kept being found."""
     return entry.get("memory_id", entry.get("id"))
+
+
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _embeddable_sql(con: Any) -> str:
@@ -222,15 +253,20 @@ class VectorStore:
             self._index.add(vec)
             self._meta.append({"text": text, **(metadata or {})})
             self._adds_since_save += 1
-            _needs_prune = len(self._meta) > MAX_ENTRIES
+            cap = self._cap()
+            if cap and len(self._meta) > cap:
+                self._prune(cap)
             if self._adds_since_save >= SAVE_EVERY:
                 self._save_async()
-        # Prune outside the store lock. It re-embeds up to MAX_ENTRIES texts, and holding the lock
-        # across that froze every read and write. _prune's own comment said to embed outside the
-        # lock, but the call site was inside it.
-        if _needs_prune:
-            self._prune()
         return True
+
+    def _cap(self) -> int:
+        """entry_cap() for this store, measured once: the machine's RAM does not change under it."""
+        cap = getattr(self, "_entry_cap", None)
+        if cap is None:
+            with self._lock:
+                cap = self._entry_cap = entry_cap(self._meta)
+        return cap
 
     def search(self, query: str, top_k: int = 5, limit: int | None = None,
                k: int | None = None, min_ratio: float | None = None) -> List[Dict[str, Any]]:
@@ -547,49 +583,43 @@ class VectorStore:
                 log.debug(f"[VECTOR_STORE] Background save failed: {e}")
         threading.Thread(target=_write, daemon=True, name="eli-vs-save").start()
 
-    def _prune(self) -> None:
-        """Rebuild the index from the newest MAX_ENTRIES entries.
+    def _prune(self, cap: int) -> bool:
+        """Take the index PRUNE_HEADROOM under `cap`: deleted memories go first, then the oldest.
 
-        The vector and its metadata row must be kept in LOCKSTEP. The previous
-        version skipped the vector when an embed failed but kept the metadata row,
-        so from the first failure onward every FAISS position mapped to the wrong
-        `_meta` entry — search returned a memory whose text did not belong to the
-        matched vector, with a confident score, and the misalignment was flushed
-        to disk. `add()` and `rebuild_full()` both get this right; only this path
-        did not.
-
-        Runs with the lock released around the embedding work (see add()).
+        The kept vectors are copied out of the index, never embedded again. Re-embedding the
+        50,000 kept texts on every add past the cap took a memory write minutes to hours. The
+        copy is done under the store lock, so an add or a second prune cannot slip in between
+        reading the index and swapping the new one in. Each vector moves with its own metadata row,
+        so position i of the index is still the text of _meta[i]. Returns whether it pruned.
         """
         with self._lock:
-            keep = list(self._meta[-MAX_ENTRIES:])
-
-        new_index = faiss.IndexFlatL2(EMBED_DIM)
-        new_meta: List[Dict[str, Any]] = []
-        dropped = 0
-        for entry in keep:
-            vec = self._embed(entry.get("text", ""))
-            if vec is None:
-                # Drop the row with its vector instead of desynchronising the two. The entry
-                # survives in the durable stores and rebuild_full() can restore it; a misaligned
-                # index can't be detected by the caller and silently returns wrong memories.
-                dropped += 1
-                continue
-            new_index.add(vec)
-            new_meta.append(entry)
-
-        if self._closed:
-            return              # closed part-way: keep the index, as rebuild_full does
-        with self._lock:
+            total = len(self._meta)
+            if total <= cap:
+                return False
+            if int(self._index.ntotal) != total:
+                log.warning("[VECTOR_STORE] index (%d) and metadata (%d) differ; not pruned, a rebuild "
+                            "from the database realigns them", self._index.ntotal, total)
+                return False
+            target = max(1, int(cap * (1.0 - PRUNE_HEADROOM)))
+            dead = getattr(self, "_tombstone_ids", set())
+            live = [i for i, e in enumerate(self._meta) if _entry_id(e) is None or _as_int(_entry_id(e)) not in dead]
+            keep = live[-target:]
+            try:
+                if keep and keep[-1] - keep[0] + 1 == len(keep):      # one run at the end: copy only it
+                    vectors = self._index.reconstruct_n(keep[0], len(keep))
+                else:
+                    vectors = self._index.reconstruct_n(0, total)[keep] if keep else None
+            except Exception as e:
+                log.warning("[VECTOR_STORE] the index cannot give its vectors back (%s); not pruned", e)
+                return False
+            new_index = faiss.IndexFlatL2(EMBED_DIM)
+            if keep:
+                new_index.add(np.ascontiguousarray(vectors, dtype="float32"))
             self._index = new_index
-            self._meta = new_meta
-            self._adds_since_save = 0
-        if dropped:
-            log.warning(
-                "[VECTOR_STORE] Pruned to %d entries; %d dropped because they could "
-                "not be re-embedded (index and metadata kept in lockstep)",
-                len(new_meta), dropped)
-        else:
-            log.debug(f"[VECTOR_STORE] Pruned to {len(new_meta)} entries")
+            self._meta = [self._meta[i] for i in keep]
+            self._adds_since_save = SAVE_EVERY       # the next add saves the smaller index
+        log.debug("[VECTOR_STORE] pruned %d entries to %d (cap %d)", total, len(keep), cap)
+        return True
 
     def flush(self, *, pending_only: bool = False) -> None:
         """Save index and metadata to disk; with pending_only, only when there are unsaved adds.
@@ -610,6 +640,11 @@ class VectorStore:
         off to the side and swapped in only when it is finished. A background rebuild cut short by
         close() at shutdown replaced the index with the few entries it had reached and saved that: the
         next start loaded 2 vectors. Returns whether the new index was swapped in."""
+        cap = entry_cap(texts_and_meta)
+        if cap and len(texts_and_meta) > cap:
+            # the newest that fit, as a prune keeps them: the rebuild used to take every row and the
+            # first add after it pruned the whole index again
+            texts_and_meta = list(texts_and_meta)[-cap:]
         new_index = faiss.IndexFlatL2(EMBED_DIM)
         new_meta: List[Dict[str, Any]] = []
         for entry in texts_and_meta:
@@ -693,9 +728,17 @@ def _migrate_legacy_index_location(index_path, vdir) -> None:
     Only runs when the resolved location has no index yet and the legacy one does, so
     it cannot clobber a live index, and it copies rather than moves — an installed
     build sharing a checkout keeps working either way.
+
+    Only for the installation's own data folder. A redirected store (ELI_ARTIFACTS_DIR or
+    ELI_DATA_DIR: the test sandbox, a tmp_path, a second profile) starts empty: the copy put the
+    checkout's whole semantic memory, every memory's text in meta.json, into the test sandbox,
+    and every test that recalled searched the developer's own memories.
     """
     from pathlib import Path
     import shutil
+    if (os.environ.get("ELI_ARTIFACTS_DIR") or os.environ.get("ELI_DATA_DIR")
+            or os.environ.get("ELI_TEST_MODE") == "1"):
+        return
     try:
         legacy_dir = _project_root() / "artifacts" / "vectors"
         if legacy_dir.resolve() == Path(vdir).resolve():
