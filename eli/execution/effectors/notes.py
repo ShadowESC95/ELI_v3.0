@@ -80,11 +80,29 @@ def _h_list_notes(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 
 
+def _h_write_note(a, args):
+    """WRITE_NOTE ("write a note saying ..."): a line in today's notes file, in the same folder as every
+    other note, so LIST_NOTES and SEARCH_NOTES find it. It wrote to a folder named relative to
+    wherever ELI was started, shared with ELI v2, which nothing ever read back."""
+    from datetime import datetime
+    txt = str((args or {}).get("text") or "").rstrip()
+    if not txt:
+        return {"ok": False, "action": "WRITE_NOTE", "content": "Missing note text."}
+    folder = notes_folder()
+    folder.mkdir(parents=True, exist_ok=True)
+    daily = folder / f"{datetime.now().strftime('%Y-%m-%d')}.md"
+    first = not daily.exists() or not daily.read_text(encoding="utf-8", errors="ignore").strip()
+    with daily.open("a", encoding="utf-8") as fh:
+        fh.write(f"{'' if first else chr(10)}- [{datetime.now().strftime('%H:%M:%S')}] {txt}\n")
+    return {"ok": True, "action": "WRITE_NOTE", "path": str(daily), "content": f"Wrote note to {daily}"}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
     "LIST_NOTES": _h_list_notes,
     "NEW_NOTE": _h_list_notes,
     "SEARCH_NOTES": _h_list_notes,
+    "WRITE_NOTE": _h_write_note,
 }.items():
     _register(_action, _fn)

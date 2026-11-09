@@ -7,8 +7,7 @@ from pathlib import Path
 
 def _run(action, args):
     from eli.execution.effectors.registry import get
-    import eli.execution.effectors.notes  # noqa: F401  (registers the note actions)
-    import eli.execution.effectors.files_notes  # noqa: F401
+    import eli.execution.effectors  # noqa: F401  (registers every effector, as the executor does)
     return get(action)(action, args)
 
 
@@ -46,3 +45,11 @@ def test_a_second_note_of_the_same_name_keeps_the_first(tmp_path, monkeypatch):
     again = _run("NEW_NOTE", {"title": "shopping", "content": "lemons"})
     text = Path(again["path"]).read_text(encoding="utf-8")
     assert "oat milk" in text and "lemons" in text
+
+
+def test_write_note_has_one_handler_and_it_is_the_notes_one():
+    from eli.execution.effectors.registry import get
+    import eli.execution.effectors  # noqa: F401
+    from eli.execution.effectors import files_notes, notes
+    assert get("WRITE_NOTE") is notes._h_write_note
+    assert not hasattr(files_notes, "_eli_safe_write_note")

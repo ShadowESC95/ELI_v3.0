@@ -1,4 +1,4 @@
-"""Files & notes effector — file open/read, note write/append, safe screenshot.
+"""Files effector — file open/read and safe screenshot (notes live in notes.py).
 
 Clean leaf lifted from executor_enhanced.py (v3 modularisation).
 """
@@ -15,111 +15,6 @@ def _open_file(path: str) -> None:
         open_file(path)
     except Exception:
         log.debug("suppressed exception", exc_info=True)
-
-
-def _write_note_builtin(args: dict) -> dict:
-    """Create a note file under ELI_DOC_DIR (default: ./eli_docs)."""
-    try:
-        title = (args.get("title") or "note").strip()
-        content = (args.get("content") or "").strip()
-        filename = (args.get("filename") or "").strip()
-        open_after = bool(args.get("open_after", False))
-
-        import os, re, time, subprocess
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parents[2]
-        doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        if not filename:
-            safe_title = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", title).strip("_") or "note"
-            filename = f"{safe_title}.md"
-        if not filename.lower().endswith((".md", ".txt")):
-            filename += ".md"
-
-        if not content:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            content = f"# {title}\n\nCreated: {ts}\n\n"
-
-        path = (doc_dir / filename).resolve()
-        doc_dir_resolved = doc_dir.resolve()
-        if path != doc_dir_resolved and doc_dir_resolved not in path.parents:
-            return {"ok": False, "error": "refusing to write outside ELI_DOC_DIR"}
-
-        path.write_text(content, encoding="utf-8")
-
-        if open_after:
-            try:
-                open_file(str(path))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-        return {"ok": True, "path": str(path), "title": title}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def _append_note_builtin(args: dict) -> dict:
-    """Append content to a note under ELI_DOC_DIR."""
-    try:
-        title = (args.get("title") or "").strip()
-        content = (args.get("content") or "").strip()
-        filename = (args.get("filename") or "").strip()
-        open_after = bool(args.get("open_after", False))
-
-        if not title and not filename:
-            return {"ok": False, "error": "append_note: title or filename is required"}
-        if not content:
-            return {"ok": False, "error": "append_note: content is empty"}
-
-        import os, re, time, subprocess
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parents[2]
-        doc_dir = Path(os.environ.get("ELI_DOC_DIR", str(root / "eli_docs"))).expanduser()
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        note_file = None
-        if filename:
-            note_file = (doc_dir / filename)
-        else:
-            if title.lower().endswith((".md", ".txt")):
-                note_file = (doc_dir / title)
-            else:
-                for ext in (".md", ".txt"):
-                    cand = doc_dir / f"{title}{ext}"
-                    if cand.exists():
-                        note_file = cand
-                        break
-                if note_file is None:
-                    safe_title = re.sub(r"[^a-zA-Z0-9_\-\.]+", "_", title).strip("_") or "note"
-                    note_file = doc_dir / f"{safe_title}.md"
-
-        note_file = note_file.resolve()
-        doc_dir_resolved = doc_dir.resolve()
-        if note_file != doc_dir_resolved and doc_dir_resolved not in note_file.parents:
-            return {"ok": False, "error": "refusing to write outside ELI_DOC_DIR"}
-
-        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        blob = f"\n\n---\n\n{ts}\n\n{content.strip()}\n"
-
-        if note_file.exists():
-            prev = note_file.read_text(encoding="utf-8", errors="ignore")
-        else:
-            prev = f"# {title or note_file.stem}\n"
-
-        note_file.write_text(prev.rstrip() + blob, encoding="utf-8")
-
-        if open_after:
-            try:
-                open_file(str(note_file))
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-        return {"ok": True, "path": str(note_file), "title": title or note_file.stem}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 
 def _eli_safe_read_file(args=None):
@@ -163,32 +58,6 @@ def _eli_safe_read_file(args=None):
     }
 
 
-def _eli_safe_write_note(args=None):
-    from datetime import datetime
-    _args = args or {}
-    txt = str(_args.get("text") or "").rstrip()
-    if not txt:
-        return {"ok": False, "action": "WRITE_NOTE", "content": "Missing note text."}
-    # The day's notes go where every other note is (notes.notes_folder), so "list my notes" and
-    # "search my notes" find them. A folder named relative to wherever ELI was started was shared
-    # with ELI v2, and nothing ever read it back.
-    from eli.execution.effectors.notes import notes_folder
-    nb = notes_folder()
-    nb.mkdir(parents=True, exist_ok=True)
-    daily = nb / f"{datetime.now().strftime('%Y-%m-%d')}.md"
-    prefix = "" if not daily.exists() or not daily.read_text(encoding="utf-8", errors="ignore").strip() else "\n"
-    stamp = datetime.now().strftime("%H:%M:%S")
-    payload = f"{prefix}- [{stamp}] {txt}\n"
-    with daily.open("a", encoding="utf-8") as fh:
-        fh.write(payload)
-    return {
-        "ok": True,
-        "action": "WRITE_NOTE",
-        "path": str(daily),
-        "content": f"Wrote note to {daily}",
-    }
-
-
 def _eli_safe_screenshot(args=None):
     _args = args or {}
     region = _args.get("region", "full")
@@ -225,18 +94,13 @@ def _eli_safe_screenshot(args=None):
         "content": str(out or "Screenshot completed"),
     }
 
-__all__ = ['_open_file', '_write_note_builtin', '_append_note_builtin', '_eli_safe_read_file', '_eli_safe_write_note', '_eli_safe_screenshot']
+__all__ = ['_open_file', '_eli_safe_read_file', '_eli_safe_screenshot']
 
 
 def _h_read_file(a, args):
     return _eli_safe_read_file(args)
 
 
-def _h_write_note(a, args):
-    return _eli_safe_write_note(args)
-
-
 from eli.execution.effectors.registry import register as _register
 
 _register("READ_FILE", _h_read_file)
-_register("WRITE_NOTE", _h_write_note)
