@@ -5361,10 +5361,23 @@ def _world_chat(text: str, principal, session_id: str = "") -> str:
     return _extract_response_text(result)
 
 
+def _world_remember(said: str, answer: str, principal, session_id: str = "") -> None:
+    """A sentence the world answered itself (a build, a game) as a turn of the conversation: kept in
+    the engine's memory under the same person and session a chat turn from ELI VR gets (_world_chat),
+    so recall and the period log find what was said in VR. The action row is the world's own."""
+    engine = get_engine()
+    who = _turn_user(principal) or engine.user_id
+    session = session_id or engine.session_id
+    engine.memory.add_conversation_turn("user", said, session, who)
+    if answer:
+        engine.memory.add_conversation_turn("assistant", answer, session, who)
+
+
 try:
     from eli.world.spatial_feed import build_router as _build_world_router
     app.include_router(_build_world_router(_require_token, require_member, _ws_authorised,
-                                           chat=_world_chat, require_admin=require_admin))
+                                           chat=_world_chat, require_admin=require_admin,
+                                           remember=_world_remember))
 except Exception as _world_err:  # the world is never on the server's critical path
     print(f"[ELI] world feed unavailable: {_world_err}")
 

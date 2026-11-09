@@ -248,6 +248,41 @@ def test_a_native_client_reaches_the_world_feed_gate(monkeypatch):
     assert closed.value.code == 4401   # the feed's own refusal, not the site guard's
 
 
+def test_a_sentence_the_world_answered_is_a_turn_of_the_owners_conversation(tokenless_client, monkeypatch):
+    """A build or a game set in ELI VR was kept as an action row only: "what did I ask you in VR?"
+    found nothing. Its sentence and ELI's answer are kept where the chat path keeps its turns: the
+    engine's memory, under the same person and session as a chat turn from VR."""
+    stored = []
+
+    class _Memory:
+        def add_conversation_turn(self, role, content, session_id=None, user_id=None):
+            stored.append((role, content, session_id, user_id))
+
+    class _Engine:
+        memory = _Memory()
+        user_id = "the-owner-id"
+        session_id = "the-desktop-session"
+
+    from eli.world import composer, games
+    import eli.runtime.evidence_ledger as evidence_ledger
+    monkeypatch.setattr("api.server.get_engine", lambda *a, **k: _Engine(), raising=False)
+    monkeypatch.setattr(evidence_ledger, "record_event", lambda *a, **k: 1)
+    monkeypatch.setattr(games, "wants_stop", lambda text: False)
+    monkeypatch.setattr(games, "wants_game", lambda text: False)
+    monkeypatch.setattr(composer, "wants_building", lambda text, scene: True)
+    monkeypatch.setattr(composer, "compose", lambda text, scene: {
+        "kind": "build", "text": "A lamp, by the window.", "room": "workshop",
+        "results": [{"op": "create", "name": "Lamp", "ok": True}], "refused": []})
+    r = tokenless_client.post("/v1/world/say", json={"text": "build a lamp by the window", "session_id": "eli-vr-7"})
+    assert r.status_code == 200 and r.json()["text"] == "A lamp, by the window."
+    assert stored == [("user", "build a lamp by the window", "eli-vr-7", "the-owner-id"),
+                      ("assistant", "A lamp, by the window.", "eli-vr-7", "the-owner-id")]
+    stored.clear()
+    tokenless_client.post("/v1/world/say", json={"text": "build a lamp by the window"})
+    assert {(row[2], row[3]) for row in stored} == {("the-desktop-session", "the-owner-id")}, \
+        "with no session named, the engine's own, as a chat turn from VR gets"
+
+
 # --------------------------------------------------------------------------- #
 # Static / PWA routes (no auth)
 # --------------------------------------------------------------------------- #
