@@ -184,7 +184,15 @@ def run_and_review(target: str = "tests/", *, timeout: int = 3600,
             backup_path = None
 
     # 2) Run the suite (writes test_report.md + the junit via the conftest hook /
-    #    run_test_report).
+    #    run_test_report). The last run's junit goes first: left in place, a run that wrote none
+    #    (it did not start, or nothing was collected) was read as the last run's results.
+    junit = art / "test_report.junit.xml"
+    try:
+        junit.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        return {"ok": False, "error": f"the last run's results could not be cleared: {e}", "options": []}
     _say(f"running {target} …")
     try:
         r = subprocess.run([sys.executable, "tools/run_test_report.py", target],
@@ -196,7 +204,7 @@ def run_and_review(target: str = "tests/", *, timeout: int = 3600,
         return {"ok": False, "error": str(e), "options": []}
 
     # 3) Parse + write an errors backup file when there are failures.
-    totals, failures = _parse_junit(art / "test_report.junit.xml")
+    totals, failures = _parse_junit(junit)
     error_file = None
     if failures:
         error_file = reports_dir / f"errors_{ts}.md"
@@ -217,8 +225,15 @@ def run_and_review(target: str = "tests/", *, timeout: int = 3600,
     except Exception:
         report_text = stdout[-2000:]
     _say("done")
+    # Passed only when tests ran, none failed, and the run itself says so (its exit code): a run
+    # with no results, or one that ended on an error before its tests, is not a pass.
+    ran = int(totals.get("total") or 0)
+    passed = bool(ran) and not failures and r.returncode == 0
     return {
-        "ok": not failures,
+        "ok": passed,
+        "returncode": r.returncode,
+        "ran": ran,
+        **({} if ran else {"error": f"no tests ran (exit code {r.returncode})"}),
         "totals": totals,
         "failures": failures[:50],
         "report_text": report_text,

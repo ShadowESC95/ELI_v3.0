@@ -70,3 +70,38 @@ def test_run_and_review_integration():
     if res["ok"]:
         assert res["error_file"] is None
     assert res["report_path"]
+
+
+def _fake_run(monkeypatch, *, returncode, junit=None):
+    """The suite run replaced: it exits with `returncode` and writes `junit` (or nothing)."""
+    import subprocess
+    import types
+
+    def run(*a, **k):
+        if junit is not None:
+            (TR._art() / "test_report.junit.xml").write_text(junit)
+        return types.SimpleNamespace(returncode=returncode, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(TR, "propose_fixes", lambda failures, **k: {"ok": True, "proposals": []})
+
+
+_PASSING = """<?xml version="1.0"?><testsuites><testsuite>
+  <testcase classname="tests.test_a" name="test_pass"/></testsuite></testsuites>"""
+
+
+def test_a_run_that_wrote_no_results_is_not_read_as_the_last_runs_pass(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(tmp_path))
+    (tmp_path / "test_report.junit.xml").write_text(_PASSING)      # the last run's
+    _fake_run(monkeypatch, returncode=4)
+    res = TR.run_and_review("tests/test_nothing_here.py")
+    assert res["ok"] is False and res["ran"] == 0 and res["returncode"] == 4
+    assert res["totals"]["total"] == 0 and "no tests ran" in res["error"]
+
+
+def test_a_run_that_exits_on_an_error_is_not_a_pass_whatever_its_results(tmp_path, monkeypatch):
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(tmp_path))
+    _fake_run(monkeypatch, returncode=2, junit=_PASSING)
+    res = TR.run_and_review("tests/")
+    assert res["ok"] is False and res["returncode"] == 2 and res["ran"] == 1
+    _fake_run(monkeypatch, returncode=0, junit=_PASSING)
+    assert TR.run_and_review("tests/")["ok"] is True
