@@ -39,6 +39,10 @@ _STOPWORDS = frozenset({
     "what", "which", "who", "whom", "when", "where", "why", "how", "all",
     "just", "so", "then", "than", "also", "very", "too", "some", "any",
     "also", "yes", "yeah", "ok", "okay", "hey", "hi", "hello", "well",
+    # quantifiers and frequency words: "Nobody uses cash anymore" made an entity "Nobody"
+    "nobody", "everybody", "everyone", "someone", "somebody", "anyone", "anybody", "noone",
+    "nothing", "everything", "something", "anything", "people", "none", "each", "every",
+    "many", "most", "never", "always", "often", "sometimes", "usually", "still",
 })
 
 # Family / pet relationship nouns for possessive-fact extraction
@@ -141,7 +145,13 @@ def _connect(path: Path) -> sqlite3.Connection:
 # ── KnowledgeGraph class ─────────────────────────────────────────────────────
 
 _NOT_A_KIND = frozenset("""not just still only well actually your the in all good happy high awake
-pretty certain it doing saying so too very really""".split())
+pretty certain it doing saying so too very really
+bit little tad touch wee lot smidge fair""".split())   # "I'm a bit tired" is a state, not a kind
+
+# The conflict handler retires a relation by setting its weight to RETIRED_WEIGHT; anything at or
+# under LIVE_WEIGHT is retired and never shown.
+RETIRED_WEIGHT = 0.05
+LIVE_WEIGHT = 0.1
 
 
 # Point-in-time activities change constantly; the bitemporal claims store (eli.memory.claims,
@@ -181,8 +191,107 @@ def _as_of_day(rel: Dict[str, Any]) -> str:
         return ""
 
 
+def live_relation(rel: Dict[str, Any]) -> bool:
+    """A relation the graph still stands by: not retired by a correction and not junk an earlier
+    extractor stored (_junk_name_relation). Every reader of relations goes through this, so what the
+    one-hop block hides cannot come back through another (the multi-hop chains used to show all)."""
+    try:
+        weight = float(rel.get("weight", 1.0) if rel.get("weight") is not None else 1.0)
+    except (TypeError, ValueError):
+        weight = 1.0
+    return weight > LIVE_WEIGHT and not _junk_name_relation(rel)
+
+
+def relation_line(subject: str, predicate: str, obj: str, ts: Any = None) -> str:
+    """One relation as the prompt shows it, dated by when the graph learned it."""
+    from eli.cognition.evidence_format import as_of
+    return f"{subject} —[{predicate}]→ {as_of(obj, ts)}{_as_of_day({'ts': ts})}"
+
+
+# ── statements: who holds what, read clause by clause ───────────────────────────────────────────
+# A preference or a kind is the user's only when a first-person holder stands right before the verb
+# ("I really like X", "user prefers X"): "My brother likes football" is not theirs. A negation
+# between the holder and the verb turns a liking into a dislike ("I don't like mushrooms" was stored
+# as a preference for "mushrooms."), a conditional with "to" is a wish and no taste ("I'd like to
+# book a table"), and an object ends where its clause does.
+_OBJ = r"(?P<obj>[A-Za-z0-9][A-Za-z0-9 _\-\.'’]{1,39}?)"
+_OBJ_END = (r"(?=\s+(?:but|because|though|although|whereas|unless|except|when|if|while)\b"
+            r"|\s+(?:and|or)\s+(?:i|i'm|i'd|i've|my|he|she|they|we|you)\b"
+            r"|\s+(?:a\s+lot|a\s+bit|so\s+much|very\s+much|too\s+much|as\s+well|too)(?=[\s.,;:!?]|$)"
+            r"|[,;:!?\n]|\.(?:\s|$)|$)")
+_ADV = (r"(?:\s+(?:really|actually|still|also|just|truly|honestly|generally|usually|always|definitely|"
+        r"quite|totally|absolutely|much|kind\s+of|sort\s+of))*")
+_NEGATION = re.compile(r"\b(?:not|never|no|nobody|noone|nothing|none|neither|nor|hardly|barely|rarely|seldom)\b"
+                       r"|n['’]t\b", re.I)
+_LIKING = ("prefer", "like", "love", "enjoy", "adore")
+_DISLIKING = ("dislike", "hate", "detest", "loathe")
+_STATEMENT_PATTERNS: List[Tuple[str, "re.Pattern"]] = [
+    ("taste", re.compile(
+        rf"\b(?P<holder>i|user)(?P<aux>['’]d|\s+would|\s+do|\s+does|\s+did)?{_ADV}"
+        rf"(?:\s+(?:not|never|no\s+longer)|n['’]t)?{_ADV}\s+(?P<verb>{'|'.join(_DISLIKING + _LIKING)})s?"
+        rf"(?P<not_to>\s+not\s+to)?\s+{_OBJ}{_OBJ_END}", re.I)),
+    # "I am a X" / "I'm an X". The article is required: without it every "I'm going to bed now" /
+    # "I'm not happy" became a fact (44 of a user's 83 relations).
+    ("is_a", re.compile(rf"\b(?P<holder>i)(?:\s+am|['’]m)\s+(?P<verb>an?)\s+(?P<obj>[A-Za-z][a-zA-Z ]{{2,30}}?){_OBJ_END}",
+                        re.I)),
+    ("works_on", re.compile(rf"\b(?P<subj>[A-Za-z][a-zA-Z0-9]{{1,20}})\s+(?P<verb>works\s+on)\s+{_OBJ}{_OBJ_END}", re.I)),
+    ("uses", re.compile(rf"\b(?P<subj>[A-Za-z][a-zA-Z0-9]{{1,20}})\s+(?P<verb>uses?)\s+{_OBJ}{_OBJ_END}", re.I)),
+]
+_CLAUSE_START = re.compile(r"\b(?:but|because|though|although|whereas|unless|and|or|so)\s+", re.I)
+
+
+def statements(text: str) -> List[Tuple[str, str, str]]:
+    """(subject, predicate, object) for each plain statement in `text`: a question or a hedged
+    sentence ("maybe I'd like X", eli/memory/claims._HEDGED) states nothing. A liking negated is a
+    dislike, a dislike negated is nothing anyone can say; a negated "uses"/"works on" ("Nobody uses
+    cash anymore", "Sam never uses Vim") and a mood stored as a kind ("I'm a bit tired") are skipped."""
+    from eli.memory.claims import _HEDGED
+    out: List[Tuple[str, str, str]] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", str(text or "")):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?") or _HEDGED.search(sentence):
+            continue
+        for kind, pattern in _STATEMENT_PATTERNS:
+            for m in pattern.finditer(sentence):
+                obj = m.group("obj").strip(" .,;:!?-_'\"’")
+                first = (obj.split() or [""])[0].lower()
+                # "I love my dog", "I like it when...": a pronoun or a possessive names no thing
+                if len(obj) < 2 or obj.lower() in _STOPWORDS or (first in _STOPWORDS and first not in ("the", "a", "an")):
+                    continue
+                if "holder" in pattern.groupindex:
+                    subj = "User"
+                    said = sentence[m.start("holder"):m.start("verb")]
+                else:
+                    subj = m.group("subj").strip()
+                    if subj.lower() in _STOPWORDS:
+                        continue
+                    starts = [c.end() for c in _CLAUSE_START.finditer(sentence, 0, m.start("subj"))]
+                    said = sentence[(starts[-1] if starts else 0):m.start("verb")]
+                negated = bool(_NEGATION.search(said)) or bool(m.groupdict().get("not_to"))
+                if kind == "taste":
+                    # "I'd like to book a table", "I would prefer not to talk about it": a wish for
+                    # now, not a taste
+                    if (m.group("aux") or "").strip().lower() in ("'d", "’d", "would") and (
+                            m.group("not_to") or obj.lower().startswith("to ")):
+                        continue
+                    disliking = m.group("verb").lower() in _DISLIKING
+                    if negated and disliking:
+                        continue
+                    predicate = "dislikes" if negated or disliking else "prefers"
+                elif negated:
+                    continue
+                else:
+                    predicate = kind
+                if predicate == "is_a" and _junk_name_relation({"predicate": "is_a", "object": obj}):
+                    continue
+                out.append((subj, predicate, obj))
+    return out
+
+
 class KnowledgeGraph:
     """SQLite-backed entity-relation knowledge graph."""
+
+    relation_line = staticmethod(relation_line)     # for callers holding the graph (agent_bus)
 
     def __init__(self, db_path: Optional[Path] = None):
         self._path = Path(db_path) if db_path else _db_path()
@@ -359,8 +468,8 @@ class KnowledgeGraph:
 
     def related(self, name: str, hops: int = 2) -> List[Dict[str, Any]]:
         """
-        Multi-hop BFS from entity `name`. Returns all reachable entities
-        within `hops` steps, with their relations.
+        Multi-hop BFS from entity `name`: the live relations (live_relation) within `hops` steps,
+        strongest and newest first, each with the ts it was learned (relation_line dates it).
         """
         start_id = self.get_entity_id(name)
         if start_id is None:
@@ -377,16 +486,21 @@ class KnowledgeGraph:
                 placeholders = ",".join("?" * len(frontier))
                 rows = conn.execute(
                     f"""SELECT r.predicate, e_s.name AS subject, e_o.name AS object,
-                               r.subject_id, r.object_id, r.weight
+                               r.subject_id, r.object_id, r.weight, r.ts
                         FROM kg_relations r
                         JOIN kg_entities e_s ON r.subject_id=e_s.id
                         JOIN kg_entities e_o ON r.object_id=e_o.id
                         WHERE r.subject_id IN ({placeholders})
-                           OR r.object_id  IN ({placeholders})""",
+                           OR r.object_id  IN ({placeholders})
+                        ORDER BY r.weight DESC, r.ts DESC""",
                     frontier + frontier
                 ).fetchall()
                 new_frontier = []
                 for row in rows:
+                    # a retired name or a mood stored as a kind must not travel: neither shown nor
+                    # walked through to what lies beyond it
+                    if not live_relation(dict(row)):
+                        continue
                     results.append(dict(row))
                     for nid in (row["subject_id"], row["object_id"]):
                         if nid not in visited:
@@ -526,15 +640,13 @@ class KnowledgeGraph:
             # Skip retired/contradicted relations (weight demoted to ~0.05 by the
             # has_name conflict handler) so a corrected name never leaks back in.
             _outbound = sorted(
-                (r for r in (ent_detail.get("outbound") or [])
-                 if float(r.get("weight", 1.0) or 0) > 0.1 and not _junk_name_relation(r)),
+                (r for r in (ent_detail.get("outbound") or []) if live_relation(r)),
                 key=_rel_relevance, reverse=True,
             )
             # Inbound too: "User is_a saying your memory is fine now" reached a recall reply from the
             # value's side, where nothing filtered it.
             _inbound = [r for r in (ent_detail.get("inbound") or [])
-                        if float(r.get("weight", 1.0) or 0) > 0.1
-                        and not _junk_name_relation({"predicate": r.get("predicate"), "object": name})]
+                        if live_relation({**r, "object": name})]
             if (not (desc or aliases or _outbound or _inbound)
                     and (ent_detail.get("outbound") or ent_detail.get("inbound"))):
                 continue                     # all it had were junk relations
@@ -543,12 +655,12 @@ class KnowledgeGraph:
                 triple = (name, rel["predicate"], rel["object"])
                 if triple not in seen_triples:
                     seen_triples.add(triple)
-                    lines.append(f"  {name} —[{rel['predicate']}]→ {as_of(rel['object'], rel.get('ts'))}{_as_of_day(rel)}")
+                    lines.append("  " + relation_line(name, rel["predicate"], rel["object"], rel.get("ts")))
             for rel in _inbound[:max(3, max_relations // 2)]:
                 triple = (rel["subject"], rel["predicate"], name)
                 if triple not in seen_triples:
                     seen_triples.add(triple)
-                    lines.append(f"  {rel['subject']} —[{rel['predicate']}]→ {as_of(name, rel.get('ts'))}{_as_of_day(rel)}")
+                    lines.append("  " + relation_line(rel["subject"], rel["predicate"], name, rel.get("ts")))
 
         text = "\n".join(lines)
         if len(text) > max_chars:
@@ -568,7 +680,8 @@ class KnowledgeGraph:
 
     def extract_from_memory(self, text: str, source: str = "memory") -> int:
         """
-        Lightweight rule-based triple extraction from a memory string.
+        Lightweight rule-based triple extraction from a memory string: the user's name and
+        nickname (trusted sources only) and the plain statements statements() reads.
         Returns number of triples added.
         """
         added = 0
@@ -581,17 +694,6 @@ class KnowledgeGraph:
             (r"(?:user(?:'s)?\s+name\s+is|my\s+name\s+is)\s+([A-Za-z][a-zA-Z ]{1,24})", "has_name"),
             # "nickname: X" / "also known as X" / "call me X"
             (r"(?:nickname[:\s]+|also\s+known\s+as\s+|call\s+me\s+)([A-Za-z][a-zA-Z ]{1,20})", "nickname"),
-            # "X works on Y" — relaxed: any word, any case
-            (r"([A-Za-z][a-zA-Z0-9]{1,20})\s+works\s+on\s+([A-Za-z0-9 _\-\.]{2,50})(?:[.,]|$)", "works_on"),
-            # "prefers X" / "user prefers X"
-            (r"(?:user\s+)?prefers?\s+([A-Za-z0-9 _\-\.]{2,40})(?:[.,]|$)", "prefers"),
-            # "likes X" / "user likes X"
-            (r"(?:user\s+)?likes?\s+([A-Za-z0-9 _\-\.]{2,40})(?:[.,]|$)", "prefers"),
-            # "X uses Y" — relaxed: any word, any case
-            (r"([A-Za-z][a-zA-Z0-9]{1,20})\s+uses?\s+([A-Za-z0-9 _\-\.]{2,40})(?:[.,]|$)", "uses"),
-            # "I am a X" / "I'm an X". The article is required: without it every "I'm going to
-            # bed now" / "I'm not happy" became a fact (44 of a user's 83 relations).
-            (r"(?:i\s+am|i'm)\s+(?:a|an)\s+([A-Za-z][a-zA-Z ]{2,30})(?:[.,]|$)", "is_a"),
         ]
 
         # Only extract identity predicates from user-authored text, never from
@@ -615,62 +717,45 @@ class KnowledgeGraph:
                 log.debug("identity extraction unavailable", exc_info=True)
 
         for pattern, predicate in patterns:
-            if predicate in _identity_predicates and source not in _trusted_sources:
+            if source not in _trusted_sources or predicate not in _declared:
                 continue
-            matches = list(re.finditer(pattern, text, re.I))
-            if predicate in _identity_predicates:
-                matches = matches[:1] if predicate in _declared else []
-            for m in matches:
-                groups = m.groups()
-                if predicate in _identity_predicates:
-                    groups = (_declared[predicate],)
-                if predicate in ("has_name", "nickname", "prefers", "is_a"):
-                    # subject is implicit "User"
-                    obj = groups[-1].strip()
-                    if (obj and len(obj) > 1
-                            and obj.lower() not in _STOPWORDS):
-                        self.upsert_entity("User", "person")
-                        self.upsert_entity(obj, "value")
-                        # Contradiction detection for identity predicates:
-                        # if User already has a different has_name/nickname, retire
-                        # the old relation by lowering its weight before adding new.
-                        if predicate in _identity_predicates:
-                            try:
-                                uid = self.get_entity_id("User")
-                                if uid is not None:
-                                    conn = self._conn()
-                                    try:
-                                        old_rels = conn.execute(
-                                            "SELECT r.id, e.name FROM kg_relations r "
-                                            "JOIN kg_entities e ON e.id = r.object_id "
-                                            "WHERE r.subject_id=? AND LOWER(r.predicate)=? AND r.weight > 0.1",
-                                            (uid, predicate),
-                                        ).fetchall()
-                                        for _rid, _old_name in old_rels:
-                                            if _old_name.lower() != obj.lower():
-                                                # Conflict: demote old relation weight
-                                                conn.execute(
-                                                    "UPDATE kg_relations SET weight = 0.05 WHERE id = ?",
-                                                    (_rid,),
-                                                )
-                                        conn.commit()
-                                    finally:
-                                        conn.close()
-                            except Exception:
-                                log.debug("suppressed exception", exc_info=True)
-                        if self.add_relation("User", predicate, obj, source=source):
-                            added += 1
-                elif len(groups) >= 2:
-                    subj = groups[0].strip()
-                    obj = groups[1].strip()
-                    if (subj and obj
-                            and len(subj) > 1 and len(obj) > 1
-                            and subj.lower() not in _STOPWORDS
-                            and obj.lower() not in _STOPWORDS):
-                        self.upsert_entity(subj)
-                        self.upsert_entity(obj)
-                        if self.add_relation(subj, predicate, obj, source=source):
-                            added += 1
+            if not re.search(pattern, text, re.I):
+                continue
+            obj = _declared[predicate].strip()
+            if not obj or len(obj) <= 1 or obj.lower() in _STOPWORDS:
+                continue
+            self.upsert_entity("User", "person")
+            self.upsert_entity(obj, "value")
+            # Contradiction detection for identity predicates: if User already has a different
+            # has_name/nickname, retire the old relation by lowering its weight before adding new.
+            try:
+                uid = self.get_entity_id("User")
+                if uid is not None:
+                    conn = self._conn()
+                    try:
+                        old_rels = conn.execute(
+                            "SELECT r.id, e.name FROM kg_relations r "
+                            "JOIN kg_entities e ON e.id = r.object_id "
+                            "WHERE r.subject_id=? AND LOWER(r.predicate)=? AND r.weight > ?",
+                            (uid, predicate, LIVE_WEIGHT),
+                        ).fetchall()
+                        for _rid, _old_name in old_rels:
+                            if _old_name.lower() != obj.lower():
+                                conn.execute("UPDATE kg_relations SET weight = ? WHERE id = ?",
+                                             (RETIRED_WEIGHT, _rid))
+                        conn.commit()
+                    finally:
+                        conn.close()
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            if self.add_relation("User", predicate, obj, source=source):
+                added += 1
+
+        for subj, predicate, obj in statements(text):
+            self.upsert_entity(subj, "person" if subj == "User" else "concept")
+            self.upsert_entity(obj, "value" if subj == "User" else "concept")
+            if self.add_relation(subj, predicate, obj, source=source):
+                added += 1
 
         # Possessive relationships — "my dog Biscuit", "Biscuit (my dog)". These are
         # identity-grade user facts, so trust user-authored text only (same rule
