@@ -453,7 +453,7 @@ open the memory DB and exits.
 **WAL journal** needs isn't supported — **NTFS, exFAT/FAT, or a network mount** (very common
 for a `~/Downloads` on a dual-boot data drive). WAL returns `SQLITE_READONLY` there; the
 rollback-journal stores beside it work fine, which is the tell-tale split. (This is also why
-the AppImage — which stores data under `~/.local/share/ELI_v2` on your main partition — worked
+the AppImage — which stores data under `~/.local/share/ELI_v3` on your main partition — worked
 while the portable build in `~/Downloads` didn't.)
 **Fix:** fixed in **v2.1.19** — ELI detects a WAL-hostile filesystem and falls back to a
 DELETE (rollback) journal automatically, so it runs wherever you put it. On an older build,

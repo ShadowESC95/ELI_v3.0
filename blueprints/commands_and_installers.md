@@ -276,14 +276,28 @@ The files ship alongside the app too: `LICENSE`, `NOTICE`,
 
 ## 8. Uninstall
 
-ELI lives entirely inside its own folder — nothing spreads across your system:
+ELI v3 keeps the program and your data apart, so removing it is more than deleting one folder.
 
-```bash
-rm -rf /path/to/ELI_v3.0
-```
+**Easiest:** the **Uninstall ELI** entry in the app menu (Linux) or the Start Menu (Windows). It
+removes ELI v3's own menu entries, shortcuts and command — never another ELI version's — and then
+offers to delete your data.
 
-For an AppImage install, also remove `~/.local/share/ELI_v2`. If you added app-menu icons,
-delete the `.desktop` files from `~/.local/share/applications/`.
+**By hand:**
+
+1. **The program** — the AppImage file, the folder you extracted or cloned, or the package
+   (`sudo apt remove eli-mkxi`).
+2. **Your data and settings** — conversations, memories, voice profile, models and licence
+   activation live in ELI v3's per-user folder: `~/.local/share/ELI_v3` (Linux),
+   `%LOCALAPPDATA%\ELI_v3` (Windows), `~/Library/Application Support/ELI_v3` (macOS). A source
+   checkout keeps them inside the checkout instead (`artifacts/`, `config/`, `models/`) and uses
+   the per-user folder only for its server-port and bundle records.
+3. **The cache** — `~/.cache/ELI_v3` (AppImage and .deb).
+4. **Menu entries and command** — `~/.local/share/applications/eli-v3*.desktop`,
+   `~/.local/bin/eli-v3` and `~/.local/bin/eli-v3-run`.
+5. **The licence key** — run `eli --deactivate-license` first: it takes ELI v3's key out of the
+   folder every ELI product reads (`~/.config/eli-keys`) and leaves the other products' keys there.
+
+Never delete another ELI version's folder (such as `ELI_v2`): it holds that product's own data.
 
 ---
 
