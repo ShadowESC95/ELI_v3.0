@@ -116,3 +116,16 @@ def test_only_an_rbac_member_is_someone_else(two_users):
         assert len(mem.recall_memory("spare bulbs drawer", limit=20)) == 7
     with _as("member-7"):
         assert mem.recall_memory("spare bulbs drawer", limit=20) == []
+
+
+def test_recent_observations_of_one_kind(tmp_path):
+    """The proactive trend check compared the five newest observations of any kind."""
+    from eli.memory.memory import Memory
+    mem = Memory(db_path=tmp_path / "user.sqlite3")
+    mem.add_observation("cpu_load", "cpu at 40%")
+    mem.add_observation("battery", "battery at 80%")
+    mem.add_observation("cpu_load", "cpu at 55%")
+    mem.add_observation("network", "wifi dropped")
+    assert [o["observation"] for o in mem.get_recent_observations(limit=5, category="cpu_load")] == ["cpu at 55%", "cpu at 40%"]
+    assert {o["category"] for o in mem.get_recent_observations(limit=5, category=["battery", "network"])} == {"battery", "network"}
+    assert len(mem.get_recent_observations(limit=10)) == 4

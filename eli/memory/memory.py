@@ -6082,7 +6082,9 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
-    def get_recent_observations(self, limit=20):
+    def get_recent_observations(self, limit=20, category=None):
+        """The newest observations, or only those of `category` (one name or several): a trend is
+        compared like with like, not against the newest rows of any kind."""
         conn = self._get_connection()
         try:
             if not _has_table(conn, "observations"):
@@ -6093,14 +6095,17 @@ class Memory(metaclass=_MemoryMeta):
             content_expr = "content" if "content" in cols else ("observation" if "observation" in cols else ("text" if "text" in cols else "''"))
             source_expr = "source" if "source" in cols else "'runtime'"
             time_expr = "COALESCE(timestamp, ts, id)"
+            kinds = [category] if isinstance(category, str) else [str(c) for c in (category or ())]
+            only = f"WHERE {category_expr} IN ({','.join('?' * len(kinds))})" if kinds else ""
             rows = conn.execute(
                 f"""
                 SELECT {category_expr}, {obs_expr}, {content_expr}, {source_expr}, {time_expr}
                 FROM observations
+                {only}
                 ORDER BY {time_expr} DESC
                 LIMIT ?
                 """,
-                (int(limit),),
+                (*kinds, int(limit)),
             ).fetchall()
             return [
                 {
