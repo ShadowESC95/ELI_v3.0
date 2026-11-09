@@ -16,8 +16,6 @@ Usage (CLI):
 from __future__ import annotations
 
 import json
-import subprocess
-import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -27,25 +25,17 @@ from typing import Any, Dict
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _tesseract_ocr(path: Path, max_chars: int = 2000) -> str:
-    """Run tesseract OCR on an image; return extracted text (empty if unavailable)."""
-    if not shutil.which("tesseract"):
-        return ""
+def _ocr_text(path: Path, max_chars: int = 2000) -> str:
+    """The image's text through the one OCR helper (screen_locator.ocr_text_from_image), which has
+    tesseract print to stdout: nothing is written beside the user's image, so analysing notes.png
+    never creates or overwrites a notes.txt next to it. Page segmentation 3 (tesseract's own
+    default, a whole page) suits a document or screenshot; empty when no OCR is installed."""
+    from eli.perception.screen_locator import ocr_text_from_image
     try:
-        txt_stem = path.with_suffix("")
-        subprocess.run(
-            ["tesseract", str(path), str(txt_stem)],
-            timeout=30,
-            check=False,
-            capture_output=True,
-        )
-        out = txt_stem.with_suffix(".txt")
-        if out.exists():
-            text = out.read_text(encoding="utf-8", errors="replace")
-            return " ".join(text.split())[:max_chars]
+        text = ocr_text_from_image(path, psm=3)
     except Exception:
-        pass
-    return ""
+        return ""
+    return " ".join(str(text or "").split())[:max_chars]
 
 
 def _pil_info(path: Path) -> Dict[str, Any]:
@@ -100,7 +90,7 @@ def analyze_image_file(
 
     ocr_text = ""
     if ocr:
-        ocr_text = _tesseract_ocr(p, max_chars=max_ocr_chars)
+        ocr_text = _ocr_text(p, max_chars=max_ocr_chars)
 
     report = {
         "ok": True,
