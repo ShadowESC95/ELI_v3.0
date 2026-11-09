@@ -66,3 +66,32 @@ def test_capability_trigger_breadth(q, fires):
 def test_voice_trigger_breadth(q, fires):
     skipped = (VoiceAgent().run(q, {"action": "CHAT"}, "s", "u").data or {}).get("skipped", False)
     assert (not skipped) == fires
+
+
+def test_multi_hop_facts_are_written_dated_the_way_one_hop_facts_are(monkeypatch):
+    """The connected facts went into the prompt undated, so one learned months ago read as current."""
+    import eli.memory.knowledge_graph as kgm
+    from eli.cognition.agent_bus import KnowledgeGraphAgent
+    written = []
+
+    def relation_line(subject, predicate, obj, ts=None):
+        written.append((subject, predicate, obj, ts))
+        return f"{subject} —[{predicate}]→ {obj} (as of {ts})"
+    monkeypatch.setattr(kgm, "relation_line", relation_line, raising=False)
+
+    class _KG:
+        def stats(self):
+            return {"entities": 2, "relations": 1}
+
+        def context_for_prompt(self, q, max_chars=0):
+            return ""
+
+        def search_entities(self, q, limit=5):
+            return [{"name": "Harbour Club"}]
+
+        def related(self, name, hops=2):
+            return [{"subject": "Harbour Club", "predicate": "meets_on", "object": "Tuesdays", "ts": 1700000000.0}]
+    monkeypatch.setattr(kgm, "get_knowledge_graph", lambda: _KG())
+    r = KnowledgeGraphAgent().run("when does the harbour club meet", {"action": "CHAT"}, "s", "u")
+    assert written == [("Harbour Club", "meets_on", "Tuesdays", 1700000000.0)]
+    assert "(as of 1700000000.0)" in str(r.data)

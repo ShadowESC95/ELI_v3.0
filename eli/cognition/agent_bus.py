@@ -3341,6 +3341,10 @@ class KnowledgeGraphAgent(_BaseAgent):
             # relation chains — genuine relational inference, not a flat 1-hop entity dump.
             multihop: List[str] = []
             try:
+                # one way of writing a relation for the prompt, dated by when the graph learned it
+                # (knowledge_graph.relation_line, as the one-hop block): undated, a fact from months
+                # ago read as one about now
+                from eli.memory.knowledge_graph import relation_line as _relation_line
                 _seen_chain: set = set()
                 for _s in (kg.search_entities(_query, limit=_kg_seeds) or []):
                     _nm = (_s.get("name") if isinstance(_s, dict) else "") or ""
@@ -3353,7 +3357,7 @@ class KnowledgeGraphAgent(_BaseAgent):
                         _pred = str(_rel.get("predicate") or "related to").strip()
                         _obj = str(_rel.get("object") or "").strip()
                         if _subj and _obj and _subj != _obj:
-                            _chain = f"{_subj} —{_pred}→ {_obj}"
+                            _chain = _relation_line(_subj, _pred, _obj, _rel.get("ts"))
                             if _chain not in _seen_chain:
                                 _seen_chain.add(_chain)
                                 multihop.append(_chain)
