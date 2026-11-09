@@ -72,6 +72,14 @@ def _eli_marketplace_install(query: str):
                         f"{listing.get('id')}' when you want it.")}
 
 
+def _not_from_chat(a, entry):
+    msg = (f"I won't install '{entry.get('id')}' from chat: it is a download ({entry.get('source')}) with no "
+           "checksum or scan behind it, not one of the plugins that ship with ELI or a verified marketplace "
+           "listing. Nothing was installed.")
+    return {"ok": False, "action": a, "installed": False, "error": "unverified_download",
+            "content": msg, "response": msg}
+
+
 def _h_plugin_status(a, args):
     try:
         from eli.plugins.manager import get_manager
@@ -127,8 +135,14 @@ def _h_plugin_install(a, args):
             return {"ok": market["ok"], "action": a,
                     "content": market["message"], "response": market["message"]}
 
+        # The manager installs only what ships with ELI. A registry entry with a download ("source")
+        # would be fetched over plain urllib, unchecked and unscanned, and switched on at once; that
+        # is not done from a chat message. A downloadable plugin comes through the marketplace's
+        # verified install above, or not at all.
         entry = mgr.get_registry_entry(query.lower().replace(" ", "_"))
         if entry:
+            if entry.get("source"):
+                return _not_from_chat(a, entry)
             result = mgr.install(entry["id"])
             return {"ok": result.get("ok", False), "action": a,
                     "content": result.get("content", str(result)),
@@ -141,10 +155,16 @@ def _h_plugin_install(a, args):
             return {"ok": False, "action": a, "content": msg, "response": msg}
 
         if len(matches) == 1:
-            result = mgr.install(matches[0]["id"])
-            return {"ok": result.get("ok", False), "action": a,
-                    "content": result.get("content", str(result)),
-                    "response": result.get("response", str(result))}
+            # The name matched loosely, so it is offered, not installed: "yes" installs it by its id.
+            only = matches[0]
+            if only.get("source"):
+                return _not_from_chat(a, only)
+            msg = (f"The plugin closest to '{query}' is {only['id']}"
+                   + (f" — {only.get('description')}" if only.get("description") else "")
+                   + f". Install it? (or say 'install plugin {only['id']}')")
+            return {"ok": True, "action": a, "installed": False, "asks_user": True,
+                    "choices": [{"n": 1, "text": only["id"], "command": f"install plugin {only['id']}"}],
+                    "content": msg, "response": msg}
 
         # Multiple matches — show options
         lines = [f"Found {len(matches)} plugins matching '{query}':"]
