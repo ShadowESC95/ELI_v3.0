@@ -2360,9 +2360,26 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     if re.search(r"\b(generate|create)\s+patch\b|\bpatch\s+(eli|system)\b", low):
         return _mk("SELF_IMPROVE", {"mode": "propose", "_raw_user_text": raw}, 0.93, matched_by="self.patch_propose")
 
-    # ELI's own patch: "apply a nicotine patch" is not one.
-    if re.search(r"\bpatch\s+yourself\b|\bself.?patch\b|\bfix\s+your\s+own\s+code\b"
-                 r"|\bapply\s+(?:the|your|that|this|those|these|its)\s+(?:self[- ]?improvement\s+|own\s+)?patch(?:es)?\b", low):
+    # The owner's yes or no to the fix candidates ELI proposed (self_improvement.waiting_candidates):
+    # "approve candidate 12", "decline candidates 3 and 4", "apply that fix", "apply the patch".
+    # "apply a nicotine patch" names no fix of ELI's.
+    _cand = re.match(r"^(?:please\s+|yes,?\s+|ok(?:ay)?,?\s+)?(approve|apply|accept|decline|reject|discard)\s+"
+                     r"(?:the\s+)?(?:fix\s+)?candidates?\s+(\d+(?:\s*(?:,|and|&)?\s*\d+)*)\s*[.!]?$", low)
+    if _cand:
+        _decline = _cand.group(1) in ("decline", "reject", "discard")
+        return _mk("APPROVE_CANDIDATE", {"candidate_ids": [int(x) for x in re.findall(r"\d+", _cand.group(2))],
+                                         "decision": "decline" if _decline else "approve"},
+                   0.97, matched_by="self.candidate_by_number")
+    _cand = re.match(r"^(?:please\s+|yes,?\s+|ok(?:ay)?,?\s+)?(approve|apply|accept|decline|reject|discard)\s+"
+                     r"(?:(?:the|that|this|those|these|your|its)\s+)?(?:self[- ]?improvement\s+|own\s+|proposed\s+)?"
+                     r"(?:fix(?:es)?|patch(?:es)?|candidates?)\s*[.!]?$", low)
+    if _cand:
+        _decline = _cand.group(1) in ("decline", "reject", "discard")
+        return _mk("APPROVE_CANDIDATE", {"decision": "decline" if _decline else "approve"},
+                   0.95, matched_by="self.candidate_in_hand")
+
+    # ELI's own patch: "apply a nicotine patch" is not one. It proposes; the yes is APPROVE_CANDIDATE.
+    if re.search(r"\bpatch\s+yourself\b|\bself.?patch\b|\bfix\s+your\s+own\s+code\b", low):
         return _mk("SELF_PATCH", {}, 0.95, matched_by="self.patch_cycle")
 
     # User file fix — must beat the generic "fix the bugs/errors" self-patch guard.
@@ -2707,8 +2724,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             return _mk("MORNING_REPORT", {}, 0.95,
                        matched_by="self.morning_report")
 
-    if any(p in low for p in ["apply self-improvement patch", "apply patch", "run patch cycle",
-                              "patch yourself", "fix your own code", "self-patch", "self fix"]):
+    if any(p in low for p in ["run patch cycle", "patch yourself", "fix your own code", "self-patch", "self fix"]):
         return _mk("SELF_PATCH", {}, 0.95, matched_by="self.patch")
 
     # "improve / enhance / refactor / optimise / clean up <a named .py file>" goes to the verified

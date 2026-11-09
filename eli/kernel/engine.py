@@ -8468,7 +8468,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             # Self-maintenance actions return a complete step report from the executor ("Upgrade
             # complete. 6/6 steps succeeded."). Re-synthesising it through GGUF confabulated false
             # progress or degenerated to a lone "-Auto"; return it verbatim.
-            "SELF_UPGRADE", "SELF_IMPROVE", "SELF_PATCH",
+            "SELF_UPGRADE", "SELF_IMPROVE", "SELF_PATCH", "APPROVE_CANDIDATE",
             # Code-examiner reports are grounded fact — return verbatim.
             "EXAMINE_CODE", "CONFIRM_CODE_FIX", "CANCEL_CODE_FIX",
             # Habit confirm/decline return a short deterministic acknowledgement.

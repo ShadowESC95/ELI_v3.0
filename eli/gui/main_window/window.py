@@ -170,6 +170,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
     self_improve_failures_signal = pyqtSignal(str)
 
     self_improve_improvements_signal = pyqtSignal(str)
+    self_improve_candidates_signal = pyqtSignal(list)
 
     proactive_suggestions_signal = pyqtSignal(str)
 
@@ -279,6 +280,7 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
         self.stt_transcript.connect(self._on_stt_transcript)
         self.self_improve_failures_signal.connect(self._update_failures_display, Qt.ConnectionType.QueuedConnection)
         self.self_improve_improvements_signal.connect(self._update_improvements_display, Qt.ConnectionType.QueuedConnection)
+        self.self_improve_candidates_signal.connect(self._update_candidates, Qt.ConnectionType.QueuedConnection)
 
         # Connect new proactive signals
         self.proactive_suggestions_signal.connect(self._update_suggestions_display, Qt.ConnectionType.QueuedConnection)

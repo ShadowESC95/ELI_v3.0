@@ -58,7 +58,7 @@ def test_a_request_to_fix_the_users_own_text_is_not_a_self_patch():
     for said in ("can you fix the errors in this paragraph", "please fix the issues with my cv",
                  "apply a nicotine patch"):
         assert route(said)["action"] != "SELF_PATCH", said
-    assert route("apply the patch")["action"] == "SELF_PATCH"
+    assert route("apply the patch")["action"] == "APPROVE_CANDIDATE", "the yes to a proposed fix"
     assert route("please fix the bugs in your router")["action"] == "SELF_PATCH"
 
 

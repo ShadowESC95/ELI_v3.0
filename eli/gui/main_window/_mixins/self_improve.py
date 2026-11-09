@@ -10,6 +10,60 @@ class SelfImproveMixin:
     def _update_improvements_display(self, text: str):
         self.improvements_display.append(text)
 
+    # ── fix candidates: the owner's yes or no, the same one gated applier as in chat ──
+    def _si_refresh_candidates(self):
+        def worker():
+            try:
+                from eli.runtime.self_improvement import get_self_improvement
+                self.self_improve_candidates_signal.emit(list(get_self_improvement().waiting_candidates()))
+            except Exception as e:
+                self.self_improve_improvements_signal.emit(f"Could not read the fix candidates: {e}")
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_candidates(self, candidates: list):
+        self._si_candidates = {int(c["id"]): c for c in candidates or []}
+        self.candidates_list.clear()
+        self.candidate_display.clear()
+        from eli.runtime.self_improvement import candidate_lines
+        for c in candidates or []:
+            item = QListWidgetItem(candidate_lines([c])[0])
+            item.setData(Qt.ItemDataRole.UserRole, int(c["id"]))
+            self.candidates_list.addItem(item)
+
+    def _si_show_candidate(self, current, _previous=None):
+        if current is None:
+            self.candidate_display.clear()
+            return
+        from eli.runtime.self_improvement import candidate_lines
+        c = getattr(self, "_si_candidates", {}).get(current.data(Qt.ItemDataRole.UserRole))
+        self.candidate_display.setPlainText("\n".join(candidate_lines([c])) if c else "")
+
+    def _si_decide_candidate(self, approve: bool):
+        item = self.candidates_list.currentItem()
+        if item is None:
+            self.self_improve_improvements_signal.emit("Pick a fix candidate first.")
+            return
+        cid = int(item.data(Qt.ItemDataRole.UserRole))
+
+        def worker():
+            try:
+                from eli.execution.executor_enhanced import execute
+                res = execute("APPROVE_CANDIDATE", {"candidate_ids": [cid],
+                                                    "decision": "approve" if approve else "decline"})
+                self.self_improve_improvements_signal.emit(str(res.get("content") or res.get("error") or res))
+            except Exception as e:
+                self.self_improve_improvements_signal.emit(f"Candidate {cid} could not be decided: {e}")
+            self._si_refresh_candidates()
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _si_approve_candidate(self):
+        self._si_decide_candidate(True)
+
+    def _si_decline_candidate(self):
+        self._si_decide_candidate(False)
+
     def _si_analyze_failures(self):
         def worker():
             try:

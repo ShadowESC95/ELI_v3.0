@@ -91,10 +91,15 @@ def run_maintenance_cycle(
                 f"  - {p.get('failure')}: "
                 f"{'VERIFIED' if p.get('verified') else 'best-effort'} "
                 f"(score {p.get('score')}) — {p.get('approach') or p.get('message')}"
+                + (f" [candidate {p['candidate_id']}]" if p.get("candidate_id") else "")
             )
         if not proposals:
             lines.append(f"  ({prop.get('reason') or prop.get('error') or 'nothing to propose'})")
-        lines.append('Say "self fix" or "apply self-improvement patch" to apply gated fixes.')
+        # a kept candidate waits for the owner's yes (APPROVE_CANDIDATE): "self fix" only proposes
+        kept = [str(p["candidate_id"]) for p in proposals if p.get("candidate_id")]
+        if kept:
+            lines.append(f"Say 'approve candidate {kept[0]}' to apply one after a check on a copy of the tree, "
+                         f"or 'decline candidate {kept[0]}' to discard it.")
         result["content"] = "\n".join(lines)
         result["summary"] = result["content"]
         return result

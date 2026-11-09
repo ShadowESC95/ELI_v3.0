@@ -674,6 +674,25 @@ class TabsMixin:
         run_btn.clicked.connect(self._si_run_cycle)
         imp_layout.addWidget(run_btn)
         layout.addWidget(imp_group)
+        # The fixes ELI proposed to its own code, each waiting for a yes or no (the same candidates
+        # and the same wording as in chat: self_improvement.waiting_candidates / candidate_lines).
+        cand_group = QGroupBox('Fix candidates waiting for your yes')
+        cand_layout = QVBoxLayout(cand_group)
+        self.candidates_list = QListWidget()
+        self.candidates_list.currentItemChanged.connect(self._si_show_candidate)
+        cand_layout.addWidget(self.candidates_list)
+        self.candidate_display = QTextEdit()
+        self.candidate_display.setReadOnly(True)
+        cand_layout.addWidget(self.candidate_display)
+        cand_row = QHBoxLayout()
+        for label, slot in (('Approve', self._si_approve_candidate), ('Decline', self._si_decline_candidate),
+                            ('Refresh', self._si_refresh_candidates)):
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            cand_row.addWidget(btn)
+        cand_layout.addLayout(cand_row)
+        layout.addWidget(cand_group)
+        self._si_refresh_candidates()
         return widget
 
     def create_self_improve_tab(self):

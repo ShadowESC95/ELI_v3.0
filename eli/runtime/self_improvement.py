@@ -1525,6 +1525,41 @@ class SelfImprovementEngine:
         except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
             log.debug("proposal not assessed", exc_info=True)
 
+    def waiting_candidates(self, limit: Optional[int] = None) -> List[dict]:
+        """The fix candidates waiting for the owner's yes or no (proposed, or verified on a copy of
+        the tree, and not applied), newest first: what each changes (its file, description, the old
+        and the new text) and what the check said of it (verdict, None when not checked yet)."""
+        conn = self.memory._get_connection()
+        try:
+            _ensure_failure_tables(conn)
+            sql = ("SELECT id, file_path, description, old_code, new_code, status, verdict, timestamp FROM code_patches "
+                   "WHERE status IN ('proposed', 'verified') ORDER BY id DESC")
+            rows = conn.execute(sql + (" LIMIT ?" if limit else ""), (int(limit),) if limit else ()).fetchall()
+        finally:
+            conn.close()
+        names = ("id", "file", "description", "old", "new", "status", "verdict", "timestamp")
+        return [dict(zip(names, r)) for r in rows]
+
+    def decline_candidate(self, candidate_id: int) -> dict:
+        """The owner said no to this candidate: it stays in the archive, marked declined, and is never
+        applied."""
+        conn = self.memory._get_connection()
+        try:
+            _ensure_failure_tables(conn)
+            row = conn.execute("SELECT status FROM code_patches WHERE id = ?", (int(candidate_id),)).fetchone()
+            if not row:
+                return {"ok": False, "declined": False, "message": f"there is no candidate {candidate_id}"}
+            if row[0] in ("adopted", "probationary"):
+                return {"ok": False, "declined": False,
+                        "message": f"candidate {candidate_id} is already applied ({row[0]}); undo it with a revert"}
+            conn.execute("UPDATE code_patches SET status = 'declined' WHERE id = ?", (int(candidate_id),))
+            conn.commit()
+        finally:
+            conn.close()
+        self._settle_proposal(candidate_id, "declined")
+        return {"ok": True, "declined": True, "candidate_id": int(candidate_id),
+                "message": f"Candidate {candidate_id} declined: it is kept in the archive and not applied."}
+
     def adopt_candidate(self, candidate_id: int) -> dict:
         """Apply a verified candidate to the real tree. Nothing else is adopted; a failed adoption is rolled back and recorded."""
         conn = self.memory._get_connection()
@@ -1658,8 +1693,9 @@ class SelfImprovementEngine:
 
     @staticmethod
     def _settle_proposal(candidate_id: int, status: str) -> None:
-        """What became of a proposal: adopted (and held through probation) is right, rolled back is wrong."""
-        if status not in ("adopted", "rolled_back"):
+        """What became of a proposal: adopted (and held through probation) is right, rolled back or
+        declined by the owner is wrong."""
+        if status not in ("adopted", "rolled_back", "declined"):
             return
         try:
             from eli.cognition import epistemics as _ep, thoughts as _th
@@ -1819,10 +1855,14 @@ class SelfImprovementEngine:
                 results["patches_generated"] += 1
 
                 if dry_run:
+                    # kept whole as a candidate, so the owner's yes applies exactly what they were shown
+                    # (approve_candidate), never a second generation of it
+                    _cid = self.record_candidate(patch, hypothesis=str(patch.get("description") or ""))
                     results["details"].append({
                         "failure": err_preview,
                         "count": count,
                         "status": "dry_run",
+                        "candidate_id": _cid,
                         "patch": {
                             "file": patch.get("file"),
                             "description": patch.get("description"),
@@ -1883,12 +1923,13 @@ class SelfImprovementEngine:
         total = results["patches_generated"]
         reverted = results.get("patches_reverted", 0)
         results["summary"] = (
-            f"Patch cycle complete: {applied}/{total} patches applied "
-            f"({results['patches_failed']} failed, {results['patches_skipped']} skipped"
+            (f"Patch cycle complete: {total} fix(es) proposed, none applied "
+             if dry_run else f"Patch cycle complete: {applied}/{total} patches applied ")
+            + f"({results['patches_failed']} failed, {results['patches_skipped']} skipped"
             + (f", {reverted} reverted after tests went red" if reverted else "")
             + f"). Analyzed {len(failures)} recurring failures."
         )
-        if results.get("packaged_install") and applied == 0:
+        if results.get("packaged_install") and applied == 0 and not dry_run:
             _hint = (results.get("patch_capability") or {}).get("hint") or ""
             results["summary"] += " Packaged install: patches write to the user eli/ tree when the runtime overlay is active."
             if _hint:
@@ -2064,6 +2105,24 @@ def get_self_improvement() -> SelfImprovementEngine:
 
 def run_improvement_cycle() -> Dict[str, Any]:
     return get_self_improvement().analyze_and_improve()
+
+
+def candidate_lines(candidates: List[dict]) -> List[str]:
+    """Each candidate as the owner reads it before saying yes or no: its number, file and what it is
+    for, what the check on a copy of the tree said, and the change itself (the lines it removes with
+    -, the ones it adds with +; for a whole-file candidate only the lines that differ). The one
+    wording of a candidate, in chat and in the Self-Improve panel."""
+    import difflib
+    out: List[str] = []
+    for c in candidates or []:
+        verdict = c.get("verdict")
+        checked = (f"checked on a copy of the tree: {verdict}" if verdict
+                   else "not checked yet: approving it checks it on a copy of the tree first")
+        out.append(f"#{c.get('id')} {c.get('file')}: {c.get('description') or '(no description)'} ({checked})")
+        diff = difflib.unified_diff(str(c.get("old") or "").splitlines(), str(c.get("new") or "").splitlines(),
+                                    lineterm="", n=0)
+        out.extend(f"    {line}" for line in diff if not line.startswith(("---", "+++", "@@")))
+    return out
 
 
 def run_patch_cycle(max_patches: int = 3, dry_run: bool = False) -> Dict[str, Any]:

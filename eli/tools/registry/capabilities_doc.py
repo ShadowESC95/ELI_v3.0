@@ -273,7 +273,9 @@ _add("Memory & profile", "SET_USER_NAME", "Set/correct the user's name", "“my 
 # ── Self-maintenance ────────────────────────────────────────────────────────
 _add("Self-maintenance", "SELF_ANALYZE", "Analyse own failures/metrics", "“analyse your failures”")
 _add("Self-maintenance", "SELF_IMPROVE", "Run a self-improvement patch cycle", "“improve yourself”")
-_add("Self-maintenance", "SELF_PATCH", "Apply a self-improvement patch", "“patch yourself”")
+_add("Self-maintenance", "SELF_PATCH", "Propose fixes to ELI's own code, applied only on your yes", "“patch yourself”")
+_add("Self-maintenance", "APPROVE_CANDIDATE", "Approve or decline a proposed fix to ELI's own code", "“approve candidate 3”",
+     "“decline candidate 3”")
 _add("Self-maintenance", "SELF_REPAIR_PLAYBOOK", "Grounded repair decision guide (self help)", "“self help”", "“repair playbook”", "“maintenance playbook”")
 _add("Self-maintenance", "AUTOPILOT_DEBUG", "Turn a failure into a plan: root cause, affected files from git history, rollback, patch and validation", "“debug this error: ValueError x in eli/core/paths.py”", "“autopilot debug this traceback”")
 _add("Self-maintenance", "CODEBASE_GRAPH", "Import graph of ELI's own source: what depends on what", "“show the codebase graph”")

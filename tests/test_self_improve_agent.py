@@ -390,3 +390,108 @@ def test_an_action_that_fails_is_recorded_once_by_its_component_never_by_my_word
     assert "plumber" not in logged[0][0] and logged[0][2]["args"]["text"], "the run is kept for repair, not as the key"
     src = inspect.getsource(E.CognitiveEngine._process_impl)
     assert "log_failure(\n                    user_input" not in src and "log_failure(user_input" not in src
+
+
+def _engine_with_one_fix(tmp_path, monkeypatch):
+    import eli.runtime.self_improvement as si_mod
+    from eli.memory import Memory
+    eng = SI.SelfImprovementEngine(memory=Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent"))
+    target = tmp_path / "a_module.py"
+    target.write_text("def f():\n    return 1\n")
+    failure = {"error": "ValueError: f returned 1", "user_input": "F_ACTION (x)", "occurrence_count": 3}
+    monkeypatch.setattr(eng, "analyze_failures", lambda *a, **k: [failure])
+    monkeypatch.setattr(eng, "_try_deterministic_patch", lambda failure: {"ok": False})
+    monkeypatch.setattr(eng, "generate_code_patch", lambda failure: {
+        "ok": True, "file": str(target), "old": "    return 1\n", "new": "    return 2\n",
+        "description": "f returns the count"})
+    monkeypatch.setattr("eli.runtime.failure_taxonomy.classify", lambda *a, **k: {})
+    monkeypatch.setattr(si_mod, "get_self_improvement", lambda: eng)
+    return eng, target
+
+
+def test_fix_your_own_code_proposes_and_the_yes_is_to_exactly_what_was_shown(tmp_path, monkeypatch):
+    """SELF_PATCH ran the patch cycle with writes on, unconfirmed; and a fix shown to the owner was
+    never kept, so a yes could only have run the cycle again. Now each fix is kept whole as a
+    candidate and listed with its change, nothing is applied, and the yes approves those candidates."""
+    import eli.runtime.pending_proposal as pp
+    from eli.execution.effectors.self_improve import _h_approve_candidate, _h_self_patch
+    from eli.execution.router_enhanced import route
+    eng, target = _engine_with_one_fix(tmp_path, monkeypatch)
+    armed = []
+    monkeypatch.setattr(pp, "set_pending_proposal", lambda command, summary="", **k: armed.append(command))
+    out = _h_self_patch("SELF_PATCH", {})
+    assert target.read_text() == "def f():\n    return 1\n", "nothing is applied before the yes"
+    [cand] = eng.waiting_candidates()
+    assert out["candidates"] == [cand["id"]] and cand["new"] == "    return 2\n" and cand["status"] == "proposed"
+    assert "-    return 1" in out["content"] and "+    return 2" in out["content"]
+    assert "none applied" in out["content"]
+    assert armed == [f"approve candidates {cand['id']}"]
+    routed = route(armed[0])
+    assert routed["action"] == "APPROVE_CANDIDATE" and routed["args"]["candidate_ids"] == [cand["id"]]
+    approved = []
+    monkeypatch.setattr(eng, "approve_candidate", lambda cid: approved.append(cid) or {
+        "ok": True, "applied": True, "message": f"Candidate {cid} applied"})
+    res = _h_approve_candidate("APPROVE_CANDIDATE", routed["args"])
+    assert approved == [cand["id"]] and res["ok"] is True
+
+
+def test_a_declined_candidate_is_kept_and_never_applied_and_one_waiting_is_the_one_meant(tmp_path, monkeypatch):
+    from eli.execution.effectors.self_improve import _h_approve_candidate
+    from eli.execution.router_enhanced import route
+    eng, target = _engine_with_one_fix(tmp_path, monkeypatch)
+    cid = eng.record_candidate({"file": str(target), "old": "    return 1\n", "new": "    return 2\n",
+                                "description": "f returns the count"})
+    assert route("decline that fix")["args"] == {"decision": "decline"}
+    assert route("apply the patch")["action"] == "APPROVE_CANDIDATE"
+    res = _h_approve_candidate("APPROVE_CANDIDATE", {"decision": "decline"})
+    assert res["ok"] is True and eng.waiting_candidates() == []
+    import sqlite3
+    status = sqlite3.connect(str(tmp_path / "agent.sqlite3")).execute(
+        "select status from code_patches where id = ?", (cid,)).fetchone()
+    assert status == ("declined",) and target.read_text() == "def f():\n    return 1\n"
+    assert eng.approve_candidate(cid)["applied"] is False or eng.waiting_candidates() == []
+    none_left = _h_approve_candidate("APPROVE_CANDIDATE", {})
+    assert none_left["ok"] is False and none_left["error"] == "nothing_waiting"
+    a = eng.record_candidate({"file": str(target), "old": "x", "new": "y", "description": "one"})
+    b = eng.record_candidate({"file": str(target), "old": "x", "new": "z", "description": "two"})
+    which = _h_approve_candidate("APPROVE_CANDIDATE", {})
+    assert which["asked"] is True and f"#{a}" in which["content"] and f"#{b}" in which["content"]
+    assert which["awaiting"]["command"] == "approve candidate {answer}"
+
+
+def test_the_self_improve_panel_lists_the_waiting_candidates_and_approves_through_the_same_action(monkeypatch):
+    """The window could not see or decide a fix candidate: approving one needed the chat. The panel
+    lists the same candidates in the same words and its Approve and Decline run APPROVE_CANDIDATE."""
+    import threading
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from eli.gui.main_window._mixins.self_improve import SelfImproveMixin
+    from eli.gui.main_window._mixins.tabs import TabsMixin
+    import eli.execution.executor_enhanced as EX
+    waiting = [{"id": 7, "file": "eli/a.py", "description": "f returns the count", "old": "x = 1\n",
+                "new": "x = 2\n", "status": "proposed", "verdict": None}]
+    decided, said = [], []
+    monkeypatch.setattr(SI, "get_self_improvement", lambda: SimpleNamespace(waiting_candidates=lambda: list(waiting)))
+    monkeypatch.setattr(EX, "execute", lambda action, args=None: decided.append((action, args)) or {"content": "done"})
+
+    class _Now(threading.Thread):                       # the panel's workers, run at once here
+        def start(self):
+            self.run()
+    monkeypatch.setattr(threading, "Thread", _Now)
+
+    class _Panel(SelfImproveMixin, TabsMixin):
+        def __init__(self):
+            self.self_improve_candidates_signal = SimpleNamespace(emit=self._update_candidates)
+            self.self_improve_improvements_signal = SimpleNamespace(emit=said.append)
+    panel = _Panel()
+    widget = panel._build_self_improve_panel()          # kept, or Qt deletes the list with it
+    assert panel.candidates_list.count() == 1 and "#7 eli/a.py" in panel.candidates_list.item(0).text()
+    panel.candidates_list.setCurrentRow(0)
+    assert "+x = 2" in panel.candidate_display.toPlainText()
+    panel._si_approve_candidate()
+    panel.candidates_list.setCurrentRow(0)
+    panel._si_decline_candidate()
+    assert decided == [("APPROVE_CANDIDATE", {"candidate_ids": [7], "decision": "approve"}),
+                       ("APPROVE_CANDIDATE", {"candidate_ids": [7], "decision": "decline"})]
+    assert widget is not None and said == ["done", "done"]

@@ -207,6 +207,9 @@ def _h_self_improve(a, args):
         mode = "propose"
     if mode == "analyze" and any(k in _raw_si for k in ("self fix", "apply patch", "patch cycle")):
         mode = "patch"
+    if mode == "patch":
+        # the patch cycle proposes and waits for the owner's yes, as "fix your own code" does
+        return _h_self_patch(a, args)
     if mode == "propose":
         # The coding agent is tens of sequential model calls; inline it froze the GUI for hours.
         from eli.execution.effectors.coding import _maybe_background_code_work
@@ -246,9 +249,13 @@ def _h_self_improve(a, args):
 
 
 def _h_self_patch(a, args):
-    dry_run = (args or {}).get("dry_run", False)
+    """"Fix your own code": the patch cycle proposes. Each fix it makes is kept whole as a candidate
+    and listed with its change; nothing is applied until the owner says yes, and the yes is to those
+    very candidates (APPROVE_CANDIDATE, which checks each on a copy of the tree and applies it through
+    the one gated applier). It ran the cycle with writes on, unconfirmed."""
     max_patches = int((args or {}).get("max_patches", 3))
     try:
+        from eli.runtime.self_improvement import candidate_lines, get_self_improvement
         from eli.runtime.self_maintenance import (
             fire_maintenance_world_event,
             run_maintenance_cycle,
@@ -257,15 +264,75 @@ def _h_self_patch(a, args):
         cycle = run_maintenance_cycle(
             mode="patch",
             max_patches=max_patches,
-            dry_run=bool(dry_run),
+            dry_run=True,
             days=int((args or {}).get("days")) if (args or {}).get("days") else DEFAULT_ANALYSIS_DAYS,
         )
-        msg = str(cycle.get("content") or cycle.get("summary") or "Patch cycle complete.")
         fire_maintenance_world_event(cycle)
-        return {"ok": True, "action": a, "effect": cycle.get("effect"), "content": msg, "response": msg,
-                "result": cycle}
+        ids = [int(d["candidate_id"]) for d in ((cycle.get("patch_cycle") or {}).get("details") or [])
+               if d.get("candidate_id")]
+        shown = [c for c in get_self_improvement().waiting_candidates() if c["id"] in ids]
+        lines = [str(cycle.get("summary") or "Patch cycle complete.")]
+        if shown:
+            lines.append(f"Proposed, not applied: {len(shown)} fix candidate(s).")
+            lines.extend(candidate_lines(shown))
+            lines.append("A yes applies them, each checked on a copy of the tree first; "
+                         "'decline candidate N' discards one.")
+            from eli.runtime.pending_proposal import set_pending_proposal
+            set_pending_proposal("approve candidates " + " ".join(str(c["id"]) for c in shown),
+                                 summary="apply the proposed fixes")
+        msg = "\n".join(lines)
+        return {"ok": True, "action": a, "effect": bool(shown), "content": msg, "response": msg,
+                "result": cycle, "candidates": [c["id"] for c in shown]}
     except Exception as e:
         return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
+
+
+def _candidate_ids(args) -> list:
+    raw = (args or {}).get("candidate_ids")
+    if raw is None and (args or {}).get("candidate_id") is not None:
+        raw = [(args or {}).get("candidate_id")]
+    out = []
+    for value in (raw if isinstance(raw, (list, tuple)) else [raw]) if raw is not None else []:
+        try:
+            out.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _h_approve_candidate(a, args):
+    """The owner's yes or no to fix candidates (self_improvement.waiting_candidates): a yes checks each
+    on a copy of the tree and applies it through the one gated applier (approve_candidate); a no keeps
+    it in the archive, declined. Named by number, or the one waiting; with several waiting and none
+    named, ELI asks which."""
+    from eli.runtime.self_improvement import candidate_lines, get_self_improvement
+    si = get_self_improvement()
+    declining = str((args or {}).get("decision") or "").lower() in ("decline", "reject", "discard", "no")
+    ids = _candidate_ids(args)
+    if not ids:
+        waiting = si.waiting_candidates()
+        if not waiting:
+            msg = "No fix candidate is waiting for a yes or no."
+            return {"ok": False, "action": a, "error": "nothing_waiting", "content": msg, "response": msg}
+        if len(waiting) > 1:
+            verb = "decline" if declining else "approve"
+            msg = "These fix candidates are waiting; which one?\n" + "\n".join(candidate_lines(waiting))
+            return {"ok": True, "action": a, "asked": True, "content": msg, "response": msg,
+                    "awaiting": {"command": f"{verb} candidate {{answer}}", "action": a, "needs": "candidate"}}
+        ids = [int(waiting[0]["id"])]
+    results = []
+    for cid in ids:
+        res = si.decline_candidate(cid) if declining else si.approve_candidate(cid)
+        results.append({"candidate_id": cid, **res})
+    try:
+        from eli.runtime.pending_proposal import clear_pending_proposal
+        clear_pending_proposal()
+    except Exception:
+        log.debug("pending candidates not cleared", exc_info=True)
+    done = [bool(r.get("declined") if declining else r.get("applied")) for r in results]
+    msg = "\n".join(f"#{r['candidate_id']}: {r.get('message') or ('applied' if ok else 'not applied')}"
+                    for r, ok in zip(results, done))
+    return {"ok": all(done), "action": a, "results": results, "content": msg, "response": msg}
 
 
 
@@ -441,3 +508,4 @@ for _action, _fn in {
 
 _register("SELF_UPGRADE", _h_self_upgrade)
 _register("SELF_IMPROVEMENT_LOG", _h_self_improvement_log)
+_register("APPROVE_CANDIDATE", _h_approve_candidate)
