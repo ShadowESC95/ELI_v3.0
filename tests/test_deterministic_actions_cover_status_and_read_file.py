@@ -38,7 +38,7 @@ join already-finished sub-step results. 8 more added. Genuinely still
 excluded after this closer look: CHAT (the model call itself), CODE_SOLVE
 and GENERATE_SCRIPT (both real code-generation actions whose primary
 success path returns a JSON event blob, same as FIX_FILE), SHOW_DIFF
-(routes straight to chat()), WEB_SEARCH (its own code comment: the results
+(the diff it gathers is evidence for the model to word), WEB_SEARCH (its own code comment: the results
 are evidence for the model to answer from, not the answer), EXECUTE_GOAL
 (no executor handler at all to verify against), and NOOP (no single
 handler in the dispatch ladder).
@@ -118,8 +118,8 @@ AUDITED_2026_09_18_PASS4 = {
 # is either not meant for verbatim display (FIX_FILE/CODE_SOLVE/GENERATE_SCRIPT:
 # JSON event blob on the primary success path; RUN_TESTS: handler's own comment
 # states the design intent is LLM narration) or the action never reaches a
-# verifiable single handler (CHAT is the model call itself; SHOW_DIFF routes
-# straight to chat(); WEB_SEARCH's own comment says its results are evidence
+# verifiable single handler (CHAT is the model call itself; SHOW_DIFF's diff is
+# evidence for the model to word; WEB_SEARCH's own comment says its results are evidence
 # for the model, not the answer, and the same holds for WEB_FETCH, a linked page's
 # text (2026-10-19); EXECUTE_GOAL has no executor handler at all; NOOP has no
 # single handler in the dispatch ladder).
