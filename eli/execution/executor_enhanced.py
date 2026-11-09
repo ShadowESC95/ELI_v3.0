@@ -9466,6 +9466,30 @@ def _eli_run_key(action: Any, args: Any, kwargs: Dict[str, Any]) -> "Tuple[str, 
     return name, merged, f"{name}\x00{sig}"
 
 
+def _lessons_for_the_run(action: str, args: Dict[str, Any]) -> str:
+    """What was learned about runs like this one (eli/runtime/lessons.brief), asked before it runs:
+    brief() is what marks the lessons as shown for this run, and observe_action checks only lessons
+    that were shown, so with nothing asking it no lesson was ever checked. The lines go on the
+    turn's record (and the result), where the reply about the run reads them. "" when none."""
+    if not action or action == "CHAT":
+        return ""
+    try:
+        from eli.runtime.lessons import brief
+        told = brief(action, args=args)
+    except Exception:
+        log.debug("lessons not read before the run", exc_info=True)
+        return ""
+    if told:
+        try:
+            from eli.kernel import request_context as _rc_lessons
+            _turn = _rc_lessons.turn_facts_var.get()
+            if _turn is not None:
+                _turn.setdefault("lessons_shown", {})[action] = told
+        except Exception:
+            log.debug("lessons not noted on the turn", exc_info=True)
+    return told
+
+
 def _eli_install_recording(inner):
     if getattr(inner, "_eli_records_runs", False):
         return inner
@@ -9476,11 +9500,14 @@ def _eli_install_recording(inner):
         if key in under_way:
             return inner(action, args, *pargs, **kwargs)
         token = _ELI_RUNS_UNDER_WAY.set(under_way | {key})
+        told = _lessons_for_the_run(name, merged)
         started = time.time()
         try:
             out = inner(action, args, *pargs, **kwargs)
         finally:
             _ELI_RUNS_UNDER_WAY.reset(token)
+        if told and isinstance(out, dict):
+            out.setdefault("lessons_applied", told)
         return _finish_run(name, merged, out, started)
 
     execute._eli_records_runs = True  # type: ignore[attr-defined]

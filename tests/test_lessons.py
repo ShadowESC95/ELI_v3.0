@@ -143,3 +143,23 @@ def test_a_sibling_lesson_shown_is_a_transfer_check(tmp_path, monkeypatch):
     row = sqlite3.connect(db).execute("select checks, transfer_checks, transfer_helped from lessons where id = ?",
                                       (lid,)).fetchone()
     assert row == (0, 1, 1)
+
+
+def test_a_run_is_told_its_lessons_before_it_runs_and_they_are_checked_by_it(tmp_path, monkeypatch):
+    """Nothing asked brief() before an action ran, so no lesson was ever shown to a run and none was
+    ever checked. The executor asks before every run, keeps what it was told on the turn and the
+    result, and the run's outcome checks exactly those lessons."""
+    from eli.execution.executor_enhanced import execute
+    from eli.kernel import request_context as rc
+    db = tmp_path / "agent.sqlite3"
+    monkeypatch.setattr("eli.core.paths.agent_db_path", lambda: db)
+    lid = lessons.propose("GET_TIME", "t", ["e"], "read the clock of this machine")
+    facts = {"request_id": "r-lessons"}
+    token = rc.turn_facts_var.set(facts)
+    try:
+        out = execute("GET_TIME", {})
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert "read the clock of this machine" in out.get("lessons_applied", "")
+    assert "read the clock of this machine" in facts["lessons_shown"]["GET_TIME"]
+    assert sqlite3.connect(db).execute("select checks from lessons where id = ?", (lid,)).fetchone() == (1,)
