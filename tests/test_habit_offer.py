@@ -140,3 +140,35 @@ def test_purge_keeps_user_authored_rule_with_real_time(tmp_memory):
     tmp_memory.add_habit_rule("firefox", "firefox", 9, 30, None, enabled=True)
     assert tmp_memory.purge_invalid_habit_rules() == 0
     assert len(tmp_memory.get_habit_rules(enabled_only=False)) == 1
+
+
+# ── frequent behaviour: what worked, lately ──────────────────────────────────
+
+def _uses(mem, action, ok, n, days_ago=0.0):
+    import sqlite3
+    import time
+    for _ in range(n):
+        mem.log_habit_event("command_result", {"action": action, "args": {}, "ok": ok, "source": "cognitive_engine"})
+    if days_ago:
+        when = time.time() - days_ago * 86400.0
+        c = sqlite3.connect(mem.db_path)
+        c.execute("UPDATE habit_events SET timestamp = ?, ts = ? WHERE id IN (SELECT id FROM habit_events "
+                  "ORDER BY id DESC LIMIT ?)", (when, when, n))
+        c.commit()
+        c.close()
+
+
+def test_a_frequent_behaviour_counts_the_uses_that_worked_lately(tmp_path):
+    """The all-time tally of every request, failed or not, grew "play media x31" to x57 during a run
+    of failed plays, and ELI offered to streamline it."""
+    mem = Memory(db_path=tmp_path / "user.sqlite3")
+    _uses(mem, "PLAY_MEDIA", False, 20)
+    _uses(mem, "PLAY_MEDIA", True, 2)
+    _uses(mem, "TAKE_SCREENSHOT", True, 9)
+    _uses(mem, "OPEN_NEWS", True, 30, days_ago=10 * mem.adaptive_half_life())
+    found = {h["name"]: h for h in mem.get_detected_habits(min_count=3, limit=10)}
+    assert set(found) == {"TAKE_SCREENSHOT"}, found
+    assert found["TAKE_SCREENSHOT"]["count"] == 9 and found["TAKE_SCREENSHOT"]["failed"] == 0
+    loose = {h["name"]: h for h in mem.get_detected_habits(min_count=1, limit=10)}
+    assert loose["PLAY_MEDIA"]["count"] == 2 and loose["PLAY_MEDIA"]["failed"] == 20
+    assert "OPEN_NEWS" not in loose, "uses long past the user's own window still counted"

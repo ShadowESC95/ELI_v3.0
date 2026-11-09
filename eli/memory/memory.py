@@ -21,7 +21,7 @@ import re
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from eli.core import paths as core_paths
 from eli.utils.log import get_logger
@@ -1563,6 +1563,17 @@ def _memory_connection(self):
     _ensure_full_memory_schema(conn)
     conn.commit()
     return conn
+
+def _habit_key(event_type, details) -> Tuple[str, str]:
+    """(name, command) a habit event is tallied under: the app, the named thing or the action."""
+    key_name = _norm_text(event_type)
+    key_cmd = key_name
+    if isinstance(details, dict):
+        key_name = _norm_text(details.get("app") or details.get("name") or details.get("action") or event_type)
+        key_cmd = _norm_text(details.get("cmd") or details.get("command") or details.get("action")
+                             or details.get("app") or key_name)
+    return key_name, key_cmd
+
 
 def _get_habit_events_window(self, event_type=None, days=14):
     window = _now_ts() - float(days) * 86400.0
@@ -4788,8 +4799,8 @@ class Memory(metaclass=_MemoryMeta):
 
         The `habits` table is an *action-usage log* — "what the user has asked ELI to do,
         and how often" — NOT a list of habits to schedule. Scheduling lives in the separate
-        `habit_rules` table (add_habit_rule); behavioural-habit *detection* is a filtered
-        read over this same tally (get_detected_habits). Surface the raw usage log via
+        `habit_rules` table (add_habit_rule); behavioural-habit *detection* reads the recent
+        events that worked (get_detected_habits), not this all-time tally. Surface the raw usage log via
         get_requested_action_log(). Keep these three distinct so a frequently-invoked
         action is never silently promoted into an automated schedule."""
         now = _now_ts()
@@ -4807,22 +4818,7 @@ class Memory(metaclass=_MemoryMeta):
                 "command": _norm_text(event_type),
             })
 
-            key_name = _norm_text(event_type)
-            key_cmd = key_name
-            if isinstance(details, dict):
-                key_name = _norm_text(
-                    details.get("app")
-                    or details.get("name")
-                    or details.get("action")
-                    or event_type
-                )
-                key_cmd = _norm_text(
-                    details.get("cmd")
-                    or details.get("command")
-                    or details.get("action")
-                    or details.get("app")
-                    or key_name
-                )
+            key_name, key_cmd = _habit_key(event_type, details)
 
             row = conn.execute(
                 "SELECT id, COALESCE(count, 0) FROM habits WHERE COALESCE(name,'') = ?",
@@ -5317,32 +5313,44 @@ class Memory(metaclass=_MemoryMeta):
     )
 
     def get_detected_habits(self, min_count: int = 3, limit: int = 10):
-        """Meaningful detected *behavioural* habits from the `habits` table (media,
-        app launches, real user actions), excluding ELI's own meta/introspection/
-        system noise. Distinct from get_habit_rules() (scheduled time automations):
-        the `habits` table is populated by detect_habits() but nothing was surfacing
-        it — HABIT_STATUS/overlay only read the empty habit_rules table."""
+        """Meaningful detected *behavioural* habits (media, app launches, real user actions),
+        excluding ELI's own meta/introspection/system noise. Distinct from get_habit_rules()
+        (scheduled time automations).
+
+        A habit is what the user did and what worked, lately: the uses of each action that did not
+        fail, within one of this user's own memory half-lives (adaptive_half_life: how often they use
+        ELI). It was the all-time tally of every request, failed or not, so a run of failed plays
+        grew "play media x31" to x57 and ELI offered to streamline it. Each habit also says how often
+        it failed in that window ("failed"), so a caller can tell a routine from something broken."""
         out = []
         try:
-            conn = self._get_connection()
-            try:
-                rows = conn.execute(
-                    "SELECT COALESCE(name,''), COALESCE(count,0), "
-                    "COALESCE(command, cmd, '') FROM habits "
-                    "WHERE COALESCE(enabled,1)=1 AND COALESCE(count,0) >= ? "
-                    "ORDER BY COALESCE(count,0) DESC",
-                    (int(min_count),),
-                ).fetchall()
-            finally:
-                conn.close()
-            for r in rows:
-                name = str(r[0] or "").strip()
+            days = self.adaptive_half_life()
+            worked: Dict[str, int] = {}
+            failed: Dict[str, int] = {}
+            command: Dict[str, str] = {}
+            order: List[str] = []
+            for ev in _get_habit_events_window(self, days=days):
+                details = ev.get("details")
+                name, cmd = _habit_key(ev.get("event_type"), details)
+                name = str(name or "").strip()
                 if not name:
                     continue
+                outcome = details.get("ok", details.get("success")) if isinstance(details, dict) else None
+                if name not in command:
+                    order.append(name)
+                    command[name] = str(cmd or "")
+                if outcome is False:
+                    failed[name] = failed.get(name, 0) + 1
+                else:
+                    worked[name] = worked.get(name, 0) + 1
+            for name in sorted(order, key=lambda n: worked.get(n, 0), reverse=True):
                 up = name.upper()
+                if worked.get(name, 0) < int(min_count):
+                    continue
                 if up in self._HABIT_NOISE_EXACT or self._HABIT_NOISE_RE.search(up):
                     continue
-                out.append({"name": name, "count": int(r[1] or 0), "command": str(r[2] or "")})
+                out.append({"name": name, "count": worked[name], "failed": failed.get(name, 0),
+                            "command": command[name], "window_days": round(days, 1)})
                 if len(out) >= int(limit):
                     break
         except Exception as exc:
