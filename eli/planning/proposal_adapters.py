@@ -83,11 +83,49 @@ def safe_git_completed(args: Sequence[str] | None = None, cwd: str | None = None
             return CompletedLike(args=argv, returncode=0, stdout=short + "\n")
         return CompletedLike(args=argv, returncode=128, stderr="head unavailable\n")
 
-    if argv[:2] == ["git", "diff"] or argv[:2] == ["git", "status"]:
-        # Proposal-only safe fallback: do not shell out.
-        return CompletedLike(args=argv, returncode=0, stdout="", stderr="proposal-only safe fallback\n")
+    if len(argv) >= 2 and argv[0] == "git" and argv[1] in _READ_ONLY_GIT:
+        return _run_read_only_git(argv, wd, git_dir, kwargs)
 
-    return CompletedLike(args=argv, returncode=0, stdout="", stderr="safe adapter fallback\n")
+    # Anything that could change the repository is not run here: said as not run, not as done.
+    return CompletedLike(args=argv, returncode=1, stdout="",
+                         stderr="not run: only git's read-only queries run here\n")
+
+
+# git subcommands that only read the repository. `git diff`/`git status` here gave back empty output
+# with success, so the code monitor saw no change, ever, and "what changed in your code" had none.
+_READ_ONLY_GIT = frozenset({"diff", "status", "log", "show", "ls-files", "rev-parse", "cat-file", "rev-list"})
+# Options that would make a reading command write (a file, an external program) or reconfigure git.
+_WRITING_OPTION_PREFIXES = ("--output", "-o", "--ext-diff", "--textconv", "-c", "--exec-path", "--git-dir",
+                            "--work-tree")
+
+
+def _run_read_only_git(argv: list, wd: Path, git_dir: Optional[Path], kwargs: dict) -> CompletedLike:
+    import os
+    import shutil
+    import subprocess
+    if not git_dir:
+        return CompletedLike(args=argv, returncode=128, stderr="not a git repo\n")
+    if any(str(a).startswith(_WRITING_OPTION_PREFIXES) for a in argv[2:]):
+        return CompletedLike(args=argv, returncode=1, stderr="not run: an option that writes or reconfigures\n")
+    git = shutil.which("git")
+    if not git:
+        return CompletedLike(args=argv, returncode=127, stderr="git is not installed\n")
+    try:
+        from eli.core.host_env import host_env
+        env = host_env()
+    except ImportError:
+        env = dict(os.environ)
+    env["GIT_OPTIONAL_LOCKS"] = "0"            # `git status` takes no index lock: it only reads
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    timeout = kwargs.get("timeout") or None
+    try:
+        done = subprocess.run([git, "--no-pager", *argv[1:]], cwd=str(wd), env=env, capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CompletedLike(args=argv, returncode=124, stderr=f"git {argv[1]} did not finish in {timeout}s\n")
+    except OSError as failure:
+        return CompletedLike(args=argv, returncode=126, stderr=f"git could not run: {failure}\n")
+    return CompletedLike(args=argv, returncode=done.returncode, stdout=done.stdout or "", stderr=done.stderr or "")
 
 
 def proposal_only_enqueue(args: Sequence[str] | None = None, cwd: str | None = None, env: dict | None = None, **kwargs) -> CompletedLike:
