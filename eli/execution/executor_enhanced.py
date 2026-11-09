@@ -5759,7 +5759,7 @@ def _action_pre_dispatch(
 
     Replaces the chain of monkey-patch wrappers retired in phaseBW2:
       * USER INFO EXECUTOR WRAPPER         (REFRESH_USER_INFO, USER_INFO_REPORT)
-      * EXECUTOR SAFE FILE WRAPPERS        (READ_FILE, WRITE_NOTE, SCREENSHOT)
+      * EXECUTOR SAFE FILE WRAPPERS        (READ_FILE, SCREENSHOT; WRITE_NOTE is its notes effector's)
       * MEMORY_RECALL USER_INFO COMPAT     (identity-shaped MEMORY_RECALL)
       * GROUNDED EXECUTOR WRAPPER          (OPEN_APP/OPEN_IDE pre-flight,
                                             CHECK_TARGET_STATUS et al)
@@ -5801,8 +5801,6 @@ def _action_pre_dispatch(
     # Safe file/screenshot ops ------------------------------------------
     if a == "READ_FILE":
         return _eli_safe_read_file(args)
-    if a == "WRITE_NOTE":
-        return _eli_safe_write_note(args)
     if a == "SCREENSHOT":
         return _eli_safe_screenshot(args)
 
@@ -6853,7 +6851,7 @@ def _eli_user_info_report(force=False, reason="query"):
 
 # Helpers preserved from former EXECUTOR SAFE FILE WRAPPERS (phaseBW2).
 # The wrapper-install scaffolding was removed; pre-dispatch in execute()
-# routes READ_FILE / WRITE_NOTE / SCREENSHOT through these directly.
+# routes READ_FILE / SCREENSHOT through these directly.
 def _eli_safe_read_file(args=None):
     _args = args or {}
     path = str(_args.get("path") or "").strip()
@@ -6899,27 +6897,6 @@ def _eli_safe_read_file(args=None):
         "action": "READ_FILE",
         "path": str(p),
         "content": data,
-    }
-
-def _eli_safe_write_note(args=None):
-    from pathlib import Path
-    from datetime import datetime
-    _args = args or {}
-    txt = str(_args.get("text") or "").rstrip()
-    if not txt:
-        return {"ok": False, "action": "WRITE_NOTE", "content": "Missing note text."}
-    nb = Path("eli_notebook")
-    nb.mkdir(parents=True, exist_ok=True)
-    daily = nb / f"{datetime.now().strftime('%Y-%m-%d')}.md"
-    prefix = "" if not daily.exists() or not daily.read_text(encoding="utf-8", errors="ignore").strip() else "\n"
-    stamp = datetime.now().strftime("%H:%M:%S")
-    payload = f"{prefix}- [{stamp}] {txt}\n"
-    daily.write_text(daily.read_text(encoding="utf-8", errors="ignore") + payload if daily.exists() else payload, encoding="utf-8")
-    return {
-        "ok": True,
-        "action": "WRITE_NOTE",
-        "path": str(daily),
-        "content": f"Wrote note to {daily}",
     }
 
 def _eli_safe_screenshot(args=None):

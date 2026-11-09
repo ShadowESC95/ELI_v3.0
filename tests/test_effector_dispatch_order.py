@@ -73,3 +73,18 @@ def test_registry_is_consulted_before_any_inline_handler():
         "the effector lookup must come before the first inline action branch, or an inline copy "
         "shadows the effector again"
     )
+
+
+def test_a_note_is_written_by_its_notes_effector_not_a_copy_in_the_executor(monkeypatch):
+    # the executor kept its own WRITE_NOTE, writing to a folder under wherever ELI was started from,
+    # ahead of the notes effector
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import load_all, registry
+
+    load_all()
+    written = []
+    monkeypatch.setitem(registry._HANDLERS, "WRITE_NOTE",
+                        lambda a, args: written.append(args.get("text")) or {"ok": True, "action": a, "response": "Noted."})
+    assert ex.execute("WRITE_NOTE", {"text": "buy oat milk"})["ok"] is True
+    assert written == ["buy oat milk"]
+    assert not hasattr(ex, "_eli_safe_write_note")
