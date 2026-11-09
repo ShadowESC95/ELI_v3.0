@@ -53,3 +53,20 @@ def test_empty_answer_passes_through():
 def test_unknown_letters_are_not_invented():
     """'z' is not an option — it must not resolve to anything."""
     assert "Concise" not in _resolve_mc_choice("z", OPTS)
+
+
+@pytest.mark.parametrize("step,kind", [("role", "identity.role"), ("style", "preference.style"),
+                                       ("focus", "goal.primary")])
+def test_an_interview_answer_is_kept_as_said_outright(tmp_path, step, kind):
+    """The interview's answers were filed as words in passing ("user_passing"), so a passing remark
+    could outweigh what the user chose when asked."""
+    import sqlite3
+    from eli.onboarding.interview import _apply_answer
+    db = tmp_path / "user.sqlite3"
+    _apply_answer(step, "a", db_path=db)
+    con = sqlite3.connect(str(db))
+    try:
+        rows = con.execute("SELECT provenance FROM user_patterns WHERE pattern_type = ?", (kind,)).fetchall()
+    finally:
+        con.close()
+    assert rows == [("user_explicit",)]

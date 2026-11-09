@@ -603,11 +603,13 @@ def _apply_answer(step: str, text: str, db_path=None) -> str:
         con = sqlite3.connect(str(db))
         cur = con.cursor()
         if step == "role":
-            _insert_user_pattern(cur, "identity.role", f"User's work/role: {canonical[:200]}")
+            _insert_user_pattern(cur, "identity.role", f"User's work/role: {canonical[:200]}", provenance="user_explicit")
         elif step == "style":
-            _insert_user_pattern(cur, "preference.style", f"User prefers {canonical[:120]} answers by default.")
+            _insert_user_pattern(cur, "preference.style", f"User prefers {canonical[:120]} answers by default.",
+                                 provenance="user_explicit")
         elif step == "focus":
-            _insert_user_pattern(cur, "goal.primary", f"User wants ELI mainly for: {canonical[:200]}.")
+            _insert_user_pattern(cur, "goal.primary", f"User wants ELI mainly for: {canonical[:200]}.",
+                                 provenance="user_explicit")
         con.commit()
         con.close()
     except Exception:
