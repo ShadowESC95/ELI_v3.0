@@ -61,19 +61,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from eli.core.paths import get_paths
 import threading
 
-# ── Security gate (lazy singleton) ───────────────────────────────────────────
-_security_manager = None
-
-def _get_security_manager():
-    """Return the module-level SecurityManager singleton (imported lazily)."""
-    global _security_manager
-    if _security_manager is None:
-        try:
-            from eli.runtime.security import SecurityManager
-            _security_manager = SecurityManager()
-        except Exception:
-            _security_manager = None  # degrade gracefully if unavailable
-    return _security_manager
+# ── Security gate ────────────────────────────────────────────────────────────
+# One copy, in effectors._base (a leaf module): the SecurityManager rebuilt when the allowlists change,
+# its fail-closed fallback, and the gated runner. The executor kept its own, which read
+# ELI_ALLOWED_CMDS once for the life of the process.
+from eli.execution.effectors._base import (  # noqa: E402,F401
+    _full_control, _get_security_manager, _run, _run_ok, _shell_command_allowed_fallback,
+)
 # --- Memory bridge: route through canonical Memory class (not memory_db) ---
 # memory_db has a different schema (model/dim/vec columns) than Memory (kind/source/confidence/weight).
 # Using Memory directly avoids the "no such column: model" crash.
@@ -310,79 +304,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def _full_control() -> bool:
-    """ELI Full Control state — the GUI toggle / `full_control` setting (single source
-    of truth; no environment variable). Never raises."""
-    try:
-        from eli.core.full_control import is_full_control
-        return bool(is_full_control())
-    except Exception:
-        return False
-
-
-def _shell_command_allowed_fallback(cmd: str) -> bool:
-    """Fail-closed allowlist check used when the SecurityManager can't load.
-
-    Mirrors SecurityManager.is_command_allowed so a degraded manager can never
-    become fail-OPEN: with neither ELI Full Control nor ELI_ALLOWED_CMDS set,
-    nothing runs.
-    """
-    if _full_control():
-        return True
-    raw = (os.environ.get("ELI_ALLOWED_CMDS") or "").strip()
-    if not raw:
-        return False  # fail-closed
-    allowed = {p for p in raw.replace(",", " ").split() if p}
-    if "*" in allowed:
-        return True
-    return os.path.normpath(cmd) in allowed or cmd in allowed
-
-
-def _run(argv: List[str], timeout: int = 15) -> Dict[str, Any]:
-    # Security gate: check command against allowlist before executing.
-    # Fail CLOSED — if the SecurityManager can't load, fall back to an inline
-    # allowlist check rather than running unchecked.
-    if argv:
-        sm = _get_security_manager()
-        allowed = sm.is_command_allowed(argv[0]) if sm is not None else _shell_command_allowed_fallback(argv[0])
-        if not allowed:
-            msg = f"Command blocked by security policy: {argv[0]}"
-            return {
-                "ok": False,
-                "returncode": 1,
-                "stdout": "",
-                "stderr": msg,
-                "cmd": argv,
-                "content": msg,
-                "response": msg,
-            }
-    try:
-        p = subprocess.run(argv, timeout=timeout, capture_output=True, text=True, check=False)
-        ok = (p.returncode == 0)
-        msg = "OK" if ok else "Command failed"
-        return {
-            "ok": ok,
-            "returncode": p.returncode,
-            "stdout": p.stdout,
-            "stderr": p.stderr,
-            "cmd": argv,
-            "content": msg,
-            "response": msg,
-        }
-    except Exception as e:
-        msg = "Command error"
-        return {
-            "ok": False,
-            "returncode": 1,
-            "stdout": "",
-            "stderr": repr(e),
-            "cmd": argv,
-            "content": msg,
-            "response": msg,
-            "error": repr(e),
-        }
 
 
 # ----------------------------
@@ -3269,13 +3190,6 @@ def _open_in_browser(url: str) -> bool:
 
 
 # ================== END MEDIA CONTROL ==================
-
-def _run_ok(argv, timeout: int = 5) -> bool:
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0
-    except Exception:
-        return False
 
 
 def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) -> Dict[str, Any]:

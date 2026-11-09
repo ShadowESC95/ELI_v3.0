@@ -160,3 +160,15 @@ def test_the_command_allowlist_is_read_as_it_is_now(no_full_control, monkeypatch
     assert gate._get_security_manager().is_command_allowed("printf") is True
     monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo")
     assert gate._get_security_manager().is_command_allowed("printf") is False
+
+
+def test_the_executors_own_commands_are_held_to_the_allowlist_as_it_is_now(no_full_control, monkeypatch):
+    """The executor kept a second SecurityManager that read ELI_ALLOWED_CMDS once, so a command the
+    owner allowed later stayed blocked for the executor's own runs (and one taken off stayed
+    allowed). It uses the one gate in effectors._base."""
+    monkeypatch.setattr(gate, "_security_manager", None)
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo")
+    assert ex._get_security_manager().is_command_allowed("printf") is False
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "echo,printf")
+    assert ex._get_security_manager().is_command_allowed("printf") is True
+    assert ex._run(["printf", "allowed-now"])["stdout"] == "allowed-now"
