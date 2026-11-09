@@ -270,3 +270,19 @@ def test_generate_script_writes_the_language_the_request_names(monkeypatch, tmp_
                                                     "_evidence": "notes gathered by ELI's agents and its tests"})
     assert seen["language"] == language
     assert result["filename"].endswith(ending)
+
+
+def test_generate_script_never_saves_a_model_failure_as_a_script(monkeypatch, tmp_path):
+    import eli.coding.agent as coding
+    from eli.cognition import gguf_inference
+    from eli.execution.effectors import coding as fx
+
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(coding, "solve", lambda task, **kw: {"code": ""})
+    monkeypatch.setattr(gguf_inference, "load_model", lambda *a, **k: None)
+    monkeypatch.setattr(fx, "chat", lambda *a, **k: {"ok": False, "error": "model_not_loaded",
+                                                     "content": "The model is not loaded yet."})
+    out = fx._h_generate_script("GENERATE_SCRIPT", {"description": "write a bash script that lists files",
+                                                    "_no_background": True})
+    assert out["ok"] is False and out["error"] == "model_not_loaded"
+    assert not list((tmp_path / "artifacts").rglob("*.sh"))

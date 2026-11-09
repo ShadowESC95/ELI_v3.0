@@ -555,6 +555,11 @@ def _h_generate_script(a, args):
         log.debug(f"[GENERATE_SCRIPT] GGUF failed: {_e}, falling back to Ollama")
     # Ollama fallback
     result = chat(prompt, skip_router=True)
+    if not result.get("ok", True):
+        # Its content then is why it failed ("The model is not loaded yet..."), not a script.
+        msg = f"No script was written: {result.get('error') or result.get('content') or 'the model did not answer'}"
+        return {"ok": False, "action": a, "error": str(result.get("error") or "model_failed"),
+                "content": msg, "response": msg}
     code = result.get("content", "").strip()
     import re as _re
     code = _re.sub(r"^```[a-z]*\n?", "", code, flags=_re.MULTILINE)
