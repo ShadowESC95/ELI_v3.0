@@ -953,6 +953,11 @@ def _is_day_label(unit: str, window: Any) -> bool:
     return 1 <= len(words) <= 6 and bool(days_named(unit, window))
 
 
+def _stops_where_it_says_more_follows(text: str) -> bool:
+    from eli.cognition.output_governor import announces_what_follows
+    return announces_what_follows(text)
+
+
 def _carried_out_before() -> bool:
     """A turn nested in one that has already carried the user's commands out (the rest of a
     message of commands and talk, or the written part of an agreed offer)."""
@@ -1065,15 +1070,50 @@ def holds_up(text: str, evidence: str = "") -> bool:
     return not check.dropped
 
 
+def _not_said_already(chunks: Iterable[str], said: str):
+    """`chunks` without the sentences already in `said`, as they come: told to go on, the model wrote
+    the last paragraph out again word for word (see not_said_yet)."""
+    def _plain(unit: str) -> str:
+        return re.sub(r"[\W_]+", " ", unit.lower()).strip()
+    before = {_plain(u) for u in re.split(r"(?<=[.!?])\s+|\n+", str(said or "")) if _plain(u)}
+    buf = ""
+    for piece in chunks:
+        buf += str(piece or "")
+        while True:
+            unit, rest = _next_unit(buf)
+            if unit is None:
+                break
+            buf = rest
+            if not (_plain(unit) and _plain(unit) in before):
+                yield unit
+    if buf and not (_plain(buf) and _plain(buf) in before):
+        yield buf
+
+
 def gate_stream(chunks: Iterable[str], evidence: str = "", rewrite: Optional[Callable[[List[str], str], str]] = None,
-                instructions: str = ""):
+                instructions: str = "", go_on: Optional[Callable[[str], Iterable[str]]] = None):
     """The claim check on a live stream. When too little true is left, `rewrite(dropped, served)` asks
-    the model again from what actually happened; the record's own line is for when it can't."""
+    the model again from what actually happened; the record's own line is for when it can't. When the
+    reply stops on a sentence that only announces what follows ("Yes. Here's why."), `go_on(served)`
+    asks the model to go on from what it said, and that goes through the same check."""
     check = _Check(evidence, instructions)
     served: List[str] = []
     for out in _checked(chunks, check):
         served.append(out)
         yield out
+    said = "".join(served)
+    if go_on is not None and not check.code_served and _stops_where_it_says_more_follows(said):
+        opened = False
+        for out in _checked(_not_said_already(go_on(said) or [], said), check):
+            if not out:
+                continue
+            if not opened:
+                if not out.strip():
+                    continue
+                opened = True
+                out = ("" if said.endswith("\n") else "\n\n") + out.lstrip()
+            served.append(out)
+            yield out
     if check.code_served:
         return
     if rewrite is not None and check.fell_short():
@@ -1086,19 +1126,28 @@ def gate_stream(chunks: Iterable[str], evidence: str = "", rewrite: Optional[Cal
         yield after
 
 
+def ask_again(dropped: List[str], served: str) -> str:
+    """Notes on the turn that a reply lost what it said, for the engine to ask the model again from
+    what actually happened (kernel/stages/generation.py reads `reply_fell_short`). The checks that
+    run on a buffered reply cannot reach the model themselves; several may drop from one reply, so
+    what each dropped is kept, and `served` is what is left after the latest. "" for the caller."""
+    from eli.kernel.request_context import turn_facts_var
+    facts = turn_facts_var.get()
+    if facts is None:
+        return ""
+    prior = facts.get("reply_fell_short") or {}
+    facts["reply_fell_short"] = {"dropped": list(prior.get("dropped") or []) + [str(d).strip() for d in dropped if str(d).strip()],
+                                 "served": str(served or "")}
+    return ""
+
+
 def drop_invented_self_claims(text: str, evidence: str = "") -> str:
     """`text` without sentences that invent ELI's settings, files, causes or fixes, or report
     changes it didn't make. Code blocks are left alone. Never returns an empty reply."""
     body = str(text or "")
     if not body.strip():
         return body
-    def _note_for_the_engine(dropped: List[str], served: str) -> str:
-        # Nothing here can reach the model: the engine asks it again from what actually happened.
-        from eli.kernel.request_context import note_turn_fact
-        note_turn_fact("reply_fell_short", {"dropped": dropped, "served": served})
-        return ""
-
-    kept = "".join(gate_stream([body], evidence, rewrite=_note_for_the_engine))
+    kept = "".join(gate_stream([body], evidence, rewrite=ask_again))
     kept = re.sub(r"[ \t]+\n", "\n", kept)
     return re.sub(r"\n{3,}", "\n\n", kept).strip() or body
 

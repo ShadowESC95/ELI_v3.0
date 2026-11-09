@@ -79,3 +79,29 @@ def test_correcting_one_field_is_allowed():
     assert not output_violates_evidence(
         "The name field says alex — if that's wrong, tell me and I'll update it.",
         "name=alex")
+
+
+# ── A reply that stops where it says its answer starts ─────────────────────────
+@pytest.mark.parametrize("reply", [
+    "Yes. Here's why.",
+    "Fair question. It comes down to three things:",
+    "Sure. Let me explain.",
+    "The steps are as follows.",
+    "Two reasons.",
+    "So here's the plan:",
+])
+def test_announcing_what_follows_and_stopping_is_truncation(reply):
+    from eli.cognition.output_governor import announces_what_follows
+    assert announces_what_follows(reply)
+    assert _looks_truncated(reply)
+
+
+@pytest.mark.parametrize("reply", [
+    "Here's why: the cache was cold when you asked.",
+    "Here is the full answer. Nothing is missing.",
+    "The water level fell below.",
+    "Here are the files:\n```\na.txt\n```",
+])
+def test_an_answer_that_says_it_is_not_cut(reply):
+    from eli.cognition.output_governor import announces_what_follows
+    assert not announces_what_follows(reply)

@@ -988,3 +988,28 @@ def test_a_weekday_against_the_clock_is_checked_except_in_what_was_asked_to_be_w
         assert sc.drop_invented_self_claims(story) == story
     finally:
         rc.turn_facts_var.reset(token)
+
+
+def test_a_streamed_reply_that_stops_on_its_announcement_goes_on(turn):
+    """Live: "results ?" was answered "Yes. Here's why." and the stream ended there."""
+    asked = []
+
+    def go_on(said):
+        asked.append(said)
+        return iter(["Yes. ", "The job wrote its results to the ledger at 16:02, ", "and none were lost."])
+
+    out = "".join(sc.gate_stream(iter(["Yes. ", "Here's why."]), go_on=go_on))
+    assert asked == ["Yes. Here's why."]
+    assert out == "Yes. Here's why.\n\nThe job wrote its results to the ledger at 16:02, and none were lost."
+
+
+def test_what_it_goes_on_with_is_held_to_the_same_check(turn):
+    out = "".join(sc.gate_stream(iter(["Here's why."]), go_on=lambda said: iter([
+        "The embedding model decayed the context window. ", "Logging is now active."])))
+    assert "Logging is now active" not in out
+
+
+def test_a_finished_reply_is_not_asked_to_go_on(turn):
+    called = []
+    out = "".join(sc.gate_stream(iter(["Yes. ", "It finished at 16:02."]), go_on=lambda said: called.append(said) or []))
+    assert out == "Yes. It finished at 16:02." and not called

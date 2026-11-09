@@ -95,6 +95,44 @@ def strip_fabricated_action_claims(text: str) -> str:
     return _FAKE_TOOL_CONFIRMATION_RE.sub("", str(text or ""))
 
 
+# A sentence with what follows it (spaces after its stop, or the line breaks).
+_UNIT_SPLIT = re.compile(r"((?<=[.!?])[ \t]+|\n+)")
+
+
+def _without_sentences(text: str, drops) -> Tuple[str, List[str]]:
+    """`text` without the sentences `drops(sentence)` picks out, each taken whole, never a phrase
+    of one: "I don't have emotions in the way humans do." cut by its phrase left "in the way humans
+    do". Line breaks stay where they were. Returns (what is left, the sentences dropped)."""
+    pieces = _UNIT_SPLIT.split(str(text or ""))
+    kept: List[str] = []
+    dropped: List[str] = []
+    for i in range(0, len(pieces), 2):
+        unit = pieces[i]
+        sep = pieces[i + 1] if i + 1 < len(pieces) else ""
+        if unit.strip() and drops(unit):
+            dropped.append(unit.strip())
+            if "\n" in sep and kept and not kept[-1].endswith("\n"):
+                kept.append("\n")
+            continue
+        kept.append(unit + sep)
+    left = re.sub(r"[ \t]+\n", "\n", "".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", left).strip(), dropped
+
+
+def _short_of_a_reply(dropped: List[str], left: str, original: str, *, words: int) -> str:
+    """When dropping left fewer than `words` words, the reply is asked for again from what actually
+    happened (self_claims.ask_again, which the engine reads), never answered with a note of the
+    governor's own. What is served meanwhile is what is left, or the model's reply as it came."""
+    if not dropped or len(left.split()) >= words:
+        return left
+    try:
+        from eli.cognition.self_claims import ask_again
+        ask_again(dropped, left)
+    except ImportError:
+        pass
+    return left or original
+
+
 _DIAG_SHELL_CMD_RE = re.compile(
     r"\b(journalctl|systemctl|grep\s+-[a-z]*i\b|/var/log|~/?\.eli/logs)\b",
     re.I,
@@ -117,21 +155,20 @@ def strip_fabricated_diagnostic_shell(text: str) -> str:
             return ""
         return block
 
+    blocks = [m.group(0) for m in _CODE_FENCE_RE.finditer(body) if _DIAG_SHELL_CMD_RE.search(m.group(0))]
     cleaned = _CODE_FENCE_RE.sub(_repl, body)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if not stripped_any:
         return body
     if len(cleaned.split()) >= 3:
         return cleaned
-    cleaned = re.sub(
-        r"(?im)^.*(?:let me check|i'll (?:check|run|look at)|check the actual).*?\n+",
-        "",
-        body,
-    )
-    cleaned = _CODE_FENCE_RE.sub(_repl, cleaned).strip()
-    if len(cleaned.split()) >= 3:
-        return cleaned
-    return "You're right — I got the timing wrong. My mistake."
+    # Too little is left: the reply is asked for again, and the invented block is not served
+    # (nor an apology for something nobody mentioned).
+    cleaned, lead = _without_sentences(cleaned, lambda u: bool(_PROMISES_A_CHECK.search(u)))
+    return _short_of_a_reply(blocks + lead, cleaned, cleaned or body, words=3)
+
+
+_PROMISES_A_CHECK = re.compile(r"(?i)let me check|i'll (?:check|run|look at)|check the actual")
 
 
 # Repeated clarification. Asking again what the user already answered isn't a phrasing problem,
@@ -559,18 +596,15 @@ def strip_generic_ai_identity_drift(text: str) -> str:
     if not result:
         return ""
 
-    cleaned = _GENERIC_AI_IDENTITY_RE.sub("", result).strip()
-
-    # Only replace with the drift placeholder if the regex actually matched
-    # AND there is nothing useful left. Short legitimate answers ("Yes.",
-    # "hello world") must pass through untouched when no drift was detected.
-    if cleaned == result:
-        return cleaned
-
-    if not cleaned or len(cleaned.split()) < 3:
-        return "Running. That response drifted into generic model-speak; ignoring it."
-
-    return cleaned
+    lead = _GENERIC_AI_IDENTITY_RE.match(result)
+    if not lead or not lead.group(0).strip():
+        return result
+    # The disclaimer sentences at the start go whole; a reply left with too little is asked for
+    # again. Short legitimate answers ("Yes.", "hello world") have no disclaimer and pass untouched.
+    opening = lead.group(0)
+    cleaned, dropped = _without_sentences(opening, lambda u: True)
+    cleaned = result[len(opening):].strip()
+    return _short_of_a_reply(dropped, cleaned, result, words=3)
 
 
 _MEDICAL_METAPHOR_DRIFT_RE = re.compile(
@@ -628,27 +662,24 @@ def repair_local_persona_drift(text: str, user_input: str = "") -> str:
         _MEDICAL_METAPHOR_DRIFT_RE.search(result)
         or _GENERIC_MEMORY_IDENTITY_DRIFT_RE.search(result)
     ):
-        return (
-            "Wrong frame. You meant surgery on ELI - code/persona/memory repair - "
-            "not human neurosurgery. The response drifted into generic medical "
-            "filler and should be regenerated from local system context."
-        )
-    if _GENERIC_MEMORY_IDENTITY_DRIFT_RE.search(result):
-        result = _GENERIC_MEMORY_IDENTITY_DRIFT_RE.sub("", result).strip()
-        result = re.sub(
-            r"(?is)\b(?:however,\s+)?if\s+we\s+are\s+speaking\s+literally\b[, ]*",
-            "",
-            result,
-        )
-        result = re.sub(r"(?is)\bif\s+you\s+meant\s+something\s+else,\s+please\s+clarify\b[. ]*", "", result)
-        result = re.sub(r"\s{2,}", " ", result).strip(" .,:;-")
-        if not result or len(result.split()) < 4:
-            return (
-                "Persona drift detected. ELI should answer from local memory/runtime context, "
-                "not generic AI disclaimers."
-            )
+        # The reply took the repair for human surgery: those sentences go, and the reply is asked
+        # for again however much is left, since what is left answered a question nobody asked.
+        left, dropped = _without_sentences(result, lambda u: bool(
+            _MEDICAL_METAPHOR_DRIFT_RE.search(u) or _GENERIC_MEMORY_IDENTITY_DRIFT_RE.search(u)))
+        return _short_of_a_reply(dropped, left, result, words=len(result.split()) + 1)
+    if _GENERIC_MEMORY_IDENTITY_DRIFT_RE.search(result) or _LITERAL_HEDGE_RE.search(result):
+        left, dropped = _without_sentences(result, lambda u: bool(
+            _GENERIC_MEMORY_IDENTITY_DRIFT_RE.search(u) or _LITERAL_HEDGE_RE.search(u)))
+        return _short_of_a_reply(dropped, left, result, words=4)
 
     return result
+
+
+# What a generic disclaimer comes wrapped in: "However, if we are speaking literally, ...", "If you
+# meant something else, please clarify."
+_LITERAL_HEDGE_RE = re.compile(
+    r"(?is)\b(?:however,\s+)?if\s+we\s+are\s+speaking\s+literally\b"
+    r"|\bif\s+you\s+meant\s+something\s+else,\s+please\s+clarify\b")
 
 
 # Style polish (HR-ish phrasing) — applied via clean_response_style().
@@ -1005,10 +1036,44 @@ _EVASIVE_PHRASES = (
 )
 
 
+# A last sentence that only says what comes next: "Here's why.", "Let me explain.", "It comes down to
+# three things:", "as follows." With nothing after it, the reply stopped where its answer was to
+# start: live, "results ?" got "Yes. Here's why." and no more, in Quick mode, where a reply ending
+# in a full stop counted as finished.
+_ANNOUNCES_MORE = re.compile(
+    r"(?i)^\W*(?:(?:so|and|ok(?:ay)?|well|yes|yeah|yep|right|sure|alright|fine|look)[,.!\s]+)*"
+    r"(?:here(?:['’]s|\s+is|\s+are)\s+(?:why|how|what|where|when|who|the\s+(?:thing|deal|reason|reasons|problem|"
+    r"plan|breakdown|list|short\s+version|long\s+version|answer|story|catch|rundown)|a\s+(?:few|couple)|some|my|our)\b"
+    r"[^.!?\n:;]{0,40}"
+    r"|let\s+me\s+(?:explain|break\s+(?:it|that|this)\s+down|walk\s+you\s+through\s+(?:it|this|that)|spell\s+(?:it|that)\s+out)"
+    r"|(?:it|this|that)\s+(?:all\s+)?(?:comes|boils)\s+down\s+to\s+(?:this|(?:two|three|four|five|a\s+few|several)\s+\w+)"
+    r"|(?:there\s+are\s+)?(?:two|three|four|five|a\s+few|several)\s+(?:reasons?|things|points|ways|steps|options|"
+    r"problems|issues|causes)(?:\s+(?:why|here|really))?"
+    r"|[^.!?\n]*\b(?:as\s+follows|the\s+following(?:\s+\w+)?|(?:see|listed|shown|set\s+out|laid\s+out|given|"
+    r"written|summed\s+up)\s+below)"
+    r")\W*$")
+
+
+def announces_what_follows(text: str) -> bool:
+    """Whether a reply ends on a sentence that only announces what follows (or on a line ending in a
+    colon), with nothing after it."""
+    t = str(text or "").rstrip()
+    if not t or t.endswith("```"):
+        return False
+    last_line = t.splitlines()[-1].strip()
+    if last_line.endswith(":") and len(last_line.split()) >= 2:
+        return True
+    last = [u for u in re.split(r"(?<=[.!?])\s+|\n+", last_line) if u.strip()]
+    return bool(last) and bool(_ANNOUNCES_MORE.match(last[-1].strip(" *_")))
+
+
 def _looks_truncated(text: str) -> bool:
     t = (text or "").rstrip()
     if not t:
         return False
+    # Announcing what follows and stopping there is a cut-off answer however it is punctuated.
+    if announces_what_follows(t):
+        return True
     # A dangling list marker (the token cap hit as the next bullet opened). Checked before the
     # terminator test because "-" is neither alphanumeric nor a terminator, which used to ship the
     # stub.
