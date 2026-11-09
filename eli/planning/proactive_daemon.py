@@ -720,21 +720,16 @@ class ProactiveDaemon:
             except Exception:
                 _SWLOG.debug("suppressed exception", exc_info=True)
 
-        # Primary self-maintenance: unified failure analysis (propose-only from daemon). It makes
-        # several model calls in a row: held until the owner is away, not just between two turns.
+        # Primary self-maintenance: the failure analysis only (analyze_and_improve's read-mostly
+        # pass). The tick never starts the coding agent: with a model loaded it started tens of model
+        # calls of self-repair every ten minutes on its own; proposals are made when the owner asks
+        # for them (SELF_IMPROVE, a background job), and applied only on their yes.
         if not _owner_away():
             log.debug("[PROACTIVE] self-maintenance held: the owner is within their own pause between turns")
             return improvements
         try:
             from eli.runtime.self_improvement import get_self_improvement
-            _si = get_self_improvement()
-            _model_ready = False
-            try:
-                from eli.cognition import gguf_inference as _gi
-                _model_ready = bool(getattr(_gi, "is_loaded", lambda: False)())
-            except Exception:
-                log.debug("model readiness check skipped", exc_info=True)
-            _si.analyze_and_improve(repair=_model_ready)
+            get_self_improvement().analyze_and_improve(repair=False)
         except Exception as _si_err:
             log.debug(f"[PROACTIVE] unified self-maintenance tick skipped: {_si_err}")
 

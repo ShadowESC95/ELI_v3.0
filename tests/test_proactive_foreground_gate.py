@@ -107,3 +107,20 @@ def test_the_pace_is_the_brokers_and_every_background_wait_reads_it(monkeypatch)
     assert ib.foreground_recently_active() is False
     monkeypatch.setenv("ELI_BG_DEFER_WINDOW", "0")
     assert ib.background_defer_window() == 0.0, "the setting still turns the wait off"
+
+
+def test_the_daemons_tick_never_starts_the_coding_agent(monkeypatch, tmp_path):
+    """With a model loaded the ten-minute tick ran analyze_and_improve(repair=True): the coding agent's
+    tens of model calls, on its own. The tick analyses only."""
+    import eli.runtime.self_improvement as si
+    from eli.cognition import gguf_inference as gi
+    asked = []
+    monkeypatch.setattr(si, "get_self_improvement", lambda: type("S", (), {
+        "analyze_and_improve": lambda self, propose=None, repair=False: asked.append(repair) or {}})())
+    monkeypatch.setattr(gi, "is_loaded", lambda: True, raising=False)
+    monkeypatch.setattr(pd, "_owner_away", lambda: True)
+    daemon = pd.ProactiveDaemon.__new__(pd.ProactiveDaemon)
+    daemon.package_root = tmp_path                      # no source files to lint here
+    daemon.agent_mem = type("M", (), {"log_improvement": lambda self, *a, **k: None})()
+    daemon.analyze_code_quality()
+    assert asked == [False]
