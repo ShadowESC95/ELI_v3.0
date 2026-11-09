@@ -371,18 +371,19 @@ def reflect_on_period(hours: int = 24) -> Dict[str, Any]:
             except Exception:
                 log.debug("reflection: insight store failed", exc_info=True)
 
-    if not insights:
-        if section_errors:
-            # Incomplete, not a verified all-clear -- say so plainly.
-            insights.append(
-                f"Could not fully verify activity for this period — "
-                f"{len(section_errors)} data source(s) failed to load "
-                f"({'; '.join(section_errors[:3])}"
-                f"{', ...' if len(section_errors) > 3 else ''}). "
-                f"This is not a confirmed 'nothing happened'."
-            )
-        else:
-            insights.append("No evidence-backed activity signals recorded for this period.")
+    if section_errors:
+        # Incomplete, not a verified all-clear -- say so plainly, whatever the sources that did load
+        # found: a period where one source failed and another proposed a lesson was reported as if
+        # every source had been read.
+        insights.append(
+            f"Could not fully verify activity for this period — "
+            f"{len(section_errors)} data source(s) failed to load "
+            f"({'; '.join(section_errors[:3])}"
+            f"{', ...' if len(section_errors) > 3 else ''}). "
+            f"This is not a confirmed 'nothing happened'."
+        )
+    elif not insights:
+        insights.append("No evidence-backed activity signals recorded for this period.")
 
     try:
         from eli.world.world_event_bus import fire_world_event as _wfe

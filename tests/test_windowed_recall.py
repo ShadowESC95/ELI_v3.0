@@ -192,9 +192,14 @@ def test_without_a_presence_record_the_period_log_is_as_it_was(monkeypatch):
     assert "ELI's world" not in out and "You: hello" in out
 
 
-def test_a_period_says_where_each_turn_was_said_and_who_came_into_the_rooms(engine):
+def test_a_period_says_where_each_turn_was_said_and_who_came_into_the_rooms(engine, monkeypatch):
     """A VR evening read as plain "You:" lines, and the arrival in ELI's rooms was not in the period
-    log at all: ranked among the day's memories, the presence record was cut."""
+    log at all: ranked among the day's memories, the presence record was cut.
+
+    This is the fallback with no presence record (the memory row says who arrived), so the presence
+    store is held empty: sessions other tests in the run recorded would otherwise stand in for it."""
+    import eli.world.embodiment as embodiment
+    monkeypatch.setattr(embodiment, "sessions_between", lambda since, until: [], raising=False)
     mem = engine.memory
     now = time.time()
     arrived = now - 2 * DAY

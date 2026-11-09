@@ -235,6 +235,10 @@ def _isolated_evidence_and_user_model(monkeypatch):
     monkeypatch.setattr(ledger, "recent_events", lambda **kw: [])
     monkeypatch.setattr(ledger, "recent_generated_artifacts", lambda **kw: [])
     monkeypatch.setattr(user_model, "read_user_model", lambda: {"is_seeded": False})
+    # The lessons section reads the failure record other tests in the run leave behind.
+    import eli.runtime.lessons as lessons
+    monkeypatch.setattr(lessons, "review", lambda *a, **kw: None)
+    monkeypatch.setattr(lessons, "from_failure_clusters", lambda **kw: [])
 
 
 def test_all_sections_failing_is_not_reported_as_nothing_happened(
@@ -251,7 +255,28 @@ def test_all_sections_failing_is_not_reported_as_nothing_happened(
         "a reflection where every data source errored must not claim a "
         "verified 'nothing happened'"
     )
-    assert "not a confirmed" in joined.lower() or "could not fully verify" in joined.lower()
+    _says_which_sources_failed(out)
+
+
+def _says_which_sources_failed(out):
+    """The reflection names how many sources failed and which, from the errors it recorded."""
+    errors = out["section_errors"]
+    named = [i for i in out["insights"] if str(len(errors)) in i and all(e.split(":")[0] in i for e in errors[:3])]
+    assert named, f"no insight says which of {errors} failed: {out['insights']}"
+
+
+def test_a_source_that_failed_is_said_even_when_another_found_something(
+    monkeypatch, _isolated_evidence_and_user_model,
+):
+    """One source failing while another proposed a lesson was reported as a full reading."""
+    from eli.runtime import reflection
+    import eli.runtime.lessons as lessons
+
+    monkeypatch.setattr(reflection, "get_memory", lambda: _AllSectionsFailMem())
+    monkeypatch.setattr(lessons, "from_failure_clusters", lambda **kw: [1, 2])
+    out = reflection.reflect_on_period(hours=24)
+    assert any("Lessons proposed" in i for i in out["insights"])
+    _says_which_sources_failed(out)
 
 
 def test_all_sections_genuinely_empty_still_says_so_honestly(
