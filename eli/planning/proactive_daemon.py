@@ -1471,6 +1471,45 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
 
         log.debug("[PROACTIVE] Daemon stopped")
 
+    def tell_job_ended(self, job: Dict[str, Any], record: str) -> str:
+        """A job the person asked to hear about has ended: said in the conversation that asked for
+        it, as ELI's own turn. The words are the model's, from the job manager's record of how it
+        ended (held to that record before they are kept), the way the check-in is worded; with no
+        model resident, or nothing the record bears, the record's own line is what is said. It is
+        kept as ELI's turn of that conversation and put on the queue the window shows in the chat.
+        Before, it reached only the reminder queue, so the conversation had no trace of it and a
+        later "how did it go?" had nothing to read. Returns what was said."""
+        said = record
+        try:
+            from eli.cognition.inference_broker import get_broker
+            worded = get_broker().infer(
+                "The job manager's record of a job the person asked you to tell them about:\n- "
+                + record + "\n\nTell them it has ended and what came of it, in your own words, saying "
+                "only what the record says.",
+                system="You are ELI, telling the user something they asked to be told.", background=True)
+            worded = str(worded or "").strip()
+            if worded:
+                from eli.cognition.output_governor import govern_output
+                said = str(govern_output(worded, is_grounded=True, evidence=record) or "").strip() or record
+        except Exception:
+            log.debug("[PROACTIVE] the ended job was not worded by the model", exc_info=True)
+        meta = dict(job.get("meta") or {})
+        user_id, session_id = meta.get("user_id"), meta.get("session_id")
+        if not (user_id and session_id):
+            # asked from the window, whose turns carry the engine's own ids
+            from eli.kernel import engine as _engine_mod
+            running = getattr(_engine_mod, "_engine", None)
+            user_id = user_id or (str(getattr(running, "user_id", "") or "") or None)
+            session_id = session_id or (str(getattr(running, "session_id", "") or "") or None)
+        try:
+            from eli.memory import get_memory as _get_memory
+            _get_memory().add_conversation_turn("assistant", said, session_id=session_id, user_id=user_id)
+        except Exception:
+            log.warning("[PROACTIVE] the ended job was not kept in the conversation", exc_info=True)
+        self.suggestion_queue.put(("reminder", {"suggestion": said, "title": job.get("name"), "at": time.time(),
+                                                "job": job.get("id")}))
+        return said
+
     def stop(self):
         self.running = False
 

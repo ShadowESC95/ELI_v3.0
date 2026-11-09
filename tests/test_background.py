@@ -307,3 +307,57 @@ def test_tell_me_when_it_is_done_marks_a_running_job_not_a_finished_one():
     finally:
         gate.set()
         bt.shutdown()
+
+
+def test_a_job_i_asked_to_hear_about_is_told_in_the_conversation_in_elis_words(monkeypatch):
+    """It reached only the reminder queue as the job manager's line: nothing in the conversation, so a
+    later "how did it go?" had nothing to read. It is worded by the model from the record (held to
+    it), kept as ELI's turn of the conversation that asked, and shown in the chat."""
+    import queue
+    from types import SimpleNamespace
+    import eli.cognition.inference_broker as ib
+    import eli.memory as mem_mod
+    from eli.planning.proactive_daemon import ProactiveDaemon
+    kept, prompts = [], []
+    daemon = ProactiveDaemon.__new__(ProactiveDaemon)
+    daemon.suggestion_queue = queue.Queue()
+    monkeypatch.setattr(mem_mod, "get_memory", lambda: SimpleNamespace(
+        add_conversation_turn=lambda role, content, session_id=None, user_id=None: kept.append(
+            (role, content, session_id, user_id))))
+    monkeypatch.setattr(ib, "get_broker", lambda: SimpleNamespace(
+        infer=lambda prompt, system="", **k: prompts.append((prompt, k)) or "Your folder reading has finished: 2 of 2 read."))
+    monkeypatch.setattr("eli.cognition.output_governor.govern_output", lambda text, **k: text)
+    job = {"id": 7, "name": "read a folder", "status": "done", "note": "2 of 2 read",
+           "meta": {"tell": True, "user_id": "someone", "session_id": "s-1"}}
+    said = daemon.tell_job_ended(job, "Job 7 (read a folder) done: 2 of 2 read")
+    assert said == "Your folder reading has finished: 2 of 2 read."
+    assert "2 of 2 read" in prompts[0][0] and prompts[0][1].get("background") is True
+    assert kept == [("assistant", said, "s-1", "someone")]
+    kind, data = daemon.suggestion_queue.get_nowait()
+    assert kind == "reminder" and data["suggestion"] == said
+    monkeypatch.setattr(ib, "get_broker", lambda: SimpleNamespace(
+        infer=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("GGUF model not ready"))))
+    assert daemon.tell_job_ended(job, "Job 7 (read a folder) done: 2 of 2 read") == "Job 7 (read a folder) done: 2 of 2 read"
+
+
+def test_tell_me_when_job_n_is_done_asks_the_job_manager_and_results_find_the_job_in_hand(monkeypatch):
+    """"tell me when job 3 is done" routed with notify, and the action only reported the state;
+    "results?" (plural) was not a job word, and a bare "results?" searched the web for the word."""
+    import threading
+    from eli.execution.executor_enhanced import execute
+    from eli.execution.router_enhanced import route
+    from eli.runtime.background_tasks import get_background_tasks
+    bt = get_background_tasks()
+    gate = threading.Event()
+    try:
+        jid = bt.submit("long one", lambda: gate.wait(5), meta={"tell": False})
+        routed = route(f"tell me when job {jid} is done")
+        assert routed["action"] == "CHECK_JOB" and routed["args"]["notify"] is True
+        out = execute("CHECK_JOB", routed["args"])
+        assert out["will_tell"] is True and bt.get(jid)["meta"]["tell"] is True
+        assert route(f"job {jid} results?")["action"] == "CHECK_JOB"
+        bare = route("results?")
+        assert bare["action"] == "CHECK_JOB" and str(bare["args"]["job_id"]) == str(jid)
+    finally:
+        gate.set()
+        bt.wait(jid, timeout=5)

@@ -2836,7 +2836,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             r"summari[sz]e|email|message|screenshot|take)\b", low)
         _job_intent = bool(re.search(
             r"\b(?:check|status|how'?s|view|ping|tell|notify|let\s+me\s+know|done|complete|"
-            r"completed|ready|finished|finish|running|result|summary)\b", low))
+            r"completed|ready|finished|finish|running|results?|summary)\b", low))
         _short = len(low.split()) <= 6
         if (_job_intent or _short) and not _starts_other:
             _jm = re.search(_JOB_REF, low)
@@ -2855,6 +2855,13 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         from eli.runtime.background_tasks import get_background_tasks as _bt_running
         if _bt_running().list(limit=1, status="running"):
             return _mk("CHECK_JOB", {"job_id": None, "text": raw}, 0.9, matched_by="dev.running_job_progress")
+    # a bare "results?" / "the results" asks for the job in hand (the latest, within the hours a job
+    # counts as work in hand), not a web search for the word
+    if re.fullmatch(r"\W*(?:(?:and|so|any|the|my)\s+)*results?\W*", low):
+        from eli.runtime.background_tasks import job_in_hand
+        _in_hand = job_in_hand()
+        if _in_hand:
+            return _mk("CHECK_JOB", {"job_id": _in_hand["id"], "text": raw}, 0.9, matched_by="dev.job_results_in_hand")
 
     # ── Scheduled-task control ────────────────────────────────────────────────
     # Chat had no way to see or change the scheduler: the triggers above demand the

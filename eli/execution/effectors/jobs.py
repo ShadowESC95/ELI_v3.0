@@ -44,6 +44,9 @@ def _h_check_job(a, args):
     if not t:
         msg = f"No background job #{_jid}."
         return {"ok": False, "action": a, "content": msg, "response": msg}
+    # "tell me when job 3 is done": the job manager is asked to tell when it ends (it is told then,
+    # by the proactive daemon); a job that has already ended is reported as it is, below
+    _told = bool(args.get("notify")) and _bt.tell_when_done(int(_jid))
     if t["status"] == "done":
         r = t.get("result") or {}
         extra = ""
@@ -83,7 +86,9 @@ def _h_check_job(a, args):
             msg += f" {str(_p.get('stage') or 'working').capitalize()}: {_p.get('done', 0)} of {_p['total']}"
             msg += (f", about {_duration(t['eta_s'])} left for that at the rate so far." if t.get("eta_s")
                     else ".")
-    return {"ok": True, "action": a, "job": t, "content": msg, "response": msg}
+    if _told:
+        msg += " You'll be told when it ends."
+    return {"ok": True, "action": a, "job": t, "content": msg, "response": msg, "will_tell": _told}
 
 
 from eli.execution.effectors.registry import register as _register

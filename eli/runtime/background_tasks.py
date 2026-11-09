@@ -468,10 +468,18 @@ def _tell_the_person(job: Dict[str, Any]) -> None:
     body = f"Job {job['id']} ({job['name']}) {job['status']}" + (f": {said[0][:_tunable('cog.job_line_chars')]}" if said else ".")
     from eli.utils.platform_compat import notify
     notify("ELI", body)
+    # said in the conversation that asked for it, in ELI's words (the proactive daemon)
     from eli.planning.proactive_daemon import get_daemon
-    q = getattr(get_daemon(), "suggestion_queue", None)
-    if q is not None:
-        q.put(("reminder", {"suggestion": body, "title": job["name"], "at": time.time()}))
+    get_daemon().tell_job_ended(job, body)
+
+
+def job_in_hand() -> Optional[Dict[str, Any]]:
+    """The latest job, when it is from the last cog.jobs_in_hand_hours: what a bare "results?" or
+    "is it done?" is about. None with no such job."""
+    for job in get_background_tasks().list(limit=1):
+        if time.time() - float(job.get("created") or 0) < _tunable("cog.jobs_in_hand_hours") * 3600:
+            return job
+    return None
 
 
 def work_targets(unfinished_only: bool = False) -> List[str]:
