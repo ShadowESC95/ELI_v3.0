@@ -160,6 +160,7 @@ class DeviceServer:
         if not ok_lib:
             return {"ok": False, "error": f"driver not installed: pip install {pip}",
                     "need_install": True, "driver": driver_name, "pip": pip}
+        _admit_lan_device(dev)
         res = drv.pair(dev, code=code)
         # The driver mutates dev (e.g. stores credentials in attrs); persist if paired.
         if res.get("paired") or res.get("ok"):
@@ -487,6 +488,7 @@ class DeviceServer:
             if not ok_lib:
                 return {"ok": False, "error": f"driver not installed: pip install {pip}",
                         "need_install": True, "driver": driver_name, "pip": pip}
+            _admit_lan_device(dev)
             cmd = (command or "").lower().strip()
             if cmd in ("play_url", "play_media"):
                 url = str(value or "").strip()
@@ -1325,6 +1327,38 @@ def bluetooth_control_by_name(name: str, command: str, scan_timeout: float = 3.0
     res = dict(drv.control(match, command))
     res.setdefault("device_name", match.get("name") or match.get("host"))
     return res
+
+
+def _admit_lan_device(dev: Dict[str, Any]) -> List[str]:
+    """Let ELI's offline guard pass connections to a registered device on this network: its host (and
+    the host of its description URL, for UPnP), each only when every address it resolves to is
+    private, link-local or unique-local. With the Net toggle off (the default) the guard refused every
+    LAN device but the MQTT broker as "network disabled (offline mode)", so DLNA, Cast, AirPlay and
+    Fire TV control never worked. A public address is not admitted: the offline default stands for it.
+    Gives back what was admitted."""
+    from urllib.parse import urlparse
+    from eli.core import netguard
+    driver = str(dev.get("driver") or "").lower()
+    if driver in ("bluetooth", "ble", "ble_light"):
+        return []                                          # not an IP device
+    hosts = {str(dev.get("host") or "").strip()}
+    location = str(dev.get("location") or (dev.get("attrs") or {}).get("location") or "")
+    if location:
+        hosts.add(urlparse(location).hostname or "")
+    admitted: List[str] = []
+    for host in sorted(h for h in hosts if h):
+        try:
+            addresses = netguard._addresses_for(host)
+        except netguard.UnresolvableHostError:
+            log.debug("device host %s does not resolve; not admitted", host)
+            continue
+        if addresses and not any(netguard._is_public_address(a) for a in addresses):
+            netguard.register_local_service(host, *addresses)
+            admitted += [host, *addresses]
+        elif addresses:
+            log.info("device host %s resolves outside this network (%s); the offline guard keeps it out",
+                     host, ", ".join(addresses))
+    return admitted
 
 
 def _ssdp_discover(timeout: float) -> List[dict]:

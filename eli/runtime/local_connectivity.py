@@ -119,8 +119,9 @@ def bluetooth_status() -> Dict[str, Any]:
     try:
         from eli.runtime import bt_platform as bp
         from eli.runtime.device_drivers import BluetoothDriver
+        # A status snapshot changes nothing: it renamed the PC's Bluetooth adapter (and powered and
+        # unblocked the radio) on every dashboard refresh. Pairing and connecting set the name.
         rs = bp.radio_status()
-        BluetoothDriver.ensure_adapter_alias()
         return {
             "available": rs.get("available", False),
             "tool": rs.get("tool", ""),

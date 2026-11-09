@@ -187,3 +187,15 @@ def test_unsupported_command_and_missing_address():
     d = dd.get_driver("bluetooth")
     assert d.control(DEV, "moonwalk")["ok"] is False
     assert d.control({}, "connect")["ok"] is False
+
+
+@pytest.mark.parametrize("bad", ["00') ; Start-Process notepad ; ('", "aa:bb", ""])
+def test_an_address_that_is_not_one_is_refused_where_every_caller_comes_in(monkeypatch, bad):
+    """The API's /v1/devices/bluetooth passed a member's address straight on to the OS tools."""
+    ran = []
+    import eli.runtime.bt_platform as bp
+    monkeypatch.setattr(bp, "_sh", lambda *a, **k: ran.append(a) or (0, ""))
+    drv = dd.BluetoothDriver()
+    monkeypatch.setattr(drv, "_sh", lambda *a, **k: ran.append(a) or (0, ""))
+    out = drv.control({"host": bad}, "connect")
+    assert out["ok"] is False and ran == []

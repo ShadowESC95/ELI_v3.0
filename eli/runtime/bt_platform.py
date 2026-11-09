@@ -37,9 +37,9 @@ def _valid_mac(addr: str) -> bool:
     return bool(a and a != _ZERO_MAC and _MAC_RE.match(a))
 
 
-def _sh(args: List[str], timeout: float = 25.0) -> Tuple[int, str]:
+def _sh(args: List[str], timeout: float = 25.0, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except FileNotFoundError:
         return 127, "tool-not-found"
@@ -52,11 +52,21 @@ def powershell(script: str, timeout: float = 30.0) -> Tuple[int, str]:
     return _powershell(script, timeout=timeout)
 
 
-def _powershell(script: str, timeout: float = 30.0) -> Tuple[int, str]:
-    exe = shutil.which("pwsh") or shutil.which("powershell")
+def _powershell(script: str, timeout: float = 30.0, *, values: Optional[Dict[str, str]] = None,
+                winrt: bool = False) -> Tuple[int, str]:
+    """Run a PowerShell snippet. `values` reach the script as environment variables ($env:ELI_BT_<NAME>)
+    and are never pasted into its source: an address with a quote in it closed the script's string
+    and ran whatever followed as the ELI user. `winrt`: the snippet uses the WinRT API, which Windows
+    PowerShell (powershell.exe) reaches and PowerShell 7 does not."""
+    exe = (shutil.which("powershell") if winrt else (shutil.which("pwsh") or shutil.which("powershell")))
     if not exe:
-        return 127, "powershell not found"
-    return _sh([exe, "-NoProfile", "-NonInteractive", "-Command", script], timeout=timeout)
+        return 127, ("Windows PowerShell (powershell.exe) not found: the Bluetooth API is reached through it"
+                     if winrt else "powershell not found")
+    env = None
+    if values:
+        env = dict(os.environ)
+        env.update({f"ELI_BT_{k.upper()}": str(v) for k, v in values.items()})
+    return _sh([exe, "-NoProfile", "-NonInteractive", "-Command", script], timeout=timeout, env=env)
 
 
 @dataclass
@@ -420,18 +430,19 @@ def _windows_ensure_radio() -> Tuple[bool, str]:
     if adapters and any(a.powered for a in adapters):
         return True, adapters[0].id
     rc, out = _powershell(
+        _WINRT_AWAIT
+        + "$null = [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime];"
         "try {"
-        "  $r = [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime]"
-        "    ::GetRadiosAsync().GetAwaiter().GetResult() |"
-        "    Where-Object { $_.Kind -eq 'Bluetooth' };"
-        "  foreach ($x in $r) {"
+        "  $all = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync())"
+        "    ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]]);"
+        "  foreach ($x in ($all | Where-Object { $_.Kind -eq 'Bluetooth' })) {"
         "    if ($x.State -ne 'On') {"
-        "      $x.SetStateAsync('On').GetAwaiter().GetResult() | Out-Null"
+        "      $null = Await ($x.SetStateAsync('On')) ([Windows.Devices.Radios.RadioAccessStatus])"
         "    }"
         "    Write-Output ($x.Name + '|' + $x.State)"
         "  }"
         "} catch { Write-Output ('ERROR|' + $_.Exception.Message) }",
-        timeout=25,
+        timeout=25, winrt=True,
     )
     if rc == 0:
         for line in (out or "").splitlines():
@@ -453,10 +464,30 @@ def ensure_radio() -> Tuple[bool, str]:
     return _windows_ensure_radio()
 
 
-def radio_status() -> Dict[str, Any]:
-    """Snapshot for UI — adapter count, powered state, recovery hint."""
+def _radio_on_now(adapters: List["BtAdapter"]) -> Tuple[bool, str]:
+    """Whether a radio is on, read without changing anything (no power on, no rfkill unblock)."""
+    kind = platform_kind()
+    if kind == "linux":
+        if not shutil.which("bluetoothctl"):
+            return False, recovery_hint(adapters)
+        _, show = _sh(["bluetoothctl", "show"], timeout=8)
+        if "powered: yes" in (show or "").lower():
+            found = re.search(r"Controller\s+([0-9A-Fa-f:]{17})", show or "")
+            return True, found.group(1) if found else ""
+        return False, recovery_hint(adapters)
+    if kind == "darwin" and shutil.which("blueutil"):
+        _, out = _sh(["blueutil", "-p"], timeout=5)
+        return out.strip() == "1", "default"
+    on = [a for a in adapters if a.powered]
+    return bool(on), (on[0].id if on else recovery_hint(adapters))
+
+
+def radio_status(recover: bool = False) -> Dict[str, Any]:
+    """Snapshot for UI — adapter count, powered state, recovery hint. A snapshot reads: it powered the
+    radio on and unblocked it on every dashboard refresh (and in the test suite, on the machine it ran
+    on). `recover=True` is the old behaviour, for a caller about to use the radio."""
     adapters = list_adapters()
-    ok, msg = ensure_radio()
+    ok, msg = ensure_radio() if recover else _radio_on_now(adapters)
     kind = platform_kind()
     tool = ""
     if kind == "linux":
@@ -679,12 +710,14 @@ def device_info(addr: str) -> Dict[str, Any]:
         return info
 
     if kind == "windows":
+        if not _valid_mac(addr):
+            return info
         rc, out = _powershell(
-            f"$d = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue |"
-            f" Where-Object {{ $_.InstanceId -match '{addr.replace(':', '_')}' }} |"
-            f" Select-Object -First 1 -ExpandProperty FriendlyName;"
-            f"if ($d) {{ Write-Output $d }}",
-            timeout=12,
+            "$d = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue |"
+            " Where-Object { $_.InstanceId -like ('*' + $env:ELI_BT_TOKEN + '*') } |"
+            " Select-Object -First 1 -ExpandProperty FriendlyName;"
+            "if ($d) { Write-Output $d }",
+            timeout=12, values={"token": addr.upper().replace(":", "")},
         )
         if rc == 0 and out.strip():
             info["name"] = out.strip()
@@ -812,11 +845,13 @@ def device_known(addr: str) -> bool:
         _, paired = _sh(["blueutil", "--paired"], timeout=8)
         return addr in (paired or "").upper()
     if kind == "windows":
+        if not _valid_mac(addr):
+            return False
         rc, out = _powershell(
-            f"Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue |"
-            f" Where-Object {{ $_.InstanceId -match '{addr.replace(':', '_')}' }} |"
-            f" Measure-Object | Select-Object -ExpandProperty Count",
-            timeout=10,
+            "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue |"
+            " Where-Object { $_.InstanceId -like ('*' + $env:ELI_BT_TOKEN + '*') } |"
+            " Measure-Object | Select-Object -ExpandProperty Count",
+            timeout=10, values={"token": addr.replace(":", "")},
         )
         return rc == 0 and out.strip() not in ("", "0")
     return False
@@ -1282,34 +1317,51 @@ def wait_for_device(addr: str, timeout: float = 18.0, name: str = "") -> bool:
     return bool(res.get("found"))
 
 
+# What Windows' pairing call answers when the device is paired (Windows.Devices.Enumeration
+# .DevicePairingResultStatus); every other status (NotPaired, ConnectionRejected,
+# AuthenticationTimeout, PairingCanceled, AccessDenied, ...) is a failure, said as it came.
+_PAIRED = ("Paired", "AlreadyPaired")
+# WinRT's asynchronous calls awaited from Windows PowerShell: .GetAwaiter() is not callable on them
+# there, so every call failed at that point.
+_WINRT_AWAIT = (
+    "Add-Type -AssemblyName System.Runtime.WindowsRuntime;"
+    "$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {"
+    " $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and"
+    " $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0];"
+    "function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op));"
+    " $t.Wait(-1) | Out-Null; $t.Result };"
+)
+
+
 def windows_bt_action(addr: str, action: str) -> Tuple[bool, str]:
-    """Pair / connect / disconnect via WinRT (Windows 10+)."""
+    """Pair a device through WinRT (Windows 10+). Success is the pairing status Windows reports
+    (Paired / AlreadyPaired), not the absence of the word "fail": "Disconnected" and
+    "RejectedByHandler" passed as success and ELI said it had connected or disconnected a device it
+    had not touched. Connect, disconnect and trust have no WinRT call, so they are refused as not
+    supported here rather than reported done."""
     addr = (addr or "").strip().upper()
-    mac_u = addr.replace(":", "")
-    ps_action = {"pair": "Pair", "connect": "Connect", "disconnect": "Disconnect",
-                 "trust": "Connect"}.get(action, "Connect")
+    if not _valid_mac(addr):
+        return False, f"not a Bluetooth address: {addr[:40]!r}"
+    if action != "pair":
+        return False, (f"{action} is not supported on Windows: ELI has no way to {action} a Bluetooth device "
+                       f"there yet (Windows' Bluetooth API offers pairing only); Settings › Bluetooth & devices can")
     script = (
-        f"$addr = [uint64]('0x{mac_u}');"
-        "Add-Type -AssemblyName System.Runtime.WindowsRuntime;"
-        "$bt = [Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,"
-        "ContentType=WindowsRuntime];"
+        _WINRT_AWAIT
+        + "$addr = [Convert]::ToUInt64($env:ELI_BT_ADDR, 16);"
+        "$null = [Windows.Devices.Bluetooth.BluetoothDevice,Windows.Devices.Bluetooth,ContentType=WindowsRuntime];"
+        "$null = [Windows.Devices.Enumeration.DevicePairingResult,Windows.Devices.Enumeration,ContentType=WindowsRuntime];"
         "try {"
-        f"  $dev = $bt::FromBluetoothAddressAsync($addr).GetAwaiter().GetResult();"
+        "  $dev = Await ([Windows.Devices.Bluetooth.BluetoothDevice]::FromBluetoothAddressAsync($addr))"
+        "    ([Windows.Devices.Bluetooth.BluetoothDevice]);"
         "  if (-not $dev) { Write-Output 'FAIL|device not found'; exit 1 }"
-        f"  if ('{ps_action}' -eq 'Pair') {{"
-        "    $r = $dev.DeviceInformation.Pairing.PairAsync().GetAwaiter().GetResult();"
-        "    Write-Output ($r.Status.ToString())"
-        f"  }} elseif ('{ps_action}' -eq 'Disconnect') {{"
-        "    $dev.ConnectionStatus; Write-Output 'Disconnected'"
-        "  } else {"
-        "    Write-Output ($dev.ConnectionStatus.ToString())"
-        "  }"
+        "  $r = Await ($dev.DeviceInformation.Pairing.PairAsync()) ([Windows.Devices.Enumeration.DevicePairingResult]);"
+        "  Write-Output ('STATUS|' + $r.Status.ToString())"
         "} catch { Write-Output ('FAIL|' + $_.Exception.Message) }"
     )
-    rc, out = _powershell(script, timeout=45)
-    low = (out or "").lower()
-    ok = rc == 0 and "fail" not in low and "unreachable" not in low
-    return ok, out.strip()[:400]
+    rc, out = _powershell(script, timeout=45, values={"addr": addr.replace(":", "")}, winrt=True)
+    said = (out or "").strip()
+    status = next((line.split("|", 1)[1].strip() for line in said.splitlines() if line.startswith("STATUS|")), "")
+    return rc == 0 and status in _PAIRED, said[:400]
 
 
 def tools_for_platform() -> Dict[str, Any]:

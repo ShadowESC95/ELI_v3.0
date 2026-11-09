@@ -565,6 +565,11 @@ class BluetoothDriver(Driver):
         addr = self._addr(dev)
         if not addr:
             return {"ok": False, "error": "bluetooth: no device address"}
+        from eli.runtime import bt_platform as bp
+        if not bp._valid_mac(addr):
+            # Checked here, where every caller comes in (the API's /v1/devices/bluetooth among them):
+            # an address goes on to OS tools, and on Windows into PowerShell.
+            return {"ok": False, "error": f"bluetooth: {addr[:40]!r} is not a Bluetooth address"}
         cmd = (command or "").lower().replace("-", "_")
         if cmd in ("use_for_audio", "audio", "route_audio", "listen", "output"):
             info = self._bt_device_info(addr)
@@ -785,9 +790,7 @@ class BluetoothDriver(Driver):
         from eli.runtime import bt_platform as bp
         info = self._bt_device_info(addr)
         name = str(info.get("name") or "")
-        conn = self._windows_bt_action(addr, "connect")
-        if not conn.get("ok"):
-            conn = self._windows_bt_action(addr, "pair")
+        conn = self._windows_bt_action(addr, "pair")
         if not conn.get("ok"):
             return {
                 "ok": False,
@@ -826,19 +829,16 @@ class BluetoothDriver(Driver):
                 break
         if not target and (out or "").strip():
             target = (out or "").splitlines()[0].strip()
-        if target:
-            return {
-                "ok": True,
-                "routed": True,
-                "sink": target,
-                "device": addr,
-                "note": "Connected — select this output in Windows Sound settings if audio does not switch",
-            }
+        # Nothing here sets Windows' default output (the policy interface above is declared, never
+        # called), so the sound has not moved: that is said, with the output found for it.
         return {
-            "ok": True,
+            "ok": False,
             "routed": False,
+            "sink": target,
             "device": addr,
-            "note": "Bluetooth connected — pick the device in Settings → System → Sound",
+            "error": ("the device is paired, but ELI cannot switch Windows' sound output; "
+                      + (f"choose {target} in Settings › System › Sound" if target
+                         else "choose it in Settings › System › Sound")),
         }
 
     def _find_bt_sink(self, addr: str, name: str = "") -> Optional[str]:

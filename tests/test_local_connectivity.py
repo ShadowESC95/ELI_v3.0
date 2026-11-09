@@ -4,7 +4,40 @@ from __future__ import annotations
 from eli.runtime import local_connectivity as lc
 
 
-def test_connectivity_status_shape():
+import pytest
+
+# Commands that change the machine. The status snapshot ran some of them on the machine the suite
+# ran on: it unblocked and powered the Bluetooth radio and renamed the PC's adapter to 'Eli · Home'
+# over the owner's own name; the Wi-Fi scan ran a real rescan.
+_WRITES = ("power on", "system-alias", "rfkill", "hciconfig", "rescan", "connect", "select")
+
+
+@pytest.fixture
+def machine(monkeypatch):
+    """Every tool 'installed', every command recorded and answered with nothing: no test here
+    reaches this computer's Bluetooth, Wi-Fi or sound."""
+    import subprocess
+    import eli.runtime.bt_platform as bp
+    ran = []
+
+    def fake_sh(args, timeout=25.0, env=None):
+        ran.append(" ".join(map(str, args)))
+        return 0, ""
+
+    def fake_run(args, *a, **k):
+        ran.append(" ".join(map(str, args if isinstance(args, (list, tuple)) else [args])) + " " + str(k.get("input") or ""))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    for mod in (lc, bp):
+        monkeypatch.setattr(mod, "_sh", fake_sh)
+    monkeypatch.setattr(bp.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(lc.shutil, "which", lambda name: f"/usr/bin/{name}", raising=False)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bp, "list_adapters", lambda: [bp.BtAdapter(id="hci0", state="down", source="kernel")])
+    return ran
+
+
+def test_connectivity_status_shape(machine):
     st = lc.connectivity_status()
     assert st["ok"] is True
     assert st["local_only"] is True
@@ -13,7 +46,13 @@ def test_connectivity_status_shape():
     assert "bluetooth" in st
 
 
-def test_wifi_scan_returns_dict():
+def test_the_status_snapshot_changes_nothing_on_the_machine(machine):
+    lc.connectivity_status()
+    changed = [c for c in machine if any(w in c for w in _WRITES)]
+    assert changed == [], f"a status read changed the machine: {changed}"
+
+
+def test_wifi_scan_returns_dict(machine):
     r = lc.wifi_scan()
     assert "ok" in r
     assert "networks" in r

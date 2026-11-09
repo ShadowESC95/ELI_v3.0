@@ -89,3 +89,65 @@ def test_an_adapter_with_no_address_file_is_read_without_a_traceback(monkeypatch
         found = bt._linux_kernel_adapters()
     assert [(a.id, a.address, a.state) for a in found] == [("hci0", "AA:BB:CC:DD:EE:FF", "up")]
     assert not [r for r in caplog.records if r.exc_info], "nothing went wrong: nothing to trace"
+
+
+# ── Windows: an address is a value, never part of the script; success is the status Windows gives ──
+
+def _windows(monkeypatch):
+    ran = []
+    monkeypatch.setattr(bp, "platform_kind", lambda: "windows")
+    monkeypatch.setattr(bp.shutil, "which", lambda name: f"C:/Windows/{name}.exe" if name == "powershell" else None)
+
+    def fake_sh(args, timeout=25.0, env=None):
+        ran.append((args, dict(env or {})))
+        return 0, fake_sh.answer
+    fake_sh.answer = "STATUS|Paired"
+    monkeypatch.setattr(bp, "_sh", fake_sh)
+    return ran, fake_sh
+
+
+@pytest.mark.parametrize("bad", ["00') ; Start-Process notepad ; ('", "AA:BB:CC:DD:EE:FF'; calc; '", "not-a-mac"])
+def test_an_address_that_is_not_one_never_reaches_powershell(monkeypatch, bad):
+    """A quote in the address closed the script's string and ran what followed as the ELI user."""
+    ran, _ = _windows(monkeypatch)
+    ok, said = bp.windows_bt_action(bad, "pair")
+    assert ok is False and "not a Bluetooth address" in said
+    assert bp.device_known(bad) is False and bp.device_info(bad).get("name", "") == ""
+    assert ran == [], "PowerShell ran for an address that is not one"
+
+
+def test_the_address_goes_to_powershell_as_a_value(monkeypatch):
+    ran, _ = _windows(monkeypatch)
+    ok, _said = bp.windows_bt_action("aa:bb:cc:dd:ee:ff", "pair")
+    assert ok is True
+    (args, env), = ran
+    assert env["ELI_BT_ADDR"] == "AABBCCDDEEFF"
+    assert "AABBCCDDEEFF" not in args[-1], "the address was pasted into the script"
+    assert args[0].endswith("powershell.exe"), "WinRT needs Windows PowerShell"
+
+
+@pytest.mark.parametrize("status,ok", [("Paired", True), ("AlreadyPaired", True), ("RejectedByHandler", False),
+                                       ("AuthenticationTimeout", False), ("PairingCanceled", False)])
+def test_pairing_is_judged_by_the_status_windows_reports(monkeypatch, status, ok):
+    _, fake = _windows(monkeypatch)
+    fake.answer = f"STATUS|{status}"
+    assert bp.windows_bt_action("AA:BB:CC:DD:EE:FF", "pair")[0] is ok
+
+
+@pytest.mark.parametrize("action", ["connect", "disconnect", "trust"])
+def test_what_windows_cannot_do_is_refused_not_reported_done(monkeypatch, action):
+    """'Disconnect' printed the word 'Disconnected' and ELI said it had disconnected the headset."""
+    ran, _ = _windows(monkeypatch)
+    ok, said = bp.windows_bt_action("AA:BB:CC:DD:EE:FF", action)
+    assert ok is False and "not supported on Windows" in said and ran == []
+
+
+def test_the_radio_snapshot_changes_nothing(monkeypatch):
+    ran = []
+    monkeypatch.setattr(bp, "platform_kind", lambda: "linux")
+    monkeypatch.setattr(bp, "list_adapters", lambda: [bp.BtAdapter(id="hci0", state="down", source="kernel")])
+    monkeypatch.setattr(bp.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(bp, "_sh", lambda args, timeout=25.0, env=None: ran.append(args) or (0, "Powered: no"))
+    status = bp.radio_status()
+    assert status["powered"] is False
+    assert all(a[:2] in (["bluetoothctl", "show"], ["bluetoothctl", "list"]) for a in ran), ran

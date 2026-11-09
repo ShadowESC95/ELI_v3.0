@@ -350,3 +350,30 @@ def test_driver_device_control_and_pair_degrade_without_lib(server, monkeypatch)
     assert c["ok"] is False and c.get("need_install") and c["pip"] == "pyatv"
     p = server.pair_device(did)
     assert p["ok"] is False and p.get("need_install")
+
+
+def test_a_lan_device_is_let_through_the_offline_guard_and_nothing_else(server, monkeypatch):
+    """With the Net toggle off (the default) every LAN device but the MQTT broker was refused as
+    "network disabled (offline mode)": a DLNA renderer could be found and added, never controlled."""
+    from eli.core import netguard
+    from eli.runtime import device_drivers
+    seen = {}
+
+    class _Renderer:
+        def available(self):
+            return True, ""
+
+        def control(self, dev, command, value=None):
+            seen["local"] = [netguard._is_local_host(h) for h in ("192.168.1.40", "192.168.1.41")]
+            return {"ok": True}
+
+    monkeypatch.setattr(device_drivers, "get_driver", lambda name: _Renderer())
+    server.register_device(device_id="tv", name="Living room TV", dtype="media", driver="upnp",
+                           host="192.168.1.40", location="http://192.168.1.41:8080/desc.xml")
+    server.register_device(device_id="far", name="Far away", dtype="media", driver="upnp", host="93.184.216.34")
+    assert netguard._is_local_host("192.168.1.40") is False
+    out = server.control("tv", "play")
+    assert out["ok"] and seen["local"] == [True, True], "the renderer and its description host were refused"
+    assert netguard._is_local_host("10.9.9.9") is False, "only the device's own hosts opened up"
+    server.control("far", "play")
+    assert netguard._is_local_host("93.184.216.34") is False, "a public address was let through"
