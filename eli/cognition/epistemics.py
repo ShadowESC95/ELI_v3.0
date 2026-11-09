@@ -102,6 +102,10 @@ FEATURES_BY_KIND = {
 # many settled figures on each side of the line: fewer tell nothing either way.
 Z_SIG = 1.282
 MIN_EACH_SIDE = 5
+# A gate opens only once the outcomes have shown replies below its line to be no worse than those above
+# it by more than this share of right answers (a non-inferiority margin, at the same 90 %): that nothing
+# was shown worse is not that they were shown as good.
+NON_INFERIORITY_MARGIN = 0.10
 # A fit is kept this long before the outcomes are read again: a turn assesses several figures of a kind.
 FIT_SECONDS = 30.0
 
@@ -431,21 +435,29 @@ def base_rate(kind: str = ANSWER, *, class_: str = "", where: Optional[Dict[str,
     return ((sum(y for _s, y, _f in rows) + 1.0) / (n + 2.0), n)
 
 
-def worse_below(kind: str, feature: str, value: float, *, class_: str = "", min_each: int = MIN_EACH_SIDE,
+def worse_below(kind: str, feature: str, value: float, *, class_: str = "", where: Optional[Dict[str, Any]] = None,
+                min_each: int = MIN_EACH_SIDE, margin: float = NON_INFERIORITY_MARGIN,
                 days: float = DAYS, db_path=None) -> Optional[bool]:
     """Whether the figures of this kind whose `feature` was below `value` proved right less often than
-    those at or above it: a one-sided two-proportion test at Z_SIG. None until each side has `min_each`
-    settled figures: a line nothing has checked holds as it is. `feature` may be "score", the figure
-    itself. What a gate asks before holding a reply to a line: with no evidence the gate stands as it
-    was; shown that replies below the line do as well, it opens; shown that they do worse, it holds."""
+    those at or above it. True: shown worse (a one-sided two-proportion test at Z_SIG). False: shown no
+    worse than those above by more than `margin` (the Beta(1, 1) posteriors of the two rates, the chance
+    that the rate below is within the margin of the rate above at least that of Z_SIG). None: neither
+    shown, or fewer than `min_each` settled figures on a side. A line nothing has checked holds.
+
+    `where` keeps only the figures whose features equal the given values: the replies that took the
+    path the gate decides (memory context kept, the fast path taken), so a gate is judged by what
+    became of its own path and not by replies it had already turned away. `feature` may be "score",
+    the figure itself. What a gate asks before holding a reply to a line: with no evidence, or shown
+    worse, the gate stands as it was; shown that replies below the line do as well, it opens."""
     rows = outcomes(kind, class_=class_, days=days, db_path=db_path)
+    if where:
+        rows = [r for r in rows if all((r[2] or {}).get(k) == v for k, v in where.items())]
     below: List[float] = []
     above: List[float] = []
     for score, y, features in rows:
         raw = score if feature == "score" else (features or {}).get(feature)
-        if raw is None or isinstance(raw, bool):
-            if raw is None:
-                continue
+        if raw is None:
+            continue
         try:
             x = float(raw)
         except (TypeError, ValueError):
@@ -456,10 +468,22 @@ def worse_below(kind: str, feature: str, value: float, *, class_: str = "", min_
     p_b, p_a = sum(below) / len(below), sum(above) / len(above)
     pooled = (sum(below) + sum(above)) / (len(below) + len(above))
     spread = math.sqrt(max(EDGE, pooled * (1.0 - pooled)) * (1.0 / len(below) + 1.0 / len(above)))
-    return (p_a - p_b) / spread >= Z_SIG
+    if (p_a - p_b) / spread >= Z_SIG:
+        return True
+
+    def _posterior(ys: List[float]) -> Tuple[float, float]:
+        a, b = sum(ys) + 1.0, len(ys) - sum(ys) + 1.0
+        mean = a / (a + b)
+        return mean, mean * (1.0 - mean) / (a + b + 1.0)
+
+    (m_b, v_b), (m_a, v_a) = _posterior(below), _posterior(above)
+    if (m_b - m_a + float(margin)) / math.sqrt(max(EDGE, v_a + v_b)) >= Z_SIG:
+        return False
+    return None
 
 
-__all__ = ["ACT", "ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "FEATURES_BY_KIND", "MIN_EACH_SIDE", "OUTCOME",
+__all__ = ["ACT", "ANSWER", "ASSESSED", "CLAIM", "EVENTS", "FEATURES", "FEATURES_BY_KIND", "MIN_EACH_SIDE",
+           "NON_INFERIORITY_MARGIN", "OUTCOME",
            "PROPOSAL", "Probability", "RECALL", "ROUTE", "Z_SIG", "apply", "apply_rows", "assess", "assess_many",
            "base_rate", "brier", "calibrate", "claim_request_id", "ece", "entropy", "features_of", "fit", "fit_rows",
            "forget_fits", "logit", "outcomes", "reliability", "report", "settle", "settle_open", "sigmoid",

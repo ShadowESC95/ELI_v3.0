@@ -452,7 +452,9 @@ def _memory_context_stands(confidence: float) -> bool:
         return True
     try:
         from eli.cognition.epistemics import ANSWER, worse_below
-        verdict = worse_below(ANSWER, "memory_conf", _MEMORY_CONTEXT_LINE, class_="")
+        # judged by the replies that kept their memory context, the path this gate decides: under the
+        # line those are the replies it let through, not the ones whose context it dropped
+        verdict = worse_below(ANSWER, "memory_conf", _MEMORY_CONTEXT_LINE, class_="", where={"memory_ctx": True})
     except (OSError, ValueError, ImportError) as failure:
         log.debug("memory context evidence unavailable: %s", failure)
         verdict = None

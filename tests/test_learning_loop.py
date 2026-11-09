@@ -55,7 +55,38 @@ def test_a_gate_holds_its_line_until_the_outcomes_say_replies_below_it_do_as_wel
     for i in range(8):
         ep.assess(ep.ANSWER, 0.8, request_id=f"h{i}", features={"grounding": 0.1}, db_path=db)
         ep.settle(f"h{i}", i % 2 == 0, db_path=db)
-    assert ep.worse_below(ep.ANSWER, "grounding", 0.35, db_path=db) is False, "as right below the line as above: it opens"
+    # Eight a side, as often right: nothing shown either way. Read as "no worse", it opened the gate.
+    assert ep.worse_below(ep.ANSWER, "grounding", 0.35, db_path=db) is None, "not shown as good: the line holds"
+
+
+def test_a_gate_opens_only_once_replies_below_its_line_are_shown_to_do_as_well(db):
+    """'Not shown worse' opened every gate: four of five right below the line against forty-five of
+    fifty above (ten points worse) opened it. Opening now needs the replies below to be shown within
+    the margin of those above."""
+    def settle(prefix, n, right, value):
+        for i in range(n):
+            ep.assess(ep.ANSWER, 0.8, request_id=f"{prefix}{i}", features={"grounding": value}, db_path=db)
+            ep.settle(f"{prefix}{i}", i < right, db_path=db)
+    settle("a", 50, 45, 0.9)
+    settle("b", 5, 4, 0.1)
+    assert ep.worse_below(ep.ANSWER, "grounding", 0.35, db_path=db) is None
+    settle("c", 150, 138, 0.1)
+    settle("d", 150, 135, 0.9)
+    assert ep.worse_below(ep.ANSWER, "grounding", 0.35, db_path=db) is False, "shown as good: it opens"
+
+
+def test_a_gate_is_judged_by_the_replies_that_took_its_path(db):
+    """Under the memory line the replies whose context the gate dropped were compared with replies
+    above it that kept theirs: the gate's own doing was what it was judged by."""
+    for i in range(10):
+        ep.assess(ep.ANSWER, 0.8, request_id=f"kept{i}", features={"memory_conf": 0.9, "memory_ctx": True}, db_path=db)
+        ep.settle(f"kept{i}", True, db_path=db)
+        ep.assess(ep.ANSWER, 0.8, request_id=f"dropped{i}", features={"memory_conf": 0.2, "memory_ctx": False},
+                  db_path=db)
+        ep.settle(f"dropped{i}", False, db_path=db)
+    assert ep.worse_below(ep.ANSWER, "memory_conf", 0.5, db_path=db) is True
+    assert ep.worse_below(ep.ANSWER, "memory_conf", 0.5, where={"memory_ctx": True}, db_path=db) is None, \
+        "no reply under the line kept its context: nothing is known of that path"
 
 
 def test_several_figures_of_one_turn_are_assessed_at_once_and_settled_by_prefix_and_age(db):
