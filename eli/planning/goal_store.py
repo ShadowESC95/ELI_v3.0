@@ -3,11 +3,29 @@ from __future__ import annotations
 import json
 import re
 import os
+import shutil
+import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Callable, Dict, Iterator, List, Any, Optional
 
 from eli.planning.goal_models import GoalSpec
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
+
+# One read-modify-write of goals.json at a time in this process: the proactive daemon (autogenesis,
+# goal ticks, the work loop), a user's turn (task events), the operator dock and self-improvement all
+# write it, and two at once lost what the first wrote.
+_STORE_LOCK = threading.RLock()
+
+
+class GoalStoreUnreadable(RuntimeError):
+    """goals.json is there but is not a list of goals. It is left as it is (a copy is kept aside) and
+    nothing is written over it: a writer that read it as empty used to save a store holding only
+    its own goal, and every other goal and task was gone."""
 
 
 def _default_goal_store() -> Path:
@@ -25,47 +43,119 @@ def goal_store_path() -> Path:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    """A scratch file of its own for every write, then one rename: a shared goals.json.tmp let two
+    writers interleave on it and leave a partial file."""
+    fd, scratch = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(scratch, path)
+    except BaseException:
+        try:
+            os.unlink(scratch)
+        except OSError:
+            pass
+        raise
 
 
-def load_goals() -> List[GoalSpec]:
-    path = goal_store_path()
+def _read(path: Path) -> List[GoalSpec]:
     if not path.exists():
         return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    items = raw if isinstance(raw, list) else raw.get("goals", [])
+    except (OSError, ValueError) as exc:
+        raise GoalStoreUnreadable(f"{path} could not be read as goals ({type(exc).__name__}: {exc})") from exc
+    items = raw if isinstance(raw, list) else (raw.get("goals") if isinstance(raw, dict) else None)
+    if not isinstance(items, list):
+        raise GoalStoreUnreadable(f"{path} does not hold a list of goals")
     return [GoalSpec.from_any(x) for x in items if isinstance(x, dict)]
 
 
-def save_goals(goals: List[GoalSpec]) -> Path:
+def _keep_aside(path: Path, why: GoalStoreUnreadable) -> None:
+    """A copy of the unreadable store beside it, once per version of the file."""
+    try:
+        copy = path.with_name(f"{path.name}.unreadable-{int(path.stat().st_mtime)}")
+        if not copy.exists():
+            shutil.copy2(path, copy)
+            log.warning("the goal store could not be read; it is left in place, a copy is at %s, and no goal is "
+                        "written until it is fixed (%s)", copy, why)
+    except OSError:
+        log.warning("the goal store could not be read, nor copied aside (%s)", why, exc_info=True)
+
+
+def load_goals() -> List[GoalSpec]:
+    """Every goal and task, for reading. A store that cannot be read reads as none (see editing for
+    writers, which refuse instead)."""
     path = goal_store_path()
-    payload = [g.to_dict() for g in goals]
-    _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    try:
+        return _read(path)
+    except GoalStoreUnreadable as exc:
+        _keep_aside(path, exc)
+        return []
+
+
+def _dump(goals: List[GoalSpec]) -> str:
+    return json.dumps([g.to_dict() for g in goals], indent=2, sort_keys=True) + "\n"
+
+
+@contextmanager
+def editing() -> Iterator[List[GoalSpec]]:
+    """The goal list for one read-modify-write, held against every other writer in this process and
+    written back (only if it changed) when the block ends without an error. Raises
+    GoalStoreUnreadable, writing nothing, when the store on disk cannot be read."""
+    with _STORE_LOCK:
+        path = goal_store_path()
+        try:
+            goals = _read(path)
+        except GoalStoreUnreadable as exc:
+            _keep_aside(path, exc)
+            raise
+        before = _dump(goals)
+        yield goals
+        after = _dump(goals)
+        if after != before:
+            _atomic_write(path, after)
+
+
+def save_goals(goals: List[GoalSpec]) -> Path:
+    """Write the whole list. Refuses (GoalStoreUnreadable) to replace a store that cannot be read."""
+    with _STORE_LOCK:
+        path = goal_store_path()
+        try:
+            _read(path)
+        except GoalStoreUnreadable as exc:
+            _keep_aside(path, exc)
+            raise
+        _atomic_write(path, _dump(goals))
     return path
 
 
+def update_goal(goal_id: str, change: Callable[[GoalSpec], Any]) -> Optional[GoalSpec]:
+    """Change one goal in place on the stored record (`change(goal)`), so a writer holding an older
+    copy never puts back fields another writer changed since. The goal as stored, or None."""
+    with editing() as goals:
+        for goal in goals:
+            if goal.goal_id == goal_id:
+                change(goal)
+                goal.updated_at = time.time()
+                return goal
+    return None
+
+
 def upsert_goal(goal: Dict[str, Any] | GoalSpec) -> GoalSpec:
-    goals = load_goals()
     spec = GoalSpec.from_any(goal)
     now = time.time()
     spec.updated_at = now
-    replaced = False
-    for i, cur in enumerate(goals):
-        if cur.goal_id == spec.goal_id:
-            spec.created_at = cur.created_at
-            goals[i] = spec
-            replaced = True
-            break
-    if not replaced:
-        if not spec.created_at:
-            spec.created_at = now
-        goals.append(spec)
-    save_goals(goals)
+    with editing() as goals:
+        for i, cur in enumerate(goals):
+            if cur.goal_id == spec.goal_id:
+                spec.created_at = cur.created_at
+                goals[i] = spec
+                break
+        else:
+            if not spec.created_at:
+                spec.created_at = now
+            goals.append(spec)
     return spec
 
 
@@ -92,17 +182,11 @@ def due_goals(now: float | None = None, limit: int = 5) -> List[GoalSpec]:
 
 def mark_goal_tick(goal_id: str, when: float | None = None) -> bool:
     when = time.time() if when is None else float(when)
-    goals = load_goals()
-    changed = False
-    for g in goals:
-        if g.goal_id == goal_id:
-            g.last_tick_at = when
-            g.updated_at = when
-            changed = True
-            break
-    if changed:
-        save_goals(goals)
-    return changed
+
+    def _tick(goal: GoalSpec) -> None:
+        goal.last_tick_at = when
+
+    return update_goal(goal_id, _tick) is not None
 
 
 def summarize_goals() -> Dict[str, Any]:
@@ -145,15 +229,18 @@ def open_task(title: str, objective: str = "", constraints: List[str] | None = N
 
 def close_task(goal_id: str) -> bool:
     """Explicitly mark a task done and retire its World object. Never inferred from idle time."""
-    goals = load_goals()
-    for g in goals:
-        if g.goal_id == goal_id and "task" in g.tags and g.status == "active":
-            g.status = "done"
-            g.updated_at = time.time()
-            save_goals(goals)
-            _notify_world("task_closed", f"Task closed: {g.title}", {"goal_id": g.goal_id, "title": g.title})
-            return True
-    return False
+    closed = None
+    with editing() as goals:
+        for g in goals:
+            if g.goal_id == goal_id and "task" in g.tags and g.status == "active":
+                g.status = "done"
+                g.updated_at = time.time()
+                closed = g
+                break
+    if closed is None:
+        return False
+    _notify_world("task_closed", f"Task closed: {closed.title}", {"goal_id": closed.goal_id, "title": closed.title})
+    return True
 
 
 def current_task(now: float | None = None) -> Optional[GoalSpec]:
@@ -168,25 +255,24 @@ def record_task_event(goal_id: str, kind: str, text: str) -> bool:
     text = " ".join(str(text or "").split())[:300]
     if not text or kind not in _TASK_LISTS and kind != "question_resolved":
         return False
-    goals = load_goals()
-    for g in goals:
-        if g.goal_id != goal_id:
-            continue
-        meta = g.metadata
-        if kind == "question_resolved":
-            key = "open_questions"
-            meta[key] = [q for q in meta.get(key, []) if q.lower() != text.lower()]
-        elif kind == "constraint":
-            if text not in g.constraints:
-                g.constraints.append(text)
-        else:
-            lst = meta.setdefault(_TASK_LISTS[kind], [])
-            if text not in lst:
-                lst.append(text)
-            del lst[:-_TASK_CAP]
-        g.updated_at = time.time()
-        save_goals(goals)
-        return True
+    with editing() as goals:
+        for g in goals:
+            if g.goal_id != goal_id:
+                continue
+            meta = g.metadata
+            if kind == "question_resolved":
+                key = "open_questions"
+                meta[key] = [q for q in meta.get(key, []) if q.lower() != text.lower()]
+            elif kind == "constraint":
+                if text not in g.constraints:
+                    g.constraints.append(text)
+            else:
+                lst = meta.setdefault(_TASK_LISTS[kind], [])
+                if text not in lst:
+                    lst.append(text)
+                del lst[:-_TASK_CAP]
+            g.updated_at = time.time()
+            return True
     return False
 
 

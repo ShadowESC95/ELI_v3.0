@@ -44,23 +44,38 @@ def _work_state(goal) -> Dict[str, Any]:
 
 
 def _persist(goal, work: Dict[str, Any]) -> bool:
-    """Write the work record back through goal_store so it survives a restart."""
+    """Write the work record back through goal_store so it survives a restart: into the stored goal
+    itself, so fields another writer changed meanwhile (its last tick, a pause) are kept. A goal the
+    work finished or gave up on is finished as a goal too: its status said "active" for good, so
+    every reader (the due list, the proposals, the rooms) kept it as one ELI still holds."""
     work["steps"] = list(work.get("steps", []))[-_MAX_HISTORY:]
     work["updated_at"] = time.time()
     try:
-        from eli.planning.goal_store import upsert_goal
         meta = dict(getattr(goal, "metadata", {}) or {})
         meta["work"] = work
         try:
             goal.metadata = meta
         except Exception:
-            pass  # frozen spec — the dict below still carries it
-        upsert_goal(goal)
+            pass  # frozen spec — the stored record below still carries it
+
+        def _record(stored) -> None:
+            stored.metadata = {**dict(stored.metadata or {}), "work": work}
+            if work.get("status") in _FINISHED:
+                stored.status = _FINISHED[work["status"]]
+
+        from eli.planning.goal_store import update_goal, upsert_goal
+        if update_goal(str(getattr(goal, "goal_id", "")), _record) is None:
+            if work.get("status") in _FINISHED:
+                goal.status = _FINISHED[work["status"]]
+            upsert_goal(goal)
         return True
     except Exception:
         log.debug("work_loop: could not persist progress for %s",
                   getattr(goal, "goal_id", "?"), exc_info=True)
         return False
+
+
+_FINISHED = {"done": "done", "stopped": "stopped"}     # the work's end -> the goal's status
 
 
 def _criteria_met(goal, work: Dict[str, Any]) -> tuple[bool, str]:

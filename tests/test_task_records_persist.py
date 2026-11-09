@@ -100,3 +100,41 @@ def test_close_task_is_a_no_op_for_unknown_or_already_closed(monkeypatch):
     t = gs.open_task("Twice closed")
     assert gs.close_task(t.goal_id) is True
     assert gs.close_task(t.goal_id) is False  # already done, not active
+
+
+# ── one writer at a time, and an unreadable store is never written over ──────
+
+def test_writers_on_many_threads_lose_nothing():
+    """goals.json was read-modify-written with no lock by the daemon and the user's turns, through
+    one shared goals.json.tmp: task decisions were lost and a partial file wiped every goal."""
+    import threading
+    task = gs.open_task("Write the quarterly summary")
+    others = [gs.upsert_goal({"title": f"goal {i}", "goal_id": f"g{i}"}) for i in range(4)]
+
+    def decide(n):
+        for i in range(10):
+            gs.record_task_event(task.goal_id, "decision", f"decision {n}-{i}")
+
+    def tick(goal):
+        for _ in range(10):
+            gs.mark_goal_tick(goal.goal_id)
+
+    threads = [threading.Thread(target=decide, args=(n,)) for n in range(3)]
+    threads += [threading.Thread(target=tick, args=(g,)) for g in others]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    stored = {g.goal_id: g for g in gs.load_goals()}
+    assert len(stored[task.goal_id].metadata["decisions"]) == 30, "decisions were lost"
+    assert all(stored[g.goal_id].last_tick_at > 0 for g in others)
+
+
+def test_an_unreadable_store_is_kept_and_not_written_over(tmp_path):
+    path = tmp_path / "goals.json"
+    path.write_text('[{"title": "keep me", "goal_id": "g1"}', encoding="utf-8")     # cut short
+    assert gs.load_goals() == []
+    with pytest.raises(gs.GoalStoreUnreadable):
+        gs.upsert_goal({"title": "a new goal"})
+    assert path.read_text(encoding="utf-8") == '[{"title": "keep me", "goal_id": "g1"}', "written over"
+    assert list(tmp_path.glob("goals.json.unreadable-*")), "no copy kept aside"

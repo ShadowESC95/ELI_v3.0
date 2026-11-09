@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from eli.planning.goal_store import load_goals, save_goals, upsert_goal
+from eli.planning.goal_store import update_goal, upsert_goal
 from eli.planning.goal_models import GoalSpec
 
 VALID_AUTONOMY_MODES = {
@@ -88,56 +88,40 @@ def create_goal(
 
 
 def set_goal_enabled(goal_id: str, enabled: bool) -> Dict[str, Any]:
-    goals = load_goals()
-    changed = False
-    out = None
-    for g in goals:
-        if g.goal_id == goal_id:
-            g.enabled = bool(enabled)
-            if not g.enabled and g.status == "active":
-                g.status = "paused"
-            elif g.enabled and g.status in {"paused", "inactive"}:
-                g.status = "active"
-            changed = True
-            out = g
-            break
-    if not changed:
+    def _set(g) -> None:
+        g.enabled = bool(enabled)
+        if not g.enabled and g.status == "active":
+            g.status = "paused"
+        elif g.enabled and g.status in {"paused", "inactive"}:
+            g.status = "active"
+
+    out = update_goal(goal_id, _set)
+    if out is None:
         return {"ok": False, "error": "goal not found", "goal_id": goal_id}
-    save_goals(goals)
     return {"ok": True, "goal": out.to_dict() if hasattr(out, "to_dict") else dict(out.__dict__)}
 
 
 def update_goal_fields(goal_id: str, **fields: Any) -> Dict[str, Any]:
-    goals = load_goals()
-    out = None
+    normalized = dict(fields)
+    if "priority" in normalized and normalized["priority"] is not None:
+        normalized["priority"] = _coerce_priority(normalized["priority"])
+    if "cadence_sec" in normalized and normalized["cadence_sec"] is not None:
+        normalized["cadence_sec"] = _coerce_cadence(normalized["cadence_sec"])
+    if "autonomy_mode" in normalized and normalized["autonomy_mode"] is not None:
+        normalized["autonomy_mode"] = _coerce_autonomy_mode(normalized["autonomy_mode"])
     changed = False
 
-    for g in goals:
-        if g.goal_id != goal_id:
-            continue
-
-        normalized = dict(fields)
-        if "priority" in normalized and normalized["priority"] is not None:
-            normalized["priority"] = _coerce_priority(normalized["priority"])
-        if "cadence_sec" in normalized and normalized["cadence_sec"] is not None:
-            normalized["cadence_sec"] = _coerce_cadence(normalized["cadence_sec"])
-        if "autonomy_mode" in normalized and normalized["autonomy_mode"] is not None:
-            normalized["autonomy_mode"] = _coerce_autonomy_mode(normalized["autonomy_mode"])
-
+    def _set(g) -> None:
+        nonlocal changed
         for key, val in normalized.items():
             if val is None or not hasattr(g, key):
                 continue
             setattr(g, key, val)
             changed = True
 
-        out = g
-        break
-
+    out = update_goal(goal_id, _set)
     if out is None:
         return {"ok": False, "error": "goal not found", "goal_id": goal_id}
-
-    if changed:
-        save_goals(goals)
 
     return {
         "ok": True,
