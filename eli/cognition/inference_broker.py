@@ -47,24 +47,49 @@ _fg_inflight = 0
 _fg_inflight_lock = __import__("threading").Lock()
 
 
+_last_foreground_end = 0.0        # wall-clock time the most recent foreground generation ended
+
+
 def foreground_call_started() -> float:
-    """A user-facing generation begins; returns its start time for foreground_call_finished."""
+    """A user-facing generation begins; returns its start time for foreground_call_finished. The
+    first one in progress starts the GPU-use sampler (hardware_profile.gpu_use_during_last_generation)."""
     global _fg_inflight
     with _fg_inflight_lock:
         _fg_inflight += 1
+        first = _fg_inflight == 1
     stamp_foreground_activity()
+    if first:
+        try:
+            from eli.core.hardware_profile import start_gpu_use_sampling
+            start_gpu_use_sampling()
+        except Exception:
+            log.debug("GPU use sampling not started", exc_info=True)
     return _time.monotonic()
 
 
 def foreground_call_finished(started: float) -> None:
-    """It ended: the model is free once no other is in progress; its length sets how long chores wait."""
-    global _fg_inflight, _last_foreground_duration, _last_foreground_ts
+    """It ended: the model is free once no other is in progress; its length sets how long chores wait.
+    The last one in progress stops the GPU-use sampler."""
+    global _fg_inflight, _last_foreground_duration, _last_foreground_ts, _last_foreground_end
     with _fg_inflight_lock:
         _fg_inflight = max(0, _fg_inflight - 1)
+        last = _fg_inflight == 0
     now = _time.monotonic()
     _last_foreground_ts = now
+    _last_foreground_end = _time.time()
     if started:
         _last_foreground_duration = max(0.0, now - float(started))
+    if last:
+        try:
+            from eli.core.hardware_profile import stop_gpu_use_sampling
+            stop_gpu_use_sampling()
+        except Exception:
+            log.debug("GPU use sampling not stopped", exc_info=True)
+
+
+def last_generation() -> dict:
+    """The last user-facing generation: {"seconds" it took, "ended" (wall clock, 0 before one)}."""
+    return {"seconds": float(_last_foreground_duration), "ended": float(_last_foreground_end)}
 
 
 def foreground_in_progress() -> bool:

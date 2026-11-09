@@ -36,6 +36,7 @@ import json
 import shutil
 import subprocess
 import multiprocessing
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1586,6 +1587,114 @@ def get_live_gpu_telemetry() -> Dict[str, Any]:
                      for k, v in c.items() if k != "driver"} for c in cards],
     })
     return out
+
+
+# ── how busy each GPU was while the model answered ────────────────────────────────────────────
+
+def _gpu_use_reader():
+    """A reader of each card's use now ([{index, name, util_pct}]) from the vendor's own source, or
+    None where no source gives use: nvidia-smi (NVIDIA, any OS), the amdgpu driver's counters or
+    rocm-smi (AMD on Linux)."""
+    try:
+        hw = detect_hardware()
+    except Exception:
+        return None
+    vendor = (getattr(hw, "gpu_vendor", "") or "").lower()
+    if not getattr(hw, "has_gpu", False):
+        return None
+    if vendor == "nvidia" and nvidia_smi_path():
+        return _nvidia_cards
+    if vendor == "amd" and sys.platform.startswith("linux"):
+        return _amd_cards
+    return None
+
+
+class _GpuUseDuringGeneration:
+    """Each card's use, sampled from the first foreground generation's start to the last one's end
+    (eli/cognition/inference_broker). Readings follow one another at the pace the source gives them:
+    the wait between two is as long as one reading took (the device tool's own time, measured), so
+    the sampler never asks faster than the driver answers nor holds a core reading it back to back."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._run_id = 0
+        self._stop: Optional[threading.Event] = None
+        self._started = 0.0
+        self._samples: Dict[int, Dict[str, Any]] = {}
+        self._last: Dict[str, Any] = {"seconds": 0.0, "ended": 0.0, "devices": []}
+
+    def start(self) -> None:
+        with self._lock:
+            if self._stop is not None:
+                return
+            self._run_id += 1
+            self._stop = threading.Event()
+            self._started = time.time()
+            self._samples = {}
+            run_id, stop = self._run_id, self._stop
+        threading.Thread(target=self._sample, args=(run_id, stop), name="eli-gpu-use", daemon=True).start()
+
+    def _sample(self, run_id: int, stop: threading.Event) -> None:
+        reader = _gpu_use_reader()
+        if reader is None:
+            return
+        while not stop.is_set():
+            t0 = time.monotonic()
+            try:
+                cards = reader() or []
+            except Exception:
+                log.debug("GPU use not read", exc_info=True)
+                return
+            took = time.monotonic() - t0
+            with self._lock:
+                if run_id != self._run_id or stop.is_set():
+                    return
+                for card in cards:
+                    util = card.get("util_pct")
+                    if util is None:
+                        continue
+                    slot = self._samples.setdefault(int(card.get("index") or 0),
+                                                    {"name": str(card.get("name") or ""), "values": []})
+                    slot["values"].append(float(util))
+            if stop.wait(took):
+                return
+
+    def stop(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._stop is None:
+                return dict(self._last)
+            self._stop.set()
+            self._stop = None
+            ended = time.time()
+            devices = [{"index": i, "name": slot["name"], "util_avg": round(sum(v) / len(v), 1),
+                        "util_max": max(v), "samples": len(v)}
+                       for i, slot in sorted(self._samples.items()) if (v := slot["values"])]
+            self._last = {"seconds": round(max(0.0, ended - self._started), 3), "ended": ended, "devices": devices}
+            return dict(self._last)
+
+    def last(self) -> Dict[str, Any]:
+        with self._lock:
+            return {**self._last, "devices": [dict(d) for d in self._last["devices"]]}
+
+
+_GPU_USE = _GpuUseDuringGeneration()
+
+
+def start_gpu_use_sampling() -> None:
+    """The model began answering (inference_broker.foreground_call_started)."""
+    _GPU_USE.start()
+
+
+def stop_gpu_use_sampling() -> Dict[str, Any]:
+    """The model stopped answering: the use seen while it did, kept for gpu_use_during_last_generation."""
+    return _GPU_USE.stop()
+
+
+def gpu_use_during_last_generation() -> Dict[str, Any]:
+    """How busy each card was during the last foreground generation: {"seconds", "ended" (wall
+    clock), "devices": [{"index", "name", "util_avg", "util_max", "samples"}]}. No devices where no
+    source gives use, or before a generation has ended."""
+    return _GPU_USE.last()
 
 
 def gpu_label(telemetry: Dict[str, Any]) -> str:

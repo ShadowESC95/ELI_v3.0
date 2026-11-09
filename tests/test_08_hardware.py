@@ -1,5 +1,7 @@
 import types
 
+import pytest
+
 from eli.core.hardware_profile import detect_hardware, recommend
 
 
@@ -146,3 +148,34 @@ def test_models_are_found_in_every_model_folder_not_only_elis_own(monkeypatch, t
     monkeypatch.setattr("eli.cognition.model_load_diagnostics.not_a_chat_model", lambda p: "")
     found = hp.discover_models()
     assert [m["name"] for m in found] == ["Kept.gguf"]
+
+
+def test_gpu_use_is_sampled_from_the_first_generation_s_start_to_the_last_one_s_end(monkeypatch):
+    """GPU_STATUS reads how busy each card was while the model answered; nothing measured it."""
+    import time as _t
+    import eli.core.hardware_profile as hp
+    import eli.cognition.inference_broker as ib
+    readings = iter([[{"index": 0, "name": "Card A", "util_pct": 40}, {"index": 1, "name": "Card B", "util_pct": 10}],
+                     [{"index": 0, "name": "Card A", "util_pct": 80}, {"index": 1, "name": "Card B", "util_pct": None}]])
+
+    def reader():
+        try:
+            return next(readings)
+        except StopIteration:
+            return []
+    monkeypatch.setattr(hp, "_gpu_use_reader", lambda: reader)
+    monkeypatch.setattr(hp, "_GPU_USE", hp._GpuUseDuringGeneration())
+    first = ib.foreground_call_started()
+    second = ib.foreground_call_started()          # a second call inside the same answer
+    deadline = _t.time() + 5
+    while _t.time() < deadline and len(hp._GPU_USE._samples.get(0, {}).get("values", [])) < 2:
+        _t.sleep(0.01)
+    ib.foreground_call_finished(second)
+    assert hp.gpu_use_during_last_generation()["devices"] == [], "still answering: not over yet"
+    ib.foreground_call_finished(first)
+    used = hp.gpu_use_during_last_generation()
+    assert used["ended"] > 0 and used["seconds"] >= 0
+    a, b = used["devices"]
+    assert (a["index"], a["name"], a["util_avg"], a["util_max"], a["samples"]) == (0, "Card A", 60.0, 80.0, 2)
+    assert (b["index"], b["util_max"], b["samples"]) == (1, 10.0, 1)
+    assert ib.last_generation()["ended"] == pytest.approx(_t.time(), abs=5)
