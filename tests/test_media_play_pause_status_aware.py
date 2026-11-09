@@ -143,3 +143,12 @@ def test_a_bare_play_goes_to_the_paused_player(two_players):
     status["firefox.instance_1_9"] = "Stopped"
     media.play_media()
     assert sent == [("play", "spotify")]
+
+
+def test_a_pause_with_nothing_running_says_why_in_the_record(two_players):
+    """"Failed to pause spotify: No players found" was put down as "an error inside ELI"."""
+    from eli.execution.effectors import media
+    status, sent = two_players
+    status.clear()
+    out = media.pause_media("spotify")
+    assert out["ok"] is False and out["cause"] == "missing_resource"

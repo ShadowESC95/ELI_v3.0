@@ -86,8 +86,28 @@ def _playerctl(cmd: str, player: Optional[str] = None) -> Dict[str, Any]:
             "error": f"unsupported media command: {cmd}",
             "content": f"unsupported media command: {cmd}",
             "response": f"unsupported media command: {cmd}",
+            "cause": "user_input",
         }
-    return fn(player)
+    return _with_cause(fn(player))
+
+
+# Why a transport command failed, in the cause words action_outcomes keeps: the player named, or any
+# player, not running is a missing resource ("Failed to pause spotify: No players found" was put down
+# as "an error inside ELI"), a missing playerctl a missing dependency.
+_NOT_RUNNING = re.compile(r"no (?:media )?players? (?:found|matching|is currently running)|"
+                          r"no media player is currently running|not running|was not found", re.I)
+_NOT_INSTALLED = re.compile(r"not installed|command not found|no such file", re.I)
+
+
+def _with_cause(result: Any) -> Any:
+    if not isinstance(result, dict) or result.get("ok") or result.get("cause"):
+        return result
+    said = " ".join(str(result.get(k) or "") for k in ("error", "response", "content"))
+    if _NOT_INSTALLED.search(said):
+        result["cause"] = "dependency"
+    elif _NOT_RUNNING.search(said):
+        result["cause"] = "missing_resource"
+    return result
 
 
 def _resolve_media_target(target: str | None, command: Optional[str] = None) -> str | None:
@@ -526,7 +546,7 @@ def _open_named_site(target: str, asked: Dict[str, Any]) -> Dict[str, Any]:
         msg = (f"I played nothing: I have no player for {name}, and no address for it"
                + (f" ({why})" if why else "") + ". Give me its address and I'll open it.")
         return {"ok": False, "action": "PLAY_MEDIA", "played": False, "target": name,
-                "error": "unknown_site", "content": msg, "response": msg}
+                "error": "unknown_site", "cause": "missing_resource", "content": msg, "response": msg}
     opened = _execute_impl("OPEN_URL", {"url": url})
     if not (isinstance(opened, dict) and opened.get("ok")):
         reason = str((opened or {}).get("error") or (opened or {}).get("response") or "the browser did not open")
