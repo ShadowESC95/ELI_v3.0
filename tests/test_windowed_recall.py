@@ -156,3 +156,37 @@ def test_the_answer_lists_every_message_by_day_and_follows_up_on_the_last_topic(
         out = execute("MESSAGE_TIME_QUERY", {"topic": topic})["content"]
         assert "coast” in 2 messages" in out and "Thu 10 Sep 2026 at 10:05" in out and "10:05, 23:05" in out, out
         assert "shop" not in out and "When did" not in out
+
+
+# ── ELI VR in the period's record ────────────────────────────────────────────────────────────────
+
+def test_the_period_log_holds_who_came_into_elis_world_and_what_was_said_there(monkeypatch):
+    """Asked "were we in VR yesterday?", the log held only what was typed and run."""
+    import eli.world.embodiment as embodiment
+    start = time.time() - DAY
+    asked = []
+
+    def sessions_between(since, until):
+        asked.append((since, until))
+        return [{"surface": "spatial_client", "session": "eli-vr-1a2b", "headset": True, "started": start,
+                 "ended": start + 42 * 60, "rooms": ["the range"], "end": "the link closed"}]
+
+    monkeypatch.setattr(embodiment, "sessions_between", sessions_between, raising=False)
+    tr = SimpleNamespace(window_stats={"since": start - 3600, "until": start + 7200}, actions=[],
+                         conv_hits=[{"content": "set up the targets again", "timestamp": start + 60, "session_id": "eli-vr-1a2b"},
+                                    {"content": "back at the desk now", "timestamp": start + 3000, "session_id": "desk"}])
+    out = format_period_log(tr, "were we in vr yesterday?")
+    assert asked == [(start - 3600, start + 7200)]
+    assert "you came in with the headset, in the range" in out and "you left after 42 min (the link closed)" in out
+    assert "You (in VR): set up the targets again" in out and "You: back at the desk now" in out
+    assert out.index("came in") < out.index("set up the targets") < out.index("left after")
+
+
+def test_without_a_presence_record_the_period_log_is_as_it_was(monkeypatch):
+    import eli.world.embodiment as embodiment
+    monkeypatch.setattr(embodiment, "sessions_between", lambda since, until: [], raising=False)
+    start = time.time() - DAY
+    tr = SimpleNamespace(window_stats={"since": start, "until": start + 3600}, actions=[],
+                         conv_hits=[{"content": "hello", "timestamp": start + 60, "session_id": "desk"}])
+    out = format_period_log(tr, "what did i say?")
+    assert "ELI's world" not in out and "You: hello" in out

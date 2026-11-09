@@ -9,7 +9,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from eli.memory.retrieval import TurnRetrievalResult, retrieve_for_turn
+from eli.utils.log import get_logger
 from eli.runtime.memory_provenance import is_explicit_memory_audit_query
+
+log = get_logger(__name__)
 
 _VERIFIED_MARKER = "Verified stored memories"
 
@@ -267,6 +270,38 @@ def _tracks_in(rows, lines_fmt) -> str:
     return f"Distinct tracks in those actions ({len(seen)}): {items}."
 
 
+# The session ids ELI VR's turns carry, and the name its sessions go by in the presence record.
+_VR_SESSION = "eli-vr-"
+
+
+def _vr_sessions(since: float, until: float) -> List[Tuple[float, str, bool, str]]:
+    """Who came into ELI's world in the period and when they left, from the presence record
+    (eli/world/embodiment.sessions_between): asked "were we in VR yesterday?", the period log held
+    only what was typed and run, and the answer was that nothing was recorded."""
+    try:
+        from eli.world import embodiment
+        sessions = embodiment.sessions_between(since, until)
+    except (ImportError, AttributeError, OSError, ValueError):
+        log.debug("[RETRIEVAL] presence record unavailable for the period log", exc_info=True)
+        return []
+    out: List[Tuple[float, str, bool, str]] = []
+    for e in sessions or []:
+        try:
+            started = float(e["started"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        how = "with the headset" if e.get("headset") else f"from {e.get('surface') or 'a client'}"
+        rooms = [str(r) for r in (e.get("rooms") or []) if r]
+        out.append((started, f"In ELI's world: you came in {how}" + (f", in {', '.join(rooms)}" if rooms else ""),
+                    False, "VR"))
+        if e.get("ended") is not None:
+            ended = float(e["ended"])
+            mins = max(0, round((ended - started) / 60.0))
+            out.append((ended, f"In ELI's world: you left after {mins} min" + (f" ({e['end']})" if e.get("end") else ""),
+                        False, "VR"))
+    return out
+
+
 def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: int = 6000) -> str:
     """The period a question asks about, in order: what the user said and what ELI ran.
 
@@ -283,7 +318,11 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
         txt = " ".join(str(t.get("content") or t.get("text") or "").split())
         ts = t.get("timestamp") or t.get("ts")
         if txt and ts:
-            rows.append((float(ts), f"You: {txt[:200]}", False, ""))
+            # said in ELI VR: its sessions carry ids of their own (eli-vr-...)
+            who = "You (in VR)" if str(t.get("session_id") or "").startswith(_VR_SESSION) else "You"
+            rows.append((float(ts), f"{who}: {txt[:200]}", False, ""))
+    vr = _vr_sessions(float(stats["since"]), float(stats["until"]))
+    rows.extend(vr)
     for a in getattr(tr, "actions", None) or []:
         txt = " ".join(str(a.get("content") or "").split())[:140]
         failed = "" if str(a.get("outcome") or "ok") == "ok" else " (failed)"
@@ -359,8 +398,9 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
     except Exception:
         day_key = ""
     head = (f"What happened in that period ({since} to {until}), from the conversation log and the "
-            f"action ledger, which records every action ELI runs with what the executor reported. "
-            f"This is the record of that period; answer from it and give the times.{day_key}{note}")
+            f"action ledger, which records every action ELI runs with what the executor reported"
+            + (", and the record of who came into ELI's world (ELI VR) and when they left" if vr else "") + ". "
+            + f"This is the record of that period; answer from it and give the times.{day_key}{note}")
     focus_kept = [i for i in focus if i in keep]
     if focus_kept and len(focus_kept) < len(keep):
         rest = [i for i in sorted(keep) if i not in set(focus_kept)]
