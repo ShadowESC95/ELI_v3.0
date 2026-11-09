@@ -700,10 +700,13 @@ def _h_examine_code(a, args):
             # No saved audit → fall through and run a fresh scan.
         paths = _ce.resolve_targets(request)
         if not paths:
-            msg = ("I couldn't resolve any Python files to examine. Name a file "
-                   "(e.g. 'examine eli/memory/memory.py') or a module.")
-            return {'ok': True, 'action': a, 'content': msg, 'response': msg,
-                    'evidence_source': 'code_examiner_no_targets'}
+            # the request named no file, nor ELI's own code, nor one just referred to: asked, and the
+            # answer completes it
+            msg = ("Which file or module should I examine? (e.g. 'eli/memory/memory.py', a module, "
+                   "or 'your code' for ELI's own recent files)")
+            return {'ok': True, 'action': a, 'content': msg, 'response': msg, 'asked': True,
+                    'evidence_source': 'code_examiner_no_targets',
+                    'awaiting': {'command': 'examine {answer}', 'action': a, 'needs': 'file'}}
         findings = _ce.examine(paths)
         _ce.save_last_audit(paths, findings)
         # Report-only policy: a broad audit never offers to patch, and cosmetic lint is never

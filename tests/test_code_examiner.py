@@ -310,3 +310,19 @@ def test_the_examiners_lint_is_the_one_pyflakes_wrapper(monkeypatch, tmp_path):
     assert seen and [(f.line, f.message) for f in found] == [(3, "undefined name 'y'")]
     monkeypatch.setattr(V, "pyflakes_messages", lambda src, filename="<candidate>": None)
     assert CE._tier2_pyflakes(tmp_path / "m.py", "x = 1\n") is None
+
+
+def test_a_request_that_names_no_target_is_asked_not_answered_with_a_sweep(tmp_module, monkeypatch):
+    """"is there any issues with the files?" swept ELI's own core files, which nobody had named. A
+    request is examined for what it names, ELI's own code or the codebase when it says so, or the file
+    just referred to; otherwise ELI asks which, and the answer completes the request."""
+    from eli.execution.effectors.coding import _h_examine_code
+    monkeypatch.setattr(CE, "get_last_file", lambda: None)
+    assert CE.resolve_targets("is there any issues with the files?") == []
+    out = _h_examine_code("EXAMINE_CODE", {"request": "is there any issues with the files?"})
+    assert out["asked"] is True and out["awaiting"]["command"] == "examine {answer}"
+    assert CE.resolve_targets("examine your code for errors"), "ELI's own code, named"
+    p = tmp_module("_ce_last.py", "x = 1\n")
+    monkeypatch.setattr(CE, "get_last_file", lambda: str(p))
+    assert CE.resolve_targets("check it again for errors") == [p.resolve()]
+    assert CE.resolve_targets("are there any problems with my essay?") == []

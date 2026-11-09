@@ -2239,7 +2239,15 @@ def _maybe_background_code_work(action, args):
             named = _ce._extract_named_paths(request)
             if explicit_foreground(request):
                 return None
-            if not named:
+            # With no file named, what it would examine (code_examiner.resolve_targets): with nothing
+            # to examine it is asked about at once; the file just referred to is decided as a named one
+            _sweep = not named
+            if _sweep:
+                named = _ce.resolve_targets(request)
+                if not named:
+                    return None
+                _sweep = len(named) > 1
+            if _sweep:
                 bg, reason = True, "codebase sweep (no single file named)"
             elif len(named) > 1:
                 bg, reason = True, f"{len(named)} files named"

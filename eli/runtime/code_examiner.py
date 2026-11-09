@@ -201,17 +201,32 @@ def _git_recent_py(days: int = 7, max_files: int = MAX_SWEEP_FILES) -> List[Path
     return found[:max_files]
 
 
+# "it", "that file", "the code": the request points back at the file just examined or fixed.
+_POINTS_BACK = re.compile(r"\b(?:it|(?:that|this|the|same)\s+(?:file|code|script|module))\b", re.I)
+# The project's code as a whole: the only code this examiner reads (_inside_project).
+_THE_CODEBASE = re.compile(r"\b(?:code\s*base|repo(?:sitory)?|source\s+code|source\s+tree)\b", re.I)
+
+
 def resolve_targets(request: str) -> List[Path]:
-    """Files the user named, else a capped default sweep (git-recent eli/*.py,
-    else a curated core set)."""
+    """What a request asks to examine: the files it names; else, when it names ELI's own code or the
+    codebase ("examine your code", "audit the repo"; route_contracts.names_eli), a capped sweep (git-recent
+    eli/*.py, else a curated core set); else the file just referred to ("check it again"). Nothing
+    otherwise: a request that names no target was answered with a sweep of ELI's core files, about
+    which nobody had asked, and the caller now asks what to examine."""
     named = _extract_named_paths(request)
     if named:
         return named[:MAX_SWEEP_FILES]
-    recent = _git_recent_py()
-    if recent:
-        return recent
-    fallback = [(PROJECT_ROOT / r).resolve() for r in _CORE_FALLBACK]
-    return [p for p in fallback if p.exists()]
+    from eli.execution.route_contracts import names_eli
+    if names_eli(request) or _THE_CODEBASE.search(str(request or "")):
+        recent = _git_recent_py()
+        if recent:
+            return recent
+        fallback = [(PROJECT_ROOT / r).resolve() for r in _CORE_FALLBACK]
+        return [p for p in fallback if p.exists()]
+    last = get_last_file() if _POINTS_BACK.search(str(request or "")) else None
+    if last and Path(last).is_file():
+        return [Path(last).resolve()]
+    return []
 
 
 # --------------------------------------------------------------------------- #
