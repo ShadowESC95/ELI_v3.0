@@ -661,8 +661,13 @@ def _activate_staged_gpu_pack(
     version: str,
     source: str,
     cuda_idx: str = "cu124",
+    allow_download: bool = True,
 ) -> int:
-    """Vendor CUDA runtimes if needed, move into dest, verify, write markers."""
+    """Vendor CUDA runtimes if needed, move into dest, verify, write markers.
+
+    The NVIDIA runtime (cudart, cublas) is fetched only when the pack does not carry it, and only
+    when ``allow_download``: the start-up hook installs a bundled pack before ELI's network guard
+    exists and without anyone having asked for a download, so there it never fetches anything."""
     if not (staging / "llama_cpp").is_dir():
         return _fail("wheel did not contain a llama_cpp package")
 
@@ -676,14 +681,25 @@ def _activate_staged_gpu_pack(
         backend = "cuda"
     if has_cuda or (backend not in ("", "vulkan") and not has_vk):
         try:
-            with tempfile.TemporaryDirectory() as td:
-                _vendor_cuda_runtime(libdir, Path(td), _normalize_cuda_idx(cuda_idx))
-        except Exception as exc:
-            return _fail(f"could not fetch the CUDA runtime libraries: {exc}")
-        try:
             _assert_cuda_runtime_complete(libdir)
+            missing = ""
         except RuntimeError as exc:
-            return _fail(str(exc))
+            missing = str(exc)
+        if missing and not allow_download:
+            return _fail(
+                f"{missing} Fetching them is a download, so it is left for an install you ask for "
+                "(the model load screen, or ELI --install-gpu-pack)."
+            )
+        if missing:
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    _vendor_cuda_runtime(libdir, Path(td), _normalize_cuda_idx(cuda_idx))
+            except Exception as exc:
+                return _fail(f"could not fetch the CUDA runtime libraries: {exc}")
+            try:
+                _assert_cuda_runtime_complete(libdir)
+            except RuntimeError as exc:
+                return _fail(str(exc))
 
     _dedupe_wheel_native_trees(staging)
 
@@ -720,6 +736,7 @@ def _activate_staged_gpu_pack(
         encoding="utf-8",
     )
     (dest / ".gpu_pack_ok").write_text("verified", encoding="utf-8")
+    (dest.parent / _BUNDLE_FAILED).unlink(missing_ok=True)
     record_gpu_choice(dest.parent)
     _say(f"installed and verified at {dest}")
     _say("done — the model loader will now offload layers to the GPU.")
@@ -929,6 +946,7 @@ def _install_from_local_wheel(
     *,
     force: bool = False,
     cuda_idx: str = "cu124",
+    allow_download: bool = True,
 ) -> int:
     """Install a GPU pack from a wheel already on disk (bundled asset)."""
     try:
@@ -956,7 +974,26 @@ def _install_from_local_wheel(
             version=version,
             source=str(whl_path),
             cuda_idx=cuda_idx,
+            allow_download=allow_download,
         )
+
+
+# runtime/<this>: a bundled pack that could not be installed at start-up, and which bundle it was.
+# Without it every start unpacked the whole wheel again and failed the same way.
+_BUNDLE_FAILED = ".gpu_bundle_failed"
+
+
+def _bundle_stamp(path: Path) -> dict:
+    st = path.stat()
+    return {"wheel": path.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def _bundle_already_failed(runtime: Path, path: Path) -> bool:
+    try:
+        recorded = json.loads((runtime / _BUNDLE_FAILED).read_text(encoding="utf-8"))
+        return {k: recorded.get(k) for k in ("wheel", "size", "mtime_ns")} == _bundle_stamp(path)
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def ensure_gpu_pack_for_hardware(*, bundle_only: bool = False) -> int:
@@ -1009,10 +1046,15 @@ def ensure_gpu_pack_for_hardware(*, bundle_only: bool = False) -> int:
     bundled = _pick_bundled_wheel(prefer_cuda=nvidia)
     if bundled:
         bk, ver, path = bundled
+        if bundle_only and _bundle_already_failed(runtime, path):
+            return 1   # this bundle failed here before; an install the person asks for tries again
         _say(f"hardware={hp.gpu_name!r} — installing bundled {bk} pack ({path.name})")
-        rc = _install_from_local_wheel(path, bk, ver)
+        rc = _install_from_local_wheel(path, bk, ver, allow_download=not bundle_only)
         if rc == 0:
             marker.write_text("gpu-bundled", encoding="utf-8")
+        elif bundle_only:
+            (runtime / _BUNDLE_FAILED).write_text(
+                json.dumps({**_bundle_stamp(path), "reason": last_failure()}, indent=2), encoding="utf-8")
         return rc
 
     if bundle_only:
