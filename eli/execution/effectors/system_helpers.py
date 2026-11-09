@@ -99,37 +99,55 @@ def _run_ok(argv, timeout: int = 5) -> bool:
         return False
 
 
+def _volume_done(said: str, asked: int | None = None) -> Dict[str, Any]:
+    """A volume change that went through, with the level read back after it: the reply and the turn's
+    record hold the real figure. Asked "current volume?" later, the model had only "Volume down" to
+    go on and said 50% for a level of 45%."""
+    try:
+        from eli.utils.platform_compat import get_volume
+        level = get_volume()
+    except Exception:
+        log.debug("volume not read back", exc_info=True)
+        level = None
+    msg = said if level is None or (asked is not None and int(level) == int(asked)) else f"{said} — now {int(level)}%"
+    out = {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+    if level is not None:
+        out["level"] = int(level)
+    return out
+
+
 def volume_fallback(direction: str, delta: int = 10, level: int | None = None) -> Dict[str, Any]:
     """Volume on every OS: platform_compat first (Windows audio API or volume keys, macOS osascript,
-    Linux), then Linux's own tools."""
+    Linux), then Linux's own tools. No direction and no level is a question: the level is read."""
     direction = (direction or "").strip().lower()
+    if not direction and level is None:
+        direction = "get"
+    if direction == "set" and level is None:
+        direction = "get"
     try:
         from eli.utils.platform_compat import adjust_volume, get_volume, set_volume, set_muted
         if direction == "set" and level is not None:
             if set_volume(int(level)):
-                msg = f"Volume set to {int(level)}%"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done(f"Volume set to {int(level)}%", int(level))
         if direction in ("up", "raise"):
             if adjust_volume(int(delta)):
-                msg = "Volume up"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done("Volume up")
         if direction in ("down", "lower"):
             if adjust_volume(-int(delta)):
-                msg = "Volume down"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done("Volume down")
         if direction == "mute":
             if set_muted(True):
-                msg = "Muted"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done("Muted")
         if direction == "unmute":
             if set_muted(False):
-                msg = "Unmuted"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done("Unmuted")
         if direction == "get":
             vol = get_volume()
             if vol is not None:
-                msg = f"Volume is {vol}%"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                msg = f"Volume is {int(vol)}%"
+                return {"ok": True, "action": "VOLUME", "level": int(vol), "content": msg, "response": msg}
+            msg = "I couldn't read the volume: no audio tool on this system answered."
+            return {"ok": False, "action": "VOLUME", "error": "volume_unreadable", "content": msg, "response": msg}
     except Exception as e:
         return {"ok": False, "action": "VOLUME", "error": str(e),
                 "content": str(e), "response": str(e)}
@@ -140,13 +158,11 @@ def volume_fallback(direction: str, delta: int = 10, level: int | None = None) -
             if shutil.which("wpctl") and _run_ok(
                 ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{int(level)}%"]
             ):
-                msg = f"Volume set to {int(level)}%"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done(f"Volume set to {int(level)}%", int(level))
             if shutil.which("pactl") and _run_ok(
                 ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{int(level)}%"]
             ):
-                msg = f"Volume set to {int(level)}%"
-                return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                return _volume_done(f"Volume set to {int(level)}%", int(level))
         if direction in ("up", "raise"):
             for tool, argv in (
                 ("wpctl", ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{int(delta)}%+"]),
@@ -154,8 +170,7 @@ def volume_fallback(direction: str, delta: int = 10, level: int | None = None) -
                 ("amixer", ["amixer", "-D", "pulse", "sset", "Master", f"{int(delta)}%+"]),
             ):
                 if shutil.which(tool) and _run_ok(argv):
-                    msg = "Volume up"
-                    return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                    return _volume_done("Volume up")
         if direction in ("down", "lower"):
             for tool, argv in (
                 ("wpctl", ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{int(delta)}%-"]),
@@ -163,8 +178,7 @@ def volume_fallback(direction: str, delta: int = 10, level: int | None = None) -
                 ("amixer", ["amixer", "-D", "pulse", "sset", "Master", f"{int(delta)}%-"]),
             ):
                 if shutil.which(tool) and _run_ok(argv):
-                    msg = "Volume down"
-                    return {"ok": True, "action": "VOLUME", "content": msg, "response": msg}
+                    return _volume_done("Volume down")
     except Exception as e:
         return {"ok": False, "action": "VOLUME", "error": str(e),
                 "content": str(e), "response": str(e)}

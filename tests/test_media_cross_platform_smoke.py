@@ -63,3 +63,38 @@ def test_windows_open_url_smoke(monkeypatch):
     monkeypatch.setattr(pc, "MACOS", False)
     assert pc._windows_open_url("https://example.com") is True
     assert opened == ["https://example.com"]  # the default browser, not Chrome by name
+
+
+def _fake_mixer(monkeypatch, start):
+    from eli.utils import platform_compat as pc
+    level = {"v": start}
+    monkeypatch.setattr(pc, "get_volume", lambda: level["v"])
+    monkeypatch.setattr(pc, "set_volume", lambda v: level.update(v=v) or True)
+    monkeypatch.setattr(pc, "adjust_volume", lambda d: level.update(v=level["v"] + d) or True)
+    monkeypatch.setattr(pc, "set_muted", lambda m: True)
+    return level
+
+
+def test_volume_is_read_when_nothing_is_to_change(monkeypatch):
+    """Nothing produced a read and an empty VOLUME said "no wpctl, pactl, or amixer available"; the
+    level ELI set was then guessed by the model."""
+    from eli.execution.effectors.system_helpers import volume_fallback
+    _fake_mixer(monkeypatch, 45)
+    for asked in ({"direction": "get"}, {"direction": ""}, {"direction": "set"}):
+        out = volume_fallback(**asked)
+        assert out["ok"] is True and out["level"] == 45 and "45%" in out["response"]
+
+
+def test_a_volume_change_says_the_level_it_left(monkeypatch):
+    from eli.execution.effectors.system_helpers import volume_fallback
+    _fake_mixer(monkeypatch, 60)
+    out = volume_fallback("down", delta=15)
+    assert out["level"] == 45 and "45%" in out["response"]
+
+
+def test_an_unreadable_volume_is_said(monkeypatch):
+    from eli.execution.effectors.system_helpers import volume_fallback
+    from eli.utils import platform_compat as pc
+    monkeypatch.setattr(pc, "get_volume", lambda: None)
+    out = volume_fallback("get")
+    assert out["ok"] is False and out["error"] == "volume_unreadable"
