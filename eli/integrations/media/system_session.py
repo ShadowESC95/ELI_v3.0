@@ -148,7 +148,8 @@ def info() -> Optional[Dict[str, Any]]:
         status = str(d.get("status") or "").lower()
         player = str(d.get("player") or "").split("!")[0].removesuffix(".exe")
         return {"player": player, "status": status if status in ("playing", "paused", "stopped") else status,
-                "artist": str(d.get("artist") or ""), "title": str(d.get("title") or "")}
+                "artist": str(d.get("artist") or ""), "title": str(d.get("title") or ""),
+                "shuffle": d.get("shuffle") if isinstance(d.get("shuffle"), bool) else None}
     if pc.MACOS:
         app = macos_running_player()
         if not app:

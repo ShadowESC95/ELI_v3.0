@@ -250,7 +250,138 @@ def test_artist_album_name_phrasing_reaches_the_album_block_not_track_search(mon
     assert album_uri_calls == [("ox", "copper tides")], (
         "must resolve as an album request (name='ox', artist='copper tides')"
     )
-    assert ("ox copper tides", "albums") in track_search_calls, (
+    # The artist is searched in the form that finds both readings of an "s" said without an
+    # apostrophe ("veridians album ..." is Veridian's; "copper tides" is the name): search matches
+    # word beginnings, so "copper tide" finds Copper Tides, and "veridian" finds Veridian.
+    assert ("ox copper tide", "albums") in track_search_calls, (
         "the album search-tab fallback must search for the album name + "
         "artist, not get skipped"
     )
+
+
+# ── a site ELI has no player for ────────────────────────────────────────────────────────────────────
+def _nothing_plays(monkeypatch):
+    """Every player ELI has is a failure if it is reached."""
+    def _never(*a, **k):
+        raise AssertionError("no other service may be used")
+    monkeypatch.setattr(ex, "_play_on_spotify", _never)
+    monkeypatch.setattr(ex, "_spotify_play_track", _never)
+    monkeypatch.setattr("eli.integrations.media.youtube_playback.attempt_youtube_mpv", _never)
+    monkeypatch.setattr(ex, "_open_in_browser", _never)
+
+
+def test_play_on_an_unknown_site_opens_that_site_and_plays_nothing_else(monkeypatch):
+    """"play X on <site>" with no player for the site played a Spotify track or a YouTube video and
+    never mentioned the site."""
+    _nothing_plays(monkeypatch)
+    opened = []
+    monkeypatch.setattr(ex, "_execute_impl",
+                        lambda action, args: opened.append((action, args)) or {"ok": True, "action": action})
+    out = ex.play_specific("the lighthouse keeper", "movy.xy")
+    assert opened == [("OPEN_URL", {"url": "https://movy.xy/"})]
+    assert out["played"] is False and "movy.xy" in out["response"]
+    assert "the lighthouse keeper" in out["response"]
+
+
+def test_play_on_a_site_with_no_known_address_says_so(monkeypatch):
+    _nothing_plays(monkeypatch)
+    import eli.runtime.site_address as sa
+    monkeypatch.setattr(sa, "named", lambda name, **k: {"why": "network access is switched off"})
+    monkeypatch.setattr(ex, "_execute_impl", lambda *a, **k: (_ for _ in ()).throw(AssertionError("nothing to open")))
+    out = ex.play_specific("the lighthouse keeper", "movy")
+    assert out["ok"] is False and out["error"] == "unknown_site"
+    assert "network access is switched off" in out["response"]
+
+
+# ── where an untargeted request goes ────────────────────────────────────────────────────────────────
+def _record(monkeypatch, runs):
+    import eli.runtime.action_outcomes as ao
+    import time as _t
+    now = _t.time()
+    monkeypatch.setattr(ao, "_runs", lambda **k: [
+        {"action": "PLAY_MEDIA", "worked": True, "ts": now - i, "args": args, "result": {"played": True}}
+        for i, args in enumerate(runs)])
+
+
+def test_a_bare_title_with_spotify_open_is_asked_about(monkeypatch):
+    """Where a 'play X' went depended only on whether Spotify was running: a show's title played a
+    song of that name."""
+    _record(monkeypatch, [])
+    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
+    _nothing_plays(monkeypatch)
+    out = ex.play_specific("puffin cove", None)
+    assert out["asks_user"] is True and out["played"] is False
+    assert {c["command"] for c in out["choices"]} == {"play puffin cove on spotify", "play puffin cove on youtube"}
+    assert out["awaiting"]["command"] == "play puffin cove on {answer}"
+
+
+def test_a_show_never_goes_to_spotify(monkeypatch):
+    _record(monkeypatch, [])
+    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
+    _nothing_plays(monkeypatch)
+    out = ex.play_specific("puffin cove season 2 episode 3", None)
+    assert out["asks_user"] is True
+    assert all("spotify" not in c["command"] for c in out["choices"])
+
+
+def test_where_the_person_played_the_same_thing_is_where_it_goes(monkeypatch):
+    _record(monkeypatch, [{"query": "puffin cove", "target": "youtube"}])
+    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
+    from eli.integrations.media.spotify_intent import media_request
+    assert ex._where_to_play(media_request("puffin cove")) == "youtube"
+    # a kind of thing follows where that kind was played: music the person sent to YouTube
+    _record(monkeypatch, [{"query": "silver lanterns by veridian", "target": "youtube"}])
+    assert ex._where_to_play(media_request("harbour lights by copper tides")) == "youtube"
+    # a bare title learns nothing from another bare title
+    _record(monkeypatch, [{"query": "north and south", "target": "youtube"}])
+    assert ex._where_to_play(media_request("puffin cove")) is None
+
+
+# ── kinds of request on Spotify ─────────────────────────────────────────────────────────────────────
+def test_songs_similar_to_a_song_start_from_that_song(monkeypatch):
+    """'songs similar to X' was searched as the title of one track and could never be accepted."""
+    asked = []
+
+    def _track(q):
+        asked.append(q)
+        ex._MEDIA_STATE["title"] = "Veridian — Silver Lanterns"
+        return {"ok": True, "action": "PLAY_MEDIA", "played": True, "content": "x", "response": "x"}
+
+    monkeypatch.setattr(ex, "_spotify_play_track", _track)
+    out = ex.play_specific("songs similar to silver lanterns", "spotify")
+    assert asked == ["silver lanterns"]
+    assert out["played"] is True and out["kind"] == "similar" and out["seed"] == "silver lanterns"
+
+
+def test_a_style_is_played_as_a_playlist_not_a_title(monkeypatch):
+    searched = []
+    monkeypatch.setattr(ex, "_spotify_play_track",
+                        lambda q: (_ for _ in ()).throw(AssertionError("a style is not a track title")))
+    monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: searched.append((q, prefer)) or True)
+    monkeypatch.setattr(ex, "_spotify_live_meta", lambda *a, **k: ("▶ Playing", "Quiet Machine", "Rain"))
+    monkeypatch.setattr(ex, "_spotify_playback_confirmed", lambda before, hint="": True)
+    monkeypatch.setattr(ex, "_spotify_clear_track_repeat", lambda: False)
+    monkeypatch.setattr(ex.time, "sleep", lambda *_a, **_k: None)
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda *_a, **_k: None)
+    out = ex.play_specific("some lo-fi", "spotify")
+    assert searched == [("lo-fi", "playlists")]
+    assert out["played"] is True and out["kind"] == "genre"
+
+
+def test_an_album_asked_for_with_its_artist_reaches_the_album_and_not_a_track_search(monkeypatch):
+    """'play the album T by A' never reached the album path, and a failed album fell into a track
+    search of the raw words, 'album' included."""
+    album_uri = []
+    monkeypatch.setattr(ex, "_spotify_resolve_album_uri",
+                        lambda name, artist=None: album_uri.append((name, artist)) or None)
+    monkeypatch.setattr(ex, "_spotify_search", lambda q, prefer=None: False)
+    monkeypatch.setattr(ex, "_spotify_running", lambda: True)
+    monkeypatch.setattr(ex, "_spotify_play_track",
+                        lambda q: (_ for _ in ()).throw(AssertionError("an album is not a track search")))
+    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_shuffle_state", lambda: None)
+    monkeypatch.setattr("eli.integrations.media.cross_platform.spotify_live_track",
+                        lambda player="spotify": {"status": "", "artist": "", "title": "", "album": ""})
+    out = ex.play_specific("the album salt and a stone by veridian (the full album)", "spotify")
+    assert album_uri == [("salt and a stone", "veridian")]
+    assert out["ok"] is False and out["kind"] == "album"

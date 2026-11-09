@@ -99,3 +99,39 @@ def test_liked_songs_recognises_the_phrase_without_the_word_playlist():
         "no 'playlist' word in this phrasing — confirms the raw-query check "
         "is what must catch it, not playlist_name() extraction"
     )
+
+
+# ── what a play request asks for, read once (media_request) ───────────────────────────────────────
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("said, kind, title, artist, search", [
+    # an album asked for with its artist, the album word first: it never reached the album path
+    ("the album salt and a stone by veridian", "album", "salt and a stone", "veridian", "salt and a stone veridian"),
+    # a possessive said without the apostrophe, and the filler after it, kept out of the search
+    ("veridians album salt and a stone (the full album)", "album", "salt and a stone", "veridians",
+     "salt and a stone veridian"),
+    ("veridian's album salt and a stone", "album", "salt and a stone", "veridian", "salt and a stone veridian"),
+    ("silver lanterns by veridian", "track", "silver lanterns", "veridian", "silver lanterns veridian"),
+    ("songs by veridian", "artist", "", "veridian", "veridian"),
+    ("just play some lo-fi", "genre", "lo-fi", "", "lo-fi"),
+    ("veridian's emotional songs", "genre", "emotional", "veridian", "veridian emotional"),
+    ("puffin cove season 2 episode 3", "episode", "puffin cove season 2 episode 3", "", "puffin cove season 2 episode 3"),
+    ("puffin cove", "title", "puffin cove", "", "puffin cove"),
+    ("like a prayer", "title", "like a prayer", "", "like a prayer"),
+])
+def test_media_request_reads_what_is_asked_for(said, kind, title, artist, search):
+    got = si.media_request(said)
+    assert (got["kind"], got["title"], got["artist"], got["search"]) == (kind, title, artist, search)
+
+
+@pytest.mark.parametrize("said", ["songs similar to silver lanterns on spotify", "music like silver lanterns",
+                                  "silver lanterns radio", "something like silver lanterns"])
+def test_songs_like_a_song_are_read_with_their_seed(said):
+    got = si.media_request(said)
+    assert got["kind"] == "similar" and got["seed"] == "silver lanterns" and got["search"] == "silver lanterns"
+
+
+def test_a_kind_given_by_the_router_is_taken():
+    assert si.media_request("puffin cove", kind="episode")["kind"] == "episode"
+    assert si.album_request("the album salt and a stone by veridian") == ("salt and a stone", "veridian")

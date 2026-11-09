@@ -225,3 +225,79 @@ def test_track_query_matches_now_playing_false_on_unrelated_track(monkeypatch):
 def test_track_query_matches_now_playing_false_when_nothing_live(monkeypatch):
     monkeypatch.setattr(cp, "spotify_live_meta", lambda player="spotify": ("", "", ""))
     assert cp.track_query_matches_now_playing("evil by orlo") is False
+
+
+# ── Windows: Spotify is read through the OS media session, not playerctl ──────────────────────────
+def _windows(monkeypatch):
+    monkeypatch.setattr(cp.pc, "LINUX", False)
+    monkeypatch.setattr(cp.pc, "MACOS", False)
+    monkeypatch.setattr(cp.pc, "WINDOWS", True)
+    monkeypatch.setattr(cp.shutil, "which", lambda tool: None)     # no playerctl on Windows
+
+
+def test_windows_spotify_playback_is_confirmed_from_the_media_session(monkeypatch):
+    """spotify_is_playing/spotify_live_meta asked playerctl only, which Windows has not got, so every
+    'play X on Spotify' there ended in "couldn't confirm"."""
+    from eli.integrations.media import system_session
+    _windows(monkeypatch)
+    monkeypatch.setattr(system_session, "info", lambda: {"player": "Spotify", "status": "playing",
+                                                         "artist": "Veridian", "title": "Silver Lanterns"})
+    assert cp.spotify_is_playing() is True
+    assert cp.spotify_live_meta() == ("▶ Playing", "Veridian", "Silver Lanterns")
+
+
+def test_windows_another_apps_session_is_not_spotify(monkeypatch):
+    from eli.integrations.media import system_session
+    _windows(monkeypatch)
+    monkeypatch.setattr(system_session, "info", lambda: {"player": "Firefox", "status": "playing",
+                                                         "artist": "", "title": "A video"})
+    assert cp.spotify_is_playing() is False
+    assert cp.spotify_live_meta() == ("", "", "")
+
+
+def test_windows_play_does_not_press_the_toggle_on_a_playing_spotify(monkeypatch):
+    from eli.integrations.media import system_session
+    from eli.integrations.mpris import playerctl_backend as pb
+    _windows(monkeypatch)
+    monkeypatch.setattr(system_session, "info", lambda: {"player": "Spotify", "status": "playing",
+                                                         "artist": "a", "title": "b"})
+    pressed = []
+    monkeypatch.setattr(pb, "_windows_media_vk", lambda cmd: pressed.append(cmd) or {"ok": True})
+    assert cp.spotify_play() is True
+    assert pressed == []
+
+
+# ── shuffle is off while one particular thing is started, then put back ──────────────────────────
+def test_shuffle_is_held_off_and_put_back(monkeypatch):
+    monkeypatch.setattr(cp.pc, "LINUX", True)
+    monkeypatch.setattr(cp.pc, "MACOS", False)
+    monkeypatch.setattr(cp.pc, "WINDOWS", False)
+    monkeypatch.setattr(cp.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    state = {"shuffle": "On"}
+    sent = []
+
+    def run(argv, **k):
+        if argv[:4] == ["playerctl", "-p", "spotify", "shuffle"]:
+            if len(argv) == 5:
+                sent.append(argv[4])
+                state["shuffle"] = argv[4]
+            return True, state["shuffle"], ""
+        return True, "", ""
+
+    monkeypatch.setattr(cp, "_run", run)
+    with cp.spotify_shuffle_held_off() as held:
+        assert held.was_on is True and state["shuffle"] == "Off"
+    assert sent == ["Off", "On"] and state["shuffle"] == "On"
+    state["shuffle"] = "Off"
+    sent.clear()
+    with cp.spotify_shuffle_held_off():
+        pass
+    assert sent == []
+
+
+# ── an album is judged by its album ────────────────────────────────────────────────────────────────
+def test_album_is_judged_by_the_playing_tracks_album():
+    now = {"artist": "Veridian", "title": "Harbour", "album": "Salt and a Stone (Remastered)"}
+    assert cp.album_matches("salt and a stone", "veridians", now) is True
+    assert cp.album_matches("salt and a stone", "copper tides", now) is False
+    assert cp.album_matches("north and south", "", now) is False

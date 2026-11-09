@@ -503,7 +503,14 @@ def spotify_play() -> bool:
         return False
 
     if pc.WINDOWS:
+        # The media key is play/pause in one: pressed on a Spotify that is already playing, it pauses.
+        if spotify_is_playing():
+            return True
         try:
+            from eli.integrations.media import system_session
+            if "spotify" in str((system_session.info() or {}).get("player") or "").lower() \
+                    and system_session.command("play"):
+                return spotify_wait_playing(timeout=4.0)
             from eli.integrations.mpris import playerctl_backend as pb
             r = pb._windows_media_vk("play")
             if r.get("ok"):
@@ -523,20 +530,8 @@ def spotify_is_playing() -> bool:
         ok, out, _ = _run(["playerctl", "-p", "spotify", "status"], timeout=5)
         if ok and "playing" in out.lower():
             return True
-
-    if pc.MACOS:
-        ok, out = _macos_osascript(
-            'tell application "Spotify" to return (player state as string)'
-        )
-        if ok and "playing" in out.lower():
-            return True
-
-    if pc.WINDOWS and shutil.which("playerctl"):
-        ok, out, _ = _run(["playerctl", "-p", "spotify", "status"], timeout=5)
-        if ok and "playing" in out.lower():
-            return True
-
-    return False
+        return False
+    return spotify_live_track()["status"] == "playing"
 
 
 def spotify_wait_playing(timeout: float = 8.0, interval: float = 0.25) -> bool:
@@ -608,6 +603,25 @@ def query_matches_track(query: str, artist: str, title: str) -> bool:
     return len(found) * 4 >= len(wanted) * 3 and bool(wanted & in_title)
 
 
+def _same_word(a: str, b: str) -> bool:
+    """One word, allowing a possessive or plural "s" said or left off ("veridians" for Veridian)."""
+    return a == b or (len(a) > 2 and a.endswith("s") and a[:-1] == b) or (len(b) > 2 and b.endswith("s") and b[:-1] == a)
+
+
+def _all_words_in(wanted: str, have: str) -> bool:
+    want, got = _match_tokens(wanted), _match_tokens(have)
+    return bool(want) and bool(got) and all(any(_same_word(w, h) for h in got) for w in want)
+
+
+def album_matches(album: str, artist: str, now: dict) -> bool:
+    """The playing track is from the album asked for: every word of the album's name is in the
+    track's album (an edition may add "(Remastered)"), and the artist, when named, is its artist.
+    Judged by the player's album (xesam:album), not by the words of the request in a track title."""
+    if not _all_words_in(album, str((now or {}).get("album") or "")):
+        return False
+    return not artist or _all_words_in(artist, str((now or {}).get("artist") or ""))
+
+
 def spotify_loop_status() -> str:
     if pc.LINUX and shutil.which("playerctl"):
         ok, out, _ = _run(["playerctl", "-p", "spotify", "loop"], timeout=5)
@@ -642,48 +656,103 @@ def spotify_clear_track_repeat() -> bool:
     return False
 
 
-def spotify_live_meta(player: str = "spotify") -> tuple[str, str, str]:
-    """Return (status_head, artist, title) from the live player when possible."""
-    if pc.LINUX or (shutil.which("playerctl") and not pc.MACOS):
-        try:
-            from eli.integrations.mpris import playerctl_backend as _pcb
-            st = _pcb.get_player_status(player)
-            if st.get("ok"):
-                artist = str(st.get("artist") or "").strip()
-                title = str(st.get("title") or "").strip()
-                status = str(st.get("status") or "").lower()
-                if status == "playing":
-                    head = "▶ Playing"
-                elif status == "paused":
-                    head = "⏸ Paused"
-                elif status == "stopped":
-                    head = "⏹ Stopped"
-                else:
-                    head = f"⏺ {status.capitalize()}" if status else "▶ Playing"
-                return head, artist, title
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
+_STATUS_HEAD = {"playing": "▶ Playing", "paused": "⏸ Paused", "stopped": "⏹ Stopped"}
 
+
+def spotify_live_track(player: str = "spotify") -> dict[str, str]:
+    """What the player says it is doing: {"status" (playing/paused/stopped/...), "artist", "title",
+    "album"}, empty values when nothing could be read. MPRIS on Linux, the OS media session on
+    Windows (playerctl_backend chooses), AppleScript for Spotify on macOS. Windows used to be asked
+    through playerctl only, which it does not have, so no Spotify play there was ever confirmed."""
+    empty = {"status": "", "artist": "", "title": "", "album": ""}
     if pc.MACOS:
         ok, out = _macos_osascript(
             'tell application "Spotify"\n'
             '  if not running then return ""\n'
             '  set t to name of current track\n'
             '  set a to artist of current track\n'
+            '  set b to album of current track\n'
             '  set s to player state as string\n'
-            '  return s & "|" & a & "|" & t\n'
+            '  return s & "|" & a & "|" & t & "|" & b\n'
             'end tell'
         )
         if ok and "|" in out:
-            parts = out.split("|", 2)
-            if len(parts) == 3:
-                status, artist, title = (p.strip() for p in parts)
-                head = "▶ Playing" if "playing" in status.lower() else (
-                    "⏸ Paused" if "paused" in status.lower() else f"⏺ {status}"
-                )
-                return head, artist, title
+            status, artist, title, album = (list(p.strip() for p in out.split("|", 3)) + ["", "", ""])[:4]
+            return {"status": status.lower(), "artist": artist, "title": title, "album": album}
+        return empty
+    try:
+        from eli.integrations.mpris import playerctl_backend as _pcb
+        st = _pcb.get_player_status(player)
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
+        return empty
+    if not st.get("ok"):
+        return empty
+    # Without MPRIS the OS reports whichever app holds its media session: only Spotify's is Spotify's.
+    if not pc.LINUX and player and player.lower() not in str(st.get("player") or "").lower():
+        return empty
+    return {"status": str(st.get("status") or "").lower(), "artist": str(st.get("artist") or "").strip(),
+            "title": str(st.get("title") or "").strip(), "album": str(st.get("album") or "").strip()}
 
-    return "", "", ""
+
+def spotify_live_meta(player: str = "spotify") -> tuple[str, str, str]:
+    """Return (status_head, artist, title) from the live player when possible."""
+    now = spotify_live_track(player)
+    if not (now["status"] or now["artist"] or now["title"]):
+        return "", "", ""
+    status = now["status"]
+    head = _STATUS_HEAD.get(status) or (f"⏺ {status.capitalize()}" if status else "▶ Playing")
+    return head, now["artist"], now["title"]
+
+
+# ── shuffle, held off while one thing is asked for ───────────────────────────────
+
+def spotify_shuffle_state() -> bool | None:
+    """Whether Spotify's shuffle is on; None when it cannot be read."""
+    if pc.LINUX and shutil.which("playerctl"):
+        ok, out, _ = _run(["playerctl", "-p", "spotify", "shuffle"], timeout=5)
+        if ok and out.strip().lower() in ("on", "off", "true", "false"):
+            return out.strip().lower() in ("on", "true")
+        return None
+    if pc.MACOS:
+        ok, out = _macos_osascript('tell application "Spotify" to return shuffling')
+        return (out.strip().lower() == "true") if ok and out.strip().lower() in ("true", "false") else None
+    if pc.WINDOWS:
+        from eli.integrations.media import system_session
+        now = system_session.info() or {}
+        if "spotify" in str(now.get("player") or "").lower() and now.get("shuffle") is not None:
+            return bool(now["shuffle"])
+    return None
+
+
+def spotify_set_shuffle(on: bool) -> bool:
+    """Set Spotify's shuffle on or off; True when it is now as asked."""
+    if pc.LINUX and shutil.which("playerctl"):
+        _run(["playerctl", "-p", "spotify", "shuffle", "On" if on else "Off"], timeout=5)
+    elif pc.MACOS:
+        _macos_osascript(f'tell application "Spotify" to set shuffling to {"true" if on else "false"}')
+    elif pc.WINDOWS:
+        from eli.integrations.media import system_session
+        if spotify_shuffle_state() not in (None, bool(on)):
+            system_session.toggle_shuffle()
+    return spotify_shuffle_state() is bool(on)
+
+
+class spotify_shuffle_held_off:
+    """With shuffle on, Spotify starts some other track of what it opened, not the one asked for: the
+    track check rightly refused it and the request failed after half a minute, then played in a
+    second once shuffle was off. So shuffle is off while one particular thing is started, and put
+    back as it was after (the track that started keeps playing). `was_on` says what was found."""
+
+    def __enter__(self):
+        self.was_on = spotify_shuffle_state()
+        self.turned_off = bool(self.was_on) and spotify_set_shuffle(False)
+        return self
+
+    def __exit__(self, *exc):
+        if self.turned_off:
+            spotify_set_shuffle(True)
+        return False
 
 
 def mpv_socket_path() -> str:
