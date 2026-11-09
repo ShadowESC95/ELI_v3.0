@@ -21,8 +21,15 @@ class QuickNotesPlugin(Plugin):
         super().__init__()
 
     def _notes_dir(self) -> Path:
-        from eli.core.paths import get_paths
-        d = get_paths().artifacts_dir / "notes"
+        """The one notes folder ELI keeps: the notes action's (effectors/notes.notes_folder), so a note
+        made here is the same store the notes action reads; the user notes directory of
+        eli.core.paths where that is not available."""
+        try:
+            from eli.execution.effectors.notes import notes_folder
+            d = Path(notes_folder())
+        except ImportError:
+            from eli.core.paths import notes_dir
+            d = Path(notes_dir())
         d.mkdir(parents=True, exist_ok=True)
         return d
 
