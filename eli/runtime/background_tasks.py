@@ -35,7 +35,7 @@ log = get_logger(__name__)
 class Task:
     id: int
     name: str
-    status: str = "queued"          # scheduled | queued | running | done | failed | cancelled | interrupted
+    status: str = "queued"          # scheduled | queued | running | done | failed | skipped | cancelled | interrupted
     created: float = field(default_factory=time.time)
     started: Optional[float] = None
     finished: Optional[float] = None
@@ -186,8 +186,13 @@ class BackgroundTasks:
                 t = self._tasks[jid]
                 t.result = res
                 t.finished = time.time()
-                # A handler that reports failure did not finish the job, whatever the thread did.
-                if isinstance(res, dict) and res.get("ok") is False and not res.get("skipped"):
+                # A handler that reports failure did not finish the job, whatever the thread did, and
+                # one that did not run it (skipped: the model was not up, a turn was going on) did
+                # not either: read as "done", a skipped job was forgotten and told as finished.
+                if isinstance(res, dict) and res.get("ok") is False and res.get("skipped"):
+                    t.status = "skipped"
+                    t.note = str(res.get("said") or res.get("reason") or "it was not run")[:500]
+                elif isinstance(res, dict) and res.get("ok") is False:
                     t.status = "failed"
                     t.error = str(res.get("error") or res.get("content") or "it reported failure")[:500]
                 else:
@@ -223,6 +228,17 @@ class BackgroundTasks:
                         self._tasks[jid].meta["after_job_error"] = str(exc)[:200]
                     self._save_ledger()
 
+    def tell_when_done(self, jid: int) -> bool:
+        """The person is told when job `jid` ends ("tell me when job 3 is done"). False for a job
+        that is not on record or has already ended (its end has been told, or it was not asked for)."""
+        with self._lock:
+            t = self._tasks.get(int(jid))
+            if t is None or t.status in ("done", "failed", "skipped", "cancelled", "interrupted"):
+                return False
+            t.meta["tell"] = True
+        self._save_ledger()
+        return True
+
     def report(self, jid: int, done: int, total: int, stage: str = "") -> None:
         with self._lock:
             t = self._tasks.get(int(jid))
@@ -235,11 +251,12 @@ class BackgroundTasks:
     def submit(self, name: str, fn: Callable[..., Any], *args,
                on_done: Optional[Callable[[Task], None]] = None,
                kind: str = "task", meta: Optional[Dict[str, Any]] = None, **kwargs) -> int:
-        """Schedule `fn(*args, **kwargs)` on a background thread NOW. Returns a job id."""
+        """Schedule `fn(*args, **kwargs)` on a background thread NOW. Returns a job id. A job
+        started while a person's own message is handled tells them when it ends (_asked_for)."""
         with self._lock:
             self._counter += 1
             jid = self._counter
-            self._tasks[jid] = Task(id=jid, name=str(name)[:120], kind=kind, meta=dict(meta or {}))
+            self._tasks[jid] = Task(id=jid, name=str(name)[:120], kind=kind, meta=_asked_for(meta))
         self._save_ledger()
         fut = self._pool.submit(self._execute, jid, name, fn, args, kwargs, on_done)
         with self._lock:
@@ -261,7 +278,7 @@ class BackgroundTasks:
             jid = self._counter
             self._tasks[jid] = Task(id=jid, name=str(name)[:120], kind=kind,
                                     status="scheduled", scheduled_for=fire_at,
-                                    meta=dict(meta or {}))
+                                    meta=_asked_for(meta))
 
         def _fire():
             with self._lock:
@@ -323,7 +340,7 @@ class BackgroundTasks:
             timer = self._timers.pop(int(jid), None)
             if t is None:
                 return False
-            if t.status in ("done", "failed", "cancelled"):
+            if t.status in ("done", "failed", "skipped", "cancelled"):
                 return False
             # A scheduled task that hasn't fired: cancel its timer outright.
             if t.status == "scheduled":
@@ -417,6 +434,28 @@ def _record_failed_job(job: Dict[str, Any]) -> None:
     get_self_improvement().memory.log_failure(
         job["name"], error=f"background job failed: {said[0] if said else 'no reason recorded'}",
         context={"job": job["id"], "targets": (job.get("meta") or {}).get("targets")}, source="anomaly")
+
+
+def _asked_for(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """A job's record, marked to be told when it ends if a person's own message started it (not an
+    autonomous turn, not a daemon), with who asked. Only the PDF-folder reading set this, so a code
+    examination, a fix or a self-improvement someone asked for finished without a word to them, and
+    asked where the results were, a model made reasons up. A caller's own `tell` stands."""
+    out = dict(meta or {})
+    if "tell" in out:
+        return out
+    try:
+        from eli.kernel import request_context as rc
+        if not rc.in_user_turn():
+            return out
+        out["tell"] = True
+        for key, var in (("user_id", rc.user_id_var), ("session_id", rc.session_id_var)):
+            value = var.get()
+            if value and key not in out:
+                out[key] = str(value)
+    except (ImportError, LookupError, AttributeError) as failure:
+        log.debug("who asked for the job is unknown: %s", failure)
+    return out
 
 
 def _tell_the_person(job: Dict[str, Any]) -> None:

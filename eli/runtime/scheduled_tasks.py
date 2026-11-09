@@ -289,6 +289,8 @@ def _result_preview(kind: str, res: Any) -> str:
         return str(res)[:300]
     if res.get("error"):
         return f"failed: {res['error']}"
+    if res.get("skipped"):
+        return f"not run yet: {res.get('said') or res.get('reason') or 'it was skipped'}"
     if kind == "code":
         return f"built → {res.get('script_path') or res.get('path') or 'done'}"
     if kind == "research":
@@ -328,7 +330,8 @@ def _surface(request: str, kind: str, label: str = "Overnight"):
     def _cb(task) -> None:
         try:
             res = getattr(task, "result", None)
-            note = (f"{label} {kind} task done — “{request[:70]}”:\n\n"
+            status = str(getattr(task, "status", "") or "done")
+            note = (f"{label} {kind} task {status} — “{request[:70]}”:\n\n"
                     f"{_result_preview(kind, res)}")
             from eli.planning.proactive_daemon import get_daemon
             d = get_daemon()
@@ -400,7 +403,9 @@ def _arm(pid: str, request: str, when_ts: float, when_spec: str, kind: str,
                     f"[SCHEDULED] skipped {kind}: main model not loaded within "
                     f"{int(_MODEL_WAIT_TIMEOUT)}s — VRAM interlock (won't cold-load a second model)"
                 )
-                return {"ok": False, "skipped": True, "reason": "model_not_loaded_vram_interlock"}
+                return {"ok": False, "skipped": True, "reason": "model_not_loaded_vram_interlock",
+                        "said": f"the model was not loaded within {int(_MODEL_WAIT_TIMEOUT // 60)} minutes; "
+                                f"it runs once the model is up"}
         _fg = _wait_foreground_idle()
         if _fg is not None:
             return _fg
@@ -408,23 +413,32 @@ def _arm(pid: str, request: str, when_ts: float, when_spec: str, kind: str,
 
     def _on_done(task) -> None:
         res = getattr(task, "result", None)
-        if isinstance(res, dict) and res.get("reason") == "foreground_busy":
+        busy = isinstance(res, dict) and res.get("reason") == "foreground_busy"
+        if isinstance(res, dict) and res.get("skipped") and (busy or not recurring):
+            # Not run: still to do. The persisted entry stays (a restart arms it again) and it is
+            # armed again here: after a turn that kept the model busy, a little later; for a model
+            # that was not up, after as long again as it was waited for. (A recurring task has its
+            # next slot below.) The first skip of a task is said on the panel; the ones after it
+            # would only repeat it.
+            if not busy and not meta.get("skip_said"):
+                meta["skip_said"] = True
+                try:
+                    surface(task)
+                except Exception:
+                    log.debug("suppressed exception", exc_info=True)
             try:
                 get_background_tasks().schedule(
                     f"{kind}: {request[:50]} (deferred)",
                     worker,
                     request,
-                    when=time.time() + _FOREGROUND_DEFER_SEC,
+                    when=time.time() + (_FOREGROUND_DEFER_SEC if busy else _MODEL_WAIT_TIMEOUT),
                     kind=kind,
                     on_done=_on_done,
                     meta=meta,
                 )
-                log.info(
-                    f"[SCHEDULED] re-armed {kind} in {int(_FOREGROUND_DEFER_SEC)}s "
-                    f"(foreground busy)"
-                )
+                log.info(f"[SCHEDULED] re-armed {kind} ({res.get('reason') or 'skipped'})")
             except Exception as ex:
-                log.debug(f"[SCHEDULED] foreground defer re-arm failed: {ex}")
+                log.debug(f"[SCHEDULED] re-arm after a skip failed: {ex}")
             return
         forget(pid)
         try:

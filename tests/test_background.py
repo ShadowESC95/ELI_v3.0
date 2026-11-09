@@ -265,3 +265,45 @@ def test_a_read_that_fails_is_said_in_the_prompt_not_left_out(monkeypatch):
         raise RuntimeError("bus unavailable")
     monkeypatch.setattr(live_reads, "_media_line", _no_session)
     assert "could not be read" in live_reads.live_facts("what song is this?")
+
+
+def test_a_job_started_by_someones_own_message_tells_them_when_it_ends():
+    """Only the PDF-folder reading asked to be told: a code examination someone asked for ended
+    without a word, and asked where the results were, the model invented reasons."""
+    import contextvars
+    from eli.kernel import request_context as rc
+    bt = BackgroundTasks(max_workers=1)
+    try:
+        def in_a_turn():
+            rc.turn_facts_var.set({"request_id": "r1", "autonomous": False})
+            rc.user_id_var.set("someone")
+            return bt.submit("examine the code", lambda: {"ok": True})
+        asked = contextvars.copy_context().run(in_a_turn)
+        assert bt.get(asked)["meta"]["tell"] is True and bt.get(asked)["meta"]["user_id"] == "someone"
+
+        def autonomous():
+            rc.turn_facts_var.set({"request_id": "r2", "autonomous": True})
+            return bt.submit("a chore", lambda: {"ok": True})
+        chore = contextvars.copy_context().run(autonomous)
+        daemon = bt.submit("a daemon's job", lambda: {"ok": True})
+        quiet = contextvars.copy_context().run(
+            lambda: (rc.turn_facts_var.set({"autonomous": False}), bt.submit("x", lambda: 1, meta={"tell": False}))[1])
+        for jid in (chore, daemon, quiet):
+            assert not bt.get(jid)["meta"].get("tell"), jid
+    finally:
+        bt.shutdown()
+
+
+def test_tell_me_when_it_is_done_marks_a_running_job_not_a_finished_one():
+    import threading
+    bt = BackgroundTasks(max_workers=1)
+    gate = threading.Event()
+    try:
+        jid = bt.submit("long one", lambda: gate.wait(5))
+        assert bt.tell_when_done(jid) is True and bt.get(jid)["meta"]["tell"] is True
+        gate.set()
+        bt.wait(jid, timeout=5)
+        assert bt.tell_when_done(jid) is False and bt.tell_when_done(999) is False
+    finally:
+        gate.set()
+        bt.shutdown()

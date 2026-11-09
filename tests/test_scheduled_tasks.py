@@ -230,3 +230,52 @@ def test_wait_foreground_idle_defers_when_busy(monkeypatch):
     )
     out = ST._wait_foreground_idle()
     assert out == {"ok": False, "skipped": True, "reason": "foreground_busy"}
+
+
+def test_a_task_skipped_because_the_model_was_not_up_is_kept_said_and_run_once_it_is(monkeypatch):
+    """Skipped (the model was not loaded in time), a one-shot task was recorded as done, deleted from
+    the store and announced as 'task done'."""
+    import uuid
+    import eli.runtime.scheduled_tasks as ST
+    import eli.cognition.gguf_inference as gi
+    from eli.runtime.background_tasks import get_background_tasks
+    _clear_store()
+    up = {"model": False}
+    ran, said = [], []
+    monkeypatch.setattr(gi, "is_loaded", lambda: up["model"])
+    monkeypatch.setattr(ST, "_MODEL_WAIT_TIMEOUT", 0.05)
+    monkeypatch.setattr(ST, "_MODEL_WAIT_POLL", 0.01)
+    monkeypatch.setattr(ST, "_wait_foreground_idle", lambda: None)
+    monkeypatch.setitem(ST._WORKERS, "research", lambda req, *a, **k: (ran.append(req), {"ok": True, "answer": "found"})[1])
+
+    def surface(request, kind, label="Overnight"):
+        real = ST.__dict__["_surface_real"](request, kind, label)
+        return lambda task: (said.append((task.status, ST._result_preview(kind, task.result))), real)
+    monkeypatch.setitem(ST.__dict__, "_surface_real", ST._surface)
+    monkeypatch.setattr(ST, "_surface", surface)
+    pid = uuid.uuid4().hex[:12]
+    ST._persist_add({"pid": pid, "request": "research the tides", "when_ts": time.time(), "when_spec": "now",
+                     "kind": "research"})
+    bt = get_background_tasks()
+    deadline = time.time() + 10
+    try:
+        first = ST._arm(pid, "research the tides", time.time(), "now", "research")
+        while not said and time.time() < deadline:
+            time.sleep(0.02)
+        assert bt.get(first)["status"] == "skipped"
+        assert said and said[0][0] == "skipped" and "model was not loaded" in said[0][1]
+        assert any(e["pid"] == pid for e in ST._load_store()), "still to do: kept"
+        time.sleep(0.3)                                  # tried again, still no model: not said again
+        up["model"] = True
+        while not ran and time.time() < deadline:
+            time.sleep(0.02)
+        assert ran == ["research the tides"], "run once the model is up"
+        while any(e["pid"] == pid for e in ST._load_store()) and time.time() < deadline:
+            time.sleep(0.02)
+        assert not any(e["pid"] == pid for e in ST._load_store()), "done: forgotten"
+        assert sum(1 for status, _ in said if status == "skipped") == 1, "the skip is said once"
+    finally:
+        up["model"] = True                               # nothing of this test is left waiting
+        while any(e["pid"] == pid for e in ST._load_store()) and time.time() < deadline:
+            time.sleep(0.02)
+        _clear_store()
