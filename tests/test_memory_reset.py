@@ -253,3 +253,20 @@ def test_the_reset_tool_lists_the_other_files_and_says_when_nothing_was_wiped(tm
     out = capsys.readouterr().out
     assert rc == 2 and "nothing was wiped: backup" in out and "✓ wiped" not in out
     assert (base / "notes" / "shopping.md").exists()
+
+
+def test_paired_devices_and_the_gaze_calibration_survive_a_reset(tmp_path, monkeypatch):
+    """Clear Memory unpaired every device, dropped their automations and the home mesh, and lost the
+    gaze calibration: those are this machine's set-up, not memory."""
+    base, _config = _sandbox(tmp_path, monkeypatch)
+    kept = ["devices/registry.json", "devices/mesh.json", "devices/creds/a-lamp.json", "eli_ar_avatar/state.json"]
+    for rel in kept:
+        (base / rel).parent.mkdir(parents=True, exist_ok=True)
+        (base / rel).write_text("set up here", encoding="utf-8")
+    (base / "notes").mkdir()
+    (base / "notes" / "n.md").write_text("a note", encoding="utf-8")
+    s = mr.run_reset(rebuild=False)
+    assert s["wiped"], s["errors"]
+    for rel in kept:
+        assert (base / rel).read_text(encoding="utf-8") == "set up here", rel
+    assert not (base / "notes" / "n.md").exists()

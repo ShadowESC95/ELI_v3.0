@@ -5,7 +5,7 @@ Clears every place ELI keeps learned state AND the user's identity, while preser
 
 The reset is inverted: everything under data_dir() goes, except what is the installation or the
 machine and holds none of the user's words (KEEP_TOP / KEEP_RUNTIME: models, voices, plugins, GPU
-packs, hardware measurements, the licence trial). A list of what to wipe always fell behind the
+packs, hardware measurements, the licence trial, paired devices, the gaze calibration). A list of what to wipe always fell behind the
 stores ELI grew: the executor's incidents, auto goals quoting the user's commands, the attention
 queue, notes, documents, the proactive queue, the world journal, logs and backup copies of the user
 database all survived a "factory reset". Also cleared outside data_dir():
@@ -51,6 +51,8 @@ KEEP_TOP = frozenset({
     "plugins_state.json",                               # which installed plugins are switched on
     "llama_runtime_smoke.json", "runtime_hardware_profile.json", "runtime_dynamic_budget.json",
     ".eli_trial_state.json",                            # the licence trial
+    "devices",                                          # paired devices, their automations, the home mesh
+    "eli_ar_avatar",                                    # the gaze tracker's calibration state
     "README.md",                                        # shipped with the data folder
     "_pytest",                                          # a checkout's test sandbox, not ELI's state
 })
