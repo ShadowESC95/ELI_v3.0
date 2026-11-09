@@ -30,28 +30,15 @@ class LabsTab(QWidget):
         self._parent = parent_window
         self._build_ui()
 
-    # ── ELI callback: dispatches to the main window's inference ───────────
+    # ── ELI callback: the main window's Labs generation, never a chat turn ────
     def _eli_ask(self, prompt: str) -> str:
-        pw = self._parent
-        if pw is None:
+        """What a Labs tool asks the model (eli/gui/main_window ChromeIoMixin._labs_generate). It
+        took the window's chat entry first, which ran each internal prompt, file contents and
+        test output included, through the router as if the user had typed it."""
+        generate = getattr(self._parent, "_labs_generate", None)
+        if not callable(generate):
             return "(ELI not connected)"
-        for attr in ("_engine_ask", "engine_ask", "_ask_eli", "ask_eli"):
-            fn = getattr(pw, attr, None)
-            if callable(fn):
-                return fn(prompt) or ""
-        # Fallback: try the inference queue directly
-        try:
-            from eli.cognition import gguf_inference
-            result = gguf_inference.infer(prompt, max_tokens=512)
-            text = result.get("text", "") if isinstance(result, dict) else str(result)
-            try:
-                from eli.cognition.output_governor import govern_output, normalize_assistant_text
-                text = govern_output(normalize_assistant_text(prompt, text), is_grounded=False)
-            except Exception:
-                pass
-            return text
-        except Exception as ex:
-            return f"[ELI inference error: {ex}]"
+        return generate(prompt) or ""
 
     def _get_memory(self):
         pw = self._parent

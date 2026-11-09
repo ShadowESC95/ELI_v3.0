@@ -8,6 +8,7 @@ from __future__ import annotations
 from eli.gui.labs._common import *  # noqa: F401,F403
 
 from eli.gui.labs.code_runner import _CodeRunnerThread  # noqa: F401
+from eli.gui.labs.bg_worker import _start_bg
 
 
 class _SimIDETab(QWidget):
@@ -80,6 +81,7 @@ class _SimIDETab(QWidget):
         self._eli = eli_callback
         self._current_file: Optional[Path] = None
         self._runner: Optional[_CodeRunnerThread] = None
+        self._eli_workers = []
         self._build_ui()
         # Phase 4 hook: expose the editor buffer so a project's Save/Resume can
         # capture and restore the Sim-IDE's working code.
@@ -334,20 +336,14 @@ class _SimIDETab(QWidget):
         self._run_eli(prompt)
 
     def _run_eli(self, prompt: str):
-        def _thread():
-            try:
-                ans = self._eli(prompt)
-                self._set_eli_panel(ans)
-            except Exception as ex:
-                self._set_eli_panel(f"[ELI error: {ex}]")
-        threading.Thread(target=_thread, daemon=True).start()
+        # Answered off this thread, shown on it: the panel is a Qt widget.
+        _start_bg(self._eli_workers, lambda: self._eli(prompt), self._set_eli_panel)
 
-    def _set_eli_panel(self, text: str):
-        try:
-            if hasattr(self, "_eli_panel"):
-                self._eli_panel.setPlainText(text)
-        except Exception:
-            pass
+    def _set_eli_panel(self, text):
+        if isinstance(text, dict) and "__error__" in text:
+            text = f"[ELI error: {text['__error__']}]"
+        if hasattr(self, "_eli_panel"):
+            self._eli_panel.setPlainText(str(text))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

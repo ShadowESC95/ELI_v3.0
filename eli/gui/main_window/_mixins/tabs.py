@@ -1326,7 +1326,7 @@ class TabsMixin:
         evidence-first document generation with export to pdf/docx/lualatex/etc."""
         try:
             from eli.gui.labs_tab import _ReportTab
-            self._report_builder_widget = _ReportTab(eli_callback=self._engine_ask)
+            self._report_builder_widget = _ReportTab(eli_callback=self._labs_generate)
             self.tabs.addTab(self._report_builder_widget, "📄 Report Builder")
         except Exception as e:
             fallback = QLabel(f"Report Builder unavailable: {e}")

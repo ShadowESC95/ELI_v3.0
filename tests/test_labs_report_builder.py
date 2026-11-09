@@ -75,3 +75,135 @@ def test_report_pipeline_has_review_revision_and_autosave():
     assert "applying review feedback" in source
     assert "def _autosave_report" in source
     assert "artifacts" in source and "documents" in source
+
+
+# ── behaviour, on the real widget (offscreen Qt) ─────────────────────────────
+
+import subprocess
+import threading
+import time
+import types
+
+import pytest
+
+
+@pytest.fixture
+def report_tab(monkeypatch):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    app = QApplication.instance() or QApplication([])
+    import eli.gui.labs.report_tab as rt
+    shown = []
+    for kind in ("information", "warning", "critical"):
+        monkeypatch.setattr(QMessageBox, kind, lambda *a, _k=kind, **kw: shown.append((_k, a[1:])))
+    tab = rt._ReportTab(eli_callback=lambda prompt: "")
+    tab._shown = shown
+    return app, rt, tab
+
+
+def _converter(monkeypatch, rt, tab, exe):
+    """A stand-in for pandoc / lualatex: it writes what the real one writes, where it is told."""
+    seen = []
+
+    def run(cmd, cwd=None, **kw):
+        seen.append(list(cmd))
+        if "-o" in cmd:                                        # pandoc <in> -o <out>
+            pathlib_out = cmd[cmd.index("-o") + 1]
+            open(pathlib_out, "wb").write(b"converted")
+        else:                                                  # lualatex -output-directory <d> <tex>
+            out_dir = cmd[cmd.index("-output-directory") + 1]
+            stem = cmd[-1].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            for ext in (".pdf", ".aux", ".log", ".toc"):
+                open(f"{out_dir}/{stem}{ext}", "wb").write(b"converted")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(rt, "subprocess", types.SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired))
+    monkeypatch.setattr(tab, "_find_executable", lambda names: exe if exe in names else None)
+    return seen
+
+
+@pytest.mark.parametrize("kind,exe,mine", [
+    ("docx", "pandoc", ["report.md"]),
+    ("pdf", "lualatex", ["report.tex", "report.aux", "report.log", "report.toc"]),
+    ("pdf", "pandoc", ["report.md"]),
+])
+def test_an_export_leaves_the_users_own_files_beside_it_alone(report_tab, monkeypatch, tmp_path, kind, exe, mine):
+    """Exporting report.docx wrote its pandoc input over the user's report.md and then deleted it;
+    a PDF overwrote report.tex and deleted report.aux/.log/.toc."""
+    app, rt, tab = report_tab
+    for name in mine:
+        (tmp_path / name).write_text(f"the user's own {name}")
+    target = tmp_path / f"report.{kind}"
+    monkeypatch.setattr(rt.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    seen = _converter(monkeypatch, rt, tab, exe)
+    getattr(tab, f"_export_{kind}")("# Title\n\nBody text.", "Title", "Author")
+    assert seen, "the converter ran"
+    assert target.read_bytes() == b"converted"
+    for name in mine:
+        assert (tmp_path / name).read_text() == f"the user's own {name}"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(mine + [target.name])
+    assert all(str(tmp_path) not in arg for cmd in seen for arg in cmd if arg != str(target)), seen
+
+
+def test_a_converter_that_writes_nothing_is_reported_and_leaves_no_file(report_tab, monkeypatch, tmp_path):
+    app, rt, tab = report_tab
+    target = tmp_path / "report.docx"
+    monkeypatch.setattr(rt.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    monkeypatch.setattr(rt, "subprocess", types.SimpleNamespace(
+        run=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "pandoc: unknown option"),
+        TimeoutExpired=subprocess.TimeoutExpired))
+    monkeypatch.setattr(tab, "_find_executable", lambda names: "pandoc" if "pandoc" in names else None)
+    tab._export_docx("# T", "T", "A")
+    assert not target.exists()
+    assert tab._shown and tab._shown[-1][0] == "critical" and "unknown option" in tab._shown[-1][1][1]
+
+
+def _wait(app, done, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while not done() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+
+
+def test_expand_and_critique_write_off_the_window_thread(report_tab, monkeypatch):
+    """Both ran a whole generation on the Qt thread: the window stopped repainting until the
+    reply came back (a minute or more on the larger models)."""
+    app, rt, tab = report_tab
+    on_window_thread = []
+
+    def infer(prompt, *, stage, temperature=0.34, top_p=0.92, min_chars=1):
+        on_window_thread.append(threading.current_thread() is threading.main_thread())
+        return f"[{stage} text]"
+
+    monkeypatch.setattr(tab, "_rb_infer", infer)
+    tab._editor.setPlainText("An opening paragraph.")
+    cursor = tab._editor.textCursor()
+    cursor.select(cursor.SelectionType.Document)
+    tab._editor.setTextCursor(cursor)
+    tab._ask_eli_expand_selection()
+    assert not tab._expand_btn.isEnabled() and not tab._critique_btn.isEnabled()
+    _wait(app, lambda: tab._manual_pending is None)
+    assert tab._editor.toPlainText() == "[manual_expand text]"
+    tab._ask_eli_critique()
+    _wait(app, lambda: tab._manual_pending is None)
+    assert tab._editor.toPlainText().endswith("## Peer-Review Critique\n\n[manual_critique text]\n")
+    assert on_window_thread == [False, False]
+    assert tab._expand_btn.isEnabled() and tab._critique_btn.isEnabled()
+
+
+def test_a_failed_expand_is_said_and_the_buttons_come_back(report_tab, monkeypatch):
+    app, rt, tab = report_tab
+
+    def infer(prompt, **kw):
+        raise RuntimeError("REPORT_BUILDER[manual_expand] returned 0 chars")
+
+    monkeypatch.setattr(tab, "_rb_infer", infer)
+    tab._editor.setPlainText("A paragraph.")
+    cursor = tab._editor.textCursor()
+    cursor.select(cursor.SelectionType.Document)
+    tab._editor.setTextCursor(cursor)
+    tab._ask_eli_expand_selection()
+    _wait(app, lambda: tab._manual_pending is None)
+    assert tab._editor.toPlainText() == "A paragraph."
+    assert tab._shown[-1][0] == "warning" and "returned 0 chars" in tab._shown[-1][1][1]
+    assert tab._expand_btn.isEnabled()

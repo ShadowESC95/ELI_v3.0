@@ -232,3 +232,95 @@ def test_add_mcp_dialog_form_parses_args_env_and_network(qapp):
     assert entry["args"] == ["-y", "pkg", "/a path"]
     assert entry["env"] == {"API_KEY": "abc", "MODE": "fast"}
     assert entry["permissions"] == ["network"]  # asked for, so the sandbox grants it
+
+
+# --------------------------------------------------------------------------- #
+# Labs tools answer on a worker and write on the window's thread
+# --------------------------------------------------------------------------- #
+def _wait_for(qapp, done, seconds=10.0):
+    import time
+    deadline = time.monotonic() + seconds
+    while not done() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+
+def _watch(widget, method):
+    """Note the thread every call of a widget's method comes from."""
+    import threading
+    calls, real = [], getattr(widget, method)
+
+    def spy(*a, **k):
+        calls.append(threading.current_thread() is threading.main_thread())
+        return real(*a, **k)
+
+    setattr(widget, method, spy)
+    return calls
+
+
+def test_file_chat_writes_the_answer_on_the_window_thread(qapp):
+    """File Chat appended the answer to its QTextEdit from the plain thread that asked the model:
+    a Qt widget touched off its thread can corrupt the document or abort the process."""
+    import threading
+    from eli.gui.labs.file_chat_tab import _FileChatTab
+    asked_on_window_thread = []
+
+    def eli(prompt):
+        asked_on_window_thread.append(threading.current_thread() is threading.main_thread())
+        return "it is a list of three steps"
+
+    tab = _FileChatTab(eli_callback=eli)
+    tab._loaded_text = "step one\nstep two\nstep three"
+    tab._question.setText("what is this?")
+    writes = _watch(tab._chat_history, "append")
+    tab._ask()
+    _wait_for(qapp, lambda: len(writes) >= 2)
+    assert asked_on_window_thread == [False]
+    assert writes == [True, True]                     # the question, then the answer
+    assert "it is a list of three steps" in tab._chat_history.toPlainText()
+
+
+def test_file_chat_shows_a_failed_answer_as_an_error(qapp):
+    from eli.gui.labs.file_chat_tab import _FileChatTab
+
+    def eli(prompt):
+        raise RuntimeError("no model is loaded")
+
+    tab = _FileChatTab(eli_callback=eli)
+    tab._loaded_text = "text"
+    tab._question.setText("why?")
+    tab._ask()
+    _wait_for(qapp, lambda: "no model is loaded" in tab._chat_history.toPlainText())
+    assert "[Error: no model is loaded]" in tab._chat_history.toPlainText()
+
+
+def test_sim_ide_writes_the_answer_on_the_window_thread(qapp):
+    from eli.gui.labs.sim_ide_tab import _SimIDETab
+    tab = _SimIDETab(eli_callback=lambda prompt: "it prints a greeting")
+    tab._set_code('print("hi")\n')
+    writes = _watch(tab._eli_panel, "setPlainText")
+    tab._ask_eli_explain()
+    _wait_for(qapp, lambda: bool(writes))
+    assert writes == [True]
+    assert tab._eli_panel.toPlainText() == "it prints a greeting"
+
+
+# --------------------------------------------------------------------------- #
+# Test & Review: a run that produced no results is not a pass
+# --------------------------------------------------------------------------- #
+def test_a_run_with_no_results_is_shown_as_no_tests_ran(qapp):
+    """With pytest missing (or the runner absent in a bundle) the bar went green: "0 passed …
+    of 0 ✅ all green"."""
+    from eli.gui.labs.test_review_tab import _TestReviewTab
+    tab = _TestReviewTab()
+    tab._on_run_done({"ok": True, "totals": {"total": 0, "passed": 0, "failed": 0, "errored": 0},
+                      "failures": [], "options": [{"id": "rerun", "label": "Re-run", "command": "x"}],
+                      "stdout": "collecting ...\n/usr/bin/python: No module named pytest\n"})
+    text = tab._summary.text()
+    assert text.startswith("No tests ran") and "No module named pytest" in text
+    assert "all green" not in text and "#a3be8c" not in tab._summary.styleSheet()
+    assert "No module named pytest" in tab._detail.toPlainText()
+    tab._on_run_done({"ok": True, "totals": {"total": 3, "passed": 3, "failed": 0, "errored": 0},
+                      "failures": [], "options": [], "stdout": ""})
+    assert "all green" in tab._summary.text()

@@ -7,6 +7,8 @@ physics tables — lives in eli.gui.labs._common.
 from __future__ import annotations
 from eli.gui.labs._common import *  # noqa: F401,F403
 
+from eli.gui.labs.bg_worker import _start_bg
+
 # NOTE: still ~3.3k lines — next strangler target: split into
 #   report/{ui,sources,prompts,outline,pdf_export}.py
 
@@ -258,6 +260,8 @@ class _ReportTab(QWidget):
         self._eli = eli_callback
         self._sources: List[Dict[str, Any]] = []  # {path, kind, bytes, preview}
         self._draft_running = False
+        self._manual_workers: List[Any] = []
+        self._manual_pending: Optional[Dict[str, Any]] = None   # the Expand/Critique in progress
         self._build_ui()
         self._status_sig.connect(self._status.setText)
         self._editor_sig.connect(self._editor.setPlainText)
@@ -427,14 +431,14 @@ class _ReportTab(QWidget):
 
         action_row2 = QHBoxLayout()
         if self._eli:
-            sect_btn = QPushButton("Expand Selected Section")
-            sect_btn.clicked.connect(self._ask_eli_expand_selection)
-            action_row2.addWidget(sect_btn)
+            self._expand_btn = QPushButton("Expand Selected Section")
+            self._expand_btn.clicked.connect(self._ask_eli_expand_selection)
+            action_row2.addWidget(self._expand_btn)
 
-            review_btn = QPushButton("Peer-Review Critique")
-            review_btn.setToolTip("Ask ELI to critique the current draft as a peer reviewer")
-            review_btn.clicked.connect(self._ask_eli_critique)
-            action_row2.addWidget(review_btn)
+            self._critique_btn = QPushButton("Peer-Review Critique")
+            self._critique_btn.setToolTip("Ask ELI to critique the current draft as a peer reviewer")
+            self._critique_btn.clicked.connect(self._ask_eli_critique)
+            action_row2.addWidget(self._critique_btn)
         ag.addLayout(action_row2)
 
         action_row3 = QHBoxLayout()
@@ -3039,23 +3043,13 @@ class _ReportTab(QWidget):
             )
             return
         prompt = self._build_expand_prompt(selected)
-        self._status.setText(
-            f"ELI expanding selection through direct report broker… "
-            f"({len(prompt):,} chars / ~{len(prompt)//4:,} prompt tokens)"
-        )
-        try:
-            response = self._rb_infer(
-                prompt,
-                stage="manual_expand",
-                temperature=0.34,
-                min_chars=120,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "ELI Report Builder error", str(exc))
-            return
-        cursor.insertText(response)
-        self._status.setText(f"Inserted {len(response):,} chars at cursor.")
-
+        # A copy of the cursor follows the text while ELI writes, so the expansion lands on the
+        # passage that was selected even if the draft is edited meanwhile.
+        self._run_manual_stage(
+            prompt, stage="manual_expand", temperature=0.34, min_chars=120,
+            where=type(cursor)(cursor),
+            status=(f"ELI expanding selection through direct report broker… "
+                    f"({len(prompt):,} chars / ~{len(prompt)//4:,} prompt tokens)"))
 
     def _ask_eli_critique(self):
         draft = self._editor.toPlainText().strip()
@@ -3063,19 +3057,44 @@ class _ReportTab(QWidget):
             QMessageBox.information(self, "No draft", "Generate or paste a draft first.")
             return
         prompt = self._build_critique_prompt(draft)
-        self._status.setText(
-            f"ELI preparing peer-review critique through direct report broker… "
-            f"({len(prompt):,} chars / ~{len(prompt)//4:,} prompt tokens)"
-        )
-        try:
-            response = self._rb_infer(
-                prompt,
-                stage="manual_critique",
-                temperature=0.22,
-                min_chars=180,
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "ELI Report Builder error", str(exc))
+        self._run_manual_stage(
+            prompt, stage="manual_critique", temperature=0.22, min_chars=180, where=None,
+            status=(f"ELI preparing peer-review critique through direct report broker… "
+                    f"({len(prompt):,} chars / ~{len(prompt)//4:,} prompt tokens)"))
+
+    def _set_manual_busy(self, busy: bool) -> None:
+        for name in ("_expand_btn", "_critique_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(not busy)
+
+    def _run_manual_stage(self, prompt: str, *, stage: str, temperature: float, min_chars: int,
+                          where, status: str) -> None:
+        """Expand / Critique: the model writes off the window's thread (a whole generation, on the
+        35B model a minute or more, froze the window when it ran on it); the text is put into the
+        editor on the window's thread when it is done."""
+        if self._manual_pending is not None:
+            self._status.setText("ELI is still writing the last Expand / Critique.")
+            return
+        self._manual_pending = {"stage": stage, "where": where}
+        self._set_manual_busy(True)
+        self._status.setText(status)
+        _start_bg(self._manual_workers,
+                  lambda: self._rb_infer(prompt, stage=stage, temperature=temperature,
+                                         min_chars=min_chars),
+                  self._on_manual_stage_done)
+
+    def _on_manual_stage_done(self, response) -> None:
+        pending, self._manual_pending = self._manual_pending or {}, None
+        self._set_manual_busy(False)
+        if isinstance(response, dict) and "__error__" in response:
+            self._status.setText(f"ELI Report Builder error: {response['__error__']}")
+            QMessageBox.warning(self, "ELI Report Builder error", str(response["__error__"]))
+            return
+        response = str(response or "")
+        if pending.get("stage") == "manual_expand":
+            pending["where"].insertText(response)
+            self._status.setText(f"Inserted {len(response):,} chars at cursor.")
             return
         existing = self._editor.toPlainText().rstrip()
         critique_block = "\n\n---\n\n## Peer-Review Critique\n\n" + response.strip() + "\n"
@@ -3117,8 +3136,24 @@ class _ReportTab(QWidget):
         except Exception as ex:
             QMessageBox.critical(self, "Export Error", str(ex))
 
-    # ── PDF export: write LuaLaTeX, compile via lualatex (preferred) or
-    #    fall back to pandoc with --pdf-engine=lualatex / xelatex / pdflatex.
+    # ── PDF / DOCX export. The LaTeX or Markdown a converter reads, and everything it writes
+    #    beside it, live in a folder of the export's own that is removed afterwards; only the
+    #    finished file is moved to the name the user chose. They were written next to that file
+    #    under its name, so exporting report.docx overwrote and then deleted the user's report.md
+    #    (and a PDF replaced report.tex and deleted report.aux/.log/.toc).
+    @staticmethod
+    def _export_workdir():
+        return tempfile.TemporaryDirectory(prefix=_temp_path("report-export-").name)
+
+    @staticmethod
+    def _deliver(produced: Path, out: Path) -> bool:
+        import shutil
+        if not produced.is_file():
+            return False
+        shutil.move(str(produced), str(out))
+        return True
+
+    # lualatex (preferred), else pandoc with --pdf-engine=lualatex.
     def _export_pdf(self, md_text: str, title: str, author: str):
         path, _ = QFileDialog.getSaveFileName(
             self, "Export PDF (article)", "report.pdf", "PDF (*.pdf)"
@@ -3126,30 +3161,19 @@ class _ReportTab(QWidget):
         if not path:
             return
         out_pdf = Path(path)
-        tmp = out_pdf.with_suffix(".tex")
-        tex = self._md_to_latex(md_text, title, author)
-        try:
-            tmp.write_text(tex, encoding="utf-8")
-        except Exception as ex:
-            QMessageBox.critical(self, "Export Error", f"Could not write .tex: {ex}")
-            return
         engine = self._find_executable(["lualatex", "xelatex", "pdflatex"])
         if engine:
             try:
-                cmd = [engine, "-interaction=nonstopmode",
-                       "-output-directory", str(out_pdf.parent), str(tmp)]
-                self._status.setText(f"Running {engine} → {out_pdf.name}…")
-                proc = subprocess.run(cmd, cwd=str(out_pdf.parent),
-                                      capture_output=True, text=True, timeout=240)
-                # lualatex writes <stem>.pdf next to the .tex
-                produced = tmp.with_suffix(".pdf")
-                if produced.exists() and produced != out_pdf:
-                    produced.replace(out_pdf)
-                if out_pdf.exists():
-                    self._status.setText(f"PDF saved: {out_pdf}")
-                    QMessageBox.information(self, "Exported", f"PDF saved to:\n{out_pdf}")
-                    self._cleanup_latex_aux(tmp)
-                    return
+                with self._export_workdir() as work:
+                    tex = Path(work) / "report.tex"
+                    tex.write_text(self._md_to_latex(md_text, title, author), encoding="utf-8")
+                    cmd = [engine, "-interaction=nonstopmode", "-output-directory", work, str(tex)]
+                    self._status.setText(f"Running {engine} → {out_pdf.name}…")
+                    proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=240)
+                    if self._deliver(tex.with_suffix(".pdf"), out_pdf):
+                        self._status.setText(f"PDF saved: {out_pdf}")
+                        QMessageBox.information(self, "Exported", f"PDF saved to:\n{out_pdf}")
+                        return
                 msg = (proc.stderr or proc.stdout or "")[-1500:]
                 QMessageBox.critical(self, "Export Error",
                                      f"{engine} did not produce a PDF.\n\n{msg}")
@@ -3171,18 +3195,19 @@ class _ReportTab(QWidget):
             )
             return
         try:
-            md_tmp = out_pdf.with_suffix(".md")
-            md_tmp.write_text(md_text, encoding="utf-8")
-            cmd = [pandoc, str(md_tmp), "-o", str(out_pdf),
-                   "--pdf-engine=lualatex", "-V", f"title={title}", "-V", f"author={author}"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
-            md_tmp.unlink(missing_ok=True)
-            if out_pdf.exists():
-                self._status.setText(f"PDF (pandoc) saved: {out_pdf}")
-                QMessageBox.information(self, "Exported", f"PDF saved to:\n{out_pdf}")
-            else:
-                msg = (proc.stderr or proc.stdout or "")[-1500:]
-                QMessageBox.critical(self, "Export Error", f"pandoc failed:\n{msg}")
+            with self._export_workdir() as work:
+                md = Path(work) / "report.md"
+                md.write_text(md_text, encoding="utf-8")
+                produced = Path(work) / "report.pdf"
+                cmd = [pandoc, str(md), "-o", str(produced),
+                       "--pdf-engine=lualatex", "-V", f"title={title}", "-V", f"author={author}"]
+                proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=240)
+                if self._deliver(produced, out_pdf):
+                    self._status.setText(f"PDF (pandoc) saved: {out_pdf}")
+                    QMessageBox.information(self, "Exported", f"PDF saved to:\n{out_pdf}")
+                    return
+            msg = (proc.stderr or proc.stdout or "")[-1500:]
+            QMessageBox.critical(self, "Export Error", f"pandoc failed:\n{msg}")
         except Exception as ex:
             QMessageBox.critical(self, "Export Error", f"pandoc invocation failed: {ex}")
 
@@ -3200,19 +3225,20 @@ class _ReportTab(QWidget):
             )
             return
         out_docx = Path(path)
-        md_tmp = out_docx.with_suffix(".md")
         try:
-            md_tmp.write_text(md_text, encoding="utf-8")
-            cmd = [pandoc, str(md_tmp), "-o", str(out_docx),
-                   "-V", f"title={title}", "-V", f"author={author}"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            md_tmp.unlink(missing_ok=True)
-            if out_docx.exists():
-                self._status.setText(f"DOCX saved: {out_docx}")
-                QMessageBox.information(self, "Exported", f"DOCX saved to:\n{out_docx}")
-            else:
-                msg = (proc.stderr or proc.stdout or "")[-1500:]
-                QMessageBox.critical(self, "Export Error", f"pandoc failed:\n{msg}")
+            with self._export_workdir() as work:
+                md = Path(work) / "report.md"
+                md.write_text(md_text, encoding="utf-8")
+                produced = Path(work) / "report.docx"
+                cmd = [pandoc, str(md), "-o", str(produced),
+                       "-V", f"title={title}", "-V", f"author={author}"]
+                proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=180)
+                if self._deliver(produced, out_docx):
+                    self._status.setText(f"DOCX saved: {out_docx}")
+                    QMessageBox.information(self, "Exported", f"DOCX saved to:\n{out_docx}")
+                    return
+            msg = (proc.stderr or proc.stdout or "")[-1500:]
+            QMessageBox.critical(self, "Export Error", f"pandoc failed:\n{msg}")
         except Exception as ex:
             QMessageBox.critical(self, "Export Error", f"pandoc failed: {ex}")
 
@@ -3224,17 +3250,6 @@ class _ReportTab(QWidget):
             if p:
                 return p
         return None
-
-    @staticmethod
-    def _cleanup_latex_aux(tex_path: Path):
-        for ext in (".aux", ".log", ".out", ".toc", ".lof", ".lot",
-                    ".synctex.gz", ".fls", ".fdb_latexmk"):
-            try:
-                p = tex_path.with_suffix(ext)
-                if p.exists():
-                    p.unlink()
-            except Exception:
-                pass
 
     @staticmethod
     def _md_to_html(md: str) -> str:

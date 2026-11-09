@@ -7,7 +7,7 @@ physics tables — lives in eli.gui.labs._common.
 from __future__ import annotations
 from eli.gui.labs._common import *  # noqa: F401,F403
 
-from eli.gui.labs.bg_worker import _BgWorker  # noqa: F401
+from eli.gui.labs.bg_worker import _start_bg
 
 
 class _TestReviewTab(QWidget):
@@ -56,6 +56,7 @@ class _TestReviewTab(QWidget):
 
         # Coloured pass/fail summary bar.
         self._summary = QLabel("No run yet.")
+        self._summary.setWordWrap(True)
         self._summary.setStyleSheet("padding:5px;font-weight:bold;border-radius:4px;"
                                     "background:#2e3440;color:#d8dee9;")
         lay.addWidget(self._summary)
@@ -119,10 +120,7 @@ class _TestReviewTab(QWidget):
         self._table.setRowCount(0); self._detail.clear(); self._fix_btn.setEnabled(False)
         self._eli_summary.setText("")
         from eli.runtime.eval_review import run_eval_board
-        w = _BgWorker(lambda: run_eval_board(target))
-        w.done.connect(self._on_run_done)
-        self._workers.append(w)
-        w.start()
+        _start_bg(self._workers, lambda: run_eval_board(target), self._on_run_done)
 
     def _start(self, target: str):
         self._set_busy(True)
@@ -133,10 +131,7 @@ class _TestReviewTab(QWidget):
         self._table.setRowCount(0); self._detail.clear(); self._fix_btn.setEnabled(False)
         self._eli_summary.setText("")
         from eli.runtime.test_review import run_and_review
-        w = _BgWorker(lambda: run_and_review(target))
-        w.done.connect(self._on_run_done)
-        self._workers.append(w)
-        w.start()
+        _start_bg(self._workers, lambda: run_and_review(target), self._on_run_done)
 
     @staticmethod
     def _module_of(node: str) -> str:
@@ -153,6 +148,19 @@ class _TestReviewTab(QWidget):
             return
         self._last = res
         t = res.get("totals", {})
+        if int(t.get("total", 0) or 0) <= 0:
+            # No test reported a result: the run itself did not happen (no pytest, no runner in
+            # this build, a crash before the first test). That is a failed run; it was painted
+            # green as "0 passed of 0, all green".
+            said = [ln for ln in str(res.get("stdout") or "").splitlines() if ln.strip()]
+            self._summary.setStyleSheet("padding:5px;font-weight:bold;border-radius:4px;"
+                                        "background:#bf616a;color:#1a1f2e;")
+            self._summary.setText("No tests ran" + (f": {said[-1].strip()}" if said else "."))
+            self._table.setRowCount(0)
+            self._fail_modules = []
+            self._detail.setPlainText("\n".join(said))
+            self._clear_options()
+            return
         failed = int(t.get("failed", 0)) + int(t.get("errored", 0))
         bg = "#a3be8c" if failed == 0 else "#bf616a"
         self._summary.setStyleSheet(f"padding:5px;font-weight:bold;border-radius:4px;"
@@ -230,10 +238,7 @@ class _TestReviewTab(QWidget):
                           for f in res.get("failures", [])[:15]) or "(none)"
         prompt = ("Summarise these test results in a few sentences and say what's most worth "
                   f"doing next.\nTotals: {t}\nFailing:\n{fails}")
-        w = _BgWorker(lambda: (self._eli(prompt) or ""))
-        w.done.connect(self._on_summary)
-        self._workers.append(w)
-        w.start()
+        _start_bg(self._workers, lambda: (self._eli(prompt) or ""), self._on_summary)
 
     def _on_summary(self, text):
         if isinstance(text, dict):
@@ -252,10 +257,7 @@ class _TestReviewTab(QWidget):
             except Exception:
                 pass
         if callable(self._eli):
-            w = _BgWorker(lambda: (self._eli(cmd) or ""))
-            w.done.connect(self._on_summary)
-            self._workers.append(w)
-            w.start()
+            _start_bg(self._workers, lambda: (self._eli(cmd) or ""), self._on_summary)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

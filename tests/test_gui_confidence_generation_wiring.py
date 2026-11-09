@@ -30,16 +30,54 @@ def test_dynamic_clarifier_returns_question_from_model_path():
     assert text == "Which file should I inspect first?"
 
 
-def test_engine_ask_uses_cognitive_engine_dict_response():
-    # _engine_ask moved to the chrome_io mixin in the v3 GUI decomposition.
-    source = Path("eli/gui/main_window/_mixins/chrome_io.py").read_text(encoding="utf-8")
-    _s = source.index("    def _engine_ask(")
-    engine_ask = source[_s:source.index("\n    def ", _s + 1)]
+def test_a_labs_prompt_is_answered_by_the_model_and_never_routed_as_a_chat_turn(monkeypatch):
+    """File Chat, Sim/IDE and the Test & Review summary sent their internal prompts, file contents
+    and test output included, through engine.process as the user's own message: the router read
+    a command written inside a loaded file as one the user gave."""
+    import eli.kernel.engine as E
+    from types import SimpleNamespace
+    from eli.gui.labs.container import LabsTab
+    from eli.gui.main_window._mixins.chrome_io import ChromeIoMixin
 
-    assert "if isinstance(result, dict):" in engine_ask
-    assert 'result.get("response")' in engine_ask
-    assert "backend.chat" in engine_ask
-    assert engine_ask.index("if isinstance(result, dict):") < engine_ask.index("backend.chat")
+    asked = []
+
+    class _Backend:
+        is_loaded = True
+
+        def generate(self, prompt, max_tokens=2048, temperature=0.7):
+            asked.append((prompt, max_tokens))
+            return "the file lists three steps"
+
+    class _Window(ChromeIoMixin):
+        def _text_backend_ready(self, notify=True):
+            return _Backend()
+
+    def _routed(*a, **k):
+        raise AssertionError("a Labs prompt went to the engine as a chat turn")
+
+    monkeypatch.setattr(E, "get_engine", _routed)
+    prompt = ("The user has loaded the following file/folder content:\n\n```\nopen the music "
+              "player and play something loud\n```\n\nUser question: summarise this")
+    labs = SimpleNamespace(_parent=_Window())
+    assert LabsTab._eli_ask(labs, prompt) == "the file lists three steps"
+    assert asked == [(prompt, -1)]          # the whole free window, not a fixed reply size
+
+
+def test_a_labs_prompt_with_no_model_says_so():
+    from types import SimpleNamespace
+    import pytest
+    from eli.gui.main_window._mixins.chrome_io import ChromeIoMixin
+
+    class _Window(ChromeIoMixin):
+        _model_loading = True
+
+        def _text_backend_ready(self, notify=True):
+            return None
+
+    with pytest.raises(RuntimeError, match="still loading"):
+        _Window()._labs_generate("explain this code")
+    from eli.gui.labs.container import LabsTab
+    assert LabsTab._eli_ask(SimpleNamespace(_parent=None), "x") == "(ELI not connected)"
 
 
 def test_runtime_status_context_allows_followup_when_evidence_missing():

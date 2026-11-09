@@ -429,57 +429,21 @@ class ChromeIoMixin:
         if widget is getattr(self, "image_tab_widget", None):
             self._image_zoom_view.zoom_reset()
 
-    def _engine_ask(self, prompt: str, max_tokens: int = 512) -> str:
-        """Synchronous ELI inference adapter for Labs generation."""
+    def _labs_generate(self, prompt: str) -> str:
+        """A Labs tool's own request to the model (File Chat, Sim/IDE, the Test & Review summary).
+
+        The loaded backend answers it as ELI, in the whole free window. It is not a chat turn:
+        nothing routes it, runs an action it names or records it as something the user said, so a
+        command written inside a loaded file or a test's output is read as text. These prompts
+        went through engine.process as the user's own message."""
         prompt = str(prompt or "").strip()
         if not prompt:
             return ""
-
-        def _normalise_engine_text(result):
-            if isinstance(result, dict):
-                response = result.get("response")
-                if response is not None and str(response).strip():
-                    return str(response).strip()
-                for key in ("content", "text", "answer", "message", "output"):
-                    value = result.get(key)
-                    if value is not None and str(value).strip():
-                        return str(value).strip()
-                return str(result).strip()
-            if result is not None and str(result).strip():
-                return str(result).strip()
-            return ""
-
-        try:
-            from eli.kernel.engine import get_engine
-            engine = get_engine()
-            if engine is not None and hasattr(engine, "process"):
-                result = engine.process(prompt, stream=False, reasoning_mode="quick")  # internal helper — quick intentional
-                text = _normalise_engine_text(result)
-                if text:
-                    return text
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        backend = getattr(self, "active_backend", None)
-        try:
-            if backend is not None and hasattr(backend, "chat"):
-                result = backend.chat(prompt, max_tokens=max_tokens)
-                text = _normalise_engine_text(result)
-                if text:
-                    return text
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        try:
-            from eli.cognition import gguf_inference
-            result = gguf_inference.generate(prompt, max_tokens=max_tokens)
-            text = _normalise_engine_text(result)
-            if text:
-                return text
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        return ""
+        backend = self._text_backend_ready(notify=False)
+        if backend is None:
+            raise RuntimeError("no model is loaded" + (" yet; it is still loading"
+                                                       if getattr(self, "_model_loading", False) else ""))
+        return str(backend.generate(prompt=prompt, max_tokens=-1) or "").strip()
 
     def _convert_selected_file(self):
         """Convert the file currently selected in the Files tree to the chosen

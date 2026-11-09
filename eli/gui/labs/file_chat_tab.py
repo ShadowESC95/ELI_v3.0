@@ -7,12 +7,15 @@ physics tables — lives in eli.gui.labs._common.
 from __future__ import annotations
 from eli.gui.labs._common import *  # noqa: F401,F403
 
+from eli.gui.labs.bg_worker import _start_bg
+
 
 class _FileChatTab(QWidget):
     def __init__(self, eli_callback=None, parent=None):
         super().__init__(parent)
         self._eli = eli_callback
         self._loaded_text = ""
+        self._workers = []
         self._build_ui()
 
     def _build_ui(self):
@@ -112,21 +115,16 @@ class _FileChatTab(QWidget):
         self._chat_history.append(f"\n**You:** {question}\n")
         self._question.clear()
         if self._eli:
-            def _run():
-                try:
-                    answer = self._eli(prompt)
-                    self._append_answer(answer)
-                except Exception as ex:
-                    self._append_answer(f"[Error: {ex}]")
-            threading.Thread(target=_run, daemon=True).start()
+            # The model answers off this thread; the answer is written on it (the widget is
+            # Qt's, so only the window's thread may touch it).
+            _start_bg(self._workers, lambda: self._eli(prompt), self._append_answer)
         else:
             self._chat_history.append("*[ELI not connected — load a model first]*\n")
 
-    def _append_answer(self, text: str):
-        try:
-            self._chat_history.append(f"**ELI:** {text}\n")
-        except Exception:
-            pass
+    def _append_answer(self, text):
+        if isinstance(text, dict) and "__error__" in text:
+            text = f"[Error: {text['__error__']}]"
+        self._chat_history.append(f"**ELI:** {text}\n")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
