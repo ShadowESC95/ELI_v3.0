@@ -1705,11 +1705,14 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
                 _FG_PRIORITY.clear()
 
     def _safe_release():
-        # Released by the thread that took it (a streamed decode runs on a thread of its own,
-        # _decode_on_own_thread). A release from any other thread is a bug, and it says so: this
-        # used to swallow it and leave the lock held by a thread that had moved on, so every later
-        # model call waited for good.
-        _LLM_CALL_LOCK.release()
+        # Given back by whoever ends the call (native_locks.CallLock: the hold is the call's, not the
+        # thread's); a streamed decode takes and gives it back on a thread of its own
+        # (_decode_on_own_thread). A release of a lock nobody holds is a bug: said at error, with
+        # its trace, and the reply goes on. It used to be swallowed at debug level.
+        try:
+            _LLM_CALL_LOCK.release()
+        except RuntimeError:
+            log.error("[GGUF] the model lock could not be given back", exc_info=True)
         if _fg_started[0]:
             try:
                 from eli.cognition.inference_broker import foreground_call_finished

@@ -110,6 +110,30 @@ def test_the_users_turn_waiting_to_embed_makes_a_background_generation_yield():
     bg.join(5)
 
 
+def test_the_model_lock_is_given_back_by_whoever_ends_the_call(caplog):
+    """A call that starts on one thread can end on another (a web server reads a stream's pieces
+    from any pool thread). An owner-bound lock refused that release, and stayed held for good."""
+    import logging
+    import threading
+    from eli.runtime.native_locks import CallLock
+    lock = CallLock()
+    taken = threading.Thread(target=lock.acquire)
+    taken.start()
+    taken.join()
+    assert lock.acquire(timeout=0.05) is False, "held by the call, not by this thread"
+    with caplog.at_level(logging.ERROR, logger="eli.runtime.native_locks"):
+        lock.release()                               # the call ends here, on another thread
+    assert any("did not take it" in r.getMessage() for r in caplog.records), "said, not swallowed"
+    assert lock.acquire(timeout=1) is True
+    assert lock.acquire(blocking=False) is True and lock._is_owned(), "a call inside a call"
+    lock.release()
+    lock.release()
+    assert not lock.locked()
+    import pytest
+    with pytest.raises(RuntimeError):
+        lock.release()
+
+
 def test_background_work_waiting_on_the_lock_never_preempts_another_background_job():
     from eli.kernel import request_context
     from eli.runtime.native_locks import FOREGROUND_WAITING, hold_llama_lock
