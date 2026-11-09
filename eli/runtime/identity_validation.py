@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Dict
 
 
@@ -93,7 +94,15 @@ _COMMAND_VERBS = frozenset({
 })
 
 _PLACEHOLDER_RE = re.compile(r"(?i)<[^>]*(?:user|name|username|local_user)[^>]*>|\[[^\]]*(?:user|name|username)[^\]]*\]")
-_IDENTITY_CHARS_RE = re.compile(r"^[A-Za-z][A-Za-z .'\-]{0,48}$")
+# A name is letters of any script (Zoë, José, Søren, Seán, 李明), with spaces, apostrophes, dots and
+# hyphens between: [A-Za-z] turned every name outside plain ASCII away, and read back from the
+# profile blanked one already stored. `[^\W\d_]` is a Unicode letter; text is composed first (NFC)
+# so an accent typed as a separate mark is part of its letter.
+_LETTER = r"[^\W\d_]"
+_NAME_CHAR = rf"(?:{_LETTER}|[ .'’\-])"
+_IDENTITY_CHARS_RE = re.compile(rf"^{_LETTER}{_NAME_CHAR}{{0,48}}$")
+# The name a declaration gives: two characters at least, up to where the next clause starts.
+_NAME_CAPTURE = rf"({_LETTER}{_NAME_CHAR}{{1,48}}?)"
 
 
 def normalize_identity_candidate(value: Any, *, max_words: int = 3) -> str:
@@ -104,7 +113,7 @@ def normalize_identity_candidate(value: Any, *, max_words: int = 3) -> str:
     This deliberately validates shape only. It does not encode any specific
     user's identity.
     """
-    raw = " ".join(str(value or "").strip().split())
+    raw = " ".join(unicodedata.normalize("NFC", str(value or "")).strip().split())
     if _PLACEHOLDER_RE.search(raw):
         return ""
     candidate = raw
@@ -182,7 +191,7 @@ def extract_explicit_identity_facts(text: Any) -> Dict[str, str]:
     Extract only explicit user identity declarations. Questions, broad "it is"
     phrasing, and generic "or ..." fragments are intentionally ignored.
     """
-    raw = " ".join(str(text or "").strip().split())
+    raw = " ".join(unicodedata.normalize("NFC", str(text or "")).strip().split())
     if not raw:
         return {}
 
@@ -193,12 +202,12 @@ def extract_explicit_identity_facts(text: Any) -> Dict[str, str]:
 
     # Unambiguous self-declarations only.
     patterns: tuple[tuple[str, str], ...] = (
-        ("name", r"\bmy\s+name\s+is\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
-        ("preferred_name", r"\bmy\s+preferred\s+name\s+is\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
-        ("preferred_name", r"\bi\s+prefer\s+to\s+be\s+called\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
-        ("preferred_name", r"\bi\s+go\s+by\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
-        ("nickname", r"\bmy\s+nickname\s+is\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
-        ("nickname", r"\bnickname\s+is\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
+        ("name", r"\bmy\s+name\s+is\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
+        ("preferred_name", r"\bmy\s+preferred\s+name\s+is\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
+        ("preferred_name", r"\bi\s+prefer\s+to\s+be\s+called\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
+        ("preferred_name", r"\bi\s+go\s+by\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
+        ("nickname", r"\bmy\s+nickname\s+is\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
+        ("nickname", r"\bnickname\s+is\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")"),
     )
 
     facts: Dict[str, str] = {}
@@ -222,7 +231,7 @@ def extract_explicit_identity_facts(text: Any) -> Dict[str, str]:
             low,
         )
         if _call_me_is_declaration:
-            _m = re.search(r"\bcall\s+me\s+([A-Za-z][A-Za-z .'\-]{1,48}?)(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")", raw, flags=re.I)
+            _m = re.search(r"\bcall\s+me\s+" + _NAME_CAPTURE + r"(?=\s*$|\s*[.!?,;]|" + _NAME_END + r")", raw, flags=re.I)
             if _m:
                 _v = normalize_identity_candidate(_m.group(1))
                 if _v:

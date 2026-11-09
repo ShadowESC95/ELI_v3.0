@@ -11,6 +11,7 @@ ignored (they're recalls, not statements), and only a known set of relations is 
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Dict, List
 
 # Relations worth remembering. Matched as the word right after "my ".
@@ -25,9 +26,11 @@ _RELATIONS = [
     "boss", "manager", "colleague", "coworker", "neighbour", "neighbor", "landlord",
 ]
 _REL_ALT = "|".join(re.escape(r) for r in sorted(_RELATIONS, key=len, reverse=True))
-# First letter must be a real capital even though the pattern runs case-insensitively
-# (re.I would otherwise let [A-Z] match "is"/"happy"). (?-i:…) turns off i-flag for that char.
-_NAME = r"(?P<name>(?-i:[A-Z])[A-Za-z'À-ſ\-]{1,30})"
+# A name is letters of any script ([^\W\d_] is a Unicode letter); its first letter is not a small
+# one (a capital, or a letter of a script without case), checked after the match since the patterns
+# run case-insensitively: the first letter had to be A-Z, so "my dog Émile" or "my sister Łucja"
+# gave nothing.
+_NAME = r"(?P<name>[^\W\d_][^\W\d_'\-]{1,30})"
 
 # "my dog Biscuit" · "my dog is Biscuit" · "my dog's name is Biscuit" · "my dog, Biscuit"
 _P_MY_REL_NAME = re.compile(
@@ -65,7 +68,7 @@ def extract_relational_facts(text: str) -> List[Dict[str, str]]:
     Only *statements* — a question ("what is my dog's name?") returns nothing, since that's
     a recall, not a new fact. Last mention wins per relation within one message.
     """
-    s = str(text or "").strip()
+    s = unicodedata.normalize("NFC", str(text or "")).strip()
     if not s:
         return []
     # Skip pure questions/recalls unless they also assert ("my dog is X but what breed?").
@@ -77,7 +80,7 @@ def extract_relational_facts(text: str) -> List[Dict[str, str]]:
         for m in rx.finditer(s):
             name = (m.group("name") or "").strip("'-")
             rel = _canon_rel(m.group("rel"))
-            if not name or name in _STOP_NAMES or name.lower() in {r.lower() for r in _RELATIONS}:
+            if not name or name[0].islower() or name in _STOP_NAMES or name.lower() in {r.lower() for r in _RELATIONS}:
                 continue
             found[rel] = name  # last mention wins
     return [{"relation": r, "name": n} for r, n in found.items()]

@@ -48,3 +48,14 @@ def test_canonicalises_relation_synonyms():
 
 def test_last_mention_wins_per_relation():
     assert _pairs("my dog is Rex... actually my dog is Biscuit") == [("dog", "Biscuit")]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("my dog is Émile", [("dog", "Émile")]),
+    ("my sister Łucja is visiting", [("sister", "Łucja")]),
+    ("Søren, my cousin, is here", [("cousin", "Søren")]),
+    ("my cat is called Ноа", [("cat", "Ноа")]),
+])
+def test_names_in_any_script_are_relations_too(text, expected):
+    """The first letter had to be A-Z: a dog called Émile or a sister called Łucja gave nothing."""
+    assert _pairs(text) == sorted(expected), text

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from eli.runtime.identity_validation import (
     extract_explicit_identity_facts,
     normalize_identity_candidate,
@@ -147,3 +149,21 @@ def test_constitutional_ai_rejects_question_revision_after_failed_critique():
     )
 
     assert result.startswith("My identity")
+
+
+@pytest.mark.parametrize("name", ["José", "Zoë", "Søren", "Seán", "Łucja", "李明", "Анна"])
+def test_a_name_in_any_script_is_taken_and_kept(name):
+    """Only ASCII letters made a name: 'my name is José' gave nothing, and a stored one read back blank."""
+    import unicodedata
+    from eli.runtime.identity_validation import extract_explicit_identity_facts, normalize_identity_candidate
+    assert extract_explicit_identity_facts(f"my name is {name}") == {"name": name}
+    assert extract_explicit_identity_facts(f"call me {name}, please") == {"preferred_name": name}
+    assert normalize_identity_candidate(name) == name
+    decomposed = unicodedata.normalize("NFD", name)
+    assert normalize_identity_candidate(decomposed) == unicodedata.normalize("NFC", name)
+
+
+def test_a_name_in_any_script_still_is_not_a_sentence_or_a_number():
+    from eli.runtime.identity_validation import normalize_identity_candidate
+    for not_a_name in ("José2", "pause spotify", "Zoë: hi", "3Zoë"):
+        assert normalize_identity_candidate(not_a_name) == "", not_a_name
