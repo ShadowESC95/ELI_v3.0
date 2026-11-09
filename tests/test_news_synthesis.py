@@ -169,3 +169,33 @@ def test_conversation_focus_terms_filters_noise(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "network_allowed", lambda: True)
     b = ns.build_news_briefing(refresh=False, top_n=3, interest_n=2)
     assert b.get("offline") is False
+
+
+# ── the user's interests are matched here, never sent out ──────────────────────
+def _record_fetches(monkeypatch):
+    import eli.core.config as cfg
+    from eli.tools.news import news_fetcher as nf
+    from eli.tools.news import news_synthesis as ns
+    topics = []
+    monkeypatch.setattr(cfg, "network_allowed", lambda: True)
+    monkeypatch.setattr(ns, "_derive_interest_terms", lambda user_id=None, limit=8: ["quasars", "beekeeping"])
+    monkeypatch.setattr(nf.NewsFetcher, "fetch", lambda self, sources=None, topic="", **k: topics.append(topic) or {})
+    monkeypatch.setattr(nf, "fetch_news", lambda topic="", sources=None: topics.append(topic) or {})
+    monkeypatch.setattr(nf.NewsFetcher, "get_recent", lambda self, limit=20, category="", topic="": [])
+    monkeypatch.setattr(nf, "search_stored_news", lambda q, limit=10: [])
+    return topics
+
+
+def test_the_morning_report_never_sends_the_users_interests_out(monkeypatch):
+    """Each interest word from the profile became a Reddit address (/r/<word>) and an arXiv query."""
+    from eli.tools.news import news_synthesis as ns
+    topics = _record_fetches(monkeypatch)
+    ns.interest_news_block()
+    assert topics and not {"quasars", "beekeeping"} & set(topics)
+
+
+def test_the_news_briefing_never_sends_the_users_interests_out(monkeypatch):
+    from eli.tools.news import news_synthesis as ns
+    topics = _record_fetches(monkeypatch)
+    ns.build_news_briefing()
+    assert topics and not {"quasars", "beekeeping"} & set(topics)

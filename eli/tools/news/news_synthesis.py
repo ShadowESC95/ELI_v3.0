@@ -483,13 +483,16 @@ def interest_news_block(user_id=None, max_items: int = 4) -> str:
     except Exception:
         return ""
 
+    # The terms are the user's own words (their profile, their conversations): they are matched
+    # against what came in, never sent out. Each became a Reddit address (/r/<term>) and an arXiv
+    # query. The general feeds are fetched once, with nothing of the user's in the request.
+    try:
+        fetch_news()                        # populate store (gated; no-op offline)
+    except Exception:
+        log.debug("suppressed exception", exc_info=True)
     seen: set = set()
     articles: list = []
     for term in terms[:3]:
-        try:
-            fetch_news(topic=term)          # populate store (gated; no-op offline)
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
         # Prefer get_recent (fetched_at-DESC = current) over search_stored_news, which
         # orders by FTS rank and reliably returned week-old items — the exact staleness
         # in the interest ("relevant to you") surface.
@@ -763,13 +766,8 @@ def build_news_briefing(user_id=None, topic: str = "", top_n: int = 5,
             return (_now_dt - d).days if d else None
 
         for term in interest_terms[:3]:
-            # Pull FRESH, term-specific news, then take the most RECENT matches
-            # (NOT relevance-ranked). Fetch is network-gated (no-op offline).
-            try:
-                if refresh:
-                    fetcher.fetch(sources=None, topic=term)
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
+            # The most RECENT matches in what the refresh above fetched (NOT relevance-ranked). The
+            # terms are the user's own words and are never sent out (see interest_news_block).
             try:
                 hits = fetcher.get_recent(limit=8, topic=term) or []
             except Exception:
