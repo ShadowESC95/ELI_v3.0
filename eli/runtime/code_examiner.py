@@ -246,33 +246,14 @@ def _tier1(path: Path) -> List[Finding]:
 # Tier 2 — static lint (pyflakes if available, else conservative AST)         #
 # --------------------------------------------------------------------------- #
 def _tier2_pyflakes(path: Path, src: str) -> Optional[List[Finding]]:
-    try:
-        from pyflakes.api import check as _pf_check
-        from pyflakes.reporter import Reporter
-    except Exception:
-        return None
-    import io
+    """pyflakes' findings through the one wrapper (eli.coding.verification.pyflakes_messages, which
+    drops star-import noise); None when pyflakes is not here or could not check the file."""
+    from eli.coding.verification import pyflakes_messages
     rel = _rel(path)
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        _pf_check(src, rel, Reporter(out, err))
-    except Exception:
+    found = pyflakes_messages(src, rel)
+    if found is None:
         return None
-    findings: List[Finding] = []
-    for line in (out.getvalue() or "").splitlines():
-        # format: path:line:col message
-        m = re.match(rf"{re.escape(rel)}:(\d+):(?:\d+:)?\s*(.+)", line)
-        if not m:
-            continue
-        msg = m.group(2).strip()
-        # Drop star-import noise: a file using `from X import *` makes pyflakes flag every unresolved
-        # name as "may be undefined, or defined from star imports" (a GUI scan gave ~800). They aren't
-        # bugs, and surfacing them as fixable findings made an examine return 853 mostly bogus results.
-        if ("may be undefined, or defined from star imports" in msg
-                or "unable to detect undefined names" in msg):
-            continue
-        findings.append(Finding(rel, 2, TIER_CONF[2], "lint", msg, line=int(m.group(1))))
-    return findings
+    return [Finding(rel, 2, TIER_CONF[2], "lint", msg, line=line) for line, msg in found]
 
 
 def _tier2_ast_undefined_names(path: Path, src: str) -> List[Finding]:
@@ -634,10 +615,15 @@ def _validate_patch(src: str, patch: Dict[str, Any]) -> Optional[str]:
         return "patch has an empty 'old'"
     if not isinstance(new, str):
         return "patch 'new' is not a string"
-    if old not in src:
-        return "old_code not found verbatim in file"
+    # the applier's own rule (self_improvement._replace_exactly_once): an `old` that occurs twice does
+    # not say which place it means, and was accepted here only for the applier to refuse it, so the
+    # generator never retried with the reason
+    from eli.runtime.self_improvement import _replace_exactly_once
+    changed, why = _replace_exactly_once(src, old, new)
+    if changed is None:
+        return why
     try:
-        ast.parse(src.replace(old, new, 1))
+        ast.parse(changed)
     except SyntaxError as e:
         return f"applying the patch breaks syntax ({e.msg} near line {e.lineno})"
     return None

@@ -291,3 +291,22 @@ def test_recalling_the_last_audit_routes_to_examine_not_chat(monkeypatch):
     r = route("pull up each of those 59 findings once more")
     assert r["action"] == "EXAMINE_CODE" and r["meta"]["matched_by"] == "eli.examine_code_recall"
     assert route("pull up that song")["action"] != "EXAMINE_CODE"
+
+
+def test_a_patch_whose_old_text_occurs_twice_is_refused_before_the_applier():
+    """The generator's check took any `old` that was there, and the applier then refused one that
+    occurs twice: the generator never retried with that reason. Both read one rule now."""
+    src = "def f():\n    x = 1\n    return x\n\ndef g():\n    x = 1\n    return x\n"
+    why = CE._validate_patch(src, {"old": "    x = 1\n", "new": "    x = 2\n"})
+    assert why and "2 times" in why
+    assert CE._validate_patch(src, {"old": "def g():\n    x = 1\n", "new": "def g():\n    x = 2\n"}) is None
+
+
+def test_the_examiners_lint_is_the_one_pyflakes_wrapper(monkeypatch, tmp_path):
+    import eli.coding.verification as V
+    seen = []
+    monkeypatch.setattr(V, "pyflakes_messages", lambda src, filename="<candidate>": seen.append(filename) or [(3, "undefined name 'y'")])
+    found = CE._tier2_pyflakes(tmp_path / "m.py", "x = 1\n")
+    assert seen and [(f.line, f.message) for f in found] == [(3, "undefined name 'y'")]
+    monkeypatch.setattr(V, "pyflakes_messages", lambda src, filename="<candidate>": None)
+    assert CE._tier2_pyflakes(tmp_path / "m.py", "x = 1\n") is None
