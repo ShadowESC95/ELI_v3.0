@@ -704,6 +704,23 @@ class ChromeIoMixin:
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+    @staticmethod
+    def _eli_server_auth(lan: bool) -> tuple:
+        """Where the web server listens and the token it asks for, set for the server to read.
+
+        The token is the stable, saved one, reused across restarts so a paired phone is not
+        stranded (rotate it to drop devices). "This computer" needs it too: any page the browser
+        opens can reach 127.0.0.1, so a page whose name re-resolves there could drive ELI's whole
+        API when it ran with no token. The link the window shows carries it, as the LAN link does."""
+        import os
+        from api.api_token import get_stable_token
+        token = get_stable_token()
+        host = "0.0.0.0" if lan else "127.0.0.1"
+        os.environ["ELI_API_HOST"] = host
+        os.environ["ELI_API_TOKEN"] = token
+        os.environ.pop("ELI_API_ALLOW_TOKENLESS", None)
+        return host, token
+
     def _eli_server_start(self, lan: bool) -> None:
         # Prefer sharing the already-loaded model (in-process uvicorn thread). On
         # frozen Windows that path often dies on the worker thread AFTER the outer
@@ -746,35 +763,23 @@ class ChromeIoMixin:
                         log.debug("no port box to show the move", exc_info=True)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
-        if lan:
-            # Stable, persisted token — reused across restarts so an already-paired
-            # phone is NOT stranded (a fresh token every start meant its saved URL
-            # went 401 on every restart). Rotate explicitly to kick devices off.
+        try:
+            host, token = self._eli_server_auth(lan)
+        except Exception as e:
+            self._eli_server_update_ui("error", f"token: {e}")
             try:
-                from api.api_token import get_stable_token
-                token = get_stable_token()
-            except Exception as e:
-                self._eli_server_update_ui("error", f"token: {e}")
-                try:
-                    QMessageBox.warning(self, "Web server", f"Could not create LAN token:\n{e}")
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-                return
-            host = "0.0.0.0"
-            os.environ["ELI_API_HOST"] = host
-            os.environ["ELI_API_TOKEN"] = token
-            os.environ.pop("ELI_API_ALLOW_TOKENLESS", None)  # LAN must require the token
+                QMessageBox.warning(self, "Web server", f"Could not create the server's token:\n{e}")
+            except Exception:
+                log.debug("suppressed exception", exc_info=True)
+            return
+        if lan:
             lan_ip = self._eli_server_lan_ip()
             url = f"http://{lan_ip}:{port}/?open=connect#token={token}"
             http_qr = f"http://{lan_ip}:{port}/#token={token}"
         else:
-            host = "127.0.0.1"
-            token = ""
             lan_ip = "127.0.0.1"
-            os.environ["ELI_API_HOST"] = host
-            os.environ["ELI_API_ALLOW_TOKENLESS"] = "1"
             os.environ.pop("ELI_API_HTTPS_PORT", None)
-            url = f"http://127.0.0.1:{port}/"
+            url = f"http://127.0.0.1:{port}/#token={token}"
             http_qr = ""
         os.environ["ELI_API_PORT"] = str(port)
         self._srv_err = ""
@@ -999,11 +1004,9 @@ class ChromeIoMixin:
         env["ELI_API_PORT"] = str(port)
         if token:
             env["ELI_API_TOKEN"] = token
+        env.pop("ELI_API_ALLOW_TOKENLESS", None)      # a token either way (_eli_server_auth)
         if lan:
-            env.pop("ELI_API_ALLOW_TOKENLESS", None)
             env.setdefault("ELI_API_HTTPS_PORT", "8443")
-        else:
-            env["ELI_API_ALLOW_TOKENLESS"] = "1"
         log_dir = None
         try:
             from eli.core.paths import project_root
