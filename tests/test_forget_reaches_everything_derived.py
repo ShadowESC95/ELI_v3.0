@@ -147,7 +147,7 @@ def test_forget_takes_the_words_out_of_every_store_that_copied_them(mem, monkeyp
 
     monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: VS())
     said = "I work nights at the ZETA-4242 depot these days"
-    mem.add_conversation_turn("user", said, session_id="s1", user_id="u")
+    mem.add_conversation_turn("user", said, session_id="s1")
     rid = mem.store_memory(said, source="user")["id"]
     mem.record_claims_from(said, rid)
     c = sqlite3.connect(mem.db_path)

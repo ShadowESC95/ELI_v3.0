@@ -93,12 +93,11 @@ CREATE TABLE IF NOT EXISTS kg_relations (
     object_id   INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
     weight      REAL    DEFAULT 1.0,
     source      TEXT    DEFAULT 'inferred',
-    ts          REAL    NOT NULL
+    ts          REAL    NOT NULL,
+    user_id     TEXT    DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS kg_rel_subj ON kg_relations(subject_id);
 CREATE INDEX IF NOT EXISTS kg_rel_obj  ON kg_relations(object_id);
-CREATE UNIQUE INDEX IF NOT EXISTS kg_rel_unique
-    ON kg_relations(subject_id, LOWER(predicate), object_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS kg_entities_fts
     USING fts5(name, aliases, description, content='kg_entities', content_rowid='id');
@@ -189,6 +188,12 @@ def _as_of_day(rel: Dict[str, Any]) -> str:
         return " (as of " + time.strftime("%d %b %Y", time.localtime(float(rel.get("ts")))) + ")"
     except (TypeError, ValueError):
         return ""
+
+
+def _who(user_id: Optional[str] = None) -> str:
+    """The user a relation is stored under or read for: eli/memory/policy.owner_key."""
+    from eli.memory.policy import owner_key
+    return owner_key(user_id)
 
 
 def live_relation(rel: Dict[str, Any]) -> bool:
@@ -385,6 +390,15 @@ class KnowledgeGraph:
         conn = _connect(self._path)
         try:
             conn.executescript(_DDL)
+            # Relations are a user's (eli/memory/policy.owner_key): '' the owner, a member's id
+            # otherwise. The same triple from two users is two relations, so the uniqueness carries
+            # the user too; every relation from before is the owner's.
+            if "user_id" not in {r[1] for r in conn.execute("PRAGMA table_info(kg_relations)")}:
+                conn.execute("ALTER TABLE kg_relations ADD COLUMN user_id TEXT DEFAULT ''")
+            conn.execute("DROP INDEX IF EXISTS kg_rel_unique")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS kg_rel_unique_user "
+                         "ON kg_relations(subject_id, LOWER(predicate), object_id, user_id)")
+            conn.commit()
         finally:
             conn.close()
 
@@ -464,10 +478,13 @@ class KnowledgeGraph:
         weight: float = 1.0,
         source: str = "inferred",
         auto_create: bool = True,
+        user_id: Optional[str] = None,
     ) -> bool:
-        """Add (subject)-[predicate]->(object) triple. Returns True if new."""
+        """Add (subject)-[predicate]->(object) triple for one user (user_id None: the turn's,
+        eli/memory/policy.owner_key). Returns True if new."""
         predicate = predicate.strip().lower().replace(" ", "_")
         now = time.time()
+        who = _who(user_id)
         sid = self.get_entity_id(subject)
         oid = self.get_entity_id(obj)
         if sid is None and auto_create:
@@ -482,8 +499,9 @@ class KnowledgeGraph:
             conn = self._conn()
             try:
                 existing = conn.execute(
-                    "SELECT id FROM kg_relations WHERE subject_id=? AND LOWER(predicate)=? AND object_id=?",
-                    (sid, predicate, oid)
+                    "SELECT id FROM kg_relations WHERE subject_id=? AND LOWER(predicate)=? AND object_id=? "
+                    "AND COALESCE(user_id, '')=?",
+                    (sid, predicate, oid, who)
                 ).fetchone()
                 if existing:
                     # ts stays when it was first learned. The profile sync re-adds every relation, and
@@ -495,9 +513,9 @@ class KnowledgeGraph:
                     conn.commit()
                     return False
                 conn.execute(
-                    "INSERT INTO kg_relations(subject_id, predicate, object_id, weight, source, ts) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (sid, predicate, oid, weight, source, now)
+                    "INSERT INTO kg_relations(subject_id, predicate, object_id, weight, source, ts, user_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (sid, predicate, oid, weight, source, now, who)
                 )
                 conn.commit()
                 return True
@@ -506,8 +524,10 @@ class KnowledgeGraph:
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
-    def query_entity(self, name: str) -> Optional[Dict[str, Any]]:
-        """Return entity dict with all outbound and inbound relations."""
+    def query_entity(self, name: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return entity dict with its outbound and inbound relations: the user's own (user_id None:
+        the turn's user), never another's."""
+        who = _who(user_id)
         eid = self.get_entity_id(name)
         if eid is None:
             return None
@@ -521,14 +541,14 @@ class KnowledgeGraph:
             out_rows = conn.execute(
                 """SELECT r.predicate, e.name AS object, r.weight, r.ts
                    FROM kg_relations r JOIN kg_entities e ON r.object_id=e.id
-                   WHERE r.subject_id=? ORDER BY r.weight DESC""",
-                (eid,)
+                   WHERE r.subject_id=? AND COALESCE(r.user_id, '')=? ORDER BY r.weight DESC""",
+                (eid, who)
             ).fetchall()
             in_rows = conn.execute(
                 """SELECT e.name AS subject, r.predicate, r.weight, r.ts
                    FROM kg_relations r JOIN kg_entities e ON r.subject_id=e.id
-                   WHERE r.object_id=? ORDER BY r.weight DESC""",
-                (eid,)
+                   WHERE r.object_id=? AND COALESCE(r.user_id, '')=? ORDER BY r.weight DESC""",
+                (eid, who)
             ).fetchall()
 
             result["outbound"] = [dict(r) for r in out_rows]
@@ -537,7 +557,7 @@ class KnowledgeGraph:
         finally:
             conn.close()
 
-    def related(self, name: str, hops: int = 2) -> List[Dict[str, Any]]:
+    def related(self, name: str, hops: int = 2, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Multi-hop BFS from entity `name`: the live relations (live_relation) within `hops` steps,
         strongest and newest first, each with the ts it was learned (relation_line dates it).
@@ -545,6 +565,7 @@ class KnowledgeGraph:
         start_id = self.get_entity_id(name)
         if start_id is None:
             return []
+        who = _who(user_id)
         conn = self._conn()
         try:
             visited: set = {start_id}
@@ -561,10 +582,11 @@ class KnowledgeGraph:
                         FROM kg_relations r
                         JOIN kg_entities e_s ON r.subject_id=e_s.id
                         JOIN kg_entities e_o ON r.object_id=e_o.id
-                        WHERE r.subject_id IN ({placeholders})
-                           OR r.object_id  IN ({placeholders})
+                        WHERE (r.subject_id IN ({placeholders})
+                           OR r.object_id  IN ({placeholders}))
+                          AND COALESCE(r.user_id, '') = ?
                         ORDER BY r.weight DESC, r.ts DESC""",
-                    frontier + frontier
+                    frontier + frontier + [who]
                 ).fetchall()
                 new_frontier = []
                 for row in rows:
@@ -626,7 +648,8 @@ class KnowledgeGraph:
 
     def context_for_prompt(self, query: str, max_chars: int = 800, *,
                            max_entities: Optional[int] = None,
-                           max_relations: Optional[int] = None) -> str:
+                           max_relations: Optional[int] = None,
+                           user_id: Optional[str] = None) -> str:
         """
         Return a compact KG context block suitable for LLM injection.
         Searches entities matching `query`, then expands one hop.
@@ -683,7 +706,7 @@ class KnowledgeGraph:
 
         for ent in hits:
             name = ent["name"]
-            ent_detail = self.query_entity(name)
+            ent_detail = self.query_entity(name, user_id=user_id)
             if not ent_detail:
                 continue
             desc = ent_detail.get("description", "").strip()
@@ -718,9 +741,8 @@ class KnowledgeGraph:
             # value's side, where nothing filtered it.
             _inbound = [r for r in (ent_detail.get("inbound") or [])
                         if live_relation({**r, "object": name})]
-            if (not (desc or aliases or _outbound or _inbound)
-                    and (ent_detail.get("outbound") or ent_detail.get("inbound"))):
-                continue                     # all it had were junk relations
+            if not (desc or aliases or _outbound or _inbound):
+                continue                     # nothing of this user's to show: junk, or another user's
             lines.append(header)
             for rel in _outbound[:max_relations]:
                 triple = (name, rel["predicate"], rel["object"])
@@ -749,21 +771,22 @@ class KnowledgeGraph:
 
     # ── Automatic extraction from memory text ────────────────────────────────
 
-    def extract_from_memory(self, text: str, source: str = "memory") -> int:
+    def extract_from_memory(self, text: str, source: str = "memory", user_id: Optional[str] = None) -> int:
         """Write the triples read_triples() finds in a memory string. A new name or nickname for the
         user retires the one held before (its weight drops to RETIRED_WEIGHT). Returns how many
         triples were new."""
         added = 0
+        who = _who(user_id)
         for subj, predicate, obj in read_triples(text, source):
             if predicate in _IDENTITY_PREDICATES:
-                self._retire_other_identity(predicate, obj)
+                self._retire_other_identity(predicate, obj, who)
             self.upsert_entity(subj, "person" if subj == "User" else "concept")
             self.upsert_entity(obj, "concept" if predicate in _POSSESSIVE or subj != "User" else "value")
-            if self.add_relation(subj, predicate, obj, source=source):
+            if self.add_relation(subj, predicate, obj, source=source, user_id=who):
                 added += 1
         return added
 
-    def _retire_other_identity(self, predicate: str, value: str) -> None:
+    def _retire_other_identity(self, predicate: str, value: str, who: str = "") -> None:
         """Contradiction detection for identity predicates: a different has_name/nickname the user
         already has is retired, not left beside the new one."""
         try:
@@ -774,8 +797,8 @@ class KnowledgeGraph:
             try:
                 for rid, old in conn.execute(
                         "SELECT r.id, e.name FROM kg_relations r JOIN kg_entities e ON e.id = r.object_id "
-                        "WHERE r.subject_id=? AND LOWER(r.predicate)=? AND r.weight > ?",
-                        (uid, predicate, LIVE_WEIGHT)).fetchall():
+                        "WHERE r.subject_id=? AND LOWER(r.predicate)=? AND r.weight > ? AND COALESCE(r.user_id, '')=?",
+                        (uid, predicate, LIVE_WEIGHT, who)).fetchall():
                     if old.lower() != value.lower():
                         conn.execute("UPDATE kg_relations SET weight = ? WHERE id = ?", (RETIRED_WEIGHT, rid))
                 conn.commit()
@@ -818,11 +841,12 @@ def rebuild_from_memories(conn) -> int:
     from eli.memory import policy
     kg = get_knowledge_graph()
     n = 0
-    for text, source, kind, tags in conn.execute(
+    whose = "COALESCE(user_id, '')" if "user_id" in {r[1] for r in conn.execute("PRAGMA table_info(memories)")} else "''"
+    for text, source, kind, tags, who in conn.execute(
             "SELECT COALESCE(text, content, ''), COALESCE(source, 'user'), COALESCE(kind, 'memory'), "
-            "COALESCE(tags, '') FROM memories ORDER BY id").fetchall():
+            f"COALESCE(tags, ''), {whose} FROM memories ORDER BY id").fetchall():
         t = (text or "").strip()
         if t and feeds_graph(policy.classify_origin(source, kind, tags, t)):
-            kg.extract_from_memory(t, source=source)
+            kg.extract_from_memory(t, source=source, user_id=who)
             n += 1
     return n

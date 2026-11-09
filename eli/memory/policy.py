@@ -81,6 +81,83 @@ def classify_origin(source: str = "user", kind: str = "memory", tags=None, text:
 ORIGIN_VERSION = "2"
 
 
+# ── whose a row is ───────────────────────────────────────────────────────────────────────────────
+# Memories, claims, graph relations and vector entries are the owner's ('' in a user_id column) or
+# one RBAC member's (their id). A member is an id the API authenticates as a user of its own
+# (eli/runtime/api_users); every other id is the owner, as one person on a single-user install
+# (ELI VR's requests, the web console, the install's own earlier generated ids). Supplied ids are
+# not identities there: any caller can send any. Every member's facts used to be recalled into
+# everyone's prompts and a member's claim superseded the owner's.
+_MEMBERS_SEEN: list = [None, frozenset()]
+
+
+def rbac_members() -> frozenset:
+    """The ids of the API's users (eli/runtime/api_users), read again whenever its file changes."""
+    try:
+        from eli.runtime import api_users
+        path = api_users._store_path()
+        st = path.stat()
+    except (OSError, ImportError):
+        return frozenset()
+    seen = (str(path), st.st_mtime_ns, st.st_size)
+    if _MEMBERS_SEEN[0] != seen:
+        try:
+            members = frozenset(str(u.get("user_id") or "").strip() for u in api_users.list_users()) - {""}
+        except Exception:
+            members = frozenset()
+        _MEMBERS_SEEN[:] = [seen, members]
+    return _MEMBERS_SEEN[1]
+
+
+def _active_user_id() -> str:
+    try:
+        from eli.kernel.state import get_active_user_id
+        return str(get_active_user_id() or "")
+    except Exception:
+        return ""
+
+
+def is_member(user_id) -> bool:
+    """An RBAC member other than the install's own active user."""
+    uid = str(user_id or "").strip()
+    return bool(uid) and uid in rbac_members() and uid != _active_user_id()
+
+
+def owner_key(user_id=None) -> str:
+    """The key a row is stored under and read for: '' for the owner, the member's id otherwise.
+    With no id given, the turn's own (request_context.user_id_var); a background job is the owner's."""
+    if user_id is None:
+        try:
+            from eli.kernel.request_context import user_id_var
+            user_id = user_id_var.get()
+        except Exception:
+            user_id = None
+    return str(user_id).strip() if is_member(user_id) else ""
+
+
+def scope_sql(column: str, key: str, *, raw_ids: bool = False) -> tuple:
+    """(" AND ...", params) keeping only the rows of `key` (owner_key). raw_ids: the table keeps the
+    id as it was given (conversation turns), so the owner's rows are every row that is not a member's."""
+    if key:
+        return f" AND {column} = ?", (key,)
+    if not raw_ids:
+        return f" AND COALESCE({column}, '') = ''", ()
+    members = sorted(rbac_members())
+    if not members:
+        return "", ()
+    return f" AND COALESCE({column}, '') NOT IN ({','.join('?' * len(members))})", tuple(members)
+
+
+def is_active_user(user_id) -> bool:
+    """No id, or the install's active user id: the rule the document index and the action log keep
+    for a supplied id (executions recorded without a user are the owner's)."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return True
+    active = _active_user_id()
+    return not active or uid == active
+
+
 KEY_VERSION = "2"
 _EDGE_PUNCT = "\"'\u201c\u201d\u2018\u2019()[]{}<>,;:!?."
 

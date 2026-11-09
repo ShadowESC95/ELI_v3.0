@@ -294,7 +294,7 @@ def test_documents_filed_as_memories_move_to_the_document_index(mem, monkeypatch
 def test_only_what_the_user_said_becomes_graph_facts(mem, monkeypatch):
     seen = []
     monkeypatch.setattr("eli.memory.knowledge_graph.KnowledgeGraph.extract_from_memory",
-                        lambda self, text, source="memory": seen.append(text) or 0)
+                        lambda self, text, source="memory", **kw: seen.append(text) or 0)
     mem.store_memory("I prefer tea in the morning", source="user")
     mem.store_memory("Physicists prefer the light-cone gauge for this.", source="tool", kind="pdf:x:chunk:1")
     mem.store_memory("You said you prefer tea.", source="assistant")

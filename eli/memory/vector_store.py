@@ -250,12 +250,18 @@ class VectorStore:
             threading.Thread(target=self._auto_rebuild, daemon=True, name="eli-vs-rebuild").start()
 
     def add(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Index `text`. Its entry carries whose it is (user_id: eli/memory/policy.owner_key, the
+        turn's user when the metadata does not say), so search only ever returns a user's own."""
         vec = self._embed(text)
         if vec is None:
             return False
+        meta = dict(metadata or {})
+        if "user_id" not in meta:
+            from eli.memory.policy import owner_key
+            meta["user_id"] = owner_key()
         with self._lock:
             self._index.add(vec)
-            self._meta.append({"text": text, **(metadata or {})})
+            self._meta.append({"text": text, **meta})
             self._adds_since_save += 1
             cap = self._cap()
             if cap and len(self._meta) > cap:
@@ -273,22 +279,34 @@ class VectorStore:
         return cap
 
     def search(self, query: str, top_k: int = 5, limit: int | None = None,
-               k: int | None = None, min_ratio: float | None = None) -> List[Dict[str, Any]]:
+               k: int | None = None, min_ratio: float | None = None,
+               user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """The entries nearest `query` among the user's own (user_id None: the turn's user). Entries
+        from before they carried a user are the owner's. Every caller that reads hit texts straight
+        (the orchestrator, the context synthesiser, HyDE) gets only that user's memories."""
+        from eli.memory.policy import owner_key
+        who = owner_key(user_id)
         vec = self._embed(query)
         if limit is not None:
             top_k = int(limit)
         if k is not None:
             top_k = int(k)
         if vec is None:
-            return self._keyword_fallback(query, top_k)
+            return self._keyword_fallback(query, top_k, who)
         with self._lock:
             if self._index.ntotal == 0:
                 return []
-            k = min(top_k, self._index.ntotal)
+            # over-fetch by the share of the index that is other users', so filtering keeps top_k
+            mine = sum(1 for e in self._meta if str(e.get("user_id") or "") == who)
+            if not mine:
+                return []
+            k = min(self._index.ntotal, max(top_k, -(-top_k * len(self._meta) // mine)))
             distances, indices = self._index.search(vec, k)
         results = []
         for dist, idx in zip(distances[0], indices[0]):
             if idx < 0 or idx >= len(self._meta):
+                continue
+            if str(self._meta[idx].get("user_id") or "") != who:
                 continue
             entry = dict(self._meta[idx])
             _mid = _entry_id(entry)
@@ -301,6 +319,8 @@ class VectorStore:
             score = float(1.0 / (1.0 + dist))
             entry["score"] = score
             results.append(entry)
+            if len(results) >= top_k:
+                break
         return _trim_weak_tail(results, min_ratio=min_ratio)
 
     def mark_memory_deleted(self, memory_id: int) -> bool:
@@ -450,9 +470,11 @@ class VectorStore:
         try:
             con = _sq.connect(db_path)
             try:
+                whose = ("COALESCE(user_id, '')" if "user_id" in {r[1] for r in con.execute("PRAGMA table_info(memories)")}
+                         else "''")
                 raw = con.execute(
                     "SELECT COALESCE(text, content, ''), COALESCE(source,'user'), "
-                    "COALESCE(tags,''), COALESCE(kind,'memory'), id "
+                    f"COALESCE(tags,''), COALESCE(kind,'memory'), id, {whose} "
                     "FROM memories "
                     "WHERE length(COALESCE(text, content, '')) > 10" + _embeddable_sql(con) + " "
                     "ORDER BY id"
@@ -463,7 +485,7 @@ class VectorStore:
             log.debug(f"[VECTOR_STORE] memory database read failed: {e}")
             return None
         return [{"text": row[0].strip(), "source": row[1], "tags": row[2], "kind": row[3],
-                 "memory_id": row[4], "id": row[4]} for row in raw if row[0].strip()]
+                 "memory_id": row[4], "id": row[4], "user_id": row[5]} for row in raw if row[0].strip()]
 
     def _auto_rebuild(self) -> None:
         """At startup: rebuild an empty or unreadable index from the database, or add the memories a
@@ -528,11 +550,11 @@ class VectorStore:
         faiss.normalize_L2(arr)
         return arr
 
-    def _keyword_fallback(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+    def _keyword_fallback(self, query: str, top_k: int, who: str = "") -> List[Dict[str, Any]]:
         terms = query.lower().split()
         scored = []
         with self._lock:
-            entries = list(self._meta)
+            entries = [e for e in self._meta if str(e.get("user_id") or "") == who]
         for entry in entries:
             text = (entry.get("text") or "").lower()
             hit_count = sum(1 for t in terms if t in text)

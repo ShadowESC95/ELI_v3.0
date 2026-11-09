@@ -367,7 +367,24 @@ _POLICY_COLUMNS = [
     ("corrected_count", "INTEGER DEFAULT 0"),
     ("origin", "TEXT"),
     ("text_key", "TEXT"),
+    # whose the row is (eli/memory/policy.owner_key): '' the owner, an API member's id otherwise
+    ("user_id", "TEXT DEFAULT ''"),
 ]
+
+
+def _memory_scope(cols, alias: str = "", user_id=None) -> tuple:
+    """(" AND ...", params) keeping the memories of the turn's user (eli/memory/policy.scope_sql):
+    the owner's rows for the owner and background work, a member's own rows for that member."""
+    if "user_id" not in cols:
+        return "", ()
+    from eli.memory import policy as _policy
+    return _policy.scope_sql(f"{alias}user_id", _policy.owner_key(user_id))
+
+
+def _semantic_scope(key: str) -> tuple:
+    """The semantic facts of `key` (owner_key): store_semantic files the owner's under "default"."""
+    from eli.memory import policy as _policy
+    return _policy.scope_sql("user_id", key, raw_ids=True)
 
 
 def _policy_min_weight() -> float:
@@ -401,6 +418,7 @@ def _ensure_policy_schema(conn) -> None:
                      "kind TEXT, created_at REAL, PRIMARY KEY (child_id, parent_id))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_lineage_parent ON memory_lineage(parent_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin ON memories(origin)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)")
     except Exception:
         log.debug("[MEMORY] policy tables not created", exc_info=True)
 
@@ -641,6 +659,7 @@ def _ensure_memory_schema(conn):
         ("command", "TEXT"),
         ("count", "INTEGER DEFAULT 0"),
         ("timestamp", "REAL"),
+        ("user_id", "TEXT DEFAULT ''"),       # whose action it was (eli/memory/policy.owner_key)
     ]:
         _add_column_if_missing(conn, "habit_events", name, decl)
 
@@ -1218,7 +1237,7 @@ def _ensure_full_memory_schema(conn):
     for n, d in [
         ("event_type", "TEXT"), ("event", "TEXT"), ("details", "TEXT"), ("data", "TEXT"),
         ("timestamp", "REAL"), ("ts", "REAL"), ("name", "TEXT"), ("cmd", "TEXT"),
-        ("method", "TEXT"), ("command", "TEXT")
+        ("method", "TEXT"), ("command", "TEXT"), ("user_id", "TEXT DEFAULT ''")
     ]:
         _add_memory_column(conn, "habit_events", n, d)
 
@@ -1575,12 +1594,18 @@ def _habit_key(event_type, details) -> Tuple[str, str]:
     return key_name, key_cmd
 
 
-def _get_habit_events_window(self, event_type=None, days=14):
+def _get_habit_events_window(self, event_type=None, days=14, user_key=None):
+    """Habit events of the last `days`; with user_key (eli/memory/policy.owner_key) one user's only."""
     window = _now_ts() - float(days) * 86400.0
     conn = self._get_connection()
     try:
         sql = "SELECT id, COALESCE(event_type, event, name, ''), COALESCE(details, data, ''), COALESCE(timestamp, ts, 0) FROM habit_events WHERE COALESCE(timestamp, ts, 0) >= ?"
         params = [window]
+        if user_key is not None and "user_id" in _memory_table_columns(conn, "habit_events"):
+            from eli.memory import policy as _policy
+            frag, frag_params = _policy.scope_sql("user_id", user_key)
+            sql += frag
+            params.extend(frag_params)
         if event_type:
             sql += " AND COALESCE(event_type, event, name, '') = ?"
             params.append(event_type)
@@ -1876,7 +1901,7 @@ class Memory(metaclass=_MemoryMeta):
                      verification_status: str = "verified",
                      provenance_kind: str = "user_verbatim",
                      event_ts: Optional[float] = None, origin: str = "",
-                     text_key: str = "") -> int:
+                     text_key: str = "", user_key: str = "") -> int:
         """Internal method to write a memory to a single DB connection."""
         t = (text or "").strip()
         if not t:
@@ -1901,6 +1926,8 @@ class Memory(metaclass=_MemoryMeta):
                 "last_seen": ts, "recall_count": 0, "origin": origin or "",
                 "text_key": text_key or "",
             })
+        if "user_id" in cols:
+            row["user_id"] = user_key or ""
         names = list(row)
         cur = conn.execute(
             f"INSERT INTO memories ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
@@ -2049,16 +2076,18 @@ class Memory(metaclass=_MemoryMeta):
         return bool(self_fact)
 
     @staticmethod
-    def _touch_duplicate(conn, text_key: str, origin: str, now: float, importance: float) -> Optional[int]:
-        """If this statement is already stored, count the new sighting and return its id."""
+    def _touch_duplicate(conn, text_key: str, origin: str, now: float, importance: float,
+                         user_key: str = "") -> Optional[int]:
+        """If this user already has this statement stored, count the new sighting and return its id."""
         if not text_key:
             return None
         cols = _memory_table_columns(conn, "memories")
         if "text_key" not in cols or "seen_count" not in cols:
             return None
+        scope, scope_params = _memory_scope(cols, "", user_key or "")
         row = conn.execute(
-            "SELECT id FROM memories WHERE text_key = ? AND COALESCE(origin, '') = ? "
-            "ORDER BY id ASC LIMIT 1", (text_key, origin or ""),
+            "SELECT id FROM memories WHERE text_key = ? AND COALESCE(origin, '') = ?" + scope + " "
+            "ORDER BY id ASC LIMIT 1", (text_key, origin or "", *scope_params),
         ).fetchone()
         if not row:
             return None
@@ -2078,6 +2107,7 @@ class Memory(metaclass=_MemoryMeta):
         confidence: float = 1.0,
         metadata: Optional[Dict[str, Any]] = None,
         importance: Optional[float] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Store memory in primary DB and all secondary DBs.
 
@@ -2085,6 +2115,7 @@ class Memory(metaclass=_MemoryMeta):
         ----------
         importance : override the auto-computed salience score (0.0–1.0).
             Pass None to let _score_importance compute it automatically.
+        user_id : whose memory it is; None reads the turn's own (eli/memory/policy.owner_key).
         """
         t = (text or "").strip()
         if not t:
@@ -2150,6 +2181,7 @@ class Memory(metaclass=_MemoryMeta):
         from eli.memory import policy as _policy
         origin = _policy.classify_origin(source, kind, tags, t)
         _key = _policy.text_key(t)
+        _who = _policy.owner_key(user_id)
         ts = time.time()
         try:
             event_ts = float(meta.get("event_ts")) if isinstance(meta, dict) and meta.get("event_ts") else None
@@ -2159,7 +2191,7 @@ class Memory(metaclass=_MemoryMeta):
         # a repeat bumps the existing row's seen_count instead of adding a row
         conn_primary = self._get_connection()
         try:
-            _dup = self._touch_duplicate(conn_primary, _key, origin, ts, importance)
+            _dup = self._touch_duplicate(conn_primary, _key, origin, ts, importance, _who)
             if _dup is not None:
                 conn_primary.commit()
                 return {"ok": True, "id": _dup, "deduplicated": True, "importance": importance,
@@ -2169,7 +2201,7 @@ class Memory(metaclass=_MemoryMeta):
                 importance=importance,
                 verification_status=verification_status,
                 provenance_kind=provenance_kind,
-                event_ts=event_ts, origin=origin, text_key=_key,
+                event_ts=event_ts, origin=origin, text_key=_key, user_key=_who,
             )
             conn_primary.commit()
         finally:
@@ -2193,6 +2225,7 @@ class Memory(metaclass=_MemoryMeta):
                         "importance": importance,
                         "verification_status": verification_status,
                         "provenance_kind": provenance_kind,
+                        "user_id": _who,
                     },
                 ))
                 # No save here: each save rewrites the whole index (18 MB at 2,900 memories), and a
@@ -2222,7 +2255,7 @@ class Memory(metaclass=_MemoryMeta):
 
         try:
             if origin == _policy.ORIGIN_USER:
-                self.record_claims_from(t, rowid, event_ts or ts)
+                self.record_claims_from(t, rowid, event_ts or ts, user_id=_who)
         except Exception:
             log.debug("claims not recorded", exc_info=True)
 
@@ -2231,7 +2264,7 @@ class Memory(metaclass=_MemoryMeta):
             from eli.memory.knowledge_graph import feeds_graph, get_knowledge_graph
             if feeds_graph(origin):
                 kg = get_knowledge_graph()
-                kg.extract_from_memory(t, source=source)
+                kg.extract_from_memory(t, source=source, user_id=_who)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -2274,13 +2307,14 @@ class Memory(metaclass=_MemoryMeta):
         try:
             if not _eli_table_exists(conn, "memories"):
                 return []
+            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
             rows = conn.execute("""
                 SELECT id, COALESCE(text,''), COALESCE(tags,''), COALESCE(timestamp, ts, id)
                 FROM memories
-                WHERE tags LIKE ?
+                WHERE tags LIKE ?""" + mine + """
                 ORDER BY COALESCE(timestamp, ts, id) DESC
                 LIMIT ?
-            """, (f"%{tag}%", max(1, int(limit)))).fetchall()
+            """, (f"%{tag}%", *mine_params, max(1, int(limit)))).fetchall()
             out = []
             for r in rows:
                 tags_s = str(r[2] or "")
@@ -2306,12 +2340,13 @@ class Memory(metaclass=_MemoryMeta):
         try:
             if not _eli_table_exists(conn, "memories"):
                 return []
+            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
             rows = conn.execute("""
                 SELECT id, COALESCE(timestamp, ts, id), COALESCE(kind,''), COALESCE(text,''), COALESCE(tags,''), COALESCE(source,'')
-                FROM memories
+                FROM memories WHERE 1=1""" + mine + """
                 ORDER BY COALESCE(timestamp, ts, id) DESC
                 LIMIT ?
-            """, (max(int(limit) * 8, 160),)).fetchall()
+            """, (*mine_params, max(int(limit) * 8, 160))).fetchall()
             out = []
             for r in rows:
                 kind = str(r[2] or '').lower()
@@ -2334,10 +2369,15 @@ class Memory(metaclass=_MemoryMeta):
             conn.close()
 
     def recall_memory(self, query, limit=10, keyword_only: bool = False,
-                      verified_only: bool = False, tags=None):
+                      verified_only: bool = False, tags=None, user_id: Optional[str] = None):
+        """What the turn's user has stored that matches `query` (user_id None: the turn's own,
+        eli/memory/policy.owner_key). Another user's memories, claims, graph facts and turns never
+        come back: every channel below is scoped to them."""
         q = _norm_text(query).strip()
         if not q:
             return []
+        from eli.memory import policy as _scope_policy
+        _scope_key = _scope_policy.owner_key(user_id)
 
         limit = int(limit or 10)
         conn = self._get_connection()
@@ -2363,6 +2403,11 @@ class Memory(metaclass=_MemoryMeta):
             # so the aliased list is the one every query below uses.
             _kind_filter, _kind_params = memory_exclusion_sql(cols, alias="m.")
             _kind_filter_t, _ = memory_exclusion_sql(cols, alias="")
+            # the user's own rows only: rides with the exclusion fragment every query below uses
+            _scope, _scope_params = _memory_scope(cols, "m.", _scope_key)
+            _scope_t, _ = _memory_scope(cols, "", _scope_key)
+            _kind_filter, _kind_filter_t = _kind_filter + _scope, _kind_filter_t + _scope_t
+            _kind_params = (*_kind_params, *_scope_params)
             _verify_filter, _verify_params = verification_filter_sql(
                 cols, alias="m.", verified_only=verified_only,
             )
@@ -2646,9 +2691,10 @@ class Memory(metaclass=_MemoryMeta):
             if _identity_query:
                 try:
                     if _has_table(conn, "semantic"):
+                        _sem_scope, _sem_params = _semantic_scope(_scope_key)
                         sem_rows = conn.execute(
                             "SELECT id, fact, tags, confidence, created_at "
-                            "FROM semantic ORDER BY confidence DESC"
+                            "FROM semantic WHERE 1=1 " + _sem_scope + " ORDER BY confidence DESC", _sem_params
                         ).fetchall()
                         for sr in sem_rows:
                             out.insert(0, {
@@ -2671,7 +2717,7 @@ class Memory(metaclass=_MemoryMeta):
                 try:
                     from eli.memory.knowledge_graph import get_knowledge_graph
                     _kg = get_knowledge_graph()
-                    _kg_ctx = _kg.context_for_prompt(q, max_chars=600)
+                    _kg_ctx = _kg.context_for_prompt(q, max_chars=600, user_id=_scope_key)
                     if _kg_ctx:
                         out.insert(0, {
                             "id": "kg:context",
@@ -2714,14 +2760,15 @@ class Memory(metaclass=_MemoryMeta):
                     # Full phrase first, then a distinctive-keyword OR sweep.
                     _likes = [f"%{_q_low2}%"] + [f"%{_k}%" for _k in _kw]
                     _where = " OR ".join("LOWER(content) LIKE ?" for _ in _likes)
+                    _turn_scope, _turn_params = _scope_policy.scope_sql("user_id", _scope_key, raw_ids=True)
                     _conv_rows = conn.execute(
                         f"""SELECT COALESCE(timestamp, ts, 0), role, content
                            FROM conversation_turns
                            WHERE ({_where})
-                           AND role = 'user'
+                           AND role = 'user'{_turn_scope}
                            ORDER BY COALESCE(timestamp, ts, 0) DESC
                            LIMIT ?""",
-                        (*_likes, max(6, limit - len(out)) * 4),
+                        (*_likes, *_turn_params, max(6, limit - len(out)) * 4),
                     ).fetchall()
                     # Rank by count of distinct keywords matched, then recency,
                     # so the discriminating turn wins over generic recent chatter.
@@ -3278,10 +3325,11 @@ class Memory(metaclass=_MemoryMeta):
                 return []
             hits = " + ".join("(lower(COALESCE(text, '')) LIKE ?)" for _ in words)
             need = max(1, int(round(len(words) * 0.6)))
+            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories_archive"))
             rows = conn.execute(
                 f"SELECT id, COALESCE(text, ''), origin, archived_at, archive_reason, ({hits}) AS h FROM memories_archive "
-                f"WHERE ({hits}) >= ? ORDER BY h DESC, archived_at DESC LIMIT ?",
-                [f"%{w}%" for w in words] * 2 + [need, int(limit)],
+                f"WHERE ({hits}) >= ?{mine} ORDER BY h DESC, archived_at DESC LIMIT ?",
+                [f"%{w}%" for w in words] * 2 + [need, *mine_params, int(limit)],
             ).fetchall()
             return [{"id": r[0], "text": r[1], "origin": r[2], "archived_at": r[3], "reason": r[4]} for r in rows]
         except Exception:
@@ -3435,10 +3483,12 @@ class Memory(metaclass=_MemoryMeta):
                 everyone.update(frontier)
             report["derived"] = len(everyone) - len(wanted)
             marks = ",".join("?" * len(everyone))
-            rows = [{"id": r[0], "text": r[1] or "", "tags": r[2] or "", "ts": r[3] or 0, "source": r[4] or "user"}
+            whose = "COALESCE(user_id, '')" if "user_id" in _memory_table_columns(conn, "memories") else "''"
+            rows = [{"id": r[0], "text": r[1] or "", "tags": r[2] or "", "ts": r[3] or 0, "source": r[4] or "user",
+                     "user_id": r[5] or ""}
                     for r in conn.execute(
                         f"SELECT id, COALESCE(text, ''), COALESCE(tags, ''), COALESCE(timestamp, ts, 0), "
-                        f"COALESCE(source, 'user') FROM memories WHERE id IN ({marks})", sorted(everyone))]
+                        f"COALESCE(source, 'user'), {whose} FROM memories WHERE id IN ({marks})", sorted(everyone))]
             report["memories"] = len(rows)
             if not rows:
                 return report
@@ -3449,7 +3499,8 @@ class Memory(metaclass=_MemoryMeta):
             report["recall_log"] = conn.execute(f"DELETE FROM recall_log WHERE memory_id IN ({marks})", sorted(everyone)).rowcount or 0
             conn.execute(f"DELETE FROM memory_lineage WHERE child_id IN ({marks}) OR parent_id IN ({marks})", sorted(everyone) * 2)
             for r in rows:
-                self._forget_derivatives(conn, r["text"], r["ts"], report, include_turns, source=r["source"])
+                self._forget_derivatives(conn, r["text"], r["ts"], report, include_turns, source=r["source"],
+                                         user_key=r["user_id"])
             conn.commit()
         finally:
             conn.close()
@@ -3485,7 +3536,7 @@ class Memory(metaclass=_MemoryMeta):
 
     @staticmethod
     def _forget_derivatives(conn, text: str, ts: float, report: Dict[str, int], include_turns: bool,
-                            source: str = "user") -> None:
+                            source: str = "user", user_key: str = "") -> None:
         """Remove what was made from one forgotten memory. Something was made from it when it quotes
         the memory whole, is a piece of it (a quote, a thought's excerpt), holds most of its content
         words, or holds a word nothing else the user said contains (_only_in). One shared capitalised
@@ -3600,13 +3651,15 @@ class Memory(metaclass=_MemoryMeta):
         if has("kg_relations") and has("kg_entities") and ts:
             from eli.memory.knowledge_graph import read_triples
             ends = set()
+            mine, mine_params = ((" AND COALESCE(r.user_id, '') = ?", (user_key or "",))
+                                 if "user_id" in columns("kg_relations") else ("", ()))
             for subj, predicate, obj in set(read_triples(text, source)):
                 for rid, sid, oid in conn.execute(
                         "SELECT r.id, r.subject_id, r.object_id FROM kg_relations r "
                         "JOIN kg_entities s ON s.id = r.subject_id JOIN kg_entities o ON o.id = r.object_id "
                         "WHERE LOWER(s.name) = LOWER(?) AND LOWER(r.predicate) = LOWER(?) AND LOWER(o.name) = LOWER(?) "
-                        "AND ABS(COALESCE(r.ts, 0) - ?) <= ?",
-                        (subj, predicate, obj, float(ts), Memory._LEARNED_WITH_SECONDS)).fetchall():
+                        "AND ABS(COALESCE(r.ts, 0) - ?) <= ?" + mine,
+                        (subj, predicate, obj, float(ts), Memory._LEARNED_WITH_SECONDS, *mine_params)).fetchall():
                     conn.execute("DELETE FROM kg_relations WHERE id = ?", (rid,))
                     report["graph"] += 1
                     ends.update((sid, oid))
@@ -3632,6 +3685,13 @@ class Memory(metaclass=_MemoryMeta):
         _claims.ensure_schema(conn)
         return conn
 
+    @staticmethod
+    def _claim_subject(user_id=None) -> str:
+        """Who the turn's claims are about: the owner ("user") or one API member ("user:<id>")."""
+        from eli.memory import claims as _claims
+        from eli.memory import policy as _policy
+        return _claims.user_subject(_policy.owner_key(user_id))
+
     def record_observed(self, relation: str, value: str, when: Optional[float] = None, source: str = "") -> Optional[int]:
         """Something ELI saw rather than was told, such as the show playing in the user's player. Activities only."""
         from eli.memory import claims as _claims
@@ -3640,7 +3700,7 @@ class Memory(metaclass=_MemoryMeta):
         conn = self._claims_conn()
         try:
             cid = _claims.record(conn, relation, value, valid_from=when, source_text=source, origin="observed",
-                                 confidence=0.6)
+                                 confidence=0.6, subject=self._claim_subject())
             conn.commit()
         finally:
             conn.close()
@@ -3659,16 +3719,17 @@ class Memory(metaclass=_MemoryMeta):
                 return out
             if "conversation_turns" not in _table_names(conn):
                 return out
-            rows = conn.execute("SELECT role, content, COALESCE(ts, timestamp, 0) FROM conversation_turns "
-                                "ORDER BY COALESCE(ts, timestamp, 0), id").fetchall()
-            for role, content, ts in rows:
+            rows = conn.execute("SELECT role, content, COALESCE(ts, timestamp, 0), COALESCE(user_id, '') "
+                                "FROM conversation_turns ORDER BY COALESCE(ts, timestamp, 0), id").fetchall()
+            for role, content, ts, who in rows:
                 text, when = str(content or ""), float(ts or 0.0) or None
+                subject = self._claim_subject(who)
                 out["turns"] += 1
                 if str(role or "").lower() == "user":
                     found = _claims.extract(text)
                     out["claims"] += len(found)
                     if found and not dry_run:
-                        _claims.record_from_text(conn, text, when=when)
+                        _claims.record_from_text(conn, text, when=when, subject=subject)
                 elif str(role or "").lower() == "assistant":
                     for inner in re.findall(r"\(([^()]{3,160})\)", text):
                         show = _claims.observed_show(inner)
@@ -3676,7 +3737,7 @@ class Memory(metaclass=_MemoryMeta):
                             out["claims"] += 1
                             if not dry_run:
                                 _claims.record(conn, "watching", show, valid_from=when, source_text=inner,
-                                               origin="observed", confidence=0.6)
+                                               origin="observed", confidence=0.6, subject=subject)
             if not dry_run:
                 self._meta_set(conn, "claims_extract_version", _claims.EXTRACT_VERSION)
                 conn.commit()
@@ -3687,15 +3748,18 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
-    def record_claims_from(self, text: str, memory_id: Optional[int] = None, when: Optional[float] = None) -> List[int]:
-        """Turn first-person statements into dated claims. A changed fact supersedes the old one and keeps it as history."""
+    def record_claims_from(self, text: str, memory_id: Optional[int] = None, when: Optional[float] = None,
+                           user_id: Optional[str] = None) -> List[int]:
+        """Turn first-person statements into dated claims about whoever said them (user_id None: the
+        turn's user). A changed fact supersedes that user's old one and keeps it as history."""
         from eli.memory import claims as _claims
         if not _claims.extract(text):
             return []
         conn = self._claims_conn()
         try:
             ids = _claims.record_from_text(conn, text, source_memory_id=memory_id, when=when,
-                                           root_id=self.lineage_root(memory_id) if memory_id else None)
+                                           root_id=self.lineage_root(memory_id) if memory_id else None,
+                                           subject=self._claim_subject(user_id))
             conn.commit()
         finally:
             conn.close()
@@ -3710,25 +3774,27 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
+    # Every reader below is about the turn's user (_claim_subject): never another member's claims,
+    # never ELI's own stances (claims.SUBJECT_ELI).
     def claims_current(self):
         from eli.memory import claims as _c
-        return self._claims_query(_c.current)
+        return self._claims_query(_c.current, self._claim_subject())
 
     def claims_disputed(self):
         from eli.memory import claims as _c
         return self._claims_query(lambda conn: _c._rows(
             conn, f"SELECT {_c._COLS} FROM memory_claims WHERE subject = ? AND status = 'disputed' ORDER BY id",
-            (_c.SUBJECT_USER,)))
+            (self._claim_subject(),)))
 
     def claim_conflicts(self):
         from eli.memory import claims as _c
-        return self._claims_query(_c.open_conflicts)
+        return self._claims_query(_c.open_conflicts, self._claim_subject())
 
     def resolve_claim_conflict(self, relation: str, value: str) -> int:
         from eli.memory import claims as _c
         conn = self._claims_conn()
         try:
-            n = _c.resolve_conflict(conn, relation, value)
+            n = _c.resolve_conflict(conn, relation, value, subject=self._claim_subject())
             conn.commit()
             return n
         finally:
@@ -3736,15 +3802,15 @@ class Memory(metaclass=_MemoryMeta):
 
     def claims_during(self, start: float, end: float):
         from eli.memory import claims as _c
-        return self._claims_query(_c.valid_during, start, end)
+        return self._claims_query(_c.valid_during, start, end, self._claim_subject())
 
     def claims_known_at(self, when: float):
         from eli.memory import claims as _c
-        return self._claims_query(_c.known_at, when)
+        return self._claims_query(_c.known_at, when, self._claim_subject())
 
     def claim_history(self, relation: str):
         from eli.memory import claims as _c
-        return self._claims_query(_c.history, relation)
+        return self._claims_query(_c.history, relation, self._claim_subject())
 
     def memory_facts(self, memory_id: int) -> Dict[str, Any]:
         """What is on record for one memory, for ELI to answer from when the user holds it in its
@@ -4341,15 +4407,18 @@ class Memory(metaclass=_MemoryMeta):
             # facts come from the user's own words, never from text they pasted (split_pasted)
             from eli.cognition.correction_patterns import split_pasted
             _content_s = split_pasted(str(content or ""))[0]
+            # all of it is the turn's user's: a member's statements never become the owner's facts
+            from eli.memory import policy as _turn_policy
+            _turn_who = _turn_policy.owner_key(user_id)
             try:
                 from eli.memory.knowledge_graph import get_knowledge_graph
-                get_knowledge_graph().extract_from_memory(_content_s, source="user")
+                get_knowledge_graph().extract_from_memory(_content_s, source="user", user_id=_turn_who)
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
             # A dated claim from every message, not only those kept as memories: "GOT is on in the
             # background" said in passing was never stored, and ELI answered with a show from a month before.
             try:
-                self.record_claims_from(_content_s, None, now)
+                self.record_claims_from(_content_s, None, now, user_id=_turn_who)
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
             try:
@@ -4361,6 +4430,7 @@ class Memory(metaclass=_MemoryMeta):
                         source="conversation",
                         kind="fact",
                         importance=_imp,
+                        user_id=_turn_who,
                     )
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
@@ -4428,11 +4498,15 @@ class Memory(metaclass=_MemoryMeta):
             log.debug("suppressed exception", exc_info=True)
 
         if str(role or "").lower() == "user":
-            try:
-                from eli.runtime.profile_extractor import write_patterns_from_turn
-                write_patterns_from_turn(content, db_path=self.db_path, ts_value=now)
-            except Exception as e:
-                log.debug(f"[MEMORY] profile extraction failed: {e}")
+            # The learned profile (patterns, semantic facts, the user model) holds one person, the
+            # owner: a member's turn feeding it made the member's life the owner's.
+            from eli.memory import policy as _profile_policy
+            if not _profile_policy.is_member(user_id):
+                try:
+                    from eli.runtime.profile_extractor import write_patterns_from_turn
+                    write_patterns_from_turn(content, db_path=self.db_path, ts_value=now)
+                except Exception as e:
+                    log.debug(f"[MEMORY] profile extraction failed: {e}")
         else:
             # Notice when ELI commits to a position so it outlives the conversation. Without this a stance
             # exists only in the scrollback: ELI could argue a line for an hour and take the opposite
@@ -4728,7 +4802,7 @@ class Memory(metaclass=_MemoryMeta):
     # -----------------------------------------------------------------
 
     def memories_between(self, since: float, until: float, limit: int = 40,
-                         verified_only: bool = True) -> List[Dict[str, Any]]:
+                         verified_only: bool = True, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Memories whose event time falls in [since, until), strongest first: the time filter comes before any ranking."""
         from eli.core.self_provenance import memory_exclusion_sql
         from eli.runtime.memory_provenance import verification_filter_sql
@@ -4739,11 +4813,12 @@ class Memory(metaclass=_MemoryMeta):
             imp = "COALESCE(importance, 0.5)" if "importance" in cols else "0.5"
             skip, skip_params = memory_exclusion_sql(cols, alias="")
             ver, ver_params = verification_filter_sql(cols, alias="", verified_only=verified_only)
+            mine, mine_params = _memory_scope(cols, "", user_id)
             rows = conn.execute(
                 f"SELECT id, {when}, COALESCE(text, content, ''), COALESCE(tags, ''), COALESCE(weight, 1.0), {imp} "
-                f"FROM memories WHERE {when} >= ? AND {when} < ?{skip}{ver} "
+                f"FROM memories WHERE {when} >= ? AND {when} < ?{skip}{ver}{mine} "
                 f"ORDER BY {imp} * COALESCE(weight, 1.0) DESC, {when} DESC LIMIT ?",
-                (float(since), float(until), *skip_params, *ver_params, int(limit))).fetchall()
+                (float(since), float(until), *skip_params, *ver_params, *mine_params, int(limit))).fetchall()
             return [{"id": r[0], "ts": r[1], "timestamp": r[1], "event_ts": r[1], "text": r[2], "tags": r[3],
                      "weight": r[4], "importance": r[5], "_source": "window"} for r in rows]
         finally:
@@ -4753,10 +4828,11 @@ class Memory(metaclass=_MemoryMeta):
         """Return the most recent memory entries, ordered by timestamp descending."""
         conn = self._get_connection()
         try:
+            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
             cursor = conn.execute(
                 "SELECT id, ts, timestamp, kind, text, tags, source, confidence, weight "
-                "FROM memories ORDER BY COALESCE(timestamp, ts, id) DESC LIMIT ?",
-                (limit,)
+                "FROM memories WHERE 1=1" + mine + " ORDER BY COALESCE(timestamp, ts, id) DESC LIMIT ?",
+                (*mine_params, limit)
             )
             rows = cursor.fetchall()
             out = []
@@ -4807,6 +4883,7 @@ class Memory(metaclass=_MemoryMeta):
         details_blob = _jsonify_value(details)
         conn = self._get_connection()
         try:
+            from eli.memory import policy as _policy
             rid = _insert_payload(conn, "habit_events", {
                 "event_type": _norm_text(event_type),
                 "event": _norm_text(event_type),
@@ -4816,6 +4893,7 @@ class Memory(metaclass=_MemoryMeta):
                 "ts": now,
                 "name": _norm_text(event_type),
                 "command": _norm_text(event_type),
+                "user_id": _policy.owner_key(),
             })
 
             key_name, key_cmd = _habit_key(event_type, details)
@@ -5318,8 +5396,8 @@ class Memory(metaclass=_MemoryMeta):
         (scheduled time automations).
 
         A habit is what the user did and what worked, lately: the uses of each action that did not
-        fail, within one of this user's own memory half-lives (adaptive_half_life: how often they use
-        ELI). It was the all-time tally of every request, failed or not, so a run of failed plays
+        fail, by this user (the turn's: eli/memory/policy.owner_key), within one of their own memory
+        half-lives (adaptive_half_life: how often they use ELI). It was the all-time tally of every request, failed or not, so a run of failed plays
         grew "play media x31" to x57 and ELI offered to streamline it. Each habit also says how often
         it failed in that window ("failed"), so a caller can tell a routine from something broken."""
         out = []
@@ -5329,7 +5407,8 @@ class Memory(metaclass=_MemoryMeta):
             failed: Dict[str, int] = {}
             command: Dict[str, str] = {}
             order: List[str] = []
-            for ev in _get_habit_events_window(self, days=days):
+            from eli.memory import policy as _policy
+            for ev in _get_habit_events_window(self, days=days, user_key=_policy.owner_key()):
                 details = ev.get("details")
                 name, cmd = _habit_key(ev.get("event_type"), details)
                 name = str(name or "").strip()

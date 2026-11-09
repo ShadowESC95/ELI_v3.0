@@ -233,3 +233,32 @@ def test_the_model_loader_gives_the_embedder_its_place_before_planning(monkeypat
     except Exception:
         pass
     assert order[:1] == ["embedder"], order
+
+
+def test_search_returns_only_the_searching_user_s_entries(monkeypatch):
+    """The vector index carried no user: the orchestrator, the context synthesiser and HyDE read
+    another API member's memories straight from its hits."""
+    faiss = pytest.importorskip("faiss")
+    import numpy as np
+    from eli.kernel.request_context import user_id_var
+    from eli.memory import policy
+    from eli.memory.vector_store import EMBED_DIM
+    monkeypatch.setattr(policy, "rbac_members", lambda: frozenset({"member-7"}))
+    vs = _bare_store()
+    vs._tombstone_ids = set()
+    vs._entry_cap = 0
+    vs._index = faiss.IndexFlatL2(EMBED_DIM)
+    vs._save_async = lambda: None
+    vs._embed = lambda text: np.ones((1, EMBED_DIM), dtype="float32")
+    assert vs.add("the owner's bike lock code", metadata={"memory_id": 1})
+    token = user_id_var.set("member-7")
+    try:
+        assert vs.add("a member's bike lock code", metadata={"memory_id": 2})
+        assert [h["memory_id"] for h in vs.search("bike lock", top_k=5, min_ratio=0)] == [2]
+        assert [e["memory_id"] for e in vs._keyword_fallback("bike lock", 5, "member-7")] == [2]
+    finally:
+        user_id_var.reset(token)
+    assert [h["memory_id"] for h in vs.search("bike lock", top_k=5, min_ratio=0)] == [1]
+    vs._meta.append({"text": "an entry from before entries had users", "memory_id": 3})
+    vs._index.add(np.ones((1, EMBED_DIM), dtype="float32"))
+    assert sorted(h["memory_id"] for h in vs.search("bike lock", top_k=5, min_ratio=0)) == [1, 3]

@@ -204,7 +204,7 @@ def test_history_is_read_in_order_and_answers_the_question(mem):
         ("user", "Do you recall what I am watching at the moment?", "2026-10-08 21:38"),
     ]:
         conn.execute("INSERT INTO conversation_turns (session_id, user_id, role, content, ts, timestamp) "
-                     "VALUES ('s', 'u', ?, ?, ?, ?)", (role, text, _dt(when), _dt(when)))
+                     "VALUES ('s', 'default-user', ?, ?, ?, ?)", (role, text, _dt(when), _dt(when)))
     conn.commit()
     conn.close()
     assert mem.backfill_claims()["claims"] == 3

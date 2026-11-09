@@ -331,13 +331,8 @@ def _sha256(path: Path) -> str:
 
 
 def _owner(user_id: str) -> bool:
-    if not user_id:
-        return True
-    try:
-        from eli.kernel.state import get_active_user_id
-        return str(user_id) == str(get_active_user_id())
-    except Exception:
-        return True
+    from eli.memory.policy import is_active_user
+    return is_active_user(user_id)
 
 
 class DocumentIndex:

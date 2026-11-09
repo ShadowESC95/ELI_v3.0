@@ -49,6 +49,13 @@ _KEY = re.compile(r"\s+")
 SUBJECT_USER = "user"
 SUBJECT_ELI = "eli"
 
+
+def user_subject(owner_key: str = "") -> str:
+    """The subject of one user's claims: SUBJECT_USER for the owner (owner_key ''), "user:<id>" for
+    an API member, so one member's "I work nights" never supersedes or confirms another's."""
+    key = str(owner_key or "").strip()
+    return f"{SUBJECT_USER}:{key}" if key else SUBJECT_USER
+
 # What the user is doing at the moment. These change often, so a newer value replaces the old one
 # whoever reported it, instead of the two standing side by side as a dispute.
 CHANGES_OFTEN = frozenset({"watching", "playing", "reading", "listening_to"})
@@ -479,14 +486,15 @@ def extract(text: str) -> List[Dict[str, Any]]:
 
 
 def record_from_text(conn, text: str, *, source_memory_id: Optional[int] = None, when: Optional[float] = None,
-                     origin: str = "user_said", root_id: Optional[int] = None) -> List[int]:
+                     origin: str = "user_said", root_id: Optional[int] = None,
+                     subject: str = SUBJECT_USER) -> List[int]:
     ids: List[int] = []
     for c in extract(text):
         if c["retire"]:
-            retire(conn, c["relation"], at=when)
+            retire(conn, c["relation"], subject=subject, at=when)
             continue
-        cid = record(conn, c["relation"], c["value"], single_valued=c["single_valued"], valid_from=when,
-                     source_memory_id=source_memory_id, source_text=text, origin=origin,
+        cid = record(conn, c["relation"], c["value"], subject=subject, single_valued=c["single_valued"],
+                     valid_from=when, source_memory_id=source_memory_id, source_text=text, origin=origin,
                      historical=c["historical"], root_id=root_id)
         if cid:
             ids.append(cid)
