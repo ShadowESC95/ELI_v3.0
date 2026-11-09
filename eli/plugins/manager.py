@@ -7,9 +7,9 @@ Handles discovery, loading, downloading, installing, enabling and disabling plug
 Usage (from executor or GUI):
     from eli.plugins.manager import get_manager
     mgr = get_manager()
-    mgr.list_available()        # all plugins in registry
+    mgr.list_available()        # the plugins ELI ships (the bundled registry)
     mgr.list_installed()        # locally installed plugins
-    mgr.install("weather")      # download + enable
+    mgr.install("weather")      # enable a shipped plugin; anything else goes through the marketplace
     mgr.uninstall("weather")    # disable + remove files
     mgr.enable("weather")       # re-enable disabled plugin
     mgr.disable("weather")      # disable without removing
@@ -22,10 +22,8 @@ import importlib
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 import threading
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -103,13 +101,6 @@ def _state_file() -> Path:
     return state_file
 
 
-def _registry_url() -> str:
-    return os.environ.get(
-        "ELI_PLUGIN_REGISTRY_URL",
-        "https://raw.githubusercontent.com/eli-plugins/registry/main/index.json",
-    )
-
-
 def _local_registry() -> Path:
     """Bundled fallback registry shipped with ELI."""
     return _eli_src() / "plugins" / "registry" / "index.json"
@@ -138,26 +129,9 @@ def _save_state(state: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def _fetch_registry(timeout: int = 8) -> List[Dict[str, Any]]:
-    """Fetch registry from network, falling back to bundled index.json.
-
-    The network fetch is routed through `netguard.http_get_json`, so it respects
-    offline-by-default: when network isn't allowed the call fails CLOSED
-    (`OfflineError`, no socket attempt) and we drop straight to the bundled
-    registry — instead of hanging on an N-second timeout every call. Online,
-    it behaves exactly as before.
-    """
-    try:
-        from eli.core.netguard import http_get_json
-        data = http_get_json(
-            _registry_url(),
-            headers={"User-Agent": "ELI-plugin-manager/1.0"},
-            timeout=timeout,
-        )
-        return data.get("plugins", [])
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    # Fallback: bundled registry
+    """The plugins ELI ships, from the bundled index.json. Never the network: a plugin from
+    anywhere else is a marketplace listing (eli.plugins.marketplace), installed only through its
+    checksum, scan, manifest and consent. `timeout` is unused and kept for callers."""
     p = _local_registry()
     if p.exists():
         try:
@@ -199,7 +173,7 @@ class PluginManager:
     # ------------------------------------------------------------------
 
     def refresh_registry(self) -> List[Dict]:
-        """Re-fetch the online registry."""
+        """Re-read the bundled registry."""
         self._registry_cache = _fetch_registry()
         return self._registry_cache
 
@@ -253,6 +227,14 @@ class PluginManager:
                 log.debug(f"[PLUGIN] Failed to auto-load {pid}: {exc}")
 
     def _load_plugin_from_file(self, plugin_id: str, path: Path) -> Optional[Plugin]:
+        # Only a plugin that ships with ELI, or one whose own valid manifest says what it may do,
+        # is executed. A folder dropped into the user's plugins directory (or a plugin whose
+        # manifest went missing) would otherwise run with every capability unchecked.
+        from eli.plugins.sandbox import plugin_trust
+        trust = plugin_trust(Path(path).parent)
+        if not trust["loadable"]:
+            log.warning(f"[PLUGIN] not loading {plugin_id}: {trust['problem']}")
+            return None
         spec = importlib.util.spec_from_file_location(
             f"plugins.{plugin_id}.plugin", path
         )
@@ -303,61 +285,47 @@ class PluginManager:
         self,
         plugin_id: str,
         progress_cb: Optional[Callable[[str], None]] = None,
+        *,
+        confirm: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ) -> Dict[str, Any]:
         """
         Install a plugin by id.
-        1. Looks up registry entry
-        2. pip-installs any required packages
-        3. Downloads plugin.py, or for a built-in uses the copy that ships with ELI
-        4. Enables it
-        """
-        entry = self.get_registry_entry(plugin_id)
-        if entry is None:
-            return {"ok": False, "error": f"Plugin '{plugin_id}' not found in registry"}
 
+        A plugin that ships with ELI is enabled from the copy ELI ships: nothing is downloaded or
+        installed, and the Python packages it lists must already be present (ELI's own
+        requirements carry them). Any other id is a marketplace listing and goes through
+        marketplace.install — checksum, signature, scan, manifest check, and `confirm` (the
+        operator's consent; none means refused) — and is installed switched off.
+        """
         def _log(msg: str) -> None:
             log.debug(f"[PLUGIN:install:{plugin_id}] {msg}")
             if progress_cb:
                 progress_cb(msg)
 
-        _log(f"Installing {entry['name']} v{entry['version']}…")
+        shipped = _bundled_plugins_dir() / plugin_id / "plugin.py"
+        if not shipped.is_file():
+            return self._install_from_marketplace(plugin_id, confirm=confirm, log_cb=_log)
 
-        # 1. pip deps
-        for pkg in entry.get("pip", []):
-            _log(f"  pip install {pkg}")
+        entry = self.get_registry_entry(plugin_id) or {"id": plugin_id, "name": plugin_id, "version": "?"}
+        _log(f"Enabling the {entry.get('name', plugin_id)} plugin that ships with ELI…")
+        missing = []
+        for pkg in entry.get("pip", []) or []:
+            name = str(pkg).split(";")[0].strip()
+            for sep in ("[", "=", "<", ">", "!", "~", " "):
+                name = name.split(sep)[0]
             try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "--quiet", pkg],
-                    timeout=120,
-                )
-            except Exception as exc:
-                return {"ok": False, "error": f"pip install {pkg} failed: {exc}"}
+                from importlib.metadata import PackageNotFoundError, version
+                version(name)
+            except PackageNotFoundError:
+                missing.append(str(pkg))
+            except Exception:
+                log.debug(f"[PLUGIN] could not check {pkg}", exc_info=True)
+                missing.append(str(pkg))
+        if missing:
+            return {"ok": False, "error": (f"'{entry.get('name', plugin_id)}' needs the Python package(s) "
+                                           f"{', '.join(missing)}, which are not installed in this ELI. "
+                                           "ELI does not install packages for a plugin; nothing was changed.")}
 
-        # 2–3. Download plugin.py, or use the built-in that ships with ELI. A built-in with no copy
-        # used to get a generated stub whose every action answered ok "executed (stub)", and it
-        # replaced the real plugin in memory.
-        source_url = entry.get("source")
-        if source_url:
-            plugin_dir = _plugins_dir() / plugin_id
-            plugin_dir.mkdir(parents=True, exist_ok=True)
-            (plugin_dir / "__init__.py").touch()
-            plugin_py = plugin_dir / "plugin.py"
-            _log(f"  Downloading from {source_url}")
-            try:
-                req = urllib.request.Request(
-                    source_url,
-                    headers={"User-Agent": "ELI-plugin-manager/1.0"},
-                )
-                with urllib.request.urlopen(req, timeout=30) as r:
-                    plugin_py.write_bytes(r.read())
-            except Exception as exc:
-                return {"ok": False, "error": f"Download failed: {exc}"}
-        else:
-            plugin_py = _bundled_plugins_dir() / plugin_id / "plugin.py"
-            if not plugin_py.is_file():
-                return {"ok": False, "error": f"Plugin '{plugin_id}' has no download and none ships with ELI"}
-
-        # 4. Save state
         state = _load_state()
         enabled = set(state.get("enabled", []))
         disabled = set(state.get("disabled", []))
@@ -366,9 +334,9 @@ class PluginManager:
         state["enabled"] = sorted(enabled)
         state["disabled"] = sorted(disabled)
         state.setdefault("installed", {})[plugin_id] = {
-            "version": entry["version"],
+            "version": entry.get("version", "?"),
             "description": entry.get("description", ""),
-            "source": source_url or "builtin",
+            "source": "builtin",
         }
         _save_state(state)
         self._state = state
@@ -379,20 +347,38 @@ class PluginManager:
         except Exception:
             log.debug("[PLUGIN] sandbox refresh failed", exc_info=True)
 
-        # 5. Load into memory
-        loaded = self._load_plugin_from_file(plugin_id, plugin_py)
+        loaded = self._load_plugin_from_file(plugin_id, shipped)
         if loaded is None:
-            return {"ok": False, "error": "Plugin installed but could not be loaded"}
+            return {"ok": False, "error": "Plugin enabled but could not be loaded"}
 
-        _log(f"  ✅ {entry['name']} installed and loaded")
+        _log(f"  ✅ {entry.get('name', plugin_id)} enabled and loaded")
         return {
             "ok": True,
             "plugin_id": plugin_id,
-            "name": entry["name"],
+            "name": entry.get("name", plugin_id),
             "actions": entry.get("actions", []),
-            "content": f"✅ Plugin '{entry['name']}' installed successfully.",
-            "response": f"✅ Plugin '{entry['name']}' installed successfully.",
+            "content": f"✅ Plugin '{entry.get('name', plugin_id)}' installed successfully.",
+            "response": f"✅ Plugin '{entry.get('name', plugin_id)}' installed successfully.",
         }
+
+    @staticmethod
+    def _install_from_marketplace(plugin_id: str, *, confirm, log_cb) -> Dict[str, Any]:
+        """A plugin that does not ship with ELI: its marketplace listing, through the verified path."""
+        try:
+            from eli.plugins import marketplace
+            listing = next((m for m in marketplace.search(plugin_id)
+                            if str(m.get("id", "")).lower() == plugin_id.lower()), None)
+        except Exception as exc:
+            return {"ok": False, "error": f"Plugin '{plugin_id}' does not ship with ELI, and the "
+                                          f"marketplace could not be read: {exc}"}
+        if listing is None:
+            return {"ok": False, "error": f"Plugin '{plugin_id}' does not ship with ELI and no "
+                                          f"marketplace lists it"}
+        log_cb(f"Installing {listing.get('name', plugin_id)} from {listing.get('registry_label') or 'the marketplace'}…")
+        result = marketplace.install(listing, confirm=confirm)
+        if not result.get("ok"):
+            result.setdefault("error", "; ".join(result.get("problems") or []) or "installation refused")
+        return result
 
     def uninstall(self, plugin_id: str) -> Dict[str, Any]:
         """Remove plugin files and state."""
@@ -514,6 +500,10 @@ class PluginManager:
             plugin_py = _bundled_plugins_dir() / plugin_id / "plugin.py"
         if not plugin_py.exists():
             return {"ok": False, "error": f"Plugin '{plugin_id}' not installed"}
+        from eli.plugins.sandbox import plugin_trust
+        trust = plugin_trust(plugin_py.parent)
+        if not trust["loadable"]:
+            return {"ok": False, "error": f"Plugin '{plugin_id}' cannot be enabled: {trust['problem']}"}
 
         state = _load_state()
         disabled = set(state.get("disabled", []))

@@ -25,18 +25,20 @@ def test_fetch_registry_offline_uses_bundled_instantly(monkeypatch):
     assert len(out) >= 1
 
 
-def test_fetch_registry_routes_through_netguard(monkeypatch):
-    """It must use the gated helper, not a raw urlopen."""
-    called = {"guarded": False}
+def test_the_manager_registry_never_reaches_the_network(monkeypatch):
+    """The manager had a second, remote registry whose entries it downloaded and ran unverified.
+    Its registry is the bundled list of what ships with ELI; anything else is a marketplace
+    listing, verified there."""
+    import eli.core.config as cfg
+    monkeypatch.setattr(cfg, "network_allowed", lambda: True)
 
-    def fake_http_get_json(url, headers=None, timeout=20):
-        called["guarded"] = True
-        return {"plugins": [{"name": "x"}]}
-
-    monkeypatch.setattr("eli.core.netguard.http_get_json", fake_http_get_json)
+    reached = []
+    monkeypatch.setattr("eli.core.netguard.http_get_json",
+                        lambda url, **k: reached.append(url) or {"plugins": [{"id": "remote"}]})
     out = manager._fetch_registry()
-    assert called["guarded"] is True
-    assert out == [{"name": "x"}]
+    bundled = __import__("json").loads(manager._local_registry().read_text()).get("plugins", [])
+    assert reached == [], "the plugin manager's registry reached the network"
+    assert out == bundled and out
 
 
 def test_web_search_blocks_offline_at_choke_point(monkeypatch):

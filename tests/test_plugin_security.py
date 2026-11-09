@@ -185,3 +185,18 @@ def test_unknown_publisher_is_unverified_not_trusted(tmp_path, monkeypatch):
     src = b"x = 1\n"
     v = integrity.verify_signature(src, base64.b64encode(b"z" * 64).decode(), "nobody")
     assert v["ok"] is False and v["status"] == integrity.UNVERIFIED
+
+
+@pytest.mark.parametrize("src", [
+    "from os import system\nsystem('touch x')\n",
+    "import os as o\no.system('touch x')\n",
+    "from os import system as run\nrun('touch x')\n",
+])
+def test_an_imported_or_aliased_call_is_still_seen(src):
+    """The scan matched only the literal chain `os.system`, so `from os import system` passed."""
+    assert "process_exec" in scan_source(src)["required"]
+
+
+def test_an_aliased_dynamic_import_is_still_refused():
+    r = scan_source("from importlib import import_module as im\nim('subprocess')\n")
+    assert not r["ok"] and r["forbidden"]

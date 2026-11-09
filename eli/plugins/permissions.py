@@ -140,23 +140,37 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
 
 ALL_CAPABILITIES = tuple(CAPABILITIES)
 
+# The capabilities ELI enforces while a plugin runs (eli/plugins/sandbox.py's audit hook stops the
+# operation itself, and asks the operator before the first use). The others are declarations
+# only: nothing at runtime stops a plugin that does them, asked or not, until ELI's own entry
+# points for them call sandbox.enforce(). The consent text says so.
+ENFORCED_CAPABILITIES = frozenset({"network", "filesystem_read", "filesystem_write", "process_exec"})
+_NOT_ENFORCED = ("ELI does not enforce this one yet: once the plugin is switched on, nothing stops "
+                 "it doing this, whatever you answer.")
+
 
 def describe(capability: str) -> Dict[str, Any]:
     """Human-readable description of a capability, including unknown ones.
 
     An unrecognised capability is reported as critical rather than ignored — a
     manifest asking for something this build has never heard of is exactly the case
-    that must not be waved through.
+    that must not be waved through. `enforced` says whether ELI stops a plugin that
+    uses it without permission; where it does not, `why_risky` says so too.
     """
     known = CAPABILITIES.get(capability)
     if known:
-        return {"id": capability, **known}
+        enforced = capability in ENFORCED_CAPABILITIES
+        out = {"id": capability, **known, "enforced": enforced}
+        if not enforced:
+            out["why_risky"] = f"{known['why_risky']} {_NOT_ENFORCED}"
+        return out
     return {
         "id": capability,
         "title": f"Unrecognised permission: {capability}",
         "detail": "This build of ELI does not know what this permission does.",
         "why_risky": "A permission ELI cannot explain cannot be judged. Treat with suspicion.",
         "risk": RISK_CRITICAL,
+        "enforced": False,
     }
 
 
@@ -361,6 +375,7 @@ def check(plugin_id: str, capability: str, detail: str = "",
         "detail": detail or info["detail"],
         "why_risky": info["why_risky"],
         "risk": info["risk"],
+        "enforced": info["enforced"],
     }
     try:
         answer = _PROMPT(request)
@@ -389,7 +404,7 @@ def require(plugin_id: str, capability: str, detail: str = "") -> None:
 
 __all__ = [
     "ALLOW_ALWAYS", "ALLOW_ONCE", "DENY_ONCE", "DENY_ALWAYS", "DECISIONS",
-    "CAPABILITIES", "ALL_CAPABILITIES", "describe", "risk_of",
+    "CAPABILITIES", "ALL_CAPABILITIES", "ENFORCED_CAPABILITIES", "describe", "risk_of",
     "PermissionStore", "store", "set_prompt_handler", "has_prompt_handler",
     "check", "require",
 ]

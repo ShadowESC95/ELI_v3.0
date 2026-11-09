@@ -142,6 +142,9 @@ def test_ambiguous_bare_name_is_reported_not_guessed(installed, monkeypatch):
 
     (pdir / "rival").mkdir()
     (pdir / "rival" / "plugin.py").write_text(SECOND_SRC, encoding="utf-8")
+    (pdir / "rival" / "eli_plugin.json").write_text(json.dumps({
+        "id": "rival", "name": "Rival", "version": "1.0.0", "description": "Also greets.",
+        "author": "t", "license": "MIT", "permissions": []}), encoding="utf-8")
     state["enabled"] = ["greeter", "rival"]
     mgr._state = state
     mgr.enable("rival")
@@ -215,3 +218,69 @@ def test_installing_a_built_in_uses_the_shipped_plugin_and_uninstalling_keeps_it
 
     assert mgr.uninstall("pomodoro")["ok"]
     assert shipped.read_bytes() == before
+
+
+def test_installing_an_id_that_does_not_ship_never_downloads_or_runs_it(tmp_path, monkeypatch):
+    """manager.install fetched a registry entry's 'source' over raw urllib, pip-installed its
+    packages with no consent and no network check, and exec'd the module at once with no manifest,
+    checksum, scan or consent. Now it goes through the marketplace (which needs consent) or nowhere."""
+    import subprocess
+    import urllib.request
+
+    import eli.plugins.manager as M
+    import eli.plugins.marketplace as MK
+
+    pdir = tmp_path / "plugins"
+    state = {"enabled": [], "disabled": [], "installed": {}}
+    monkeypatch.setattr(M, "_plugins_dir", lambda: pdir)
+    monkeypatch.setattr(M, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(M, "_save_state", lambda s: state.update(s))
+    touched = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: touched.append("download"))
+    monkeypatch.setattr(subprocess, "check_call", lambda *a, **k: touched.append("pip"))
+    monkeypatch.setattr(MK, "search", lambda q, **k: [])
+    entry = {"id": "stranger", "name": "Stranger", "version": "1.0.0", "source": "https://example.invalid/p.py",
+             "pip": ["somepkg"], "actions": ["X"]}
+    mgr = M.PluginManager()
+    monkeypatch.setattr(mgr, "get_registry_entry", lambda pid: entry if pid == "stranger" else None)
+    monkeypatch.setattr(mgr, "list_available", lambda: [entry])
+
+    res = mgr.install("stranger")
+    assert res["ok"] is False
+    assert touched == [], "nothing may be downloaded or pip-installed"
+    assert not (pdir / "stranger").exists() and "stranger" not in mgr._loaded
+
+
+def test_a_listed_plugin_goes_through_the_marketplace_and_its_consent(tmp_path, monkeypatch):
+    import eli.plugins.manager as M
+    import eli.plugins.marketplace as MK
+    state = {"enabled": [], "disabled": [], "installed": {}}
+    monkeypatch.setattr(M, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(M, "_save_state", lambda s: state.update(s))
+    listing = {"id": "stranger", "name": "Stranger", "registry_label": "a registry"}
+    seen = {}
+    monkeypatch.setattr(MK, "search", lambda q, **k: [listing])
+    monkeypatch.setattr(MK, "install", lambda l, confirm=None, **k: seen.update(listing=l, confirm=confirm)
+                        or {"ok": False, "problems": ["needs your explicit confirmation"]})
+    res = M.PluginManager().install("stranger")
+    assert seen["listing"] is listing and seen["confirm"] is None
+    assert res["ok"] is False and "confirmation" in res["error"]
+
+
+def test_a_shipped_plugin_is_never_pip_installed(tmp_path, monkeypatch):
+    """A built-in whose package is missing is reported, not installed from PyPI in the background."""
+    import subprocess
+
+    import eli.plugins.manager as M
+    state = {"enabled": [], "disabled": [], "installed": {}}
+    monkeypatch.setattr(M, "_plugins_dir", lambda: tmp_path / "plugins")
+    monkeypatch.setattr(M, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(M, "_save_state", lambda s: state.update(s))
+    ran = []
+    monkeypatch.setattr(subprocess, "check_call", lambda *a, **k: ran.append(a))
+    mgr = M.PluginManager()
+    entry = dict(mgr.get_registry_entry("pomodoro"), pip=["a_package_that_is_not_installed_xyz"])
+    monkeypatch.setattr(mgr, "get_registry_entry", lambda pid: entry if pid == "pomodoro" else None)
+    res = mgr.install("pomodoro")
+    assert res["ok"] is False and "a_package_that_is_not_installed_xyz" in res["error"]
+    assert ran == [] and "pomodoro" not in state["enabled"]

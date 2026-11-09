@@ -141,6 +141,32 @@ def scan_source(source: str, *, filename: str = "plugin.py") -> Dict[str, Any]:
         if item not in required[cap]:
             required[cap].append(item)
 
+    # Names bound by imports, so `from os import system` + `system(...)` and `import os as o` +
+    # `o.system(...)` resolve to the `os.system` they are.
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                if alias.name != "*":
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def resolve(chain: str) -> str:
+        head, _, rest = chain.partition(".")
+        target = aliases.get(head)
+        return (target + ("." + rest if rest else "")) if target else chain
+
+    def forbidden_call(name: str):
+        if name in _FORBIDDEN_CALLS:
+            return name, _FORBIDDEN_CALLS[name]
+        if name.startswith("builtins.") and name[len("builtins."):] in _FORBIDDEN_CALLS:
+            return name, _FORBIDDEN_CALLS[name[len("builtins."):]]
+        why = _FORBIDDEN_ATTRS.get(name)
+        return (name, why) if why else None
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -154,16 +180,22 @@ def scan_source(source: str, *, filename: str = "plugin.py") -> Dict[str, Any]:
             cap = _IMPORT_CAPABILITIES.get(mod) or _IMPORT_CAPABILITIES.get(root)
             if cap:
                 need(cap, f"imports from {mod}", node.lineno)
+            for alias in node.names:
+                full = f"{mod}.{alias.name}"
+                cap = _ATTR_CAPABILITIES.get(full)
+                if cap:
+                    need(cap, f"imports {full}", node.lineno)
         elif isinstance(node, ast.Call):
             fn = node.func
-            if isinstance(fn, ast.Name) and fn.id in _FORBIDDEN_CALLS:
-                forbidden.append({"what": fn.id, "why": _FORBIDDEN_CALLS[fn.id],
-                                  "line": node.lineno})
             chain = _attr_chain(fn)
+            resolved = resolve(chain) if chain else ""
+            hit = forbidden_call(resolved) if resolved else None
+            if hit is None and isinstance(fn, ast.Name) and fn.id in _FORBIDDEN_CALLS:
+                hit = (fn.id, _FORBIDDEN_CALLS[fn.id])
+            if hit:
+                forbidden.append({"what": hit[0], "why": hit[1], "line": node.lineno})
+            chain = resolved
             if chain:
-                why = _FORBIDDEN_ATTRS.get(chain)
-                if why:
-                    forbidden.append({"what": chain, "why": why, "line": node.lineno})
                 cap = _ATTR_CAPABILITIES.get(chain)
                 if cap:
                     need(cap, f"calls {chain}", node.lineno)
@@ -174,7 +206,7 @@ def scan_source(source: str, *, filename: str = "plugin.py") -> Dict[str, Any]:
                     need(cap, f"calls .{fn.attr}()", node.lineno)
                 # open(..., 'w') is the common write that is not an os.* call
         elif isinstance(node, ast.Attribute):
-            chain = _attr_chain(node)
+            chain = resolve(_attr_chain(node))
             cap = _ATTR_CAPABILITIES.get(chain)
             if cap:
                 need(cap, f"uses {chain}", node.lineno)
