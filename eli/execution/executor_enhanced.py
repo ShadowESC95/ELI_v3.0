@@ -5180,11 +5180,25 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
         # This is what "do you have any proposals for me?" answers, live and not canned.
         try:
             lines: list[str] = []
+            # A goal ELI would work on next asks first (eli/planning/goal_tick): those waiting for the
+            # user's yes come first, each once, with what working on it would do.
+            waiting: list = []
+            try:
+                from eli.planning.goal_tick import pending_goal_proposals
+                waiting = list(pending_goal_proposals() or [])
+            except Exception:
+                log.debug("waiting goal proposals unread", exc_info=True)
+            for w in waiting:
+                _obj = str(w.get("objective") or "").strip()
+                lines.append(f"• [waiting for your yes] {w.get('title') or '(goal)'}" + (f" — {_obj}" if _obj else "")
+                             + (f" ({w['action_class']})" if w.get("action_class") else ""))
+            _asked = {str(w.get("goal_id") or "") for w in waiting} - {""}
             try:
                 from eli.planning.goal_store import load_goals
                 goals = [
                     g for g in (load_goals() or [])
                     if getattr(g, "enabled", True)
+                    and str(getattr(g, "goal_id", "")) not in _asked
                     and str(getattr(g, "status", "")).lower() in ("active", "proposed", "queued")
                     and str(getattr(g, "autonomy_mode", "")).lower() == "proposal_only"
                 ]
@@ -5211,7 +5225,8 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                 msg = ("No active proposals right now — I form them from your recurring "
                        "behaviour, recurring errors, and my own code health as signals build up.")
             return {"ok": True, "action": a, "content": msg, "response": msg,
-                    "proposal_count": len(lines), "evidence_source": "proposals_runtime"}
+                    "proposal_count": len(lines), "waiting_goal_proposals": waiting,
+                    "evidence_source": "proposals_runtime"}
         except Exception as e:
             return {"ok": False, "action": a, "error": str(e), "content": str(e), "response": str(e)}
 

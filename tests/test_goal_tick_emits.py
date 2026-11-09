@@ -110,3 +110,20 @@ def test_a_tick_that_keeps_failing_says_why_and_asks_for_attention(monkeypatch, 
     daemon._note_tick_failures({"scheduler tick": {"ok": True}, "goal tick": {"ok": True}})
     daemon._note_tick_failures({"scheduler tick": failing, "goal tick": {"ok": True}})
     assert len(filed) == 1, "a failure after a good tick starts over"
+
+
+def test_a_goal_waiting_for_the_users_yes_is_listed_when_asked_for_proposals(tmp_path, monkeypatch):
+    """A goal's tick asks the user, but nothing showed the question: GET_PROPOSALS ("any proposals
+    for me?") listed the goals and capability proposals and never what waited for a yes."""
+    from eli.execution import executor_enhanced as ex
+    from eli.planning import goal_store
+    _queue_and_goals(tmp_path, monkeypatch)
+    goal_store.update_goal("g1", lambda g: setattr(g, "autonomy_mode", "proposal_only"))
+    goal_tick.governed_goal_tick(now=10_000.0)
+    out = ex.execute("GET_PROPOSALS", {})
+    assert out["ok"], out
+    (waiting,) = out["waiting_goal_proposals"]
+    assert waiting["goal_id"] == "g1" and waiting["proposal_id"]
+    text = out["content"]
+    assert "[waiting for your yes] Tidy the notes folder — move old notes" in text, text
+    assert text.count("Tidy the notes folder") == 1, "a waiting goal is listed once"
