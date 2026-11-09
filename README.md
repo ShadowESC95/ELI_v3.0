@@ -608,7 +608,7 @@ Defence-in-depth, all local:
 |---|---|
 | Prompt-injection guard | Strips `[INST]`, `<\|im_start\|>system`, jailbreak phrases before the model sees input |
 | SQL identifier validation | Allowlist regex on every f-string SQL identifier — no injection via table/column names |
-| Shell gate (`RUN_CMD`) — denylist | Destructive patterns (`rm -rf /`, `mkfs`, fork bombs) and dangerous executables (`dd`, `fdisk`, …) are **denylisted**. With Full Control off (the default), shell is additionally fail-closed — nothing runs unless allowlisted via `ELI_ALLOWED_CMDS` |
+| Shell gate (`RUN_CMD`) — denylist | Destructive patterns (`rm -rf /`, `mkfs`, fork bombs) and dangerous executables (`dd`, `fdisk`, …) are **denylisted**. With Full Control off (the default), every command in the line is checked — after `;`, `&&`, `\|`, inside `$( )` and backticks: commands that only read run (read-only subcommands of tools like `git status` count), anything else must be listed in `ELI_ALLOWED_CMDS`, and writing a file needs Full Control |
 | Shell gate — Full Control caveat | The **ELI Full Control** toggle (off by default) **bypasses the shell gate entirely** — every command runs, *including* the destructive denylist. Enable it only when you intend ELI to have full machine access |
 | Custom-agent trust | SHA-256 registry — unregistered/tampered agent files are skipped at load |
 | Offline-by-default | A process-wide network guard fails closed unless a task is explicitly authorised online |

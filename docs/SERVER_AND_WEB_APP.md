@@ -30,6 +30,14 @@ The server is **safe by default**:
   mints an access token**. The token gates the action endpoints (`/v1/chat` *and*
   `/v1/execute` — the latter can run system actions), so being on the same Wi‑Fi is not enough
   to drive your machine.
+- **Only its own site** — every request and WebSocket handshake is checked before anything runs.
+  The `Host` must name this server: an IP address, `localhost`, this machine's own name, or a
+  name listed in `ELI_API_ALLOWED_HOSTS` (for a reverse proxy, say). A browser's `Origin`, when
+  sent, must be this server's own address or a listed name, and its `Sec-Fetch-Site`, when sent,
+  must be same-origin or none (a link on another site may open one of ELI's pages, never call
+  `/v1`). Native clients (ELI VR, the phone app, curl) send no `Origin`. Anything else is
+  refused with 403, so a web page you open cannot drive ELI through your browser — not by a
+  cross-site post, not by pointing its own name at this machine, not by a WebSocket.
 - **netguard unaffected** — ELI's offline-by-default outbound network guard still fail-closes;
   an inbound server does not breach it. `--lan` changes *who on your own network* can reach
   ELI, never *where your data goes* (it stays local).
@@ -114,6 +122,7 @@ The launchers set these for you; you can also set them directly before `python -
 | `ELI_RESEARCH_ROOT` | `artifacts/research/_sources/` | The only directory `/v1/research/ingest` may read documents from. Paths outside it are rejected. |
 | `ELI_RESEARCH_MAX_FILES` / `ELI_RESEARCH_MAX_BYTES` | `2000` / `512 MB` | Caps on a single research ingest (directory-walk DoS guard). |
 | `ELI_API_RELOAD` | `0` | `1` enables uvicorn auto-reload (dev only). |
+| `ELI_API_ALLOWED_HOSTS` | _(unset)_ | Extra names the server answers to, besides its IP addresses, `localhost` and this machine's own name (comma- or space-separated, e.g. a reverse proxy's `eli.example.lan`). A request whose `Host` (or browser `Origin`) is any other name is refused (see §2). |
 
 Run it directly (advanced):
 ```bash
@@ -147,6 +156,8 @@ deferred and optional.
   use the host's LAN IP (not `127.0.0.1`).
 - **401 on the phone** → the token wasn't captured; re-open the full `…/?token=…` URL.
 - **Port in use** → `--port`/`-Port` to pick another.
+- **403 "answers to its own address"** → you reached it by a name that is not this machine's;
+  use its IP, or list that name in `ELI_API_ALLOWED_HOSTS`.
 - **Want this-machine-only** → omit `--lan` (the default); it binds loopback.
 
 ## 10. Files
