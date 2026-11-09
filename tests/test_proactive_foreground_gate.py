@@ -86,3 +86,24 @@ def test_a_job_of_many_model_calls_waits_until_the_owner_is_away(monkeypatch):
     assert pd._foreground_busy() is False and pd._owner_away() is False
     state["since"] = 301.0
     assert pd._owner_away() is True
+
+
+def test_the_pace_is_the_brokers_and_every_background_wait_reads_it(monkeypatch):
+    """The pace was the daemon's alone: the broker's default window and the model's background wait
+    were each a fixed 30 s, so a chore the daemon held off still ran in the owner's pause."""
+    import eli.cognition.inference_broker as ib
+    assert pd._OwnerPace is ib.OwnerPace and pd._PACE is ib.owner_pace()
+    pace = ib.OwnerPace()
+    pace.gaps = [80.0, 95.0, 110.0]
+    monkeypatch.setattr(ib, "_PACE", pace)
+    monkeypatch.delenv("ELI_BG_DEFER_WINDOW", raising=False)
+    assert ib.background_defer_window() == pace.usual() == 95.0
+    monkeypatch.setattr(ib, "_fg_inflight", 0)
+    monkeypatch.setattr(ib, "_last_foreground_duration", 0.0)
+    import time
+    monkeypatch.setattr(ib, "_last_foreground_ts", time.monotonic() - 60.0)       # a minute since the last turn
+    assert ib.foreground_recently_active() is True, "inside the owner's usual pause"
+    monkeypatch.setattr(ib, "_last_foreground_ts", time.monotonic() - 120.0)
+    assert ib.foreground_recently_active() is False
+    monkeypatch.setenv("ELI_BG_DEFER_WINDOW", "0")
+    assert ib.background_defer_window() == 0.0, "the setting still turns the wait off"

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import threading
 import time as _time
 from typing import Optional, Any
@@ -101,8 +102,70 @@ def seconds_since_foreground() -> float:
     return (_time.monotonic() - _last_foreground_ts) if _last_foreground_ts else 1e9
 
 
-def foreground_recently_active(window: float = 30.0) -> bool:
-    """True if a user-facing inference ran (or was running) recently.
+BASE_WINDOW_S = 45.0
+"""How long after a turn chores wait before any pause of the owner's has been measured, and the
+least they ever wait."""
+PACE_QUANTILE = 0.75
+"""Which of the owner's own pauses between turns sets how long chores wait after one: most of them
+(three in four). The longest is a real break, and waiting that long every time would hold chores
+off for good."""
+PACE_GAPS_KEPT = 20
+"""How many of those pauses are kept: about one sitting's worth."""
+
+
+class OwnerPace:
+    """The owner's pace in this session, read off the model's foreground calls each daemon tick: the
+    quiet between one turn's end and the next turn's start. Chores waited a fixed 45 s (or the last
+    call's length), so self-repair's model calls started between the owner's commands every time
+    and were mid-call when the next one came."""
+
+    def __init__(self) -> None:
+        self.gaps: list = []
+        self._quiet: Optional[float] = None
+
+    def observe(self) -> None:
+        busy, since = foreground_in_progress(), seconds_since_foreground()
+        if self._quiet is not None and (busy or since < self._quiet) and self._quiet < 1e8:
+            self.gaps = (self.gaps + [round(self._quiet, 1)])[-PACE_GAPS_KEPT:]
+        self._quiet = None if busy else since
+
+    def usual(self) -> float:
+        """The PACE_QUANTILE of the kept pauses; BASE_WINDOW_S until one is measured, and never less."""
+        if not self.gaps:
+            return BASE_WINDOW_S
+        ordered = sorted(self.gaps)
+        return max(BASE_WINDOW_S, ordered[int(PACE_QUANTILE * (len(ordered) - 1))])
+
+    def longest(self) -> float:
+        return max([BASE_WINDOW_S, *self.gaps])
+
+
+
+
+_PACE = OwnerPace()
+
+
+def owner_pace() -> OwnerPace:
+    """The one measure of the owner's pace this session (the proactive daemon feeds it each tick)."""
+    return _PACE
+
+
+def background_defer_window() -> float:
+    """How long background model work waits after the owner's last turn: ELI_BG_DEFER_WINDOW when it
+    is set (0 turns the wait off), else the owner's usual pause between turns this session
+    (OwnerPace). Two copies of a fixed 30 s used to decide this."""
+    raw = os.environ.get("ELI_BG_DEFER_WINDOW", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            log.debug("ELI_BG_DEFER_WINDOW is not a number: %r", raw)
+    return _PACE.usual()
+
+
+def foreground_recently_active(window: Optional[float] = None) -> bool:
+    """True if a user-facing inference ran (or was running) recently: within `window` seconds, or by
+    default within the owner's usual pause between turns (OwnerPace).
 
     The effective window scales UP with the last foreground turn's DURATION: on a slow /
     CPU-offloaded model where one turn takes minutes, background chores then defer for about
@@ -111,6 +174,8 @@ def foreground_recently_active(window: float = 30.0) -> bool:
     duration is tiny, so the base `window` dominates and behaviour is unchanged."""
     if _fg_inflight > 0:
         return True
+    if window is None:
+        window = _PACE.usual()
     try:
         eff = min(max(float(window), float(_last_foreground_duration)), _MAX_ADAPTIVE_DEFER)
         return (_time.monotonic() - _last_foreground_ts) < eff
@@ -196,11 +261,7 @@ class InferenceBroker:
         # stall the user (prompt evaluation can't be preempted once started). Skip this cycle; the
         # daemon retries on a later idle tick. Window: ELI_BG_DEFER_WINDOW (0 disables).
         if background:
-            try:
-                import os as _os_d
-                _win = float(_os_d.environ.get("ELI_BG_DEFER_WINDOW", "30"))
-            except Exception:
-                _win = 30.0
+            _win = background_defer_window()
             if _win > 0 and foreground_recently_active(_win):
                 return ""
         # Background generations are hard-capped so they can't hold the shared model lock for

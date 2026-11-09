@@ -45,49 +45,11 @@ from eli.memory import (
 from eli.utils.log import get_logger
 log = get_logger(__name__)
 
-BASE_WINDOW_S = 45.0
-"""How long after a turn chores wait before any pause of the owner's has been measured, and the
-least they ever wait."""
-PACE_QUANTILE = 0.75
-"""Which of the owner's own pauses between turns sets how long chores wait after one: most of them
-(three in four). The longest is a real break, and waiting that long every time would hold chores
-off for good."""
-PACE_GAPS_KEPT = 20
-"""How many of those pauses are kept: about one sitting's worth."""
+# The owner's pace (how long chores wait after one of their turns) is measured by the inference
+# broker, which every background model call asks (eli/cognition/inference_broker.OwnerPace).
+from eli.cognition.inference_broker import BASE_WINDOW_S, OwnerPace as _OwnerPace, owner_pace  # noqa: E402,F401
 
-
-class _OwnerPace:
-    """The owner's pace in this session, read off the model's foreground calls each daemon tick: the
-    quiet between one turn's end and the next turn's start. Chores waited a fixed 45 s (or the last
-    call's length), so self-repair's model calls started between the owner's commands every time
-    and were mid-call when the next one came."""
-
-    def __init__(self) -> None:
-        self.gaps: list = []
-        self._quiet: Optional[float] = None
-
-    def observe(self) -> None:
-        try:
-            from eli.cognition.inference_broker import foreground_in_progress, seconds_since_foreground
-            busy, since = foreground_in_progress(), seconds_since_foreground()
-        except Exception:
-            return
-        if self._quiet is not None and (busy or since < self._quiet) and self._quiet < 1e8:
-            self.gaps = (self.gaps + [round(self._quiet, 1)])[-PACE_GAPS_KEPT:]
-        self._quiet = None if busy else since
-
-    def usual(self) -> float:
-        """The PACE_QUANTILE of the kept pauses; BASE_WINDOW_S until one is measured, and never less."""
-        if not self.gaps:
-            return BASE_WINDOW_S
-        ordered = sorted(self.gaps)
-        return max(BASE_WINDOW_S, ordered[int(PACE_QUANTILE * (len(ordered) - 1))])
-
-    def longest(self) -> float:
-        return max([BASE_WINDOW_S, *self.gaps])
-
-
-_PACE = _OwnerPace()
+_PACE = owner_pace()
 
 
 def _foreground_busy(window: Optional[float] = None) -> bool:

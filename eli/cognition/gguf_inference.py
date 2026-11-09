@@ -1658,8 +1658,8 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
         # Background work does not start while a conversation is live or has just finished: it would take the
         # single model the next message needs, and prompt evaluation cannot be interrupted once begun.
         try:
-            from eli.cognition.inference_broker import foreground_recently_active
-            _defer = float(os.environ.get("ELI_BG_DEFER_WINDOW", "30"))
+            from eli.cognition.inference_broker import background_defer_window, foreground_recently_active
+            _defer = background_defer_window()
             if _defer > 0 and foreground_recently_active(_defer):
                 if not getattr(_bg_tls, "job", False):
                     return iter(()) if stream else {"choices": [{"text": ""}]}
