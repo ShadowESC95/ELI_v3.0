@@ -225,3 +225,32 @@ def test_a_substantive_afternoon_sentence_is_not_phatic():
 
     assert not phatic("what is the weather this afternoon in Cork")
     assert not phatic("the sun is not that cheerful and it is only afternoon for 30 minutes")
+
+
+def _daemon_reading(rows):
+    from types import SimpleNamespace
+    from eli.planning.proactive_daemon import ProactiveDaemon
+    daemon = ProactiveDaemon.__new__(ProactiveDaemon)
+    daemon.agent_mem = SimpleNamespace(get_recent_observations=lambda limit=20: list(rows))
+    return daemon
+
+
+def _focus(*topics):
+    return [{"type": "topic_focus", "topics": list(topics)}]
+
+
+def test_the_same_focus_tick_after_tick_is_not_emerging():
+    """The comparison read the five newest observations of any kind, and the same tick writes others
+    first: the previous tick dropped out and the same topics were 'emerging' at four ticks running."""
+    crowded = [{"category": "habit", "content": "{}"}] * 5           # what the tick wrote before reading
+    daemon = _daemon_reading(crowded)
+    first = _focus("router", "cork", "weather")
+    daemon._trend_patterns(first)
+    assert [p["type"] for p in first] == ["topic_focus"], "with no prior tick found, nothing is new or gone"
+    again = _focus("router", "cork", "weather")
+    daemon._trend_patterns(again)
+    assert [p["type"] for p in again] == ["topic_focus"], "the same focus was called emerging"
+    moved = _focus("router", "cork", "garden")
+    daemon._trend_patterns(moved)
+    kinds = {p["type"]: p["topics"] for p in moved}
+    assert kinds["trend_emerging"] == ["garden"] and kinds["trend_fading"] == ["weather"]

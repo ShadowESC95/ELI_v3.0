@@ -113,7 +113,7 @@ def append_attention(
     p = attention_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+        f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str) + "\n")
 
     if suppression_window_sec > 0:
         sup = _load_suppression()

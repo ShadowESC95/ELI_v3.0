@@ -75,3 +75,38 @@ def test_a_yes_runs_the_goal_once_through_the_gate_with_the_yes_given(tmp_path, 
     assert out["ok"] and ran == [("g1", {"dry_run": False, "user_confirmed": True})]
     assert proposal_queue.read_records() == []
     assert goal_tick.confirm_goal_proposal(rec.proposal_id)["outcome"] == "not_found", "a yes runs it once"
+
+
+def test_a_scheduler_tick_that_proposes_a_goal_completes(tmp_path, monkeypatch):
+    """Each goal tick's items carried the queue's ProposalRecord object, the scheduler filed them as
+    attention metadata in JSON, and every scheduler tick raised from 3 Nov on: its state file was
+    never written again."""
+    import json
+    _queue_and_goals(tmp_path, monkeypatch)
+    from eli.planning import attention_queue, autonomy_scheduler
+    monkeypatch.setattr(autonomy_scheduler, "scheduler_state_path", lambda: tmp_path / "autonomy_scheduler.json")
+    monkeypatch.setattr(attention_queue, "attention_path", lambda: tmp_path / "attention.jsonl")
+    monkeypatch.setattr(attention_queue, "suppression_path", lambda: tmp_path / "suppression.json")
+    monkeypatch.setattr(autonomy_scheduler, "load_policy", lambda: {"mode": "proposal_only"})
+    out = autonomy_scheduler.scheduler_tick(limit=3, now=10_000.0, cooldown_sec=0)
+    assert out["ok"] and out["goal_tick"]["count"] == 1
+    assert json.loads((tmp_path / "autonomy_scheduler.json").read_text())["last_run"] == 10_000.0
+    json.dumps(out["goal_tick"])                                    # plain data all the way down
+
+
+def test_a_tick_that_keeps_failing_says_why_and_asks_for_attention(monkeypatch, caplog):
+    from eli.planning import attention_queue
+    from eli.planning.proactive_daemon import ProactiveDaemon
+    filed = []
+    monkeypatch.setattr(attention_queue, "append_attention", lambda **kw: filed.append(kw) or kw)
+    daemon = ProactiveDaemon.__new__(ProactiveDaemon)
+    failing = {"ok": False, "error": "TypeError: Object of type ProposalRecord is not JSON serializable"}
+    with caplog.at_level("WARNING"):
+        daemon._note_tick_failures({"scheduler tick": failing, "goal tick": {"ok": True}})
+    assert "ProposalRecord is not JSON serializable" in caplog.text
+    assert filed == [], "one failure is a log line"
+    daemon._note_tick_failures({"scheduler tick": failing, "goal tick": {"ok": True}})
+    assert len(filed) == 1 and filed[0]["kind"] == "autonomy_tick_failing"
+    daemon._note_tick_failures({"scheduler tick": {"ok": True}, "goal tick": {"ok": True}})
+    daemon._note_tick_failures({"scheduler tick": failing, "goal tick": {"ok": True}})
+    assert len(filed) == 1, "a failure after a good tick starts over"

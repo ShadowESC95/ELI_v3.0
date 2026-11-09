@@ -84,7 +84,9 @@ def _emit_governed_proposal(proposal: Dict[str, Any]) -> Dict[str, Any]:
                 rec = fn(proposal)
             except TypeError:
                 rec = fn()
-        return {"ok": True, "record": rec, "proposal": proposal}
+        # plain data: the scheduler files each tick's items as attention metadata (JSON), and a
+        # ProposalRecord object there made every scheduler tick raise from 3 Nov on
+        return {"ok": True, "record": rec.to_dict() if hasattr(rec, "to_dict") else rec, "proposal": proposal}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "proposal": proposal}
 
