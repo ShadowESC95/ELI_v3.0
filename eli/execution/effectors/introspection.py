@@ -8,6 +8,7 @@ re-exports system_intel's helpers alongside its own.
 from __future__ import annotations
 
 import json
+import re
 
 from eli.utils.log import get_logger
 
@@ -73,10 +74,44 @@ def _h_runtime_status(a, args):
     return {'ok': bool(rep.get('ok', True)), 'action': a, 'report': rep, 'content': txt, 'response': txt}
 
 
+# Words that ask for the reading itself ("gpu status and temperature?"), beside the report's own
+# labels. A message with words beyond these asks something about the reading ("where do you keep
+# getting 1% from, I'm running you on two GPUs?") and is answered in words from it.
+_READING_WORDS = frozenset(("show", "check", "give", "tell", "me", "my", "your", "the", "and", "of", "on", "in",
+                            "what", "what's", "whats", "is", "are", "current", "now", "please", "status", "stats",
+                            "usage", "use", "gpus", "gpu's", "card", "cards", "temp", "how", "hot", "report",
+                            "gpu", "vram", "memory", "temperature", "power", "utilisation", "utilization",
+                            "driver", "free", "used", "nvidia"))
+
+
+def _asks_about_the_reading(question: str, report_text: str) -> bool:
+    """Whether the message asks something of the GPU reading, not for the reading alone."""
+    labels = {w for line in str(report_text or "").splitlines() for w in
+              re.findall(r"[a-z0-9']+", line.split(":", 1)[0].lower())}
+    said = re.findall(r"[a-z0-9']+", str(question or "").lower())
+    return any(w not in labels and w not in _READING_WORDS for w in said)
+
+
 def _h_gpu_status(a, args):
+    """GPU status: the reading, each card on its own, whether ELI was generating when it was read and
+    what the cards did while it last generated, and how the model is split between cards and CPU
+    (system_intel.gpu_use_facts). Asked something about the reading, the result says it is to be
+    answered in words from these facts (explain_in_words), not shown as the dump: "where do you keep
+    getting 1% from" was answered with the same status block and an idle reading."""
     e = _ex(); rep = e._gpu_status_report()
-    return {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep,
-            'content': rep.get('content', ''), 'response': rep.get('response', rep.get('content', ''))}
+    from eli.execution.effectors.system_intel import gpu_use_facts
+    use = gpu_use_facts(rep)
+    text = str(rep.get('content') or '')
+    if use["lines"]:
+        text = (text + "\n\nGPU use:\n" + "\n".join(use["lines"])).strip()
+    question = str((args or {}).get("question") or (args or {}).get("query") or "") if isinstance(args, dict) else ""
+    explain = bool(question) and _asks_about_the_reading(question, rep.get('content') or '')
+    out = {'ok': bool(rep.get('ok', False)), 'action': a, 'report': rep, 'gpu_use': use,
+           'content': text, 'response': text}
+    if explain:
+        out['explain_in_words'] = True
+        out['question'] = question
+    return out
 
 
 def _h_memory_status(a, args):

@@ -215,3 +215,64 @@ def test_live_runtime_brief_explains_moe(monkeypatch, tmp_path):
     brief = cs.live_runtime_brief()
     assert "mixture-of-experts offload" in brief
     assert "53" in brief and "21.54GB" in brief
+
+
+# ── what the reading means: each card, idle or at work, and the model's split ────────────────────
+def _two_cards(monkeypatch, *, during=None):
+    from types import SimpleNamespace
+    import eli.core.gguf_sizes as gs
+    import eli.core.hardware_profile as hp
+    from eli.cognition import inference_broker
+    report = {
+        "ok": True, "content": "GPU status:\n- name: GPU x2\n- GPU utilization: 1%\n- power: 48.00 W",
+        "gpu": {"util_pct": 1, "devices": [
+            {"index": 0, "name": "Card A", "util_pct": 1, "used_mb": 6000, "total_mb": 8192, "temp_c": 49, "power_w": 30},
+            {"index": 1, "name": "Card B", "util_pct": 0, "used_mb": 6600, "total_mb": 8192, "temp_c": 45, "power_w": 18}]},
+        "runtime_snapshot": {"model_path": "/models/m.gguf", "effective": {"n_gpu_layers": 37},
+                             "tensor_split": [15.0, 22.0]},
+    }
+    monkeypatch.setattr(ex, "_gpu_status_report", lambda: report)
+    monkeypatch.setattr(inference_broker, "_fg_inflight", 0)
+    monkeypatch.setattr(gs, "weights", lambda path: SimpleNamespace(
+        blocks=48, block_bytes=(2 ** 28,) * 48, expert_bytes=(0,) * 48, output_bytes=0,
+        gpu_bytes=lambda n, experts_in_ram: min(n, 48) * 2 ** 28))
+    if during is None:
+        monkeypatch.delattr(hp, "gpu_use_during_last_generation", raising=False)
+    else:
+        monkeypatch.setattr(hp, "gpu_use_during_last_generation", lambda: during, raising=False)
+
+
+def _gpu_status(question):
+    from eli.execution.effectors.introspection import _h_gpu_status
+    return _h_gpu_status("GPU_STATUS", {"question": question, "explain": True})
+
+
+def test_the_reading_names_each_card_and_that_eli_was_idle(monkeypatch):
+    """"1%" was the busiest of two cards, read while ELI generated nothing."""
+    _two_cards(monkeypatch)
+    out = _gpu_status("gpu status and temperature?")
+    text = out["content"]
+    assert "GPU 0 Card A: use 1%" in text and "GPU 1 Card B: use 0%" in text
+    assert "not generating" in text
+    assert "no reading of the cards was taken" in text
+    assert "37 of its 48 layers on the GPUs, 11 on the CPU" in text
+    assert "GPU 0 41%" in text and "GPU 1 59%" in text
+    assert "explain_in_words" not in out          # a bare request for the reading is the reading
+
+
+def test_what_the_cards_did_while_eli_generated_is_given_when_measured(monkeypatch):
+    _two_cards(monkeypatch, during={"seconds": 40, "devices": [
+        {"index": 0, "util_avg": 38, "util_max": 71, "samples": 80},
+        {"index": 1, "util_avg": 52, "util_max": 90, "samples": 80}]})
+    text = _gpu_status("gpu status")["content"]
+    assert "During ELI's last generation (40 s, measured)" in text
+    assert "GPU 1: average use 52%, peak 90%" in text
+
+
+def test_a_question_about_the_reading_is_answered_in_words(monkeypatch):
+    from eli.kernel.stages.fast_actions import _shown_as_is
+    _two_cards(monkeypatch)
+    out = _gpu_status("where do you keep getting 1% from, i am running you on 2 gpu's, no?")
+    assert out["explain_in_words"] is True
+    assert _shown_as_is("GPU_STATUS", "quick", out) is False
+    assert _shown_as_is("GPU_STATUS", "quick", {"ok": True}) is True

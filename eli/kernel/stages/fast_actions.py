@@ -288,11 +288,15 @@ _DIRECT_RESULT_ACTIONS = frozenset({
 _ALWAYS_AS_IS = frozenset(("ADD_EVENT", "LIST_EVENTS", "REMOVE_EVENT", "SET_ALARM", "SET_TIMER", "MULTI_COMMAND", "SEQUENCE"))
 
 
-def _shown_as_is(action, reasoning_mode=None) -> bool:
+def _shown_as_is(action, reasoning_mode=None, result=None) -> bool:
     """Whether an action's own result is the reply, with no model call to reword it. There
     were three places that decided this, each with its own list; two of them sent a calendar
-    or timer result through a full generation."""
+    or timer result through a full generation. A result that says it is evidence for a question
+    asked about it (`explain_in_words`: "why is the GPU at 1%?" after GPU_STATUS) is worded by the
+    model in every mode; shown as it is, the question went unanswered."""
     act = str(action or "").upper()
+    if isinstance(result, dict) and result.get("explain_in_words"):
+        return False
     if act in _ALWAYS_AS_IS:
         return True
     if act not in _DIRECT_RESULT_ACTIONS:
