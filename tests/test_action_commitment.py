@@ -196,3 +196,29 @@ def test_an_instruction_said_again_after_i_said_is_carried_out():
 
 def test_a_correction_that_asks_is_not_an_instruction():
     assert corrected_action("i said what time is it?", None) is None
+
+
+# ── an offer or a condition is not a promise to act now ─────────────────────────────────────────────
+def test_an_offer_a_condition_or_a_capability_is_not_a_commitment():
+    """A conditional offer and a statement of what ELI could do were each followed by "nothing ran
+    for …", as if ELI had promised to act."""
+    for t in [
+        "Is that the real list? If you want the full listing, say \"show it\" and I'll run the command.",
+        "Say \"go\" and I'll fetch the new results.",
+        "I can help sort this out by checking the service status.",
+        "I'll check the forecast once you tell me the town.",
+        "Happy to look into the logs if you'd like.",
+        "Let me know which folder and I'll search it.",
+        "If the backup finished, I'll verify it.",
+    ]:
+        assert d(t) is None, f"an offer taken for a promise: {t!r}"
+
+
+def test_the_clause_starts_at_any_sentence_end():
+    """A '?' ending the sentence before was not a start: the clause quoted began with its tail."""
+    out = d("Was that the real reality? Let me check the folder again.")
+    assert out is not None and out["clause"] == "Let me check the folder again"
+    out = d("Odd! Fetching the newest copy now.")
+    assert out is not None and out["clause"] == "Fetching the newest copy now"
+    out = d("Sure, I can do that. Checking the service now.")
+    assert out is not None and out["clause"] == "Checking the service now", "a promise after an offer still counts"

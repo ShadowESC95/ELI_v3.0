@@ -300,6 +300,48 @@ def extract_deepen_topic(text: str) -> str:
     return topic
 
 
+# A promise that waits on the user or on a condition, or that says only what ELI could do, is an offer,
+# not an act to carry out now: "if you want the listing, say 'show it' and I'll run it", "I'll check
+# the forecast once you tell me the town", "I can help by checking the service". Read in the clause
+# that holds the verb: a condition on the user anywhere in it; a condition or an instruction to the
+# user ahead of the verb; a statement of what ELI can, could or would do ahead of it.
+_WAITS_ON_THE_USER = re.compile(
+    r"\b(?:if|once|when|whenever|after|as\s+soon\s+as|unless)\s+you(?:'?re|'?d|'?ve|'?ll)?\b"
+    r"|\bshould\s+you\b|\bwould\s+you\s+like\b|\bwant\s+me\s+to\b", re.I)
+_CONDITION_AHEAD = re.compile(
+    r"^\W*(?:if|unless|in\s+case|once|whenever)\b"
+    r"|\b(?:say|tell\s+me|let\s+me\s+know|ask(?:\s+me)?|give\s+me|send\s+me|type|confirm)\b[^.!?\n]*\band\b", re.I)
+_CAPABILITY_AHEAD = re.compile(
+    r"\b(?:i|we)\s+(?:can|could|would|might|may)\b|\b(?:i|we)'d\b|\b(?:happy|glad|able)\s+to\b", re.I)
+
+
+def _boundary():
+    """The sentence boundary the claim check reads replies by (self_claims._BOUNDARY), one copy."""
+    try:
+        from eli.cognition.self_claims import _BOUNDARY
+        return _BOUNDARY
+    except Exception:
+        return re.compile(r"[.!?]+[\"'’”)\]*_]*\s+|\n")
+
+
+def _clause_around(s: str, start: int, end: int) -> tuple:
+    """(start, end) of the sentence that holds s[start:end]: from the last boundary before it (a
+    '?' or '!' as well as a '.' or a line break) to the first after it."""
+    boundary = _boundary()
+    begin = 0
+    for b in boundary.finditer(s, 0, start):
+        begin = b.end()
+    after = boundary.search(s, end)
+    return begin, (after.start() if after else len(s))
+
+
+def is_an_offer(clause: str, verb_start: int, verb_end: int) -> bool:
+    """Whether the promise at clause[verb_start:verb_end] is an offer or a condition, not an act."""
+    return bool(_WAITS_ON_THE_USER.search(clause)
+                or _CONDITION_AHEAD.search(clause[:verb_end])
+                or _CAPABILITY_AHEAD.search(clause[:verb_start]))
+
+
 def detect_action_commitment(text: str) -> Optional[Dict[str, str]]:
     """Return {clause, matched} if `text` promises/fakes an action, else None.
 
@@ -325,17 +367,15 @@ def detect_action_commitment(text: str) -> Optional[Dict[str, str]]:
     # slot" fired a follow-through whose query was that whole 200-char sentence, which the web lookup
     # searched verbatim and got junk. Only a forward commitment ("let me check", "I'll fetch",
     # "checking now") triggers followthrough.
-    _pre = s[max(0, m.start() - 40):m.start()].lower()
+    start, end = _clause_around(s, m.start(), m.end())
+    _pre = s[max(start, m.start() - 40):m.start()].lower()     # in this sentence, not the one before
     if re.search(r"\b(?:been|was|were|have\s+been|had\s+been|i'?ve\s+been|"
                  r"earlier|already|recently|just\s+(?:checked|finished)|"
                  r"instead\s+of|rather\s+than|without|should(?:'?ve|\s+have)|"
                  r"could(?:'?ve|\s+have)|failed\s+to|forgot\s+to|neglected\s+to|"
                  r"did\s*n[o']?t|did\s+not|never)\b", _pre):
         return None
-    start = max(s.rfind(". ", 0, m.start()), s.rfind("\n", 0, m.start())) + 1
-    end_dot = s.find(". ", m.end())
-    end_nl = s.find("\n", m.end())
-    ends = [e for e in (end_dot, end_nl) if e != -1]
-    end = min(ends) if ends else len(s)
-    clause = s[start:end].strip(" .\n") or s
+    if is_an_offer(s[start:end], m.start() - start, m.end() - start):
+        return None
+    clause = s[start:end].strip(" .!?\n") or s
     return {"clause": clause, "matched": m.group(0).strip()}
