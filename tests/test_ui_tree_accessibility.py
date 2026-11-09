@@ -111,3 +111,39 @@ def test_live_matches_carry_geometry_and_state():
         for key in ("text", "x", "y", "w", "h", "cx", "cy", "role", "enabled"):
             assert key in b, f"missing {key}"
         assert b["w"] > 0 and b["h"] > 0
+
+
+# ── the system's PyGObject is taken only when it is built for this Python ───
+
+def _gi_folder(base, *names):
+    gi_dir = base / "gi"
+    gi_dir.mkdir(parents=True)
+    for name in names:
+        (gi_dir / name).write_bytes(b"")
+    return str(base)
+
+
+def test_a_system_pygobject_built_for_another_python_is_not_added(tmp_path, monkeypatch):
+    """/usr/lib/python3/dist-packages was added with no version check: the bundle's Python failed on
+    the system 3.14's compiled gi part and kept a foreign folder on its path."""
+    import sys
+    other = f"{sys.version_info.major}{sys.version_info.minor + 2}"
+    foreign = _gi_folder(tmp_path / "dist-packages", f"_gi.cpython-{other}-x86_64-linux-gnu.so")
+    monkeypatch.setattr(ui_tree, "_system_gi_bases", lambda: (foreign,))
+    assert ui_tree._system_gi_path() is None
+    assert f"built for Python {sys.version_info.major}.{sys.version_info.minor + 2}" in ui_tree._SYSTEM_GI_NOTE
+
+
+def test_a_system_pygobject_for_this_python_is_used(tmp_path, monkeypatch):
+    from importlib.machinery import EXTENSION_SUFFIXES
+    mine = _gi_folder(tmp_path / "site-packages", f"_gi{EXTENSION_SUFFIXES[0]}")
+    monkeypatch.setattr(ui_tree, "_system_gi_bases", lambda: (mine,))
+    assert ui_tree._system_gi_path() == mine
+
+
+def test_a_frozen_build_never_takes_the_systems_pygobject(tmp_path, monkeypatch):
+    from importlib.machinery import EXTENSION_SUFFIXES
+    mine = _gi_folder(tmp_path / "site-packages", f"_gi{EXTENSION_SUFFIXES[0]}")
+    monkeypatch.setattr(ui_tree, "_system_gi_bases", lambda: (mine,))
+    monkeypatch.setattr("eli.core.paths.is_frozen", lambda: True)
+    assert ui_tree._system_gi_path() is None

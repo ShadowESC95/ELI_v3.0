@@ -34,6 +34,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -150,25 +151,47 @@ def unavailable_reason() -> str:
     return _UNAVAILABLE_REASON
 
 
+_SYSTEM_GI_NOTE = ""      # why the system's PyGObject was not used, for unavailable_reason
+
+
+def _system_gi_bases() -> tuple:
+    ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return ("/usr/lib/python3/dist-packages",
+            f"/usr/lib/python{ver}/site-packages",
+            f"/usr/lib64/python{ver}/site-packages")
+
+
 def _system_gi_path() -> Optional[str]:
-    """Where the distro keeps PyGObject, when the venv has no copy.
+    """Where the distro keeps a PyGObject this Python can load, when the venv has no copy.
 
     PyGObject cannot be pip-installed without gobject-introspection dev headers, so
     on a normal desktop it exists ONLY in the system interpreter's dist-packages.
     ELI runs from a venv, which by default cannot see it — so the accessibility
     backend would report "not installed" on a machine where AT-SPI works perfectly.
-    Only used as a fallback, and only when the ABI matches (same major.minor), since
-    a compiled extension built for another Python will not load.
+    Only a folder whose compiled gi/_gi part is built for this interpreter is used: the shared
+    /usr/lib/python3/dist-packages holds the one for the system's Python, and adding it to a 3.12
+    bundle on a 3.14 system failed on gi's compiled part and left a foreign folder on the path.
+    A frozen build never takes it (its own libraries would meet the system's); the system-Python
+    helper serves it instead.
     """
-    import sys
+    global _SYSTEM_GI_NOTE
+    from importlib.machinery import EXTENSION_SUFFIXES
     from pathlib import Path as _P
-    ver = f"{sys.version_info.major}.{sys.version_info.minor}"
-    for base in ("/usr/lib/python3/dist-packages",
-                 f"/usr/lib/python{ver}/site-packages",
-                 f"/usr/lib64/python{ver}/site-packages"):
+    from eli.core.paths import is_frozen
+    _SYSTEM_GI_NOTE = ""
+    if is_frozen():
+        return None
+    for base in _system_gi_bases():
         gi_dir = _P(base) / "gi"
-        if gi_dir.is_dir():
+        if not gi_dir.is_dir():
+            continue
+        if any((gi_dir / f"_gi{suffix}").is_file() for suffix in EXTENSION_SUFFIXES):
             return base
+        built = sorted({f"{m.group(1)}.{m.group(2)}" for f in gi_dir.glob("_gi.*")
+                        for m in [re.match(r"_gi\.cpython-(\d)(\d+)", f.name)] if m})
+        if built:
+            _SYSTEM_GI_NOTE = (f"the system's PyGObject in {base} is built for Python {', '.join(built)}, "
+                               f"not {sys.version_info.major}.{sys.version_info.minor}")
     return None
 
 
@@ -195,7 +218,7 @@ def _atspi():
         _UNAVAILABLE_REASON = ""
         return Atspi
     except Exception as exc:
-        _UNAVAILABLE_REASON = f"{type(exc).__name__}: {exc}"
+        _UNAVAILABLE_REASON = f"{type(exc).__name__}: {exc}" + (f" ({_SYSTEM_GI_NOTE})" if _SYSTEM_GI_NOTE else "")
         # a bundled Python cannot load the system's bindings; the system Python is used instead
         log.debug("ui_tree: AT-SPI bindings do not load in this Python (%s)", _UNAVAILABLE_REASON)
         return None
