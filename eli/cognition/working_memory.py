@@ -97,7 +97,11 @@ class _PinnedFact:
 
 class WorkingMemory:
     """
-    Session-scoped working memory.  One instance per CognitiveEngine session.
+    Session-scoped working memory: one instance per user and conversation (the engine keeps one for
+    each, CognitiveEngine._working_memory). `user_id` is whose pins these are ("" for the machine's
+    owner, an API member's id for theirs) and `session_id` the conversation; both key the rows
+    persist() writes, and restore() brings back only that user's. The engine used to hold one for
+    every caller, so one user's "remember that ..." was in every other user's prompt.
 
     Usage
     -----
@@ -113,9 +117,11 @@ class WorkingMemory:
         system += wm.context_block()
     """
 
-    def __init__(self):
+    def __init__(self, user_id: str = "", session_id: str = ""):
         self._facts: OrderedDict[str, _PinnedFact] = OrderedDict()
         self._turn: int = 0
+        self.user_id = str(user_id or "")
+        self.session_id = str(session_id or "")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -295,24 +301,46 @@ class WorkingMemory:
                     pass
         return saved
 
+    @staticmethod
+    def _ensure_table(conn: Any) -> None:
+        """working_memory_pins keyed by user, conversation and fact. A table from before it held a
+        user is carried over as the owner's ("" user, "" conversation)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS working_memory_pins (
+                user_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                key TEXT NOT NULL,
+                text TEXT NOT NULL,
+                source TEXT DEFAULT 'auto',
+                importance REAL DEFAULT 0.5,
+                hit_count INTEGER DEFAULT 1,
+                saved_at REAL,
+                last_hit REAL,
+                PRIMARY KEY (user_id, session_id, key)
+            )
+        """)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(working_memory_pins)")}
+        if "user_id" in cols:
+            return
+        last_hit = "last_hit" if "last_hit" in cols else "saved_at"
+        conn.execute("ALTER TABLE working_memory_pins RENAME TO working_memory_pins_unkeyed")
+        WorkingMemory._ensure_table(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO working_memory_pins "
+            "(user_id, session_id, key, text, source, importance, hit_count, saved_at, last_hit) "
+            f"SELECT '', '', key, text, source, importance, hit_count, saved_at, {last_hit} "
+            "FROM working_memory_pins_unkeyed")
+        conn.execute("DROP TABLE working_memory_pins_unkeyed")
+
     def persist(self, db_path: str) -> None:
-        """Persist high-importance pinned facts to SQLite for cross-session recovery."""
+        """Persist high-importance pinned facts to SQLite for cross-session recovery: this user's and
+        this conversation's rows are replaced, nobody else's."""
         import sqlite3
         try:
             conn = sqlite3.connect(str(db_path))
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS working_memory_pins (
-                    key TEXT PRIMARY KEY,
-                    text TEXT NOT NULL,
-                    source TEXT DEFAULT 'auto',
-                    importance REAL DEFAULT 0.5,
-                    hit_count INTEGER DEFAULT 1,
-                    saved_at REAL
-                )
-            """)
-            if "last_hit" not in {r[1] for r in conn.execute("PRAGMA table_info(working_memory_pins)")}:
-                conn.execute("ALTER TABLE working_memory_pins ADD COLUMN last_hit REAL")
-            conn.execute("DELETE FROM working_memory_pins")
+            self._ensure_table(conn)
+            conn.execute("DELETE FROM working_memory_pins WHERE user_id = ? AND session_id = ?",
+                         (self.user_id, self.session_id))
             for key, fact in self._facts.items():
                 # A recalled memory is already in long-term memory and comes back when it is
                 # relevant. Carried over as a pin it showed up in every prompt of every later
@@ -324,10 +352,10 @@ class WorkingMemory:
                     # a restored fact isn't made to look as old as its last persist() call.
                     conn.execute(
                         "INSERT OR REPLACE INTO working_memory_pins "
-                        "(key, text, source, importance, hit_count, saved_at, last_hit) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (key, fact.text, fact.source, fact.importance, fact.hit_count, fact.ts,
-                         fact.last_hit_ts),
+                        "(user_id, session_id, key, text, source, importance, hit_count, saved_at, last_hit) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (self.user_id, self.session_id, key, fact.text, fact.source, fact.importance,
+                         fact.hit_count, fact.ts, fact.last_hit_ts),
                     )
             conn.commit()
             conn.close()
@@ -335,19 +363,20 @@ class WorkingMemory:
             pass
 
     def restore(self, db_path: str) -> int:
-        """Load pinned facts from SQLite into this session. Returns count loaded."""
+        """Load this user's pinned facts (from any of their conversations) from SQLite into this
+        one. Returns count loaded."""
         import sqlite3
         loaded = 0
         try:
             conn = sqlite3.connect(str(db_path))
             try:
-                cols = {r[1] for r in conn.execute("PRAGMA table_info(working_memory_pins)")}
-                last_hit = "last_hit" if "last_hit" in cols else "saved_at"
+                self._ensure_table(conn)
+                conn.commit()
                 rows = conn.execute(
-                    "SELECT key, text, source, importance, hit_count, saved_at, " + last_hit + " "
-                    "FROM working_memory_pins WHERE COALESCE(source, '') != 'memory_recall' "
-                    "ORDER BY importance DESC LIMIT ?",
-                    (MAX_PINS,),
+                    "SELECT key, text, source, importance, hit_count, saved_at, last_hit "
+                    "FROM working_memory_pins WHERE COALESCE(source, '') != 'memory_recall' AND user_id = ? "
+                    "ORDER BY importance DESC, COALESCE(last_hit, saved_at, 0) DESC LIMIT ?",
+                    (self.user_id, MAX_PINS),
                 ).fetchall()
             except Exception:
                 conn.close()
@@ -355,7 +384,7 @@ class WorkingMemory:
             conn.close()
             for row in rows:
                 key, text, source, importance, hit_count, saved_at, last_hit_ts = row
-                if text and text.strip():
+                if text and text.strip() and (key or self._key(text)) not in self._facts:
                     # saved_at is this fact's real original pin time, written
                     # by persist() -- preserve it instead of reporting every
                     # restored fact as freshly pinned "now".

@@ -86,3 +86,24 @@ def test_both_low_confidence_falls_through_to_normal_single_pass():
     # Falls through past the splitter entirely; whatever the normal pipeline
     # does next, it must not be the raw garbled sub-answers joined together.
     assert out != "garbage\n\nalso garbage"
+
+
+def test_an_action_that_ran_is_never_dropped_for_the_agent_buss_figure():
+    """The figure on an action's reply is the agent bus's retrieval aggregate, nothing about whether
+    the action worked: a started background job's notice was dropped at 0.29 and never shown."""
+    eng = _engine_with_scripted_segments([
+        {"ok": True, "action": "EXAMINE_CODE", "confidence": 0.288,
+         "response": "That's started in the background as job #1; ask to check job 1 for the result."},
+        {"response": "The comet passed closest to the sun last Tuesday.", "confidence": 0.95},
+    ])
+    out = eng.process(COMPOUND, stream=False)
+    assert "job #1" in out and "The comet passed" in out
+
+
+def test_an_action_that_failed_says_so_and_is_kept():
+    eng = _engine_with_scripted_segments([
+        {"ok": False, "action": "OPEN_APP", "confidence": 0.1, "response": "The mail app is not installed."},
+        {"response": "The comet passed closest to the sun last Tuesday.", "confidence": 0.95},
+    ])
+    out = eng.process(COMPOUND, stream=False)
+    assert "not installed" in out and "The comet passed" in out

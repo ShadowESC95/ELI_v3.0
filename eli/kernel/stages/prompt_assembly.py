@@ -118,6 +118,28 @@ class PromptAssemblyMixin:
         )
         return kept + f"\n[…{label} truncated to {budget_chars} chars to fit context window]"
 
+    @classmethod
+    def _fit_blocks(cls, head: str, blocks: List[str], budget_chars: int, message: str) -> str:
+        """`head` and as many of `blocks` as fit `budget_chars`, whole, in their own order. A block
+        that has to go is the one least related to the message (scoring.term_overlap); `head` alone
+        over the budget is capped as before."""
+        parts = [b for b in (blocks or []) if b]
+        joined = "\n\n".join(filter(None, [head] + parts))
+        if len(joined) <= budget_chars:
+            return joined
+        from eli.cognition.scoring import term_overlap
+        room = budget_chars - len(head or "")
+        keep: set = set()
+        for i in sorted(range(len(parts)), key=lambda i: term_overlap(message, parts[i]), reverse=True):
+            if len(parts[i]) + 2 <= room:
+                keep.add(i)
+                room -= len(parts[i]) + 2
+        left_out = len(parts) - len(keep)
+        if left_out:
+            log.debug(f"[COGNITIVE] persona hand-off: {left_out} block(s) least related to the message left out to fit")
+        return "\n\n".join(filter(None, [cls._cap_text(head, budget_chars, "persona_handoff")]
+                                    + [parts[i] for i in sorted(keep)]))
+
     def _build_evidence_prompt(self, user_input: str, bus_result) -> str:
         # Per-block character budgets, in characters per token of the window that loaded, so a
         # 4k model is not overfilled and a 128k one is not starved (they were fixed sizes).
@@ -272,10 +294,15 @@ Answer:"""
     def _build_enhanced_system(self, memory_context: str = "", compact: bool = False,
                                user_input: str = "", reasoning_mode: Optional[str] = None,
                                situation_brief: str = "") -> str:
+        # Every per-turn reading below (greeting, opinion, a question about the model, which rules
+        # apply, whether depth was asked for) is of what the user said this turn. `user_input` is the
+        # prompt, which can open with the recent conversation, whose header says "history": read
+        # whole, every turn after the second was told the user had asked for a longer answer.
+        said = _users_own_words(user_input)
         # Phatic greetings bypass the full persona/awareness/timeline stack — it
         # ballooned prompt eval on CPU-only laptops for a simple hello.
         try:
-            if _is_brief_phatic_prompt(str(user_input or "").strip().lower()):
+            if _is_brief_phatic_prompt(str(said or "").strip().lower()):
                 return self._build_phatic_minimal_system(
                     user_input,
                     situation_brief=situation_brief,
@@ -384,7 +411,7 @@ Answer:"""
                     "this block over retrieved memory."
                 )
                 situation_brief = (_rt_line + "\n\n" + (situation_brief or "")).strip()
-            _ui_low = str(user_input or "").lower()
+            _ui_low = str(said or "").lower()
             if re.search(
                 r"\b(?:what|which|your)\b[^.?!]{0,40}\bmodel\b"
                 r"|\bare you running\b|\bmodel are you\b|\brunning (?:a|on)\b"
@@ -437,12 +464,12 @@ Answer:"""
         # Smalltalk/phatic prompts are not "nothing"; they are rapport, tone,
         # chemistry, and local-user preference signals.
         try:
-            _is_phatic_smalltalk = _is_brief_phatic_prompt(str(user_input or "").strip().lower())
+            _is_phatic_smalltalk = _is_brief_phatic_prompt(str(said or "").strip().lower())
         except Exception:
             _is_phatic_smalltalk = False
 
         try:
-            _is_subjective_opinion = _eli_is_subjective_opinion_prompt(user_input)
+            _is_subjective_opinion = _eli_is_subjective_opinion_prompt(said)
         except Exception:
             _is_subjective_opinion = False
 
@@ -471,7 +498,7 @@ Answer:"""
         try:
             from eli.kernel import prompt_rules as _pr
             base_rules += _pr.select_rules(
-                user_input=user_input or "", memory_context=memory_context or "",
+                user_input=said or "", memory_context=memory_context or "",
                 profile_text=_user_profile_block or "")
         except Exception:
             log.debug("prompt_rules selection failed; using the full block", exc_info=True)
@@ -544,7 +571,7 @@ Answer:"""
             import time as _time
             _now = _time.strftime("%H:%M:%S UTC%z", _time.localtime())
             _date = _time.strftime("%A %d %B %Y", _time.localtime())
-            _compact_wants_depth = any(x in (user_input or "").lower() for x in (
+            _compact_wants_depth = any(x in (said or "").lower() for x in (
                 "longer", "more detail", "in depth", "in-depth", "elaborate", "thorough",
                 "recall", "remember", "what have", "what did", "history", "expand",
                 "everything", "give me all", "tell me all", "list all", "list every",
@@ -638,7 +665,7 @@ Answer:"""
         import time as _time
         _now = _time.strftime("%H:%M:%S UTC%z", _time.localtime())
         _date = _time.strftime("%A %d %B %Y", _time.localtime())
-        _user_wants_depth = any(x in (user_input or "").lower() for x in (
+        _user_wants_depth = any(x in (said or "").lower() for x in (
             "longer", "more detail", "in depth", "in-depth", "elaborate", "thorough",
             "comprehensive", "recall", "remember", "what have", "what did", "history",
             "full answer", "explain fully", "go deeper", "expand",
@@ -1544,17 +1571,17 @@ Answer:"""
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Assemble all injections and cap ONCE so no individual block is silently
-        # truncated mid-sentence by a per-injection cap.
-        if _extra_blocks:
-            brief = "\n\n".join(filter(None, [brief] + _extra_blocks))
+        # Assemble all injections once, within one budget, so no individual block is silently
+        # truncated mid-sentence by a per-injection cap. When they do not all fit, whole blocks are
+        # left out, the least related to the message first (_fit_blocks): cutting the joined text's
+        # tail dropped whatever the turn had added last, whatever it was.
         _persona_budget = self._persona_handoff_budget(reasoning_mode)
         if _verified_evidence_packet:
             _persona_budget = max(
                 self._PERSONA_MIN_CHARS // 2,
                 _persona_budget - min(len(_verified_evidence_packet), _persona_budget // 2),
             )
-        brief = self._cap_text(brief, _persona_budget, "persona_handoff")
+        brief = self._fit_blocks(brief, _extra_blocks, _persona_budget, _users_own_words(user_input))
         try:
             from eli.runtime.session_continuity import build_session_thread_block
             _session_thread = build_session_thread_block(_recent_turns, user_input=user_input)

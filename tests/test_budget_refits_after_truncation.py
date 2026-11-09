@@ -156,3 +156,16 @@ def test_clear_pending_fix_removes_a_real_one(tmp_path, monkeypatch):
     monkeypatch.setattr(CE, "_pending_file", lambda: target)
     CE.clear_pending_fix()
     assert not target.exists()
+
+
+def test_a_prompt_that_fits_the_window_is_never_cut_on_the_stream_path():
+    """Live: 160k window, unlimited reply budget, a 12k-token prompt was cut whenever its length was
+    not a multiple of 3, because the fit line was drawn from a budget derived from the same prompt."""
+    from eli.kernel.stages.generation import _stream_char_budget
+    n_ctx, floor, cpt = 159744, 159744 // 8, 3.5
+    for prompt_chars in (42950, 42951, 42952, 50502):
+        assert prompt_chars <= _stream_char_budget(n_ctx, floor, cpt)
+    # a prompt that does not leave the reply floor is over the line
+    assert (n_ctx - floor) * cpt + 1 > _stream_char_budget(n_ctx, floor, cpt)
+    code = _engine_code()
+    assert "_max_stream_chars = _stream_char_budget(_n_ctx, _answer_floor)" in code

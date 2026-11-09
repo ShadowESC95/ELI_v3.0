@@ -47,3 +47,15 @@ def test_returns_signal_descriptor():
     out = detect_crisis("i am going to kill myself")
     assert out["category"] == "self_harm"
     assert "kill myself" in out["signal"]
+
+
+def test_a_self_harm_message_is_answered_as_a_steered_chat_whatever_else_it_matches():
+    """A crisis message that also names 'last response' went to a deterministic trace of the last
+    response (the trace shortcut and three later re-routes all ran after the guard)."""
+    from eli.kernel import request_context as rc
+    from eli.kernel.engine import CognitiveEngine
+    eng = CognitiveEngine()
+    eng.process("your last response made me want to kill myself", stream=False)
+    meta = eng._last_request_meta
+    assert meta.get("route_action") == "CHAT" and meta.get("result_action") == "CHAT"
+    assert rc.crisis_steering_var.get() is None, "the steering stays with its turn"

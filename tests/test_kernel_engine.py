@@ -225,3 +225,58 @@ def test_placeholder_detector_flags_template_scaffold(scaffold):
 def test_placeholder_detector_passes_real_answers(ok):
     from eli.kernel.engine import _eli_is_placeholder_output
     assert _eli_is_placeholder_output(ok) is False
+
+
+def test_a_one_line_question_after_earlier_turns_is_not_read_as_asking_for_depth(engine):
+    """The depth check read the prompt with the recent conversation in front of it, whose header says
+    'history', so every turn after the second was told the user had asked for a longer answer."""
+    from eli.kernel import request_context as rc
+    from eli.runtime.session_continuity import _HISTORY_NOTE
+    asked = "what time does the bakery open?"
+    prompt = f"[Recent conversation — {_HISTORY_NOTE}]\nYou: hello\nELI: hi\n\nYou: {asked}"
+    token = rc.turn_facts_var.set({"request_id": "req-d", "user_input": asked})
+    try:
+        system = engine._build_enhanced_system(user_input=prompt, reasoning_mode="quick")
+        assert "explicitly asked for a detailed" not in system
+        assert engine._use_compact_system(prompt, "", reasoning_mode="quick")
+    finally:
+        rc.turn_facts_var.reset(token)
+    token = rc.turn_facts_var.set({"request_id": "req-e", "user_input": "go deeper, be thorough please"})
+    try:
+        assert "explicitly asked for a detailed" in engine._build_enhanced_system(
+            user_input=prompt, reasoning_mode="quick")
+    finally:
+        rc.turn_facts_var.reset(token)
+
+
+def test_the_persona_hand_off_budget_comes_from_the_window_not_a_hand_set_cap(engine, monkeypatch):
+    """It was cut at 8,192 characters (14,000 in deep modes) on a 160k window whose own share was
+    159,744, on 29 of 30 orchestrated turns."""
+    from eli.cognition import context_budget
+    monkeypatch.setattr(context_budget, "chars_per_token", lambda: 4.0)
+    monkeypatch.setattr(engine, "_effective_n_ctx", lambda: 159744)
+    big = engine._persona_handoff_budget("quick")
+    assert big > 14_000 and big == engine._persona_handoff_budget("tree_of_thoughts")
+    monkeypatch.setattr(engine, "_effective_n_ctx", lambda: 4096)
+    assert engine._persona_handoff_budget("quick") < big
+
+
+def test_blocks_that_do_not_fit_are_left_out_least_related_first(engine):
+    head = "who ELI is " * 20
+    tide = "[TIDES] high water at the harbour is at 06:10 and 18:32 today"
+    noise = "[HOME STATE] the hallway lamp is on and the heater is set to twenty degrees " * 3
+    out = engine._fit_blocks(head, [noise, tide], len(head) + len(tide) + 4, "when is high water at the harbour")
+    assert tide in out and "HOME STATE" not in out and out.startswith(head.strip()[:20])
+    whole = engine._fit_blocks(head, [noise, tide], 10_000, "anything")
+    assert whole.index("HOME STATE") < whole.index("TIDES"), "kept blocks stay in their own order"
+
+
+def test_a_reply_that_announces_what_follows_is_finished_in_quick_mode_too():
+    """A reply visibly cut ('Here are the steps:') gets the completion pass in every mode; only a reply
+    that merely looks short is left alone in Quick (output_governor.announces_what_follows)."""
+    import inspect
+    from eli.kernel.stages.generation import GenerationMixin
+    prompt = GenerationMixin._completion_prompt("how do I re-pot it?", "Here are the steps:")
+    assert "TRUNCATED DRAFT:\nHere are the steps:" in prompt and "USER REQUEST:\nhow do I re-pot it?" in prompt
+    src = inspect.getsource(GenerationMixin._finalize_chat_result)
+    assert "announces_what_follows" in src and "_completion_prompt(user_input, response)" in src

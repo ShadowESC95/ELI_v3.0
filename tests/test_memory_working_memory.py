@@ -87,3 +87,65 @@ def test_working_memory_concurrent_access(wm):
     for t in threads:
         t.join(timeout=2)
     assert len(errors) == 0, f"Thread safety errors: {errors}"
+
+
+# ── one working memory per user and conversation ──────────────────────────
+
+def test_pins_are_kept_and_restored_for_their_own_user_only(tmp_path):
+    """persist() emptied one table and wrote this object's pins with no user, and restore() loaded
+    them all, so after a restart one user's pinned facts were restored into whoever talked next."""
+    db = str(tmp_path / "wm.sqlite3")
+    a = WorkingMemory(user_id="member-a", session_id="s1")
+    a.pin("the boathouse key is under the blue pot", source="user_explicit", importance=0.95)
+    a.persist(db)
+    owner = WorkingMemory(user_id="", session_id="s2")
+    owner.pin("the allotment opens at eight", source="user_explicit", importance=0.95)
+    owner.persist(db)          # replaces only the owner's own rows
+    assert WorkingMemory(user_id="member-b").restore(db) == 0
+    back = WorkingMemory(user_id="member-a", session_id="s3")
+    assert back.restore(db) == 1 and "boathouse" in back.context_block()
+    mine = WorkingMemory(user_id="")
+    mine.restore(db)
+    assert "allotment" in mine.context_block() and "boathouse" not in mine.context_block()
+
+
+def test_a_table_from_before_pins_had_a_user_is_carried_over_as_the_owners(tmp_path):
+    import sqlite3
+    import time
+    db = str(tmp_path / "wm.sqlite3")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE working_memory_pins (key TEXT PRIMARY KEY, text TEXT NOT NULL, source TEXT, "
+                "importance REAL, hit_count INTEGER, saved_at REAL)")
+    con.execute("INSERT INTO working_memory_pins VALUES ('k', 'the shed code is written on the calendar', "
+                "'user_explicit', 0.95, 2, ?)", (time.time(),))
+    con.commit()
+    con.close()
+    assert WorkingMemory(user_id="member-a").restore(db) == 0
+    owner = WorkingMemory(user_id="")
+    assert owner.restore(db) == 1 and "shed code" in owner.context_block()
+
+
+def test_the_engine_keeps_one_working_memory_per_user_and_conversation(monkeypatch):
+    """One WorkingMemory on the process-wide engine went into every caller's prompt."""
+    monkeypatch.setattr("eli.memory.policy.rbac_members", lambda: frozenset({"member-a", "member-b"}), raising=False)
+    from eli.kernel import request_context as rc
+    from eli.kernel.engine import CognitiveEngine
+    eng = CognitiveEngine()
+
+    def as_user(user, session, fn):
+        tokens = (rc.user_id_var.set(user), rc.session_id_var.set(session))
+        try:
+            return fn()
+        finally:
+            rc.session_id_var.reset(tokens[1])
+            rc.user_id_var.reset(tokens[0])
+
+    as_user("member-a", "s1", lambda: eng._working_memory.absorb_user_message(
+        "remember that the boathouse key is under the blue pot"))
+    assert "boathouse" in as_user("member-a", "s1", lambda: eng._working_memory.context_block())
+    assert "boathouse" not in as_user("member-b", "s2", lambda: eng._working_memory.context_block())
+    assert "boathouse" not in as_user("member-b", "s1", lambda: eng._working_memory.context_block())
+    assert "boathouse" not in eng._working_memory.context_block()          # the desktop's own
+    as_user("member-b", "s2", lambda: eng._working_memory.advance_turn())
+    assert as_user("member-a", "s1", lambda: eng._working_memory._turn) == 0, "another session moved the counter"
+    assert as_user("member-a", "s1", lambda: eng._engagement) is not eng._engagement

@@ -205,3 +205,17 @@ def test_a_load_of_a_missing_configured_model_fails_and_does_not_reload_the_old_
     _loaded(monkeypatch, image)
     with pytest.raises(FileNotFoundError, match="chosen-but-gone.gguf"):
         gi._load_model_now()
+
+
+def test_an_attached_image_is_looked_at_whatever_verb_leads_the_message(image, monkeypatch):
+    """'This is the screenshot you took, analyse it' with the marker after it went to chat: only a
+    leading document verb reached the analysis, and the resolver that also reads the marker was
+    behind the model-trust gate, so nothing looked at the image."""
+    from eli.cognition import action_trust
+    from eli.kernel.engine import CognitiveEngine
+    monkeypatch.setattr(action_trust, "may_choose_actions", lambda: False)
+    eng = CognitiveEngine.__new__(CognitiveEngine)
+    msg = f"This is the screenshot you took earlier, analyse it [Attached image: {image.name} — path: {image}]"
+    intent = eng._parse_intent(msg, [])
+    assert intent["action"] == "ANALYZE_IMAGE" and intent["args"]["path"] == str(image)
+    assert intent["args"]["instruction"] == "This is the screenshot you took earlier, analyse it"

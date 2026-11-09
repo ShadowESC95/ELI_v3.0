@@ -340,11 +340,32 @@ def test_a_promise_that_did_not_run_does_not_stand_as_kept(monkeypatch):
     from eli.kernel.engine import CognitiveEngine
     stored = []
     me = SimpleNamespace(_in_followthrough=False, process=lambda *a, **k: "x", _agenda_offer=lambda *a, **k: "",
-                         _store_followthrough_reply=lambda main, extra: stored.append(extra))
+                         _store_followthrough_reply=lambda main, extra: stored.append(extra),
+                         _say_in_own_words=lambda *a, **k: "")          # no model to say it: the record's line
     monkeypatch.setattr("eli.kernel.engine.route_intent", lambda text: {"action": "CHAT"})
     out = list(CognitiveEngine._stream_with_followthrough(
         me, iter(["Point taken. I am going to check the current load before we start."]), "be proactive"))
     assert "I haven't done that" in out[-1] and "check the current load" in out[-1] and stored == [out[-1].strip()]
+
+
+def test_an_unkept_promise_is_said_in_elis_own_words(monkeypatch):
+    """The fact that nothing ran goes to the model, which says it after what it already said; a fixed
+    parenthesis was glued onto the reply."""
+    from eli.kernel.engine import CognitiveEngine
+    stored, asked = [], []
+
+    def _own_words(said, fact, **k):
+        asked.append((fact, k.get("already_said")))
+        return "Scratch that, I never actually looked at the load."
+
+    me = SimpleNamespace(_in_followthrough=False, process=lambda *a, **k: "x", _agenda_offer=lambda *a, **k: "",
+                         _store_followthrough_reply=lambda main, extra: stored.append(extra),
+                         _say_in_own_words=_own_words)
+    monkeypatch.setattr("eli.kernel.engine.route_intent", lambda text: {"action": "CHAT"})
+    reply = "Point taken. I am going to check the current load before we start."
+    out = list(CognitiveEngine._stream_with_followthrough(me, iter([reply]), "be proactive"))
+    assert out[-1].strip() == "Scratch that, I never actually looked at the load." and stored == [out[-1].strip()]
+    assert "check the current load" in asked[0][0] and asked[0][1] == reply
 
 
 def test_an_action_run_from_the_dag_pool_is_recorded_on_the_turn():
@@ -663,3 +684,27 @@ def test_a_due_reminder_reaches_the_desktop_and_the_chat(monkeypatch):
     ag._default_delivery({"title": "Call mum", "start_ts": at}, missed=True)      # came due while ELI was shut: no alarm
     assert seen == [("notify", "Call mum (was due at 19:00; ELI was not running)")]
     assert q.get_nowait()[1]["suggestion"].endswith("ELI was not running)")
+
+
+def test_a_rewording_brings_no_facts_of_its_own(monkeypatch):
+    """_say_in_own_words keeps only what the facts it was given hold (self_claims.only_what_it_was_given)."""
+    from eli.cognition import gguf_inference, self_claims
+    from eli.kernel.engine import CognitiveEngine
+    monkeypatch.setattr(gguf_inference, "is_loaded", lambda: True)
+    monkeypatch.setattr(self_claims, "only_what_it_was_given",
+                        lambda text, facts, asked="": text.split(" It failed")[0] if "42" in text else text, raising=False)
+    eng = CognitiveEngine.__new__(CognitiveEngine)
+    eng._get_chat_response = lambda *a, **k: "Nothing ran for that. It failed 42 times"
+    assert eng._say_in_own_words("did it run?", "Nothing ran for that.") == "Nothing ran for that."
+
+
+def test_the_record_of_the_period_asked_about_is_part_of_what_happened():
+    from eli.kernel import request_context as rc
+    from eli.kernel.engine import CognitiveEngine
+    eng = CognitiveEngine.__new__(CognitiveEngine)
+    token = rc.turn_facts_var.set({"_period_lines": ["09:10 asked for the tide times", "09:12 opened the chart"]})
+    try:
+        said = eng._what_actually_happened()
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert "record of the period" in said and "09:12 opened the chart" in said

@@ -15,9 +15,11 @@ from eli.core import config
 from eli.runtime.self_improvement import get_self_improvement
 from eli.memory import get_memory
 
+import contextlib
 import contextvars
 import copy
 import inspect
+import itertools
 import os
 import re
 import json
@@ -26,7 +28,7 @@ import threading
 import uuid
 import weakref
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 from eli.kernel import request_context as _request_context
 from eli.core.confidence import confidence_label as _confidence_label
 from eli.cognition.evidence_format import this_conversation as _this_conversation
@@ -2249,7 +2251,41 @@ def _fast_path_stands(aggregated: float) -> bool:
     return verdict is False
 
 
+def _result_shown_as_is(action: Any, reasoning_mode: Any, result: Any) -> bool:
+    """fast_actions._shown_as_is, given the result: a result that says it is evidence for a question
+    asked about it (explain_in_words) is worded by the model, not shown as it is."""
+    try:
+        return _shown_as_is(action, reasoning_mode, result)
+    except TypeError:                     # a fast_actions that does not take the result yet
+        return _shown_as_is(action, reasoning_mode)
+
+
+def _conversation_figure(field: str, doc: str) -> property:
+    """A figure the next message of the same user in the same conversation settles, kept in that
+    conversation's session-sticky store (CognitiveEngine._sticky_key) and not on the engine, which
+    every caller shares."""
+    def _get(self: Any) -> Any:
+        return self._sticky_get(field)
+
+    def _set(self: Any, value: Any) -> None:
+        self._sticky_set(field, value)
+
+    return property(_get, _set, doc=doc)
+
+
 class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, ReasoningModesMixin, RetrievalMixin, MemoryCommitMixin):
+    # What the last reply of this conversation is waiting on: its request id and chance of being
+    # right, the user's words it answered, the claims it rested on, the route its message was read
+    # as, and the memories it was shown. As plain attributes on the one engine, whichever turn came
+    # next (another session, the VR body, another API member) settled them, and a correction from
+    # one user filed the other's question as its surprise.
+    _pending_assessment = _conversation_figure("pending_assessment", "request id of the reply awaiting its outcome")
+    _pending_assessment_p = _conversation_figure("pending_assessment_p", "that reply's chance of being right")
+    _pending_user_input = _conversation_figure("pending_user_input", "the message that reply answered")
+    _pending_claims = _conversation_figure("pending_claims", "claims about the user the reply rested on")
+    _pending_route = _conversation_figure("pending_route", "(request id, action) the last message was read as")
+    _pending_recall_ids = _conversation_figure("pending_recall_ids", "memories shown to the last reply")
+
     def __init__(
         self,
         *,
@@ -2282,30 +2318,17 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # instead of always waiting out the full 24h window — see _start_reflection_loop.
         self._reflection_wake = threading.Event()
         self.user_id = self._get_user_id()
-        # ── Working Memory (session-persistent pinned facts) ──────────────────
+        # ── Working memory and engagement: one of each per user and conversation ──
+        # Made on first use by _working_memory / _engagement, the working memory restored from
+        # that user's own pins (cross-session continuity).
+        self._conversation_lock = threading.Lock()
+        self._settle_lock = threading.Lock()
+        self._conversation_state_on = True
+        self._wm_turn_counter = 0  # track turns for periodic WM persistence
         try:
-            from eli.cognition.working_memory import WorkingMemory
-            self._working_memory = WorkingMemory()
-            # Restore pins from last session — cross-session continuity
-            try:
-                _wm_db = str(getattr(self.memory, "db_path", "") or "")
-                if _wm_db:
-                    _restored = self._working_memory.restore(_wm_db)
-                    if _restored:
-                        log.debug(f"[COGNITIVE] WorkingMemory: restored {_restored} pins from last session")
-            except Exception as _wm_restore_err:
-                log.debug(f"[COGNITIVE] WorkingMemory restore failed (non-fatal): {_wm_restore_err}")
+            _ = self._working_memory  # the desktop conversation's, restored at boot as before
         except Exception as _wm_err:
             log.debug(f"[COGNITIVE] WorkingMemory init failed (non-fatal): {_wm_err}")
-            self._working_memory = None
-        self._wm_turn_counter = 0  # track turns for periodic WM persistence
-        # ── Engagement Tracker (auto reasoning-mode escalation) ───────────────
-        try:
-            from eli.cognition.engagement_tracker import EngagementTracker
-            self._engagement = EngagementTracker()
-        except Exception as _et_err:
-            log.debug(f"[COGNITIVE] EngagementTracker init failed (non-fatal): {_et_err}")
-            self._engagement = None
         # Boot self-awareness subsystem
         self._awareness = None
         try:
@@ -2512,31 +2535,33 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "cpu_only": bool(cpu_only),
         }
 
-    # Roughly four characters per token, and at most a quarter of the window for
-    # who ELI is — the rest belongs to what the user said and what was retrieved.
+    # At most a quarter of the window for who ELI is and what the turn brought with it; the rest
+    # belongs to what the user said, what was retrieved and the reply.
     _PERSONA_SHARE_OF_CTX = 0.25
-    _PERSONA_CHARS_PER_TOKEN = 4
     _PERSONA_MIN_CHARS = 2048
-    _PERSONA_MAX_CHARS = 8192
-    _PERSONA_MAX_CHARS_DEEP = 14_000
 
     def _persona_handoff_budget(self, reasoning_mode: str | None = None) -> int:
-        """Character budget for the persona brief, derived from the live window."""
+        """Character budget for the persona brief, derived from the live window: its share of the
+        window at the loaded model's measured characters per token, and never more than the window
+        has left once the persona text and the reply's reserve are in. Hand-set caps of 8,192 and
+        14,000 characters cut it on a 160k window whose own share was 159,744, chopping the turn's
+        blocks off its end. `reasoning_mode` is kept for callers; the window decides."""
         try:
             ctx = int(self._effective_n_ctx() or 0)
         except Exception:
             ctx = 0
-        _cap = self._PERSONA_MAX_CHARS
-        try:
-            from eli.cognition.reasoning_modes import canonical_mode as _cm
-            if _cm(reasoning_mode or getattr(self, "_last_orchestrator_reasoning_mode", "quick")) != "quick":
-                _cap = self._PERSONA_MAX_CHARS_DEEP
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
         if ctx <= 0:
-            return max(self._PERSONA_MIN_CHARS, min(_cap, self._PERSONA_MIN_CHARS))
-        share = int(ctx * self._PERSONA_CHARS_PER_TOKEN * self._PERSONA_SHARE_OF_CTX)
-        return max(self._PERSONA_MIN_CHARS, min(_cap, share))
+            return self._PERSONA_MIN_CHARS
+        try:
+            from eli.cognition.context_budget import chars_per_token, output_reserve_tokens
+            cpt = max(0.5, float(chars_per_token()))
+            reserve = output_reserve_tokens(int(self._generation_settings().get("max_tokens") or 0), ctx)
+        except Exception:
+            log.debug("persona budget inputs unavailable", exc_info=True)
+            return self._PERSONA_MIN_CHARS
+        share = int(ctx * cpt * self._PERSONA_SHARE_OF_CTX)
+        room = int((ctx - reserve) * cpt) - len(_load_persona_text() or "")
+        return max(self._PERSONA_MIN_CHARS, min(share, room))
 
     def _effective_n_ctx(self) -> int:
         return self._runtime_n_ctx()
@@ -2608,6 +2633,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
     def _use_compact_system(self, user_input: str, memory_context: str,
                             reasoning_mode: Optional[str] = None) -> bool:
         mode = str(reasoning_mode or "quick").strip().lower() or "quick"
+        # the user's own message, not the prompt with the recent conversation in front of it
+        from eli.kernel.stages.prompt_assembly import _users_own_words
+        user_input = _users_own_words(user_input)
         words = len((user_input or "").split())
         ctx_len = len(memory_context or "")
 
@@ -4128,12 +4156,16 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
         if not stream or not _result_is_generator:
             # Native orchestrator results return directly instead of passing through
-            # _finalize_chat_result. Only explicit format requests, never tool results.
+            # _finalize_chat_result. Only explicit format requests, never tool results. A written
+            # answer gets the claim check here, before it is shown, with the evidence it was written
+            # from: this exit reached the screen unchecked, and the check at storage changed only the
+            # stored copy, so a sentence it dropped stayed on the screen.
             if isinstance(result, str):
-                result = _held_to_requested_format(user_input, result, None)
+                result = self._claim_checked(user_input, _held_to_requested_format(user_input, result, None))
             elif isinstance(result, dict) and result.get("ok", True) and str(result.get("action") or "").upper() == "CHAT":
                 _raw_answer = str(result.get("response") or result.get("content") or "")
-                _visible_answer = _held_to_requested_format(user_input, _raw_answer, result.get("trace"))
+                _visible_answer = self._claim_checked(
+                    user_input, _held_to_requested_format(user_input, _raw_answer, result.get("trace")))
                 if _visible_answer != _raw_answer:
                     result = dict(result, response=_visible_answer, content=_visible_answer)
             # Every non-streamed orchestrated turn exits here — publish its meta so the badge and
@@ -4166,7 +4198,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 parts = []
                 try:
                     stream_iter = self._stream_with_followthrough(
-                        result, user_input, reasoning_mode=reasoning_mode)
+                        self._claim_checked_stream(result), user_input, reasoning_mode=reasoning_mode)
                 except Exception as _ft_wrap_err:
                     log.debug(f"[COGNITIVE] orchestrator followthrough wrap failed: {_ft_wrap_err}")
                     stream_iter = result
@@ -4175,22 +4207,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     if token:
                         parts.append(token)
                         yield token
+                # What was shown is what is kept: the claim check ran on the stream before each
+                # sentence reached the screen. Checking the joined text again here changed only the
+                # stored copy, and the screen has no way to take a streamed sentence back.
                 final = "".join(parts).strip()
                 if final:
-                    try:
-                        _wm_ctx = ""
-                        try:
-                            _wm_ctx = str(getattr(self, "_last_orchestrator_memory_context", "") or "")
-                        except Exception:
-                            _wm_ctx = ""
-                        final = self._govern_visible_response(
-                            user_input,
-                            final,
-                            memory_context=_wm_ctx,
-                            is_grounded=bool(_wm_ctx),
-                        )
-                    except Exception as _gov_err:
-                        log.debug(f"[COGNITIVE] orchestrator stream governance skipped: {_gov_err}")
                     self._publish_orchestrator_turn_meta(user_input, final)
                     try:
                         self.enqueue_post_response_storage(
@@ -4201,6 +4222,42 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
         return result
 
+
+    def _orchestrator_evidence(self) -> str:
+        return str(getattr(self, "_last_orchestrator_memory_context", "") or "")
+
+    def _claim_checked(self, user_input: str, text: str) -> str:
+        """A written answer as it may be shown: the claim check (_govern_visible_response) with the
+        evidence it was written from, run before display; the turn records that it ran, so storage
+        keeps what was shown instead of checking it again without that evidence."""
+        if not str(text or "").strip():
+            return text
+        try:
+            evidence = self._orchestrator_evidence()
+            text = self._govern_visible_response(user_input, text, memory_context=evidence,
+                                                 is_grounded=bool(evidence))
+            _request_context.note_turn_fact("claims_checked", True)
+        except Exception as _gov_err:
+            log.debug(f"[COGNITIVE] claim check before display skipped: {_gov_err}")
+        return text
+
+    def _claim_checked_stream(self, chunks: Any) -> Generator:
+        """A stream as it may be shown. One already held to the claim check as it was generated
+        (the live generation path notes it on the turn) passes as it is; any other (an answer
+        re-chunked after it was written, such as the orchestrator's escalation) goes through the
+        same live check, sentence by sentence, before it reaches the screen."""
+        it = iter(chunks)
+        try:
+            first = next(it)
+        except StopIteration:
+            return
+        if (_request_context.turn_facts_var.get() or {}).get("claims_checked"):
+            yield first
+            yield from it
+            return
+        from eli.cognition.self_claims import gate_stream
+        _request_context.note_turn_fact("claims_checked", True)
+        yield from gate_stream(itertools.chain([first], it), self._orchestrator_evidence())
 
     # ---- PATH1 PUBLIC CONTRACT (for orchestrator / GUI fallback) ----
     def parse_intent(self, user_input: str, context: list) -> dict:
@@ -4236,6 +4293,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # news fetch can still fall back to WEB_SEARCH, so NEWS_FETCH isn't skip-listed.
         if failed_result.get("ok"):
             return failed_result
+        # A result that already went another way (the executor's own alternative) is not tried again.
+        if failed_result.get("instead_of") or failed_result.get("alternative"):
+            return failed_result
         if _retry_count >= 2 or failed_action.upper() in _SKIP_REPLAN_ACTIONS:
             return failed_result
 
@@ -4267,7 +4327,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 return failed_result
 
             alt_action = str(alt["action"]).upper().strip()
-            alt_args = dict(alt.get("args") or {})
+            # The request's own args: the model chooses only which deed-alike action to try.
+            alt_args = dict(failed_args or {})
 
             if alt_action == failed_action.upper():
                 return failed_result  # Same action would fail again
@@ -4283,9 +4344,16 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
 
+            if not self._may_run_alternative(user_input, failed_action, alt_action, alt_args):
+                log.debug(f"[REPLAN] {alt_action} not run: not admitted for {user_input[:60]!r}")
+                _request_context.note_turn_fact("replan", {"from": failed_action, "to": alt_action, "ran": False})
+                return failed_result
+
             log.debug(f"[REPLAN] Retrying {failed_action} → {alt_action} (attempt {_retry_count + 1})")
             from eli.execution.executor_enhanced import execute as _exec
             alt_result = _exec(alt_action, alt_args)
+            _request_context.note_turn_fact("replan", {"from": failed_action, "to": alt_action, "ran": True,
+                                                       "ok": bool(alt_result.get("ok"))})
 
             if alt_result.get("ok"):
                 alt_result["_replanned_from"] = failed_action
@@ -4299,6 +4367,26 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception as _replan_err:
             log.debug(f"[REPLAN] Re-plan attempt failed: {_replan_err}")
             return failed_result
+
+    @staticmethod
+    def _may_run_alternative(user_input: str, failed: str, action: str, args: Dict[str, Any]) -> bool:
+        """Whether an action the model proposes in place of a failed one may run: only one that does
+        the same deed by other means (action_outcomes.same_deed, the one owner of what counts as
+        that), on the request's own args, and admitted as a resolved intent is (_parse_intent): while
+        the model may choose actions at all (action_trust), and when the sentence asks for it and
+        holds what it needs (route_contracts). It used to run with the model's own arguments after a
+        name check alone, so a failed close could become any supported action, a shell command or a
+        keystroke among them."""
+        try:
+            from eli.runtime.action_outcomes import same_deed
+            from eli.cognition.action_trust import may_choose_actions
+            from eli.execution.route_contracts import fits, has_what_it_needs
+            intent = {"action": action, "args": dict(args or {})}
+            return bool(same_deed(failed, action) and may_choose_actions()
+                        and fits(user_input, intent) and has_what_it_needs(user_input, intent))
+        except (ImportError, AttributeError, TypeError, ValueError):
+            log.debug("replan admission unavailable; not running the alternative", exc_info=True)
+            return False
 
     def _inject_anti_repeat_contract(
         self,
@@ -4400,12 +4488,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # held back as they stream (the buffered modes get the same check in govern_output).
         from eli.cognition.self_claims import gate_stream as _gate
         _claims_evidence = f"{memory_context or ''}\n{situation_brief or ''}"
+        # what is shown has been through the claim check: the stored copy is what was shown
+        _request_context.note_turn_fact("claims_checked", True)
 
         def _say_again(dropped, served):
             said = str((_request_context.turn_facts_var.get() or {}).get("user_input") or prompt)
             return self._say_in_own_words(said, self._what_actually_happened(), not_this=" ".join(dropped),
                                           already_said=served, reasoning_mode=reasoning_mode)
 
+        def _go_on(said_so_far: str):
+            # a reply that stops on announcing what follows is finished by the completion pass,
+            # streamed, from the same brief and evidence
+            asked = str((_request_context.turn_facts_var.get() or {}).get("user_input") or prompt)
+            return self._stream_model_response(self._completion_prompt(asked, said_so_far), memory_context,
+                                               reasoning_mode=reasoning_mode, situation_brief=situation_brief)
+
+        _gate_extra = {"go_on": _go_on} if "go_on" in inspect.signature(_gate).parameters else {}
         try:
             yield from _gate(_stream_holding_back_repeats(
                 stream_factory(situation_brief, memory_context, None),
@@ -4413,7 +4511,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 allow_retry=True,
                 echo_sources=_echo_sources,
                 leak=_leak,
-            ), _claims_evidence, rewrite=_say_again, instructions=situation_brief)
+            ), _claims_evidence, rewrite=_say_again, instructions=situation_brief, **_gate_extra)
             return
         except _RepeatDetected:
             log.debug("[ANTI-REPEAT] opening matched a recent reply — regenerating")
@@ -4450,20 +4548,29 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         right by an endorsement, and left unsettled by anything else."""
         if _is_autonomous_source(source):
             return
+        # Only the user's own next message settles: a sub-question of a split message or a
+        # followthrough re-run is part of the turn that set these, not an answer to it.
+        if (_request_context.turn_facts_var.get() or {}).get("parent_request_id"):
+            return
+        # Taken and cleared together, so two turns of one conversation arriving at once never both
+        # settle the same reply.
+        with (getattr(self, "_settle_lock", None) or contextlib.nullcontext()):
+            ids, self._pending_recall_ids = getattr(self, "_pending_recall_ids", None), None
+            request_id, self._pending_assessment = getattr(self, "_pending_assessment", None), None
+            asked, self._pending_user_input = str(getattr(self, "_pending_user_input", "") or ""), ""
+            asked_p = float(getattr(self, "_pending_assessment_p", 0.5) or 0.5)
+            route, self._pending_route = getattr(self, "_pending_route", None), None
+            claims, self._pending_claims = getattr(self, "_pending_claims", None), None
         from eli.cognition.correction_patterns import is_answer_correction, is_endorsement
         corrected = is_answer_correction(user_input)
-        ids = getattr(self, "_pending_recall_ids", None)
         if ids:
-            self._pending_recall_ids = None
             try:
                 self.memory.record_recall_outcome(ids, helped=not corrected)
             except Exception:
                 log.debug("recall outcome not settled", exc_info=True)
-        request_id = getattr(self, "_pending_assessment", None)
         endorsed = is_endorsement(user_input)
         from eli.cognition import epistemics, thoughts
         if request_id:
-            self._pending_assessment = None
             how = "correction" if corrected else ("endorsement" if endorsed else "")
             if corrected:
                 epistemics.settle(request_id, False, how="correction")
@@ -4480,18 +4587,15 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 try:
                     from eli.cognition.scoring import tokenize as _tok
                     from eli.memory.salience import note_surprise
-                    _asked = str(getattr(self, "_pending_user_input", "") or "")
-                    note_surprise("answer", float(getattr(self, "_pending_assessment_p", 0.5) or 0.5),
-                                  subjects=_tok(_asked)[:3], why=f"you corrected the reply to: {_asked[:80]}",
+                    note_surprise("answer", asked_p,
+                                  subjects=_tok(asked)[:3], why=f"you corrected the reply to: {asked[:80]}",
                                   user_id=str(getattr(self, "user_id", "") or ""))
                 except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                     log.debug("correction surprise not noted", exc_info=True)
         # The route the last sentence was read as (kind route, _assess_route): a correction, a
         # complaint about ELI or a redo settles it wrong; any other next turn is the user moving on,
         # which settles it right. A misroute draws a complaint; a right route draws the next request.
-        route = getattr(self, "_pending_route", None)
         if route:
-            self._pending_route = None
             try:
                 from eli.cognition.correction_patterns import is_continuity_complaint
                 from eli.cognition.self_claims import complains_about_eli
@@ -4506,9 +4610,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # The claims about the user the last reply rested on: an endorsement settles them all right; a
         # correction settles wrong the ones it speaks of (its words share the claim's), and leaves the
         # rest open, since a reply corrected on one point was not wrong on every claim it used.
-        claims = getattr(self, "_pending_claims", None)
         if claims:
-            self._pending_claims = None
             from eli.cognition.scoring import tokenize
             from eli.execution.route_contracts import _same_word
             said = set(tokenize(user_input))
@@ -4749,6 +4851,34 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("turn finalize backstop failed", exc_info=True)
 
+    def _confirm_goals(self, said: str, goals: List[Dict[str, Any]], reasoning_mode: Optional[str] = None) -> Dict[str, Any]:
+        """The user said yes to goal proposals ELI asked about: each is confirmed, and what came of
+        it is said in ELI's own words, the record's own line when the model can't."""
+        from eli.runtime.pending_proposal import clear_pending_proposal
+        try:
+            from eli.planning.goal_tick import confirm_goal_proposal
+        except ImportError:
+            confirm_goal_proposal = None
+        lines, all_ok = [], True
+        for goal in goals:
+            if confirm_goal_proposal is None:
+                trace = {"ok": False, "outcome": "not run", "detail": "goal confirmation is not in this build"}
+            else:
+                try:
+                    trace = confirm_goal_proposal(str(goal["proposal_id"]))
+                except Exception as failure:  # noqa: BLE001 - the failure is the answer, with its cause
+                    trace = {"ok": False, "outcome": "failed", "detail": str(failure)}
+            all_ok = all_ok and bool(trace.get("ok"))
+            lines.append(f"The goal \"{goal.get('command')}\": {trace.get('outcome') or 'no outcome recorded'}"
+                         + (f" ({trace.get('detail')})" if trace.get("detail") else "") + ".")
+        clear_pending_proposal()
+        facts = _request_context.turn_facts_var.get()
+        if isinstance(facts, dict):
+            facts.setdefault("executed_actions", []).append("CONFIRM_GOAL_PROPOSAL")
+        fact = " ".join(lines)
+        reply = self._say_in_own_words(said, fact, reasoning_mode=reasoning_mode) or fact
+        return {"ok": all_ok, "action": "CONFIRM_GOAL_PROPOSAL", "response": reply, "content": reply}
+
     def _carry_out_agreed(self, said: str, agreed: Dict[str, Any], *, source: str = "user", stream: bool = False,
                           reasoning_mode: Optional[str] = None, **kwargs) -> Any:
         """The user said yes to what ELI offered. Steps with an action run through the executor.
@@ -4767,10 +4897,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             if supplied_as_data(said):
                 log.warning("[COGNITIVE] ignored embedded commands inside text supplied as data")
                 commands = []
+        ran_actions: List[str] = []          # what actually ran, for the task turn's record
         if commands:
             try:
                 ran = execute_action("MULTI_COMMAND", {"commands": commands, "raw": " and ".join(commands),
                                                        "results_only": not (_typed and len(commands) > 1)})
+                ran_actions = [str(r.get("action")).upper() for r in ((ran or {}).get("results") or [])
+                               if isinstance(r, dict) and r.get("action")] or ["MULTI_COMMAND"]
                 text = str((ran or {}).get("response") or (ran or {}).get("content") or "").strip()
                 if text:
                     shown.append(text)
@@ -4787,16 +4920,13 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         def _saved(written: str) -> str:
             # "I'll put the code in /x. Deal?" -- "deal": what was written goes there, through the
             # file action and its checks. ELI said it had, and nothing was there.
+            # CREATE_FILE leaves a file that is already there as it is and says so; what it says is shown.
             lines = []
             for path in saves:
-                if os.path.exists(os.path.expanduser(path)):
-                    lines.append(f"There is already a file at {path}, so I left it as it is.")
-                    continue
                 ran = execute_action("CREATE_FILE", {"path": path, "content": _pp.what_was_written(written),
-                                                      "verbatim": True})
-                ok = bool((ran or {}).get("ok"))
-                lines.append(f"Saved it to {(ran or {}).get('path') or path}." if ok else
-                             str((ran or {}).get("response") or (ran or {}).get("error") or f"{path} was not written."))
+                                                      "verbatim": True}) or {}
+                said = str(ran.get("response") or ran.get("content") or ran.get("error") or "").strip()
+                lines.append(said or f"{'written' if ran.get('ok') else 'not written'}: {ran.get('path') or path}")
             return "\n".join(lines)
 
         if not tasks:
@@ -4813,7 +4943,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         message = _pp.task_message(tasks)
         token = _request_context.agreed_task_var.set(
             {"said": said, "offer": str(agreed.get("offer") or ""), "message": message, "done": done,
-             "rest_of_message": _typed})
+             "rest_of_message": _typed, "ran": list(ran_actions)})
         try:
             inner = self.process(message, source=source, stream=stream, reasoning_mode=reasoning_mode, **kwargs)
         finally:
@@ -4963,10 +5093,74 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             return None
         # Per instance as well as per session: engines built in the same second
         # share an int(time()) session id, and must not share state any more
-        # than they did when these were plain attributes.
+        # than they did when these were plain attributes. Per user too: two API
+        # callers that send no session id in the same second are given the same
+        # one (str(int(time.time()))).
         ns = self.__dict__.get("_sticky_ns") or self.__dict__.setdefault(
             "_sticky_ns", uuid.uuid4().hex[:12])
-        return f"{ns}:{sid}"
+        return f"{ns}:{self.user_id or ''}:{sid}"
+
+    # ── per-user, per-conversation trackers ────────────────────────────────
+    # The working memory (facts pinned for the rest of a conversation) and the engagement tracker
+    # (how deep a conversation has gone) belong to one user's one conversation. Both were single
+    # objects on this process-wide engine, so one API user's pinned facts went into every other
+    # user's prompt, and every session moved one turn counter.
+
+    def _per_conversation(self, field: str, make: Callable[[], Any]) -> Any:
+        key = self._sticky_key()
+        if key is None:
+            own = self.__dict__.setdefault("_unkeyed_conversation", {})
+            if field not in own:
+                own[field] = make()
+            return own[field]
+        obj = _request_context.get_session_sticky(key, field)
+        if obj is None:
+            with self.__dict__["_conversation_lock"]:
+                obj = _request_context.get_session_sticky(key, field)
+                if obj is None:
+                    obj = make()
+                    _request_context.set_session_sticky(key, field, obj)
+        return obj
+
+    def _new_working_memory(self) -> Any:
+        from eli.cognition.working_memory import WorkingMemory
+        from eli.kernel.state import member_user_id
+        wm = WorkingMemory(user_id=member_user_id(self.user_id), session_id=str(self.session_id or ""))
+        db = str(getattr(getattr(self, "memory", None), "db_path", "") or "")
+        if db:
+            restored = wm.restore(db)
+            if restored:
+                log.debug(f"[COGNITIVE] WorkingMemory: restored {restored} pins from this user's last session")
+        live = self.__dict__.setdefault("_working_memories", weakref.WeakValueDictionary())
+        live[self._sticky_key() or "-"] = wm
+        return wm
+
+    @property
+    def _working_memory(self) -> Any:
+        """This user's and this conversation's working memory; None on an engine built without one."""
+        if not self.__dict__.get("_conversation_state_on"):
+            return None
+        try:
+            return self._per_conversation("working_memory", self._new_working_memory)
+        except Exception:
+            log.debug("working memory unavailable", exc_info=True)
+            return None
+
+    def _all_working_memories(self) -> List[Any]:
+        """Every conversation's working memory this engine still holds (shutdown flushes them)."""
+        return list((self.__dict__.get("_working_memories") or {}).values())
+
+    @property
+    def _engagement(self) -> Any:
+        """This user's and this conversation's engagement tracker; None on an engine built without one."""
+        if not self.__dict__.get("_conversation_state_on"):
+            return None
+        try:
+            from eli.cognition.engagement_tracker import EngagementTracker
+            return self._per_conversation("engagement", EngagementTracker)
+        except Exception:
+            log.debug("engagement tracker unavailable", exc_info=True)
+            return None
 
     def _sticky_get(self, field: str, default: Any = None) -> Any:
         return _request_context.get_session_sticky(self._sticky_key(), field, default)
@@ -5031,6 +5225,16 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if _request_context.reasoning_mode_var.get() is not None:
             _request_context.reasoning_mode_var.set(value)
         self._sticky_set("reasoning_mode", value)
+
+    @property
+    def _crisis_steering(self) -> Optional[str]:
+        return _request_context.crisis_steering_var.get()
+
+    @_crisis_steering.setter
+    def _crisis_steering(self, value: Optional[str]) -> None:
+        # Only inside a turn: set on a caller's own context it would steer that thread's later turns.
+        if _request_context.turn_facts_var.get() is not None:
+            _request_context.crisis_steering_var.set(value)
 
     @property
     def _in_followthrough(self) -> bool:
@@ -5166,14 +5370,42 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             self._conversation_history = []
         # ── End minimal attr guard ─────────────────────────────────────────────
 
+        # Crisis guard (ELI_CRISIS_GUARD_V1): first-person self-harm or suicidal language is a hard
+        # safety override (eli.core.crisis_guard; STT text is flat and unpunctuated, so it matches
+        # normalised phrase patterns). Such a message is answered whole, by the model, steered (the
+        # directive goes into the persona brief): never split into sub-questions, never answered by
+        # an onboarding step or a deterministic report or status shortcut, never an action. The
+        # routing stage below forces CHAT after its last re-route. "your last response made me want
+        # to ..." was answered with a trace of the last response.
+        try:
+            from eli.core.crisis_guard import detect_crisis, crisis_steering_directive
+            _crisis = detect_crisis(user_input)
+        except Exception:
+            _crisis = None
+        if _crisis:
+            self._crisis_steering = crisis_steering_directive(_crisis.get("signal", ""))
+
+        # A yes to a goal proposal ELI asked about is that proposal's confirmation: the goal is worked
+        # on once (planning.goal_tick.confirm_goal_proposal), read by the one consent reader.
+        if not _crisis and not _is_autonomous_source(source) and not (
+                _request_context.turn_facts_var.get() or {}).get("parent_request_id"):
+            try:
+                from eli.runtime.pending_proposal import goals_agreed
+                _goals_yes = goals_agreed(user_input)
+            except Exception:
+                log.debug("goal consent check skipped", exc_info=True)
+                _goals_yes = []
+            if _goals_yes:
+                return self._confirm_goals(user_input, _goals_yes, reasoning_mode)
+
         # Light first-run onboarding (opt-in, non-blocking, skippable). For a blank-slate user (no
         # User Model) a light opener starts a short baseline interview (name -> role -> style); a
         # substantive task passes straight through. Seeds flow into the User Model, persona and KG.
         try:
             from eli.onboarding.interview import onboarding_intercept as _ob_intercept
             _ob_db = getattr(getattr(self, "memory", None), "db_path", None)
-            _ob_msg = _ob_intercept(user_input, user_id=getattr(self, "user_id", None), db_path=_ob_db,
-                                    route=_route_once)
+            _ob_msg = None if _crisis else _ob_intercept(user_input, user_id=getattr(self, "user_id", None),
+                                                         db_path=_ob_db, route=_route_once)
             if _ob_msg is not None:
                 return {"ok": True, "action": "CHAT", "content": _ob_msg, "response": _ob_msg}
         except Exception:
@@ -5207,7 +5439,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             # Split compound questions only when the message is long enough to hold several genuine
             # standalone questions. Short messages (<=25 words) are conversational; splitting loses
             # context and yields canned per-fragment replies.
-            if _mqs_q_count > 1 and _mqs_total_words > 25 and not _mqs_conversational:
+            if _mqs_q_count > 1 and _mqs_total_words > 25 and not _mqs_conversational and not _crisis:
                 # Split on '?' — each segment must be a standalone question
                 # (≥6 words); fragments like 'good "what"?' are not sub-questions.
                 _mqs_parts = _mqs_raw.split("?")
@@ -5234,15 +5466,30 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     for _mqs_seg in _mqs_segs:
                         _mqs_q = _mqs_seg.rstrip("?").strip() + "?"
                         try:
+                            _mqs_meta_before = str((self._last_request_meta or {}).get("request_id") or "")
                             _mqs_r = self.process(
                                 _mqs_q, source=source, stream=False,
                                 reasoning_mode=reasoning_mode, **_mqs_kwargs,
                             )
                             # Extract user-visible text from dict/str/generator result
                             _mqs_conf = None
-                            _mqs_failed = isinstance(_mqs_r, dict) and _mqs_r.get("ok") is False
+                            # What an action that ran reports is a fact, whatever the agent bus's
+                            # retrieval figure beside it says, and a failure it reports is the truth
+                            # about it: "I've started it as job #1" was dropped at 0.29.
+                            _mqs_acted = isinstance(_mqs_r, dict) and (
+                                str(_mqs_r.get("action") or "").upper() not in ("", "CHAT", "UNKNOWN")
+                                or bool(_mqs_r.get("executed_actions")))
+                            _mqs_failed = isinstance(_mqs_r, dict) and _mqs_r.get("ok") is False and not _mqs_acted
                             if isinstance(_mqs_r, dict):
-                                _mqs_conf = _mqs_r.get("confidence")
+                                # A written answer is judged by its own chance of being right (the
+                                # sub-turn's calibrated figure, epistemics), its handler's figure
+                                # only where it published none.
+                                _mqs_meta = self._last_request_meta or {}
+                                _mqs_p = (_mqs_meta.get("probability")
+                                          if str(_mqs_meta.get("request_id") or "") not in ("", _mqs_meta_before)
+                                          else None)
+                                _mqs_conf = None if _mqs_acted else (_mqs_p if _mqs_p is not None
+                                                                      else _mqs_r.get("confidence"))
                                 _mqs_r = (
                                     _mqs_r.get("response") or _mqs_r.get("content")
                                     or _mqs_r.get("text") or ""
@@ -5271,6 +5518,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             if _mqs_r and not _mqs_low_conf and not _mqs_failed:
                                 _mqs_responses.append(_mqs_r)
                             elif _mqs_r:
+                                # the turn's record says what was left out of the reply
+                                _dropped = list((_request_context.turn_facts_var.get() or {}).get("dropped_segments") or [])
+                                _request_context.note_turn_fact(
+                                    "dropped_segments", _dropped + [{"question": _mqs_q, "chance": _mqs_conf}])
                                 log.debug(
                                     "[ENGINE] multi-question: dropped low-confidence segment "
                                     "%r (confidence=%s)", _mqs_q[:60], _mqs_conf,
@@ -5297,6 +5548,10 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 _mqs_deduped.append(_mqs_cand)
                         _mqs_responses = _mqs_deduped
 
+                    if _mqs_responses:
+                        # Each part was checked on its own sub-turn's exit, before it was joined here;
+                        # what is shown is what is stored.
+                        _request_context.note_turn_fact("claims_checked", True)
                     if len(_mqs_responses) >= 2:
                         return "\n\n".join(_mqs_responses)
                     elif len(_mqs_responses) == 1:
@@ -5324,7 +5579,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 r"(?:who\s+are\s+you|what\s+are\s+you|tell\s+me\s+about\s+yourself)",
                 _cis_raw,
             )
-            if _cis_ab or _cis_ba:
+            if (_cis_ab or _cis_ba) and not _crisis:
                 log.debug("[ENGINE] compound identity question detected — splitting into two calls")
                 _cis_kwargs = {k: v for k, v in kwargs.items()}
                 _cis_a = self.process(
@@ -5381,7 +5636,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         # and nothing from a long message (correction_patterns.shortcut_text). The whole message is
         # still what is stored and what the model is given.
         from eli.cognition.correction_patterns import shortcut_text as _eli_shortcut_text_of
-        _eli_shortcut_text = _eli_shortcut_text_of(user_input)
+        _eli_shortcut_text = "" if _crisis else _eli_shortcut_text_of(user_input)
 
         # Migrated from bottom-of-file _eli_engine_second_process wrapper.
         # Handles reasoning-mode status as a first-class process middleware
@@ -6085,7 +6340,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
         # Redo directive (ELI_REDO_DIRECTIVE_V1): the user telling ELI to actually (re-)do the task
         # ("do it again", "are you actually fetching?"). If it routed to CHAT but a real action ran
-        # recently, re-run that action. The crisis guard below still wins, it runs after and forces CHAT.
+        # recently, re-run that action. The crisis override still wins: it is applied last.
         try:
             if str(action).upper() == "CHAT":
                 from eli.runtime.action_commitment import redo_applies as _redo_applies
@@ -6146,38 +6401,11 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("[CORRECTION] check skipped", exc_info=True)
 
-        # Crisis guard (ELI_CRISIS_GUARD_V1): first-person self-harm or suicidal language is a hard
-        # safety override. STT text is flat and unpunctuated, so it matches normalised phrase patterns
-        # (eli.core.crisis_guard). When it fires: force CHAT (never PLAY_MEDIA / WEB_SEARCH / NEWS_FETCH),
-        # skip grounding escalation/hedge, and add a steering directive to the persona brief. Steered,
-        # not scripted.
-        try:
-            from eli.core.crisis_guard import detect_crisis, crisis_steering_directive
-            _crisis = detect_crisis(user_input)
-        except Exception:
-            _crisis = None
-        if _crisis:
-            self._crisis_steering = crisis_steering_directive(_crisis.get("signal", ""))
-            if str(action).upper() != "CHAT":
-                log.debug(
-                    f"[CRISIS_GUARD] self-harm signal {_crisis.get('signal')!r} — "
-                    f"forcing {action} -> CHAT")
-            action = "CHAT"
-            args = {"message": user_input}
-            intent = dict(intent or {})
-            intent["action"] = "CHAT"
-            intent["args"] = args
-            _cmeta = dict(intent.get("meta") or {})
-            _cmeta["safety_override"] = "self_harm"
-            _cmeta["allow_chat_without_evidence"] = True
-            intent["meta"] = _cmeta
-        else:
-            self._crisis_steering = None
-
         # Remember the last REAL action so a later "do it again" / "are you
-        # actually doing X" directive can re-run it (ELI_REDO_DIRECTIVE_V1).
+        # actually doing X" directive can re-run it (ELI_REDO_DIRECTIVE_V1). A message carrying a
+        # self-harm signal is never one: its turn is CHAT whatever it was routed as.
         try:
-            if str(action).upper() not in ("CHAT", "NOOP", "UNKNOWN", ""):
+            if not _crisis and str(action).upper() not in ("CHAT", "NOOP", "UNKNOWN", ""):
                 self._last_command_action = {
                     "action": action, "args": dict(args or {}), "input": user_input,
                     # Stamped so "do it again" only re-runs something recent: CHAT never overwrites this.
@@ -6302,6 +6530,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             action = "RUNTIME_STATUS"
             args = {}
             log.debug("[COGNITIVE] Upgraded CHAT -> RUNTIME_STATUS for grounded runtime query")
+
+        # The crisis override, after every re-route above so none of them can undo it.
+        if _crisis:
+            if str(action).upper() != "CHAT":
+                log.debug(
+                    f"[CRISIS_GUARD] self-harm signal {_crisis.get('signal')!r} — "
+                    f"forcing {action} -> CHAT")
+            action = "CHAT"
+            args = {"message": user_input}
+            intent = dict(intent or {})
+            intent["action"] = "CHAT"
+            intent["args"] = args
+            _cmeta = dict(intent.get("meta") or {})
+            _cmeta["safety_override"] = "self_harm"
+            _cmeta["allow_chat_without_evidence"] = True
+            intent["meta"] = _cmeta
 
         # Stage 2: persona lock verify (authority gate), fail-closed: a missing "allowed" key is DENY,
         # and a gate exception denies privileged/side-effecting actions but lets read-only and
@@ -6826,7 +7070,9 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         # A diagnostic of ELI's own behaviour is told in words in every mode: in Quick its raw
                         # packet (JSON) and routing trace reached the person as the answer.
                         from eli.runtime.control_contracts import EXPLAINED_IN_WORDS, asks_for_raw
-                        _explain_in_words = _action_upper in EXPLAINED_IN_WORDS and not asks_for_raw(user_input)
+                        # an effector result can say it is evidence for a question asked about it
+                        _explain_in_words = (_action_upper in EXPLAINED_IN_WORDS or bool(
+                            (_chosen_payload or {}).get("explain_in_words"))) and not asks_for_raw(user_input)
                         _bypass_persona = bool(
                             kwargs.get("bypass_persona")
                             or intent.get("bypass_persona")
@@ -7649,7 +7895,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
 
             # An action whose handler returned the finished answer, or a question for the user:
             # that is the reply.
-            if (_shown_as_is(action, reasoning_mode) or _asks_the_user(_action_result)) and isinstance(_action_result, dict):
+            if (_result_shown_as_is(action, reasoning_mode, _action_result) or _asks_the_user(_action_result)) and isinstance(_action_result, dict):
                 _as_is = str(_action_result.get("response") or _action_result.get("content") or "").strip()
                 if _as_is:
                     try:
@@ -8192,7 +8438,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if (
             str(action).upper() not in {"CHAT"}
             and str(action).upper() not in _no_synthesis_actions
-            and not _shown_as_is(action, reasoning_mode)
+            and not _result_shown_as_is(action, reasoning_mode, result)
             and not _asks_the_user(result)
             and raw_response
         ):
@@ -8301,6 +8547,27 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                  "allow_chat_without_evidence": True}}
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+        # A file or image the user attached is a fact of the message, whatever verb leads it ("this is
+        # the screenshot you took, analyse it"): it is looked at by its own analysis (the router's
+        # extension dispatch, on that path), and the rest of the message is the instruction. Only a
+        # leading document verb reached that dispatch; otherwise the marker was read only by the
+        # resolver behind the model-trust gate, so the turn went to chat, nothing looked at the
+        # image, and the reply described the screen from earlier replies.
+        try:
+            from eli.execution.router_enhanced import _ATTACHMENT_MARKER_RE, _attachment_marker_path
+            from eli.execution.router_enhanced import route as _route_path
+            _attached = _attachment_marker_path(text)
+            if _attached:
+                _looked = _route_path(f"analyse {_attached}") or {}
+                if str(_looked.get("action") or "").upper() not in ("", "CHAT", "UNKNOWN"):
+                    _instruction = " ".join(_ATTACHMENT_MARKER_RE.sub(" ", text).split())
+                    _looked = dict(_looked, args=dict(_looked.get("args") or {}, path=_attached,
+                                                      **({"instruction": _instruction} if _instruction else {})))
+                    _looked["meta"] = dict(_looked.get("meta") or {}, matched_by="engine.attachment")
+                    log.debug(f"[COGNITIVE] attachment → {_looked.get('action')} on {_attached}")
+                    return _looked
+        except Exception:
+            log.debug("attachment check skipped", exc_info=True)
         router_intent = None
         try:
             router_intent = _route_once(text)

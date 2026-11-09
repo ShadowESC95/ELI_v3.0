@@ -243,3 +243,22 @@ def test_a_load_inside_the_model_lock_leaves_the_embedder_alone(monkeypatch, tmp
     with pytest.raises(Exception, match="stop here"):
         g._load_model_now()
     assert seen == [True]
+
+
+def test_a_stream_the_user_stopped_ends_quietly_without_a_fault_message(monkeypatch):
+    """A Stop aborts the decode ("llama_decode returned 2"); the stream ran its fallback and then said
+    'Something went wrong reaching the local model', which API and VR readers showed."""
+    from eli.kernel.engine import CognitiveEngine
+    from eli.kernel.stages import generation as gen_mod
+    eng = CognitiveEngine()
+    eng._gguf_available = True
+    fallback = []
+
+    def _aborted(*a, **k):
+        raise RuntimeError("llama_decode returned 2")
+
+    monkeypatch.setattr(gen_mod.gguf_inference, "generate", _aborted, raising=False)
+    monkeypatch.setattr(gen_mod.gguf_inference, "is_cancel_requested", lambda: True)
+    monkeypatch.setattr(eng, "_get_chat_response", lambda *a, **k: fallback.append(1) or "")
+    out = "".join(eng._stream_model_response("tell me about tides", ""))
+    assert out == "" and fallback == []

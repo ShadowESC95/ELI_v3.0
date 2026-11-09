@@ -475,3 +475,29 @@ def test_a_reply_reformatted_as_a_list_is_still_a_repeat():
                    "before and after the impact. That was the news, not what you meant, and I should have "
                    "asked about the show instead. So how is the season going so far for you?")
     assert not _is_repeat_of_recent(quoting_one, [prior])
+
+
+def test_the_live_gate_is_given_a_way_to_finish_a_reply_that_announces_what_follows(monkeypatch):
+    """The claim gate can finish a reply that stops on 'Here are the steps:'; the engine gives it the
+    completion pass, streamed from the same brief and evidence (self_claims.gate_stream's go_on)."""
+    from types import SimpleNamespace
+    from eli.cognition import self_claims
+    from eli.kernel import engine
+    seen = {}
+
+    def gate(chunks, evidence="", rewrite=None, instructions="", go_on=None):
+        seen["go_on"] = go_on
+        yield from chunks
+
+    monkeypatch.setattr(self_claims, "gate_stream", gate)
+    eng = engine.CognitiveEngine.__new__(engine.CognitiveEngine)
+    eng.memory = SimpleNamespace(get_recent_conversation=lambda **k: [])
+    asked = []
+    eng._stream_model_response = lambda prompt, mem, reasoning_mode=None, situation_brief="": (
+        asked.append((prompt, mem, situation_brief)) or iter([" step one."]))
+    out = "".join(eng._yield_with_anti_repeat_guard(
+        "how do I re-pot it?", lambda brief, mem, gen: iter(["Here are the steps:"]),
+        memory_context="the evidence", situation_brief="the brief"))
+    assert out == "Here are the steps:" and callable(seen["go_on"])
+    assert "".join(seen["go_on"]("Here are the steps:")) == " step one."
+    assert "TRUNCATED DRAFT:\nHere are the steps:" in asked[0][0] and asked[0][1:] == ("the evidence", "the brief")

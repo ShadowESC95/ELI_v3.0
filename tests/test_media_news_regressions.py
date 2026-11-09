@@ -990,3 +990,31 @@ def test_stt_the_loop_hands_on_the_command_without_the_wake_word(monkeypatch):
     ear, sent = _listener(monkeypatch)
     ear._act_on_transcript("computer, pause.")
     assert sent == ["pause"], "the wake word went to the router with the command"
+
+
+def test_an_old_report_in_the_conversation_is_not_the_answer_to_a_new_question():
+    """The verbatim guard searched the memory context and the prompt, which carry the recent
+    conversation, so after a code examination an unrelated question was answered with that old report."""
+    from eli.kernel import request_context as rc
+    from eli.kernel.engine import CognitiveEngine
+    old = ("Recent turns:\nELI: Examined 1 file(s): eli/foo.py\n\nNo errors found. Tier 1 — high "
+           "confidence (syntax / import): none.\nUser: thanks")
+    eng = CognitiveEngine()
+    token = rc.turn_facts_var.set({"request_id": "req-river", "user_input": "what is a river?"})
+    try:
+        out = eng._get_chat_response("what is a river?", old)
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert "Examined 1 file(s)" not in str(out or "")
+
+
+def test_a_result_marked_to_be_explained_is_not_shown_as_it_is(monkeypatch):
+    """An effector result that says it is evidence for a question asked about it (explain_in_words) is
+    worded by the model, not shown as the dump."""
+    from eli.kernel import engine as engine_mod
+    seen = []
+    monkeypatch.setattr(engine_mod, "_shown_as_is", lambda action, mode=None, result=None:
+                        seen.append(result) or not (isinstance(result, dict) and result.get("explain_in_words")))
+    marked = {"ok": True, "action": "GPU_STATUS", "response": "GPU 0: 1%", "explain_in_words": True}
+    assert engine_mod._result_shown_as_is("GPU_STATUS", "quick", marked) is False
+    assert engine_mod._result_shown_as_is("GPU_STATUS", "quick", {"ok": True}) is True and seen[0] is marked

@@ -303,7 +303,15 @@ def _is_brief_phatic_prompt(text: str) -> bool:
     return False
 
 
-_AUTONOMOUS_SOURCES = ("habit", "proactive", "scheduler", "system", "autonomy")
+# Where a turn that is ELI's own comes from: its automation (habits, the proactive daemon, the
+# scheduler and its scheduled tasks, the autonomy loop, the system) and its internal helpers that ask
+# the engine for text (the Labs report writer). Such a turn is never the user speaking: it is not
+# stored as their message or memory, stamped as their activity, read as their reply to the last
+# answer or assessed as their route. Matched on the tag before any ":detail". "scheduled_task" (the
+# scheduled-task worker's) was missing, so ELI's own overnight research request was stored as the
+# owner's message.
+_AUTONOMOUS_SOURCES = frozenset(("habit", "proactive", "scheduler", "scheduled_task", "system", "autonomy",
+                                 "labs"))
 
 
 # Reading the web: a search's results, or the page a link points to. Both are answered from what came
@@ -314,7 +322,7 @@ _WEB_READS = frozenset(("WEB_SEARCH", "WEB_FETCH"))
 def _is_autonomous_source(source: str) -> bool:
     """True when `source` (process()'s own origin tag) is ELI's own automation, not a
     real user turn — one vocabulary, shared by every place that needs the distinction."""
-    return str(source or "user").lower() in _AUTONOMOUS_SOURCES
+    return str(source or "user").strip().lower().split(":", 1)[0] in _AUTONOMOUS_SOURCES
 
 
 def _eli_test_mode() -> bool:

@@ -151,3 +151,107 @@ def test_a_reply_is_no_surer_than_the_claims_it_rests_on_and_they_are_settled_wi
     settled = {p[0]["request_id"]: p[1]["outcome"] for p in pairs}
     assert settled == {ep.claim_request_id(8, "req-c"): "failed"}, "the schedule claim is left open"
     assert eng._pending_claims is None
+
+
+def test_only_the_same_users_next_message_in_that_conversation_settles_a_reply(tmp_path, monkeypatch):
+    """The figures waiting for the next message were plain attributes on the one engine, so another
+    session's or another API member's next turn settled the previous person's reply, and a correction
+    from one user filed the other's question as its surprise."""
+    from eli.cognition import epistemics as ep
+    from eli.kernel import request_context as rc
+    from eli.memory import salience
+    from eli.runtime import evidence_ledger as led
+    ledger = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: ledger)
+    noted = []
+    monkeypatch.setattr(salience, "note_surprise", lambda kind, magnitude, **k: noted.append(k) or {})
+    eng = CognitiveEngine()
+
+    def as_user(user, session, fn, *a):
+        tokens = (rc.user_id_var.set(user), rc.session_id_var.set(session))
+        try:
+            return fn(*a)
+        finally:
+            rc.session_id_var.reset(tokens[1])
+            rc.user_id_var.reset(tokens[0])
+
+    def publish():
+        token = rc.turn_facts_var.set({"request_id": "req-a", "user_input": "when is the ferry on sunday"})
+        try:
+            eng._publish_last_response_meta({"request_id": "req-a"}, action="CHAT", result_action="CHAT",
+                                            confidence=0.8, response="the ferry leaves at nine",
+                                            user_input="when is the ferry on sunday")
+        finally:
+            rc.turn_facts_var.reset(token)
+
+    as_user("member-a", "s1", publish)
+    as_user("member-b", "s2", eng._settle_recall_outcome, "no, that's not what I asked", "api:member-b")
+    as_user("member-b", "s1", eng._settle_recall_outcome, "no, that's not what I asked", "api:member-b")
+    assert ep.outcomes(db_path=ledger) == [] and noted == [], "another user's correction settled A's reply"
+    assert as_user("member-a", "s1", lambda: eng._pending_assessment) == "req-a"
+    as_user("member-a", "s1", eng._settle_recall_outcome, "no, that's not what I asked", "api:member-a")
+    assert [(s, y) for s, y, _ in ep.outcomes(db_path=ledger)] == [(0.8, 0.0)]
+    assert as_user("member-a", "s1", lambda: eng._pending_assessment) is None
+    as_user("member-a", "s1", eng._settle_recall_outcome, "no, that's not what I asked", "api:member-a")
+    assert len(ep.outcomes(db_path=ledger)) == 1, "settled once"
+
+
+def test_a_sub_question_of_a_split_message_does_not_settle_the_last_reply(tmp_path, monkeypatch):
+    from eli.cognition import epistemics as ep
+    from eli.kernel import request_context as rc
+    from eli.runtime import evidence_ledger as led
+    ledger = tmp_path / "ledger.sqlite3"
+    monkeypatch.setattr(led, "_default_db_path", lambda: ledger)
+    eng = CognitiveEngine()
+    eng._publish_last_response_meta({"request_id": "req-n"}, action="CHAT", result_action="CHAT",
+                                    confidence=0.7, response="it is low tide at six")
+    token = rc.turn_facts_var.set({"request_id": "req-sub", "parent_request_id": "req-parent"})
+    try:
+        eng._settle_recall_outcome("no, that's wrong", "user")
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert ep.outcomes(db_path=ledger) == [] and eng._pending_assessment == "req-n"
+
+
+_INVENTED = "The lights are off now. My media control has an estimated 18% success rate lately. Anything else?"
+
+
+def test_a_written_answer_gets_the_claim_check_before_it_is_shown():
+    """The orchestrator's non-streamed answer reached the screen unchecked; the check at storage then
+    changed only the stored copy, so the dropped sentence stayed on the screen."""
+    eng = CognitiveEngine()
+    eng._last_orchestrator_trace = {}
+
+    class _FakeOrchestrator:
+        def __init__(self, engine):
+            pass
+
+        def run(self, user_input, stream=False, reasoning_mode=None):
+            return {"ok": True, "action": "CHAT", "response": _INVENTED, "trace": {}}
+
+    with patch("eli.cognition.orchestrator.AgentOrchestrator", _FakeOrchestrator):
+        result = eng._run_internal_orchestrator("turn the lights off", stream=False)
+    assert "18% success rate" not in result["response"] and "lights are off" in result["response"]
+
+
+def test_a_re_chunked_stream_gets_the_live_claim_check_and_is_stored_as_shown():
+    from eli.kernel import request_context as rc
+    eng = CognitiveEngine()
+    stored = []
+    eng.enqueue_post_response_storage = lambda u, text, *a, **k: stored.append(text)
+
+    class _FakeOrchestrator:
+        def __init__(self, engine):
+            pass
+
+        def run(self, user_input, stream=False, reasoning_mode=None):
+            return (_INVENTED[i:i + 9] for i in range(0, len(_INVENTED), 9))
+
+    token = rc.turn_facts_var.set({"request_id": "req-s"})
+    try:
+        with patch("eli.cognition.orchestrator.AgentOrchestrator", _FakeOrchestrator):
+            shown = "".join(eng._run_internal_orchestrator("turn the lights off", stream=True))
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert "18% success rate" not in shown and "lights are off" in shown
+    assert stored == [shown.strip()]

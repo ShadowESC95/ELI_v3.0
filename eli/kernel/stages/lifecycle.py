@@ -78,10 +78,17 @@ class LifecycleMixin:
         except Exception as _pd_err:
             log.debug(f"[COGNITIVE] Shutdown: proactive daemon stop failed (non-fatal): {_pd_err}")
 
-        # 2. Flush working memory → persistent store
+        # 2. Flush working memory → persistent store. Every conversation's pins are kept for that
+        # user (persist); only the owner's go into long-term memory, which has no user of its own,
+        # so an API member's pinned facts never become the owner's memories.
         try:
-            if self._working_memory:
-                saved = self._working_memory.flush_to_memory(self.memory)
+            _wm_db = str(getattr(self.memory, "db_path", "") or "")
+            for _wm in self._all_working_memories():
+                if _wm_db:
+                    _wm.persist(_wm_db)
+                if getattr(_wm, "user_id", ""):
+                    continue
+                saved = _wm.flush_to_memory(self.memory)
                 if saved:
                     log.debug(f"[COGNITIVE] Shutdown: {saved} WorkingMemory fact(s) persisted")
         except Exception as _wm_err:

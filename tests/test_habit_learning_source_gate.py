@@ -95,3 +95,40 @@ def test_finalize_turn_defaults_source_to_user(eng):
                   intent=_intent(), result={"ok": True})
     _, kwargs = spy.call_args
     assert kwargs.get("source") == "user"
+
+
+def test_every_internal_caller_of_process_names_an_autonomous_source():
+    """ELI's own callers of process() (the habit scheduler, the scheduled-task worker, ...) must pass a
+    source the engine reads as its own: 'scheduled_task' was not in the vocabulary, so a scheduled
+    research request was stored and settled as the owner's own message."""
+    import ast
+    from pathlib import Path
+    from eli.kernel.stages._common import _is_autonomous_source
+    root = Path(__file__).resolve().parents[1] / "eli"
+    internal = [root / "planning" / "habits_scheduler.py", root / "runtime" / "scheduled_tasks.py"]
+    seen = []
+    for path in internal:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "process":
+                src = next((k.value.value for k in node.keywords
+                            if k.arg == "source" and isinstance(k.value, ast.Constant)), None)
+                seen.append((path.name, src))
+                assert src and _is_autonomous_source(src), (path.name, src)
+    assert {name for name, _ in seen} == {p.name for p in internal}
+    for tag in ("scheduled_task", "labs", "scheduler:nightly"):
+        assert _is_autonomous_source(tag)
+    for tag in ("api:alice", "followthrough", "voice"):
+        assert not _is_autonomous_source(tag)
+
+
+def test_elis_own_turn_is_not_stored_as_the_users_message(eng):
+    from eli.kernel import request_context as rc
+    from eli.kernel.stages._common import _is_autonomous_source
+    for source, stored in (("scheduled_task", False), ("habit", False), ("user", True)):
+        eng.memory.reset_mock()
+        token = rc.turn_facts_var.set({"request_id": "r", "autonomous": _is_autonomous_source(source)})
+        try:
+            eng._store_user_turn("look up tide tables for the weekend")
+        finally:
+            rc.turn_facts_var.reset(token)
+        assert eng.memory.add_conversation_turn.called is stored, source

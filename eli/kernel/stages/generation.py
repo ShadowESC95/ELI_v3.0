@@ -325,6 +325,43 @@ def _truncate_system_prompt_preserving_evidence(enhanced_system: str, sys_budget
     return head_region + evidence_region + tail_region
 
 
+def _stream_char_budget(n_ctx: int, reply_floor: int, cpt: Optional[float] = None) -> int:
+    """How many characters of system prompt and prompt a streamed turn can send: the window less the
+    reply floor the request needs (and the template slack), at the loaded model's measured characters
+    per token. The line was drawn from the reply budget already derived from this same prompt's
+    length, so the test compared the prompt with itself and cut every prompt whose length was not a
+    multiple of 3."""
+    if cpt is None:
+        from eli.cognition.context_budget import chars_per_token
+        cpt = chars_per_token()
+    return max(400, int((int(n_ctx) - int(reply_floor) - 64) * max(0.5, float(cpt))))
+
+
+# The deterministic reports shown as they are (EXAMINE_CODE, FILE_AUDIT): their opening and the
+# markers that say a result really is one of them.
+_VERBATIM_REPORTS = (
+    ("EXAMINE_CODE", r"(Examined\s+\d+\s+file\(s\)\s*:[\s\S]+)", ("Tier 1", "No errors found", "PLEASE CONFIRM")),
+    ("FILE_AUDIT", r"(File Audit:[\s\S]+)", ("Directories scanned:", "Total files:")),
+)
+
+
+def _this_turns_report() -> str:
+    """The code examination or file audit report this turn's own action produced, or ""."""
+    bus = (_request_context.turn_facts_var.get() or {}).get("bus_result")
+    if bus is None:
+        return ""
+    try:
+        from eli.kernel.engine import _eli_phase13c_bus_action_result
+    except ImportError:
+        return ""
+    for action, pattern, markers in _VERBATIM_REPORTS:
+        result = _eli_phase13c_bus_action_result(bus, action) or {}
+        found = re.search(pattern, str(result.get("response") or result.get("content") or ""))
+        if found and any(m in found.group(1) for m in markers):
+            return found.group(1).strip()
+    return ""
+
+
 class GenerationMixin:
     def _yield_text_chunks(
         self, text: str, chunk_size: int = 48) -> Generator[str, None, None]:
@@ -366,22 +403,13 @@ class GenerationMixin:
 
         # Verbatim guard for deterministic grounded reports (EXAMINE_CODE / FILE_AUDIT). Re-narrating
         # made the model confabulate: EXAMINE_CODE snippets became 5 invented "bugs" that were existing
-        # comments, and FILE_AUDIT counts became 5 fabricated buggy files. If the report is in the
-        # evidence, return it verbatim.
-        _verbatim_evidence_patterns = (
-            (r"(Examined\s+\d+\s+file\(s\)\s*:[\s\S]+)",
-             ("Tier 1", "No errors found", "PLEASE CONFIRM")),
-            (r"(File Audit:[\s\S]+)", ("Directories scanned:", "Total files:")),
-        )
-        for _pat, _markers in _verbatim_evidence_patterns:
-            for _exam_src in (situation_brief, memory_context, prompt):
-                _em = re.search(_pat, str(_exam_src or ""))
-                if _em and any(_mk in _em.group(1) for _mk in _markers):
-                    _rep = re.split(
-                        r"\n\s*(?:USER QUESTION:|GROUNDED EVIDENCE \(|Recent ELI reflections|"
-                        r"Knowledge graph|Live agents \()", _em.group(1))[0].strip()
-                    if _rep:
-                        return _rep
+        # comments, and FILE_AUDIT counts became 5 fabricated buggy files. This turn's own report is
+        # returned verbatim, taken from the action that produced it. The text used to be searched for
+        # in the memory context and the prompt, which hold the recent conversation, so once a report
+        # was among the last replies, unrelated questions were answered with that old report.
+        _own_report = _this_turns_report()
+        if _own_report:
+            return _own_report
 
         # FIX_FILE success event: the executor JSON-encodes {event: artifact_generated, fixed: true,
         # path, filename, backup}. Synthesising it made the model narrate a false refusal ("I cannot
@@ -884,7 +912,7 @@ class GenerationMixin:
                 _answer_floor = max(1024, _n_ctx // 8)
                 if _req_s > 0:
                     _answer_floor = min(_answer_floor, _req_s)
-                _max_stream_chars = max(400, (_n_ctx - max(_safe_max, _answer_floor) - 64) * 3)
+                _max_stream_chars = _stream_char_budget(_n_ctx, _answer_floor)
                 if len(enhanced_system) + len(prompt) > _max_stream_chars:
                     # Keep persona HEAD + evidence TAIL (same as non-stream path).
                     # Tail-only truncation was dropping voice/constraints and leaving
@@ -1008,6 +1036,18 @@ class GenerationMixin:
 
             except Exception as e:
                 _emsg = str(e)
+                # A decode stopped by the user's Stop or by shutdown is not a fault: the stream ends
+                # there, with nothing generated again and nothing said about an error. The fallback ran
+                # and then a fixed "something went wrong reaching the local model" was yielded, a wrong
+                # cause that any stream reader other than the desktop (the API, ELI VR) showed.
+                try:
+                    _stopped = bool(gguf_inference.is_cancel_requested() or gguf_inference.is_shutting_down())
+                except Exception:
+                    _stopped = False
+                if _stopped:
+                    log.debug(f"[COGNITIVE] stream stopped: {_emsg}")
+                    _request_context.note_turn_fact("stopped", True)
+                    return
                 _ctx_overflow = ("context window" in _emsg.lower()
                                  or "requested tokens" in _emsg.lower())
                 _empty = "empty response" in _emsg.lower()
@@ -1198,16 +1238,16 @@ class GenerationMixin:
             _eli_mode_key = str(reasoning_mode or "quick").strip().lower() or "quick"
         # Depth policy: only complete genuinely truncated non-quick responses.
         # Do not fire a second full inference just because the answer is short —
-        # a concise correct answer is not truncation.
+        # a concise correct answer is not truncation. A reply that announces what follows and stops
+        # ("Here are the steps:") is visibly cut in every mode, Quick included.
         try:
-            if _eli_mode_key != "quick" and not _is_brief_phatic_prompt(user_input):
-                from eli.cognition.output_governor import _looks_truncated
-                if _looks_truncated(response):
-                    _expand_prompt = (
-                        "Complete the truncated answer below in the same voice and with the "
-                        "same grounded facts. Finish the current thought; do not add new content.\n\n"
-                        f"USER REQUEST:\n{user_input}\n\nTRUNCATED DRAFT:\n{response}\n\nCOMPLETED ANSWER:"
-                    )
+            if not _is_brief_phatic_prompt(user_input):
+                from eli.cognition import output_governor as _og_cut
+                _announces = getattr(_og_cut, "announces_what_follows", None)
+                _cut = bool(_announces and _announces(response)) or (
+                    _eli_mode_key != "quick" and _og_cut._looks_truncated(response))
+                if _cut:
+                    _expand_prompt = self._completion_prompt(user_input, response)
                     _wc = len(str(response or "").split())
                     _expand_tokens = 512
                     try:
@@ -1482,6 +1522,13 @@ class GenerationMixin:
             situation_brief=situation_brief,
         ).strip()
 
+    @staticmethod
+    def _completion_prompt(user_input: str, draft: str) -> str:
+        """The prompt that finishes a reply cut short, in the same voice and with the same facts."""
+        return ("Complete the truncated answer below in the same voice and with the "
+                "same grounded facts. Finish the current thought; do not add new content.\n\n"
+                f"USER REQUEST:\n{user_input}\n\nTRUNCATED DRAFT:\n{draft}\n\nCOMPLETED ANSWER:")
+
     def _say_in_own_words(self, user_input: str, what_to_say: str, *, not_this: str = "", already_said: str = "",
                           reasoning_mode: Optional[str] = None) -> str:
         """The model's own wording of something ELI knows to be so, checked before it is served.
@@ -1500,6 +1547,14 @@ class GenerationMixin:
                     "above, in words of your own: it is written as a fact, not as a line to read out. Add no "
                     "other facts and promise nothing that has not happened.")
         reply = str(self._get_chat_response(prompt, "", reasoning_mode=reasoning_mode) or "").strip()
+        # A wording says the facts in other words and brings no new ones: what adds a figure, name or
+        # path the facts do not hold is left out (self_claims.only_what_it_was_given).
+        try:
+            from eli.cognition.self_claims import only_what_it_was_given
+        except ImportError:
+            only_what_it_was_given = None
+        if only_what_it_was_given is not None:
+            return str(only_what_it_was_given(reply, what_to_say, user_input) or "").strip()
         return reply if reply and holds_up(reply, what_to_say) else ""
 
     def _what_actually_happened(self) -> str:
@@ -1510,6 +1565,9 @@ class GenerationMixin:
         if facts.get("_live_facts"):
             lines.append(str(facts["_live_facts"]))
         lines.extend(str(x) for x in (facts.get("_record_lines") or []))
+        if facts.get("_period_lines"):
+            lines.append("The record of the period they asked about:")
+            lines.extend(str(x) for x in facts["_period_lines"])
         return "\n".join(lines)
 
     def _maybe_fail_closed_chat(
@@ -1931,8 +1989,13 @@ class GenerationMixin:
                 log.debug(f"[FOLLOWTHROUGH] '{commit.get('matched')}' not run "
                           f"({_ft_action or 'no action'}: not a read, and not what the user asked for)")
                 # The promise is already on screen; it must not stand as if kept ("I am going to check the
-                # current load…", and nothing checked anything).
-                _not_done = f"(I haven't done that: nothing ran for “{str(commit['clause']).strip().rstrip('.')}”.)"
+                # current load…", and nothing checked anything). The fact goes to the model to say in
+                # its own words after what it already said; the record's own line is for when it can't.
+                _clause = str(commit['clause']).strip().rstrip('.')
+                _fact = f"Nothing ran for this, which your reply said you would do: “{_clause}”."
+                _not_done = (self._say_in_own_words(user_input, _fact, already_said=full,
+                                                    reasoning_mode=reasoning_mode)
+                             or f"(I haven't done that: nothing ran for “{_clause}”.)")
                 _request_context.note_turn_fact("promise_unkept", str(commit["clause"]).strip())
                 yield "\n\n" + _not_done
                 self._store_followthrough_reply(full, _not_done)
@@ -2616,7 +2679,8 @@ class GenerationMixin:
             hist_body, post = rest.split(_hist_end, 1)
             _hist_budget = max(200, max_chars - len(pre) - len(post) - len(_hist_start) - len(_hist_end) - 8)
             if _hist_budget < len(hist_body):
-                hist_body = hist_body[: _hist_budget - 40].rstrip() + "\n…[older history trimmed]…"
+                # what was cut is the end of the retrieved block, which is not "older" history
+                hist_body = hist_body[: _hist_budget - 40].rstrip() + "\n…[the rest of this context trimmed to fit]…"
             trimmed = pre + _hist_start + hist_body + _hist_end + post
             if len(trimmed) <= max_chars:
                 return trimmed

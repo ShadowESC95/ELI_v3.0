@@ -254,7 +254,9 @@ class MemoryCommitMixin:
         return bool(facts and facts.get("parent_request_id"))
 
     def _store_user_turn(self, text: str) -> None:
-        if not text or self._in_nested_turn():
+        # ELI's own turn (a habit firing, a scheduled task, an internal helper) is not something the
+        # user said: stored, a scheduled research request read as the owner's own message.
+        if not text or self._in_nested_turn() or (_request_context.turn_facts_var.get() or {}).get("autonomous"):
             return
         try:
             self.memory.add_conversation_turn("user", text, self.session_id, self.user_id)
@@ -272,11 +274,15 @@ class MemoryCommitMixin:
         if not text or self._in_nested_turn():
             return
         _shown = str(text)      # what the user saw; the stored copy below has closers tidied away
-        # Govern here so every storage path (canonical + fastpath bypasses) is covered.
-        try:
-            text = govern_output(str(text), is_grounded=False)
-        except Exception as _gov_err:
-            log.debug(f"[COGNITIVE] store-time govern failed: {_gov_err}")
+        # A reply that went through the claim check before it was shown is stored as it was shown:
+        # checked again here, with none of its evidence, it lost sentences that stayed on the screen,
+        # so the record and the screen disagreed. A reply that reached the screen by a path without
+        # that check is still governed here, so storage never keeps an unchecked claim.
+        if not (_request_context.turn_facts_var.get() or {}).get("claims_checked"):
+            try:
+                text = govern_output(str(text), is_grounded=False)
+            except Exception as _gov_err:
+                log.debug(f"[COGNITIVE] store-time govern failed: {_gov_err}")
         if not text:
             return
         try:

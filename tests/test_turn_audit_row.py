@@ -17,6 +17,10 @@ from eli.runtime import orchestrator_audit_ledger as L
 
 @pytest.fixture()
 def audit_db(tmp_path, monkeypatch):
+    # Rows an earlier test's turns queued (or left to a stream's finalizer) are written before this
+    # test's database is set, not into it.
+    gc.collect()
+    L.flush(timeout=10.0)
     db = tmp_path / "orch.sqlite3"
     monkeypatch.setenv("ELI_ORCHESTRATOR_AUDIT_DB", str(db))
     yield db
