@@ -929,7 +929,7 @@ def plan(req: Request) -> Optional[Plan]:
                        "measured holding there")
     if not any(s.usable):
         return _cpu_plan(req, weights, kv0, threads, devs)
-    ctx = int(req.n_ctx or 0) or _auto_ctx(req.model_path, devs, s)
+    ctx = _within_training(req.model_path, int(req.n_ctx or 0) or _auto_ctx(req.model_path, devs, s), s.notes)
     batch = max(32, int(req.n_batch or 0) or _default_batch())
     # -1 (llama.cpp's "every layer"), or a count at or above the block count, means every layer:
     # llama.cpp counts the output head as one more, and 42 asked of a 42-block model would leave
@@ -1013,6 +1013,24 @@ def plan(req: Request) -> Optional[Plan]:
     return p
 
 
+def _within_training(model_path: str, ctx: int, notes: List[str]) -> int:
+    """The context asked for, no longer than the model was trained on (startup_hardware_optimizer.
+    trained_ctx; unread: as asked). llama.cpp builds a cache for whatever is asked and nothing here
+    asks it to stretch the model's positions, so the model attends no further than its training:
+    past that the cache held memory for tokens the model is never given."""
+    try:
+        from eli.core.startup_hardware_optimizer import trained_ctx
+        trained = int(trained_ctx(model_path) or 0)
+    except Exception:
+        log.debug("trained context unavailable for the plan", exc_info=True)
+        trained = 0
+    if trained > 0 and int(ctx) > trained:
+        notes.append(f"asked ctx={ctx} is past the {trained} tokens the model was trained on: "
+                     f"it loads at {trained}")
+        return trained
+    return int(ctx)
+
+
 def _largest_ctx(try_ctx: Callable[[int, Tuple[str, str]], Optional[dict]], ctx: int,
                  kvs: Sequence[Tuple[str, str]], grain: int = 2048) -> Optional[dict]:
     """The largest context below `ctx`, on the grain, for which `try_ctx` finds a fit."""
@@ -1084,9 +1102,10 @@ def _cpu_plan(req: Request, weights, kv0, threads, devs, notes=None) -> Plan:
     from eli.core.mem_units import file_size_gib
     hw = detect_hardware()
     size_gb = file_size_gib(req.model_path)
-    target = int(req.n_ctx or 0) or int(auto_ctx_target(req.model_path, size_gb, free_vram_mb=0,
-                                                         available_ram_gb=float(hw.available_ram_gb),
-                                                         use_gpu=False))
+    notes = list(notes or [])
+    target = _within_training(req.model_path, int(req.n_ctx or 0) or int(
+        auto_ctx_target(req.model_path, size_gb, free_vram_mb=0, available_ram_gb=float(hw.available_ram_gb),
+                        use_gpu=False)), notes)
     batch = int(req.n_batch or 0) or _default_batch()
     ctx = _measured_cpu_ctx(req, weights, kv0, devs, target, batch,
                             float(cpu_ram_budget_mb(float(hw.available_ram_gb))))
@@ -1098,7 +1117,7 @@ def _cpu_plan(req: Request, weights, kv0, threads, devs, notes=None) -> Plan:
              cache_type_k=kv0[0], cache_type_v=kv0[1], flash_attn=bool(kv0[0]),
              split_mode=_SPLIT_MODES["none"], main_gpu=0, tensor_split=None, experts_in_ram=None,
              blocks=int(weights.blocks), devices=list(devs), measured=measured, use_mmap=req.use_mmap,
-             use_mlock=req.use_mlock, cpu_only=bool(req.cpu_only), notes=list(notes or []))
+             use_mlock=req.use_mlock, cpu_only=bool(req.cpu_only), notes=notes)
     p.asked = {"n_ctx": target, "n_gpu_layers": 0 if req.n_gpu_layers is None else int(req.n_gpu_layers),
                "n_batch": int(req.n_batch or 0) or _default_batch()}
     p.notes.append(f"on the processor: ctx={p.n_ctx} batch={p.n_batch} for "
@@ -1127,13 +1146,14 @@ def _default_batch() -> int:
 def as_asked(req: Request) -> Plan:
     """The request handed to llama.cpp as it is: for a file whose tensor table cannot be read."""
     layers = -1 if req.n_gpu_layers is None else int(req.n_gpu_layers)      # -1: every layer
-    ctx = int(req.n_ctx or 0) or 2048
+    notes = ["the model file's tensor table could not be read: loading the settings as given"]
+    ctx = _within_training(req.model_path, int(req.n_ctx or 0) or 2048, notes)
     p = Plan(model_path=req.model_path, n_ctx=ctx, n_gpu_layers=0 if req.cpu_only else layers,
              n_batch=int(req.n_batch or 0) or _default_batch(), n_threads=_threads(req.n_threads),
              cache_type_k=req.cache_type_k, cache_type_v=req.cache_type_v or req.cache_type_k,
              flash_attn=bool(req.cache_type_k), split_mode=_SPLIT_MODES["layer"], main_gpu=int(req.main_gpu or 0),
              tensor_split=_parse_list(req.tensor_split) or None, experts_in_ram=None, blocks=0,
              use_mmap=req.use_mmap, use_mlock=req.use_mlock, cpu_only=bool(req.cpu_only),
-             notes=["the model file's tensor table could not be read: loading the settings as given"])
+             notes=notes)
     p.asked = {"n_ctx": ctx, "n_gpu_layers": layers, "n_batch": p.n_batch}
     return p

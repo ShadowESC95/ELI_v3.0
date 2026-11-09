@@ -2396,12 +2396,8 @@ def _auto_ctx_limits(
     wanted = 0
     try:
         # Only a trained context that was actually read counts; train_ctx_for_model substitutes a constant.
-        from eli.core.startup_hardware_optimizer import _gguf_metadata_ctx
-        _forced = (os.environ.get("ELI_MODEL_TRAIN_CTX") or "").strip()
-        if _forced.isdigit():
-            wanted = int(_forced)
-        elif model_path:
-            wanted = int(_gguf_metadata_ctx(str(model_path)) or 0)
+        from eli.core.startup_hardware_optimizer import trained_ctx
+        wanted = trained_ctx(model_path)
         frac = float(os.environ.get("ELI_CTX_FRACTION", "0.9") or "0.9")
         wanted = int(wanted * max(0.05, min(1.0, frac)))
     except Exception:

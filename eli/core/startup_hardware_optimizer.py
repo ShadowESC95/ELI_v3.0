@@ -100,6 +100,22 @@ def _gguf_metadata_ctx(model_path: str) -> int:
     return val
 
 
+def trained_ctx(model_path) -> int:
+    """The context the model was trained on, as read: ELI_MODEL_TRAIN_CTX, else the model's own
+    GGUF header. 0 when neither says: a limit nobody read is no limit (train_ctx_for_model below
+    puts a stand-in figure in its place for the callers that need a number)."""
+    forced = os.environ.get("ELI_MODEL_TRAIN_CTX", "").strip()
+    if forced.isdigit() and int(forced) > 0:
+        return int(forced)
+    if not model_path:
+        return 0
+    try:
+        return max(0, int(_gguf_metadata_ctx(str(model_path)) or 0))
+    except Exception:
+        log.debug("trained context unreadable for %s", model_path, exc_info=True)
+        return 0
+
+
 def train_ctx_for_model(model_path: str) -> int:
     """Return the model's native training context length.
 
@@ -107,20 +123,8 @@ def train_ctx_for_model(model_path: str) -> int:
     conservative default when metadata is unreadable. No brand/filename table —
     redistributed GGUFs must not depend on marketing names in the path.
     """
-    forced = os.environ.get("ELI_MODEL_TRAIN_CTX", "").strip()
-    if forced:
-        return int(forced)
-
-    # Authoritative: the model's own embedded context_length.
-    try:
-        _meta_ctx = _gguf_metadata_ctx(model_path)
-        if _meta_ctx and _meta_ctx > 0:
-            return int(_meta_ctx)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
     # Metadata missing/unreadable — do not invent a brand-based window.
-    return 8192
+    return trained_ctx(model_path) or 8192
 
 
 def max_tokens_from_ctx(n_ctx: int) -> int:

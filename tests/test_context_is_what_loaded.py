@@ -293,3 +293,18 @@ def test_a_load_past_the_trained_length_sizes_budgets_for_the_trained_length(mon
     assert mgr.n_ctx == 39168, "the status line still says what loaded"
     assert sized == [32768]
     assert "trained on 32768" in caplog.text
+
+
+def test_a_model_whose_trained_context_cannot_be_read_is_not_held_to_a_stand_in(monkeypatch, tmp_path):
+    """train_ctx_for_model answers 8192 when the header says nothing; as the usable window's limit
+    that cut every prompt of such a model, loaded at 32768, to 8192 tokens."""
+    import eli.core.startup_hardware_optimizer as sho
+    monkeypatch.delenv("ELI_MODEL_TRAIN_CTX", raising=False)
+    monkeypatch.setattr(sho, "_gguf_metadata_ctx", lambda path: 0)
+    model = tmp_path / "no-context-in-header.gguf"
+    model.write_bytes(b"GGUF")
+    assert G._model_train_ctx(model) == 0
+    monkeypatch.setattr(G, "_ELI_EFFECTIVE_RUNTIME_REPORT", {})
+    assert G._effective_ctx_limit(_Loaded(32768)) == 32768
+    monkeypatch.setattr(sho, "_gguf_metadata_ctx", lambda path: 16384)
+    assert G._model_train_ctx(model) == 16384

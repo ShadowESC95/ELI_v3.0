@@ -1999,7 +1999,9 @@ def _model_train_ctx(model_path=None) -> int:
     model/metadata is unknown. Model-agnostic — driven by metadata, not the filename.
     """
     try:
-        from eli.core.startup_hardware_optimizer import train_ctx_for_model as _tc
+        # trained_ctx, not train_ctx_for_model: that one puts a stand-in 8192 in place of a limit
+        # nobody read, and every prompt for such a model was then cut to 8192 tokens.
+        from eli.core.startup_hardware_optimizer import trained_ctx as _tc
         mp = model_path or loaded_model_path() or get_model_path()
         if mp:
             v = int(_tc(str(mp)))

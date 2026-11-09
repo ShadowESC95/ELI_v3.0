@@ -349,3 +349,23 @@ def test_the_warm_up_batch_runs_on_the_cards_and_not_on_the_processor(machine):
     assert llm.calls == [("eval", 64), ("reset",)], "one full batch, then the cache cleared"
     spare = FakeLlm()
     assert gi._warm_up(spare, load_plan.on_processor(_req())) is False and spare.calls == []
+
+
+# ── no further than the model was trained ───────────────────────────────────
+
+def test_a_context_past_the_models_training_loads_at_its_training(machine, monkeypatch):
+    """A model trained on 32768 was loaded at 39168 as asked: every prompt was sized at 32768 while
+    the cache held room for the rest, which the model is never given."""
+    import eli.core.startup_hardware_optimizer as sho
+    monkeypatch.setattr(sho, "trained_ctx", lambda path: 4096)
+    p = load_plan.plan(_req(n_ctx=8192))
+    assert p.n_ctx == 4096
+    assert any("trained on" in n and "8192" in n for n in p.notes)
+    cpu = load_plan.on_processor(_req(n_ctx=8192))
+    assert cpu.n_ctx <= 4096 and cpu.asked["n_ctx"] == 4096
+
+
+def test_a_trained_context_nobody_could_read_leaves_the_ask_alone(machine, monkeypatch):
+    import eli.core.startup_hardware_optimizer as sho
+    monkeypatch.setattr(sho, "trained_ctx", lambda path: 0)
+    assert load_plan.plan(_req(n_ctx=8192)).n_ctx == 8192
