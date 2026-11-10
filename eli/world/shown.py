@@ -26,7 +26,13 @@ changes nothing in ELI.
 Reading ELI's records for every poll of the world would be wasteful, so what is
 shown is refreshed at most every half minute.
 
-    items()     the things to show, as the world feed carries things
+    items()     the things to show, as the world feed carries things; a belief carries its claim (what it
+                is, its chance, since when, its basis and the record it rests on), a dispute its relation,
+                a memory when it was kept
+    books(room) ELI's books (eli/world/books.py) as things of kind "book", as many as `room` bytes of the
+                message hold, the newest of each room first, the text of as many as still fit whole
+    evidence()  what ELI's actions did and how often its figures proved right, week by week, for the
+                Evidence Wall's scoreboard and charts (action_outcomes.report, epistemics.measured)
     thoughts()  what is on ELI's mind now, in its records' own words, for a body to let rise from ELI
     coming_up() what is on the user's agenda in the next day and a half: events, reminders, alarms
     free()      whether ELI is free to make something of its own now (eli/world/urges.py)
@@ -40,8 +46,12 @@ import math
 import os
 import re
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+from eli.utils.log import get_logger
+
+log = get_logger(__name__)
 
 REFRESH_SECONDS = 30.0
 MEMORIES, GOALS = 16, 8
@@ -90,9 +100,20 @@ def _memories() -> List[Dict[str, Any]]:
         out.append({
             "id": key, "name": " ".join(text.split()[:5]), "kind": "memory", "room": "memory_archive",
             "x": 0.0, "y": 0.0, "importance": 0.5, "meaning": text[:200], "made_by": "memory",
+            **({"when": _memory_time(row)} if _memory_time(row) is not None else {}),
             "form": {"shape": "orb", "colour": "#9fd8ff", "size": 0.35, "glow": 0.8, "pos": _spot(key, 1.0, 2.6)},
         })
     return out[:MEMORIES]
+
+
+def _memory_time(row: Dict[str, Any]):
+    """When a memory was kept, as its row says; None for a row that holds no time (the memory store reads
+    a row with none by its id, which is not a time)."""
+    try:
+        when = float(row.get("timestamp"))
+    except (TypeError, ValueError):
+        return None
+    return when if row.get("timestamp") != row.get("id") and when > 0 else None
 
 
 def _goals() -> List[Dict[str, Any]]:
@@ -112,10 +133,11 @@ def _goals() -> List[Dict[str, Any]]:
 
 
 def _claims() -> List[Dict[str, Any]]:
-    from eli.memory.claims import chance, describe
+    from eli.memory.claims import basis, chance, describe, origin_words
     from eli.memory.memory import get_memory
     from eli.world.building import MAX_PER_ROOM
-    rows = [r for r in get_memory().claims_current() or [] if isinstance(r, dict) and str(r.get("value", "")).strip()]
+    memory = get_memory()
+    rows = [r for r in memory.claims_current() or [] if isinstance(r, dict) and str(r.get("value", "")).strip()]
     rows.sort(key=lambda r: (float(r.get("recorded_at") or 0.0), float(r.get("confidence") or 0.0)), reverse=True)
     out = []
     for row in rows[:MAX_PER_ROOM]:
@@ -130,10 +152,34 @@ def _claims() -> List[Dict[str, Any]]:
             "id": key, "name": f"{str(row.get('relation', '')).replace('_', ' ')}: {row.get('value')}"[:48],
             "kind": "claim", "room": "evidence_wall", "x": 0.0, "y": 0.0, "importance": sure,
             "meaning": describe(row)[:200], "made_by": "claims",
+            "claim": {"relation": str(row.get("relation") or ""), "value": str(row.get("value") or ""),
+                      "chance": round(sure, 4), "sure": float(row.get("confidence") or 0.0),
+                      "since": row.get("valid_from"), "until": row.get("valid_to"), "learned": row.get("recorded_at"),
+                      "origin": str(row.get("origin") or ""), "basis": basis(row),
+                      "confirmations": int(row.get("confirmations") or 1), "contested": contested,
+                      "status": str(row.get("status") or ""),
+                      "sources": _claim_sources(memory, row, origin_words(row.get("origin")))},
             "form": {"shape": "board", "colour": "#f5b942" if contested else "#d9e4f2", "size": 0.6,
                      "glow": round(0.3 + 0.6 * sure, 2), "pos": _spot(key, 0.9, 2.1)},
         })
     return out
+
+
+def _claim_sources(memory: Any, row: Dict[str, Any], origin: str) -> List[Dict[str, Any]]:
+    """The record a claim was learned from (its source memory, memory.memory_facts), as an exhibit;
+    [] for a claim with none, or one whose memory is gone."""
+    source = row.get("source_memory_id")
+    if not str(source or "").lstrip("-").isdigit() or int(source) <= 0:
+        return []
+    try:
+        facts = memory.memory_facts(int(source)) or {}
+    except Exception:  # noqa: BLE001 - the memory unreadable: the claim rests on nothing shown
+        log.debug("a claim's source memory was not read", exc_info=True)
+        return []
+    if not str(facts.get("text") or "").strip():
+        return []
+    return [{"id": f"memory_{int(source)}", "kind": "memory", "text": str(facts["text"])[:200],
+             "when": facts.get("when") or None, "origin": origin}]
 
 
 def _conflicts() -> List[Dict[str, Any]]:
@@ -146,7 +192,7 @@ def _conflicts() -> List[Dict[str, Any]]:
         key = f"conflict_{hashlib.sha1(relation.encode('utf-8')).hexdigest()[:10]}"
         out.append({
             "id": key, "name": relation.replace("_", " ").capitalize()[:47] + "?", "kind": "conflict",
-            "room": "anomaly_room", "x": 0.0, "y": 0.0, "importance": 0.9,
+            "room": "anomaly_room", "x": 0.0, "y": 0.0, "importance": 0.9, "relation": relation,
             "meaning": conflict_question(conflict)[:200], "made_by": "claims",
             "form": {"shape": "crystal", "colour": "#ff6a4d", "size": 0.7, "glow": 0.9, "pos": _spot(key, 0.4, 1.6)},
         })
@@ -469,6 +515,170 @@ def _thought_notes() -> List[Dict[str, Any]]:
     return out
 
 
+# ── what ELI did and how often it was right, for the Evidence Wall ─────────────────────────────────
+
+# Figures go to a body to the hundredth (a whole percent, as a body shows them), so the message
+# changes when what a body would show does, not every time a recency weight moves.
+FIGURE_DIGITS = 2
+_evidence_cache: Tuple[float, Dict[str, Any]] = (-REFRESH_SECONDS, {})
+
+
+def _figure(value: Any) -> Optional[float]:
+    try:
+        return round(float(value), FIGURE_DIGITS)
+    except (TypeError, ValueError):
+        return None
+
+
+def _action_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    from eli.runtime.action_outcomes import cause_words, plain
+    causes = sorted((row.get("causes") or {}).items(), key=lambda kv: -kv[1])
+    return {"action": str(row["action"]), "name": plain(row["action"]), "n": int(row["n"]), "ok": int(row["ok"]),
+            "p": _figure(row.get("p")),
+            "causes": [{"cause": str(c), "words": cause_words(c), "n": int(k)} for c, k in causes],
+            "worst_target": str(row.get("worst_target") or ""), "last": float(row.get("last") or 0.0),
+            "weeks": [{"from": float(w["from"]), "n": int(w["n"]), "ok": int(w["ok"])} for w in row.get("weeks") or []],
+            "instead": [{"action": str(a["action"]), "name": plain(a["action"]), "n": int(a["n"]), "p": _figure(a["p"])}
+                        for a in row.get("alternatives") or []]}
+
+
+def evidence(now: float | None = None) -> Dict[str, Any]:
+    """What ELI's actions did and how often its figures proved right, for the Evidence Wall's scoreboard
+    and charts: {"actions": {"days", "runs", "rows": action_outcomes.report's actions, failures first, each
+    with its causes in words, what worked instead and its weeks}, "accuracy": epistemics.measured's rows,
+    each kind's share right, calibration error and weeks}. A record that cannot be read is left out, not
+    filled in; read as often as the rooms' records."""
+    global _evidence_cache
+    clock = time.monotonic() if now is None else now
+    if clock - _evidence_cache[0] < REFRESH_SECONDS:
+        return _evidence_cache[1]
+    out: Dict[str, Any] = {}
+    try:
+        from eli.runtime import action_outcomes
+        rep = action_outcomes.report(action_outcomes.DAYS, limit=None)
+        out["actions"] = {"days": float(rep["days"]), "runs": int(rep["runs"]),
+                          "rows": [_action_row(r) for r in rep["actions"]]}
+    except Exception:  # noqa: BLE001
+        log.debug("what ELI's actions did was not read", exc_info=True)
+    try:
+        from eli.cognition.epistemics import measured
+        out["accuracy"] = [{"kind": r["kind"], "words": r["words"], "n": int(r["n"]), "right": _figure(r["right"]),
+                            "ece": _figure(r["ece"]) if r.get("ece") is not None else None,
+                            "weeks": [{"from": float(w["from"]), "n": int(w["n"]),
+                                       "right": _figure(w["right"]) if w.get("right") is not None else None}
+                                      for w in r.get("weeks") or []]}
+                           for r in measured()]
+    except Exception:  # noqa: BLE001
+        log.debug("how often ELI was right was not read", exc_info=True)
+    _evidence_cache = (clock, out)
+    return out
+
+
+# ── ELI's books, as many as a message holds ──────────────────────────────────────────────────────
+
+# A book's paper by what it is a book of, as the thought sheets are coloured by their kind.
+BOOK_COLOURS = {"conversation": "#6b4f9a", "session": "#4f6b9a", "log": "#9a4f4f", "period": "#4f8a6b",
+                "story": "#b08a3c", "likes": "#4f9a6b", "dislikes": "#9a6b4f", "beliefs": "#4f6b8a",
+                "thoughts": "#8fe8a8", "reflection": "#b9a4ff", "goals": "#4fbf73", "diary": "#f5e6c8",
+                "lesson": "#c8a45a"}
+_books_cache: Dict[str, Any] = {"at": -REFRESH_SECONDS, "books": [], "sections": {}}
+
+
+def _book_object(book: Dict[str, Any]) -> Dict[str, Any]:
+    """A book as the feed carries it (an object of kind "book", its "book" without sections)."""
+    from eli.world.books import header
+    of = str(book["of"])
+    told = {k: v for k, v in header(book).items()
+            if k not in ("id", "room", "made_by", "importance", "length")}
+    told["length"] = int(book.get("length") or 0)
+    return {
+        "id": book["id"], "kind": "book", "room": book["room"], "name": str(book["title"])[:60],
+        "meaning": str(book.get("about") or "")[:200], "made_by": book["made_by"],
+        "when": book.get("from") if book.get("from") is not None else book.get("to"),
+        "x": 0.0, "y": 0.0, "importance": float(book.get("importance") or 0.0),
+        "form": {"shape": "board", "colour": BOOK_COLOURS.get(of, "#d9e4f2"), "size": 1.0, "glow": 0.0,
+                 "pos": _spot(book["id"], 0.9, 2.1)},
+        "book": told,
+    }
+
+
+def _shelf_order(books: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The order books go into a message: each room's newest in turn, so no room's books crowd out
+    another's when not all fit."""
+    rooms: Dict[str, List[Dict[str, Any]]] = {}
+    for book in sorted(books, key=lambda b: float(b.get("to") or b.get("from") or 0.0), reverse=True):
+        rooms.setdefault(book["room"], []).append(book)
+    out: List[Dict[str, Any]] = []
+    while any(rooms.values()):
+        for shelf in rooms.values():
+            if shelf:
+                out.append(shelf.pop(0))
+    return out
+
+
+def _size(value: Any) -> int:
+    """What a value takes in the message, as the world link sends it (json.dumps, ASCII)."""
+    import json
+    return len(json.dumps(value, default=str))
+
+
+def books(room: int, now: float | None = None) -> List[Dict[str, Any]]:
+    """ELI's books (eli/world/books.py) as feed objects of kind "book", as many as `room` bytes of the
+    message hold: every room's newest first, in turn; then, newest first again, the sections of each
+    that still fits whole. A book sent without its sections carries its length, and is read whole
+    from GET /v1/world/book/{id}. The books are read as often as the rooms' records, and what each
+    takes in the message is measured then; the sections of a book once read are kept until then."""
+    from eli.world import books as kept
+    clock = time.monotonic() if now is None else now
+    if clock - float(_books_cache["at"]) >= REFRESH_SECONDS:
+        try:
+            listed = _shelf_order(kept.listed())
+        except Exception:  # noqa: BLE001
+            log.debug("ELI's books were not read", exc_info=True)
+            listed = []
+        entries = []
+        for book in listed:
+            obj = _book_object(book)
+            entries.append((book, obj, _size(obj) + 2))          # and the ", " between it and the next
+        _books_cache.update({"at": clock, "books": entries, "sections": {}})
+    chosen = []
+    used = 0
+    for book, obj, cost in _books_cache["books"]:                 # the books themselves, as many as fit
+        if used + cost <= room:
+            chosen.append((book, obj))
+            used += cost
+    # their text, newest first, for as many as still fit whole: read once, together, for the run of books
+    # that might (a run, so the conversations' turns are read over one stretch of time, not all of it)
+    left, might = room - used, set()
+    for book, _obj in chosen:
+        if int(book.get("length") or 0) > left:
+            break
+        might.add(book["id"])
+        left -= int(book.get("length") or 0)
+    whole = _books_cache["sections"]
+    missing = [b for b, _o in chosen if b["id"] in might and b["id"] not in whole]
+    if missing:
+        try:
+            text = kept.sections(missing)
+        except Exception:  # noqa: BLE001
+            log.debug("the books' text was not read", exc_info=True)
+            text = {}
+        for book in missing:
+            obj = next(o for b, o in chosen if b is book)
+            if book["id"] in text:
+                full = {**obj, "book": {**obj["book"], "sections": text[book["id"]]}}
+                whole[book["id"]] = (full, _size(full) - _size(obj))
+            else:
+                whole[book["id"]] = None
+    out = []
+    for book, obj in chosen:
+        full = whole.get(book["id"]) if book["id"] in might else None
+        if full is not None and used + full[1] <= room:
+            obj, used = full[0], used + full[1]
+        out.append(obj)
+    return out
+
+
 def items(now: float | None = None) -> List[Dict[str, Any]]:
     """The records to show. A source that cannot be read shows nothing of its own."""
     global _cache
@@ -486,8 +696,10 @@ def items(now: float | None = None) -> List[Dict[str, Any]]:
 
 
 def forget() -> None:
-    global _cache, _thoughts_cache, _free_cache, _coming_cache, _kept_cache
+    global _cache, _thoughts_cache, _free_cache, _coming_cache, _kept_cache, _evidence_cache
     _cache = (0.0, [])
+    _evidence_cache = (-REFRESH_SECONDS, {})
+    _books_cache.update({"at": -REFRESH_SECONDS, "books": [], "sections": {}})
     _thoughts_cache = (0.0, [])
     _coming_cache = (-REFRESH_SECONDS, [])
     _free_cache = (-REFRESH_SECONDS, False)

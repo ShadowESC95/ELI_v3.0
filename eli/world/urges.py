@@ -24,7 +24,8 @@ is this here" has a true answer.
     act(scene)               make something of the moment ELI is most curious about, if ELI will;
                              the act is a figure settled when it is taken back or when it stood
     free()                   whether ELI is free to: a model in memory, and nobody's mood against it
-    act_when_free()          act, only when ELI is free: for ELI's own background loop
+    act_when_free()          act, only when ELI is free: for ELI's own background loop; then write
+                             of its own records (eli/world/stories.py)
 """
 from __future__ import annotations
 
@@ -331,15 +332,23 @@ def _day_turned(now: Optional[float] = None) -> None:
 
 
 def act_when_free() -> Optional[Dict[str, Any]]:
-    """For ELI's own background loop: act, only when ELI is free."""
+    """For ELI's own background loop: act, only when ELI is free; then write of its own records (a
+    story, which of its positions are likings, its shelves' names: eli/world/stories.py)."""
     if not free():
         return None
     try:
         _day_turned()
     except Exception:
         log.debug("the turn of the day was not noticed", exc_info=True)
+    outcome = None
     try:
         from eli.world import embodiment
-        return act(embodiment.live())
+        outcome = act(embodiment.live())
     except Exception:
-        return None
+        log.debug("no act of ELI's own this time", exc_info=True)
+    try:
+        from eli.world import stories
+        stories.write_when_free()
+    except Exception:
+        log.debug("ELI wrote nothing of its own this time", exc_info=True)
+    return outcome

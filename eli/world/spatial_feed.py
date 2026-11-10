@@ -21,6 +21,7 @@ contract, served on the local API server:
     POST /v1/world/compose    ELI making something of its own accord   (version 2)
     POST /v1/world/undo       taking back the last change              (version 2)
     GET  /v1/world/thoughts   ELI's thoughts lately: why, how sure, what it decided, what became of them (version 2, thoughts)
+    GET  /v1/world/book/ID    one of ELI's books whole, with its sections (version 2, books)
     GET  /v1/world/mind       which model is ELI's mind, and which could be (version 2)
     POST /v1/world/mind       choosing one                              (version 2)
     POST /v1/world/played     the body saying how a game ELI set went   (version 2, games)
@@ -54,8 +55,12 @@ MESSAGE_TYPE = "eli_world_state"
 CAPABILITIES = {
     1: ("world-state", "room-events"),
     2: ("world-state", "room-events", "scene", "say", "building", "undo", "own-room", "mind", "props", "pictures",
-        "models", "games", "thoughts"),
+        "models", "games", "thoughts", "books", "evidence"),
 }
+# The most one message to a body may take, in bytes, unless its hello says otherwise ("max_message"):
+# what ELI VR's world link takes in (eli_link.gd, inbound_buffer_size: 1 MiB). ELI's books fill what
+# the rest of the message leaves of it (shown.books).
+MESSAGE_BYTES = 1 << 20
 # Close codes a client can tell apart.
 CLOSE_UNAUTHORISED = 4401
 CLOSE_INCOMPATIBLE = 4406
@@ -135,14 +140,27 @@ def negotiate(hello: Dict[str, Any]) -> Dict[str, Any]:
         "capabilities": have,
         # what the client asked for and this ELI cannot give, so it can say so and not guess
         "missing": sorted(set(map(str, wanted)) - set(have)) if wanted else [],
+        # the most one message to it will take, as it said (or MESSAGE_BYTES)
+        "max_message": message_bytes(hello),
         "server": _server_name(),
     }
 
 
+def message_bytes(hello: Optional[Dict[str, Any]] = None) -> int:
+    """The most one message to a client may take: what its hello said ("max_message", bytes), else
+    MESSAGE_BYTES."""
+    said = (hello or {}).get("max_message")
+    if isinstance(said, (int, float)) and not isinstance(said, bool) and said > 0:
+        return int(said)
+    return MESSAGE_BYTES
+
+
 # ── the message ──────────────────────────────────────────────────────────────
-def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VERSION) -> Dict[str, Any]:
+def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VERSION,
+                  budget: Optional[int] = None) -> Dict[str, Any]:
     """The world reduced to what a body draws. Pass a state dict to convert
-    it; with none, the current world is read from storage."""
+    it; with none, the current world is read from storage. A version 2 message is held to `budget`
+    bytes (MESSAGE_BYTES): ELI's books fill what the rest leaves of it."""
     if state is None:
         state = _load_world()
     avatar = state.get("avatar") or {}
@@ -227,9 +245,27 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             # ELI's thoughts lately, each with why it had it, how sure it was, what it decided and what
             # became of it, by the room they belong in (eli/cognition/thoughts.py)
             message["thoughts"] = shown.kept()
+            # what ELI's actions did and how often its figures proved right (the Evidence Wall)
+            message["evidence"] = shown.evidence()
         except Exception:
-            pass
+            log.debug("ELI's records were not all read for the world message", exc_info=True)
+        _add_books(message, budget if budget is not None else MESSAGE_BYTES)
     return message
+
+
+def _add_books(message: Dict[str, Any], budget: int) -> None:
+    """ELI's books in the room the rest of the message leaves of `budget` (shown.books), the message
+    measured as it is sent; a book that would take it past the budget is not sent."""
+    try:
+        from eli.world import shown
+        found = shown.books(budget - len(json.dumps(message, default=str)))
+    except Exception:
+        log.debug("ELI's books were not read for the world message", exc_info=True)
+        return
+    message["objects"] = list(message.get("objects") or []) + found
+    while found and len(json.dumps(message, default=str)) > budget:
+        found.pop()
+        message["objects"].pop()
 
 
 # A screenful of ELI's own log for a body to show where it keeps such things (the Debug Basement's
@@ -526,6 +562,17 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         return {"thoughts": shown.kept(room=room, kinds=wanted or None, limit=max(1, min(int(limit), shown.THOUGHTS)))
                 if (room or wanted) else shown.kept()[:max(1, min(int(limit), shown.THOUGHTS))]}
 
+    @router.get("/v1/world/book/{book_id}", dependencies=[Depends(require_read)])
+    def world_book(book_id: str):
+        """One of ELI's books whole: what it is, and its sections [{heading, when, text}]. Only a book of
+        this user's records (eli/world/books.py); anything else is not found."""
+        from eli.world import books
+        book = books.read(book_id)
+        if book is None:
+            raise HTTPException(status_code=404, detail="no such book")
+        return {"id": book["id"], "book": {k: v for k, v in book.items() if k not in ("id", "sections")},
+                "sections": book["sections"]}
+
     @router.get("/v1/world/mind", dependencies=[Depends(require_read)])
     def world_mind():
         """Which model is ELI's mind now, and which ones ELI could use. Names, never paths."""
@@ -546,9 +593,11 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         """The spatial state, sent on connect and again whenever it changes.
 
         A client may say {"type": "hello", "protocol_versions": [...],
-        "capabilities": [...]}. It is answered with a welcome, and the state
-        follows in the version agreed; or with {"type": "incompatible", ...}
-        and the socket is closed. A client that never says hello is version 1.
+        "capabilities": [...], "max_message": bytes}. It is answered with a
+        welcome, and the state follows in the version agreed, each message no
+        larger than it said it takes (MESSAGE_BYTES when it said nothing); or
+        with {"type": "incompatible", ...} and the socket is closed. A client
+        that never says hello is version 1.
 
         The client may also send {"type": "vr_event", "event_type": …,
         "summary": …, "payload": …}; anything else is ignored."""
@@ -557,11 +606,12 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
             return
         await ws.accept()
         version = FEED_VERSION
+        budget = MESSAGE_BYTES         # the most one message to it takes, as its hello says
         sent = ""
         who: Dict[str, str] = {}       # the surface and session the client named in its hello
         try:
             while True:
-                message = await asyncio.to_thread(spatial_state, None, version)
+                message = await asyncio.to_thread(spatial_state, None, version, budget)
                 digest = _digest(message)
                 if digest != sent:
                     await ws.send_text(json.dumps(message, default=str))
@@ -586,6 +636,7 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
                         await ws.close(code=CLOSE_INCOMPATIBLE)
                         return
                     version, sent = answer["version"], ""   # the state again, as agreed
+                    budget = int(answer.get("max_message") or MESSAGE_BYTES)
                 elif incoming.get("type") == "vr_event":
                     try:
                         record_client_event(

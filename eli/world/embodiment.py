@@ -424,8 +424,10 @@ def held(max_age: float = FRESH_SECONDS) -> Optional[Dict[str, Any]]:
 def held_record(holding: Dict[str, Any]) -> List[str]:
     """What is on record behind a held sheet, as lines: a thought with why it came up, how sure ELI
     was, what it decided and what became of it; a belief with its basis and chance; a memory with
-    when it was kept, how often it helped and was corrected; a finding with what it found. Only what
-    the record holds; nothing filled in."""
+    when it was kept, how often it helped and was corrected; a finding with what it found; a book
+    with what it is a book of and when, for a story how ELI told it and from what, for a lesson its
+    record (the page in view comes from the body, as "lines"). Only what the record holds; nothing
+    filled in."""
     ident = str((holding or {}).get("id") or "")
     kind, _, tail = ident.partition("_")
     lines: List[str] = []
@@ -470,6 +472,24 @@ def held_record(holding: Dict[str, Any]) -> List[str]:
                 lines.append(f"How much it matters to you: {float(facts.get('importance') or 0.0):.0%}; it helped "
                              f"{int(facts.get('helped') or 0)} answer{'s' if int(facts.get('helped') or 0) != 1 else ''} and "
                              f"was corrected {int(facts.get('corrected') or 0)} time{'s' if int(facts.get('corrected') or 0) != 1 else ''}.")
+        elif kind == "book" and tail:
+            from eli.world import books
+            book = books.read(ident)
+            if book:
+                span = " – ".join(time.strftime("%a %d %b %Y", time.localtime(float(t)))
+                                  for t in dict.fromkeys(x for x in (book.get("from"), book.get("to")) if x))
+                lines.append(f"A book of yours ({book['of']}): \"{book['title']}\"" + (f", {span}" if span else "") + ".")
+                if book.get("about"):
+                    lines.append(f"What it is: {book['about']}.")
+                if book.get("of") == "story":
+                    lines.append(("You wrote it as fiction" if book.get("fiction") else "You wrote it as it happened")
+                                 + (f", {book['by'].replace('ELI, ', '', 1)}" if str(book.get("by") or "").startswith("ELI, ") else "")
+                                 + (", from " + "; ".join(book["drawn_from"]) if book.get("drawn_from") else "") + ".")
+                if book.get("of") == "lesson" and isinstance(book.get("record"), dict):
+                    rec = book["record"]
+                    lines.append(f"It is a lesson about {book.get('applies_to', '')}: {rec['status']}, checked {rec['checks']} "
+                                 f"time{'s' if rec['checks'] != 1 else ''}, it helped {rec['helped']} and harmed {rec['harmed']}"
+                                 + (f"; retired because {rec['retired_reason']}" if rec.get("retired_reason") else "") + ".")
         elif kind in ("found", "written", "seen") and tail.isdigit():
             from eli.world import shown
             record = next((r for r in shown.items() if r.get("id") == ident), None)
@@ -519,7 +539,8 @@ def context_block(max_age: float = FRESH_SECONDS) -> str:
         lines.append(f"They are looking at: {looking['name']}.")
     holding = scene.get("holding")
     if holding:
-        what = f"a {holding['kind']} sheet of yours" if holding.get("kind") else "a sheet of yours"
+        what = ("a book of yours" if holding.get("kind") == "book"
+                else f"a {holding['kind']} sheet of yours" if holding.get("kind") else "a sheet of yours")
         lines.append(f"In their hand: {what}, \"{holding['name']}\"." + (" It reads: " + " / ".join(holding["lines"]) if holding.get("lines") else ""))
         for line in held_record(holding):
             lines.append("  " + line)

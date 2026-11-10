@@ -106,3 +106,31 @@ def test_a_held_belief_memory_and_finding_are_read_from_their_records(quiet, mon
     found = embodiment.held_record({"id": "found_9", "kind": "found"})
     assert found == ["What you found for the user: Searched: when do the tides turn.", "Tide times explained", "    example.org"]
     assert embodiment.held_record({"id": "goal_abc", "kind": "goal"}) == [] and embodiment.held_record({}) == []
+
+
+def test_a_book_in_the_users_hand_is_in_elis_prompt_with_what_it_is_and_its_record(quiet, tmp_path, monkeypatch):
+    import json
+    from tests._world_records import DAY, T0, Records
+    from eli.runtime import lessons
+    from eli.world import stories
+    Records(tmp_path, monkeypatch)
+    kept = lessons.propose("OPEN_APP", "the app is not installed", ["Notes failed twice"], "open the site instead", now=T0)
+    lessons.record_outcome(kept, False, now=T0 + DAY)
+    embodiment.report(_scene({"id": f"book_lesson_{kept}", "kind": "book", "name": "open app: open the site instead",
+                              "lines": ["When: the app is not installed"]}))
+    block = embodiment.context_block()
+    assert 'In their hand: a book of yours, "open app: open the site instead". It reads: When: the app is not installed' in block
+    assert 'A book of yours (lesson): "open app: open the site instead"' in block
+    assert "It is a lesson about OPEN_APP: active, checked 1 time, it helped 0 and harmed 1." in block
+    folder = stories.folder()
+    folder.mkdir(parents=True)
+    (folder / "abc123def456.json").write_text(json.dumps({
+        "id": "abc123def456", "title": "The Blue Kettle", "text": "The kettle waited on the sill.", "fiction": True,
+        "drawn_from": [{"ref": "conversation:x", "words": "the conversation of a Monday"}],
+        "about_from": T0, "about_to": T0 + 60, "written_at": T0 + DAY, "model": "small-model"}))
+    embodiment.report(_scene({"id": "book_story_abc123def456", "kind": "book", "name": "The Blue Kettle", "lines": []}))
+    block = embodiment.context_block()
+    assert "You wrote it as fiction, with small-model, from the conversation of a Monday." in block
+    embodiment.report(_scene({"id": "book_story_000000000000", "kind": "book", "name": "Gone", "lines": ["a page"]}))
+    block = embodiment.context_block()
+    assert 'a book of yours, "Gone". It reads: a page' in block and "A book of yours (" not in block, "nothing filled in"

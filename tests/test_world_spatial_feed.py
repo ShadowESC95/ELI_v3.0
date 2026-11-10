@@ -12,9 +12,26 @@ reads or writes the real world state.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from eli.world import spatial_feed
+from eli.world import shown, spatial_feed
+from tests._world_records import DAY, T0, records  # noqa: F401 - the fixture
+
+_BOOKS, _EVIDENCE = shown.books, shown.evidence
+CONTRACT = Path(__file__).parent / "fixtures" / "world_feed_v2_contract.json"
+EXAMPLE = Path(__file__).parent / "fixtures" / "world_feed_v2_example.json"
+
+
+@pytest.fixture(autouse=True)
+def _books_and_evidence_only_where_asked(monkeypatch):
+    """ELI's books and the Evidence Wall's figures read ELI's stores; a test that wants them puts every
+    store in its own folder first (tests/_world_records.py) and asks for them, so no test here reads the
+    machine's records on the --noconftest lane."""
+    monkeypatch.setattr(shown, "books", lambda room, now=None: [])
+    monkeypatch.setattr(shown, "evidence", lambda now=None: {})
 
 WORLD = {
     "avatar": {
@@ -104,6 +121,10 @@ def test_a_client_is_welcomed_at_the_newest_version_both_speak():
     assert "building" in answer["capabilities"] and answer["missing"] == ["telepathy"]
     old = spatial_feed.negotiate({"protocol_versions": [1]})
     assert old["version"] == 1 and "building" not in old["capabilities"]
+    vr = spatial_feed.negotiate({"protocol_versions": [2], "capabilities": ["books", "evidence"], "max_message": 65536})
+    assert vr["missing"] == [] and {"books", "evidence"} <= set(spatial_feed.CAPABILITIES[2])
+    assert vr["max_message"] == 65536, "a body says how much one message to it may take"
+    assert answer["max_message"] == spatial_feed.MESSAGE_BYTES == 1 << 20, "ELI VR's world link takes 1 MiB"
 
 
 def test_a_client_from_another_age_is_refused_with_the_reason():
@@ -134,7 +155,9 @@ def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
 
     class Memory:
         def get_recent_semantic_memories(self, limit=16):
-            return [{"id": 7, "text": "The user keeps their invoices by year, newest first."}, {"id": 8, "text": " "}]
+            return [{"id": 6, "timestamp": 6, "text": "A memory kept before memories carried a time."},
+                    {"id": 7, "timestamp": 1_780_000_000.0, "text": "The user keeps their invoices by year, newest first."},
+                    {"id": 8, "text": " "}]
 
     reads = []
     monkeypatch.setattr(memory_module, "get_memory", lambda: reads.append(1) or Memory())
@@ -147,8 +170,10 @@ def test_his_memories_and_goals_stand_in_the_rooms_named_for_them(monkeypatch):
     memory, goal = by_kind["memory"], by_kind["goal"]
     assert memory["room"] == "memory_archive" and memory["name"] == "The user keeps their invoices"
     assert memory["meaning"] == "The user keeps their invoices by year, newest first." and memory["form"]["shape"] == "orb"
+    assert memory["when"] == 1_780_000_000.0, "a memory says when it was kept, for its cover"
+    assert "when" not in next(o for o in msg["objects"] if o["id"] == "memory_6"), "a row's id is not its time"
     assert goal["room"] == "upgrade_bay" and goal["name"] == "Learn the filing system" and goal["form"]["shape"] == "beacon"
-    assert memory["form"]["pos"] == shown.items()[0]["form"]["pos"], "a record keeps its place"
+    assert memory["form"]["pos"] == shown.items()[1]["form"]["pos"], "a record keeps its place"
     read_once = len(reads)
     spatial_feed.spatial_state(WORLD, version=2)
     assert len(reads) == read_once, "ELI's records are not read again for every poll"
@@ -166,12 +191,15 @@ def test_what_eli_believes_is_on_the_evidence_wall_and_what_disagrees_is_in_the_
     memory_module = pytest.importorskip("eli.memory.memory")
     conn = sqlite3.connect(":memory:")
     claims.record(conn, "works_as", "a ferry pilot", origin="user_said", now=1_780_000_000.0)
-    claims.record(conn, "lives_in", "Harbour Town", origin="user_said", now=1_780_100_000.0)
+    claims.record(conn, "lives_in", "Harbour Town", origin="user_said", now=1_780_100_000.0, source_memory_id=11)
     claims.record(conn, "lives_in", "Upper Ridge", origin="eli_said", now=1_780_200_000.0)
 
     class Memory:
         def get_recent_semantic_memories(self, limit=16):
             return []
+
+        def memory_facts(self, memory_id):
+            return {11: {"id": 11, "text": "I moved to Harbour Town last spring.", "when": 1_780_050_000.0}}.get(memory_id, {})
 
         def claims_current(self):
             return claims.current(conn)
@@ -188,8 +216,17 @@ def test_what_eli_believes_is_on_the_evidence_wall_and_what_disagrees_is_in_the_
     assert beliefs[0]["meaning"].startswith("lives in: Harbour Town (since ")
     assert beliefs[0]["form"]["colour"] == "#f5b942", "the belief something else disputes shows as contested"
     assert beliefs[1]["form"]["colour"] == "#d9e4f2"
+    held = beliefs[0]["claim"]
+    row = next(r for r in claims.current(conn) if r["value"] == "Harbour Town")
+    assert held == {"relation": "lives_in", "value": "Harbour Town", "chance": round(beliefs[0]["importance"], 4),
+                    "sure": row["confidence"], "since": 1_780_100_000.0, "until": None, "learned": 1_780_100_000.0,
+                    "origin": "user_said", "basis": claims.basis(row), "confirmations": 1, "contested": True,
+                    "status": "current",
+                    "sources": [{"id": "memory_11", "kind": "memory", "text": "I moved to Harbour Town last spring.",
+                                 "when": 1_780_050_000.0, "origin": "you said so"}]}, "a belief with what it rests on"
+    assert beliefs[1]["claim"]["sources"] == [] and beliefs[1]["claim"]["contested"] is False, "a claim with no source rests on none"
     [conflict] = [o for o in shown_now if o["kind"] == "conflict"]
-    assert conflict["room"] == "anomaly_room" and conflict["name"] == "Lives in?"
+    assert conflict["room"] == "anomaly_room" and conflict["name"] == "Lives in?" and conflict["relation"] == "lives_in"
     assert "Harbour Town" in conflict["meaning"] and "Upper Ridge" in conflict["meaning"] and conflict["meaning"].endswith("?")
     for n in range(building.MAX_PER_ROOM + 5):
         claims.record(conn, f"likes_{n}", f"thing {n}", single_valued=False, origin="user_said", now=1_780_300_000.0 + n)
@@ -695,3 +732,195 @@ def test_the_world_link_closing_ends_the_bodys_session(monkeypatch):
     assert embodiment.present() == []
     ended = [s for s in embodiment.sessions_between(0, _time.time() + 1) if s["session"] == "eli-vr-link"]
     assert ended and ended[-1]["end"] == "its world link closed"
+
+
+# ── what ELI VR's knowledge rooms are sent: books, beliefs with their sources, the Evidence Wall ─────
+
+def _contract_errors(value, kind, shapes, where="message"):
+    """Every way `value` differs from the contract's `kind` (tests/fixtures/world_feed_v2_contract.json)."""
+    errors = []
+    for one in kind.split("|"):
+        if one.startswith("array<"):
+            inner = one[len("array<"):-1]
+            if isinstance(value, list):
+                found = [e for i, item in enumerate(value) for e in _contract_errors(item, inner, shapes, f"{where}[{i}]")]
+                if not found:
+                    return []
+                errors.extend(found)
+            continue
+        if one in shapes:
+            if not isinstance(value, dict):
+                errors.append(f"{where}: not an object ({one})")
+                continue
+            shape = shapes[one]
+            found = [f"{where}: {key} is not in the contract for {one}" for key in value
+                     if key not in shape and f"?{key}" not in shape]
+            for key, sub in shape.items():
+                name = key.lstrip("?")
+                if name not in value:
+                    if not key.startswith("?"):
+                        found.append(f"{where}: {name} is missing ({one})")
+                    continue
+                found.extend(_contract_errors(value[name], sub, shapes, f"{where}.{name}"))
+            if not found:
+                return []
+            errors.extend(found)
+            continue
+        ok = {"str": isinstance(value, str), "bool": isinstance(value, bool), "null": value is None,
+              "object": isinstance(value, dict),
+              "int": isinstance(value, int) and not isinstance(value, bool),
+              "number": isinstance(value, (int, float)) and not isinstance(value, bool)}.get(one)
+        if ok is None:
+            errors.append(f"{where}: the contract names no type {one}")
+        elif ok:
+            return []
+        else:
+            errors.append(f"{where}: {value!r} is not {one}")
+    return errors
+
+
+def _seed_the_knowledge_rooms(records):
+    """One of each record the knowledge rooms show, in the test's own stores."""
+    from eli.cognition import epistemics, thoughts
+    from eli.memory import claims
+    from eli.planning import goal_store
+    from eli.runtime import lessons
+    from eli.world import stories
+    from eli.world.persistence.journal import append_journal_entry
+    now = __import__("time").time()
+    mid = records.memory_row("I moved to Harbour Town last spring.", now - 20 * DAY)
+    conn = records.memory._claims_conn()
+    claims.record(conn, "lives_in", "Harbour Town", origin="user_said", now=now - 20 * DAY, source_memory_id=mid,
+                  subject=records.memory._claim_subject())
+    claims.record(conn, "lives_in", "Upper Ridge", origin="eli_said", now=now - 2 * DAY, subject=records.memory._claim_subject())
+    conn.commit()
+    conn.close()
+    records.turn("s1", "user", "Where did I leave the blue kettle?", now - 3 * DAY)
+    records.turn("s1", "assistant", "On the windowsill, you said.", now - 3 * DAY + 60)
+    records.summary("s1", "We found the kettle. It was on the sill.", now - 3 * DAY, now - 3 * DAY + 60, 2)
+    records.ran("OPEN_APP", False, now - 3 * DAY + 10, session="s1", said="Notes is not installed", args={"name": "Notes"})
+    records.ran("OPEN_URL", True, now - 3 * DAY + 20, session="s1", said="Opened notes.example.org",
+                args={"url": "https://notes.example.org", "_alternative_of": "OPEN_APP"})
+    records.ran("OPEN_APP", True, now - 10 * DAY, session="s0", said="Opened Notes", args={"name": "Notes"})
+    for i in range(4):
+        records.figure(epistemics.ANSWER, f"answer:w{i}", 0.8, i < 3, now - (2 + 7 * i) * DAY)
+    records.stance("rain sounds", "I am fond of the sound of rain on a roof.", now - 5 * DAY, valence=1)
+    thoughts.record("act", "made a lamp for the reading corner", chance=0.6, decision="taken", subject="a lamp",
+                    ref="act:1", now=now - DAY)
+    append_journal_entry("A note from the rooms", "The reading corner is warmer now.")
+    goal_store.upsert_goal({"title": "Tidy the index", "objective": "Fewer duplicate rows."})
+    lessons.propose("OPEN_APP", "the app is not installed", ["Notes failed"], "open the site instead", now=now - 3 * DAY)
+    folder = stories.folder()
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "abc123def456.json").write_text(json.dumps({
+        "id": "abc123def456", "title": "The Blue Kettle", "text": "The kettle waited on the sill.", "fiction": True,
+        "drawn_from": [{"ref": "conversation:x", "words": "the conversation of three days ago"}],
+        "about_from": now - 3 * DAY, "about_to": now - 3 * DAY + 60, "written_at": now - DAY, "model": "small-model"}))
+
+
+def _knowledge_message(monkeypatch, records, budget=None):
+    monkeypatch.setattr(shown, "books", _BOOKS)
+    monkeypatch.setattr(shown, "evidence", _EVIDENCE)
+    # what the knowledge rooms are not about is not read from the machine (its world state, agenda, models)
+    monkeypatch.setattr(shown, "thoughts", lambda now=None: [])
+    monkeypatch.setattr(shown, "coming_up", lambda now=None: [])
+    monkeypatch.setattr(shown, "free", lambda now=None: False)
+    monkeypatch.setattr("eli.world.models.listed", lambda: [])
+    shown.forget()
+    return spatial_feed.spatial_state(WORLD, version=2, budget=budget)
+
+
+def test_the_knowledge_rooms_are_sent_in_the_shapes_the_contract_says(monkeypatch, records):
+    import os
+    contract = json.loads(CONTRACT.read_text())
+    _seed_the_knowledge_rooms(records)
+    msg = _knowledge_message(monkeypatch, records)
+    assert set(contract["capabilities"]) <= set(spatial_feed.CAPABILITIES[2])
+    errors = []
+    for key, kind in contract["message"].items():
+        errors += _contract_errors(msg[key], kind, contract["shapes"], key)
+    for i, obj in enumerate(msg["objects"]):
+        if obj["kind"] in contract["object_shapes"]:
+            errors += _contract_errors(obj, contract["object_shapes"][obj["kind"]], contract["shapes"], f"objects[{i}]")
+    assert errors == [], "\n".join(errors)
+    kinds = {o["kind"] for o in msg["objects"]}
+    assert {"book", "claim", "conflict", "memory"} <= kinds, "one of each was sent"
+    of = {o["book"]["of"] for o in msg["objects"] if o["kind"] == "book"}
+    assert {"conversation", "session", "log", "period", "story", "likes", "thoughts", "goals", "diary", "lesson"} <= of
+    assert msg["evidence"]["actions"]["rows"] and msg["evidence"]["accuracy"], "the scoreboard and the charts have rows"
+    assert any(t["subject"] == "a lamp" and t["ref"] == "act:1" for t in msg["thoughts"]), "a thought says what it is about"
+    if os.environ.get("ELI_WRITE_WORLD_FIXTURES"):
+        EXAMPLE.write_text(json.dumps({k: msg[k] for k in ("objects", "thoughts", "evidence")}, indent=1) + "\n")
+    example = json.loads(EXAMPLE.read_text())
+    errors = []
+    for key, kind in contract["message"].items():
+        errors += _contract_errors(example[key], kind, contract["shapes"], f"example.{key}")
+    for i, obj in enumerate(example["objects"]):
+        if obj["kind"] in contract["object_shapes"]:
+            errors += _contract_errors(obj, contract["object_shapes"][obj["kind"]], contract["shapes"], f"example.objects[{i}]")
+    assert errors == [], "the example a body tests against is a payload of today's shape:\n" + "\n".join(errors)
+
+
+def test_the_evidence_wall_is_told_how_each_action_and_each_kind_of_figure_went_week_by_week(monkeypatch, records):
+    from eli.cognition.epistemics import week_start
+    _seed_the_knowledge_rooms(records)
+    evidence = _knowledge_message(monkeypatch, records)["evidence"]
+    rows = {r["action"]: r for r in evidence["actions"]["rows"]}
+    opened = rows["OPEN_APP"]
+    assert (opened["name"], opened["n"], opened["ok"]) == ("open app", 2, 1)
+    assert [c["n"] for c in opened["causes"]] == [1] and opened["causes"][0]["words"], "why it failed, in words"
+    assert sum(w["n"] for w in opened["weeks"]) == 2 and sum(w["ok"] for w in opened["weeks"]) == 1
+    assert [w["from"] for w in opened["weeks"]] == sorted(w["from"] for w in opened["weeks"]), "oldest first"
+    assert opened["weeks"][-1]["from"] == week_start(__import__("time").time()), "up to this week"
+    assert list(rows)[0] == "OPEN_APP", "the actions with failures first"
+    [answers] = [a for a in evidence["accuracy"] if a["kind"] == "answer"]
+    assert answers["words"] == "replies to you" and answers["n"] == 4 and answers["right"] == 0.75
+    filled = [w for w in answers["weeks"] if w["n"]]
+    assert sum(w["n"] for w in filled) == 4 and all(w["right"] in (0.0, 1.0) for w in filled)
+    assert all(w["right"] is None for w in answers["weeks"] if not w["n"]), "a week with nothing settled says nothing"
+
+
+def test_elis_books_fill_what_the_rest_of_the_message_leaves_and_the_rest_are_read_whole_by_id(monkeypatch, records):
+    from eli.world import books
+    for n in range(40):
+        records.turn(f"s{n}", "user", f"Question number {n} " + "about the garden " * 20, T0 + n * DAY)
+        records.turn(f"s{n}", "assistant", f"Answer number {n} " + "with the roses " * 20, T0 + n * DAY + 60)
+    everything = _knowledge_message(monkeypatch, records)
+    talks = [o for o in everything["objects"] if o["kind"] == "book" and o["book"]["of"] == "conversation"]
+    assert len(talks) == 40 and all("sections" in o["book"] for o in talks), "with room, every book is sent whole"
+    bare = json.loads(json.dumps(everything))
+    for obj in bare["objects"]:
+        obj.get("book", {}).pop("sections", None)
+    budget = len(json.dumps(bare)) + 6000                  # room for every book, and the text of a few
+    every = len([o for o in everything["objects"] if o["kind"] == "book"])       # the conversations and their weeks
+    msg = _knowledge_message(monkeypatch, records, budget=budget)
+    assert len(json.dumps(msg, default=str)) <= budget, "a message is never larger than the body takes"
+    sent = [o for o in msg["objects"] if o["kind"] == "book"]
+    whole = [o for o in sent if "sections" in o["book"] and o["book"]["of"] == "conversation"]
+    assert len(sent) == every and 0 < len(whole) < 40, "every book, the text of as many as fit"
+    talks = [o for o in sent if o["book"]["of"] == "conversation"]
+    assert [o["when"] for o in whole] == sorted((o["when"] for o in talks), reverse=True)[:len(whole)], "the newest first"
+    rest = next(o for o in talks if "sections" not in o["book"])
+    assert rest["book"]["length"] > 0, "a book sent without its text says how long it is"
+    assert books.read(rest["id"])["sections"][0]["text"].startswith("Question number"), "and is read whole by its id"
+    others = dict(bare, objects=[o for o in bare["objects"] if o["kind"] != "book"])
+    one = max(len(json.dumps(o)) + 2 for o in bare["objects"] if o["kind"] == "book")
+    tight = _knowledge_message(monkeypatch, records, budget=len(json.dumps(others)) + 10 * one)
+    assert 10 <= len([o for o in tight["objects"] if o["kind"] == "book"]) < every, "with less room, fewer books"
+    assert not [o for o in _knowledge_message(monkeypatch, records, budget=len(json.dumps(others)))["objects"]
+                if o["kind"] == "book"], "with none, none: the rest of the message is never cut for them"
+
+
+def test_a_book_is_read_whole_over_http_and_anything_else_is_not_found(monkeypatch, records):
+    client, _ = _client(monkeypatch)
+    records.turn("s1", "user", "Where did I leave the blue kettle?", T0)
+    records.turn("s1", "assistant", "On the windowsill, you said.", T0 + 60)
+    from eli.world import books
+    [talk] = [b for b in books.listed() if b["of"] == "conversation"]
+    got = client.get(f"/v1/world/book/{talk['id']}")
+    assert got.status_code == 200
+    body = got.json()
+    assert body["id"] == talk["id"] and body["book"]["of"] == "conversation" and "session" not in body["book"]
+    assert [s["text"] for s in body["sections"]] == ["Where did I leave the blue kettle?", "On the windowsill, you said."]
+    for other in ("book_conversation_0000", "book_nothing_1", "memory_1"):
+        assert client.get(f"/v1/world/book/{other}").status_code == 404, other
