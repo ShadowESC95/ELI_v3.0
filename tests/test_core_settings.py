@@ -514,3 +514,20 @@ def test_reading_settings_never_saved_writes_no_file_and_an_unreadable_one_is_ke
     saved.write_text('{"n_threads": 4}', encoding="utf-8")
     rs.load_settings()
     assert json.loads(saved.read_text(encoding="utf-8"))["settings_revision"] == len(rs._REVISIONS)
+
+
+def test_a_folder_set_outside_the_install_is_kept_unless_it_is_another_elis(tmp_path, monkeypatch):
+    """Every path outside this install was removed at the first settings read, so a process started with
+    its stores in a temp folder (the OS simulation, an eval) wrote into the checkout's config instead. A
+    copied install's paths into the old install are still removed."""
+    import os
+    from eli.core import runtime_settings as rs
+    old_install = tmp_path / "old_install"
+    (old_install / "eli" / "cognition").mkdir(parents=True)
+    (old_install / "eli" / "gui").mkdir()
+    sandbox = tmp_path / "sandbox" / "config"                 # not made yet
+    monkeypatch.setenv("ELI_CONFIG_DIR", str(sandbox))
+    monkeypatch.setenv("ELI_ARTIFACTS_DIR", str(old_install / "artifacts"))
+    rs._eli_runtime_clear_stale_env_paths()
+    assert os.environ.get("ELI_CONFIG_DIR") == str(sandbox)
+    assert "ELI_ARTIFACTS_DIR" not in os.environ

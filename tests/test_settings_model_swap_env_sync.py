@@ -147,7 +147,10 @@ def test_a_path_set_while_running_stays_through_later_settings_reads(tmp_path, m
 def test_a_path_inherited_from_another_install_is_dropped_at_start(tmp_path, monkeypatch):
     from eli.core import runtime_settings as rs
     monkeypatch.setattr(rs, "_STALE_ENV_CHECKED", False)
-    monkeypatch.setenv("ELI_CONFIG_DIR", str(tmp_path / "another-install" / "config"))
+    other = tmp_path / "another-install"                     # an ELI install: it holds the eli package
+    (other / "eli" / "cognition").mkdir(parents=True)
+    (other / "eli" / "gui").mkdir()
+    monkeypatch.setenv("ELI_CONFIG_DIR", str(other / "config"))
     rs.load_settings()
     assert "ELI_CONFIG_DIR" not in os.environ
 

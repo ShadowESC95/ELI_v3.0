@@ -1104,9 +1104,20 @@ def _eli_runtime_sanitize_path_string(key: str, value: str):
     return ""
 
 
+def _inside_another_eli_tree(path) -> bool:
+    """Whether a path lies inside an ELI install other than this one (a folder holding the `eli`
+    package, eli.core.paths._is_eli_root)."""
+    from eli.core.paths import _is_eli_root
+    return any(_is_eli_root(parent) for parent in (path, *path.parents))
+
+
 def _eli_runtime_clear_stale_env_paths():
     """
-    Remove stale env path overrides that point outside the current physical install.
+    Remove stale env path overrides: ones a copied install inherited that point into another ELI
+    install. A folder outside every install (a launcher's per-user root, a test's or an eval's
+    sandbox, made or yet to be made) is set on purpose and kept: every path outside this install was
+    removed, so a process started with its stores in a temp folder had its config and artifacts sent
+    back into the checkout at its first settings read (the OS simulation wrote the checkout's audit key).
     External model paths remain allowed only when ELI_ALLOW_EXTERNAL_MODEL_PATHS=1.
     """
     import os
@@ -1158,6 +1169,9 @@ def _eli_runtime_clear_stale_env_paths():
             continue
 
         if "MODEL" in env_key and (allow_external_models or resolved.exists()):
+            continue
+
+        if "MODEL" not in env_key and not _inside_another_eli_tree(resolved):
             continue
 
         os.environ.pop(env_key, None)
