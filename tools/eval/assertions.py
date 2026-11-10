@@ -123,24 +123,24 @@ def check(assertion: Dict[str, Any], r: Dict[str, Any]) -> Tuple[bool, str]:
     if t == "result_ok":
         got = bool(r.get("ok", True))
         want = bool(val if val is not None else True)
-        return (got == want), f"result_ok={got} want={want} (err={r.get('error') or '∅'})"
+        return (got == want), f"result_ok={got} want={want} (err={r.get('error') or 'none'})"
     if t == "semantic_min":
         return _semantic_check(assertion, r)
     if t == "action_is":
         want = _as_list(val)
         got = str(r.get("action") or "").upper()
-        return (got in want), f"action={got or '∅'} want∈{want}"
+        return (got in want), f"action={got or 'none'} want in {want}"
     if t == "action_not":
         bad = _as_list(val)
         got = str(r.get("action") or "").upper()
-        return (got not in bad), f"action={got or '∅'} must∉{bad}"
+        return (got not in bad), f"action={got or 'none'} must not be in {bad}"
     if t == "matched_by":
         ok = str(val).lower() in str(r.get("matched_by") or "").lower()
         return ok, f"matched_by~{val!r}: got {r.get('matched_by')!r}"
     if t == "response_mode":
         want = _as_list(val)
         got = str(r.get("response_mode") or "").upper()
-        return (got in want), f"response_mode={got or '∅'} want∈{want}"
+        return (got in want), f"response_mode={got or 'none'} want in {want}"
     if t == "grounding_min":
         g = r.get("grounding")
         ok = g is not None and float(g) >= float(val)
@@ -164,7 +164,7 @@ def check(assertion: Dict[str, Any], r: Dict[str, Any]) -> Tuple[bool, str]:
         gf = str(r.get("gate_failed") or "").lower()
         bad = str(val or "").lower()
         ok = gf != bad
-        return ok, f"gate_failed={gf!r} must≠{bad!r}"
+        return ok, f"gate_failed={gf!r} must not be {bad!r}"
     if t == "max_latency_s":
         lat = float(r.get("latency_s") or 0.0)
         ok = lat <= float(val)

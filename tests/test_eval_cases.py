@@ -193,8 +193,12 @@ def test_the_router_board_from_the_command_line_runs_in_its_copy_and_writes_noth
                 if str(c.get("target") or "router").lower() == "router" and not c.get("desktop"))
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
     env.update(state_env(real))
+    # as a Windows console takes it (cp1252 has no box-drawing or arrow characters): the board printed
+    # them and stopped with a UnicodeEncodeError on every Windows runner
+    env["PYTHONIOENCODING"] = "cp1252"
     out = subprocess.run([sys.executable, str(_REPO / "tools" / "eval" / "run_eval.py"), "--filter", str(case["id"])],
-                         cwd=str(_REPO), env=env, capture_output=True, text=True, timeout=300)
+                         cwd=str(_REPO), env=env, capture_output=True, text=True, encoding="cp1252",
+                         errors="replace", timeout=300)
     assert out.returncode == 0 and "1 passed" in out.stdout, (out.stdout + out.stderr)[-1500:]
     written = sorted(str(p.relative_to(real)) for p in real.rglob("*") if p.is_file()) if real.exists() else []
     assert written == [], written

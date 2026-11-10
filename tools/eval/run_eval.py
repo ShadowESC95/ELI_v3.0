@@ -116,7 +116,7 @@ def run_board(target: str = "router", *, cases_path=None, coding_cases_path=None
         for a in (c.get("assert") or []):
             ok, detail = A.check(a, res)
             ok_all = ok_all and ok
-            details.append(("\u2713" if ok else "\u2717") + " " + detail)
+            details.append(("ok" if ok else "x") + " " + detail)
 
         passed += ok_all
         failed += (not ok_all)
@@ -175,7 +175,7 @@ def main(argv=None) -> int:
     records = board["records"]
     passed, failed, skipped = board["passed"], board["failed"], board["skipped"]
 
-    print(f"\n  ELI eval — {board['total']} case(s) [{args.target}]\n  " + "\u2500" * 46)
+    print(f"\n  ELI eval — {board['total']} case(s) [{args.target}]\n  " + "-" * 46)
     for rec in records:
         cid = rec["id"]
         if rec["status"] == "error":
@@ -189,13 +189,13 @@ def main(argv=None) -> int:
         print(f"  {tag} {cid}  ({rec.get('latency_s')}s)")
         if not ok_all:
             for d in rec.get("checks") or []:
-                if d.startswith("\u2717"):
+                if d.startswith("x "):
                     print(f"        {_R}{d}{_X}")
             ans = (rec.get("answer") or "").replace("\n", " ")[:120]
             if ans:
-                print(f"        \u21b3 answer: {ans!r}")
+                print(f"        -> answer: {ans!r}")
 
-    print("  " + "\u2500" * 46)
+    print("  " + "-" * 46)
     print(f"  {_G}{passed} passed{_X}  {_R}{failed} failed{_X}  {_Y}{skipped} skipped{_X}\n")
     if args.json:
         Path(args.json).write_text(json.dumps(records, indent=2), encoding="utf-8")
@@ -306,7 +306,7 @@ def _write_history(records, target, passed, failed, skipped) -> None:
     (evdir / "regressions.json").write_text(
         json.dumps({"ts": ts, "target": target, "model": summary["model"],
                     "count": len(regs), "regressions": regs}, indent=2), encoding="utf-8")
-    print(f"  history → {hist}/{ts}.json  ·  trend.jsonl +1  ·  "
+    print(f"  history -> {hist}/{ts}.json  ·  trend.jsonl +1  ·  "
           f"regressions.json ({len(regs)})\n")
 
 

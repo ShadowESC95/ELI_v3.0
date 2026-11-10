@@ -68,7 +68,7 @@ def main(argv=None) -> int:
         print(f"  {_Y}SKIP{_X} no model loadable ({probe.get('reason')}) — nothing to smoke-test.")
         return 0
 
-    print(f"\n  ELI model-swap smoke — {len(_CHECKS)} checks\n  " + "─" * 50)
+    print(f"\n  ELI model-swap smoke — {len(_CHECKS)} checks\n  " + "-" * 50)
     records, failed = [], 0
     for cid, prompt, mode, kind in _CHECKS:
         try:
@@ -95,13 +95,13 @@ def main(argv=None) -> int:
         tag = f"{_G}PASS{_X}" if ok else f"{_R}FAIL{_X}"
         print(f"  {tag} {cid:14} [{mode:8}] ({r.get('latency_s')}s)")
         for p in problems:
-            print(f"        {_R}✗ {p}{_X}")
+            print(f"        {_R}x {p}{_X}")
         records.append({"id": cid, "mode": mode, "kind": kind, "status": "pass" if ok else "fail",
                         "problems": problems, "latency_s": r.get("latency_s"),
                         "preview": text[:120]})
 
     passed = len(_CHECKS) - failed
-    print("  " + "─" * 50)
+    print("  " + "-" * 50)
     color = _G if failed == 0 else _R
     print(f"  {color}{passed} passed  {failed} failed{_X}\n")
     if args.json:

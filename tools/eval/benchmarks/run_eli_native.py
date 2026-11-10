@@ -136,7 +136,7 @@ def main(argv=None) -> int:
                "ok": ok, "sec": round(dt, 1), "answer": ans}
         with samples_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        print(f"  [{i}/{len(docs)}] {'✓' if ok else '✗'} pred={pred} gold={gold} {dt:.0f}s", flush=True)
+        print(f"  [{i}/{len(docs)}] {'ok' if ok else 'x'} pred={pred} gold={gold} {dt:.0f}s", flush=True)
 
     wall = time.time() - t_eval
     acc = correct / len(docs) if docs else 0.0

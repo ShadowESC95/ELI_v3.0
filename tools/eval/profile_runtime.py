@@ -193,7 +193,7 @@ def main(argv=None) -> int:
 
     turns = _load_turns(args.limit)
     print(f"\n  RUNTIME PROFILE  ·  mode={args.mode}  ·  turns={len(turns)}")
-    print("  " + "─" * 56)
+    print("  " + "-" * 56)
     actions, agents, errors, elapsed = _run(turns, args.mode)
     per_file, pkg = _analyse()
 
@@ -217,7 +217,7 @@ def main(argv=None) -> int:
         fired_a = set(agents)
         print(f"  AGENTS fired: {len(fired_a)} of {len(roster)}")
         for a in roster:
-            mark = "✓" if a in fired_a else "·"
+            mark = "+" if a in fired_a else "."
             print(f"      {mark} {a:18s} {agents.get(a,0)}")
         print()
 
