@@ -66,6 +66,9 @@ def test_spotify_target_plays_and_never_opens_youtube(monkeypatch):
     assert res["action"] == "PLAY_MEDIA"
     assert res.get("played") is True
     assert not _has_youtube(calls), "Spotify request must not open YouTube"
+    # what played, as fields the record keeps (the reply's wording is not what is read back)
+    assert res["track"]["source"] == "spotify" and res["track"]["confirmed"] is True
+    assert res["track"].get("title") == "Juicy" and res["track"].get("artist") == "The Notorious B.I.G."
 
 
 def test_spotify_unreachable_reports_search_only_not_youtube(monkeypatch):

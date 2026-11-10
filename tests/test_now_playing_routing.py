@@ -33,6 +33,7 @@ def test_now_playing_empty_state(monkeypatch):
     out = em.now_playing()
     assert out["action"] == "NOW_PLAYING"
     assert "Nothing is playing" in out["content"]
+    assert "track" not in out
 
 
 def test_now_playing_prefers_live_playerctl(monkeypatch):
@@ -48,3 +49,14 @@ def test_now_playing_prefers_live_playerctl(monkeypatch):
     out = em.now_playing()
     assert "Quiet Machine — Harbour Streets" in out["content"]
     assert "liked songs (playlist)" not in out["content"]
+    # what is playing, as fields: "what am I listening to" reads these, not the sentence
+    assert out["track"] == {"source": "spotify", "title": "Harbour Streets", "artist": "Quiet Machine",
+                            "confirmed": True}
+
+
+def test_a_paused_player_is_not_heard_to_play(monkeypatch):
+    monkeypatch.setattr(em, "_MEDIA_STATE", {"source": "spotify", "title": None, "mpv_sock": None})
+    monkeypatch.setattr(em, "_get_active_player", lambda *a, **k: "spotify")
+    monkeypatch.setattr(em, "_spotify_live_meta", lambda player="spotify": ("⏸ Paused", "", "Harbour Streets"))
+    out = em.now_playing()
+    assert out["track"]["confirmed"] is False and out["track"]["title"] == "Harbour Streets"

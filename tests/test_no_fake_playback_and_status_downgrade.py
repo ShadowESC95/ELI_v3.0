@@ -147,6 +147,7 @@ def test_dead_mpv_falls_back_honestly(monkeypatch, _yt_env):
 
     assert _yt_env, "should have fallen back to opening the browser"
     assert "direct playback failed" in (result.get("response") or "")
+    assert result["track"] == {"source": "youtube", "query": result["track"]["query"], "confirmed": False}
 
 
 def test_failure_message_stays_speakable(monkeypatch, _yt_env):
@@ -175,6 +176,8 @@ def test_confirmed_load_is_reported_as_playing(monkeypatch, _yt_env):
 
     assert result.get("played") is True
     assert "Playing" in (result.get("response") or "")
+    assert result["track"]["source"] == "youtube" and result["track"]["confirmed"] is True
+    assert result["track"]["query"], "the words YouTube was searched for"
 
 
 def test_alive_but_unloaded_mpv_is_not_claimed_as_playing(monkeypatch, _yt_env):
@@ -189,6 +192,7 @@ def test_alive_but_unloaded_mpv_is_not_claimed_as_playing(monkeypatch, _yt_env):
 
     assert result.get("played") is not True
     assert result.get("pending") is True
+    assert result["track"]["confirmed"] is False, "a play still resolving is not heard to play"
     response = result.get("response") or ""
     assert "not confirmed" in response.lower() or "still resolving" in response.lower()
 

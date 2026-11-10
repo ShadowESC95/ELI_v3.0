@@ -186,7 +186,8 @@ def play_media(target: str | None = None) -> Dict[str, Any]:
         _mpv_ipc(["set_property", "pause", False])
         title = _MEDIA_STATE.get("title") or "YouTube"
         return {"ok": True, "action": "PLAY_MEDIA", "content": f"▶ Resumed — {title}",
-                "response": f"▶ Resumed — {title}"}
+                "response": f"▶ Resumed — {title}",
+                "track": _track("youtube", title=_MEDIA_STATE.get("title") or "", confirmed=True)}
     result = _playerctl("play", _resolve_media_target(target, "play"))
     result["action"] = "PLAY_MEDIA"
     return result
@@ -297,7 +298,8 @@ def _spotify_try_open_and_play(uri: str, *, label: str, kind: str) -> Dict[str, 
     if track:
         msg = f"Playing {label} on Spotify — now: {meta}."
     return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-            "kind": kind, "content": msg, "response": msg}
+            "kind": kind, "content": msg, "response": msg,
+            "track": _track("spotify", query=label, title=track, artist=artist, confirmed=True)}
 
 
 
@@ -397,6 +399,20 @@ def _set_now_playing(
     })
 
 
+def _track(source: str, *, query: str = "", title: str = "", artist: str = "",
+           confirmed: bool) -> Dict[str, Any]:
+    """What a media result is about, as fields the record keeps (the executor_action row carries the
+    whole result; evidence_ledger.actions_between hands `track` back): the player or site, the words
+    asked for, the title and artist that came back, and whether it was heard to play. "What did I
+    listen to" was read back out of the reply's sentences, so a change of wording lost tracks."""
+    out: Dict[str, Any] = {"source": str(source or ""), "confirmed": bool(confirmed)}
+    for key, value in (("query", query), ("title", title), ("artist", artist)):
+        value = str(value or "").strip()
+        if value:
+            out[key] = value
+    return out
+
+
 def _known_target(t: str) -> bool:
     """A player or service ELI can play on itself (streaming platforms are taken before this)."""
     t = str(t or "").strip().lower()
@@ -422,17 +438,19 @@ def _open_named_site(target: str, asked: Dict[str, Any]) -> Dict[str, Any]:
         msg = (f"I played nothing: I have no player for {name}, and no address for it"
                + (f" ({why})" if why else "") + ". Give me its address and I'll open it.")
         return {"ok": False, "action": "PLAY_MEDIA", "played": False, "target": name,
-                "error": "unknown_site", "cause": "missing_resource", "content": msg, "response": msg}
+                "error": "unknown_site", "cause": "missing_resource", "content": msg, "response": msg,
+                "track": _track(name, query=what, confirmed=False)}
     opened = _execute_impl("OPEN_URL", {"url": url})
     if not (isinstance(opened, dict) and opened.get("ok")):
         reason = str((opened or {}).get("error") or (opened or {}).get("response") or "the browser did not open")
         msg = f"I played nothing: I have no player for {name}, and opening {url} failed ({reason})."
         return {"ok": False, "action": "PLAY_MEDIA", "played": False, "target": name, "url": url,
-                "error": "site_not_opened", "content": msg, "response": msg}
+                "error": "site_not_opened", "content": msg, "response": msg,
+                "track": _track(name, query=what, confirmed=False)}
     msg = (f"Opened {url}. I have no player for {name} and don't know its search page, so I didn't search "
            f"for “{what}” there or play anything; it's open for you to pick.")
     return {"ok": True, "action": "PLAY_MEDIA", "played": False, "search_only": True, "target": name,
-            "url": url, "content": msg, "response": msg}
+            "url": url, "content": msg, "response": msg, "track": _track(name, query=what, confirmed=False)}
 
 
 def _service_of(target: Any) -> str:
@@ -533,12 +551,14 @@ def _play_on_spotify(asked: Dict[str, Any]) -> Dict[str, Any]:
                     _set_now_playing("spotify", "Liked Songs")
                     msg = "Playing your Liked Songs on Spotify."
                     return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                            "kind": "liked_songs", "content": msg, "response": msg}
+                            "kind": "liked_songs", "content": msg, "response": msg,
+                            "track": _track("spotify", query="Liked Songs", confirmed=True)}
                 msg = ("I opened your Liked Songs on Spotify but couldn't confirm "
                        "it started playing — press play in Spotify.")
                 return {"ok": True, "action": "PLAY_MEDIA", "played": False,
                         "search_only": True, "kind": "liked_songs",
-                        "content": msg, "response": msg}
+                        "content": msg, "response": msg,
+                        "track": _track("spotify", query="Liked Songs", confirmed=False)}
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
@@ -603,18 +623,19 @@ def _spotify_playlist_search(name: str, kind: str) -> Dict[str, Any]:
             _set_now_playing("spotify", f"{name} (playlist)")
             msg = f"Playing {label} on Spotify" + (f" — now: {artist} — {track}." if track else ".")
             return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "kind": kind, "content": msg, "response": msg}
+                    "kind": kind, "content": msg, "response": msg,
+                    "track": _track("spotify", query=name, title=track, artist=artist, confirmed=True)}
         msg = (f"I opened Spotify's playlist results for “{name}” but "
                f"playback didn't start — pick a playlist in Spotify, or "
                f"try a more specific name.")
         return {"ok": True, "action": "PLAY_MEDIA", "played": False,
                 "search_only": True, "kind": kind,
-                "content": msg, "response": msg}
+                "content": msg, "response": msg, "track": _track("spotify", query=name, confirmed=False)}
     msg = (f"I couldn't reach Spotify to play {label} — "
            f"is it installed and running?")
     return {"ok": False, "action": "PLAY_MEDIA", "played": False,
             "search_only": True, "target": "spotify", "kind": kind,
-            "content": msg, "response": msg}
+            "content": msg, "response": msg, "track": _track("spotify", query=name, confirmed=False)}
 
 
 def _spotify_album(asked: Dict[str, Any]) -> Dict[str, Any]:
@@ -640,21 +661,26 @@ def _spotify_album(asked: Dict[str, Any]) -> Dict[str, Any]:
             _set_now_playing("spotify", f"{_album} (album)")
             msg = f"Playing {label} on Spotify."
             return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "kind": "album", "content": msg, "response": msg}
+                    "kind": "album", "content": msg, "response": msg,
+                    "track": _track("spotify", query=asked["search"], title=_album, artist=_album_artist,
+                                    confirmed=True)}
         # Retry play once after album search UI settles
         _time.sleep(1.2)
         if _it_is():
             _set_now_playing("spotify", f"{_album} (album)")
             msg = f"Playing {label} on Spotify."
             return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "kind": "album", "content": msg, "response": msg}
+                    "kind": "album", "content": msg, "response": msg,
+                    "track": _track("spotify", query=asked["search"], title=_album, artist=_album_artist,
+                                    confirmed=True)}
     now = spotify_live_track()
     playing = (f" Spotify is playing “{now['artist']} — {now['title']}”"
                + (f" from {now['album']}" if now["album"] else "") + ", which is not it."
                if now["status"] == "playing" and now["title"] else "")
     msg = f"I couldn't start {label} on Spotify: no track of it began playing.{playing}"
     return {"ok": False, "action": "PLAY_MEDIA", "played": False, "search_only": True,
-            "target": "spotify", "kind": "album", "content": msg, "response": msg}
+            "target": "spotify", "kind": "album", "content": msg, "response": msg,
+            "track": _track("spotify", query=asked["search"], confirmed=False)}
 
 
 def _spotify_play_track(track_q: str) -> Dict[str, Any]:
@@ -685,7 +711,9 @@ def _spotify_play_track_now(track_q: str) -> Dict[str, Any]:
             _set_now_playing("spotify", _np)
             msg = f"Playing “{_np}” on Spotify."
             return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "content": msg, "response": msg}
+                    "content": msg, "response": msg,
+                    "track": _track("spotify", query=_track_q, title=_np_title, artist=_np_artist,
+                                    confirmed=True)}
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     # Then type into Spotify's own search box (X11, or an XWayland window) — open.spotify.com's
@@ -696,7 +724,8 @@ def _spotify_play_track_now(track_q: str) -> Dict[str, Any]:
             _set_now_playing("spotify", _track_q)
             msg = f"Playing “{_track_q}” on Spotify."
             return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "content": msg, "response": msg}
+                    "content": msg, "response": msg,
+                    "track": _track("spotify", query=_track_q, confirmed=True)}
     except Exception:
         log.debug("suppressed exception", exc_info=True)
     # Type-and-play above already launched and waited 8s. If Spotify still
@@ -724,7 +753,8 @@ def _spotify_play_track_now(track_q: str) -> Dict[str, Any]:
             _set_now_playing("spotify", _track_q)
             msg = f"Playing “{_track_q}” on Spotify."
             return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                    "content": msg, "response": msg}
+                    "content": msg, "response": msg,
+                    "track": _track("spotify", query=_track_q, confirmed=True)}
         # The same request played a moment later, live, so it gets a second go before being
         # called a failure.
         try:
@@ -734,7 +764,9 @@ def _spotify_play_track_now(track_q: str) -> Dict[str, Any]:
                 _np = f"{_np_artist} — {_np_title}" if _np_artist and _np_title else _track_q
                 _set_now_playing("spotify", _np)
                 msg = f"Playing “{_np}” on Spotify."
-                return {"ok": True, "action": "PLAY_MEDIA", "played": True, "content": msg, "response": msg}
+                return {"ok": True, "action": "PLAY_MEDIA", "played": True, "content": msg, "response": msg,
+                        "track": _track("spotify", query=_track_q, title=_np_title, artist=_np_artist,
+                                        confirmed=True)}
         except (ImportError, OSError, subprocess.SubprocessError):
             log.debug("second Spotify try failed", exc_info=True)
         _np_head, _np_artist, _np_title = _spotify_live_meta()
@@ -744,17 +776,18 @@ def _spotify_play_track_now(track_q: str) -> Dict[str, Any]:
             msg = (f"Spotify is playing “{_np_artist} — {_np_title}”, not “{_track_q}”. It didn't "
                    f"find that after two tries; say “play {_track_q} on youtube” for YouTube.")
             return {"ok": False, "action": "PLAY_MEDIA", "played": False, "mismatch": True,
-                    "search_only": True, "target": "spotify", "content": msg, "response": msg}
+                    "search_only": True, "target": "spotify", "content": msg, "response": msg,
+                    "track": _track("spotify", query=_track_q, confirmed=False)}
         msg = (f"Spotify didn't start anything for “{_track_q}”: it showed its search results "
                f"but no song began playing, and its media controls didn't respond to play.")
         return {"ok": False, "action": "PLAY_MEDIA", "played": False,
                 "search_only": True, "target": "spotify",
-                "content": msg, "response": msg}
+                "content": msg, "response": msg, "track": _track("spotify", query=_track_q, confirmed=False)}
     msg = (f"I couldn't reach Spotify to play “{_track_q}” — is it installed and "
            f"running? Open it and try again, or say “play {_track_q} on youtube”.")
     return {"ok": False, "action": "PLAY_MEDIA", "played": False,
             "search_only": True, "target": "spotify",
-            "content": msg, "response": msg}
+            "content": msg, "response": msg, "track": _track("spotify", query=_track_q, confirmed=False)}
 
 def play_specific(query: str, target: str | None = None, *, browser: bool = False,
                   kind: str | None = None) -> Dict[str, Any]:
@@ -786,11 +819,12 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
             if msg:
                 return {"ok": True, "action": "PLAY_MEDIA", "played": False,
                         "search_only": True, "target": canon,
-                        "content": msg, "response": msg}
+                        "content": msg, "response": msg, "track": _track(canon, query=query, confirmed=False)}
             label = _streaming_display_name(canon)
             fail = f"Couldn't open {label}."
             return {"ok": False, "action": "PLAY_MEDIA", "played": False,
-                    "target": canon, "content": fail, "response": fail}
+                    "target": canon, "content": fail, "response": fail,
+                    "track": _track(canon, query=query, confirmed=False)}
     except Exception:
         log.debug("[MEDIA] streaming platform dispatch failed", exc_info=True)
 
@@ -845,9 +879,11 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
                 "Close Firefox completely (or set ELI_BROWSER=chromium) and try again."
             )
             return {"ok": False, "action": "PLAY_MEDIA", "played": False,
-                    "target": "youtube", "content": msg, "response": msg}
+                    "target": "youtube", "content": msg, "response": msg,
+                    "track": _track("youtube", query=yt_q, confirmed=False)}
         msg = f"Opening YouTube in browser: {yt_q} (autoplay mix)"
-        return {"ok": True, "action": "PLAY_MEDIA", "content": msg, "response": msg}
+        return {"ok": True, "action": "PLAY_MEDIA", "content": msg, "response": msg,
+                "track": _track("youtube", query=yt_q, confirmed=False)}
 
     # ── 3. YouTube target (plain) or "X by Y" → yt-dlp+mpv ──────────────────
     from eli.integrations.media.spotify_intent import (
@@ -895,8 +931,14 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
                     msg = f"Playing {_what} on YouTube (audio, in the background)."
                 else:
                     msg = f"Playing {_what} on YouTube in mpv — video on screen."
+                # what mpv says it opened (its own title); else the title and artist asked for
+                if isinstance(_resolved, str) and _resolved.strip():
+                    _heard = _track("youtube", query=yt_search, title=_resolved, confirmed=True)
+                else:
+                    _heard = _track("youtube", query=yt_search, title=_by_m.group(1) if _by_m else "",
+                                    artist=_by_m.group(2) if _by_m else "", confirmed=True)
                 return {"ok": True, "action": "PLAY_MEDIA", "played": True,
-                        "content": msg, "response": msg}
+                        "content": msg, "response": msg, "track": _heard}
             if _yt_result.get("pending"):
                 _title = (f"{_by_m.group(1).strip()} by {_by_m.group(2).strip()}"
                           if _by_m else query)
@@ -907,7 +949,8 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
                 msg = (f"Starting {_fallback_what} on YouTube in mpv — it is still resolving, so "
                        f"I have not confirmed playback yet. Ask what's playing in a moment.")
                 return {"ok": True, "action": "PLAY_MEDIA", "played": False,
-                        "pending": True, "content": msg, "response": msg}
+                        "pending": True, "content": msg, "response": msg,
+                        "track": _track("youtube", query=yt_search, confirmed=False)}
             _yt_direct_err = str(_yt_result.get("error") or "mpv could not start playback")
             if _yt_result.get("reason") == "missing_tools":
                 _missing_yt = list(_yt_result.get("missing_tools") or _missing_yt)
@@ -929,6 +972,7 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
             "missing_tools": _missing_yt,
             "content": msg,
             "response": msg,
+            "track": _track("youtube", query=yt_search, confirmed=False),
         }
     # Direct in-app playback needs yt-dlp and mpv. Be honest that this is a fallback, not playback
     # (no-fake-actions), and say what would unlock "play" for this user; an install hint is wrong
@@ -946,12 +990,14 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
                 "Close Firefox or set ELI_BROWSER=chromium, then try again."
             )
             return {"ok": False, "action": "PLAY_MEDIA", "played": False,
-                    "target": "youtube", "content": msg, "response": msg}
+                    "target": "youtube", "content": msg, "response": msg,
+                    "track": _track("youtube", query=yt_search, confirmed=False)}
         _what = (f"'{_by_m.group(1).strip()}' by {_by_m.group(2).strip()}"
                  if _by_m else f"'{query}'")
         msg = f"Opening {_what} in the browser{_play_hint}."
         return {"ok": True, "action": "PLAY_MEDIA", "played": False,
-                "search_only": True, "content": msg, "response": msg}
+                "search_only": True, "content": msg, "response": msg,
+                "track": _track("youtube", query=yt_search, confirmed=False)}
 
     # ── 5. Last resort: YouTube search page ──────────────────────────────────
     encoded = urllib.parse.quote_plus(query)
@@ -961,10 +1007,12 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
             "Close Firefox or set ELI_BROWSER=chromium, then try again."
         )
         return {"ok": False, "action": "PLAY_MEDIA", "played": False,
-                "target": "youtube", "content": msg, "response": msg}
+                "target": "youtube", "content": msg, "response": msg,
+                "track": _track("youtube", query=query, confirmed=False)}
     msg = f"Opening a YouTube search for '{query}' in the browser{_play_hint}."
     return {"ok": True, "action": "PLAY_MEDIA", "played": False,
-            "search_only": True, "content": msg, "response": msg}
+            "search_only": True, "content": msg, "response": msg,
+            "track": _track("youtube", query=query, confirmed=False)}
 
 
 def _playerctl_run(argv):
@@ -1218,7 +1266,8 @@ def now_playing() -> Dict[str, Any]:
         head = "⏸ Paused" if paused is True else "▶ Playing"
         mode = "audio (background)" if _MEDIA_STATE.get("mpv_headless") else "mpv video"
         msg = f"{head}: {title} — YouTube ({mode})."
-        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg,
+                "track": _track("youtube", title=title, confirmed=paused is not True)}
 
     # Windows and macOS have no MPRIS: ask the OS what is playing (eli.integrations.media.system_session)
     from eli.utils import platform_compat as _pc_np
@@ -1230,7 +1279,9 @@ def now_playing() -> Dict[str, Any]:
                 str(_st.get("status")), "▶ Playing")
             meta = f"{_st['artist']} — {_st['title']}" if _st.get("artist") else _st["title"]
             msg = f"{head}: {meta} — {_st.get('player')}."
-            return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+            return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg,
+                    "track": _track(str(_st.get("player") or ""), title=_st["title"], artist=_st.get("artist") or "",
+                                    confirmed=str(_st.get("status")) == "playing")}
 
     # Live playerctl metadata beats the cached _MEDIA_STATE title — the cache
     # stores what we *asked* Spotify to play ("liked songs (playlist)"), not
@@ -1241,12 +1292,15 @@ def now_playing() -> Dict[str, Any]:
         if track:
             meta = f"{artist} — {track}" if artist else track
             msg = f"{head}: {meta} — {_player}."
-            return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+            return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg,
+                    "track": _track(_player, title=track, artist=artist, confirmed=str(head).startswith("▶"))}
 
     if src == "spotify":
-        head = "▶ Playing" if _spotify_is_playing() else "⏸ Paused"
+        playing = _spotify_is_playing()
+        head = "▶ Playing" if playing else "⏸ Paused"
         msg = f"{head}: {title} — Spotify."
-        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
+        return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg,
+                "track": _track("spotify", title=_MEDIA_STATE.get("title") or "", confirmed=playing)}
     msg = "Nothing is playing right now."
     return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
