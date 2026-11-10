@@ -79,7 +79,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from pathlib import Path
-from typing import Optional, Dict, Any, Generator, Union
+from typing import Optional, Dict, Any, Generator, Sequence, Union
 
 from llama_cpp import Llama, LlamaGrammar, LogitsProcessorList
 
@@ -2484,6 +2484,37 @@ def _normalize_call_args(*args, **kwargs):
     rest.pop("model_path", None)
 
     return str(system or ""), str(prompt or ""), rest
+
+
+_LABEL_GRAMMARS: Dict[tuple, Any] = {}
+
+
+def label_grammar(field: str, labels: Sequence[str]):
+    """A GBNF grammar admitting only {"<field>": <one of labels>, "confidence": <number>}: a constrained
+    judgement the decoder cannot answer outside of. Cached; None when the backend has no grammar."""
+    key = (str(field), tuple(labels))
+    if key in _LABEL_GRAMMARS:
+        return _LABEL_GRAMMARS[key]
+    grammar = None
+    try:
+        from llama_cpp import LlamaGrammar
+        alts = " | ".join('"\\"%s\\""' % lab for lab in labels)
+        gbnf = ('root   ::= "{" ws "\\"%s\\":" ws label ws "," ws "\\"confidence\\":" ws number ws "}"\n'
+                'label  ::= %s\n'
+                'number ::= "0" ("." [0-9] [0-9]?)? | "1" (".0")?\n'
+                'ws     ::= " "?\n') % (field, alts)
+        grammar = LlamaGrammar.from_string(gbnf, verbose=False)
+    except (ImportError, ValueError, RuntimeError, OSError, AttributeError) as failure:
+        log.debug("label grammar unavailable: %s", failure)
+    _LABEL_GRAMMARS[key] = grammar
+    return grammar
+
+
+def label_budget(field: str, labels: Sequence[str]) -> int:
+    """The longest answer label_grammar admits, in characters: the most tokens it can take (a token is
+    at least one character), so the call is given exactly the room its answer can need."""
+    longest = max((len(str(lab)) for lab in labels), default=0)
+    return len('{ "%s": "%s" , "confidence": 0.99 }' % (field, "x" * longest))
 
 
 def chat_completion(*args, **kwargs) -> str:

@@ -9,8 +9,9 @@ asks ``reply_verdict``. The complaint (self_claims), redo (action_commitment) an
 """
 from __future__ import annotations
 
+import os
 import re
-from typing import Any
+from typing import Any, Dict, Tuple
 
 # Words that say the last answer was wrong: it answered something not asked, or said what is not so.
 _DISPUTES = (
@@ -110,18 +111,71 @@ META_CAPABILITY_COMPLAINT_RE = re.compile(
 # User correcting ELI's claimed model identity ("you are GLM", "no you are not Ornith").
 # A dispute about which model ELI runs names the model, or is the whole reply ("no you are not").
 # "You are not" anywhere matched before: "...but you are not properly searching for songs" got
-# the runtime-status dump.
-_MODEL_WORDS = (r"(?:glm|qwen\w*|ornith|llama|mistral|claude|gemma|phi|deepseek|gpt\w*|nemotron|"
-                r"(?:the|that|a|this)\s+model|running\s+\w+|loaded|using\s+\w+)")
-MODEL_IDENTITY_DISPUTE_RE = re.compile(
-    rf"\byou(?:'re| are)\s+not\s+(?:\w+\s+){{0,2}}?{_MODEL_WORDS}\b"
-    r"|\byou(?:'re| are)\s+(?:glm|qwen|ornith|llama|mistral|claude)\b"
-    r"|\b(?:wrong model|not ornith|not glm|not qwen)\b"
-    r"|\bcheck(?:\s+the|\s+your)?\s+model\s+again\b"
-    r"|\blook at (?:the|your) model\b"
-    r"|^\W*(?:no\W+)?you(?:'re| are)\s+not\W*$",
-    re.I,
-)
+# the runtime-status dump. The names are every model family ELI knows how to run (the architecture
+# catalogue, eli/cognition/model_identity), the loaded model's own names (its GGUF general.name,
+# basename and architecture) and the names users give models it has had; a fixed list missed every
+# newer family and every fine-tune's name.
+_SEEN_NAMES = ("ornith", "claude", "gpt", "nemotron")
+
+
+def _model_names() -> Tuple[str, ...]:
+    names = set(_SEEN_NAMES)
+    from eli.cognition.model_identity import ARCHITECTURE_TO_FAMILY
+    names |= {re.sub(r"\d+.*$", "", a) or a for a in ARCHITECTURE_TO_FAMILY} | set(ARCHITECTURE_TO_FAMILY.values())
+    names |= _loaded_model_names()
+    return tuple(sorted(n for n in names if n and n.isascii()))
+
+
+_LOADED_NAMES: Dict[str, frozenset] = {}
+
+
+def _loaded_model_names() -> frozenset:
+    """The words of the loaded model's own names in its GGUF header, read once per model file."""
+    try:
+        from eli.cognition import gguf_inference
+        path = gguf_inference.loaded_model_path()
+        if not path:
+            return frozenset()
+        key = f"{path}:{os.path.getmtime(path)}"
+        if key not in _LOADED_NAMES:
+            from eli.cognition.model_load_diagnostics import gguf_metadata
+            meta = gguf_metadata(path) or {}
+            words = set()
+            for field in ("general.name", "general.basename", "general.architecture"):
+                words |= {w for w in re.findall(r"[a-z][a-z]+", str(meta.get(field) or "").lower()) if len(w) > 2}
+            _LOADED_NAMES.clear()
+            _LOADED_NAMES[key] = frozenset(words)
+        return _LOADED_NAMES[key]
+    except Exception:  # noqa: BLE001 - no model to read: the families ELI knows stand
+        return frozenset()
+
+
+def _identity_dispute_re(names: Tuple[str, ...]) -> "re.Pattern":
+    # a name as itself or with its version ("qwen2.5", "phi-4", "gpt-4o"), never inside a longer word
+    alts = "|".join(re.escape(n) + r"(?:[-\d.][\w.-]*)?" for n in names)
+    words = rf"(?:{alts}|(?:the|that|a|this)\s+model|running\s+\w+|loaded|using\s+\w+)"
+    return re.compile(
+        rf"\byou(?:'re| are)\s+not\s+(?:\w+\s+){{0,2}}?{words}\b"
+        rf"|\byou(?:'re| are)\s+(?:{alts})\b"
+        rf"|\b(?:wrong model|not (?:{alts}))\b"
+        r"|\bcheck(?:\s+the|\s+your)?\s+model\s+again\b"
+        r"|\blook at (?:the|your) model\b"
+        r"|^\W*(?:no\W+)?you(?:'re| are)\s+not\W*$",
+        re.I)
+
+
+_DISPUTE_RES: Dict[Tuple[str, ...], "re.Pattern"] = {}
+
+
+def _identity_dispute() -> "re.Pattern":
+    names = _model_names()
+    if names not in _DISPUTE_RES:
+        _DISPUTE_RES.clear()
+        _DISPUTE_RES[names] = _identity_dispute_re(names)
+    return _DISPUTE_RES[names]
+
+
+MODEL_IDENTITY_DISPUTE_RE = _identity_dispute_re(_model_names())
 
 # The user saying what ELI said of them is not so.
 _BIOGRAPHICAL_DISPUTES = (
@@ -333,7 +387,7 @@ def is_correction_query(text: str) -> bool:
         return True
     if META_CAPABILITY_COMPLAINT_RE.search(s):
         return True
-    if MODEL_IDENTITY_DISPUTE_RE.search(s):
+    if _identity_dispute().search(s):
         return True
     if TEMPORAL_CORRECTION_RE.search(s) and re.search(
         r"\b(?:you|eli|wrong|not|can(?:'t| not)|cannot)\b", s, re.I
@@ -375,7 +429,7 @@ def is_codebase_health_query(text: str) -> bool:
 
 
 def is_model_identity_dispute(text: str) -> bool:
-    return bool(MODEL_IDENTITY_DISPUTE_RE.search(str(text or "")))
+    return bool(_identity_dispute().search(str(text or "")))
 
 
 def is_biographical_dispute(text: str) -> bool:
@@ -480,7 +534,7 @@ def reply_verdict(text: str) -> str:
     s = str(text or "")
     if not s.strip():
         return NONE
-    if (is_answer_correction(s) or MODEL_IDENTITY_DISPUTE_RE.search(s)
+    if (is_answer_correction(s) or _identity_dispute().search(s)
             or (TEMPORAL_CORRECTION_RE.search(s) and re.search(r"\b(?:you|eli|wrong|not)\b", s, re.I))):
         return CORRECTION
     if is_redo_directive(s):
@@ -496,3 +550,83 @@ def reply_verdict(text: str) -> str:
 def rejects_reply(text: str) -> bool:
     """The message says the last reply was wrong, or not done, or not done well."""
     return reply_verdict(text) in (CORRECTION, REDO, COMPLAINT)
+
+
+# ── the next message judged against the reply, by ELI's own model ────────────────────────────────
+# What ELI learns from (the reply's chance, the route, the memories and claims it rested on) is settled
+# by what the user's next message says of the last reply. The words above are cues, not a reading: the
+# local model reads the message against the reply it answers, held by a grammar to one of three labels
+# and a confidence, with the cues given as evidence. With no model loaded, the cues decide alone.
+DISPUTES, ACCEPTS, NEITHER = "disputes", "accepts", "neither"
+LABELS = (DISPUTES, ACCEPTS, NEITHER)
+_FROM_WORDS = {CORRECTION: DISPUTES, ENDORSEMENT: ACCEPTS}
+
+_JUDGE_SYSTEM = (
+    "You judge what a user's message says of the assistant's previous reply. Answer with one label. "
+    "disputes: the message says the reply was wrong, untrue, or answered something that was not asked. "
+    "accepts: the message says the reply was right or did what was wanted. "
+    "neither: anything else, such as a new request, a change of subject, the user's own news, a follow-up "
+    "question, or a complaint about how something was done that does not say the reply was wrong. "
+    "Give your confidence in the label from 0 to 1. Output one JSON object.")
+
+
+def judge_reply(message: str, reply: str = "", asked: str = "", *, ask=None) -> dict:
+    """What `message` says of the reply ELI gave to `asked`: {"label": disputes | accepts | neither,
+    "confidence" (the model's, None from the cues alone), "by": "model" | "words", "words": the cue
+    reading (reply_verdict)}. `ask(prompt, system, grammar)` is the model call (local_judge()); with
+    none, or an answer outside the labels, the cues decide (a correction disputes, an endorsement
+    accepts, anything else is neither)."""
+    words = reply_verdict(message)
+    fallback = {"label": _FROM_WORDS.get(words, NEITHER), "confidence": None, "by": "words", "words": words}
+    if ask is None or not str(message or "").strip():
+        return fallback
+    def _prompt(said: str) -> str:
+        return (f'THE USER HAD ASKED: "{asked or ""}"\nTHE ASSISTANT REPLIED: "{said}"\n'
+                f'THE USER\'S NEXT MESSAGE: "{message}"\nWord cues (not a verdict): {words}.\nJSON:')
+    said = str(reply or "")
+    room = int(getattr(ask, "room_chars", 0) or 0)
+    over = len(_prompt(said)) + len(_JUDGE_SYSTEM) - room if room else 0
+    if over > 0:      # the window the model loaded cannot hold the whole reply: its start and its end
+        gap = " … "
+        keep = max(0, len(said) - over - len(gap))
+        said = said[:keep // 2] + gap + said[len(said) - keep // 2:] if keep else ""
+    prompt = _prompt(said)
+    try:
+        from eli.cognition.gguf_inference import label_grammar
+        raw = ask(prompt, _JUDGE_SYSTEM, label_grammar("label", LABELS))
+        found = re.search(r"\{.*\}", str(raw or ""), re.S)
+        import json as _json
+        parsed = _json.loads(found.group()) if found else {}
+        label = str(parsed.get("label") or "").strip().lower()
+        confidence = max(0.0, min(1.0, float(parsed.get("confidence"))))
+    except Exception:  # noqa: BLE001 - an unusable answer: the cues decide
+        return fallback
+    if label not in LABELS:
+        return fallback
+    return {"label": label, "confidence": confidence, "by": "model", "words": words}
+
+
+def local_judge():
+    """The model call judge_reply uses: ELI's loaded local model, held by the grammar, as background
+    work (eli/cognition/gguf_inference); None when no model is loaded."""
+    try:
+        from eli.cognition.inference_broker import get_inference_broker
+        broker = get_inference_broker()
+        if broker is None or not broker.gguf_ready:
+            return None
+        from eli.cognition import gguf_inference
+    except Exception:  # noqa: BLE001 - no model to be had: the cues decide
+        return None
+
+    budget = gguf_inference.label_budget("label", LABELS)
+
+    def ask(prompt: str, system: str, grammar) -> str:
+        kwargs = {"grammar": grammar} if grammar is not None else {}
+        return gguf_inference.chat_completion(prompt, system=system, temperature=0.0, max_tokens=budget, **kwargs)
+    try:      # what the loaded window holds beside the answer, in characters
+        from eli.cognition.context_budget import chars_per_token
+        window = gguf_inference._loaded_ctx(getattr(gguf_inference, "_llm", None))
+        ask.room_chars = int(max(0, window - budget) * chars_per_token()) if window else 0
+    except Exception:  # noqa: BLE001 - the window unknown: the backend fits the call itself
+        ask.room_chars = 0
+    return ask

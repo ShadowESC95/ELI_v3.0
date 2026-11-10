@@ -96,3 +96,16 @@ def test_what_eli_said_about_itself_is_not_about_the_user():
     assert not _said_about_the_user(
         "Feels like I've had a bit more caffeine than usual. What's on your agenda for the evening?")
     assert _said_about_the_user("You mentioned feeling groggy earlier, and you said you slept badly.")
+
+
+def test_a_dispute_about_the_model_names_any_family_eli_runs_and_the_loaded_models_own_name(monkeypatch):
+    """The dispute words were a fixed list of model families, so a newer family or a fine-tune's
+    name was never read as a dispute of which model ELI runs."""
+    from eli.cognition import correction_patterns as cp
+    assert cp.is_model_identity_dispute("you are not smollm")
+    assert cp.is_model_identity_dispute("no, you're not starcoder2")
+    assert not cp.is_model_identity_dispute("you are not a philosopher, just answer")
+    assert not cp.is_model_identity_dispute("you're not properly searching for songs")
+    monkeypatch.setattr(cp, "_loaded_model_names", lambda: frozenset({"harbourwright"}))
+    assert cp.is_model_identity_dispute("you are not harbourwright, check the model again")
+    assert cp.reply_verdict("you're not harbourwright") == cp.CORRECTION

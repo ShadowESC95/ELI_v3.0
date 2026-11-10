@@ -6131,6 +6131,11 @@ def _action_post_dispatch(
                                   else "nothing has worked instead yet")),
                          subject=str(_advice.get("subject") or ""), request_id=_rid,
                          ref=f"action:{_rid}:{str(action or '').upper()}", user_id=str(_rc_t.user_id_var.get() or ""))
+                if _attempt:
+                    # what was tried is settled by what came of it; advice given is settled by the next turn
+                    from eli.cognition.thoughts import settle as _settle_thought
+                    _settle_thought(f"action:{_rid}:{str(action or '').upper()}", "done" if _worked else "wrong",
+                                    how=f"{_ao.plain(_attempt['action'])} {'worked' if _worked else 'failed too'}")
             except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                 log.debug("action thought not kept", exc_info=True)
             if isinstance(_instead, dict):
@@ -9301,6 +9306,20 @@ def _eli_install_recording(inner):
         under_way = _ELI_RUNS_UNDER_WAY.get()
         if key in under_way:
             return inner(action, args, *pargs, **kwargs)
+        # lever proven_first (eli/runtime/lessons.py): an action shown to work less often than the rest,
+        # with an alternative proven for this very thing, runs the alternative first; when that does not
+        # work, the action asked for runs as it would have
+        try:
+            from eli.runtime.action_outcomes import first_choice
+            first = first_choice(name, merged)
+        except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
+            log.debug("proven-first choice unavailable", exc_info=True)
+            first = None
+        if first:
+            done = execute(first["action"], first["args"])
+            from eli.runtime.evidence_ledger import execution_outcome as _outcome_of
+            if isinstance(done, dict) and _outcome_of(done) == "ok":
+                return dict(done, instead_of=name, proven_first=True)
         token = _ELI_RUNS_UNDER_WAY.set(under_way | {key})
         told = _lessons_for_the_run(name, merged)
         started = time.time()

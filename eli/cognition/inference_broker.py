@@ -183,6 +183,52 @@ def foreground_recently_active(window: Optional[float] = None) -> bool:
         return False
 
 
+# Work that needs the model but must never hold a turn up (judging what the user's message said of the
+# last reply): one worker runs it, in the context it was handed over in, once the foreground has been
+# quiet for the owner's usual pause (background_defer_window), as background inference a turn preempts.
+_idle_jobs: Any = None
+_idle_lock = threading.Lock()
+
+
+def when_idle(fn) -> None:
+    """Run `fn()` on ELI's one background worker once no foreground turn is active. The caller's
+    contextvars travel with it (the turn's user and session), and its generations are marked
+    background, so a turn that starts meanwhile takes the model first."""
+    global _idle_jobs
+    import contextvars
+    import queue
+    with _idle_lock:
+        if _idle_jobs is None:
+            _idle_jobs = queue.Queue()
+            threading.Thread(target=_idle_worker, name="eli-when-idle", daemon=True).start()
+    _idle_jobs.put((contextvars.copy_context(), fn))
+
+
+def _idle_worker() -> None:
+    while True:
+        ctx, fn = _idle_jobs.get()
+        try:
+            while foreground_recently_active(background_defer_window()):
+                # wait out the owner's pause (or, with the wait turned off, as long as the last turn took)
+                _time.sleep(max(background_defer_window(), float(_last_foreground_duration)) or BASE_WINDOW_S)
+            ctx.run(_run_in_background, fn)
+        except Exception:
+            log.debug("idle-time work failed", exc_info=True)
+
+
+def _run_in_background(fn) -> None:
+    try:
+        from eli.cognition import gguf_inference as gi
+        gi.set_background_inference(True)
+    except ImportError:
+        gi = None
+    try:
+        fn()
+    finally:
+        if gi is not None:
+            gi.set_background_inference(False)
+
+
 def get_inference_broker() -> Optional["InferenceBroker"]:
     global _broker
     if _broker is not None:

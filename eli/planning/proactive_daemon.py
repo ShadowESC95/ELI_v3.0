@@ -1067,6 +1067,17 @@ Date: {datetime.now().strftime("%A %B %d %H:%M")} | Interactions last 24h: {inte
                     patterns = self.analyze_user_patterns()
                     improvements = self.analyze_code_quality()
 
+                    # ELI's changes to its own parts: each lever on trial judged, kept ones checked, at
+                    # most one new lesson opened for the part its outcomes flag most strongly
+                    try:
+                        from eli.runtime import lessons as _lessons
+                        _reviewed = _lessons.review()
+                        if any(_reviewed.get(k) for k in ("opened", "kept", "reverted", "lifted", "released", "closed")):
+                            log.info("[PROACTIVE] lessons reviewed: %s", _reviewed)
+                    except (OSError, ValueError, TypeError, KeyError, AttributeError, ImportError,
+                            RuntimeError, sqlite3.Error) as _lessons_err:
+                        log.warning(f"[PROACTIVE] lessons review failed: {_lessons_err}")
+
                     # Background-synthesise the reflection insight (gated on a resident
                     # model + throttled to 30 min inside refresh_insight) so the reflection
                     # + proactive agents surface real synthesis with zero per-turn latency.

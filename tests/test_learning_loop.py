@@ -460,3 +460,62 @@ def test_a_thought_in_the_feed_says_what_it_is_about(db):
               ref="action:r1:OPEN_APP", now=1_800_000_000.0)
     [fed] = th.for_feed(5)
     assert fed["subject"] == "OPEN_APP" and fed["ref"] == "action:r1:OPEN_APP", "a body can tie it to what it is about"
+
+
+# ── the next message judged by ELI's own model ─────────────────────────────────────────────────────
+
+def test_the_next_message_is_judged_by_the_local_model_with_the_word_cues_as_evidence():
+    """Whether a reply was right was settled by regex alone: 'you misunderstood me' was a correction
+    to one list and nothing to another. The local model reads the message against the reply, held
+    to a label, with the cues as evidence; with no model, the cues decide."""
+    from eli.cognition import correction_patterns as cp
+    seen = []
+
+    def ask(prompt, system, grammar):
+        seen.append(prompt)
+        return '{"label": "disputes", "confidence": 0.86}'
+    out = cp.judge_reply("hmm, that was the other harbour", "The ferry leaves from the north quay.",
+                         "where does the ferry leave from", ask=ask)
+    assert out == {"label": "disputes", "confidence": 0.86, "by": "model", "words": "none"}
+    assert "north quay" in seen[0] and "other harbour" in seen[0] and "Word cues" in seen[0]
+    assert cp.judge_reply("thanks, spot on")["label"] == "accepts", "no model: the cues decide"
+    assert cp.judge_reply("what is the weather like")["label"] == "neither"
+    off = cp.judge_reply("thanks", "x", "y", ask=lambda *a: '{"label": "maybe", "confidence": 2}')
+    assert off["by"] == "words" and off["label"] == "accepts", "an answer outside the labels is not taken"
+
+
+def test_a_reply_too_long_for_the_window_is_kept_by_its_start_and_end():
+    from eli.cognition import correction_patterns as cp
+    seen = []
+
+    def ask(prompt, system, grammar):
+        seen.append(prompt)
+        return '{"label": "neither", "confidence": 0.5}'
+    ask.room_chars = 900
+    reply = "START " + "middle " * 400 + " END"
+    cp.judge_reply("ok and the next one?", reply, "q", ask=ask)
+    assert "START" in seen[0] and "END" in seen[0] and len(seen[0]) + len(cp._JUDGE_SYSTEM) <= 900
+
+
+def test_settling_by_the_models_label_waits_for_the_owner_and_a_change_of_subject_helps_nothing(db, monkeypatch):
+    """With a model loaded the judgement runs when the foreground is idle, never on the turn; and a
+    change of subject no longer counts the memories shown to the reply as of use."""
+    from eli.cognition import correction_patterns as cp
+    from eli.cognition import inference_broker as ib
+    from eli.kernel.engine import CognitiveEngine
+    queued = []
+    monkeypatch.setattr(ib, "when_idle", lambda fn: queued.append(fn))
+    monkeypatch.setattr(cp, "local_judge", lambda: (lambda p, s, g: '{"label": "accepts", "confidence": 0.9}'))
+    helped = []
+    ep.assess(ep.ANSWER, 0.8, request_id="req-m", db_path=db)
+    fake = _engine(_pending_assessment="req-m", _pending_recall_ids=[3], _pending_reply="It is the north quay.",
+                   memory=SimpleNamespace(record_recall_outcome=lambda ids, helped=True, out=helped: out.append(helped)))
+    CognitiveEngine._settle_recall_outcome(fake, "lovely, cheers", "user")
+    assert ep.outcomes(ep.ANSWER, db_path=db) == [] and len(queued) == 1, "nothing settled on the turn"
+    queued[0]()
+    assert [y for _s, y, _f in ep.outcomes(ep.ANSWER, db_path=db)] == [1.0] and helped == [True]
+    monkeypatch.setattr(cp, "local_judge", lambda: None)
+    fake = _engine(_pending_recall_ids=[4], memory=SimpleNamespace(
+        record_recall_outcome=lambda ids, helped=True, out=helped: out.append(("moved on", helped))))
+    CognitiveEngine._settle_recall_outcome(fake, "what is the weather like tomorrow", "user")
+    assert helped == [True], "moving on is not help"
