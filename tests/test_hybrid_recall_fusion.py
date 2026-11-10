@@ -149,3 +149,84 @@ def test_an_index_entry_whose_id_now_belongs_to_another_memory_is_not_recalled(t
     monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: index)
     vector = [h["text"] for h in mem.search_memory("does the shed roof leak", limit=5) if "vector" in h.get("_channels", ())]
     assert vector == []
+
+
+# ── one ranking: relevance first, priors among the equally relevant ─────────────────────────────
+
+def _quiet_memory(tmp_path, monkeypatch):
+    from eli.memory.memory import Memory
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: None)
+    return Memory(db_path=str(tmp_path / "user.sqlite3"))
+
+
+def test_the_memory_holding_every_word_asked_comes_before_important_one_word_matches(tmp_path, monkeypatch):
+    """recall_memory fused the channels by rank, then sorted by importance and recency and cut to the
+    limit: the limit went to the most important rows, not the most relevant."""
+    mem = _quiet_memory(tmp_path, monkeypatch)
+    for i in range(6):
+        mem.store_memory(f"the red door on the {i}th floor", source="eli", importance=0.95)
+    mem.store_memory("my red bicycle needs a repair before the race", source="eli", importance=0.3)
+    got = mem.recall_memory("red bicycle repair", limit=3)
+    assert got[0]["text"] == "my red bicycle needs a repair before the race", [h["text"] for h in got]
+
+
+def test_the_keyword_channel_ranks_by_match_not_by_importance(tmp_path, monkeypatch):
+    """The FTS5 channel ordered matches by importance*0.6 + time and cut to the limit: the most
+    important row holding any one word came first, never the best match (BM25)."""
+    mem = _quiet_memory(tmp_path, monkeypatch)
+    for i in range(12):
+        mem.store_memory(f"red paint sample number {i}", source="eli", importance=0.9)
+    best = mem.store_memory("the red bicycle repair kit is in the shed", source="eli", importance=0.2)["id"]
+    keyword = [h for h in mem.recall_memory("red bicycle repair", limit=3) if "keyword" in h.get("_channels", ())]
+    assert keyword and keyword[0]["id"] == best
+
+
+def test_a_vector_hit_carries_its_own_importance_not_its_similarity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from eli.memory.memory import Memory
+    mem = Memory(db_path=str(tmp_path / "user.sqlite3"))
+    rowid = mem.store_memory("the canal path floods in spring", source="eli", importance=0.2)["id"]
+    index = SimpleNamespace(_index=SimpleNamespace(ntotal=1), search=lambda q, top_k=5: [
+        {"memory_id": rowid, "text": "the canal path floods in spring", "score": 0.93}])
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: index)
+    hit = next(h for h in mem.recall_memory("does the towpath flood", limit=3) if h.get("id") == rowid)
+    assert hit["importance"] == pytest.approx(0.2) and hit["_similarity"] == pytest.approx(0.93)
+    assert "vector" in hit["_channels"] and hit["_channels_ran"] == ["keyword", "vector"]
+
+
+def test_a_question_with_name_in_it_is_not_flooded_with_every_semantic_fact(tmp_path, monkeypatch):
+    """Any query with "name" or "user" in it put every semantic row first, lowest confidence first."""
+    mem = _quiet_memory(tmp_path, monkeypatch)
+    conn = mem._get_connection()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS semantic (id INTEGER PRIMARY KEY, fact TEXT, tags TEXT, "
+                     "confidence REAL, created_at REAL, user_id TEXT DEFAULT '')")
+        for i in range(15):
+            conn.execute("INSERT INTO semantic (fact, tags, confidence, created_at) VALUES (?, '', ?, 0)",
+                         (f"user fact number {i} about gardening", 0.5 + i / 100))
+        conn.commit()
+    finally:
+        conn.close()
+    film = mem.store_memory("I loved the film Arrival", source="conversation")["id"]
+    got = mem.recall_memory("what was the name of the film I loved", limit=5)
+    assert got and got[0]["id"] == film and not any(str(h.get("id", "")).startswith("sem:") for h in got)
+    about = mem.recall_memory("what do you know about me", limit=20)
+    assert sum(str(h.get("id", "")).startswith("sem:") for h in about) == 15, "a question about the user still reads them"
+
+
+def test_a_restated_memory_keeps_the_date_it_was_first_said(tmp_path, monkeypatch):
+    import sqlite3
+    import time as _time
+    mem = _quiet_memory(tmp_path, monkeypatch)
+    first = mem.store_memory("I adopted a cat called Pebble", source="conversation")["id"]
+    said = _time.time() - 20 * 86400
+    conn = sqlite3.connect(mem.db_path)
+    conn.execute("UPDATE memories SET ts = ?, timestamp = ?, event_ts = ?, last_seen = ? WHERE id = ?",
+                 (said, said, said, said, first))
+    conn.commit()
+    conn.close()
+    again = mem.store_memory("I adopted a cat called Pebble", source="conversation")
+    assert again["id"] == first and again["deduplicated"]
+    hit = next(h for h in mem.recall_memory("cat Pebble", limit=3) if h.get("id") == first)
+    from eli.cognition.evidence_format import row_time
+    assert abs(row_time(hit) - said) < 1.0, "dated when it was first said, not when it was said again"

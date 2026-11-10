@@ -40,10 +40,10 @@ def split_verified_evidence_packet(text: str) -> Tuple[str, str]:
 def _normalize_hit(hit: Dict[str, Any], *, default_source: str) -> Dict[str, Any]:
     text = (hit.get("text") or hit.get("content") or "").strip()
     src = str(hit.get("_source") or default_source or "fts").lower()
-    # the recall's own ranking (how readily the row came to mind, eli/memory/policy) before the
-    # stored weight, which only decides what is kept
-    score = float(hit.get("_rank_score") or hit.get("accessibility") or hit.get("weight")
-                  or hit.get("importance") or hit.get("score") or 0.5)
+    # as the one ranking left it (eli/cognition/reranker.hit_score): the stored weight only decides
+    # what is kept
+    from eli.cognition.reranker import hit_score
+    score = hit_score(hit)
     return {
         "source": "fts5" if src in ("fts", "like") else "vector" if src == "vector" else src,
         "score": score,
@@ -55,7 +55,9 @@ def _normalize_hit(hit: Dict[str, Any], *, default_source: str) -> Dict[str, Any
 
 def _row_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     """The fields ranking and dating read from the top level of a hit."""
-    return {k: row[k] for k in ("id", "ts", "timestamp", "event_ts", "importance", "weight", "origin", "role")
+    return {k: row[k] for k in ("id", "ts", "timestamp", "event_ts", "importance", "weight", "origin", "role",
+                                "accessibility", "chance", "_channels", "_channels_ran", "rrf_score",
+                                "rerank_score", "recall_chance")
             if row.get(k) is not None}
 
 
@@ -136,9 +138,9 @@ def orchestrator_retrieve(
             continue
         role = str(h.get("role") or "?")
         prefix = "User said: " if role == "user" else "Assistant said: "
+        # scored as every hit is, by the one ranking (eli/cognition/reranker), not a fixed figure
         semantic_hits.append({
             "source": "conversation",
-            "score": 0.85,
             "text": f"{prefix}{text}",
             "meta": dict(h),
             **_row_fields(h),

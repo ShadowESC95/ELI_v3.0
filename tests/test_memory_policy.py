@@ -192,10 +192,17 @@ def test_how_alike_two_memories_are():
     assert jaccard({"a"}, set()) == 0.0 and jaccard({"x", "y"}, {"x", "y"}) == 1.0
 
 
-def test_the_chance_of_coming_to_mind_is_read_off_the_set():
+def test_the_chance_of_coming_to_mind_is_on_actrs_own_scale_not_the_sets():
+    """retrievable() z-scored against the set: two candidates were always 0.27 and 0.73 whether their
+    activations differed by 0.001 or 10. On ACT-R's fixed scale a near-tie is a near-tie."""
     chances = P.retrievable([3.0, 1.0, -1.0])
-    assert chances[0] > chances[1] > chances[2] and chances[1] == pytest.approx(0.5)
-    assert P.retrievable([1.0, 1.0]) == [0.5, 0.5] and P.retrievable([-math.inf]) == [0.0]
+    assert chances[0] > chances[1] > chances[2]
+    assert P.retrievable([P.ACTR_THRESHOLD]) == [0.5], "at the threshold: half the time"
+    close = P.retrievable([0.0, 0.001])
+    far = P.retrievable([0.0, 10.0])
+    assert close[1] - close[0] < 0.01 and far[1] - far[0] > 0.4
+    assert P.retrievable([1.0]) == P.retrievable([1.0, -5.0])[:1], "a memory's chance is its own, not its rank"
+    assert P.retrievable([-math.inf]) == [0.0]
 
 
 def test_how_sure_a_claim_is_from_what_bore_it_out():
@@ -206,11 +213,15 @@ def test_how_sure_a_claim_is_from_what_bore_it_out():
     assert users_word > 0.5 > inference, "the user's own word contradicted by an inference stays ahead of it"
 
 
-def test_unified_retrieval_scores_a_hit_by_how_readily_it_came_to_mind_not_its_stored_weight():
+def test_unified_retrieval_scores_a_hit_as_the_one_ranking_left_it():
+    """One reading of a ranked hit's score (reranker.hit_score): the fitted chance of use, else the
+    ranking's relevance; the stored weight (how long a row is kept) is no score."""
     from eli.memory.unified_retrieval import _normalize_hit
-    ranked = _normalize_hit({"text": "x", "weight": 1.8, "_rank_score": 0.35, "accessibility": 0.4}, default_source="fts")
+    fitted = _normalize_hit({"text": "x", "weight": 1.8, "rerank_score": 0.35, "recall_chance": 0.6}, default_source="fts")
+    assert fitted["score"] == pytest.approx(0.6)
+    ranked = _normalize_hit({"text": "x", "weight": 1.8, "rerank_score": 0.35, "accessibility": 0.4}, default_source="fts")
     assert ranked["score"] == pytest.approx(0.35)
-    recalled = _normalize_hit({"text": "x", "weight": 1.8, "accessibility": 0.4}, default_source="fts")
-    assert recalled["score"] == pytest.approx(0.4)
-    kept_only = _normalize_hit({"text": "x", "weight": 1.8}, default_source="fts")
-    assert kept_only["score"] == pytest.approx(1.8), "with no recall figure, what there is"
+    for name in ("_channels", "_channels_ran", "accessibility", "rrf_score", "rerank_score"):
+        assert name in _normalize_hit({"text": "x", "_channels": ["vector"], "_channels_ran": ["vector"],
+                                       "accessibility": 0.4, "rrf_score": 0.01, "rerank_score": 0.35},
+                                      default_source="vector"), "what the later ranking reads stays on the hit"

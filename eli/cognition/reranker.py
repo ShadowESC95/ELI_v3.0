@@ -3,12 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Iterable, List
 
-# Canonical text + recency primitives (one owner — no bespoke stopwords/tokeniser here).
-from eli.cognition.scoring import (
-    tokenize as _tok, recency_score as _recency_score, relevance_gate as _relevance_gate,
-    RERANK_W_OVERLAP as _W_OVERLAP, RERANK_W_IMPORTANCE as _W_IMPORTANCE,
-    RERANK_W_WEIGHT as _W_WEIGHT, RERANK_W_RECENCY as _W_RECENCY,
-)
+# Canonical text primitives (one owner — no bespoke stopwords/tokeniser here).
+from eli.cognition.scoring import tokenize as _tok
 
 
 def _as_float(v: Any, default: float = 0.0) -> float:
@@ -73,6 +69,8 @@ def fuse_ranked_lists(lists: "dict[str, list]", *, k: int = RRF_K,
                 if slot["candidate"].get(field) in (None, "", []):
                     slot["candidate"][field] = value
 
+    # the retrievers that ran: a hit's agreement is the share of these that found it (relevance)
+    ran = sorted(name for name, items in (lists or {}).items() if items is not None)
     out = []
     for slot in fused.values():
         row = dict(slot["candidate"])
@@ -81,19 +79,92 @@ def fuse_ranked_lists(lists: "dict[str, list]", *, k: int = RRF_K,
         row["rrf_score"] = round(slot["rrf"], 9)
         row["_channels"] = sorted(set(slot["channels"]))
         row["_channel_ranks"] = slot["ranks"]
+        row["_channels_ran"] = ran
         out.append(row)
     out.sort(key=lambda r: r.get("rrf_score", 0.0), reverse=True)
     return out
 
 
+# The retrievers Memory.recall_memory runs. A hit that does not say which ran (a caller's own list)
+# is read against these, with any channel it names.
+RETRIEVERS = ("vector", "keyword")
+
+
+def _get(hit: Dict[str, Any], name: str, default: Any = None) -> Any:
+    """A field of the hit, or of the row it was made from (a normalised hit keeps it under meta)."""
+    if hit.get(name) is not None:
+        return hit.get(name)
+    meta = hit.get("meta")
+    return meta.get(name, default) if isinstance(meta, dict) and meta.get(name) is not None else default
+
+
+def agreement(hit: Dict[str, Any]) -> float:
+    """How strongly the retrievers that ran agree on the hit, 0..1: its RRF over the best a hit can
+    have (first in every one of them); with no RRF, the share of them that found it."""
+    found = set(_get(hit, "_channels") or ())
+    ran = set(_get(hit, "_channels_ran") or ()) or (set(RETRIEVERS) | found)
+    if not ran:
+        return 0.0
+    rrf = _as_float(_get(hit, "rrf_score", 0.0), 0.0)
+    if rrf > 0.0:
+        return min(1.0, rrf / (len(ran) / (RRF_K + 1)))
+    return len(found & ran) / len(ran)
+
+
+def relevance(hit: Dict[str, Any], query_tokens: Iterable[str]) -> float:
+    """How well a hit answers the question, 0..1, in the units it is measured in: the share of the
+    question's content words it holds (coverage), and among the words it does not hold, the
+    retrievers' agreement on it counted as at most one word more:
+
+        relevance = coverage + (1 - coverage) * agreement / (words in the question + 1)
+
+    So holding more of what was asked always comes first (a retriever's confidence never beats what
+    the user said), and agreement orders what holds the same. A row found by the period the question
+    asked about (Memory.memories_between, _source "window") is relevant by being in it."""
+    source = str(_get(hit, "source") or _get(hit, "_source") or _get(hit, "kind") or "").lower()
+    if source == "window":
+        return 1.0
+    q = set(query_tokens or ())
+    text = str(hit.get("text") or hit.get("content") or "")
+    coverage = (len(q & set(_tok(text))) / len(q)) if q else 0.0
+    return coverage + (1.0 - coverage) * agreement(hit) / (len(q) + 1)
+
+
+def prior(hit: Dict[str, Any]) -> float:
+    """How likely the hit is wanted, and right, before the question is read: how readily it comes to
+    mind (eli/memory/policy.retrievable, from its faded uses, its importance and who said it) or, for
+    a row the recall did not measure, its importance; times the chance it is right where one is given
+    (a claim's, eli/memory/claims.chance). 0.5 for a hit nothing is known of."""
+    p = _get(hit, "accessibility")
+    if p is None:
+        p = _get(hit, "importance", 0.5)
+    chance = _get(hit, "chance")
+    return max(0.0, min(1.0, _as_float(p, 0.5) * (_as_float(chance, 1.0) if chance is not None else 1.0)))
+
+
+def hit_score(hit: Dict[str, Any]) -> float:
+    """One hit's score as the ranking left it: the chance it is of use where the outcomes have fitted
+    one, else its relevance (rerank_candidates). The one reading for every consumer of a ranked hit."""
+    for name in ("recall_chance", "rerank_score"):
+        value = _get(hit, name)
+        if value is not None:
+            return _as_float(value, 0.0)
+    return _as_float(_get(hit, "score", 0.5), 0.5)
+
+
 def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: int = 8) -> List[Dict[str, Any]]:
-    """
-    Dependency-free fallback reranker.
-    This is not a true cross-encoder yet, but it gives Stage 9 a real owner and
-    a clean upgrade point later.
-    """
+    """The one ranking of recalled evidence (memories, claims, turns, archive rows): relevance first,
+    what is known of the hit before the question as its prior.
+
+    Before any outcome is known the order is relevance (relevance()), and among hits equally relevant
+    the number of retrievers that found each, then how likely each is wanted and right (prior()),
+    then the retrievers' own ranks. Once the next turns
+    have said which memories shown went into answers that were endorsed or corrected, the chance a
+    hit is of use, fitted on those outcomes (eli/cognition/epistemics, kind recall: the relevance's
+    logit with how readily it came to mind, its importance, how much of the question it holds and
+    whether more than one retriever found it), decides the order: the weight the priors get is
+    learned, never set by hand. Nothing below is a hand-set weight."""
     q_toks = set(_tok(query))
-    now = time.time()
     out: list[dict] = []
     seen: set[str] = set()
 
@@ -112,92 +183,37 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
 
         t_toks = set(_tok(text))
         overlap = (len(q_toks & t_toks) / max(1, len(q_toks))) if q_toks else 0.0
-
-        importance = _as_float(c.get("importance", 0.5), 0.5)
-        weight = _as_float(c.get("weight", 0.5), 0.5)
-        ts = _as_float(c.get("ts", c.get("timestamp", 0)), 0.0)
-        recency = _recency_score(ts, now=now, window_days=30.0)
-
-        source = str(c.get("source") or c.get("_source") or c.get("kind") or "").lower()
-        source_bonus = 0.0
-        if source in ("semantic", "knowledge_graph", "kg"):
-            source_bonus += 0.15
-        if source in ("vector", "fts", "like", "window"):
-            source_bonus += 0.05
-
-        rrf = _as_float(c.get("rrf_score", 0.0), 0.0)
-        channels = c.get("_channels") or []
-        # memories_between() (the explicit date/time-window path a question like "what happened
-        # in the past 7 days" goes through) tags its rows _source="window" and sets neither
-        # _channels nor rrf_score — those only exist on keyword/semantic hits. Being inside the
-        # exact window the user asked about IS the relevance signal for this candidate; it must
-        # not be treated as "no retriever vouched for this" and crushed by the gate below.
-        _window_sourced = source == "window"
-
-        # Importance and recency are real quality signals, but on their own (0.20 + 0.10, plus
-        # 0.15 for weight) they can equal or beat the overlap term's full weight (0.45) — a
-        # memory saved with "please remember this" (importance 0.98) was outranking memories
-        # that actually matched a vague "summarize the week" query, because it had nothing to
-        # do with the query but was maximally important and recent. One incidental shared word
-        # ("...in what kind of memory" matching a query about "check your memory logs") is not
-        # a real topical match — it cleared an `overlap > 0` gate that was tried first and did
-        # nothing, so this needs an actual minimum, not just non-zero. Gate the importance/
-        # weight/recency credit on some sign a retriever found this genuinely related to THIS
-        # query — real lexical overlap, or at least a retrieval channel hit — not just that it
-        # is generally salient.
-        relevance_gate = _relevance_gate(overlap, strong_signal=_window_sourced, weak_signal=bool(rrf or channels))
-        accessibility = c.get("accessibility")
-        if accessibility is not None:
-            # how readily it comes to mind (eli/memory/policy.py) carries strength and recency both
-            quality = importance * _W_IMPORTANCE + _as_float(accessibility, 0.0) * (_W_WEIGHT + _W_RECENCY)
-        else:
-            quality = (
-                importance * _W_IMPORTANCE
-                + min(weight, 2.0) / 2.0 * _W_WEIGHT
-                + recency * _W_RECENCY
-            )
-        score = overlap * _W_OVERLAP + relevance_gate * quality + source_bonus
-
-        # Retrieval agreement: rrf_score already says how highly each retriever ranked this and
-        # whether more than one found it. Content signals above still decide ordering; this tips
-        # ties toward documents both channels agreed on.
-        if rrf:
-            score += min(rrf, 0.05) * 2.0          # bounded: never dominates overlap
-            if len(channels) > 1:
-                score += 0.05                       # found by keyword AND vector
+        channels = _get(c, "_channels") or []
 
         row = dict(c)
-        row["rerank_score"] = round(score, 6)
+        row["rerank_score"] = round(relevance(c, q_toks), 6)
+        row["_prior"] = round(prior(c), 6)
         row["rerank_rank"] = idx
         # what the learned ranking reads (eli/cognition/epistemics, kind recall)
         row["_overlap"] = round(overlap, 4)
         row["_agreement"] = 1.0 if len(channels) > 1 else 0.0
         out.append(row)
 
-    # The heuristic score is an index. Once the outcomes have said which shown memories went into
-    # answers nobody corrected, the chance a memory is of use, fitted on that (epistemics.weights_for:
-    # the score's logit with how readily it came to mind, its importance, how much of the question it
-    # holds and whether more than one retriever found it), decides the order; until then the index does.
     try:
         from eli.cognition.epistemics import RECALL, apply_rows, weights_for
         fit = weights_for(RECALL)
-    except Exception:  # noqa: BLE001 - no outcomes to be had: the index orders
+    except Exception:  # noqa: BLE001 - no outcomes to be had: relevance orders
         fit = {"n": 0}
     if fit.get("n"):
         for row in out:
             row["recall_chance"] = round(apply_rows(
                 min(1.0 - 1e-3, max(1e-3, _as_float(row.get("rerank_score"), 0.0))),
-                {"accessibility": _as_float(row.get("accessibility"), 0.0),
-                 "importance": _as_float(row.get("importance", 0.5), 0.5),
+                {"accessibility": _as_float(_get(row, "accessibility"), 0.0),
+                 "importance": _as_float(_get(row, "importance", 0.5), 0.5),
                  "overlap": row["_overlap"], "agreement": row["_agreement"]},
                 fit["weights"], fit["shift"], fit["names"]), 6)
 
     out.sort(key=lambda x: (
         _as_float(x.get("recall_chance", x.get("rerank_score", 0.0)), 0.0),
-        _as_float(x.get("rerank_score", 0.0), 0.0),
-        _as_float(x.get("importance", 0.0), 0.0),
-        _as_float(x.get("weight", 0.0), 0.0),
-        _as_float(x.get("ts", x.get("timestamp", 0.0)), 0.0),
+        len(_get(x, "_channels") or ()),
+        _as_float(x.get("_prior", 0.0), 0.0),
+        _as_float(_get(x, "rrf_score", 0.0), 0.0),
+        _as_float(_get(x, "event_ts", _get(x, "ts", _get(x, "timestamp", 0.0))), 0.0),
     ), reverse=True)
 
     return out[: int(limit or 8)]

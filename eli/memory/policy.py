@@ -249,6 +249,8 @@ def merge_group(rows: Iterable[dict]) -> dict:
 # a base-level activation summed over a memory's uses, each fading as a power of its age, and a
 # share among look-alikes. The recall ranking reads these (eli/memory/memory.py, reranker.py).
 ACTR_DECAY = 0.5          # d: how fast each past use fades, the value across ACT-R's literature
+ACTR_THRESHOLD = 0.0      # tau: the activation at which a memory comes to mind half the time (ACT-R's :rt default)
+ACTR_NOISE = 0.5          # s: the activation noise; the middle of the 0.2-0.8 ACT-R's manual recommends
 DAY = 86400.0
 TICK = 1.0 / DAY          # the stored timestamps' own resolution (a second) in days: no age is under it
 
@@ -311,23 +313,21 @@ def compete(activations: Sequence[float], likeness: Sequence[Sequence[float]]) -
     return out
 
 
-def retrievable(activations: Sequence[float]) -> list:
-    """Each activation as a chance of coming to mind among these, 0..1: a logistic on the activation
-    standardised against the others (ACT-R's retrieval chance, its threshold and noise read off the
-    set itself rather than fixed). All alike: a half each. Never used: 0."""
-    finite = [float(a) for a in activations if a != -math.inf]
-    if not finite:
-        return [0.0 for _ in activations]
-    mean = sum(finite) / len(finite)
-    sd = math.sqrt(sum((a - mean) ** 2 for a in finite) / len(finite)) if len(finite) > 1 else 0.0
+def retrievable(activations: Sequence[float], *, threshold: float = ACTR_THRESHOLD,
+                noise: float = ACTR_NOISE) -> list:
+    """Each activation as ACT-R's chance of retrieval, 0..1: P = 1 / (1 + e^-((A - tau) / s)), on a
+    fixed scale (the threshold tau and noise s above), so a memory's chance says how strong it is and
+    not where it stands in the set it came with (two near-equal memories are near-equal, not 0.27 and
+    0.73). How much this chance should count in a ranking is learned from the recall outcomes
+    (eli/cognition/reranker.rerank_candidates). Never used: 0."""
+    s = max(1e-6, float(noise))
     out = []
     for a in activations:
         if a == -math.inf:
             out.append(0.0)
-        elif sd <= 0.0:
-            out.append(0.5)
         else:
-            out.append(1.0 / (1.0 + math.exp(-(float(a) - mean) / sd)))
+            z = max(-60.0, min(60.0, (float(a) - float(threshold)) / s))
+            out.append(1.0 / (1.0 + math.exp(-z)))
     return out
 
 

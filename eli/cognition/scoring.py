@@ -69,46 +69,6 @@ def recency_score(ts: float, now: Optional[float] = None,
     return max(0.0, 1.0 - age_days / max(1e-6, window_days))
 
 
-# Canonical memory-ranking fusion weights: one source of truth for the recall rerank and any future
-# ranker. The SQL ORDER BY in memory.py is only a coarse, index-friendly pre-order; the real fusion
-# is here.
-MEM_FUSION_W_IMPORTANCE = 0.5
-MEM_FUSION_W_WEIGHT = 0.3
-MEM_FUSION_W_RECENCY = 0.2
-
-# Overlap-aware recall reranker weights (the later stage that also has query-text
-# overlap + source bonus available — see reranker.py). Kept here so all three
-# ranking schemes (SQL pre-order, mem fusion, reranker) are tunable in one file.
-RERANK_W_OVERLAP = 0.45
-RERANK_W_IMPORTANCE = 0.20
-RERANK_W_WEIGHT = 0.15
-RERANK_W_RECENCY = 0.10
-
-
-def fuse_memory_score(importance: float, weight: float, recency: float,
-                      pref_boost: float = 0.0, accessibility: Optional[float] = None) -> float:
-    """Blend a memory row's importance, decay-weight and recency (each ~0..1)
-    into one ranking score, plus an optional preference/identity boost. The
-    canonical recall-rerank fusion — see the MEM_FUSION_W_* weights above.
-
-    `accessibility` (0..1, eli/memory/policy.retrievable: how readily the row comes to mind, from
-    its faded uses and its share against look-alikes) carries both the row's strength and its
-    recency, so when it is known it takes the place of weight and recency together."""
-    try:
-        if accessibility is not None:
-            return (float(importance or 0.0) * MEM_FUSION_W_IMPORTANCE
-                    + float(accessibility) * (MEM_FUSION_W_WEIGHT + MEM_FUSION_W_RECENCY)
-                    + float(pref_boost or 0.0))
-        return (
-            float(importance or 0.0) * MEM_FUSION_W_IMPORTANCE
-            + float(weight or 0.0) * MEM_FUSION_W_WEIGHT
-            + float(recency or 0.0) * MEM_FUSION_W_RECENCY
-            + float(pref_boost or 0.0)
-        )
-    except Exception:
-        return 0.0
-
-
 # Maximal marginal relevance (Carbonell & Goldstein, 1998): the share of the choice that goes to
 # relevance, the rest to being unlike what is already chosen. Relevance-leaning, the usual setting:
 # likeness only breaks near-ties, so five ways of saying one thing do not fill the context.
@@ -186,6 +146,5 @@ __all__ = [
     "STOPWORDS", "tokenize", "term_overlap", "jaccard", "recency_score",
     "relevance_gate", "RELEVANCE_OVERLAP_FLOOR",
     "conf_from_flag", "conf_from_count",
-    "fuse_memory_score", "MEM_FUSION_W_IMPORTANCE", "MEM_FUSION_W_WEIGHT",
-    "MEM_FUSION_W_RECENCY", "mmr_select", "MMR_LAMBDA",
+    "mmr_select", "MMR_LAMBDA",
 ]

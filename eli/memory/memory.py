@@ -173,12 +173,10 @@ class _MemoryModule(type(_this_module)):
 _this_module.__class__ = _MemoryModule
 
 
-# What the user's own statements of preference and identity add to a memory's rank, and the most any
-# other memory gets, by the share of the user's attention its topics hold.
-PREF_BOOST = 0.15
-# What a new memory's importance takes from the user's interest in its topics: the weight the score
-# gives a self-statement, at a full share of their attention.
-INTEREST_WEIGHT = 0.20
+# How many candidates each recall channel fetches for each place in the caller's limit: ELI's own
+# records, deleted rows and stale index entries are dropped after the fetch, and the one ranking
+# (eli/cognition/reranker.rerank_candidates) needs the candidates it chooses between.
+_OVERFETCH = 3
 
 
 def _active_user_id() -> str:
@@ -1978,10 +1976,12 @@ class Memory(metaclass=_MemoryMeta):
         ).fetchone()
         if not row:
             return None
+        # The sighting is counted and dated in last_seen; the row keeps the date it was first said
+        # (timestamp, event_ts): "I adopted a cat" said again three weeks later was dated three weeks later.
         conn.execute(
-            "UPDATE memories SET seen_count = COALESCE(seen_count, 1) + 1, last_seen = ?, timestamp = ?, "
+            "UPDATE memories SET seen_count = COALESCE(seen_count, 1) + 1, last_seen = ?, "
             "importance = MAX(COALESCE(importance, 0.5), ?), weight = 1.0 WHERE id = ?",
-            (float(now), float(now), float(importance if importance is not None else 0.5), int(row[0])),
+            (float(now), float(importance if importance is not None else 0.5), int(row[0])),
         )
         return int(row[0])
 
@@ -2267,11 +2267,14 @@ class Memory(metaclass=_MemoryMeta):
         try:
             cols = _memory_table_columns(conn, "memories")
             text_expr = "LOWER(COALESCE(text, content, ''))" if "content" in cols else "LOWER(COALESCE(text, ''))"
-            tags_expr = "LOWER(COALESCE(tags, ''))"
             time_expr = "COALESCE(timestamp, ts, 0)"
-
-            # importance column present in schema — use it in ordering
+            time_expr_m = "COALESCE(m.timestamp, m.ts, 0)"
+            # when it was first said: a restated memory keeps the date it was first said (last_seen
+            # holds the latest sighting), and every hit carries it (eli/cognition/evidence_format.row_time)
+            event_expr = "COALESCE(event_ts, timestamp, ts, 0)" if "event_ts" in cols else time_expr
+            event_expr_m = "COALESCE(m.event_ts, m.timestamp, m.ts, 0)" if "event_ts" in cols else time_expr_m
             imp_expr = "COALESCE(importance, 0.5)" if "importance" in cols else "0.5"
+            imp_expr_m = "COALESCE(m.importance, 0.5)" if "importance" in cols else "0.5"
 
             # What counts as ELI's own record-keeping is decided in one place, eli/core/self_provenance.py.
             # It used to be decided in four and each new reader inherited the bug. This fragment was also
@@ -2298,31 +2301,31 @@ class Memory(metaclass=_MemoryMeta):
                 cols, alias="", verified_only=verified_only,
             )
 
-            # Stage 5: vector semantic search. FAISS runs first; FTS5/LIKE is supplementary when the vector
-            # index is empty or returns fewer than limit // 2 (very short query, cold start). With
-            # keyword_only=True (the orchestrator's keyword_search) FAISS is skipped: the orchestrator runs
-            # its own semantic_search() and running it here would duplicate vector hits under an "fts5" label.
+            # Every channel gathers candidates; one ranking (eli/cognition/reranker.rerank_candidates)
+            # orders them all at the end: relevance first, what is known of each before the question
+            # as its prior, the priors' weight learned from the recall outcomes. Each channel fetches
+            # _OVERFETCH times the limit, as ELI's own records and deleted rows are dropped below.
+            #
+            # Vector channel. With keyword_only=True (the orchestrator's keyword_search) FAISS is
+            # skipped: the orchestrator runs its own semantic_search() and running it here would
+            # duplicate vector hits under an "fts5" label.
             vector_results = []
-            _vector_index_populated = False
+            _vector_ran = False
             if not keyword_only:
                 try:
                     from eli.memory.vector_store import get_vector_store
                     _vs = get_vector_store()
                     _idx = getattr(_vs, '_index', None) if _vs is not None else None
                     _ntotal = int(getattr(_idx, 'ntotal', 0) or 0)
-                    _vector_index_populated = _ntotal > 0
                     if _vs is not None and _ntotal > 0:
-                        # Over-fetch: ELI's own records and deleted rows are dropped below.
-                        _hits = _vs.search(q, top_k=limit * 3) or []
+                        _vector_ran = True
+                        _hits = _vs.search(q, top_k=limit * _OVERFETCH) or []
                         for h in _hits:
                             vector_results.append({
                                 'id': h.get('memory_id', h.get('id', f"vec:{h.get('pos', 0)}")),
-                                'ts': h.get('ts', 0),
-                                'timestamp': h.get('ts', 0),
                                 'text': h.get('text', ''),
                                 'tags': h.get('tags', ''),
-                                'weight': float(h.get('score', 0.5)) + 0.5,
-                                'importance': float(h.get('score', 0.5)),
+                                '_similarity': float(h.get('score', 0.0) or 0.0),
                                 '_source': 'vector',
                             })
                 except Exception:
@@ -2332,203 +2335,116 @@ class Memory(metaclass=_MemoryMeta):
                 # storage policy ("Top topics: days, past, memory" was the top recall). Same filters,
                 # one query; rows deleted since they were indexed drop out too. The row is the record: an
                 # index entry whose text is not the row's (the id now belongs to another memory, as after
-                # a reset or a restore) is stale, and its own copy of the text was shown as a memory.
+                # a reset or a restore) is stale, and its own copy of the text was shown as a memory. The
+                # row also gives the hit its own importance and dates: the similarity is no importance.
                 _vec_ids = [int(v['id']) for v in vector_results if str(v.get('id')).isdigit()]
                 if _vec_ids:
                     try:
                         _row_text = "COALESCE(m.text, m.content, '')" if "content" in cols else "COALESCE(m.text, '')"
                         _ok_rows = conn.execute(
-                            f"SELECT m.id, COALESCE(m.timestamp, m.ts, 0), {_row_text} FROM memories m "
+                            f"SELECT m.id, {time_expr_m}, {event_expr_m}, {_row_text}, {imp_expr_m}, "
+                            f"COALESCE(m.weight, 1.0), COALESCE(m.tags, '') FROM memories m "
                             f"WHERE m.id IN ({','.join('?' * len(_vec_ids))}) {_kind_filter}{_verify_filter}",
                             (*_vec_ids, *_kind_params),
                         ).fetchall()
-                        _ok = {int(r[0]): (r[1], str(r[2] or "")) for r in _ok_rows}
+                        _ok = {int(r[0]): r for r in _ok_rows}
                         _same = lambda a, b: " ".join(str(a).split()) == " ".join(str(b).split())
                         vector_results = [
-                            dict(v, ts=v.get('ts') or _ok[int(v['id'])][0], timestamp=v.get('ts') or _ok[int(v['id'])][0],
-                                 text=_ok[int(v['id'])][1])
+                            dict(v, ts=_ok[int(v['id'])][1], timestamp=_ok[int(v['id'])][1],
+                                 event_ts=_ok[int(v['id'])][2], text=_ok[int(v['id'])][3],
+                                 importance=_ok[int(v['id'])][4], weight=_ok[int(v['id'])][5],
+                                 tags=v.get('tags') or _ok[int(v['id'])][6])
                             for v in vector_results if str(v.get('id')).isdigit() and int(v['id']) in _ok
-                            and _same(v.get('text', ''), _ok[int(v['id'])][1])
-                        ][:limit]
+                            and _same(v.get('text', ''), _ok[int(v['id'])][3])
+                        ]
                     except Exception:
                         log.debug("vector hit filter skipped", exc_info=True)
+                        vector_results = []
+                else:
+                    vector_results = []
 
-            # Stage 6: FTS5 keyword search runs alongside vectors, not as a fallback. FAISS IndexFlat has no
-            # similarity threshold and always returns top_k, so the fallback never ran and a fully built
-            # memories_fts was never read ("what did I say about fallout" missed the turns with the word).
-            # Both channels always run and are fused by rank in Stage 8.
-            _need_keyword = True
+            # Keyword channel: FTS5 alongside vectors, not as a fallback ("what did I say about fallout"
+            # missed the turns with the word when it only ran on an empty vector result). Content terms
+            # only, matched in the text column (tags are split at "_", so "memory" matched every row
+            # tagged memory_recall). Candidates by how well they match (BM25, FTS5's own rank), never by
+            # importance: the one-word match on an important row came before the row holding every term.
+            try:
+                from eli.runtime.reflection import TOPIC_STOPWORDS as _STOP
+            except Exception:
+                _STOP = frozenset()
+            _all_terms = [t for t in re.split(r"[^a-zA-Z0-9_]+", q) if len(t) > 1]
+            # Every token was noise (e.g. "what about that?"): search the raw tokens rather than nothing.
+            _terms = [t for t in _all_terms if t.lower() not in _STOP] or _all_terms
             fts_rows = []
-            if _need_keyword and _has_table(conn, "memories_fts"):
+            if _terms and _has_table(conn, "memories_fts"):
                 try:
-                    # Content terms only. This OR'd every token, so "what did I say about fallout" matched any
-                    # memory containing "what" or "say". The branch had been unreachable since FAISS became primary,
-                    # so the naive query was never exercised, and making the channels co-equal exposed a flood of
-                    # noise. The LIKE fallback below already filtered stopwords, FTS5 never did.
-                    try:
-                        from eli.runtime.reflection import TOPIC_STOPWORDS as _STOP
-                    except Exception:
-                        _STOP = frozenset()
-                    _terms = [
-                        t for t in re.split(r"[^a-zA-Z0-9_]+", q)
-                        if len(t) > 1 and t.lower() not in _STOP
-                    ]
-                    # Every token was noise (e.g. "what about that?") — fall back to
-                    # the raw tokens rather than searching for nothing.
-                    if not _terms:
-                        _terms = [t for t in re.split(r"[^a-zA-Z0-9_]+", q) if len(t) > 1]
-                    # The text column only: tags are split at "_", so "memory" matched every row tagged
-                    # memory_recall or working_memory whatever it said.
-                    fts_q = " OR ".join(f'text:"{t}"' for t in _terms)
-                    if fts_q:
-                        fts_rows = conn.execute(
-                            f"""
-                            SELECT m.id, {time_expr}, COALESCE(m.text, m.content, ''),
-                                   COALESCE(m.tags, ''), COALESCE(m.weight, 1.0),
-                                   {imp_expr}
-                            FROM memories m
-                            JOIN memories_fts f ON m.id = f.rowid
-                            WHERE memories_fts MATCH ?
-                            {_kind_filter}{_verify_filter}
-                            ORDER BY ({imp_expr} * 0.6 + {time_expr} * 0.0000001) DESC
-                            LIMIT ?
-                            """,
-                            (fts_q, *_kind_params, limit),
-                        ).fetchall()
+                    fts_q = " OR ".join('text:"{}"'.format(t.replace('"', '')) for t in _terms)
+                    fts_rows = conn.execute(
+                        f"""
+                        SELECT m.id, {time_expr_m}, COALESCE(m.text, m.content, ''),
+                               COALESCE(m.tags, ''), COALESCE(m.weight, 1.0), {imp_expr_m}, {event_expr_m}
+                        FROM memories_fts f
+                        JOIN memories m ON m.id = f.rowid
+                        WHERE memories_fts MATCH ?
+                        {_kind_filter}{_verify_filter}
+                        ORDER BY bm25(memories_fts)
+                        LIMIT ?
+                        """,
+                        (fts_q, *_kind_params, limit * _OVERFETCH),
+                    ).fetchall()
                 except Exception:
+                    log.debug("fts recall failed", exc_info=True)
                     fts_rows = []
 
-            # --- LIKE fallback if both vector and FTS5 are empty ---
+            # LIKE fallback when FTS5 found nothing: the phrase, else each term, ordered by how many
+            # of the terms a row holds (the same measure of match), then by when it was said.
             like_rows = []
-            like = f"%{q.lower()}%"
-            if _need_keyword and not fts_rows:
+            if not fts_rows:
+                _like_terms = [q.lower()] + [t.lower() for t in _terms if t.lower() != q.lower()]
                 try:
+                    _match = " + ".join(f"(CASE WHEN {text_expr} LIKE ? THEN 1 ELSE 0 END)" for _ in _like_terms)
+                    _where = " OR ".join(f"{text_expr} LIKE ?" for _ in _like_terms)
+                    _likes = [f"%{t}%" for t in _like_terms]
                     like_rows = conn.execute(
                         f"""
                         SELECT id, {time_expr}, COALESCE(text, content, ''), COALESCE(tags, ''),
-                               COALESCE(weight, 1.0), {imp_expr}
+                               COALESCE(weight, 1.0), {imp_expr}, {event_expr}
                         FROM memories
-                        WHERE ({text_expr} LIKE ? OR {tags_expr} LIKE ?)
+                        WHERE ({_where})
                         {_kind_filter_t}{_verify_filter_t}
-                        ORDER BY ({imp_expr} * 0.6 + {time_expr} * 0.0000001) DESC
+                        ORDER BY ({_match}) DESC, {time_expr} DESC
                         LIMIT ?
                         """,
-                        (like, like, *_kind_params, limit),
+                        (*_likes, *_kind_params, *_likes, limit * _OVERFETCH),
                     ).fetchall()
                 except Exception:
+                    log.debug("like recall failed", exc_info=True)
                     like_rows = []
 
-            if _need_keyword and not fts_rows and not like_rows:
-                toks = [
-                    t.lower()
-                    for t in re.split(r"[^a-zA-Z0-9_]+", q)
-                    if t and len(t) > 1
-                ]
-                toks = [t for t in toks if t not in {
-                    "the","and","for","with","that","this","from","into","your","have","using",
-                    "about","what","when","where","which","will","would","should","could"
-                }]
-                if toks:
-                    clauses = []
-                    params = []
-                    for tok in toks:
-                        clauses.append(f"({text_expr} LIKE ? OR {tags_expr} LIKE ?)")
-                        params.extend([f"%{tok}%", f"%{tok}%"])
-                    params.extend(_kind_params)
-                    params.append(limit)
-                    like_rows = conn.execute(
-                        f"""
-                        SELECT id, {time_expr}, COALESCE(text, content, ''), COALESCE(tags, ''),
-                               COALESCE(weight, 1.0), {imp_expr}
-                        FROM memories
-                        WHERE ({' OR '.join(clauses)})
-                        {_kind_filter_t}{_verify_filter_t}
-                        ORDER BY ({imp_expr} * 0.6 + {time_expr} * 0.0000001) DESC
-                        LIMIT ?
-                        """,
-                        params,
-                    ).fetchall()
-
-            # Convert DB rows to dicts — row format: (id, ts, text, tags, weight, importance)
+            # Convert DB rows to dicts — row format: (id, ts, text, tags, weight, importance, event_ts)
             keyword_results = [
                 {"id": r[0], "ts": r[1], "timestamp": r[1], "text": r[2], "tags": r[3],
-                 "weight": r[4], "importance": r[5] if len(r) > 5 else 0.5,
+                 "weight": r[4], "importance": r[5], "event_ts": r[6],
                  "_source": "fts" if fts_rows else "like"}
-                for r in (fts_rows or like_rows)[:limit]
+                for r in (fts_rows or like_rows)
             ]
 
-            # Stage 8: Reciprocal Rank Fusion. The old interleave ordered the channels instead of combining
-            # them, so vector won on position. RRF sums 1/(k+rank) over the channels that found a hit, so
-            # agreement beats one strong showing. It uses rank because the scores (L2 vs BM25) aren't
-            # comparable.
-            try:
-                from eli.cognition.reranker import fuse_ranked_lists
-                out: List[Dict] = fuse_ranked_lists({
-                    "vector": vector_results,
-                    "keyword": keyword_results,
-                })
-            except Exception:
-                log.debug("[MEMORY] rank fusion unavailable — interleaving", exc_info=True)
-                seen_texts: set = set()
-                out = []
-                for result_list in (vector_results, keyword_results):
-                    for r in result_list:
-                        txt = (r.get("text") or "").strip()[:120]
-                        if txt and txt not in seen_texts:
-                            seen_texts.add(txt)
-                            out.append(r)
-                        elif not txt:
-                            out.append(r)
-            # Sort merged results by composite score: importance x 0.5 + weight x 0.3 + recency x 0.2 +
-            # preference boost. importance already encodes preference/identity/user-authored salience
-            # (_score_importance) and is reinforced on every recall (+0.02). The bounded preference boost
-            # lifts durable user-context facts even when stored importance is mid.
+            # Reciprocal Rank Fusion (eli/cognition/reranker.fuse_ranked_lists): it sums 1/(k+rank) over
+            # the channels that found a hit, so agreement beats one strong showing, by rank because the
+            # scores (L2 vs BM25) aren't comparable. Only the channels that ran are passed: a hit's
+            # agreement is the share of those that found it.
+            _channels = {"keyword": keyword_results}
+            if _vector_ran:
+                _channels["vector"] = vector_results
+            from eli.cognition.reranker import fuse_ranked_lists
+            out: List[Dict] = fuse_ranked_lists(_channels)
             sort_now = time.time()
-            def _ts_float(x):
-                raw = x.get("ts") or x.get("timestamp") or 0
-                try:
-                    return float(raw)
-                except (ValueError, TypeError):
-                    return 0.0
-            try:
-                from eli.memory.interest import share as _interest_share
-                _who = _active_user_id()
-            except Exception:
-                _interest_share, _who = None, ""
-
-            def _pref_boost(x) -> float:
-                # what the user stated about themselves keeps the full boost; anything else is
-                # boosted by the share of the user's attention its topics hold (eli/memory/interest.py)
-                _t = str(x.get("tags", "") or "").lower()
-                _k = str(x.get("kind", "") or "").lower()
-                if _k in ("preference", "identity", "fact"):
-                    return PREF_BOOST
-                if any(_w in _t for _w in (
-                        "preference", "identity", "project", "interest",
-                        "current_work", "active_project")):
-                    return PREF_BOOST
-                if _interest_share is None:
-                    return 0.0
-                try:
-                    return PREF_BOOST * float(_interest_share(str(x.get("text") or x.get("content") or ""), _who))
-                except Exception:
-                    return 0.0
-            from eli.cognition.scoring import recency_score as _rs, fuse_memory_score as _fuse
             # How readily each comes to mind (eli/memory/policy.py): its faded uses, the curve's own
             # factors, and its share against the look-alikes in this set. Known for stored rows only.
             _how_readily = self._accessibility(conn, out, cols, sort_now)
             for _row in out:
                 if _row.get("id") in _how_readily:
                     _row["accessibility"] = _how_readily[_row["id"]]
-            for _row in out:
-                _row["_rank_score"] = _fuse(
-                    _row.get("importance", 0.5) or 0.5,
-                    _row.get("weight", 1.0) or 1.0,
-                    _rs(_ts_float(_row), now=sort_now, window_days=30),
-                    pref_boost=_pref_boost(_row),
-                    accessibility=_row.get("accessibility"),
-                )
-            out.sort(key=lambda x: x["_rank_score"], reverse=True)
 
             def _postmerge_noise(hit):
                 _tags = str(hit.get('tags', '') or '').lower()
@@ -2561,37 +2477,35 @@ class Memory(metaclass=_MemoryMeta):
                 _filtered.append(_r)
             out = _filtered
 
-            if verified_only:
-                out = filter_grounding_hits(out)
-
+            # The user's semantic facts (eli/runtime/profile_extractor) join the candidates when the
+            # question is about the user themselves, the ones that share a word with it (or, for "who am
+            # I"/"what do you know about me", all of them), each with its confidence as its chance of
+            # being right; the ranking decides where they stand. Any question with "name" or "user" in
+            # it used to put every semantic row first, lowest confidence first, over what it asked for.
             _q_low = q.lower()
-            _identity_query = bool(re.search(
-                r"\b(who am i|my name|name|remember me|about me|user|identity)\b",
-                _q_low,
-            ))
-
-            # Only inject semantic identity facts when the query is actually about identity/user facts.
-            if _identity_query:
+            _about_user = bool(re.search(r"\b(?:who am i|about me|know me|remember me|my name|my identity)\b", _q_low))
+            if _about_user and _has_table(conn, "semantic"):
                 try:
-                    if _has_table(conn, "semantic"):
-                        _sem_scope, _sem_params = _semantic_scope(_scope_key)
-                        sem_rows = conn.execute(
-                            "SELECT id, fact, tags, confidence, created_at "
-                            "FROM semantic WHERE 1=1 " + _sem_scope + " ORDER BY confidence DESC", _sem_params
-                        ).fetchall()
-                        for sr in sem_rows:
-                            out.insert(0, {
-                                "id": f"sem:{sr[0]}",
-                                "ts": sr[4] or 0,
-                                "timestamp": sr[4] or 0,
-                                "text": sr[1] or "",
-                                "tags": sr[2] or "semantic,user_fact",
-                                "weight": float(sr[3] or 1.0) + 0.5,
-                                "kind": "semantic",
-                                "source": "semantic",
-                            })
+                    from eli.cognition.scoring import tokenize as _sem_tok
+                    _q_words = set(_sem_tok(q)) - {"name", "know", "remember", "identity"}
+                    _sem_scope, _sem_params = _semantic_scope(_scope_key)
+                    for sr in conn.execute(
+                            "SELECT id, fact, tags, confidence, created_at FROM semantic WHERE 1=1 " + _sem_scope
+                            + " ORDER BY confidence DESC", _sem_params).fetchall():
+                        _fact = str(sr[1] or "")
+                        if _q_words and not (_q_words & set(_sem_tok(_fact))) and "name" not in _fact.lower():
+                            continue
+                        _key = _fact.strip()[:160].lower()
+                        if not _key or _key in _seen_filtered:
+                            continue
+                        _seen_filtered.add(_key)
+                        out.append({
+                            "id": f"sem:{sr[0]}", "ts": sr[4] or 0, "timestamp": sr[4] or 0, "text": _fact,
+                            "tags": sr[2] or "semantic,user_fact", "kind": "semantic", "source": "semantic",
+                            "chance": float(sr[3] if sr[3] is not None else 0.5),
+                        })
                 except Exception:
-                    log.debug("suppressed exception", exc_info=True)
+                    log.debug("semantic facts not read", exc_info=True)
             # Knowledge-graph enrichment. Skipped when keyword_only=True: the orchestrator runs its own
             # kg_search() and manages KG insertion into hybrid_merge() with its own priority. Injecting here
             # would put a KG hit in both the keyword and kg buckets, and the orchestrator's dedup
@@ -2602,13 +2516,12 @@ class Memory(metaclass=_MemoryMeta):
                     _kg = get_knowledge_graph()
                     _kg_ctx = _kg.context_for_prompt(q, max_chars=600, user_id=_scope_key)
                     if _kg_ctx:
-                        out.insert(0, {
+                        out.append({
                             "id": "kg:context",
                             "ts": 0,
                             "timestamp": 0,
                             "text": _kg_ctx,
                             "tags": "knowledge_graph,entities,relations",
-                            "weight": 2.0,
                             "kind": "knowledge_graph",
                             "source": "knowledge_graph",
                             "_source": "kg",
@@ -2653,16 +2566,6 @@ class Memory(metaclass=_MemoryMeta):
                            LIMIT ?""",
                         (*_likes, *_turn_params, max(6, limit - len(out)) * 4),
                     ).fetchall()
-                    # Rank by count of distinct keywords matched, then recency,
-                    # so the discriminating turn wins over generic recent chatter.
-                    def _kw_score(_content: str) -> int:
-                        _cl = (_content or "").lower()
-                        return sum(1 for _k in _kw if _k in _cl)
-                    _conv_rows = sorted(
-                        _conv_rows,
-                        key=lambda r: (_kw_score(r[2]), float(r[0] or 0)),
-                        reverse=True,
-                    )[: max(3, limit - len(out))]
                     for _cr in _conv_rows:
                         _txt = (_cr[2] or "").strip()
                         _key = _txt[:160].lower()
@@ -2674,15 +2577,42 @@ class Memory(metaclass=_MemoryMeta):
                                 "timestamp": float(_cr[0] or 0),
                                 "text": _txt,
                                 "tags": "conversation,user",
-                                "weight": 0.6,
-                                "importance": 0.35,
                                 "_source": "conversation_turns",
                             })
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
 
+            if verified_only:
+                out = filter_grounding_hits(out)
+            # Optional tag filter — callers (e.g. turn_dossier morning_report) may
+            # request memories tagged with specific labels without a separate API.
+            if tags:
+                _want = {str(t).strip().lower() for t in tags if str(t).strip()}
+                if _want:
+                    def _hit_has_tag(hit: dict) -> bool:
+                        raw = hit.get("tags", "")
+                        if isinstance(raw, (list, tuple, set)):
+                            blob = " ".join(str(x) for x in raw)
+                        else:
+                            blob = str(raw or "")
+                        parts = {
+                            p.strip().lower()
+                            for p in re.split(r"[,;\s]+", blob)
+                            if p.strip()
+                        }
+                        return bool(_want & parts) or any(w in blob.lower() for w in _want)
+
+                    out = [h for h in out if _hit_has_tag(h)]
+
+            # The one ranking, then complementary, not five ways of saying one thing: within the
+            # caller's limit the later places go by rank less likeness to what is already chosen
+            # (scoring.mmr_select).
+            from eli.cognition.reranker import hit_score as _hit_score, rerank_candidates as _rank
+            from eli.cognition.scoring import mmr_select as _mmr
+            out = _mmr(_rank(q, out, limit=len(out)), limit, score=_hit_score)
+
             # Retrieval only counts as exposure. Strength is reinforced later, by record_recall_outcome,
-            # when the answer these memories went into was not corrected.
+            # when the answer these memories went into was endorsed.
             try:
                 _boost_ids = [
                     int(_h["id"]) for _h in out[:5]
@@ -2725,32 +2655,7 @@ class Memory(metaclass=_MemoryMeta):
                 )
             except Exception:
                 log.debug("suppressed exception", exc_info=True)
-            # Optional tag filter — callers (e.g. turn_dossier morning_report) may
-            # request memories tagged with specific labels without a separate API.
-            if tags:
-                _want = {str(t).strip().lower() for t in tags if str(t).strip()}
-                if _want:
-                    def _hit_has_tag(hit: dict) -> bool:
-                        raw = hit.get("tags", "")
-                        if isinstance(raw, (list, tuple, set)):
-                            blob = " ".join(str(x) for x in raw)
-                        else:
-                            blob = str(raw or "")
-                        parts = {
-                            p.strip().lower()
-                            for p in re.split(r"[,;\s]+", blob)
-                            if p.strip()
-                        }
-                        return bool(_want & parts) or any(w in blob.lower() for w in _want)
-
-                    out = [h for h in out if _hit_has_tag(h)]
-
-            # Complementary, not five ways of saying one thing: within the caller's limit the later
-            # places go by rank less likeness to what is already chosen (scoring.mmr_select).
-            # conversation_turns fallback uses max(3, limit-len) which can push
-            # total above `limit` when the initial result set is small.
-            from eli.cognition.scoring import mmr_select as _mmr
-            return _mmr(out, limit, score=lambda r: r.get("_rank_score"))
+            return out
         finally:
             conn.close()
 
