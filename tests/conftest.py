@@ -79,20 +79,13 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 # (pomodoro, voice clones); learning_dir() the training runs. Pointing these roots at the sandbox
 # covers everything resolved through them, so no test can write into this checkout's own state.
 # The config dir starts each run as a fresh install has it: the tracked files and nothing else.
+# Which variable puts which store there is tests/_state_env.py's (a module run without this conftest
+# uses the same list). Starting an engine regenerates the capabilities table, which lives in
+# blueprints/, and the manifest at the checkout's root: both go to the sandbox too, and only the
+# claims bootstrap (tests/claims/conftest.py) brings the checkout's manifest up to date.
 SANDBOX = ROOT / "artifacts" / "_pytest"
-os.environ["ELI_ARTIFACTS_DIR"] = str(SANDBOX)
-os.environ["ELI_DATA_DIR"] = str(SANDBOX)
-os.environ["ELI_LEARNING_DIR"] = str(SANDBOX / "training")
-os.environ["ELI_CONFIG_DIR"] = str(SANDBOX / "config")
-os.environ["ELI_GPU_PACK_LOG"] = str(SANDBOX / "gpu-pack.log")   # it would go beside the checkout's runtime/
-os.environ["ELI_VOICE_REFS_DIR"] = str(SANDBOX / "voice_profiles")   # and a cloned voice beside its models/
-os.environ["ELI_KEYS_DIR"] = str(SANDBOX / "eli-keys")   # licence keys every ELI product shares (~/.config/eli-keys)
-# Starting an engine regenerates the capabilities table, which lives in blueprints/: a test that
-# built one rewrote the checkout's blueprint.
-os.environ["ELI_CAPABILITIES_DOC"] = str(SANDBOX / "capabilities_and_actions.md")
-# and the manifest at the checkout's root: only the claims bootstrap (tests/claims/conftest.py) brings
-# that one up to date, once, before anything reads it.
-os.environ["ELI_CAPABILITY_MANIFEST"] = str(SANDBOX / "capability_manifest.json")
+from tests._state_env import outside as _stores_outside, state_env as _state_env  # noqa: E402
+os.environ.update(_state_env(SANDBOX))
 
 
 def _fresh_config() -> None:
@@ -114,109 +107,34 @@ def _fresh_config() -> None:
 
 _fresh_config()
 os.environ.setdefault("ELI_CPU_PREFLIGHT", "0")  # no smoke subprocess in tests
-# ELI_ARTIFACTS_DIR alone did NOT isolate the SQLite stores — the user DB path is resolved
-# by eli.core.paths.user_db_path(), which honours ELI_USER_DB/ELI_MEMORY_DB FIRST (before
-# any dev-tree fallback). So tests that called store_memory()/awareness reflection were
-# writing into the REAL artifacts/db/user.sqlite3 and injecting rows ("test store", auto
-# reflections) into the user's memory. Pin the user + memory DB to the throwaway _pytest
-# tree via the highest-priority override so NO test can pollute the real database.
-_PYTEST_DB = ROOT / "artifacts" / "_pytest" / "db" / "user.sqlite3"
+# Every store is in the sandbox (state_env above): the user and memory DB (user_db_path() honours
+# ELI_USER_DB/ELI_MEMORY_DB first: tests once wrote rows into the real user.sqlite3), the agent DB, the
+# persona overlay and notebook (a run once replaced the real persona.auto.txt), the world (storage.WORLD_DIR
+# is frozen when it is first imported), the audit chain and its HMAC key, the agenda and the settings.
+_PYTEST_DB = Path(os.environ["ELI_USER_DB"])
 _PYTEST_DB.parent.mkdir(parents=True, exist_ok=True)
-os.environ["ELI_USER_DB"]   = str(_PYTEST_DB)
-os.environ["ELI_MEMORY_DB"] = str(_PYTEST_DB)
-os.environ["ELI_DB_DIR"]    = str(ROOT / "artifacts" / "_pytest" / "db")
-# agent.sqlite3 resolves via ELI_AGENT_DB FIRST (paths.agent_db_path); without it,
-# tests that touched the agent bus (dispatch/metrics/observations) were writing into
-# the REAL artifacts/db/agent.sqlite3. Pin it to the throwaway tree too so NO test can
-# change ANY of ELI's stores — the DB must stay a clean slate for a fresh download.
-os.environ["ELI_AGENT_DB"]  = str(ROOT / "artifacts" / "_pytest" / "db" / "agent.sqlite3")
-
-# persona_auto_path()/notebook_dir() had no override at all — a full test run once
-# replaced the real persona.auto.txt with fixture content. Pin both to the sandbox.
-os.environ["ELI_PERSONA_AUTO_PATH"] = str(ROOT / "artifacts" / "_pytest" / "persona.auto.txt")
-os.environ["ELI_NOTEBOOK_DIR"]      = str(ROOT / "artifacts" / "_pytest" / "eli_notebook")
-
-# storage.WORLD_DIR is frozen at import time, so this must be set before that module
-# ever loads — a full-suite run once wrote real events into the actual world state.
-os.environ["ELI_WORLD_DIR"] = str(ROOT / "artifacts" / "_pytest" / "world")
-os.environ["ELI_LAST_TRACE_PATH"] = str(ROOT / "artifacts" / "_pytest" / "last_trace.json")
-
-# Both resolve through db_dir() -> data_dir(), which ELI_DB_DIR doesn't touch, so every
-# test turn was appending to the REAL audit chain (fixture rows from a dev run sat in it).
-# The HMAC key likewise came from (or was created in) the real config dir.
-os.environ["ELI_ORCHESTRATOR_AUDIT_DB"] = str(ROOT / "artifacts" / "_pytest" / "db" / "orchestrator_audit.sqlite3")
-os.environ["ELI_CAPABILITY_STATE_DB"] = str(ROOT / "artifacts" / "_pytest" / "db" / "capability_state.sqlite3")
-os.environ["ELI_AUDIT_HMAC_KEY"] = "eli-pytest-audit-key-not-a-real-secret"
 # The document index stores whatever a turn reads and embeds it on a worker thread. Off by
 # default here; the tests for it build their own on a tmp path.
-os.environ["ELI_DOCUMENT_INDEX_DB"] = str(ROOT / "artifacts" / "_pytest" / "db" / "documents.sqlite3")
 os.environ.setdefault("ELI_DOCUMENT_INDEX", "0")
-# The agenda (calendar and reminders) writes a DB and an .ics file and fires desktop notifications.
-os.environ["ELI_AGENDA_DB"] = str(ROOT / "artifacts" / "_pytest" / "db" / "agenda.sqlite3")
-os.environ["ELI_CALENDAR_FILE"] = str(ROOT / "artifacts" / "_pytest" / "calendar.ics")
-os.environ["ELI_AGENDA_NOTIFY"] = "0"
-# Nor this machine's settings. Tests read the developer's own config/settings.json (Net toggle, Full
-# Control, model paths) and some wrote to it; with Full Control on, a test's "offline" connect went
-# out to the network. Each run starts with no settings file, as a fresh install and CI do.
-_PYTEST_SETTINGS = ROOT / "artifacts" / "_pytest" / "settings.json"
+# Each run starts with no settings file, as a fresh install and CI do: tests read the developer's own
+# settings (Net toggle, Full Control, model paths) and some wrote to them; with Full Control on, a
+# test's "offline" connect went out to the network.
+_PYTEST_SETTINGS = Path(os.environ["ELI_SETTINGS_FILE"])
 _PYTEST_SETTINGS.unlink(missing_ok=True)
-os.environ["ELI_SETTINGS_FILE"] = str(_PYTEST_SETTINGS)
 
-# Hard isolation guard: fail LOUDLY at collection if any canonical store still resolves
-# to the real artifacts/db tree. This makes "no test can change memory" an enforced
-# invariant, not just configuration that a future refactor could silently break.
+# Hard isolation guard: fail LOUDLY at collection if any store still resolves outside the sandbox
+# (tests/_state_env.stores: the DBs, the persona overlay and persona.py's own constant for it, the
+# notebook, the vector index, the world's frozen WORLD_DIR, the settings). This makes "no test can
+# change memory" an enforced invariant, not just configuration a future refactor could break.
 def _assert_db_isolated() -> None:
-    from eli.core import paths as _p
-    _safe = (ROOT / "artifacts" / "_pytest").resolve()
-    for _name, _fn in (("user", _p.user_db_path), ("memory", _p.memory_db_path),
-                       ("agent", _p.agent_db_path),
-                       ("orchestrator audit", _p.orchestrator_audit_db_path),
-                       ("capability state", _p.capability_state_db_path)):
-        _resolved = Path(_fn()).resolve()
-        if _safe not in _resolved.parents:
-            raise RuntimeError(
-                f"TEST ISOLATION BREACH: {_name} DB resolves to {_resolved}, "
-                f"outside the throwaway {_safe}. A test could pollute the real "
-                f"database. Check eli.core.paths overrides in conftest.")
-    _persona_resolved = Path(_p.persona_auto_path()).resolve()
-    if _safe not in _persona_resolved.parents:
+    escaped = _stores_outside(ROOT / "artifacts" / "_pytest")
+    if escaped:
         raise RuntimeError(
-            f"TEST ISOLATION BREACH: persona_auto_path() resolves to "
-            f"{_persona_resolved}, outside the throwaway {_safe}. A test could "
-            f"overwrite the real persona overlay. Check eli.core.paths overrides "
-            f"in conftest.")
-    _notebook_resolved = Path(_p.notebook_dir()).resolve()
-    if _safe not in _notebook_resolved.parents:
-        raise RuntimeError(
-            f"TEST ISOLATION BREACH: notebook_dir() resolves to "
-            f"{_notebook_resolved}, outside the throwaway {_safe}. Check "
-            f"eli.core.paths overrides in conftest.")
-    # persona.py used to duplicate persona_auto_path()'s resolution, so the check above
-    # passed while its own write constant still pointed at the real file. Check it directly.
-    from eli.cognition import persona as _persona_mod
-    _persona_file_resolved = Path(_persona_mod._PERSONA_AUTO_FILE).resolve()
-    if _safe not in _persona_file_resolved.parents:
-        raise RuntimeError(
-            f"TEST ISOLATION BREACH: eli.cognition.persona._PERSONA_AUTO_FILE resolves to "
-            f"{_persona_file_resolved}, outside the throwaway {_safe}. A test could "
-            f"overwrite the real persona overlay. Check eli.cognition.persona / "
-            f"eli.core.paths overrides in conftest.")
-    # The semantic vector index resolves through its own helper (eli.memory.vector_store).
-    from eli.memory.vector_store import _get_index_paths
-    for _vector_file in _get_index_paths():
-        if _safe not in Path(_vector_file).resolve().parents:
-            raise RuntimeError(
-                f"TEST ISOLATION BREACH: the vector index resolves to {_vector_file}, outside the "
-                f"throwaway {_safe}. A test could add to the real semantic memory.")
-    # WORLD_DIR is frozen at import time — check the module constant, not a fresh call.
-    from eli.world.persistence import storage as _world_storage_mod
-    _world_dir_resolved = Path(_world_storage_mod.WORLD_DIR).resolve()
-    if _safe not in _world_dir_resolved.parents:
-        raise RuntimeError(
-            f"TEST ISOLATION BREACH: eli.world.persistence.storage.WORLD_DIR resolves to "
-            f"{_world_dir_resolved}, outside the throwaway {_safe}. A test could write real "
-            f"autonomy-engine events into the actual world state. Check ELI_WORLD_DIR is set "
-            f"before this module is first imported.")
+            "TEST ISOLATION BREACH: " + "; ".join(f"{name} resolves to {path}" for name, path in escaped.items())
+            + f", outside the throwaway {ROOT / 'artifacts' / '_pytest'}. A test could change this machine's "
+            "own records. Check tests/_state_env.py.")
+
+
 _assert_db_isolated()
 
 @pytest.fixture(autouse=True)

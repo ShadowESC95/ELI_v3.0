@@ -30,7 +30,7 @@ def test_preferred_name_is_stored_as_a_single_valued_pattern(db):
 
 
 def test_a_persona_auto_txt_rebuild_does_not_touch_it(db, tmp_path, monkeypatch):
-    monkeypatch.setenv("ELI_PERSONA_AUTO_FILE", str(tmp_path / "persona.auto.txt"))
+    monkeypatch.setenv("ELI_PERSONA_AUTO_PATH", str(tmp_path / "persona.auto.txt"))
     cur = db.cursor()
     _insert_user_pattern(cur, "identity.preferred_name", "User prefers to be called Alex.",
                          provenance="user_explicit")

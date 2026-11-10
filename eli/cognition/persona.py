@@ -32,9 +32,6 @@ def _default_persona_auto_file() -> Path:
         return _PERSONA_DIR / "persona.auto.txt"
 
 
-_PERSONA_AUTO_FILE = Path(
-    os.environ.get("ELI_PERSONA_AUTO_FILE", str(_default_persona_auto_file()))
-).expanduser().resolve()
 
 _cached_persona: Optional[str] = None
 _cached_signature: Optional[tuple] = None
@@ -95,7 +92,10 @@ def base_path() -> Path:
 
 
 def auto_path() -> Path:
-    return _PERSONA_AUTO_FILE
+    """The overlay, resolved when it is used (paths.persona_auto_path, ELI_PERSONA_AUTO_PATH). It was a
+    module constant fixed at import, under a second variable of its own, so a store set aside after
+    this module was first imported (a test's, a module run without the suite conftest) was not seen."""
+    return Path(_default_persona_auto_file()).expanduser().resolve()
 
 
 def _fallback_persona() -> str:
@@ -125,7 +125,7 @@ def read_base_persona() -> str:
 
 
 def read_auto_persona() -> str:
-    return _clean_persona(_read_raw(_PERSONA_AUTO_FILE))
+    return _clean_persona(_read_raw(auto_path()))
 
 
 def _compose_persona() -> str:
@@ -151,7 +151,7 @@ def _compose_persona() -> str:
 
 def get_persona() -> str:
     global _cached_persona, _cached_signature
-    sig = (_file_signature(_PERSONA_FILE), _file_signature(_PERSONA_AUTO_FILE))
+    sig = (_file_signature(_PERSONA_FILE), _file_signature(auto_path()))
     if _cached_persona is None or _cached_signature != sig:
         _cached_persona = _compose_persona()
         _cached_signature = sig
@@ -172,14 +172,14 @@ def write_base_persona(text: str) -> str:
 
 
 def write_auto_persona(text: str) -> str:
-    _PERSONA_AUTO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    auto_path().parent.mkdir(parents=True, exist_ok=True)
     clean = _sanitize_auto_persona_text((text or "").rstrip() + "\n")
-    _PERSONA_AUTO_FILE.write_text(clean, encoding="utf-8")
+    auto_path().write_text(clean, encoding="utf-8")
     return reload()
 
 def clear_auto_persona() -> str:
-    if _PERSONA_AUTO_FILE.exists():
-        _PERSONA_AUTO_FILE.unlink()
+    if auto_path().exists():
+        auto_path().unlink()
     return reload()
 
 
@@ -189,7 +189,7 @@ def append_preference(pref: str) -> bool:
         return False
 
     marker = "## User Preferences (Auto-Updated)"
-    current = _read_raw(_PERSONA_AUTO_FILE).rstrip()
+    current = _read_raw(auto_path()).rstrip()
 
     if marker in current:
         new_text = f"{current}\n- {pref}\n"
@@ -265,9 +265,9 @@ def status() -> Dict[str, Any]:
         "module": "persona",
         "mode": "active",
         "base_file": str(_PERSONA_FILE),
-        "auto_file": str(_PERSONA_AUTO_FILE),
+        "auto_file": str(auto_path()),
         "base_exists": _PERSONA_FILE.exists(),
-        "auto_exists": _PERSONA_AUTO_FILE.exists(),
+        "auto_exists": auto_path().exists(),
         "loaded": bool(persona),
         "length": len(persona),
         "preferences_count": len(prefs),
