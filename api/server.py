@@ -5349,13 +5349,15 @@ def voice_tts(req: TTSRequest):
 # ----------------------------------------------------------------------
 # World feed for spatial clients (ELI VR)
 # ----------------------------------------------------------------------
-def _ws_authorised(ws) -> bool:
-    """The read gate, for a WebSocket handshake. A browser cannot set a header on
-    a WebSocket, so the token may also come as ?token=."""
+def _ws_authorised(ws) -> Optional[Principal]:
+    """The read gate, for a WebSocket handshake: the caller, as the read gate gives it, or None when
+    the handshake may not proceed (the world feed then reads the caller's own thoughts, as
+    /v1/world/thoughts does). A browser cannot set a header on a WebSocket, so the token may also
+    come as ?token=."""
     authorization = ws.headers.get("authorization", "")
     if not authorization and ws.query_params.get("token"):
         authorization = "Bearer " + ws.query_params["token"]
-    return _resolve_principal(authorization, _is_loopback_client(ws)) is not None
+    return _resolve_principal(authorization, _is_loopback_client(ws))
 
 def _world_chat(text: str, principal, session_id: str = "") -> str:
     """A turn of conversation from inside ELI's world (ELI VR). The same engine and the

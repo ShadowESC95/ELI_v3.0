@@ -384,6 +384,63 @@ def test_the_thoughts_route_gives_each_caller_their_own_thoughts(monkeypatch, tm
     assert [t["what"] for t in kinds["thoughts"]] == ["works at: the harbour office"]
 
 
+def test_the_world_message_gives_each_caller_their_own_thoughts(monkeypatch, tmp_path):
+    """The world message itself (/v1/world/state and the WebSocket feed a body lives on) carried the
+    owner's thoughts to every caller, though /v1/world/thoughts gave each their own: a member's VR body
+    was handed the owner's recalled memories and claims. Each caller now gets their own and ELI's
+    shared ones, over HTTP and over the socket."""
+    try:
+        from fastapi import FastAPI, Header
+        from fastapi.testclient import TestClient
+        from pydantic import BaseModel
+
+        class _Probe(BaseModel):
+            text: str = ""
+        _Probe(text="x")
+    except Exception as e:  # noqa: BLE001 - mocked pydantic under the suite conftest
+        pytest.skip(f"fastapi/pydantic not usable in-process ({type(e).__name__}); run with --noconftest")
+    from types import SimpleNamespace
+    from eli.cognition import thoughts as th
+    from eli.memory import policy
+    from eli.world import models, shown
+    monkeypatch.setattr(th, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")
+    monkeypatch.setattr(policy, "rbac_members", lambda: frozenset({"member-b"}))
+    monkeypatch.setattr(policy, "_active_user_id", lambda: "")
+    th.record("recall", "the owner's walk by the canal", decision="shown", ref="recall:r-a:1")
+    th.record("claim", "works at: the harbour office", decision="shown", ref="claim:1:r-b", user_id="member-b")
+    th.record("proposal", "a fix for the router", decision="proposed", ref="proposal:1")
+    for name, stand_in in (("items", lambda now=None: []), ("thoughts", lambda now=None: []),
+                           ("coming_up", lambda now=None: []), ("free", lambda now=None: False)):
+        monkeypatch.setattr(shown, name, stand_in)       # the rest of the message reads no store here
+    monkeypatch.setattr(models, "listed", lambda: [])
+    monkeypatch.setattr(spatial_feed, "_load_world", lambda: WORLD)
+    monkeypatch.setattr(spatial_feed, "POLL_SECONDS", 0.05)
+    shown.forget()
+
+    def who(x_who: str = Header(default="")):
+        return SimpleNamespace(user=x_who)
+
+    app = FastAPI()
+    app.include_router(spatial_feed.build_router(who, who, lambda ws: SimpleNamespace(user=ws.headers.get("x-who", "")),
+                                                 reader=lambda p: p.user or None))
+    client = TestClient(app)
+
+    def over_http(name):
+        message = client.get("/v1/world/state", params={"version": 2}, headers={"x-who": name}).json()
+        return {t["what"] for t in message["thoughts"]}
+
+    def over_the_socket(name):
+        with client.websocket_connect("/v1/world/ws", headers={"x-who": name}) as ws:
+            ws.receive_json()
+            ws.send_json({"type": "hello", "protocol_versions": [1, 2]})
+            assert ws.receive_json()["type"] == "welcome"
+            return {t["what"] for t in ws.receive_json()["thoughts"]}
+
+    for read in (over_http, over_the_socket):
+        assert read("") == {"the owner's walk by the canal", "a fix for the router"}, read.__name__
+        assert read("member-b") == {"works at: the harbour office", "a fix for the router"}, read.__name__
+
+
 def test_state_route_returns_the_message(monkeypatch):
     client, _ = _client(monkeypatch)
     r = client.get("/v1/world/state")

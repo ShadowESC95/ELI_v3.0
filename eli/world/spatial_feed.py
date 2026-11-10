@@ -157,10 +157,12 @@ def message_bytes(hello: Optional[Dict[str, Any]] = None) -> int:
 
 # ── the message ──────────────────────────────────────────────────────────────
 def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VERSION,
-                  budget: Optional[int] = None) -> Dict[str, Any]:
+                  budget: Optional[int] = None, *, reader: Optional[str] = None) -> Dict[str, Any]:
     """The world reduced to what a body draws. Pass a state dict to convert
     it; with none, the current world is read from storage. A version 2 message is held to `budget`
-    bytes (MESSAGE_BYTES): ELI's books fill what the rest leaves of it."""
+    bytes (MESSAGE_BYTES): ELI's books fill what the rest leaves of it. `reader` is whose thoughts it
+    carries (shown.kept's user_id: a member's own and ELI's shared ones; None the owner's), as for
+    /v1/world/thoughts: the message read every caller the owner's."""
     if state is None:
         state = _load_world()
     avatar = state.get("avatar") or {}
@@ -244,7 +246,7 @@ def spatial_state(state: Optional[Dict[str, Any]] = None, version: int = FEED_VE
             message["free"] = shown.free()
             # ELI's thoughts lately, each with why it had it, how sure it was, what it decided and what
             # became of it, by the room they belong in (eli/cognition/thoughts.py)
-            message["thoughts"] = shown.kept()
+            message["thoughts"] = shown.kept(user_id=reader)
             # what ELI's actions did and how often its figures proved right (the Evidence Wall)
             message["evidence"] = shown.evidence()
         except Exception:
@@ -395,7 +397,9 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
     ``require_admin`` gates choosing the model, as it does in the server.
     ``remember`` is the server's turn store: (said, answer, principal, session), for a sentence the
     game or the building answered. ``reader`` is whose records a caller reads: (principal, as
-    require_read gives it) -> a member's user id, or None for the owner's."""
+    require_read gives it) -> a member's user id, or None for the owner's. ``ws_allowed`` may give
+    the caller (a principal, as require_read gives it) for a handshake that may proceed, so the
+    socket's messages are that caller's; a bare True is the owner."""
     from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
     from pydantic import BaseModel
 
@@ -448,13 +452,17 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         """The protocol versions and capabilities this ELI speaks."""
         return protocol()
 
-    @router.get("/v1/world/state", dependencies=[Depends(require_read)])
-    def world_state(version: int = FEED_VERSION):
-        """ELI's room, avatar, awareness and world objects, for a spatial client."""
+    def _reads(principal: Any) -> Optional[str]:
+        """Whose records this caller reads (``reader``); None, the owner's, with no reader or caller."""
+        return reader(principal) if reader and principal is not None and principal is not True else None
+
+    @router.get("/v1/world/state")
+    def world_state(version: int = FEED_VERSION, principal: Any = Depends(require_read)):
+        """ELI's room, avatar, awareness and world objects, for a spatial client: the caller's own."""
         if version not in PROTOCOL_VERSIONS:
             raise HTTPException(status_code=400, detail={
                 "kind": "incompatible", "detail": negotiate({"protocol_versions": [version]})["reason"]})
-        return spatial_state(version=version)
+        return spatial_state(version=version, reader=_reads(principal))
 
     @router.post("/v1/world/event", dependencies=[Depends(require_act)])
     def world_event(event: SpatialEvent):
@@ -561,7 +569,7 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         the house, `kinds` to a comma-separated list of kinds. The caller's own (``reader``): a member
         never reads the owner's thoughts about the owner, nor the owner a member's."""
         from eli.world import shown
-        who = reader(principal) if reader else None
+        who = _reads(principal)
         wanted = [k.strip() for k in str(kinds or "").split(",") if k.strip()]
         size = max(1, min(int(limit), shown.THOUGHTS))
         return {"thoughts": shown.kept(room=room, kinds=wanted or None, limit=size, user_id=who)
@@ -606,17 +614,19 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
 
         The client may also send {"type": "vr_event", "event_type": …,
         "summary": …, "payload": …}; anything else is ignored."""
-        if not ws_allowed(ws):
+        caller = ws_allowed(ws)
+        if not caller:
             await ws.close(code=CLOSE_UNAUTHORISED)
             return
         await ws.accept()
+        reads = _reads(caller)         # whose thoughts the messages carry: the caller's own
         version = FEED_VERSION
         budget = MESSAGE_BYTES         # the most one message to it takes, as its hello says
         sent = ""
         who: Dict[str, str] = {}       # the surface and session the client named in its hello
         try:
             while True:
-                message = await asyncio.to_thread(spatial_state, None, version, budget)
+                message = await asyncio.to_thread(spatial_state, None, version, budget, reader=reads)
                 digest = _digest(message)
                 if digest != sent:
                     await ws.send_text(json.dumps(message, default=str))
