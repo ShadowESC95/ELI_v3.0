@@ -111,8 +111,8 @@ _seed_identity(SANDBOX / "config")      # the run's own owner, never this machin
 os.environ.setdefault("ELI_CPU_PREFLIGHT", "0")  # no smoke subprocess in tests
 # Every store is in the sandbox (state_env above): the user and memory DB (user_db_path() honours
 # ELI_USER_DB/ELI_MEMORY_DB first: tests once wrote rows into the real user.sqlite3), the agent DB, the
-# persona overlay and notebook (a run once replaced the real persona.auto.txt), the world (storage.WORLD_DIR
-# is frozen when it is first imported), the audit chain and its HMAC key, the agenda and the settings.
+# persona overlay and notebook (a run once replaced the real persona.auto.txt), the world (ELI_WORLD_DIR,
+# read at each use), the audit chain and its HMAC key, the agenda and the settings.
 _PYTEST_DB = Path(os.environ["ELI_USER_DB"])
 _PYTEST_DB.parent.mkdir(parents=True, exist_ok=True)
 # The document index stores whatever a turn reads and embeds it on a worker thread. Off by
@@ -126,7 +126,7 @@ _PYTEST_SETTINGS.unlink(missing_ok=True)
 
 # Hard isolation guard: fail LOUDLY at collection if any store still resolves outside the sandbox
 # (tests/_state_env.stores: the DBs, the persona overlay and persona.py's own constant for it, the
-# notebook, the vector index, the world's frozen WORLD_DIR, the settings). This makes "no test can
+# notebook, the vector index, the world's state file, the settings). This makes "no test can
 # change memory" an enforced invariant, not just configuration a future refactor could break.
 def _assert_db_isolated() -> None:
     escaped = _stores_outside(ROOT / "artifacts" / "_pytest")

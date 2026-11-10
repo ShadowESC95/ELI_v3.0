@@ -28,9 +28,6 @@ SCENE = {
 def world(tmp_path, monkeypatch):
     """A fresh world of its own, with nothing of ELI's real records reached. Gives a reader."""
     monkeypatch.setattr(world_storage, "world_dir", lambda: tmp_path)
-    monkeypatch.setattr(world_storage, "WORLD_DIR", tmp_path)
-    monkeypatch.setattr(world_storage, "EVENTS_PATH", tmp_path / "events.jsonl")
-    monkeypatch.setattr(world_storage, "ACTIONS_PATH", tmp_path / "actions.jsonl")
     store = EliWorldStorage(state_path=tmp_path / "world.json")
     monkeypatch.setattr(local_world_bridge, "_engine_instance", EliWorldAutonomyEngine(storage=store))
     monkeypatch.setattr(local_world_bridge, "load_persona_text", lambda: "")

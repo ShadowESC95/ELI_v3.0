@@ -122,7 +122,11 @@ class EliWorldAutonomyEngine:
         state.actions = state.actions[-300:]
         state.goals = decay_goals(state.goals)
         self.storage.append_event(event)
-        self.storage.save(state)
+        if not self.storage.save(state):
+            # the world on disk was not read (a stand-in world), so nothing of this was kept: whoever
+            # made the change is told so (local_world_bridge.append_event's "not_saved")
+            stood_in = getattr(state, "_stands_in_for", None) or ("", "it was not saved")
+            object.__setattr__(state, "_not_saved", str(stood_in[1]))
         return state
 
     def propose_actions(self, state: EliWorldState, event: WorldEvent) -> List[WorldAction]:

@@ -858,6 +858,12 @@ def apply(edits: Any, *, actor: str = "eli", summary: str = "", asked: bool = Fa
         state = append_event(EVENT_TYPE, source, str(summary)[:200], payload)
     event = (state.get("events") or [{}])[-1]
     results = list((event.get("payload") or {}).get("results") or [])
+    if state.get("not_saved"):
+        # applied to a stand-in for a world that could not be read, and not kept: none of it was done
+        for result in results:
+            if result.get("ok"):
+                result.update(ok=False, reason=f"the world on disk could not be read ({state['not_saved']}), "
+                                               "so this change was not saved")
     if is_undo:
         # what was taken back was made of a moment of ELI's own: the figure given for that act is
         # settled wrong (eli/world/urges.undone), by the links the earlier event carried

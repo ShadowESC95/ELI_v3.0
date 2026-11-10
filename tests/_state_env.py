@@ -40,7 +40,7 @@ def state_env(root: Path) -> Dict[str, str]:
         # persona_auto_path() and notebook_dir() have their own overrides
         "ELI_PERSONA_AUTO_PATH": str(root / "persona.auto.txt"),
         "ELI_NOTEBOOK_DIR": str(root / "eli_notebook"),
-        # storage.WORLD_DIR is frozen when that module is first imported
+        # the world (eli/world/persistence/storage.world_dir, read at each use)
         "ELI_WORLD_DIR": str(root / "world"),
         "ELI_LAST_TRACE_PATH": str(root / "last_trace.json"),
         # the audit chain, the capability state and the HMAC key the chain is signed with
@@ -69,7 +69,7 @@ def seed_identity(config_dir: Path) -> None:
 
 
 def stores() -> Dict[str, Path]:
-    """Each store as ELI resolves it now, module constants frozen at import included."""
+    """Each store as ELI resolves it now."""
     from eli.cognition import persona
     from eli.core import paths
     from eli.core.runtime_settings import _settings_file
@@ -86,8 +86,7 @@ def stores() -> Dict[str, Path]:
         "agenda DB": paths.agenda_db_path(), "calendar": paths.calendar_ics_path(),
         "persona overlay": paths.persona_auto_path(), "persona overlay (persona module)": persona.auto_path(),
         "notebook": paths.notebook_dir(), "settings": _settings_file(), "goal store": _default_goal_store(),
-        "evidence ledger": _default_db_path(), "world (storage.WORLD_DIR)": storage.WORLD_DIR,
-        "world state (storage.STATE_PATH)": storage.STATE_PATH, "world folder": storage.world_dir(),
+        "evidence ledger": _default_db_path(), "world state": storage.state_file(), "world folder": storage.world_dir(),
     }
     found.update({f"vector index {Path(p).name}": p for p in _get_index_paths()})
     return {name: Path(p).expanduser().resolve() for name, p in found.items()}
@@ -167,16 +166,6 @@ def own_state(root: Path) -> Iterator[OwnState]:
             mp.setenv(name, value)
         mp.setenv("ELI_TEST_MODE", "1")
         _forget_resolved_paths()
-        # the world's storage freezes its paths when it is first imported (on the same lane, by an
-        # earlier module): they are pointed here as well
-        from eli.world.persistence import snapshots, storage
-        world = Path(os.environ["ELI_WORLD_DIR"])
-        for name, value in (("WORLD_DIR", world), ("STATE_PATH", world / "eli_world_state.json"),
-                            ("EVENTS_PATH", world / "events.jsonl"), ("ACTIONS_PATH", world / "actions.jsonl")):
-            mp.setattr(storage, name, value)
-        mp.setattr(snapshots, "STATE_PATH", world / "eli_world_state.json", raising=False)
-        # EliWorldStorage(state_path=STATE_PATH) took the constant as its default when it was defined
-        mp.setattr(storage.EliWorldStorage.__init__, "__defaults__", (world / "eli_world_state.json",))
         if not _HOOKED[0]:
             sys.addaudithook(_note_opened)
             _HOOKED[0] = True

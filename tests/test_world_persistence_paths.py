@@ -75,7 +75,28 @@ def test_world_dir_survives_a_broken_paths_module(monkeypatch):
     assert world_dir().is_absolute()
 
 
-# ── append-only logs must not grow forever ──────────────────────────────────
+def test_the_world_is_kept_where_the_data_folder_is_now_not_where_it_was_at_import(tmp_path, monkeypatch):
+    """The world's paths were module constants fixed when storage was first imported, and a storage
+    made with no path took that constant as its default: a data folder set afterwards (a sandbox,
+    ELI_WORLD_DIR) never got the world, and the long-lived engine's storage never followed it."""
+    import json as _json
+    from eli.world.core.schemas import WorldEvent
+    from eli.world.persistence import snapshots, storage as st
+    first, second = tmp_path / "first", tmp_path / "second"
+    monkeypatch.setenv("ELI_WORLD_DIR", str(first))
+    kept = st.EliWorldStorage()
+    assert kept.state_path == first / "eli_world_state.json"
+    monkeypatch.setenv("ELI_WORLD_DIR", str(second))
+    assert st.state_file() == second / "eli_world_state.json"
+    assert kept.state_path == second / "eli_world_state.json", "a storage made earlier follows the folder"
+    _world_engine(None).ingest_event(WorldEvent("reflection", "test", "thinking"))
+    assert _json.loads((second / "eli_world_state.json").read_text(encoding="utf-8"))["events"]
+    assert (second / "events.jsonl").exists(), "the event log is beside the state it belongs to"
+    assert not (first / "eli_world_state.json").exists() and not (first / "events.jsonl").exists()
+    assert snapshots.create_snapshot("now").parent == second / "snapshots"
+
+
+# ── append-only logs must not grow forever ──────────────────────────────────# ── append-only logs must not grow forever ──────────────────────────────────
 def test_world_logs_are_trimmed(tmp_path):
     """actions.jsonl reached 41MB / 80,576 lines and events.jsonl 6.2MB on a
     normal desktop. Corrupt state backups were pruned; the logs never were, and

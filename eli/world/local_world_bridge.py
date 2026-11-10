@@ -30,10 +30,17 @@ def get_world_state() -> Dict[str, Any]:
 
 
 def append_event(event_type: str, source: str, summary: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Put an event through the world and return the world after it. When the world on disk could not
+    be read, the change is applied to a stand-in only and not saved: the result then carries
+    "not_saved", why the world was not read, so a change is never reported done that was not kept."""
     engine = _get_engine()
     event = WorldEvent(event_type=event_type, source=source, summary=summary, payload=payload or {})
     state = engine.ingest_event(event, persona_text=load_persona_text())
-    return state.to_dict()
+    out = state.to_dict()
+    not_saved = getattr(state, "_not_saved", "")
+    if not_saved:
+        out["not_saved"] = not_saved
+    return out
 
 
 def get_awareness_driven_suggestions() -> List[Dict[str, Any]]:

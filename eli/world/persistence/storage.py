@@ -6,7 +6,7 @@ import tempfile
 import threading
 from pathlib import Path
 from time import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from eli.world.agency.world_constitution import get_world_constitution, get_world_identity
 from eli.world.core.ontology import get_default_rooms
 from eli.world.core.schemas import AwarenessState, AvatarState, EliWorldState, WorldAction, WorldEvent, WorldObject
@@ -46,21 +46,22 @@ def world_dir() -> Path:
     Exported so journal/provenance/snapshots resolve the same way instead of
     each hardcoding a relative ``Path("artifacts/world/...")`` — three of them
     did, and the docstring on _world_dir above already records why that fails.
+    Resolved at every call, never kept: the world's paths used to be module
+    constants fixed when this module was first imported, so a data folder set
+    afterwards (a test's sandbox, ELI_WORLD_DIR) was never where the world went.
     """
     return _world_dir()
 
 
-WORLD_DIR = _world_dir()
-STATE_PATH = WORLD_DIR / "eli_world_state.json"
-EVENTS_PATH = WORLD_DIR / "events.jsonl"
-ACTIONS_PATH = WORLD_DIR / "actions.jsonl"
+def state_file() -> Path:
+    """The world state file, in world_dir() as it resolves now."""
+    return world_dir() / "eli_world_state.json"
+
+
 _CORRUPT_BACKUP_KEEP = 5
 # Serialises the read-modify-write swap across the GUI turn, the proactive
 # daemon and the world panel timer, which all touch this file concurrently.
 _SAVE_LOCK = threading.RLock()
-
-def _ensure() -> None:
-    WORLD_DIR.mkdir(parents=True, exist_ok=True)
 
 # The world fires an action on every autonomy tick and these files are appended forever.
 # Nothing rotated them: actions.jsonl reached 41MB / 80,576 lines and events.jsonl 6.2MB on a
@@ -112,11 +113,11 @@ def _trim_jsonl(path: Path, max_lines: int = 0) -> None:
         log.debug("world log trim failed for %s", path, exc_info=True)
 
 
-def _prune_corrupt_backups(keep: int = _CORRUPT_BACKUP_KEEP) -> None:
+def _prune_corrupt_backups(state_path: Path, keep: int = _CORRUPT_BACKUP_KEEP) -> None:
     """Keep only the newest corrupt-state backups to avoid unbounded disk use."""
     try:
         backups = sorted(
-            WORLD_DIR.glob(f"{STATE_PATH.stem}.corrupt_*.json"),
+            state_path.parent.glob(f"{state_path.stem}.corrupt_*.json"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -182,9 +183,26 @@ def _state_from_dict(data: Dict[str, Any]) -> EliWorldState:
     return state
 
 class EliWorldStorage:
-    def __init__(self, state_path: Path = STATE_PATH):
-        self.state_path = state_path
-        _ensure()
+    """The world kept in one state file, its event and action logs beside it. With no `state_path`,
+    the file is state_file() as it resolves at each use, so a long-lived storage (the autonomy
+    engine's) follows the data folder instead of the one there was when it was made."""
+
+    def __init__(self, state_path: Optional[Path] = None):
+        self._state_path = Path(state_path) if state_path is not None else None
+        self._ensure()
+
+    @property
+    def state_path(self) -> Path:
+        return self._state_path if self._state_path is not None else state_file()
+
+    @state_path.setter
+    def state_path(self, value: Optional[Path]) -> None:
+        self._state_path = Path(value) if value is not None else None
+
+    def _ensure(self) -> Path:
+        folder = self.state_path.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
 
     def load(self) -> EliWorldState:
         if not self.state_path.exists():
@@ -219,7 +237,7 @@ class EliWorldStorage:
             self.state_path.rename(corrupt)
         except Exception:
             log.debug("could not file the corrupt world state aside", exc_info=True)
-        _prune_corrupt_backups()
+        _prune_corrupt_backups(self.state_path)
         state = EliWorldState(identity=get_world_identity(), constitution=get_world_constitution(), rooms=get_default_rooms())
         self.save(state)
         return state
@@ -250,7 +268,7 @@ class EliWorldStorage:
             log.warning("the world on disk at %s was not read (%s); it is left as it is and this change "
                         "is not saved over it", stands_in[0], stands_in[1])
             return False
-        _ensure()
+        self._ensure()
         state.timestamp = time()
         payload = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
         with _SAVE_LOCK:
@@ -275,13 +293,13 @@ class EliWorldStorage:
         return True
 
     def append_event(self, event: WorldEvent) -> None:
-        _ensure()
-        with EVENTS_PATH.open("a", encoding="utf-8") as f:
+        path = self._ensure() / "events.jsonl"
+        with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event.__dict__, ensure_ascii=False) + "\n")
-        _trim_jsonl(EVENTS_PATH)
+        _trim_jsonl(path)
 
     def append_action(self, action: WorldAction) -> None:
-        _ensure()
-        with ACTIONS_PATH.open("a", encoding="utf-8") as f:
+        path = self._ensure() / "actions.jsonl"
+        with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(action.__dict__, ensure_ascii=False) + "\n")
-        _trim_jsonl(ACTIONS_PATH)
+        _trim_jsonl(path)

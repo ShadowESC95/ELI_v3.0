@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 from time import time
 from typing import Optional
-from eli.world.persistence.storage import STATE_PATH, world_dir
+from eli.world.persistence.storage import state_file, world_dir
 
 
 def snapshot_dir() -> Path:
@@ -13,11 +13,12 @@ def snapshot_dir() -> Path:
 def create_snapshot(label: str = "snapshot") -> Optional[Path]:
     SNAPSHOT_DIR = snapshot_dir()
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    if not STATE_PATH.exists():
+    state = state_file()
+    if not state.exists():
         return None
     safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:80]
     out = SNAPSHOT_DIR / f"{int(time())}_{safe_label}.json"
-    shutil.copy2(STATE_PATH, out)
+    shutil.copy2(state, out)
     return out
 
 def latest_snapshot() -> Optional[Path]:
@@ -30,6 +31,7 @@ def restore_snapshot(path: Optional[Path] = None) -> bool:
     target = path or latest_snapshot()
     if not target or not target.exists():
         return False
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(target, STATE_PATH)
+    state = state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target, state)
     return True

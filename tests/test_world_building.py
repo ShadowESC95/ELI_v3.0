@@ -23,9 +23,6 @@ from eli.world.persistence.storage import EliWorldStorage
 def world(tmp_path, monkeypatch):
     """A fresh world of its own. Gives a function that reads it back."""
     monkeypatch.setattr(world_storage, "world_dir", lambda: tmp_path)
-    monkeypatch.setattr(world_storage, "WORLD_DIR", tmp_path)
-    monkeypatch.setattr(world_storage, "EVENTS_PATH", tmp_path / "events.jsonl")
-    monkeypatch.setattr(world_storage, "ACTIONS_PATH", tmp_path / "actions.jsonl")
     store = EliWorldStorage(state_path=tmp_path / "world.json")
     monkeypatch.setattr(local_world_bridge, "_engine_instance", EliWorldAutonomyEngine(storage=store))
     monkeypatch.setattr(local_world_bridge, "load_persona_text", lambda: "")
@@ -88,6 +85,28 @@ def test_eli_makes_a_thing_and_the_world_keeps_how_it_looks_and_why(world):
     assert state.avatar.room == building.OWN_ROOM and state.avatar.activity == "building", "ELI went there to do it"
     assert building.OWN_ROOM not in state.rooms, "the house stays the nine rooms"
     assert state.spaces[building.OWN_ROOM]["name"] == "ELI's Room"
+
+
+def test_a_change_made_while_the_world_cannot_be_read_is_not_reported_done(world, tmp_path, monkeypatch):
+    """With the world file unreadable the change went to a stand-in world, which is never saved over
+    the file; it was still reported done."""
+    building.apply([{"op": "create", "name": "Lantern", "shape": "lamp"}], actor="eli", asked=True)
+    kept = tmp_path / "world.json"
+    before = kept.read_bytes()
+    real_read = Path.read_text
+
+    def unreadable(self, *a, **k):
+        if self == kept:
+            raise OSError(5, "Input/output error")
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    out = building.apply([{"op": "create", "name": "Stone", "shape": "block"}], actor="eli", asked=True)
+    monkeypatch.setattr(Path, "read_text", real_read)
+    assert not out["ok"] and not out["results"][0]["ok"]
+    assert "not saved" in out["results"][0]["reason"] and "could not be read" in out["results"][0]["reason"]
+    assert kept.read_bytes() == before and "Stone" not in _standing(world()), "nothing of it was kept"
+    assert building.apply([{"op": "create", "name": "Stone", "shape": "block"}], actor="eli", asked=True)["ok"]
 
 
 def test_every_edit_is_a_world_action_judged_by_the_policy_and_kept(world):
