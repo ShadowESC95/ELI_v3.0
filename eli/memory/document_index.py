@@ -330,9 +330,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _owner(user_id: str) -> bool:
-    from eli.memory.policy import is_active_user
-    return is_active_user(user_id)
+from eli.memory.policy import is_active_user  # noqa: E402 - whose a document is: one rule
 
 
 class DocumentIndex:
@@ -409,7 +407,7 @@ class DocumentIndex:
 
     def _scope(self, user_id: Optional[str]) -> tuple:
         uid = str(user_id or "")
-        if _owner(uid):
+        if is_active_user(uid):
             return "d.user_id IN (?, '')", (uid,)
         return "d.user_id = ?", (uid,)
 

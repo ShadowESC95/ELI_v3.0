@@ -54,8 +54,8 @@ def request_user() -> Tuple[str, bool]:
     except ImportError:
         uid = ""
     try:
-        from eli.memory.retrieval import _is_owner
-        owner = _is_owner(uid)
+        from eli.memory.policy import is_active_user
+        owner = is_active_user(uid)
     except ImportError:
         owner = not uid
     if not uid:

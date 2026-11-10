@@ -6,7 +6,7 @@ Orchestrator keyword/semantic stages consume this module instead of parallel
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from eli.memory.retrieval import TurnRetrievalResult, retrieve_for_turn
 from eli.utils.log import get_logger
@@ -150,39 +150,56 @@ def orchestrator_retrieve(
 
 
 def format_verified_memory_block(
-    tr: TurnRetrievalResult,
+    tr: Any,
     *,
-    shown: int = 6,
+    shown: Optional[int] = None,
 ) -> str:
-    """Format verified semantic hits the same way BusMemoryAgent does."""
-    hits = list(getattr(tr, "semantic_hits", None) or [])
+    """The verified-memory block of the prompt, the one formatter (the agent bus's memory agent and the
+    orchestrator both render it, so the two blocks can never differ): the first `shown` hits
+    (cog.mem_semantic_shown by default), each dated by when it was said (event_ts) and labelled with its
+    age (evidence_format.as_of). The claims among the rows shown are assessed for the turn here
+    (eli/memory/retrieval.assess_shown_claims), because these are the ones the reply rests on. `tr` is a
+    TurnRetrievalResult or the hits themselves."""
+    hits = list(tr) if isinstance(tr, (list, tuple)) else list(getattr(tr, "semantic_hits", None) or [])
     if not hits:
         return ""
-    lines: List[str] = []
+    try:
+        from eli.core.cognition_tunables import snapshot as _cog_snapshot
+        _tn = _cog_snapshot()
+    except Exception:
+        _tn = {}
+    if shown is None:
+        shown = int(_tn.get("cog.mem_semantic_shown", 6))
+    fact_chars = int(_tn.get("cog.mem_fact_chars", 240))
+    rendered = hits[:max(0, int(shown))]
+    try:
+        from eli.memory.retrieval import assess_shown_claims
+        assess_shown_claims(rendered)
+    except Exception:
+        log.debug("shown claims not assessed", exc_info=True)
     try:
         from eli.runtime.memory_provenance import format_grounding_memory_line
     except Exception:
         format_grounding_memory_line = None  # type: ignore
     import time as _time
-    for h in hits[:shown]:
+    from eli.cognition.evidence_format import as_of, row_time
+    lines: List[str] = []
+    for h in rendered:
+        # when it was said (event_ts), not when the row was last stored again
+        raw_ts = row_time(h) or 0
+        try:
+            ts_str = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(float(raw_ts))) if raw_ts else ""
+        except Exception:
+            ts_str = str(raw_ts or "")
         if format_grounding_memory_line:
             line = format_grounding_memory_line(h)
-            # when it was said (event_ts), not when the row was last stored again
-            from eli.cognition.evidence_format import row_time
-            raw_ts = row_time(h) or 0
-            try:
-                ts_str = _time.strftime(
-                    "%Y-%m-%d %H:%M", _time.localtime(float(raw_ts)),
-                ) if raw_ts else ""
-            except Exception:
-                ts_str = str(raw_ts or "")
             if ts_str:
                 line = line.replace("] ", f"] [{ts_str}] ", 1)
-            lines.append(line)
+            lines.append(as_of(line, raw_ts))
             continue
-        txt = (h.get("text") or h.get("content") or "").strip()
+        txt = (h.get("text") or h.get("content") or "").strip()[:fact_chars]
         if txt:
-            lines.append(f"  - {txt[:240]}")
+            lines.append(f"  - [{ts_str}] {as_of(txt, raw_ts)}")
     if not lines:
         return ""
     return (

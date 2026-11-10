@@ -286,23 +286,33 @@ def test_the_user_settling_a_conflict_settles_the_figures_given_for_both_claims(
     assert outcomes[ep.claim_request_id(second, "t1")] == "ok" and outcomes[ep.claim_request_id(first, "t1")] == "failed"
 
 
-def test_a_claim_reaches_the_evidence_scored_by_its_chance_and_assessed_for_the_turn(mem, ledger):
+def test_a_claim_reaches_the_evidence_scored_by_its_chance_and_is_assessed_only_when_shown(mem, ledger):
+    """Every claim retrieval gathered was assessed, so the claims' calibration was trained on claims no
+    reply rested on. Gathered, a claim is scored; rendered into the prompt, it is assessed."""
     from eli.cognition import epistemics as ep
     from eli.kernel.request_context import request_id_var, turn_facts_var
+    from eli.memory.unified_retrieval import format_verified_memory_block
     mem.store_memory("I work nights now, the warehouse changed my shift", source="user")
     t1 = request_id_var.set("turn-9")
     t2 = turn_facts_var.set({"request_id": "turn-9"})
     try:
         from eli.memory.retrieval import _claim_hits
         hits = _claim_hits(mem, "what shift do i work", None)
+        gathered = len(turn_facts_var.get().get("claims_used") or {})
+        assert format_verified_memory_block(hits, shown=0) == ""
+        not_shown = len(turn_facts_var.get().get("claims_used") or {})
+        block = format_verified_memory_block(hits, shown=1)
         facts = turn_facts_var.get()
     finally:
         request_id_var.reset(t1)
         turn_facts_var.reset(t2)
     assert hits and hits[0]["kind"] == "claim" and hits[0]["verification_status"] == "verified"
-    assert hits[0]["score"] == hits[0]["chance"] == pytest.approx(claims.sureness("user_said", 1))
+    assert hits[0]["importance"] == hits[0]["chance"] == pytest.approx(claims.sureness("user_said", 1))
+    assert gathered == 0 and not_shown == 0, "gathered, or cut from what is shown: not assessed"
+    assert "nights" in block
     used = facts["claims_used"]
     assert len(used) == 1 and next(iter(used.values()))["request_id"].endswith(":turn-9")
+    assert next(iter(used.values()))["memory_id"], "the memory the claim was read from rides with it"
     assert len(ep._ledger().open_assessments("claim", assessed_type="claim_assessed", outcome_type="claim_outcome",
                                              subject_prefix="claim:")) == 1
 

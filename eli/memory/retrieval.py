@@ -1,7 +1,10 @@
 """Shared turn retrieval — single owner for semantic + conversation recall.
 
-Both ``AgentBus`` (``BusMemoryAgent``) and ``AgentOrchestrator`` call here so
-memory is not searched twice with divergent budgets on the same turn.
+``AgentBus`` (``BusMemoryAgent``), the turn dossier and ``AgentOrchestrator`` call here. A turn's
+retrieval is kept by its request id: a later caller of the same turn that asks for no more than was
+gathered gets that result and shows what it shows of it, rather than memory being searched again with
+another budget. The claims among the evidence are assessed when they are shown (assess_shown_claims),
+not when they are gathered.
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from eli.memory.policy import is_active_user as _policy_is_active_user
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -32,20 +36,33 @@ class TurnRetrievalResult:
     # records), whole and in order: ranked among the period's memories they were cut.
     presence: List[Dict[str, Any]] = field(default_factory=list)
 
-# Per-process turn cache: key → (monotonic_ts, result)
-_TURN_CACHE: Dict[str, tuple[float, TurnRetrievalResult]] = {}
+# Per-process turn cache: key → (monotonic_ts, limits it was gathered with, result). Entries older
+# than the TTL are swept whenever one is added: an entry was only ever dropped when its own key was
+# read again, so every distinct question left its result in memory for the life of the process.
+_TURN_CACHE: Dict[str, tuple] = {}
 _CACHE_TTL_S = 8.0
 
 
-def _cache_get(key: str) -> Optional[TurnRetrievalResult]:
+def _cache_get(key: str, limits: tuple = ()) -> Optional[TurnRetrievalResult]:
     slot = _TURN_CACHE.get(key)
     if slot is None:
         return None
-    ts, entry = slot
+    ts, had, entry = slot
     if (time.monotonic() - ts) > _CACHE_TTL_S:
         _TURN_CACHE.pop(key, None)
         return None
+    # gathered with at least what is asked now: a superset the caller shows its part of
+    if limits and had and any(int(a) > int(b) for a, b in zip(limits, had)):
+        return None
     return entry
+
+
+def _cache_put(key: str, limits: tuple, result: TurnRetrievalResult) -> None:
+    now = time.monotonic()
+    for k, slot in list(_TURN_CACHE.items()):
+        if now - slot[0] > _CACHE_TTL_S:
+            _TURN_CACHE.pop(k, None)
+    _TURN_CACHE[key] = (now, limits, result)
 
 
 def invalidate_turn_cache(session_id: str = "") -> None:
@@ -62,13 +79,6 @@ _THIN_EVIDENCE = 3
 # A period question reads every turn and action in the period; the period log picks what fits
 # when it is rendered. 72 user turns covered half of one busy day.
 _WINDOW_ROWS = 400
-
-
-def _is_owner(user_id: str) -> bool:
-    """Executions recorded without a user (everything before they carried one, and the desktop
-    app's own) are the owner's; another API user must not be shown them (eli/memory/policy.is_active_user)."""
-    from eli.memory.policy import is_active_user
-    return is_active_user(user_id)
 
 
 def _tunable(key: str, fallback: int) -> int:
@@ -101,8 +111,9 @@ def _exact_token_hits(mem: Any, query: str, have: List[Dict[str, Any]], verified
 def _archive_hits(mem: Any, query: str) -> List[Dict[str, Any]]:
     """Faded rows are out of normal recall, not gone: search them only when live evidence is thin, and label them."""
     try:
+        # ranked as every hit is (eli/cognition/reranker); the row's own importance is its prior
         return [{"id": f"archive:{r['id']}", "text": r["text"], "content": r["text"], "source": "archive", "kind": "archived",
-                 "score": 0.5, "importance": 0.4, "timestamp": r.get("archived_at"), "origin": r.get("origin"),
+                 "importance": r.get("importance"), "timestamp": r.get("archived_at"), "origin": r.get("origin"),
                  "verification_status": "verified"}
                 for r in mem.search_archive(query, limit=_tunable("cog.mem_archive_recall", 8))]
     except Exception:
@@ -112,9 +123,8 @@ def _archive_hits(mem: Any, query: str) -> List[Dict[str, Any]]:
 
 def _claim_evidence(c: Dict[str, Any]) -> Dict[str, Any]:
     """A claim as a piece of evidence: scored by the chance it is right (its sureness calibrated on
-    what became of such claims, eli/memory/claims.chance), marked disputed when it is, and assessed
-    for this turn under the turn's request id, so the next turn can settle it (the engine settles
-    the claims a reply rested on with the reply)."""
+    what became of such claims, eli/memory/claims.chance) and marked disputed when it is. Not yet
+    assessed: that happens if it is shown (assess_shown_claims)."""
     from eli.memory import claims as _claims
     text = _claims.describe(c)
     disputed = bool(c.get("contested") or c.get("status") == "disputed")
@@ -123,36 +133,60 @@ def _claim_evidence(c: Dict[str, Any]) -> Dict[str, Any]:
         p = float(_claims.chance(c).p)
     except (OSError, ValueError, ImportError) as failure:
         log.debug("claim chance unavailable: %s", failure)
+    return {"id": f"claim:{c['id']}", "text": text, "content": text,
+            "source": "claims", "kind": "claim", "importance": p, "chance": p,
+            "timestamp": c["recorded_at"], "event_ts": c["valid_from"] or c["recorded_at"],
+            "origin": str(c.get("origin") or "user_said"),
+            "verification_status": "disputed" if disputed else "verified", "_claim": dict(c, chance=p)}
+
+
+def assess_shown_claims(hits: Any) -> int:
+    """The claims among the hits a reply is shown, each assessed for this turn under the turn's request
+    id (eli/cognition/epistemics, kind claim), recorded as a claim the reply rested on and kept as a
+    thought on the Evidence Wall, so the next turn settles them with the reply. Called where the hits
+    are rendered into the prompt (eli/memory/unified_retrieval.format_verified_memory_block): every
+    claim retrieval gathered used to be assessed, so the claims' calibration was trained on claims no
+    reply ever rested on. How many were assessed."""
     try:
         from eli.cognition.epistemics import CLAIM, assess, claim_request_id
         from eli.kernel.request_context import request_id_var, turn_facts_var
-        rid = str(request_id_var.get() or "")
-        facts = turn_facts_var.get()
-        if rid and facts is not None:
-            used = facts.setdefault("claims_used", {})
-            if str(c["id"]) not in used:
-                assess(CLAIM, float(c.get("confidence") or 0.0), request_id=claim_request_id(c["id"], rid),
-                       class_=str(c.get("origin") or ""),
-                       features={"confirmations": int(c.get("confirmations") or 1), "contested": disputed})
-                used[str(c["id"])] = {"p": round(p, 4), "relation": str(c.get("relation") or ""),
-                                      "value": str(c.get("value") or ""), "request_id": claim_request_id(c["id"], rid),
-                                      "memory_id": c.get("source_memory_id")}
-                # the claim the reply will rest on, as a thought on the Evidence Wall, settled with the reply
-                try:
-                    from eli.cognition.thoughts import record as _thought
-                    _thought("claim", f"{str(c.get('relation') or '').replace('_', ' ')}: {c.get('value')}",
-                             why=[_claims.basis(c)], chance=p, decision="shown",
-                             reason="the question touches it" + (", though it is disputed" if disputed else ""),
-                             subject=str(c.get("value") or ""), request_id=rid, ref=claim_request_id(c["id"], rid))
-                except (OSError, ValueError, ImportError) as thought_failure:
-                    log.debug("claim thought not kept: %s", thought_failure)
-    except (OSError, ValueError, ImportError, LookupError) as failure:
-        log.debug("claim not assessed for the turn: %s", failure)
-    return {"id": f"claim:{c['id']}", "text": text, "content": text,
-            "source": "claims", "kind": "claim", "score": p, "importance": p, "chance": p,
-            "timestamp": c["recorded_at"], "event_ts": c["valid_from"] or c["recorded_at"],
-            "origin": str(c.get("origin") or "user_said"),
-            "verification_status": "disputed" if disputed else "verified"}
+        from eli.memory import claims as _claims
+    except ImportError:
+        return 0
+    rid = str(request_id_var.get() or "")
+    facts = turn_facts_var.get()
+    if not rid or facts is None:
+        return 0
+    used = facts.get("claims_used") or {}
+    n = 0
+    for h in hits or []:
+        c = h.get("_claim") if isinstance(h, dict) else None
+        if not isinstance(c, dict) or str(c.get("id")) in used:
+            continue
+        used = facts.setdefault("claims_used", used)
+        disputed = bool(c.get("contested") or c.get("status") == "disputed")
+        p = float(c.get("chance") or c.get("confidence") or 0.0)
+        try:
+            assess(CLAIM, float(c.get("confidence") or 0.0), request_id=claim_request_id(c["id"], rid),
+                   class_=str(c.get("origin") or ""),
+                   features={"confirmations": int(c.get("confirmations") or 1), "contested": disputed})
+        except (OSError, ValueError, LookupError) as failure:
+            log.debug("claim not assessed for the turn: %s", failure)
+            continue
+        used[str(c["id"])] = {"p": round(p, 4), "relation": str(c.get("relation") or ""),
+                              "value": str(c.get("value") or ""), "request_id": claim_request_id(c["id"], rid),
+                              "memory_id": c.get("source_memory_id")}
+        n += 1
+        # the claim the reply rests on, as a thought on the Evidence Wall, settled with the reply
+        try:
+            from eli.cognition.thoughts import record as _thought
+            _thought("claim", f"{str(c.get('relation') or '').replace('_', ' ')}: {c.get('value')}",
+                     why=[_claims.basis(c)], chance=p, decision="shown",
+                     reason="the question touches it" + (", though it is disputed" if disputed else ""),
+                     subject=str(c.get("value") or ""), request_id=rid, ref=claim_request_id(c["id"], rid))
+        except (OSError, ValueError, ImportError) as thought_failure:
+            log.debug("claim thought not kept: %s", thought_failure)
+    return n
 
 
 def _claim_hits(mem: Any, query: str, window: Optional[tuple]) -> List[Dict[str, Any]]:
@@ -165,14 +199,14 @@ def _claim_hits(mem: Any, query: str, window: Optional[tuple]) -> List[Dict[str,
             # Words that say what the question is about. Every question shares "you" and "what" with some
             # stored preference that quotes the user, and the first eight of those crowded out the claim
             # asked for ("what am I currently watching" got eight preferences and no show).
-            from eli.memory.unified_retrieval import _STOP
-            words = {w for w in re.findall(r"[a-z]{3,}", (query or "").lower())} - _STOP
+            from eli.cognition.scoring import tokenize
+            words = set(tokenize(query))
             broad = bool(re.search(r"\b(?:about me|know about|remember about|my (?:job|work|home|pet))\b",
                                    (query or "").lower()))
 
             def _fit(c):
-                in_relation = len(words & set(re.findall(r"[a-z]{3,}", str(c["relation"]).replace("_", " ").lower())))
-                in_value = len(words & set(re.findall(r"[a-z]{3,}", str(c["value"]).lower())))
+                in_relation = len(words & set(tokenize(str(c["relation"]).replace("_", " "))))
+                in_value = len(words & set(tokenize(str(c["value"]))))
                 return 2 * in_relation + in_value
 
             rows = [c for c in (mem.claims_current() + mem.claims_disputed()) if broad or _fit(c)]
@@ -204,12 +238,20 @@ def retrieve_for_turn(
     """Retrieve, optionally deepen, rerank, and dedupe memory evidence for one turn."""
     t0 = time.perf_counter()
     q = (query or "").strip()
-    # Every limit is part of the key: the deepening loop repeats the same query with larger limits,
-    # and must not be handed the shallower result it just had.
-    cache_key = (f"{session_id}:{user_id}:{q.lower()[:240]}:{window}:"
-                 f"{semantic_limit}:{conv_limit}:{recent_limit}:{summary_limit}:{hop2_limit}:{merge_cap}:{verified_only}")
+    # Kept by the turn (its request id) and what it was asked: a later caller of the same turn gets it
+    # when it was gathered with at least the limits that caller asks for (the deepening loop asks for
+    # more and is not handed the shallower result); a new turn asking the same within the TTL gathers
+    # its own, so the claims it shows are assessed for it.
+    try:
+        from eli.kernel.request_context import request_id_var
+        request_id = str(request_id_var.get() or "")
+    except ImportError:
+        request_id = ""
+    limits = (int(semantic_limit), int(conv_limit), int(recent_limit), int(summary_limit), int(hop2_limit),
+              int(merge_cap))
+    cache_key = f"{session_id}:{request_id}:{user_id}:{q.lower()[:240]}:{window}:{verified_only}:{enable_hop2}"
     if use_cache:
-        cached = _cache_get(cache_key)
+        cached = _cache_get(cache_key, limits)
         if cached is not None:
             return cached
 
@@ -314,7 +356,8 @@ def retrieve_for_turn(
         try:
             from eli.runtime.evidence_ledger import actions_between
             actions = actions_between(window[0], window[1], limit=_WINDOW_ROWS, user_id=user_id,
-                                      include_unattributed=_is_owner(user_id),
+                                      # executions recorded without a user are the owner's (policy.is_active_user)
+                                      include_unattributed=_policy_is_active_user(user_id),
                                       db_path=getattr(mem, "db_path", None))
         except Exception:
             log.debug("action log unavailable", exc_info=True)
@@ -373,5 +416,5 @@ def retrieve_for_turn(
         presence=presence,
     )
     if use_cache and q:
-        _TURN_CACHE[cache_key] = (time.monotonic(), result)
+        _cache_put(cache_key, limits, result)
     return result

@@ -221,3 +221,38 @@ def test_a_period_says_where_each_turn_was_said_and_who_came_into_the_rooms(engi
     assert "Presence: A body arrived: ELI VR (headset) joined ELI in the Reading Room." in log_text
     lines = log_text.splitlines()
     assert lines.index(next(l for l in lines if "Presence:" in l)) < lines.index(next(l for l in lines if "in VR" in l))
+
+
+def test_a_turns_retrieval_is_kept_by_its_request_and_the_cache_sweeps_itself(monkeypatch):
+    """The cache key held every limit, so the orchestrator never reused the bus's retrieval of the same
+    turn; it held no request id, so a new turn asking the same within 8 s got the last turn's result
+    (and no claims assessed for it); and entries were only dropped when their own key was read again."""
+    from types import SimpleNamespace
+    from eli.kernel.request_context import request_id_var
+    from eli.memory import retrieval as rt
+    calls = []
+    mem = SimpleNamespace(
+        recall_memory=lambda q, limit=10, verified_only=True: calls.append(limit) or [],
+        search_conversations=lambda *a, **k: [], get_recent_conversation=lambda *a, **k: [],
+        get_session_summaries=lambda *a, **k: [], claims_current=lambda: [], claims_disputed=lambda: [],
+        search_archive=lambda *a, **k: [])
+    rt.invalidate_turn_cache()
+    token = request_id_var.set("turn-a")
+    try:
+        wide = rt.retrieve_for_turn(mem, "the canal path", semantic_limit=32, conv_limit=16)
+        narrow = rt.retrieve_for_turn(mem, "the canal path", semantic_limit=12, conv_limit=8)
+        assert narrow is wide and calls == [32], "the same turn asking for less reuses what it gathered"
+        rt.retrieve_for_turn(mem, "the canal path", semantic_limit=64, conv_limit=16)
+        assert calls == [32, 64], "asking for more gathers more"
+    finally:
+        request_id_var.reset(token)
+    token = request_id_var.set("turn-b")
+    try:
+        rt.retrieve_for_turn(mem, "the canal path", semantic_limit=12, conv_limit=8)
+        assert calls == [32, 64, 12], "another turn gathers its own"
+    finally:
+        request_id_var.reset(token)
+    monkeypatch.setattr(rt, "_CACHE_TTL_S", -1.0)
+    rt.retrieve_for_turn(mem, "something else", semantic_limit=12)
+    assert len(rt._TURN_CACHE) == 1, "expired entries leave when one is added"
+    rt.invalidate_turn_cache()

@@ -1144,45 +1144,12 @@ class BusMemoryAgent(_BaseAgent):
                     )
 
             if raw_hits:
-                hits_text = []
-                try:
-                    from eli.runtime.memory_provenance import format_grounding_memory_line
-                except Exception:
-                    format_grounding_memory_line = None  # type: ignore
-                from eli.cognition.evidence_format import row_time
-                for h in raw_hits[:_tn["cog.mem_semantic_shown"]]:
-                    if format_grounding_memory_line:
-                        line = format_grounding_memory_line(h)
-                        # when it was said (event_ts), not when the row was last stored again: a
-                        # re-pinned memory from 14 Sep showed as 24 Sep
-                        raw_ts = row_time(h) or 0
-                        try:
-                            ts_str = time.strftime(
-                                "%Y-%m-%d %H:%M", time.localtime(float(raw_ts)),
-                            ) if raw_ts else ""
-                        except Exception:
-                            ts_str = str(raw_ts)
-                        if ts_str:
-                            line = line.replace("] ", f"] [{ts_str}] ", 1)
-                        from eli.cognition.evidence_format import as_of
-                        hits_text.append(as_of(line, raw_ts))
-                        continue
-                    txt = (h.get("text") or h.get("content") or "")[:_tn["cog.mem_fact_chars"]]
-                    raw_ts = row_time(h) or 0
-                    try:
-                        ts_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(raw_ts))) if raw_ts else ""
-                    except Exception:
-                        ts_str = str(raw_ts)
-                    if txt:
-                        from eli.cognition.evidence_format import as_of
-                        txt = as_of(txt, raw_ts)
-                        hits_text.append(f"  - [{ts_str}] {txt}")
-                if hits_text:
-                    from eli.memory.unified_retrieval import VERIFIED_SCOPE_NOTE
-                    context_parts.append(
-                        f"Verified stored memories ({len(raw_hits)} found — "
-                        f"{VERIFIED_SCOPE_NOTE}):\n"
-                        + "\n".join(hits_text))
+                # the one verified-memory formatter (eli/memory/unified_retrieval), which also assesses
+                # the claims among the rows shown: the orchestrator renders the same block
+                from eli.memory.unified_retrieval import format_verified_memory_block
+                _verified = format_verified_memory_block(raw_hits, shown=_tn["cog.mem_semantic_shown"])
+                if _verified:
+                    context_parts.append(_verified)
 
             if conv_hits:
                 conv_text = []
