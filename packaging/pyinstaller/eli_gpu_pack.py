@@ -477,6 +477,19 @@ def _too_old_for_modern_archs(version: str) -> bool:
     return bool(t) and t < MIN_MODERN_ARCH_VERSION
 
 
+def _nvidia_present(drv: tuple[int, int] | None) -> bool:
+    """An NVIDIA card here: the driver reports a CUDA version, or the card is simply seen (the
+    version parse picks the exact wheel; it is not the gate for "is this NVIDIA")."""
+    return drv is not None or _has_nvidia_gpu()
+
+
+def pack_backend_for() -> str:
+    """The pack this machine takes, as install() decides it: CUDA where an NVIDIA card is present,
+    Vulkan otherwise. The startup window asked for this since v3.0.138 and it did not exist, so the
+    GPU pack's status always read "unknown" and offered a reinstall of a working pack."""
+    return "cuda" if _nvidia_present(_driver_cuda_version()) else "vulkan"
+
+
 def pack_backend_from_url(url: str) -> str:
     """Name the backend a gpu-packs asset actually contains.
 
@@ -1186,7 +1199,7 @@ def _install(argv: list[str] | None = None) -> int:
     # the exact wheel, not the gate for "is this NVIDIA". Conflating the two forced
     # a working 1660 Ti (whose bare nvidia-smi lacked a parseable CUDA line) onto CPU.
     drv = None if want_vulkan else _driver_cuda_version()
-    nvidia_present = (not want_vulkan) and (drv is not None or _has_nvidia_gpu())
+    nvidia_present = (not want_vulkan) and _nvidia_present(drv)
     amd_present = (not want_vulkan) and _has_amd_gpu()
     intel_arc_present = (not want_vulkan) and _has_intel_arc_gpu()
     intel_igpu_present = (not want_vulkan) and _has_intel_igpu()

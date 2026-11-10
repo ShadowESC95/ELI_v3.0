@@ -89,3 +89,26 @@ def test_post_install_verification_still_uses_the_live_probe():
         "expected the post-install verification's live probe to still be "
         "present alongside the boot-time cheap-first checks"
     )
+
+
+def test_every_name_the_gpu_pack_controls_read_exists_and_the_status_is_worked_out(monkeypatch):
+    """The startup window asked eli_gpu_pack for pack_backend_for(), which it never had (since
+    v3.0.138): the GPU pack's status always read "unknown (module 'eli_gpu_pack' has no attribute
+    'pack_backend_for')" and offered to reinstall a working pack, which the owner then did. Every
+    name ELI reads from the pack module must exist, and the status must come out in words."""
+    import ast
+    from eli.gui.panels import startup
+    gp = startup._import_eli_gpu_pack()
+    tree = ast.parse(Path(startup.__file__).read_text(encoding="utf-8"))
+    read = {n.attr for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "gp"}
+    assert read and not sorted(a for a in read if not hasattr(gp, a)), sorted(a for a in read if not hasattr(gp, a))
+    monkeypatch.setattr(gp, "_driver_cuda_version", lambda: (12, 6))
+    assert gp.pack_backend_for() == "cuda"
+    monkeypatch.setattr(gp, "_driver_cuda_version", lambda: None)
+    monkeypatch.setattr(gp, "_has_nvidia_gpu", lambda: False)
+    assert gp.pack_backend_for() == "vulkan"
+    monkeypatch.setattr(gp, "gpu_pack_looks_installed", lambda *_a: True)
+    monkeypatch.setattr("eli.core.hardware_profile._llama_gpu_offload_available", lambda: True)
+    state = startup._gpu_pack_state()
+    assert state["text"].startswith("Active"), state

@@ -186,9 +186,9 @@ def _pack_is_active() -> bool:
 def _gpu_pack_state() -> Dict[str, Any]:
     """What the GPU pack controls show, for the startup window and the first-run wizard alike.
     The cheap gpu_pack_looks_installed() check comes first: the live probe takes up to 180 s."""
-    from eli.core.hardware_profile import detect_hardware, _llama_gpu_offload_available
+    from eli.core.hardware_profile import _llama_gpu_offload_available
     gp = _import_eli_gpu_pack()
-    backend = gp.pack_backend_for(detect_hardware())
+    backend = gp.pack_backend_for()
     dest = gp._eli_root() / "runtime" / "gpu"
     old = gp.outdated_pack(dest)
     if (gp.gpu_pack_looks_installed(dest) or gp.gpu_pack_operational(dest)) and _llama_gpu_offload_available():
