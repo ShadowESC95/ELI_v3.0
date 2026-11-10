@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import pathlib
 
+import pytest
+
 import eli.cognition.gguf_inference as G
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -238,6 +240,7 @@ def test_the_thread_box_keeps_auto_and_reaches_every_thread_this_machine_has(mon
     """The box ran 1-64 and started at 8: the saved auto (0) came up as 1, the window's Load asked
     llama.cpp for one thread, and the next save wrote 1 over auto."""
     import os
+    pytest.importorskip("PySide6", reason="the window's toolkit is not installed here (CI's no-GUI step)")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
     from eli.gui.main_window._mixins.settings_model import SettingsModelMixin
@@ -263,6 +266,7 @@ def test_the_tuner_does_not_write_its_thread_figure_as_the_operators():
 def test_a_load_past_the_trained_length_sizes_budgets_for_the_trained_length(monkeypatch, tmp_path, caplog):
     """A model trained on 32768 loaded at 39168: generation sized every prompt at 32768, but the
     reasoning-mode budgets were re-derived from 39168."""
+    pytest.importorskip("PySide6", reason="the window's toolkit is not installed here (CI's no-GUI step)")
     import eli.core.startup_hardware_optimizer as sho
     import eli.gui.main_window.models as M
     model = tmp_path / "m.gguf"

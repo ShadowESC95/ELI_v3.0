@@ -263,7 +263,7 @@ def test_the_windows_cpu_build_comes_from_wheels_and_is_built_only_where_a_compi
 
 def test_without_an_inference_engine_eli_is_installed_with_every_extra_but_llm():
     """[full] includes the llm extra (llama-cpp-python), which pip would build from source."""
-    import tomllib
+    from eli.core.toml_util import loads_toml
 
     code = _ps1_code()
     line = next(line for line in code.splitlines() if "$Rest = & $PythonVenv -c" in line)
@@ -273,7 +273,7 @@ def test_without_an_inference_engine_eli_is_installed_with_every_extra_but_llm()
     root = Path(__file__).resolve().parents[1]
     got = subprocess.run([sys.executable, "-c", snippet, str(root / "pyproject.toml")],
                          capture_output=True, text=True, check=True).stdout.strip()
-    full = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    full = loads_toml((root / "pyproject.toml").read_bytes())
     extras = full["project"]["optional-dependencies"]["full"][0].split("[", 1)[1].rstrip("]").split(",")
     assert got.split(",") == [e for e in extras if e != "llm"]
 
