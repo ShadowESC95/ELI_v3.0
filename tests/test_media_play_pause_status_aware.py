@@ -118,7 +118,8 @@ def two_players(monkeypatch):
         returncode, stdout, stderr = 0, "\n".join(status), ""
 
     # playerctl is there, as far as anything in ELI can tell
-    monkeypatch.setattr(media.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(media.subprocess, "run", lambda argv, **kw: _Listed() if "--list-all" in argv
                         else subprocess.CompletedProcess(argv, 0, "", ""))
     monkeypatch.setattr(mp, "_has", lambda tool: True)

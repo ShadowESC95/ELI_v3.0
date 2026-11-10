@@ -112,7 +112,9 @@ class _FakeProc:
 @pytest.fixture
 def _yt_env(monkeypatch):
     """Pin the YouTube branch: tools present, no real network, no real browser."""
-    monkeypatch.setattr(media_impl.shutil, "which", lambda c: f"/usr/bin/{c}"
+    import shutil
+    from eli.integrations.media import youtube_playback as yp
+    monkeypatch.setattr(shutil, "which", lambda c: f"/usr/bin/{c}"
                         if c in ("mpv", "yt-dlp") else None)
     monkeypatch.setattr(media_impl, "_mpv_quit", lambda: None)
     monkeypatch.setattr(media_impl, "_set_now_playing", lambda *a, **k: None)
@@ -120,8 +122,9 @@ def _yt_env(monkeypatch):
     opened: list[str] = []
     # _open_in_browser reports whether the browser really opened; the fake always succeeds.
     monkeypatch.setattr(media_impl, "_open_in_browser", lambda url: opened.append(url) or True)
-    monkeypatch.setattr(media_impl, "_yt_resolve_watch_url", lambda q: "https://youtu.be/stub")
-    monkeypatch.setattr(media_impl, "_yt_mix_url", lambda u: u)
+    # the one results-page reader, used by the mpv attempt and the browser fallback alike
+    monkeypatch.setattr(yp, "yt_resolve_watch_url", lambda q: "https://youtu.be/stub")
+    monkeypatch.setattr(yp, "yt_mix_url", lambda u: u)
     monkeypatch.setenv("ELI_YT_VERIFY_SECONDS", "0.3")   # keep the test fast
     return opened
 
@@ -179,7 +182,8 @@ def test_alive_but_unloaded_mpv_is_not_claimed_as_playing(monkeypatch, _yt_env):
     seconds before it exits. Liveness alone would report that as playing — the original
     defect in slower clothing. Nothing loaded means nothing is claimed."""
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _FakeProc(rc=None))
-    monkeypatch.setattr(ex, "_mpv_load_confirmed", lambda _sock: False)
+    from eli.integrations.media import youtube_playback as yp
+    monkeypatch.setattr(yp, "mpv_load_confirmed", lambda _sock: False)
 
     result = ex.play_specific("some track", target="youtube")
 

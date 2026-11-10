@@ -20,10 +20,10 @@ def test_spotify_open_uri_macos_uses_osascript(monkeypatch):
     assert calls and "open location" in calls[0]
 
 
-def test_mpv_apply_browser_autoplay_from_executor():
-    from eli.execution.executor_enhanced import _yt_apply_browser_autoplay, _yt_mix_url
-    mix = _yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-    url = _yt_apply_browser_autoplay(mix)
+def test_mpv_apply_browser_autoplay():
+    from eli.integrations.media.youtube_playback import yt_apply_browser_autoplay, yt_mix_url
+    mix = yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    url = yt_apply_browser_autoplay(mix)
     assert "autoplay=1" in url
     assert "start_radio=1" in url
 

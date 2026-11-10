@@ -28,7 +28,6 @@ from pathlib import Path
 import pytest
 
 from eli.execution import router_enhanced as router
-from eli.execution import executor_enhanced as ex
 from eli.kernel import engine as eng
 
 
@@ -131,5 +130,6 @@ def test_real_code_audit_requests_still_route(phrase):
 
 def test_mpv_helpers_survive_a_missing_socket():
     """Nothing here may raise when mpv is not running."""
-    assert ex._mpv_load_confirmed("/nonexistent/eli-test.sock") is False
-    assert ex._mpv_load_confirmed("") is False
+    from eli.integrations.media.youtube_playback import mpv_load_confirmed
+    assert mpv_load_confirmed("/nonexistent/eli-test.sock") is False
+    assert mpv_load_confirmed("") is False

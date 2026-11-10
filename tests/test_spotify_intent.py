@@ -35,8 +35,8 @@ def test_mpv_load_confirmed_rejects_bool_duration(monkeypatch):
         "eli.integrations.media.cross_platform.mpv_ipc_send",
         lambda cmd, **kw: True if cmd[-1] == "duration" else False,
     )
-    from eli.execution.executor_enhanced import _mpv_load_confirmed
-    assert _mpv_load_confirmed("/tmp/fake.sock") is False
+    from eli.integrations.media.youtube_playback import mpv_load_confirmed
+    assert mpv_load_confirmed("/tmp/fake.sock") is False
 
 
 def test_youtube_mpv_query_skips_album_suffix_for_plain_songs():

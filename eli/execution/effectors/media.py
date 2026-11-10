@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import os
 import shlex
-import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -19,7 +17,9 @@ log = get_logger(__name__)
 
 from eli.execution.effectors._base import _allow_or_block, _open_in_browser, _run_argv
 from eli.execution.effectors.system_helpers import volume_fallback as _volume_fallback
-import re  # module-level: _PLAYLIST_RE is compiled at import time
+# YouTube's helpers have one copy, read through the module so a test or a fix there reaches every caller.
+from eli.integrations.media import youtube_playback as _yp
+import re  # module-level: the cause patterns are compiled at import time
 
 
 def _execute_impl(*a, **k):
@@ -192,84 +192,6 @@ def play_media(target: str | None = None) -> Dict[str, Any]:
     return result
 
 
-def _yt_resolve_watch_url(query: str) -> str | None:
-    """Return the first YouTube watch URL for a search query.
-    Uses a plain urllib scrape — no yt-dlp or API key required.
-    Returns None if the network request fails or no video is found.
-    """
-    try:
-        import urllib.request as _ureq
-        import urllib.parse as _up2
-        import re as _re2
-        url = f"https://www.youtube.com/results?search_query={_up2.quote_plus(query)}"
-        req = _ureq.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
-        )
-        with _ureq.urlopen(req, timeout=8) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-        m = _re2.search(r'"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"', html)
-        if m:
-            return f"https://www.youtube.com/watch?v={m.group(1)}"
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-    return None
-
-
-def _yt_autoplay_enabled() -> bool:
-    """Whether direct YouTube playback should continue into related tracks.
-
-    On by default -- a single track that stops dead is what was reported. The
-    setting exists so someone who wants exactly one track can say so, and so
-    the scrape can be skipped entirely when it is not wanted.
-    """
-    import os as _os
-    env = (_os.environ.get("ELI_YT_AUTOPLAY") or "").strip().lower()
-    if env in {"0", "false", "off", "no"}:
-        return False
-    if env in {"1", "true", "on", "yes"}:
-        return True
-    try:
-        from eli.core.config import get as _cfg_get
-        return bool(_cfg_get("youtube_autoplay", True))
-    except Exception:
-        return True
-
-
-def _yt_mix_url(watch_url: str | None) -> str | None:
-    """Turn a plain YouTube watch URL into a Mix/radio URL so playback AUTOPLAYS
-    related songs continuously instead of stopping after one video. YouTube's
-    `&list=RD<videoId>` is the auto-generated "Mix" (song radio) seeded from the
-    video — the user's reported "YT doesn't autoplay the next songs" + "play
-    something related" both come from this."""
-    if not watch_url:
-        return watch_url
-    import re as _re3
-    m = _re3.search(r"[?&]v=([A-Za-z0-9_-]{11})", watch_url)
-    if m:
-        vid = m.group(1)
-        return f"https://www.youtube.com/watch?v={vid}&list=RD{vid}"
-    return watch_url
-
-
-from eli.integrations.media.youtube_playback import (
-    yt_apply_browser_autoplay as _yt_apply_browser_autoplay,
-    yt_resolve_watch_url_ytdlp as _yt_resolve_watch_url_ytdlp,
-)
-
-
-def _yt_browser_play_url(query: str) -> str:
-    """Resolve a song query to a browser URL that autoplays and continues (Mix)."""
-    import urllib.parse as _up2
-
-    watch = _yt_resolve_watch_url(query) or _yt_resolve_watch_url_ytdlp(query)
-    if watch and _yt_autoplay_enabled():
-        watch = _yt_mix_url(watch)
-    if watch:
-        return _yt_apply_browser_autoplay(watch)
-    return f"https://www.youtube.com/results?search_query={_up2.quote_plus(query)}"
-
-
 def _spotify_open_uri(uri: str) -> bool:
     from eli.integrations.media.cross_platform import spotify_open_uri as _cp_open
     return _cp_open(uri)
@@ -278,27 +200,6 @@ def _spotify_open_uri(uri: str) -> bool:
 def _spotify_search(query: str, prefer: str | None = None) -> bool:
     from eli.integrations.media.cross_platform import spotify_search as _cp_search
     return _cp_search(query, prefer=prefer)
-
-
-_PLAYLIST_RE = re.compile(
-    r"^\s*(?:my|the|a)?\s*(?P<name>.+?)\s*(?:play\s*list|playlist)\s*$", re.I
-)
-
-
-def _spotify_playlist_name(query: str) -> str:
-    """The playlist name in "play my workout playlist", else "".
-
-    A song request and a playlist request need different Spotify contexts: a
-    track plays once and stops, a playlist keeps going. There was no way to
-    ask for the second one at all.
-    """
-    m = _PLAYLIST_RE.match(str(query or ""))
-    if not m:
-        return ""
-    name = (m.group("name") or "").strip(" .,:;-")
-    # "play my playlist" names nothing; treat it as no playlist rather than
-    # searching Spotify for the empty string.
-    return name if len(name) >= 2 else ""
 
 
 def _spotify_loop_status() -> str:
@@ -457,49 +358,6 @@ def _mpv_socket_path() -> str:
     return _cp_sock()
 
 
-def _yt_player_clients() -> list:
-    """yt-dlp YouTube clients to try, in order.
-
-    A googlevideo "HTTP error 403 Forbidden" during playback does not mean the
-    video is unavailable — it means yt-dlp resolved a stream URL that is bound
-    to the client which requested it, and ffmpeg (inside mpv) cannot reproduce
-    that request. The live failure carried `c=ANDROID_VR`, whose URLs are tied
-    to the requesting client and reliably 403 when handed to another fetcher.
-
-    The empty string means "whatever yt-dlp picks by default" and it goes
-    FIRST, deliberately. Measured against live YouTube on yt-dlp 2026.03.17,
-    the default client resolved and fetched (HTTP 206) while web_safari, tv,
-    ios, mweb and web_embedded did not resolve at all — pinning a "preferred"
-    client would have broken working playback for everyone to chase an
-    intermittent failure. So the default path is never altered; the ladder is
-    only ever walked after a 403 has actually happened, and it lists the
-    clients that were observed to resolve.
-
-    Which clients work shifts as YouTube changes, so the order is overridable
-    with ELI_YT_PLAYER_CLIENTS (comma-separated) without touching code. A
-    stale yt-dlp is the other common cause and no client can compensate for
-    it, which is why the failure message says so.
-    """
-    raw = (os.environ.get("ELI_YT_PLAYER_CLIENTS") or "").strip()
-    if raw:
-        return [("" if c.strip().lower() == "default" else c.strip())
-                for c in raw.split(",") if c.strip()]
-    return ["android", "tv", "ios", "mweb", ""]
-
-
-def _yt_is_client_bound_failure(stderr_tail: str) -> bool:
-    """True when the failure is the kind a different client can fix.
-
-    A 403 is worth retrying with another client. "Video unavailable", a
-    geo-block or an empty search result are not — retrying those just burns
-    seconds before the browser fallback the user was always going to get.
-    """
-    low = str(stderr_tail or "").lower()
-    if "empty playlist" in low or "unavailable" in low or "private video" in low:
-        return False
-    return "403" in low or "forbidden" in low
-
-
 def _mpv_alive() -> bool:
     from eli.integrations.media.cross_platform import mpv_alive as _cp_alive
     p = _MEDIA_STATE.get("mpv_sock") or _mpv_socket_path()
@@ -512,32 +370,6 @@ def _mpv_ipc(command: list, *, want_response: bool = False):
     from eli.integrations.media.cross_platform import mpv_ipc_send
     p = _MEDIA_STATE.get("mpv_sock") or _mpv_socket_path()
     return mpv_ipc_send(command, sock_path=p, want_response=want_response)
-
-
-def _mpv_numeric(val: Any) -> bool:
-    """True for real mpv numbers — bool must not count (bool is a int subclass)."""
-    return isinstance(val, (int, float)) and not isinstance(val, bool)
-
-
-def _mpv_load_confirmed(sock_path: str) -> bool:
-    """True once mpv has actually opened a stream (not merely spawned)."""
-    from eli.integrations.media.youtube_playback import mpv_load_confirmed
-    return mpv_load_confirmed(sock_path)
-
-
-def _prune_mpv_logs(keep: int = 5) -> None:
-    """Keep only the newest `keep` mpv failure logs so /tmp cannot grow without bound."""
-    import glob as _glob
-    try:
-        logs = sorted(_glob.glob(str(__import__("eli.core.paths", fromlist=["temp_path"]).temp_path("mpv_*.log"))),
-                      key=os.path.getmtime, reverse=True)
-        for stale in logs[keep:]:
-            try:
-                os.unlink(stale)
-            except OSError:
-                log.debug("suppressed exception", exc_info=True)
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
 
 
 def _mpv_quit() -> None:
@@ -1006,7 +838,7 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
     if is_yt_browser:
         from eli.integrations.media.spotify_intent import youtube_search_query as _yt_q
         yt_q = _yt_q(query)
-        url = _yt_browser_play_url(yt_q)
+        url = _yp.yt_browser_play_url(yt_q)
         if not _open_in_browser(url):
             msg = (
                 "Couldn't open YouTube in the browser — Firefox may be hung. "
@@ -1106,7 +938,7 @@ def play_specific(query: str, target: str | None = None, *, browser: bool = Fals
         else "" if _yt_have_tools
         else (" — say yes if I offer to install mpv or yt-dlp")
     )
-    watch = _yt_browser_play_url(yt_search)
+    watch = _yp.yt_browser_play_url(yt_search)
     if "watch?v=" in watch:
         if not _open_in_browser(watch):
             msg = (
@@ -1418,7 +1250,7 @@ def now_playing() -> Dict[str, Any]:
     msg = "Nothing is playing right now."
     return {"ok": True, "action": "NOW_PLAYING", "content": msg, "response": msg}
 
-__all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_yt_resolve_watch_url', '_yt_mix_url', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
+__all__ = ['MEDIA_DUCK', 'MEDIA_PLAYER', '_BROWSER_PLAYERS', '_DUCKED_MEDIA', '_DUCK_LOCK', '_DUCK_TIMER', '_get_active_player', '_playerctl', '_resolve_media_target', '_targets_mpv', 'play_media', '_spotify_open_uri', '_spotify_search', '_spotify_play', '_spotify_is_playing', '_spotify_running', '_mpv_socket_path', '_mpv_alive', '_mpv_ipc', '_mpv_quit', '_set_now_playing', 'play_specific', '_playerctl_run', '_playerctl_p', '_duck_media_pause', '_duck_media_resume', '_duck_schedule_resume', '_spotify_player_name', '_spotify_launch', '_spotify_ctl', 'stop_media', 'pause_media', 'next_media', 'previous_media', 'shuffle_media', 'repeat_media', 'now_playing']
 
 
 def _ensure_spotify_running() -> bool:

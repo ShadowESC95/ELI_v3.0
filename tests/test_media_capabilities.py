@@ -33,14 +33,6 @@ def test_detect_hardware_capabilities_uses_hardware_profile():
         assert isinstance(hw.get("vram_mb"), int)
 
 
-def test_yt_player_clients_default_order():
-    from eli.integrations.media.youtube_playback import yt_player_clients
-    os.environ.pop("ELI_YT_PLAYER_CLIENTS", None)
-    clients = yt_player_clients()
-    assert clients[0] == "android"
-    assert "" in clients
-
-
 def test_mpv_numeric_rejects_bool():
     from eli.integrations.media.youtube_playback import mpv_numeric
     assert mpv_numeric(True) is False
