@@ -31,9 +31,15 @@ def test_the_section_says_the_turns_are_from_earlier_sessions():
 
 
 def test_stored_memories_are_still_timestamped():
-    """The fix is symmetry -- don't lose the side that was already right."""
-    src = _source()
-    assert re.search(r'hits_text\.append\(f"  - \[\{ts_str\}\] \{txt\}"\)', src)
+    """The fix is symmetry -- don't lose the side that was already right. The bus renders stored
+    memories through the one verified-memory formatter (eli/memory/unified_retrieval), which dates
+    each row by when it was said."""
+    import time
+    from eli.memory.unified_retrieval import format_verified_memory_block
+    assert "format_verified_memory_block(" in _source()
+    said = time.mktime((2026, 3, 4, 9, 30, 0, 0, 0, -1))
+    block = format_verified_memory_block([{"text": "the spare key hangs by the back door", "timestamp": said}], shown=5)
+    assert "[2026-03-04 09:30] the spare key hangs by the back door" in block
 
 
 def test_a_missing_timestamp_does_not_break_the_line():

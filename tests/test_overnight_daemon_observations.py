@@ -83,15 +83,18 @@ def test_a_real_message_still_yields_its_subjects():
 
 
 def test_the_daemon_uses_the_shared_vocabulary():
-    """Not a second list that drifts. This is the whole point of the fix."""
+    """Not a second list that drifts. This is the whole point of the fix. The daemon's focus is now the
+    one interest estimator's (eli/memory/interest.focus), which reads topics with the shared vocabulary."""
     import inspect
 
+    from eli.memory import interest
     from eli.planning import proactive_daemon
 
     src = inspect.getsource(proactive_daemon)
-    i = src.index("Pattern 2: Meaningful topic focus")
+    i = src.index("Pattern 2: the user's focus")
     window = src[i:i + 2000]
-    assert "from eli.runtime.reflection import topic_words" in window
+    assert "from eli.memory.interest import focus" in window and "STOPWORDS" not in window
+    assert "from eli.runtime.reflection import topic_words" in inspect.getsource(interest)
 
 
 # ── 2. trend detection must read the shape it writes ───────────────────────
