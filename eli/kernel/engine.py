@@ -7090,6 +7090,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             # grounded fact; never let a reasoning mode re-narrate them.
                             "EXAMINE_CODE",
                             "CONFIRM_CODE_FIX",
+                            # the yes or no to a fix candidate: what each one came to, as the applier said it
+                            "APPROVE_CANDIDATE",
                             "CANCEL_CODE_FIX",
                             "CONFIRM_HABIT",
                             "DECLINE_HABIT",
