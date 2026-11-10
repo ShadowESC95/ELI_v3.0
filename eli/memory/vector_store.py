@@ -66,7 +66,15 @@ except ImportError:
     FAISS_AVAILABLE = False
 
 SAVE_EVERY   = 50
+# The width of a vector when no embedder has said its own: nomic-embed-text-v1.5's, the one ELI ships.
+# Every index is made at the loaded embedder's own width (VectorStore._dim), and an index made by
+# another embedder is rebuilt, never fed vectors of the wrong width.
 EMBED_DIM    = 768
+# The task prefixes an embedder was trained with, by its GGUF architecture: nomic's embedders read a
+# stored passage as "search_document: ..." and a question as "search_query: ..." (they are trained
+# asymmetrically, and every stored memory was embedded as a question). A model with no known pair
+# gets none.
+_TASK_PREFIXES = {"nomic-bert": ("search_query: ", "search_document: ")}
 # How much of the machine's RAM the semantic index may take, vectors and their metadata together.
 # An IndexFlat holds every vector in RAM and searches them all, so the cap on entries is what fits
 # in this share (a 32 GiB PC: about 100,000 memories; an 8 GiB phone: a quarter of that). It was a
@@ -75,10 +83,7 @@ INDEX_RAM_SHARE = 0.01
 # A prune takes the index this far under its cap, so the next one is this many adds away. Pruning to
 # exactly the cap made every add after it prune again.
 PRUNE_HEADROOM = 0.10
-_VECTOR_BYTES = EMBED_DIM * 4      # float32
-
-
-def entry_cap(meta: Optional[List[Dict[str, Any]]] = None) -> int:
+def entry_cap(meta: Optional[List[Dict[str, Any]]] = None, dim: int = EMBED_DIM) -> int:
     """How many entries the index may hold on this machine: INDEX_RAM_SHARE of its RAM over what
     one entry takes (its vector and its text as the index's own entries measure it). 0 when the
     RAM cannot be read: then nothing is pruned, rather than a cap made up."""
@@ -90,7 +95,7 @@ def entry_cap(meta: Optional[List[Dict[str, Any]]] = None) -> int:
     if total_gib <= 0:
         return 0
     texts = [len(str(e.get("text") or "").encode("utf-8")) for e in (meta or [])[-1000:]]
-    per_entry = _VECTOR_BYTES + (sum(texts) / len(texts) if texts else 0.0)
+    per_entry = int(dim) * 4 + (sum(texts) / len(texts) if texts else 0.0)      # float32 vectors
     return max(1, int(total_gib * (1 << 30) * INDEX_RAM_SHARE / per_entry))
 
 _store: Optional["VectorStore"] = None
@@ -104,8 +109,15 @@ def reset_vector_store(discard: bool = False) -> None:
     global _store
     with _store_lock:
         old, _store = _store, None
-    if discard and old is not None:
-        old._discarded = True
+    if old is not None:
+        if discard:
+            old._discarded = True
+        # Closed, so a rebuild it is running stops and its embedder is freed: dropped, it kept running
+        # and its finishing flush put the old index and texts back where the wipe had removed them.
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - the instance is dropped whatever its embedder does
+            log.debug("old vector store not closed", exc_info=True)
 
 
 def embedder_in_ram(Llama) -> Dict[str, Any]:
@@ -239,20 +251,66 @@ class VectorStore:
         self._adds_since_save = 0
         self._save_generation = 0
         self._needs_rebuild = False
+        self._dim = EMBED_DIM
+        self._prefixes = ("", "")
+        self._rebuilding = 0
+        self._added_during: List[tuple] = []
         self._tombstone_ids: set[int] = set()
         self._index_path, self._meta_path = _get_index_paths()
         self._load()
         self._load_tombstones()
         self._init_embedder()
+        self._check_embedder_identity()
         # Saves are batched (SAVE_EVERY, and at shutdown), so an unclean exit can leave the newest
         # memories out of the saved index: the catch-up embeds whatever the index is missing.
         if self._embedder is not None:
             threading.Thread(target=self._auto_rebuild, daemon=True, name="eli-vs-rebuild").start()
 
+    def _new_index(self):
+        return faiss.IndexFlatL2(int(getattr(self, "_dim", EMBED_DIM) or EMBED_DIM))
+
+    def _identity(self) -> Dict[str, Any]:
+        """Which embedder made the vectors: its file, size, width and task prefixes."""
+        path = resolve_embedder_path()
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        return {"model": os.path.basename(path), "size": int(size), "dim": int(getattr(self, "_dim", EMBED_DIM)),
+                "prefixes": list(getattr(self, "_prefixes", ("", "")))}
+
+    def _identity_path(self) -> str:
+        return self._index_path + ".embedder.json"
+
+    def _check_embedder_identity(self) -> None:
+        """An index made by another embedder (another file, width or prefixes, or one from before the
+        embedder was recorded, whose stored memories were embedded as questions) is rebuilt from the
+        database. Of another width it cannot take a single new vector, so it is replaced by an empty
+        one at once; of the same width it is searched until the rebuilt one takes its place."""
+        if self._embedder is None:
+            return
+        import json as _json
+        try:
+            with open(self._identity_path(), "r", encoding="utf-8") as f:
+                saved = _json.load(f)
+        except (OSError, ValueError):
+            saved = None
+        index_dim = int(getattr(self._index, "d", self._dim) or self._dim)
+        if index_dim != int(self._dim):
+            log.warning("[VECTOR_STORE] the saved index holds %d-wide vectors and the embedder makes %d-wide ones: "
+                        "rebuilt from the memory database", index_dim, self._dim)
+            with self._lock:
+                self._index, self._meta = self._new_index(), []
+            self._needs_rebuild = True
+        elif int(getattr(self._index, "ntotal", 0) or 0) and saved != self._identity():
+            log.debug("[VECTOR_STORE] the index was made by another embedder or prefixes (%s): rebuilt", saved)
+            self._needs_rebuild = True
+
     def add(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Index `text`. Its entry carries whose it is (user_id: eli/memory/policy.owner_key, the
-        turn's user when the metadata does not say), so search only ever returns a user's own."""
-        vec = self._embed(text)
+        """Index `text` as a stored passage. Its entry carries whose it is (user_id:
+        eli/memory/policy.owner_key, the turn's user when the metadata does not say), so search only
+        ever returns a user's own."""
+        vec = self._embed(text, role="document")
         if vec is None:
             return False
         meta = dict(metadata or {})
@@ -262,6 +320,9 @@ class VectorStore:
         with self._lock:
             self._index.add(vec)
             self._meta.append({"text": text, **meta})
+            if getattr(self, "_rebuilding", 0):
+                # a rebuild is under way off to the side: this add goes into the index it swaps in
+                self._added_during.append((vec, {"text": text, **meta}))
             self._adds_since_save += 1
             cap = self._cap()
             if cap and len(self._meta) > cap:
@@ -275,7 +336,7 @@ class VectorStore:
         cap = getattr(self, "_entry_cap", None)
         if cap is None:
             with self._lock:
-                cap = self._entry_cap = entry_cap(self._meta)
+                cap = self._entry_cap = entry_cap(self._meta, getattr(self, "_dim", EMBED_DIM))
         return cap
 
     def search(self, query: str, top_k: int = 5, limit: int | None = None,
@@ -302,13 +363,14 @@ class VectorStore:
                 return []
             k = min(self._index.ntotal, max(top_k, -(-top_k * len(self._meta) // mine)))
             distances, indices = self._index.search(vec, k)
+            # the entries read under the same lock as the search: a prune or a rebuild swapping the
+            # index in between paired a vector with another entry's text
+            matched = [(dist, dict(self._meta[idx])) for dist, idx in zip(distances[0], indices[0])
+                       if 0 <= idx < len(self._meta)]
         results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            if idx < 0 or idx >= len(self._meta):
+        for dist, entry in matched:
+            if str(entry.get("user_id") or "") != who:
                 continue
-            if str(self._meta[idx].get("user_id") or "") != who:
-                continue
-            entry = dict(self._meta[idx])
             _mid = _entry_id(entry)
             if _mid is not None:
                 try:
@@ -439,12 +501,19 @@ class VectorStore:
                 log.warning("[VECTOR_STORE] the embedder did not load on the GPU (%s); in RAM", _on_gpu)
                 _where = embedder_in_ram(Llama)
                 _llm = Llama(**_common, **_where)
+            _meta = dict(getattr(_llm, "metadata", None) or {})
+            _arch = str(_meta.get("general.architecture") or "")
+            _prefixes = _TASK_PREFIXES.get(_arch, ("", ""))
+
             class _EmbedShim:
                 def __init__(self, llm): self._llm = llm
                 def _get_llm(self): return self._llm
                 def get_llm(self): return self._llm
-                def embed(self, text):
-                    pfx = '' if text.startswith(('search_query:', 'search_document:', 'classification:', 'clustering:')) else 'search_query: '
+                def embed(self, text, role="query"):
+                    # a stored passage as a document, a question as a query, each with the embedder's own
+                    # prefix; a text that says its task already keeps it
+                    pfx = '' if text.startswith(('search_query:', 'search_document:', 'classification:', 'clustering:')) \
+                        else _prefixes[1 if role == "document" else 0]
                     # llama.cpp prints "init: embeddings required but some input tokens were not marked as
                     # outputs -> overriding" from C on every embedding, out of reach of verbose=False. Harmless,
                     # but memory/RAG embeds many times per turn and it dominated the startup console, making a
@@ -454,6 +523,11 @@ class VectorStore:
                         r = self._llm.create_embedding(pfx + text)
                     return r['data'][0]['embedding']
             self._embedder = _EmbedShim(_llm)
+            self._prefixes = _prefixes
+            try:
+                self._dim = int(_meta.get(f"{_arch}.embedding_length") or 0) or len(self._embedder.embed("width", role="document"))
+            except Exception:  # noqa: BLE001 - an embedder that cannot say its width keeps the default
+                log.debug("embedder width not read", exc_info=True)
             _on = ("on GPU %d" % _where.get("main_gpu", 0)) if _where.get("n_gpu_layers") else "in RAM"
             log.debug('[VECTOR_STORE] Embedder ready (%s, %s)', os.path.basename(_model_path), _on)
         except Exception as e:
@@ -527,7 +601,7 @@ class VectorStore:
             result["error"] = "stopped before it finished; the saved index is kept"
         return result
 
-    def embed_text(self, text: str) -> Optional[List[float]]:
+    def embed_text(self, text: str, role: str = "query") -> Optional[List[float]]:
         """The embedding model's vector for `text`, or None. Every embed goes through here:
         serialised (llama-cpp embedding models are not thread-safe and concurrent calls corrupt
         their state) and never after close(). During the user's turn the wait makes a background
@@ -539,13 +613,16 @@ class VectorStore:
             if self._embedder is None:        # closed while this call waited
                 return None
             try:
-                return self._embedder.embed(text)
+                try:
+                    return self._embedder.embed(text, role=role)
+                except TypeError:          # an embedder that takes no role
+                    return self._embedder.embed(text)
             except Exception as e:
                 log.debug(f"[VECTOR_STORE] embed failed: {e}")
                 return None
 
-    def _embed(self, text: str) -> Optional[Any]:
-        vec = self.embed_text(text)
+    def _embed(self, text: str, role: str = "query") -> Optional[Any]:
+        vec = self.embed_text(text, role=role)
         if vec is None:
             return None
         arr = np.array(vec, dtype="float32").reshape(1, -1)
@@ -582,15 +659,36 @@ class VectorStore:
                         log.debug(f"[VECTOR_STORE] meta migration save failed: {_mig_e}")
                 loaded = self._index.ntotal
                 log.debug(f"[VECTOR_STORE] Loaded {loaded} vectors")
-                if loaded == 0:
+                if loaded != len(self._meta):
+                    # position i of the index is the text of meta[i]: out of step, every hit after the
+                    # first difference carried another memory's text
+                    log.warning("[VECTOR_STORE] the saved index (%d) and its metadata (%d) differ: rebuilt "
+                                "from the memory database", loaded, len(self._meta))
+                    self._index, self._meta = self._new_index(), []
+                    self._needs_rebuild = True
+                elif loaded == 0:
                     # Saved index is empty — schedule a background rebuild after embedder init
                     self._needs_rebuild = True
                 return
             except Exception as e:
                 log.debug(f"[VECTOR_STORE] Load failed, starting fresh: {e}")
-        self._index = faiss.IndexFlatL2(EMBED_DIM)
+        self._index = self._new_index()
         self._meta = []
         self._needs_rebuild = True
+
+    def _write_files(self, index, meta) -> None:
+        """Both files written whole to a temporary name and moved into place, so an interrupted save
+        never leaves a truncated index or metadata; the embedder that made them recorded beside them."""
+        import json as _json
+        tmp = self._index_path + ".tmp"
+        faiss.write_index(index, tmp)
+        os.replace(tmp, self._index_path)
+        _dump_meta(self._meta_path, meta)
+        if getattr(self, "_embedder", None) is not None:
+            tmp = self._identity_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(self._identity(), f)
+            os.replace(tmp, self._identity_path())
 
     def _save_async(self) -> None:
         if getattr(self, "_discarded", False):
@@ -607,8 +705,7 @@ class VectorStore:
                     with self._lock:
                         if generation != self._save_generation or getattr(self, "_discarded", False):
                             return
-                    faiss.write_index(idx_snapshot, self._index_path)
-                    _dump_meta(self._meta_path, meta_snapshot)
+                    self._write_files(idx_snapshot, meta_snapshot)
             except Exception as e:
                 log.debug(f"[VECTOR_STORE] Background save failed: {e}")
         threading.Thread(target=_write, daemon=True, name="eli-vs-save").start()
@@ -652,7 +749,7 @@ class VectorStore:
         except Exception as e:
             log.warning("[VECTOR_STORE] the index cannot give its vectors back (%s); left as it is", e)
             return False
-        new_index = faiss.IndexFlatL2(EMBED_DIM)
+        new_index = self._new_index()
         if keep:
             new_index.add(np.ascontiguousarray(vectors, dtype="float32"))
         self._index = new_index
@@ -683,8 +780,7 @@ class VectorStore:
                 return
             try:
                 self._save_generation += 1
-                faiss.write_index(self._index, self._index_path)
-                _dump_meta(self._meta_path, self._meta)
+                self._write_files(self._index, self._meta)
                 self._adds_since_save = 0
             except Exception as e:
                 log.debug(f"[VECTOR_STORE] flush failed: {e}")
@@ -694,28 +790,45 @@ class VectorStore:
         off to the side and swapped in only when it is finished. A background rebuild cut short by
         close() at shutdown replaced the index with the few entries it had reached and saved that: the
         next start loaded 2 vectors. Returns whether the new index was swapped in."""
-        cap = entry_cap(texts_and_meta)
+        cap = entry_cap(texts_and_meta, getattr(self, "_dim", EMBED_DIM))
         if cap and len(texts_and_meta) > cap:
             # the newest that fit, as a prune keeps them: the rebuild used to take every row and the
             # first add after it pruned the whole index again
             texts_and_meta = list(texts_and_meta)[-cap:]
-        new_index = faiss.IndexFlatL2(EMBED_DIM)
+        new_index = self._new_index()
         new_meta: List[Dict[str, Any]] = []
-        for entry in texts_and_meta:
-            if self._closed:
-                break
-            vec = self._embed(entry.get("text", ""))
-            if vec is not None:
-                new_index.add(vec)
-                new_meta.append(entry)
-        if self._closed or self._embedder is None or (texts_and_meta and not new_meta):
-            log.debug("[VECTOR_STORE] rebuild not finished (store closed or no embedding model); "
-                      "the index on disk is kept")
-            return False
         with self._lock:
-            self._index = new_index
-            self._meta = new_meta
-            self._adds_since_save = 0
+            self._rebuilding = getattr(self, "_rebuilding", 0) + 1
+            if self._rebuilding == 1:
+                self._added_during = []
+        try:
+            for entry in texts_and_meta:
+                if self._closed:
+                    break
+                vec = self._embed(entry.get("text", ""), role="document")
+                if vec is not None:
+                    new_index.add(vec)
+                    new_meta.append(entry)
+            if self._closed or self._embedder is None or (texts_and_meta and not new_meta):
+                log.debug("[VECTOR_STORE] rebuild not finished (store closed or no embedding model); "
+                          "the index on disk is kept")
+                return False
+            with self._lock:
+                # what was added while this was built goes in too: the startup rebuild runs while the
+                # first turns store memories, and the swap used to drop them until the next start
+                built = {_as_int(_entry_id(e)) for e in new_meta}
+                for vec, entry in getattr(self, "_added_during", []):
+                    if _entry_id(entry) is None or _as_int(_entry_id(entry)) not in built:
+                        new_index.add(vec)
+                        new_meta.append(entry)
+                self._index = new_index
+                self._meta = new_meta
+                self._adds_since_save = 0
+        finally:
+            with self._lock:
+                self._rebuilding = max(0, self._rebuilding - 1)
+                if not self._rebuilding:
+                    self._added_during = []
         self.flush()
         log.debug(f"[VECTOR_STORE] Rebuilt index with {new_index.ntotal} vectors")
         return True
@@ -840,8 +953,10 @@ def _load_meta(meta_path: str):
 def _dump_meta(meta_path: str, meta) -> None:
     """Persist vector metadata as JSON, then retire any legacy pickle."""
     import json as _json
-    with open(meta_path, "w", encoding="utf-8") as f:
+    tmp = meta_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         _json.dump(meta, f, ensure_ascii=False, default=str)
+    os.replace(tmp, meta_path)      # never a truncated file: written whole, then moved into place
     legacy = _legacy_meta_path(meta_path)
     try:
         if os.path.exists(legacy):

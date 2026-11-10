@@ -35,7 +35,7 @@ def test_vector_store_add_reports_indexed_on_success():
 
     vs = _bare_store()
     vs._index = DummyIndex()
-    vs._embed = lambda text: object()
+    vs._embed = lambda text, role="query": object()
     vs._prune = lambda: None
     vs._save_async = lambda: None
 
@@ -249,7 +249,7 @@ def test_search_returns_only_the_searching_user_s_entries(monkeypatch):
     vs._entry_cap = 0
     vs._index = faiss.IndexFlatL2(EMBED_DIM)
     vs._save_async = lambda: None
-    vs._embed = lambda text: np.ones((1, EMBED_DIM), dtype="float32")
+    vs._embed = lambda text, role="query": np.ones((1, EMBED_DIM), dtype="float32")
     assert vs.add("the owner's bike lock code", metadata={"memory_id": 1})
     token = user_id_var.set("member-7")
     try:

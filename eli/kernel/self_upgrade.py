@@ -520,11 +520,8 @@ class SelfUpgrader:
                 f"({result.get('indexed', 0)}/{result.get('source_count', 0)} vectors)."
             )
         except Exception as e:
-            # Primary import failed; try the canonical rebuild script path.
-            script = PROJECT_ROOT / "eli" / "scripts" / "rebuild_vector_index.py"
-            if script.exists():
-                r = _run([sys.executable, str(script)], timeout=120)
-                return r["ok"], r["stdout"][:80] or r["stderr"][:80]
+            # One rebuild, the vector store's own (VectorStore.rebuild_from_db): the standalone script it
+            # fell back to wrote a format the next start could not load.
             return False, str(e)[:120]
 
     def _rebuild_kg(self):

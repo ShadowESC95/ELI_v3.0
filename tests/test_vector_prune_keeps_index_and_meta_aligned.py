@@ -67,7 +67,7 @@ def store(tmp_path, monkeypatch):
     s._embedder = object()          # non-None so _embed is attempted
     embedded = []
 
-    def fake_embed(text):
+    def fake_embed(text, role="query"):
         embedded.append(text)
         return _vec(text)
 
@@ -135,7 +135,7 @@ def test_search_returns_the_text_that_matches_the_vector(store):
 
 def test_rebuild_takes_only_what_fits(store, monkeypatch):
     s, embedded = store
-    monkeypatch.setattr(vs, "entry_cap", lambda meta=None: 4)
+    monkeypatch.setattr(vs, "entry_cap", lambda meta=None, dim=None: 4)
     entries = [{"text": f"memory {i}", "memory_id": i} for i in range(10)]
     assert s.rebuild_full(entries) is True
     assert [e["memory_id"] for e in s._meta] == [6, 7, 8, 9]
@@ -219,3 +219,94 @@ def test_storing_a_memory_does_not_rewrite_the_whole_index(monkeypatch, tmp_path
     for i in range(3):
         mem.store_memory(f"I visited place number {i} last spring")
     assert calls == ["add", "add", "add"]
+
+
+# ── rebuilds, resets, saves and the embedder that made the vectors ──────────────────────────────
+
+def test_a_memory_added_while_the_index_is_rebuilt_is_in_the_index_swapped_in(store):
+    """The startup rebuild built a new index off the lock and swapped it in, dropping every add that
+    went to the old one meanwhile: the first turns' memories were missing from vector recall."""
+    s, embedded = store
+    s._entry_cap = 0
+    rows = [{"text": f"stored memory number {i}", "memory_id": i} for i in range(1, 4)]
+    real = s._embed
+
+    def embed_and_meanwhile_add(text, role="query"):
+        if text == rows[1]["text"]:
+            s.add("said while the rebuild ran", {"memory_id": 99})
+        return real(text, role=role)
+    s._embed = embed_and_meanwhile_add
+    assert s.rebuild_full(rows)
+    assert [e["memory_id"] for e in s._meta] == [1, 2, 3, 99] and s._index.ntotal == 4
+    assert s._rebuilding == 0 and s._added_during == []
+
+
+def test_stored_passages_and_questions_are_embedded_each_as_what_it_is(store, monkeypatch):
+    s, _ = store
+    roles = []
+    monkeypatch.setattr(s, "_embed", lambda text, role="query": roles.append(role) or _vec(text), raising=False)
+    s.add("the shed key is on the hook", {"memory_id": 1, "user_id": ""})
+    s.search("where is the shed key", top_k=1, user_id="")
+    assert roles == ["document", "query"]
+
+
+def test_a_saved_index_out_of_step_with_its_metadata_is_rebuilt_not_read(tmp_path, monkeypatch):
+    import json
+    import faiss
+    index, meta = tmp_path / "index.faiss", tmp_path / "meta.json"
+    idx = faiss.IndexFlatL2(vs.EMBED_DIM)
+    idx.add(np.ones((3, vs.EMBED_DIM), dtype="float32"))
+    faiss.write_index(idx, str(index))
+    meta.write_text(json.dumps([{"text": "only one row"}]))
+    s = vs.VectorStore.__new__(vs.VectorStore)
+    s._index_path, s._meta_path, s._dim = str(index), str(meta), vs.EMBED_DIM
+    s._needs_rebuild = False
+    s._load()
+    assert s._needs_rebuild and s._index.ntotal == 0 and s._meta == []
+
+
+def test_an_index_of_another_width_or_embedder_is_rebuilt(tmp_path, monkeypatch):
+    import json
+    import threading
+    import faiss
+    s = vs.VectorStore.__new__(vs.VectorStore)
+    s._lock = threading.RLock()
+    s._index_path = str(tmp_path / "index.faiss")
+    s._embedder, s._dim, s._prefixes = object(), 384, ("", "")
+    s._index, s._meta, s._needs_rebuild = faiss.IndexFlatL2(768), [{"text": "a"}], False
+    s._check_embedder_identity()
+    assert s._needs_rebuild and s._index.d == 384 and s._meta == [], "a vector of the new width fits at once"
+    s._index = faiss.IndexFlatL2(384)
+    s._index.add(np.ones((1, 384), dtype="float32"))
+    s._meta, s._needs_rebuild = [{"text": "a"}], False
+    (tmp_path / "index.faiss.embedder.json").write_text(json.dumps(s._identity()))
+    s._check_embedder_identity()
+    assert not s._needs_rebuild, "the same embedder: kept"
+    s._prefixes = ("search_query: ", "search_document: ")
+    s._check_embedder_identity()
+    assert s._needs_rebuild and s._index.ntotal == 1, "same width, other prefixes: rebuilt, searched until then"
+
+
+def test_a_save_writes_whole_files_and_says_which_embedder_made_them(tmp_path):
+    import json
+    import threading
+    import faiss
+    s = vs.VectorStore.__new__(vs.VectorStore)
+    s._lock = threading.RLock()
+    s._index_path, s._meta_path = str(tmp_path / "index.faiss"), str(tmp_path / "meta.json")
+    s._embedder, s._dim, s._prefixes = object(), vs.EMBED_DIM, ("q: ", "d: ")
+    s._index, s._meta, s._adds_since_save, s._save_generation = faiss.IndexFlatL2(vs.EMBED_DIM), [], 1, 0
+    s.flush()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["index.faiss", "index.faiss.embedder.json", "meta.json"]
+    assert json.loads((tmp_path / "index.faiss.embedder.json").read_text())["prefixes"] == ["q: ", "d: "]
+
+
+def test_resetting_the_store_closes_the_one_dropped(monkeypatch):
+    closed = []
+
+    class _Old:
+        def close(self):
+            closed.append(True)
+    monkeypatch.setattr(vs, "_store", _Old())
+    vs.reset_vector_store(discard=True)
+    assert closed == [True] and vs._store is None
