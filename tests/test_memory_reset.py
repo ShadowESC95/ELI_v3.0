@@ -43,6 +43,32 @@ def test_clear_db_keep_tables(tmp_path):
     c.close()
 
 
+def test_clear_db_restarts_the_row_counters_only_where_a_store_keeps_them(tmp_path, caplog):
+    """A store with no AUTOINCREMENT table has no sqlite_sequence, and clearing one logged a full
+    traceback for asking it (every template the seeding tool clears); a store that has one starts
+    its counters again, except for the tables kept."""
+    import logging
+    plain = tmp_path / "plain.sqlite3"
+    c = sqlite3.connect(str(plain))
+    c.execute("CREATE TABLE facts(id INTEGER PRIMARY KEY, text TEXT)")
+    c.execute("INSERT INTO facts(text) VALUES('a')")
+    c.commit(); c.close()
+    with caplog.at_level(logging.DEBUG, logger=mr.log.name):
+        assert mr.clear_db(plain) == 1
+    assert not [r for r in caplog.records if r.exc_info], [r.getMessage() for r in caplog.records]
+    counted = tmp_path / "counted.sqlite3"
+    c = sqlite3.connect(str(counted))
+    c.execute("CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT)")
+    c.execute("CREATE TABLE habits(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT)")
+    c.executemany("INSERT INTO notes(text) VALUES(?)", [("a",), ("b",)])
+    c.execute("INSERT INTO habits(text) VALUES('walk')")
+    c.commit(); c.close()
+    mr.clear_db(counted, keep_tables={"habits"})
+    c = sqlite3.connect(str(counted))
+    assert dict(c.execute("SELECT name, seq FROM sqlite_sequence").fetchall()) == {"habits": 1}
+    c.close()
+
+
 def test_scrub_json_names(tmp_path):
     p = tmp_path / "d.json"
     p.write_text(json.dumps({"user_name": "Alex", "nested": {"name": "Bob", "keep": "ok"}}),

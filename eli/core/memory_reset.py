@@ -167,14 +167,15 @@ def clear_db(path: Path, keep_tables: "frozenset[str] | set[str] | None" = None)
                     c.execute(f'DELETE FROM "{n}"')
                 except Exception:
                     log.debug("suppressed exception", exc_info=True)
-        try:
+        # The row counters of AUTOINCREMENT tables start again, where the store has any: SQLite makes
+        # sqlite_sequence only for such a table, and asking a store without one for it logged a
+        # traceback for every template seeded.
+        if any(n == "sqlite_sequence" for n, _ in rows):
             if keep:
                 qs = ",".join("?" * len(keep))
                 c.execute(f"DELETE FROM sqlite_sequence WHERE name NOT IN ({qs})", tuple(keep))
             else:
                 c.execute("DELETE FROM sqlite_sequence")
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
         try:
             c.execute("VACUUM")
         except Exception:
