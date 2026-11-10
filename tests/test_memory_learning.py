@@ -68,3 +68,71 @@ def test_a_memory_let_go_is_a_thought_with_its_reason(mem):
     assert len(kept) == 1 and kept[0]["decision"] == "dropped" and kept[0]["ref"] == f"memory:{c}"
     assert kept[0]["chance"] == pytest.approx(0.05) and "it never went into an answer" in kept[0]["why"]
     assert "archive" in kept[0]["reason"] and mem.search_archive("index rebuilt")
+
+
+# ── association: what went together into endorsed answers comes to mind together ──────────────
+
+_HOUSE = [
+    "the spare key is under the blue flowerpot at the front door",
+    "the alarm panel is behind the coat rack, the code starts with seven",
+    "the front door paint is peeling near the letterbox",
+    "the house next door has a new dog",
+    "the front door hinges need oil",
+    "the back door sticks in winter",
+    "the front garden gate is broken",
+]
+# (question, what answers it), asked after the first two went together into endorsed answers
+_LATER = [("locked out at the front door again", {0, 1}),
+          ("where is the spare key for the front door", {0, 1})]
+
+
+def _recall_at(mem, k):
+    found = total = 0
+    for question, wanted in _LATER:
+        got = [h.get("text") for h in mem.recall_memory(question, limit=k)]
+        found += sum(1 for i in wanted if _HOUSE[i] in got)
+        total += len(wanted)
+    return found / total
+
+
+def _household(tmp_path, monkeypatch, name):
+    from eli.memory.memory import Memory
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: None)
+    m = Memory(db_path=tmp_path / f"{name}.sqlite3")
+    ids = [m.store_memory(t, source="eli")["id"] for t in _HOUSE]
+    for _ in range(2):
+        m.record_recall_outcome([ids[0], ids[1]], helped=True)
+    return m, ids
+
+
+def test_endorsed_answers_link_their_memories_and_the_link_fades_without_use(mem):
+    a = mem.store_memory("the canal path floods in spring", source="user")["id"]
+    b = mem.store_memory("wellingtons are by the back door", source="user")["id"]
+    c = mem.store_memory("the lock keeper is there on weekdays", source="user")["id"]
+    assert mem.strengthen_links([a]) == 0, "a link needs two"
+    mem.record_recall_outcome([a, b], helped=True)
+    mem.record_recall_outcome([a, c], helped=False)
+    import time as _time
+    conn = mem._get_connection()
+    try:
+        now = _time.time()
+        fresh = mem._linked(conn, [a], now)
+        later = mem._linked(conn, [a], now + 90 * 86400)
+    finally:
+        conn.close()
+    assert set(fresh) == {b}, "only what went into an endorsed answer is linked"
+    assert later[b][a] < fresh[b][a] / 5, "unused, a link fades as a memory does"
+
+
+def test_association_improves_recall_or_it_is_switched_off(tmp_path, monkeypatch):
+    """The measured condition for keeping association: recall@k with it beats recall@k without it on
+    questions whose answer went before with another memory into endorsed answers. If it ever stops
+    doing so, this fails and eli/memory/memory.ASSOCIATION must be switched off."""
+    import eli.memory.memory as mm
+    if not mm.ASSOCIATION:
+        pytest.skip("association is switched off")
+    on, _ = _household(tmp_path, monkeypatch, "on")
+    with_links = _recall_at(on, 3)
+    monkeypatch.setattr(mm, "ASSOCIATION", False)
+    without_links = _recall_at(on, 3)
+    assert with_links > without_links, (with_links, without_links)

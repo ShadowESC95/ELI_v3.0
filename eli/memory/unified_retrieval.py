@@ -57,7 +57,7 @@ def _row_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     """The fields ranking and dating read from the top level of a hit."""
     return {k: row[k] for k in ("id", "ts", "timestamp", "event_ts", "importance", "weight", "origin", "role",
                                 "accessibility", "chance", "_channels", "_channels_ran", "rrf_score",
-                                "rerank_score", "recall_chance")
+                                "rerank_score", "recall_chance", "_links")
             if row.get(k) is not None}
 
 

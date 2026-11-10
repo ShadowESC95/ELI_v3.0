@@ -173,6 +173,14 @@ class _MemoryModule(type(_this_module)):
 _this_module.__class__ = _MemoryModule
 
 
+# Association (Hebbian learning, Hebb 1949, in ACT-R's terms): memories that went together into an
+# answer the user endorsed are linked (Memory.strengthen_links); a link's strength is the base-level
+# activation of its uses, so it fades without use as a memory does (eli/memory/policy.base_activation);
+# and a recall spreads from what it found to what is strongly linked to it, a third channel beside the
+# vector and keyword ones. Kept only while it measurably improves recall: its test switches it off
+# otherwise (tests/test_memory_learning.py, the replay figures).
+ASSOCIATION = True
+
 # How many candidates each recall channel fetches for each place in the caller's limit: ELI's own
 # records, deleted rows and stale index entries are dropped after the fetch, and the one ranking
 # (eli/cognition/reranker.rerank_candidates) needs the candidates it chooses between.
@@ -417,6 +425,12 @@ def _ensure_policy_schema(conn) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_lineage_parent ON memory_lineage(parent_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_origin ON memories(origin)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)")
+        # Memories that went together into an answer the user endorsed (Memory.strengthen_links), one row
+        # per pair (a < b): how often and when, so the link's strength fades as a memory's does.
+        conn.execute("CREATE TABLE IF NOT EXISTS memory_links (a INTEGER NOT NULL, b INTEGER NOT NULL, "
+                     "user_id TEXT NOT NULL DEFAULT '', uses INTEGER NOT NULL DEFAULT 1, first_used REAL, "
+                     "last_used REAL, PRIMARY KEY (a, b, user_id))")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_links_b ON memory_links(b)")
     except Exception:
         log.debug("[MEMORY] policy tables not created", exc_info=True)
 
@@ -2507,6 +2521,31 @@ class Memory(metaclass=_MemoryMeta):
             from eli.cognition.reranker import fuse_ranked_lists
             out: List[Dict] = fuse_ranked_lists(_channels)
             sort_now = time.time()
+            # Spreading activation: from the memories this recall found to the ones linked to them
+            # (ASSOCIATION, strengthen_links). Each linked memory carries its links (_links: source ->
+            # strength); the ranking gives it the relevance of what it is linked to, times the link's
+            # strength (eli/cognition/reranker.rerank_candidates), so a memory that went with this one
+            # into endorsed answers comes with it though it shares no word with the question.
+            if ASSOCIATION and not keyword_only:
+                try:
+                    _spread = self._linked(conn, [r.get("id") for r in out[:limit * _OVERFETCH]], sort_now, _scope_key)
+                    for _row in out:
+                        if str(_row.get("id", "")).isdigit() and int(_row["id"]) in _spread:
+                            _row["_links"] = _spread[int(_row["id"])]
+                    _have = {int(r["id"]) for r in out if str(r.get("id", "")).isdigit()}
+                    _new = sorted((i for i in _spread if i not in _have), key=lambda i: max(_spread[i].values()),
+                                  reverse=True)[:limit * _OVERFETCH]
+                    if _new:
+                        for r in conn.execute(
+                                f"SELECT m.id, {time_expr_m}, COALESCE(m.text, m.content, ''), COALESCE(m.tags, ''), "
+                                f"COALESCE(m.weight, 1.0), {imp_expr_m}, {event_expr_m} FROM memories m "
+                                f"WHERE m.id IN ({','.join('?' * len(_new))}) {_kind_filter}{_verify_filter}",
+                                (*_new, *_kind_params)).fetchall():
+                            out.append({"id": r[0], "ts": r[1], "timestamp": r[1], "text": r[2], "tags": r[3],
+                                        "weight": r[4], "importance": r[5], "event_ts": r[6], "_source": "association",
+                                        "_channels": [], "_channels_ran": sorted(_channels), "_links": _spread[int(r[0])]})
+                except sqlite3.Error:
+                    log.debug("association not spread", exc_info=True)
             # How readily each comes to mind (eli/memory/policy.py): its faded uses, the curve's own
             # factors, and its share against the look-alikes in this set. Known for stored rows only.
             _how_readily = self._accessibility(conn, out, cols, sort_now)
@@ -2980,6 +3019,8 @@ class Memory(metaclass=_MemoryMeta):
             _fts_delete(conn, r["id"], r.get("text") or "", r.get("tags") or "")
             ids.append(r["id"])
         conn.executemany("DELETE FROM memories WHERE id = ?", [(i,) for i in ids])
+        if ids and _has_table(conn, "memory_links"):
+            conn.executemany("DELETE FROM memory_links WHERE a = ? OR b = ?", [(i, i) for i in ids])
         try:
             from eli.memory.vector_store import get_vector_store
             _vs = get_vector_store()
@@ -3745,12 +3786,69 @@ class Memory(metaclass=_MemoryMeta):
                     f"weight = MAX(?, COALESCE(weight, 1.0) * 0.5) WHERE id IN ({marks})",
                     [_policy_min_weight()] + ids)
             conn.commit()
-            return int(cur.rowcount or 0)
+            moved = int(cur.rowcount or 0)
         except Exception:
             log.debug("recall outcome not recorded", exc_info=True)
             return 0
         finally:
             conn.close()
+        if helped and ASSOCIATION:
+            # what went together into an endorsed answer is linked (strengthen_links)
+            self.strengthen_links(ids, now=now)
+        return moved
+
+    def strengthen_links(self, ids, *, now: Optional[float] = None, user_id: Optional[str] = None) -> int:
+        """Memories that went together into an answer the user endorsed are linked, each pair once more
+        (Hebb: what fires together wires together). How many pairs."""
+        from eli.memory import policy as _policy
+        ids = sorted({int(i) for i in (ids or []) if str(i).isdigit() and int(i) > 0})
+        if len(ids) < 2:
+            return 0
+        now = float(now if now is not None else time.time())
+        who = _policy.owner_key(user_id)
+        pairs = [(a, b) for i, a in enumerate(ids) for b in ids[i + 1:]]
+        conn = self._get_connection()
+        try:
+            conn.executemany(
+                "INSERT INTO memory_links (a, b, user_id, uses, first_used, last_used) VALUES (?, ?, ?, 1, ?, ?) "
+                "ON CONFLICT(a, b, user_id) DO UPDATE SET uses = uses + 1, last_used = excluded.last_used",
+                [(a, b, who, now, now) for a, b in pairs])
+            conn.commit()
+            return len(pairs)
+        except sqlite3.Error:
+            log.debug("links not strengthened", exc_info=True)
+            return 0
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _linked(conn, ids, now: float, who: str = "") -> Dict[int, Dict[int, float]]:
+        """The memories linked to any of `ids`: {memory: {source among ids: how strongly activation
+        spreads along the link}}, the link's chance of coming to mind (eli/memory/policy.retrievable of
+        its base-level activation, on ACT-R's fixed scale), so a link used often and lately carries most
+        and one unused for long next to nothing."""
+        from eli.memory import policy as _policy
+        ids = sorted({int(i) for i in ids if str(i).isdigit()})
+        if not ids or not _has_table(conn, "memory_links"):
+            return {}
+        marks = ",".join("?" * len(ids))
+        try:
+            rows = conn.execute(
+                f"SELECT a, b, uses, COALESCE(first_used, last_used, 0), COALESCE(last_used, 0) FROM memory_links "
+                f"WHERE (a IN ({marks}) OR b IN ({marks})) AND user_id = ?", (*ids, *ids, who)).fetchall()
+        except sqlite3.Error:
+            log.debug("links not read", exc_info=True)
+            return {}
+        source = set(ids)
+        out: Dict[int, Dict[int, float]] = {}
+        for a, b, uses, first, last in rows:
+            for src, other in ((a, b), (b, a)):
+                if src not in source:
+                    continue
+                act = _policy.base_activation(int(uses or 1), max(0.0, (now - float(first)) / _policy.DAY),
+                                              [max(0.0, (now - float(last)) / _policy.DAY)])
+                out.setdefault(int(other), {})[int(src)] = round(_policy.retrievable([act])[0], 4)
+        return out
 
     def rekey_text_keys(self, dry_run: bool = False) -> Dict[str, Any]:
         """Recompute every row's dedupe key when the key definition changes. Never merges rows."""

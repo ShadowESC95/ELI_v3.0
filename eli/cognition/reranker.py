@@ -186,13 +186,26 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
         channels = _get(c, "_channels") or []
 
         row = dict(c)
-        row["rerank_score"] = round(relevance(c, q_toks), 6)
+        row["rerank_score"] = relevance(c, q_toks)
         row["_prior"] = round(prior(c), 6)
         row["rerank_rank"] = idx
         # what the learned ranking reads (eli/cognition/epistemics, kind recall)
         row["_overlap"] = round(overlap, 4)
         row["_agreement"] = 1.0 if len(channels) > 1 else 0.0
         out.append(row)
+
+    # Spreading activation (eli/memory/memory.ASSOCIATION): a memory linked to others among these, by
+    # answers the user endorsed, is as relevant as the most relevant of them times the link's strength,
+    # if that is more than its own.
+    by_id = {str(r.get("id")): r["rerank_score"] for r in out if r.get("id") is not None}
+    for row in out:
+        links = _get(row, "_links") or {}
+        spread = max((by_id.get(str(src), 0.0) * _as_float(p, 0.0) for src, p in links.items()), default=0.0)
+        if spread > row["rerank_score"]:
+            row["rerank_score"] = spread
+            row["_spread"] = round(spread, 6)
+    for row in out:
+        row["rerank_score"] = round(row["rerank_score"], 6)
 
     try:
         from eli.cognition.epistemics import RECALL, apply_rows, weights_for
