@@ -90,3 +90,41 @@ def test_an_improvement_not_found_again_is_closed_and_one_found_again_reopens(tm
     conn.close()
     assert m.tidy_learning_tables()["improvements_closed"] == 2
     assert m.get_recent_improvements(open_only=True) == [] and len(m.get_recent_improvements()) == 2
+
+def test_the_daemons_rescan_closes_what_it_no_longer_finds_and_the_prompt_counts_only_open_ones(tmp_path, monkeypatch):
+    """The code-quality scan wrote what it found every ten minutes and closed nothing; the self-status
+    prompt then told the model every row ever written was a pending suggestion."""
+    from eli.planning import proactive_daemon as pd
+    m = Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent")
+    source = tmp_path / "pkg" / "execution" / "executor_enhanced.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def run():\n    # TODO: say why\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(pd, "_owner_away", lambda: False)        # the scan alone, no self-maintenance
+    daemon = pd.ProactiveDaemon.__new__(pd.ProactiveDaemon)
+    daemon.package_root, daemon.agent_mem = tmp_path / "pkg", m
+    assert [i["type"] for i in daemon.analyze_code_quality()] == ["todos"]
+    assert len(m.get_recent_improvements(open_only=True)) == 1
+    source.write_text("def run():\n    return 1\n", encoding="utf-8")
+    assert daemon.analyze_code_quality() == []
+    assert m.get_recent_improvements(open_only=True) == [] and m.get_recent_improvements()[0]["status"] == "obsolete"
+    m.log_improvement("bug", "Investigate failure: open the notes → KeyError: 'name'", area="executor")
+    from types import SimpleNamespace
+    from eli.kernel.stages import prompt_assembly as pa
+    monkeypatch.setattr("eli.memory.memory.get_agent_memory", lambda db_path=None: m)
+    monkeypatch.setattr(pa, "resolve_db_paths", lambda: SimpleNamespace(agent_db=m.db_path, user_db="", memory_db=""))
+
+    class Engine(pa.PromptAssemblyMixin):
+        def _runtime_memory_snapshot(self):
+            return {}
+
+        def _is_grounded_status_query(self, text):
+            return False
+
+        def _intent_requires_grounding(self, intent, text):
+            return False
+
+        def _recent_topic_summary(self, text):
+            return ""
+    told = Engine()._build_grounded_evidence_context("show me your improvement log")
+    assert "- improvements table: 1 open proposals" in told and "Investigate failure: open the notes" in told
+

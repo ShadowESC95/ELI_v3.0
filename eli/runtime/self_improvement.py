@@ -95,6 +95,17 @@ def _safe_str(x: Any) -> str:
         return ""
 
 
+def _investigation(failure: Dict[str, Any]) -> str:
+    """The improvement a failure is logged as, the one name its diagnosis thought, its improvement
+    record and a fix made for it share."""
+    return f"Investigate failure: {_safe_str(failure.get('user_input'))} → {_safe_str(failure.get('error'))}".strip()
+
+
+def _diagnosis_ref(investigation: str) -> str:
+    """The ref the diagnosis thought of an improvement is kept and settled under."""
+    return f"diagnosis:{str(investigation or '')[:80]}"
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, "").strip() or default)
@@ -267,6 +278,9 @@ def _ensure_failure_tables(conn: sqlite3.Connection) -> None:
     _ensure_columns(conn, "code_patches", {
         "hypothesis": "TEXT", "verdict": "TEXT", "results": "TEXT", "cost_s": "REAL", "parent_id": "INTEGER",
         "probation_actions": "TEXT", "probation_baseline": "TEXT", "probation_started": "REAL",
+        # the improvement the candidate was made for (_investigation): its diagnosis thought is settled,
+        # and the improvement closed, by what becomes of the candidate
+        "diagnosis": "TEXT",
     })
     conn.commit()
 
@@ -814,7 +828,7 @@ class SelfImprovementEngine:
             err = _safe_str(f.get("error"))
             if not ui and not err:
                 continue
-            desc = f"Investigate failure: {ui} → {err}".strip()
+            desc = _investigation(f)
             if desc.lower() in existing_descs:
                 continue
             # Classified from the failure itself. This was a hardcoded stability/runtime for every
@@ -856,7 +870,7 @@ class SelfImprovementEngine:
                               f"its severity is {imp.get('severity', 'unknown')}"],
                          decision="proposed", reason="it recurred and is worth a fix" if imp.get("severity") in ("bug", "unknown")
                          else "it is the environment's, not a defect",
-                         subject=str(imp.get("area") or ""), ref=f"diagnosis:{str(imp.get('description') or '')[:80]}")
+                         subject=str(imp.get("area") or ""), ref=_diagnosis_ref(str(imp.get("description") or "")))
             except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                 log.debug("diagnosis thought not kept", exc_info=True)
 
@@ -1102,7 +1116,7 @@ class SelfImprovementEngine:
                         proposal["candidate_id"] = self.record_candidate(
                             {"file": patch["file"], "old": patch["old"], "new": patch["new"],
                              "description": f"coding-agent fix for {label}"[:300],
-                             "failure_ref": label},
+                             "failure_ref": label, "diagnosis": _investigation(failure)},
                             hypothesis=str(proposal["approach"] or "")[:400])
                         proposal["hunks"] = len(patch.get("hunks") or [])
                     elif isinstance(patch, dict):
@@ -1445,10 +1459,10 @@ class SelfImprovementEngine:
             _ensure_failure_tables(conn)
             cur = conn.execute(
                 "INSERT INTO code_patches (file_path, description, old_code, new_code, status, timestamp, failure_ref, "
-                "hypothesis, parent_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                "hypothesis, parent_id, diagnosis) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (str(patch.get("file") or ""), str(patch.get("description") or "")[:300], str(patch.get("old", "")),
                  str(patch.get("new", "")), "proposed", time.time(), str(patch.get("failure_ref") or ""),
-                 hypothesis[:400], parent_id))
+                 hypothesis[:400], parent_id, str(patch.get("diagnosis") or "") or None))
             conn.commit()
             return int(cur.lastrowid)
         finally:
@@ -1691,19 +1705,39 @@ class SelfImprovementEngine:
             conn.close()
         self._settle_proposal(candidate_id, status)
 
-    @staticmethod
-    def _settle_proposal(candidate_id: int, status: str) -> None:
+    def _settle_proposal(self, candidate_id: int, status: str) -> None:
         """What became of a proposal: adopted (and held through probation) is right, rolled back or
-        declined by the owner is wrong."""
+        declined by the owner is wrong. The diagnosis it was made for (the improvement "Investigate
+        failure: ...", its thought under _diagnosis_ref) goes with it, and an adopted fix closes that
+        improvement as applied."""
         if status not in ("adopted", "rolled_back", "declined"):
             return
+        right = status == "adopted"
+        diagnosis = ""
+        try:
+            conn = self.memory._get_connection()
+            try:
+                _ensure_failure_tables(conn)
+                row = conn.execute("SELECT diagnosis FROM code_patches WHERE id = ?", (int(candidate_id),)).fetchone()
+            finally:
+                conn.close()
+            diagnosis = str((row or [""])[0] or "")
+        except (sqlite3.Error, AttributeError, TypeError, ValueError):
+            log.debug("the proposal's diagnosis unreadable", exc_info=True)
         try:
             from eli.cognition import epistemics as _ep, thoughts as _th
-            right = status == "adopted"
             _ep.settle(f"proposal:{int(candidate_id)}", right, how=status, kind=_ep.PROPOSAL)
             _th.settle(f"proposal:{int(candidate_id)}", "right" if right else "wrong", how=status)
+            if diagnosis:
+                _th.settle(_diagnosis_ref(diagnosis), "right" if right else "wrong",
+                           how=f"the fix made for it was {status.replace('_', ' ')}")
         except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
             log.debug("proposal not settled", exc_info=True)
+        if right and diagnosis:
+            try:
+                self.memory.close_improvement(diagnosis, status="applied")
+            except (sqlite3.Error, AttributeError, TypeError, ValueError):
+                log.debug("the improvement a fix was adopted for not closed", exc_info=True)
 
     def _check_probationary_patches(self) -> None:
         """Re-check every probationary patch's watched actions against its pre-adoption

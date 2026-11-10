@@ -152,6 +152,12 @@ def test_a_whole_file_candidate_is_kept_for_approval_not_applied(contained, tmp_
         assert Path(tasks["target_file"]) == target
         cid = r["proposals"][0]["candidate_id"]
         assert target.read_text() == before and not list(d.glob("*.eli_bak*"))
+        conn = eng.memory._get_connection()
+        try:
+            kept = conn.execute("SELECT diagnosis FROM code_patches WHERE id = ?", (cid,)).fetchone()[0]
+        finally:
+            conn.close()
+        assert kept == SI._investigation({"error": _tb(rel)}), "the candidate names the diagnosis it was made for"
         assert {c["id"]: c for c in eng.candidate_archive(limit=200)}.get(cid) is None, "no verdict until checked"
 
         # approval: the copy-of-the-tree check decides

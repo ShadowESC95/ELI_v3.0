@@ -907,23 +907,20 @@ Answer:"""
                         _ots = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_o[0] or 0)))
                         _log_lines.append(f"  [{_ots}] {str(_o[1] or '')[:120]}")
 
-                # improvements table
-                _row = _aconn.execute("SELECT COUNT(*) FROM improvements").fetchone()
-                _imp_count = _row[0] if _row else 0
-                _log_lines.append(f"- improvements table: {_imp_count} proposals (pending code quality suggestions)")
-                if _imp_count > 0:
-                    _imps = _aconn.execute(
-                        "SELECT ts, category, area, suggestion FROM improvements ORDER BY ts DESC LIMIT 3"
-                    ).fetchall()
-                    for _i in _imps:
-                        _its = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_i[0] or 0)))
-                        _suggestion = str(_i[3] or "")
-                        try:
-                            _sug_obj = _json.loads(_suggestion)
-                            _suggestion = _sug_obj.get("suggestion", _suggestion)
-                        except Exception:
-                            log.debug("suppressed exception", exc_info=True)
-                        _log_lines.append(f"  [{_its}] [{_i[1]}:{_i[2]}] {_suggestion[:100]}")
+                # improvements still open (the store's own reader): every proposal ever made was
+                # counted as pending, fixed, applied or no longer found alike
+                from eli.memory.memory import get_agent_memory as _agent_memory
+                _imps = _agent_memory().get_recent_improvements(limit=-1, open_only=True)
+                _log_lines.append(f"- improvements table: {len(_imps)} open proposals")
+                for _i in _imps[:3]:
+                    _its = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(float(_i["timestamp"] or 0)))
+                    _suggestion = str(_i["description"] or "")
+                    try:
+                        _sug_obj = _json.loads(_suggestion)
+                        _suggestion = _sug_obj.get("suggestion", _suggestion) if isinstance(_sug_obj, dict) else _suggestion
+                    except ValueError:
+                        log.debug("suppressed exception", exc_info=True)
+                    _log_lines.append(f"  [{_its}] [{_i['category']}:{_i['area']}] {_suggestion[:100]}")
 
                 _aconn.close()
                 lines.extend(_log_lines)

@@ -5479,6 +5479,21 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
+    def close_improvement(self, description: str, *, status: str = "applied") -> int:
+        """The open improvement of this description is done with (a fix made for it adopted): closed
+        with `status`. close_improvements closes what a rescan did not find again; this closes the one
+        named. How many were closed."""
+        conn = self._get_connection()
+        try:
+            _ensure_contract_schema(conn)
+            cur = conn.execute("UPDATE improvements SET status = ? WHERE COALESCE(description, '') = ? "
+                               "AND COALESCE(status, 'pending') IN ('pending', 'open')",
+                               (str(status), str(description or "").strip()))
+            conn.commit()
+            return int(cur.rowcount or 0)
+        finally:
+            conn.close()
+
     def save_session_summary(self, session_id, user_id=None, summary="", turns_count=0, started_at=None, ended_at=None, source="gui.autosave"):
         now = _now_ts()
         started_at = now if started_at is None else float(started_at)

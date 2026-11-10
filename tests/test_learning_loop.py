@@ -297,6 +297,34 @@ def test_a_proposal_is_a_figure_settled_by_its_adoption(db, monkeypatch, tmp_pat
     assert th.recent(5, kinds=["proposal"])[0]["outcome"] == "right"
 
 
+def test_the_fix_made_for_a_failure_settles_its_diagnosis_and_closes_its_improvement(db, monkeypatch, tmp_path):
+    """A diagnosis thought ("Investigate failure: ...") was never settled and its improvement stayed open
+    for ever: nothing tied the candidate the coding agent made for the failure back to them."""
+    from eli.memory.memory import Memory
+    from eli.runtime import self_improvement as S
+    mem = Memory(db_path=tmp_path / "agent.sqlite3")
+    si = S.SelfImprovementEngine(memory=mem)
+    failure = {"user_input": "open the notes", "error": "KeyError: 'name'"}
+    told = S._investigation(failure)
+    si.log_improvement("bug", told, area="executor")
+    th.record("diagnosis", told, decision="proposed", ref=S._diagnosis_ref(told))
+    monkeypatch.setattr(si, "verify_in_workspace", lambda patch, **k: {"verdict": "fixed", "cost_s": 1.0})
+    made = si.propose_candidate({"file": "eli/x.py", "old": "a", "new": "b", "description": "use get",
+                                 "diagnosis": told}, hypothesis="h")
+    assert th.recent(5, kinds=["diagnosis"])[0]["status"] == "open"
+    si._settle_proposal(made["candidate_id"], "adopted")
+    [diag] = th.recent(5, kinds=["diagnosis"])
+    assert diag["outcome"] == "right" and "adopted" in diag["how"]
+    assert [i for i in mem.get_recent_improvements(open_only=True) if i["description"] == told] == []
+    assert mem.get_recent_improvements()[0]["status"] == "applied"
+    other = S._investigation({"user_input": "play it", "error": "TimeoutError"})
+    th.record("diagnosis", other, decision="proposed", ref=S._diagnosis_ref(other))
+    again = si.propose_candidate({"file": "eli/y.py", "old": "a", "new": "b", "description": "wait",
+                                  "diagnosis": other}, hypothesis="h")
+    si._settle_proposal(again["candidate_id"], "rolled_back")
+    assert next(t for t in th.recent(5, kinds=["diagnosis"]) if t["what"] == other[:140])["outcome"] == "wrong"
+
+
 # ── the executor: a result checked, and a proven alternative tried ────────────────────────────────
 
 def test_a_result_that_claims_a_file_is_checked_before_it_is_recorded(tmp_path):

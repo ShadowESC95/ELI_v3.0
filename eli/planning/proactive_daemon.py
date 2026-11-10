@@ -589,6 +589,7 @@ class ProactiveDaemon:
         Analyze ELI's own code for improvements (WRITE to AGENT DB)
         """
         improvements: List[Dict[str, Any]] = []
+        unread: List[str] = []
 
         code_files = [
             self.package_root / "execution" / "executor_enhanced.py",
@@ -654,13 +655,22 @@ class ProactiveDaemon:
                     })
 
             except Exception as e:
+                unread.append(file_path.name)
                 log.debug(f"[PROACTIVE] Code analysis error for {file_path.name}: {e}")
 
-        for item in improvements:
+        found = [json.dumps(item)[:4000] for item in improvements]
+        for told in found:
             try:
-                self.agent_mem.log_improvement("code_quality", json.dumps(item)[:4000])
+                self.agent_mem.log_improvement("code_quality", told)
             except Exception:
                 _SWLOG.debug("suppressed exception", exc_info=True)
+        # What this rescan no longer finds is closed (and opened again if a later scan finds it); a
+        # scan that could not read every file says nothing of what it did not read.
+        if not unread:
+            try:
+                self.agent_mem.close_improvements("code_quality", found)
+            except (sqlite3.Error, AttributeError, TypeError, ValueError):
+                _SWLOG.debug("code-quality items not closed", exc_info=True)
 
         # Primary self-maintenance: the failure analysis only (analyze_and_improve's read-mostly
         # pass). The tick never starts the coding agent: with a model loaded it started tens of model
