@@ -165,6 +165,23 @@ def test_a_corrected_claims_memory_is_counted_against_once_when_the_model_reads_
     assert calls == [([21], False)], "read as accepted first, the model's dispute counts against it"
 
 
+def test_the_memories_settled_with_a_reply_are_the_ones_it_was_shown():
+    """The prompt shows the reranked memories, but the next message settled (and the recall figures
+    assessed) the first five merged ones, in the order the retrievers gave them before the rerank: a
+    memory the rerank put first and the reply rested on went unsettled, and one it dropped was
+    counted. The memories settled are the ones shown, in their order; an archive hit is not a row."""
+    import inspect
+    from types import SimpleNamespace
+    from eli.cognition import orchestrator
+    merged = [{"id": i, "text": f"memory {i}"} for i in (1, 2, 3, 4, 5, 6)]
+    reranked = [{"id": 6, "text": "memory 6", "rerank_score": 0.9}, {"id": "archive:9", "text": "an archived one"},
+                {"id": 2, "text": "memory 2", "rerank_score": 0.6}, {"id": 0, "text": "no row"}]
+    wm = SimpleNamespace(merged_hits=merged, reranked_hits=reranked)
+    assert [h["id"] for h in orchestrator.shown_memories(wm)] == [6, 2]
+    run = inspect.getsource(orchestrator.AgentOrchestrator.run)
+    assert run.count("shown_memories(wm)") == 2 and "wm.merged_hits\n" not in run.split("_pending_recall_ids", 1)[1][:80]
+
+
 def test_a_recall_is_logged_at_once_without_the_question_and_old_logs_leave(mem):
     """Recall writes were queued and applied only at the fiftieth, so up to 49 were lost at every exit
     (nothing flushed the queue); each row kept the user's question, which forgetting a memory left
