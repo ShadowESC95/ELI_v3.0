@@ -90,7 +90,7 @@ def _assert_paths_outside_bundle() -> None:
         "models_dir": Path(_paths.models_dir()),
         "remediation_root": _grem._root(),
         # runtime WRITE targets that shipped broken once each — keep gated
-        "persona_auto_file": Path(_persona._PERSONA_AUTO_FILE),
+        "persona_auto_file": Path(_persona.auto_path()),
         "code_examiner_root": __import__("eli.runtime.self_improvement", fromlist=["PROJECT_ROOT"]).PROJECT_ROOT,
         "image_artifacts_dir": Path(_img_paths.artifacts_dir()),
         "custom_agents_dir": Path(os.environ.get("ELI_CUSTOM_AGENTS_DIR", "")) if os.environ.get("ELI_CUSTOM_AGENTS_DIR") else Path(_paths.project_root()) / "eli",

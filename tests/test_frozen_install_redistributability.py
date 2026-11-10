@@ -187,3 +187,25 @@ def test_no_code_writes_to_generic_or_relative_eli_paths():
                 if i not in doc_lines and bad.search(code) and "adopt_legacy_file(" not in code:
                     found.append(f"{f.relative_to(root)}:{i}: {line.strip()[:100]}")
     assert not found, "generic or relative paths:\n" + "\n".join(found)
+
+
+def test_the_packaged_apps_path_check_runs_against_the_code_it_ships_with(tmp_path):
+    """The frozen app's launch selftest checks every place it writes is outside the read-only bundle.
+    It read persona._PERSONA_AUTO_FILE, a constant 3.0.159 replaced with persona.auto_path(), so every
+    packaged build failed its launch on all three systems - and nothing outside a frozen build ran the
+    check. Here it runs as the packaged app runs it (sys.frozen set, a bundle folder of its own)."""
+    import os
+    import subprocess
+    from tests._state_env import state_env
+    repo = Path(__file__).resolve().parents[1]
+    entry = repo / "packaging" / "pyinstaller" / "eli_entry.py"
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    code = ("import importlib.util, sys; sys.frozen = True; sys._MEIPASS = sys.argv[2]; "
+            "s = importlib.util.spec_from_file_location('eli_entry', sys.argv[1]); "
+            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); m._assert_paths_outside_bundle()")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env.update(state_env(tmp_path / "state"), HOME=str(tmp_path / "home"), QT_QPA_PLATFORM="offscreen")
+    out = subprocess.run([sys.executable, "-c", code, str(entry), str(bundle)], cwd=str(repo), env=env,
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    assert out.returncode == 0, (out.stdout + out.stderr)[-2000:]
