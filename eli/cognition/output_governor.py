@@ -193,7 +193,10 @@ _CLARIFY_PHRASES = re.compile(
 
 # Sentence splitter that keeps the terminator, so a dropped sentence leaves the
 # surrounding text intact.
-_SENTENCE_RE = re.compile(r"[^.!?\n]*[.!?]+[\s]*|[^.!?\n]+$")
+# A sentence with its ending and the space after it, or a line with no ending of its own, or blank
+# lines: every character of a reply is in one piece, so dropping one sentence keeps the rest whole.
+# A line without its own full stop before a newline was in none and was lost from the joined result.
+_SENTENCE_RE = re.compile(r"[^.!?\n]*[.!?]+\s*|[^.!?\n]+\n*\s*|\n+")
 _SENTENCE_PARTS = _SENTENCE_RE   # shared by the self-status guard
 
 

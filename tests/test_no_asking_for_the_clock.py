@@ -46,3 +46,10 @@ def test_statements_about_the_time_survive():
 def test_it_never_empties_a_reply():
     """A silent turn is a worse failure than an odd one."""
     assert drop("What time is it?") == "What time is it?"
+
+
+def test_a_line_without_a_full_stop_is_kept_when_another_sentence_goes():
+    """The sentence reader skipped a line with no full stop of its own before a newline, so dropping
+    the clock question deleted that line too."""
+    out = drop("Morning\nGood to see you up early. What time is it?")
+    assert out == "Morning\nGood to see you up early."
