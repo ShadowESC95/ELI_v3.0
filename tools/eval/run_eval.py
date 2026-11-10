@@ -165,8 +165,10 @@ def main(argv=None) -> int:
 
     if args.target == "replay":
         return _replay_main(args)
-    if args.target in ("engine", "all"):
-        D.enter_sandbox()       # before eli is imported (see eli_driver)
+    # Every board runs in a throwaway copy of ELI's folders, entered before eli is imported (see
+    # eli_driver): the router board, run from a checkout, wrote the world's presence lock into that
+    # checkout's own data folder.
+    D.enter_sandbox()
     board = run_board(args.target, cases_path=args.cases,
                       coding_cases_path=args.coding_cases, case_filter=args.filter,
                       smoke=args.smoke, desktop=args.desktop)

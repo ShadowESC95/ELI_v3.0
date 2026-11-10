@@ -178,3 +178,24 @@ def test_the_sandbox_holds_every_place_eli_keeps_state():
     assert not box.exists(), "the throwaway folder outlived the run"
     assert all(box in Path(p).parents for p in got["paths"]), got
     assert box not in Path(got["real"]).parents, "the history would be thrown away with it"
+
+
+def test_the_router_board_from_the_command_line_runs_in_its_copy_and_writes_nothing_of_elis(tmp_path):
+    """Run from a checkout, the router board (the default target) used that checkout's own folders:
+    the world's presence lock landed in its data folder. Every board now runs in a throwaway copy."""
+    import os
+    import subprocess
+    import sys
+    from tests._state_env import state_env
+    from tools.eval import run_eval
+    real = tmp_path / "real"
+    case = next(c for c in run_eval._load_cases(Path(run_eval.__file__).with_name("cases.yaml"))
+                if str(c.get("target") or "router").lower() == "router" and not c.get("desktop"))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env.update(state_env(real))
+    out = subprocess.run([sys.executable, str(_REPO / "tools" / "eval" / "run_eval.py"), "--filter", str(case["id"])],
+                         cwd=str(_REPO), env=env, capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0 and "1 passed" in out.stdout, (out.stdout + out.stderr)[-1500:]
+    written = sorted(str(p.relative_to(real)) for p in real.rglob("*") if p.is_file()) if real.exists() else []
+    assert written == [], written
+
