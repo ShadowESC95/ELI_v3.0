@@ -89,3 +89,82 @@ def test_programs_drawing_on_a_card_are_listed_with_their_card(monkeypatch):
     assert holders[5100]["name"] == "monado-service"
     from eli.core import load_plan
     assert [load_plan.is_xr_program(h["name"]) for h in (holders[5100], holders[5200], holders[4242])] == [True, True, False]
+
+
+# ── the free VRAM with ELI's own model unloaded ──────────────────────────────
+# enforce_hardware_authority recommends for the VRAM there would be with no model of ELI's loaded. It
+# took that as the card's total less a fixed 500 MB "for the display server", so whatever else held
+# the card (another model server, a browser, a headset) was counted as freed by unloading ELI's.
+
+def _card(free_mb, total_mb=8192):
+    hw = hp.HardwareProfile()
+    hw.has_gpu, hw.free_vram_mb, hw.total_vram_mb = True, free_mb, total_mb
+    return hw
+
+
+def _no_kfd(monkeypatch, tmp_path):
+    monkeypatch.setattr(hp, "_KFD_PROCESSES", tmp_path / "no-kfd")
+
+
+def _loaded_at(monkeypatch, free_at_load):
+    import eli.cognition.gguf_inference as gi
+    monkeypatch.setattr(gi, "get_runtime_snapshot", lambda: {"vram_free_mb_at_load": free_at_load})
+
+
+def test_nvidia_on_any_os_counts_what_eli_itself_holds(monkeypatch, tmp_path):
+    _no_kfd(monkeypatch, tmp_path)
+    _loaded_at(monkeypatch, None)
+    _smi(monkeypatch, "4242, /usr/local/lib/ollama/llama-server, 5146\n"
+                      f"{os.getpid()}, /usr/app/ELI, 900\n")
+    assert hp.process_vram_mb() == 900.0
+    assert hp.cold_free_vram_mb(_card(1100)) == 2000, "the other server's 5146 MB is not ELI's to free"
+
+
+def test_a_driver_that_does_not_say_falls_back_to_what_was_free_before_the_load(monkeypatch, tmp_path):
+    """Windows' display driver mode lists ELI with no figure; Intel and Apple list nothing. The load
+    plan read the free VRAM itself just before loading, on whatever backend llama.cpp runs."""
+    _no_kfd(monkeypatch, tmp_path)
+    _smi(monkeypatch, f"{os.getpid()}, C:\\ELI\\ELI.exe, [N/A]\n")
+    _loaded_at(monkeypatch, 3000)
+    assert hp.process_vram_mb() is None
+    assert hp.cold_free_vram_mb(_card(1100)) == 3000
+    monkeypatch.setattr(hp, "nvidia_smi_path", lambda: None)       # no NVIDIA tool at all
+    assert hp.cold_free_vram_mb(_card(1100)) == 3000
+    _loaded_at(monkeypatch, None)
+    assert hp.cold_free_vram_mb(_card(1100)) is None, "nothing measured: no figure is made up"
+
+
+def test_amd_on_linux_reads_the_kernels_per_process_counters(monkeypatch, tmp_path):
+    monkeypatch.setattr(hp, "nvidia_smi_path", lambda: None)
+    _loaded_at(monkeypatch, None)
+    own = tmp_path / "kfd" / str(os.getpid())
+    own.mkdir(parents=True)
+    (own / "vram_0").write_text(str(1536 * 1_048_576))
+    monkeypatch.setattr(hp, "_KFD_PROCESSES", tmp_path / "kfd")
+    real_read = hp.Path.read_text
+    monkeypatch.setattr(hp.Path, "read_text", lambda self, *a, **k: "ELI" if self.name == "comm"
+                        else real_read(self, *a, **k))
+    assert hp.process_vram_mb() == 1536.0
+    assert hp.cold_free_vram_mb(_card(1000, 16384)) == 2536
+
+
+def test_the_recommendation_with_a_model_loaded_is_made_for_the_measured_cold_card(monkeypatch, tmp_path):
+    import eli.cognition.gguf_inference as gi
+    import eli.core.runtime_settings as rs
+    _no_kfd(monkeypatch, tmp_path)
+    _smi(monkeypatch, "4242, /usr/local/lib/ollama/llama-server, 5146\n"
+                      f"{os.getpid()}, /usr/app/ELI, 900\n")
+    monkeypatch.setattr(gi, "_llm", object())
+    monkeypatch.setattr(rs, "load_settings", lambda: {})
+    monkeypatch.setattr(hp, "detect_hardware", lambda: _card(1100))
+    monkeypatch.setattr(hp, "discover_models", lambda: [])
+    monkeypatch.setattr(hp, "_user_model_path_is_valid", lambda settings: True)
+    seen = {}
+
+    def recommend(hw, models):
+        seen["free"] = hw.free_vram_mb
+        return hp.ModelRecommendation(n_ctx=2048, batch_size=128)
+
+    monkeypatch.setattr(hp, "recommend", recommend)
+    hp.enforce_hardware_authority()
+    assert seen["free"] == 2000, "8192 − 500 was taken as free with another model server on the card"
