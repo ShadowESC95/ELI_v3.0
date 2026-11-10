@@ -86,3 +86,59 @@ def test_a_surprise_raises_the_memories_about_its_subject_and_is_a_thought(store
     assert nothing["touched"] == [] and th.recent(5)[0]["decision"] == "noted"
     assert salience.note_surprise("x", 0.0, subjects=["spotify"], why="no surprise") == {"touched": [], "gain": 0.0}
     assert salience.importance_gain(2.0) == salience.GAIN and salience.importance_gain(-1) == 0.0
+
+
+def test_one_users_thoughts_are_never_shown_to_another(store, monkeypatch):
+    """Thoughts with an empty user were returned for any user, claim thoughts were written with no user,
+    and the feed read them with no user at all: one member's recalled memory text and claims went to
+    every reader."""
+    from eli.kernel import request_context as rc
+    from eli.memory import policy
+    monkeypatch.setattr(policy, "rbac_members", lambda: frozenset({"member-b"}))
+    monkeypatch.setattr(policy, "_active_user_id", lambda: "")
+    token = rc.user_id_var.set("member-b")
+    try:   # a member's turn: what came to mind is theirs, written without naming them
+        th.record("claim", "works at: the harbour office", decision="shown", ref="claim:1:r-b")
+        th.record("proposal", "a fix for the router", decision="proposed", ref="proposal:1")
+    finally:
+        rc.user_id_var.reset(token)
+    th.record("recall", "the owner's walk by the canal", decision="shown", ref="recall:r-a:1")
+    owner_sees = {t["what"] for t in th.recent(10)}
+    assert owner_sees == {"the owner's walk by the canal", "a fix for the router"}
+    assert {t["what"] for t in th.recent(10, user_id="member-b")} == {"works at: the harbour office",
+                                                                       "a fix for the router"}
+    token = rc.user_id_var.set("member-b")
+    try:
+        assert "the owner's walk by the canal" not in {t["what"] for t in th.for_feed(10)}, "the caller's own"
+    finally:
+        rc.user_id_var.reset(token)
+
+
+def test_the_store_is_made_once_and_a_settle_by_prefix_uses_the_ref_index(store, monkeypatch):
+    """Every write, settle and read re-ran the schema script, and a prefix settle used LIKE, which the
+    ref index cannot serve, so each one read the whole table."""
+    th.record("recall", "first", decision="shown", ref="recall:r9:1")
+    ran = []
+    real = th.sqlite3.connect
+
+    class _Watch:
+        def __init__(self, conn):
+            self._c = conn
+
+        def executescript(self, sql):
+            ran.append(sql)
+            return self._c.executescript(sql)
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    monkeypatch.setattr(th.sqlite3, "connect", lambda *a, **k: _Watch(real(*a, **k)))
+    th.record("recall", "second", decision="shown", ref="recall:r9:2")
+    assert th.settle_prefix("recall:r9:", "right") == 2 and th.recent(5)
+    assert ran == [], "the schema was made once for this store"
+    conn = real(str(store))
+    lo, hi = th._prefix_range("recall:r9:")
+    plan = " ".join(str(r) for r in conn.execute(
+        "EXPLAIN QUERY PLAN UPDATE thoughts SET status = 'x' WHERE status = 'open' AND ref >= ? AND ref < ?", (lo, hi)))
+    assert "idx_thoughts_ref" in plan
+    assert th.settle_prefix("recall:R9:", "right") == 0, "a prefix is exact, as refs are"

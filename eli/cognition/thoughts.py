@@ -30,7 +30,13 @@ The kinds and their rooms:
     act         something made of ELI's own accord   core_room
     proposal    a fix ELI proposed for itself        upgrade_bay
     diagnosis   a failure ELI analysed               upgrade_bay
+    lesson      a change ELI made to one of its parts  upgrade_bay
     note        a note ELI wrote in its rooms        evidence_wall
+
+Whose a thought is: the user of the turn it was had in (the owner's, or one API member's, as the
+memory policy keys them), unless it is about ELI itself (SHARED_KINDS: a fix, a diagnosis, a change
+to its parts, something it made, a note in its rooms). A reader is shown its own thoughts and ELI's
+shared ones, never another user's memories, claims or sentences.
 
 A body hangs the latest of each room up as sheets (eli/world/shown.py) the user can pick up and
 ask about; by_id gives one back for that.
@@ -56,9 +62,11 @@ ROOM_OF = {
     "surprise": "anomaly_room", "conflict": "anomaly_room",
     "action": "debug_basement",
     "route": "core_room", "act": "core_room",
-    "proposal": "upgrade_bay", "diagnosis": "upgrade_bay",
+    "proposal": "upgrade_bay", "diagnosis": "upgrade_bay", "lesson": "upgrade_bay",
     "note": "evidence_wall",
 }
+# The kinds that are about ELI itself and are any reader's to see; every other kind is its user's.
+SHARED_KINDS = ("proposal", "diagnosis", "lesson", "act", "note")
 DECISIONS = ("shown", "held", "kept", "raised", "dropped", "taken", "declined", "tried", "advised", "told",
              "proposed", "adopted", "pinned")
 OUTCOMES = ("right", "wrong", "done", "undone", "dropped", "stood", "rejected")
@@ -86,6 +94,9 @@ CREATE TABLE IF NOT EXISTS thoughts (
 CREATE INDEX IF NOT EXISTS idx_thoughts_ts ON thoughts(ts);
 CREATE INDEX IF NOT EXISTS idx_thoughts_ref ON thoughts(ref);
 """
+# The databases whose schema this process has made sure of: each is made sure of once, not on every
+# write, settle and read of a turn.
+_ensured: set = set()
 _COLUMNS = ("id", "ts", "kind", "what", "why_json", "chance", "decision", "reason", "subject", "request_id", "ref",
             "status", "outcome", "how", "settled_at", "user_id", "room")
 _trimmed_at = 0.0
@@ -99,14 +110,36 @@ def _default_db_path() -> Path:
 def _connect(db_path=None) -> sqlite3.Connection:
     path = Path(db_path).expanduser().resolve() if db_path else _default_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        _ensured.discard(str(path))       # a store taken away (a wipe) is made again
     conn = sqlite3.connect(str(path), timeout=5.0)
     try:
         from eli.core.sqlite_util import apply_pragmas
         apply_pragmas(conn, db_path=str(path), synchronous="NORMAL")
     except ImportError as failure:   # the plain connection serves
         log.debug("pragmas not applied to the thoughts store: %s", failure)
-    conn.executescript(_SCHEMA)
+    key = str(path)
+    if key not in _ensured:
+        conn.executescript(_SCHEMA)
+        _ensured.add(key)
     return conn
+
+
+def _owner_key(user_id: Any = None) -> str:
+    """Whose a thought is, as the memory policy keys users ("" the owner, else the member's id); with
+    none given, the user of the turn running in this context."""
+    try:
+        from eli.memory.policy import owner_key
+        return owner_key(None if user_id in (None, "") else user_id)
+    except ImportError as failure:      # no policy to say otherwise: one owner
+        log.debug("memory policy unavailable: %s", failure)
+        return ""
+
+
+def _prefix_range(prefix: str) -> tuple:
+    """A prefix as a range of the ref index ("ref >= ? AND ref < ?"): LIKE is case-blind and the
+    index is not, so a LIKE settle read the whole table."""
+    return prefix, prefix + "\U0010ffff"
 
 
 def room_of(kind: str) -> str:
@@ -149,7 +182,9 @@ def record(kind: str, what: str, *, why: Any = None, chance: Optional[float] = N
         "chance": None if chance is None else max(0.0, min(1.0, float(chance))),
         "decision": str(decision or "")[:40], "reason": " ".join(str(reason or "").split())[:300],
         "subject": " ".join(str(subject or "").split())[:200], "request_id": str(request_id or "")[:120],
-        "ref": str(ref or "")[:200], "user_id": str(user_id or "")[:120], "room": str(room or room_of(kind)),
+        "ref": str(ref or "")[:200], "room": str(room or room_of(kind)),
+        # a thought about ELI itself is any reader's; any other is the user's of the turn it was had in
+        "user_id": "" if str(kind) in SHARED_KINDS else _owner_key(user_id)[:120],
     }
     try:
         conn = _connect(db_path)
@@ -217,8 +252,8 @@ def settle_prefix(prefix: str, outcome: str, *, how: str = "", now: Optional[flo
             sql += "ref = ?"
             params.append(prefix)
         else:
-            sql += "ref LIKE ?"
-            params.append(prefix + "%")
+            sql += "ref >= ? AND ref < ?"
+            params.extend(_prefix_range(prefix))
         if kinds:
             sql += " AND kind IN (%s)" % ",".join("?" * len(kinds))
             params.extend(str(k) for k in kinds)
@@ -245,9 +280,11 @@ def _as_dict(row) -> Dict[str, Any]:
     return out
 
 
-def recent(limit: int = 40, *, kinds: Optional[Iterable[str]] = None, room: str = "", user_id: str = "",
+def recent(limit: int = 40, *, kinds: Optional[Iterable[str]] = None, room: str = "", user_id: Optional[str] = None,
            since: Optional[float] = None, open_only: bool = False, db_path=None) -> List[Dict[str, Any]]:
-    """The latest thoughts, newest first, each with its reasons as a list and its words."""
+    """The latest thoughts of one reader, newest first, each with its reasons as a list and its words:
+    their own and ELI's shared ones (SHARED_KINDS). `user_id` is the reader (None: the user of the turn
+    running in this context, which outside any turn is the owner)."""
     try:
         conn = _connect(db_path)
     except (sqlite3.Error, OSError) as failure:
@@ -263,9 +300,13 @@ def recent(limit: int = 40, *, kinds: Optional[Iterable[str]] = None, room: str 
         if room:
             sql += " AND room = ?"
             params.append(str(room))
-        if user_id:
-            sql += " AND (user_id = ? OR COALESCE(user_id, '') = '')"
-            params.append(str(user_id))
+        key = _owner_key(user_id)
+        from eli.memory.policy import scope_sql
+        mine, mine_args = scope_sql("user_id", key, raw_ids=True)
+        shared = ",".join("?" * len(SHARED_KINDS))
+        sql += f" AND ((1 = 1{mine}) OR (COALESCE(user_id, '') = '' AND kind IN ({shared})))"
+        params.extend(mine_args)
+        params.extend(SHARED_KINDS)
         if since is not None:
             sql += " AND ts >= ?"
             params.append(float(since))
@@ -331,11 +372,12 @@ def words(thought: Dict[str, Any]) -> str:
     return ". ".join(p[0].upper() + p[1:] if p else p for p in parts) + "."
 
 
-def for_feed(limit: int = 40, *, user_id: str = "", db_path=None) -> List[Dict[str, Any]]:
-    """The latest thoughts as a body draws them: id, kind, room, what, why, chance, decision, reason,
-    status, outcome, when (unix time), words, and what the thought is about: its subject (an action's
-    name, a memory's words, a relation) and its ref (the record it settles with: "claim:<id>:<turn>",
-    "act:<moment>"), so a body can tie a thought to the record it is about."""
+def for_feed(limit: int = 40, *, user_id: Optional[str] = None, db_path=None) -> List[Dict[str, Any]]:
+    """The latest thoughts of one reader (recent's `user_id`) as a body draws them: id, kind, room,
+    what, why, chance, decision, reason, status, outcome, when (unix time), words, and what the thought
+    is about: its subject (an action's name, a memory's words, a relation) and its ref (the record it
+    settles with: "claim:<id>:<turn>", "act:<moment>"), so a body can tie a thought to the record it is
+    about."""
     out = []
     for t in recent(limit, user_id=user_id, db_path=db_path):
         out.append({"id": int(t["id"]), "kind": str(t["kind"]), "room": str(t["room"] or room_of(t["kind"])),
@@ -347,5 +389,5 @@ def for_feed(limit: int = 40, *, user_id: str = "", db_path=None) -> List[Dict[s
     return out
 
 
-__all__ = ["DAYS", "DECISIONS", "OUTCOMES", "ROOM_OF", "by_id", "for_feed", "recent", "record", "room_of", "settle",
-           "settle_prefix", "words"]
+__all__ = ["DAYS", "DECISIONS", "OUTCOMES", "ROOM_OF", "SHARED_KINDS", "by_id", "for_feed", "recent", "record",
+           "room_of", "settle", "settle_prefix", "words"]

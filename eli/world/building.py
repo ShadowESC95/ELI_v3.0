@@ -870,6 +870,11 @@ def apply(edits: Any, *, actor: str = "eli", summary: str = "", asked: bool = Fa
             if refs and any(r.get("ok") for r in results):
                 from eli.world.urges import undone
                 undone(refs)
+            if any(r.get("ok") for r in results):
+                # a note written in a batch that was taken back is a thought that was undone
+                from eli.cognition.thoughts import settle as _settle_thought
+                for ts in undid:
+                    _settle_thought(f"note:{ts}", "undone", how="the batch it was written in was taken back")
         except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
             log.debug("undone acts not settled", exc_info=True)
     done = {r["index"] for r in results}
