@@ -21,11 +21,18 @@ def open_file(*a, **k):
 
 
 def _h_check_chronal_alignment(a, args):
-    import time as _t_mod
-    _now = _t_mod.localtime()
-    msg = (f"Chronal alignment nominal. Local time: "
-           f"{_t_mod.strftime('%Y-%m-%d %H:%M:%S', _now)}.")
-    return {"ok": True, "action": a, "content": msg, "response": msg}
+    """The clock as this machine has it (local time, its zone and offset from UTC): facts for the
+    model to answer the playful question in its own words. It answered with one fixed sentence that
+    called the alignment "nominal", which nothing had checked."""
+    import datetime as _dt
+    now = _dt.datetime.now().astimezone()
+    offset = now.strftime("%z")
+    facts = (f"Local time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+             f"Time zone: {now.tzname() or 'unnamed'} (UTC{offset[:3]}:{offset[3:]})\n"
+             f"UTC: {now.astimezone(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+    question = str((args or {}).get("question") or (args or {}).get("message") or "check chronal alignment")
+    return {"ok": True, "action": a, "content": facts, "response": facts, "explain_in_words": True,
+            "question": question}
 
 
 def _h_data_fabricator(a, args):

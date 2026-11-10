@@ -142,3 +142,11 @@ def test_proactive_status_reads_daemon():
 def test_cpu_usage_reads_metrics():
     r = _contract(get("CPU_USAGE")("CPU_USAGE", {}), "CPU_USAGE")
     assert r["ok"] is True
+
+
+def test_the_chronal_check_gives_the_clocks_facts_for_the_model_to_word():
+    """It answered with one fixed sentence calling the alignment "nominal", which nothing had checked."""
+    r = _contract(get("CHECK_CHRONAL_ALIGNMENT")("CHECK_CHRONAL_ALIGNMENT", {}), "CHECK_CHRONAL_ALIGNMENT")
+    assert r["ok"] is True and r["explain_in_words"] is True
+    assert "nominal" not in r["content"].lower()
+    assert r["content"].startswith("Local time: ") and "Time zone: " in r["content"] and "UTC: " in r["content"]
