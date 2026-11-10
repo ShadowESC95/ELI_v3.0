@@ -6,31 +6,15 @@ from pathlib import Path
 from typing import Any, Dict
 
 
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import canonical_root
-        return canonical_root(Path(__file__).resolve().parents[2])
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
-
-def _artifact_path(*parts: str) -> Path:
-    root = _project_root()
-    try:
-        from eli.core import paths as _paths
-        for fn_name in ("get_paths", "get_project_paths"):
-            fn = getattr(_paths, fn_name, None)
-            if callable(fn):
-                obj = fn()
-                val = getattr(obj, "artifacts_dir", None)
-                if val:
-                    return Path(val).expanduser().resolve().joinpath(*parts)
-        val = getattr(_paths, "ARTIFACTS_DIR", None)
-        if val:
-            return Path(val).expanduser().resolve().joinpath(*parts)
-    except Exception:
-        pass
-    return root.joinpath("artifacts", *parts)
+def _store_paths() -> Dict[str, Path]:
+    """Where the stores are, as the stores themselves resolve them (eli/core/paths with its ELI_USER_DB /
+    ELI_MEMORY_DB / ELI_AGENT_DB overrides; the vector store's own path rule): the report read
+    <data>/db/user.sqlite3 and <data>/vectors whatever the stores actually used."""
+    from eli.core import paths as _paths
+    from eli.memory.vector_store import _get_index_paths
+    index, meta = _get_index_paths()
+    return {"user_db": Path(_paths.user_db_path()), "agent_db": Path(_paths.agent_db_path()),
+            "index": Path(index), "meta": Path(meta)}
 
 
 def _count_table(cur: sqlite3.Cursor, table: str) -> int | None:
@@ -38,19 +22,34 @@ def _count_table(cur: sqlite3.Cursor, table: str) -> int | None:
         safe = '"' + table.replace('"', '""') + '"'
         row = cur.execute(f"SELECT COUNT(*) FROM {safe}").fetchone()
         return int(row[0]) if row else 0
-    except Exception:
+    except sqlite3.Error:
+        return None
+
+
+def _distinct_conversations(cur: sqlite3.Cursor) -> int | None:
+    """How many conversations the turns belong to: the distinct sessions of conversation_turns (the legacy
+    `conversations` table nothing writes any more was counted, so this was always 0)."""
+    try:
+        row = cur.execute("SELECT COUNT(DISTINCT session_id) FROM conversation_turns "
+                          "WHERE COALESCE(session_id, '') <> ''").fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
         return None
 
 
 def inspect_sqlite(path: Path) -> Dict[str, Any]:
+    """Every table of one database with its row count, and the conversations its turns belong to. A
+    database that is not there, or a table that cannot be counted, is an error, never a 0."""
     out: Dict[str, Any] = {
         "path": str(path),
         "exists": path.exists(),
         "tables": [],
         "counts": {},
+        "conversations": None,
         "errors": [],
     }
     if not path.exists():
+        out["errors"].append(f"missing: {path}")
         return out
 
     try:
@@ -65,6 +64,10 @@ def inspect_sqlite(path: Path) -> Dict[str, Any]:
         out["tables"] = tables
         for table in tables:
             out["counts"][table] = _count_table(cur, table)
+            if out["counts"][table] is None:
+                out["errors"].append(f"{path.name}: {table} could not be counted")
+        if "conversation_turns" in tables:
+            out["conversations"] = _distinct_conversations(cur)
         con.close()
     except Exception as exc:
         out["errors"].append(type(exc).__name__ + ": " + str(exc))
@@ -72,11 +75,12 @@ def inspect_sqlite(path: Path) -> Dict[str, Any]:
 
 
 def inspect_vector_store() -> Dict[str, Any]:
-    index_path = _artifact_path("vectors", "index.faiss")
+    where = _store_paths()
+    index_path = where["index"]
     # Canonical metadata is JSON now; fall back to legacy pickle only if present.
-    meta_path = _artifact_path("vectors", "meta.json")
+    meta_path = where["meta"]
     if not meta_path.exists():
-        _legacy = _artifact_path("vectors", "meta.pkl")
+        _legacy = meta_path.with_name("meta.pkl")
         if _legacy.exists():
             meta_path = _legacy
     out: Dict[str, Any] = {
@@ -123,8 +127,11 @@ def inspect_vector_store() -> Dict[str, Any]:
 
 
 def memory_truth_report() -> Dict[str, Any]:
-    user_db = _artifact_path("db", "user.sqlite3")
-    agent_db = _artifact_path("db", "agent.sqlite3")
+    """The one count of what memory holds (memories, turns, conversations, vectors), read from the
+    stores where they are. Every status path formats these numbers rather than counting again."""
+    where = _store_paths()
+    user_db = where["user_db"]
+    agent_db = where["agent_db"]
     user = inspect_sqlite(user_db)
     agent = inspect_sqlite(agent_db)
     vectors = inspect_vector_store()
@@ -136,7 +143,7 @@ def memory_truth_report() -> Dict[str, Any]:
         "user_memories": int(user_counts.get("memories") or 0),
         "user_memory_fts": int(user_counts.get("memories_fts") or 0),
         "user_conversation_turns": int(user_counts.get("conversation_turns") or 0),
-        "user_conversations": int(user_counts.get("conversations") or 0),
+        "user_conversations": user.get("conversations"),
         "user_observations": int(user_counts.get("observations") or 0),
         "user_recall_log": int(user_counts.get("recall_log") or 0),
         "agent_memories": int(agent_counts.get("memories") or 0),

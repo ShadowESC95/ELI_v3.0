@@ -30,13 +30,18 @@ def test_a_learning_event_is_stored_once(tmp_path):
         "select count(*) from runtime_events where source='memory.log_learning_event'").fetchone()[0]
 
 
-def test_upkeep_removes_earlier_ledger_copies_of_replay_rows(tmp_path):
-    mem = Memory(db_path=tmp_path / "user.sqlite3")
-    con = sqlite3.connect(mem.db_path)
-    ensure_schema(con)
-    con.execute("insert into runtime_events (event_type, source, timestamp) values ('learning_replay', 'memory.log_learning_event', ?)", (time.time(),))
-    con.commit()
-    con.close()
-    assert mem.tidy_learning_tables()["replay_mirrors_removed"] == 1
-    con = sqlite3.connect(mem.db_path)
-    assert con.execute("select count(*) from runtime_events").fetchone()[0] == 0
+def test_upkeep_never_deletes_from_the_chained_evidence_ledger(tmp_path, monkeypatch):
+    """The daily upkeep deleted the ledger copies of replay rows an older version wrote, between chained
+    rows: the chain was broken for good and its check reported a deleted row."""
+    from eli.runtime import evidence_ledger as led
+    db = tmp_path / "user.sqlite3"
+    mem = Memory(db_path=db)
+    for i, source in enumerate(("executor", "memory.log_learning_event", "executor")):
+        led.record_event("learning_replay" if i == 1 else "tool_execution", source=source, content=f"row {i}",
+                         db_path=db, timestamp=time.time() - 100 + i * 20)
+    assert led.verify_chain(db).get("ok") is True
+    out = mem.tidy_learning_tables()
+    assert "error" not in out and "replay_mirrors_removed" not in out
+    assert led.verify_chain(db).get("ok") is True, "the chain stands after the upkeep"
+    con = sqlite3.connect(db)
+    assert con.execute("select count(*) from runtime_events").fetchone()[0] == 3

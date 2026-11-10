@@ -3985,16 +3985,13 @@ class Memory(metaclass=_MemoryMeta):
                      (key, value, time.time()))
 
     def tidy_learning_tables(self, dry_run: bool = False) -> Dict[str, Any]:
-        """Drop repeated belief revisions and ledger copies of replay rows; cap corroboration at the days the user has used ELI."""
-        out: Dict[str, Any] = {"revisions_removed": 0, "corroboration_capped": 0, "replay_mirrors_removed": 0}
+        """Drop repeated belief revisions; cap corroboration at the days the user has used ELI. The ledger
+        copies of replay rows an older version wrote stay where they are: runtime_events is the hash-chained
+        evidence ledger (eli/runtime/evidence_ledger), and deleting from it broke the chain for good, so its
+        check could no longer tell tampering from ELI's own upkeep."""
+        out: Dict[str, Any] = {"revisions_removed": 0, "corroboration_capped": 0}
         conn = self._get_connection()
         try:
-            if _eli_table_exists(conn, "runtime_events"):
-                n = conn.execute("SELECT COUNT(*) FROM runtime_events WHERE source = 'memory.log_learning_event'").fetchone()[0]
-                out["replay_mirrors_removed"] = int(n or 0)
-                if not dry_run and n:
-                    conn.execute("DELETE FROM runtime_events WHERE source = 'memory.log_learning_event'")
-                    conn.commit()
             from eli.cognition.stance_store import compact_revisions
             if _eli_table_exists(conn, "eli_stances") and _eli_table_exists(conn, "memory_claims"):
                 from eli.memory import claims as _claims
@@ -5562,8 +5559,11 @@ class Memory(metaclass=_MemoryMeta):
             sql += ", COALESCE(enabled, 1)"
             sql += f", {time_expr}"
             sql += " FROM habit_rules"
+            # A rule without a time is no schedule: read as 00:00 it ran its command at midnight.
+            where = ["hour IS NOT NULL", "minute IS NOT NULL"] if {"hour", "minute"} <= cols else ["0"]
             if enabled_only and "enabled" in cols:
-                sql += " WHERE COALESCE(enabled, 1) = 1"
+                where.append("COALESCE(enabled, 1) = 1")
+            sql += " WHERE " + " AND ".join(where)
             sql += f" ORDER BY {time_expr} ASC"
             rows = conn.execute(sql).fetchall()
 
@@ -5676,22 +5676,9 @@ class Memory(metaclass=_MemoryMeta):
                     "enabled": 1,
                 })
 
-            rule = conn.execute(
-                "SELECT id FROM habit_rules WHERE COALESCE(name, '') = ?",
-                (name,),
-            ).fetchone()
-            if rule is None:
-                _insert_payload(conn, "habit_rules", {
-                    "name": name,
-                    "command": cmd_str,
-                    "enabled": 1,
-                    "timestamp": now,
-                    "ts": now,
-                    "pattern": name,
-                    "action": cmd_str,
-                    "trigger_phrase": name,
-                    "action_type": "app_cmd",
-                })
+            # No habit rule from a use: a rule is a time something runs (eli/planning/habits.detect_habits
+            # through add_habit_rule). This made an enabled rule with no time for every app opened,
+            # and the scheduler, reading the missing time as 00:00, opened it at midnight.
 
             _insert_payload(conn, "habit_events", {
                 "event_type": "app_cmd",

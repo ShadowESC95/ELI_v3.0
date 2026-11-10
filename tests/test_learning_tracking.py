@@ -43,8 +43,23 @@ def test_app_command_updates_habit_tables_and_replay_buffer(tmp_path):
 
     assert _count(db, "habit_events") >= 1
     assert _count(db, "habits") >= 1
-    assert _count(db, "habit_rules") >= 1
+    assert _count(db, "habit_rules") == 0, "opening an app makes no scheduled rule (it ran at midnight)"
+    assert mem.get_habit_rules(enabled_only=False) == []
     assert _count(db, "learning_replay") >= 1
+
+
+def test_a_rule_without_a_time_is_never_read_as_midnight(tmp_path):
+    import sqlite3
+    db = tmp_path / "user.sqlite3"
+    mem = Memory(db_path=db, secondary_paths=[])
+    mem._get_connection().close()
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO habit_rules (name, command, enabled) VALUES ('notes', 'notes', 1)")
+    conn.commit()
+    conn.close()
+    assert mem.get_habit_rules() == []
+    assert mem.add_habit_rule("tea", "open tea timer", 7, 30)
+    assert [(r["name"], r["hour"], r["minute"]) for r in mem.get_habit_rules()] == [("tea", 7, 30)]
 
 
 def test_runtime_evidence_ledger_tracks_repeated_events(tmp_path):

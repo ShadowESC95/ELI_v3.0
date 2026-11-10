@@ -112,3 +112,29 @@ def test_a_request_about_the_conversation_over_a_period_it_names_reads_that_peri
                                   "let us discuss the plan for tomorrow"])
 def test_talk_that_names_a_day_is_not_a_request_to_recall(text):
     assert route_intent(text)["meta"]["matched_by"] != "memory.temporal_recall_as_chat"
+
+
+def test_the_memory_count_reads_the_stores_where_they_are_and_counts_conversations_by_session(tmp_path, monkeypatch):
+    """The health report read <data>/db/user.sqlite3 whatever ELI_USER_DB said, counted the legacy
+    `conversations` table nothing writes (always 0 conversations), and said 'all stores reachable'
+    with a database missing."""
+    from eli.memory import get_memory_status, memory_truth
+    from eli.memory.memory import Memory
+    user = tmp_path / "elsewhere" / "user.sqlite3"
+    user.parent.mkdir()
+    monkeypatch.setenv("ELI_USER_DB", str(user))
+    monkeypatch.setenv("ELI_AGENT_DB", str(tmp_path / "agent.sqlite3"))
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: None)
+    mem = Memory(db_path=user)
+    for session in ("morning", "evening"):
+        mem.add_conversation_turn("user", f"hello from the {session} chat", session_id=session)
+    report = memory_truth.memory_truth_report()
+    assert report["databases"]["user"]["path"] == str(user)
+    assert report["summary"]["user_conversation_turns"] == 2 and report["summary"]["user_conversations"] == 2
+    assert any("missing" in e for e in report["databases"]["agent"]["errors"]), "the agent database is not there"
+    words = memory_truth.format_memory_truth(report)
+    assert "across 2 conversations" in words and "all stores reachable" not in words
+    status = get_memory_status(user)
+    assert status["ok"] and status["conversation_turns"] == 2 and status["distinct_sessions"] == 2
+    gone = get_memory_status(tmp_path / "nothing.sqlite3")
+    assert gone["ok"] is False and "database_not_found" in gone["error"]

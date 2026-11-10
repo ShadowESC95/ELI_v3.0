@@ -125,84 +125,34 @@ def log_event(event_type: str, details: Any):
 
 def get_memory_status(db_path: Optional[str | Path] = None) -> Dict[str, Any]:
     """
-    Grounded telemetry helper used by UI/status answers.
-
-    Returns counts from the actual SQLite file instead of making the model guess.
+    Grounded telemetry helper used by UI/status answers: one database's counts as the one counter
+    reads them (eli/memory/memory_truth.inspect_sqlite), instead of making the model guess.
     """
+    from eli.memory.memory_truth import inspect_sqlite
     if db_path is None:
         resolved = resolve_db_paths().user_db or resolve_db_paths().memory_db
     else:
         resolved = Path(db_path).expanduser().resolve()
 
     db = Path(resolved).expanduser().resolve()
+    seen = inspect_sqlite(db)
+    counts = seen.get("counts") or {}
     out: Dict[str, Any] = {
-        "ok": True,
+        "ok": not seen.get("errors"),
         "db_path": str(db),
-        "exists": db.exists(),
-        "tables": [],
-        "memory_entries": 0,
-        "conversation_turns": 0,
-        "distinct_sessions": 0,
-        "db_size_mb": 0.0,
+        "exists": bool(seen.get("exists")),
+        "tables": list(seen.get("tables") or []),
+        "memory_entries": int(counts.get("memories") or 0) + int(counts.get("semantic") or 0),
+        "conversation_turns": int(counts.get("conversation_turns") or 0),
+        "distinct_sessions": int(seen.get("conversations") or 0),
+        "db_size_mb": db.stat().st_size / 1048576.0 if db.exists() else 0.0,
     }
-
+    if "semantic" in counts:
+        out["semantic_facts"] = int(counts.get("semantic") or 0)
     if not db.exists():
-        out["ok"] = False
         out["error"] = f"database_not_found: {db}"
-        return out
-
-    out["db_size_mb"] = db.stat().st_size / 1048576.0
-
-    con = sqlite3.connect(str(db))
-    try:
-        cur = con.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        tables = [r[0] for r in cur.fetchall()]
-        out["tables"] = tables
-
-        for tbl in ("memories", "memory", "eli_memory", "mem"):
-            if tbl in tables:
-                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
-                out["memory_entries"] = int(cur.fetchone()[0] or 0)
-                break
-
-        # Also count semantic user facts
-        if "semantic" in tables:
-            try:
-                cur.execute("SELECT COUNT(*) FROM semantic")
-                sem = int(cur.fetchone()[0] or 0)
-                out["semantic_facts"] = sem
-                out["memory_entries"] = out["memory_entries"] + sem
-            except Exception:
-                pass
-
-        for tbl in ("conversation_turns", "conversations", "conversation", "chat_history", "history"):
-            if tbl in tables:
-                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
-                out["conversation_turns"] = int(cur.fetchone()[0] or 0)
-                # distinct_sessions is always computed here. It was gated on tbl=='conversations', which never
-                # ran because 'conversation_turns' matched first and broke the loop, giving a permanent false
-                # 0. Sessions live on conversation_turns.session_id, so take the MAX distinct across the
-                # candidates.
-                _ds = 0
-                for _src in ("conversation_turns", tbl, "conversations"):
-                    if _src not in tables:
-                        continue
-                    try:
-                        cur.execute(
-                            f"SELECT COUNT(DISTINCT session_id) FROM {_src} "
-                            "WHERE COALESCE(session_id, '') <> ''"
-                        )
-                        _v = int(cur.fetchone()[0] or 0)
-                        if _v > _ds:
-                            _ds = _v
-                    except Exception:
-                        pass
-                out["distinct_sessions"] = _ds
-                break
-    finally:
-        con.close()
-
+    elif seen.get("errors"):
+        out["error"] = "; ".join(seen["errors"])
     return out
 
 from .memory import get_search_memory, get_memory_authority, rebuild_vector_index_from_search_db
