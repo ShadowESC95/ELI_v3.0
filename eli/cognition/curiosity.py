@@ -29,7 +29,8 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-HALF_LIFE_DAYS = 7.0            # a surprise weighs half as much after a week, as the ledger weighs runs
+# A surprise weighs half as much after a week: the shared recency weight (epistemics.recency_weight).
+from eli.cognition.epistemics import HALF_LIFE_DAYS, recency_weight  # noqa: E402
 LOOKBACK_DAYS = 30.0            # how far back surprises count, as the ledger reads runs
 _WORD = re.compile(r"[a-z0-9][a-z0-9'-]{2,}")
 _STOP = frozenset("the a an and or of to in on for with at by from about this that these those it its is are was were "
@@ -46,7 +47,7 @@ def _surprises(now: float) -> List[Dict[str, Any]]:
 
 
 def _weight(ts: float, now: float) -> float:
-    return 0.5 ** (max(0.0, now - float(ts or 0.0)) / 86400.0 / HALF_LIFE_DAYS)
+    return recency_weight(ts, now, HALF_LIFE_DAYS)
 
 
 def _open_conflicts() -> List[str]:

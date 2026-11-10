@@ -12,11 +12,18 @@ def db(tmp_path, monkeypatch):
     return path
 
 
-def _run(db, action, ok, t, predicted=None):
+def _run(db, action, ok, t, predicted=None, outcome=None):
+    """One run as the executor records it: the tool_execution row (with the prediction made before it)
+    and the executor_action row the one reliability estimator reads (eli/runtime/action_outcomes)."""
+    from eli.runtime import action_outcomes
     payload = {"ok": ok}
     if predicted is not None:
         payload["predicted"] = predicted
-    led.record_event("tool_execution", action=action, subject=f"s{t}", payload=payload, outcome="ok" if ok else "failed", db_path=db, timestamp=t)
+    outcome = outcome or ("ok" if ok else "failed")
+    led.record_event("tool_execution", action=action, subject=f"s{t}", payload=payload, outcome=outcome, db_path=db, timestamp=t)
+    led.record_event("executor_action", source="executor.post_dispatch", action=action, subject=f"s{t}",
+                     payload={"args": {}, "result": {"ok": ok}}, outcome=outcome, db_path=db, timestamp=t)
+    action_outcomes.forget()
 
 
 def test_no_prediction_without_history(db):
@@ -32,6 +39,23 @@ def test_reliability_follows_recent_outcomes(db):
         _run(db, "OPEN_APP", True, now - 100 + i * 15)
     assert led.predict_success("SCREENSHOT", db_path=db) < 0.25 < 0.75 < led.predict_success("OPEN_APP", db_path=db)
     assert [r["action"] for r in led.unreliable_actions(db_path=db)] == ["SCREENSHOT"]
+
+
+def test_a_run_that_changed_nothing_counts_against_the_action_in_the_prediction_too(db):
+    """Two estimators of 'will this action work' disagreed: the outcome report counted a run that
+    changed nothing as a failure, the executor's prediction (tool_execution rows) ignored it, so ELI
+    predicted success for what its own report said usually fails. One estimator now serves both."""
+    import time
+    from eli.runtime import action_outcomes
+    now = time.time()
+    for i in range(6):
+        _run(db, "OPEN_APP", True, now - 100 + i * 15, outcome="no_effect")
+    for i in range(6):
+        _run(db, "DATE", True, now - 100 + i * 15)
+    predicted = led.predict_success("OPEN_APP", db_path=db)
+    assert predicted is not None and predicted < 0.5
+    assert predicted == pytest.approx(round(action_outcomes.reliability("OPEN_APP", db_path=db)["p"], 4))
+    assert [r["action"] for r in led.unreliable_actions(db_path=db)] == ["OPEN_APP"]
 
 
 def test_recent_runs_count_more_than_old_ones(db):
@@ -126,8 +150,27 @@ def test_scores_that_prove_too_sure_are_brought_down_and_the_error_measured(db):
     p = ep.calibrate("answer", 0.9, db_path=db)
     assert p.n == 12 and 0.45 < p.p < 0.75
     rep = ep.report("answer", db_path=db)
-    assert rep["n"] == 12 and rep["ece_calibrated"] < rep["ece"] and rep["brier_calibrated"] < rep["brier"]
-    assert rep["bands"][0]["predicted"] == 0.9 and rep["bands"][0]["observed"] == 0.5
+    assert rep["n"] == 12 and rep["ece_fitted"] < rep["ece_score"] and rep["brier_fitted"] < rep["brier_score"]
+    # the calibration error a reply carries is that of the chances as they were given, each before its
+    # own outcome was known (prequential), not of the fit on the outcomes it was fitted to
+    assert rep["n_given"] == 12 and rep["ece"] < rep["ece_score"]
+    assert p.ece == pytest.approx(rep["ece"]) and rep["bands"] != [{"range": "0.90-1.00", "n": 12, "predicted": 0.9,
+                                                                    "observed": 0.5}]
+
+
+def test_the_calibration_error_is_of_the_chances_as_given_not_the_fit_on_its_own_rows(db):
+    """The figure shipped with each reply (meta.calibration.ece) was measured on the rows the fit was
+    trained on, while the chance actually given, stored with every figure, was never read."""
+    for i in range(10):
+        ep._record_figure("answer", ep.Probability(p=0.95, kind="answer", score=0.6), f"given{i}", "", None, "", "",
+                          db)
+        ep.settle(f"given{i}", right=i % 2 == 0, db_path=db)
+    rep = ep.report("answer", db_path=db)
+    assert rep["bands"] == [{"range": "0.90-1.00", "n": 10, "predicted": 0.95, "observed": 0.5}]
+    assert rep["ece"] == pytest.approx(0.45) and rep["ece_score"] == pytest.approx(0.1)
+    assert ep.calibrate("answer", 0.6, db_path=db).ece == pytest.approx(0.45)
+    line = [x for x in ep.measured_lines(db_path=db) if x.startswith("- replies to you")][0]
+    assert "off by 0.45" in line and "10 scored as given" in line
 
 
 def test_scores_that_prove_right_are_left_about_where_they_are(db):
@@ -155,7 +198,6 @@ def test_the_scoring_rules_and_the_entropy_of_a_vote():
     assert ep.ece([(0.9, 0.0)] * 10) == pytest.approx(0.9, abs=1e-9)
     assert ep.entropy([5]) == 0.0 and ep.entropy([1, 1, 1, 1, 1]) == pytest.approx(1.0)
     assert 0.0 < ep.entropy([3, 2]) < ep.entropy([2, 2, 1]) < 1.0
-    assert ep.fit([]) == (1.0, 0.0)
 
 
 def test_the_next_turn_says_whether_the_last_answer_was_right():
@@ -273,3 +315,74 @@ def test_the_tone_profile_counts_corrections_with_the_same_reader():
     sig = analyze_turns(["actually I think tea is nicer", "i said that to my friend", "you misunderstood me",
                          "try that again"])
     assert sig["correction_rate"] == 0.5
+
+
+def test_a_figure_is_settled_once_and_a_later_verdict_takes_the_place_of_the_earlier(db):
+    """settle() wrote a row every time: a figure settled twice counted twice (once right, once wrong),
+    and a reversal inside the ledger's dedup window was dropped as a repeat."""
+    ep.assess("act", 0.5, request_id="act:7", db_path=db)
+    assert ep.settle("act:7", True, how="stood", kind="act", db_path=db)
+    assert ep.settle("act:7", True, how="stood", kind="act", db_path=db)
+    assert [y for _s, y, _f in ep.outcomes("act", db_path=db)] == [1.0]
+    assert ep.settle("act:7", False, how="undone", kind="act", db_path=db)     # within seconds: not a repeat
+    assert [y for _s, y, _f in ep.outcomes("act", db_path=db)] == [0.0], "the later verdict stands, once"
+    assert ep.base_rate("act", db_path=db) == (pytest.approx(1 / 3), 1)
+
+
+def test_settling_one_kind_keeps_the_other_kinds_fits(db, monkeypatch):
+    """Every settle cleared every kind's fit, and routes are settled each turn, so no fit outlived a
+    turn and each reply re-read the whole ledger."""
+    ep.assess("answer", 0.8, request_id="a1", db_path=db)
+    ep.settle("a1", True, db_path=db)
+    ep.calibrate("answer", 0.8, db_path=db)
+    reads = []
+    real = led.assessment_pairs
+    monkeypatch.setattr(led, "assessment_pairs", lambda *a, **k: reads.append(a[0]) or real(*a, **k))
+    ep.assess("route", 0.8, request_id="route:r1", db_path=db)
+    ep.settle("route:r1", True, kind="route", db_path=db)
+    ep.calibrate("answer", 0.8, db_path=db)
+    assert "answer" not in reads, "the answer fit was kept"
+    names = {r[1] for r in led._connect(db).execute("PRAGMA index_list(runtime_events)").fetchall()}
+    assert "idx_runtime_events_request" in names, "figures and outcomes are joined by request id on an index"
+
+
+def test_a_reply_with_no_token_figures_is_not_read_as_the_surest_reply(db):
+    """A missing token figure was imputed as log-probability 0 and entropy 0 (certainty), so replies
+    with no figures borrowed the confidence of the surest ones."""
+    for i in range(12):       # replies with token figures: sure ones right, unsure ones wrong
+        sure = i % 2 == 0
+        ep.assess("answer", 0.8, request_id=f"t{i}", features={"mean_logprob": -0.1 if sure else -2.0}, db_path=db)
+        ep.settle(f"t{i}", sure, db_path=db)
+    for i in range(12):       # replies without any (the fast path): mostly wrong
+        ep.assess("answer", 0.8, request_id=f"n{i}", features={}, db_path=db)
+        ep.settle(f"n{i}", i % 4 == 0, db_path=db)
+    fit = ep.weights_for("answer", db_path=db)
+    assert "mean_logprob" in fit["scale"]["missing"] and f"mean_logprob{ep.MISSING}" in ep.weight_names(fit)
+    sure = ep.calibrate("answer", 0.8, features={"mean_logprob": -0.1}, db_path=db).p
+    none = ep.calibrate("answer", 0.8, features={}, db_path=db).p
+    assert none < sure and none < 0.5, "missing is its own sign, not the surest value"
+    assert fit["scale"]["sd"]["mean_logprob"] == pytest.approx(0.95), "each feature is standardised"
+
+
+def test_a_reply_is_no_surer_than_the_claims_it_rested_on_once_the_outcomes_say_so(db):
+    """The claims a reply rested on, how far its samples agreed and the path it took were recorded
+    with every reply and read by nothing."""
+    assert {"claims_min_p", "agreement", "entropy", "grounded", "memory_ctx", "bus_fast"} <= set(ep.features_of("answer"))
+    for i in range(16):
+        weak = i % 2 == 0
+        ep.assess("answer", 0.8, request_id=f"c{i}", features={"claims_min_p": 0.3 if weak else 0.9}, db_path=db)
+        ep.settle(f"c{i}", not weak, db_path=db)
+    weak = ep.calibrate("answer", 0.8, features={"claims_min_p": 0.3}, db_path=db)
+    strong = ep.calibrate("answer", 0.8, features={"claims_min_p": 0.9}, db_path=db)
+    assert weak.p < 0.5 < strong.p and weak.weights["claims_min_p"] > 0.5
+
+
+def test_a_class_with_few_outcomes_is_drawn_toward_its_kind(db):
+    """One outcome of a class threw away the hundreds of its kind: the class was fitted on its own row."""
+    _settled(db, score=0.6, right=lambda i: i % 10 != 0, n=60, prefix="k", class_="chat")
+    _settled(db, score=0.6, right=lambda i: False, n=1, prefix="g", class_="grounded")
+    alone = ep.fit_model([(0.6, 0.0, {})], ep.features_of("answer"))
+    lone = ep.apply_fit(alone, 0.6, {})
+    pooled = ep.calibrate("answer", 0.6, class_="grounded", db_path=db)
+    assert pooled.class_ == "grounded" and pooled.n == 1
+    assert pooled.p > lone + 0.2 and pooled.p > 0.6, "one wrong reply does not outweigh its kind's sixty"

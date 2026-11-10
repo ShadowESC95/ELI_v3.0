@@ -33,6 +33,15 @@ the same thing the same way. This reads the record back as knowledge ELI acts on
     report(days, action)            what worked and did not, by action and target, with the causes and
                                     what worked instead: ELI's own record of its abilities, as data and
                                     in words, for the status reports, the self-analysis and the world
+    reliability(action, since)      the one answer to "how reliable is this action here" at the action
+                                    level (evidence_ledger.action_reliability and predict_success read it,
+                                    so the executor's prediction, the staged-deployment check and the
+                                    report agree), over every user's runs: the code is shared
+    unreliable(limit)               the actions shown to work less often than the rest (epistemics.compare)
+
+What is learned for a request is learned from the runs of the user who made it (the owner's, or one
+API member's): another user's runs are never pooled into its chance or offered as what worked
+instead, and their arguments are never replayed.
 
 Nothing here phrases a reply beyond these words, and nothing is a hand-set limit: the shrinkage is
 the usual pseudo-count, the window the ledger's own, the significance the project's one.
@@ -49,8 +58,9 @@ from eli.utils.log import get_logger
 
 log = get_logger(__name__)
 
-DAYS = 30.0                     # how far back runs count, as action_reliability counts them
-HALF_LIFE_DAYS = 7.0            # a run's weight halves each week, as action_reliability weighs them
+DAYS = 30.0                     # how far back runs count
+# A run's weight halves each week: the shared recency weight (eli/cognition/epistemics.recency_weight).
+from eli.cognition.epistemics import HALF_LIFE_DAYS, Z_SIG, phi, recency_weight  # noqa: E402
 # A target class with this many runs stands half on its own against its action's rate, and an action
 # with this many against every action's: the usual pseudo-count shrinkage, no more.
 SHRINK_RUNS = 3.0
@@ -251,12 +261,22 @@ def cause_words(cause: str) -> str:
 _cache: Dict[str, Any] = {"at": 0.0, "runs": [], "where": ""}
 
 
+def _where(db_path) -> str:
+    """Which ledger a read is of: the default one by its own path, so a moved default is a new read."""
+    try:
+        from eli.runtime.evidence_ledger import _default_db_path
+        return str(db_path) if db_path else str(_default_db_path())
+    except (ImportError, OSError, ValueError) as failure:
+        log.debug("ledger path unknown: %s", failure)
+        return str(db_path or "")
+
+
 def _runs(*, days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
-    """Every execution of the last `days`, oldest first, each with its target class and whether it
-    worked; read once and kept CACHE_SECONDS."""
+    """Every execution of the last `days`, oldest first, each with its target class, whether it
+    worked and whose it was (the owner's "", or an API member's id); read once and kept CACHE_SECONDS."""
     from eli.runtime.evidence_ledger import executor_runs
     now = time.time()
-    where = str(db_path or "")
+    where = _where(db_path)
     if now - float(_cache["at"]) < CACHE_SECONDS and _cache["where"] == where and _cache.get("days") == days:
         return _cache["runs"]
     out: List[Dict[str, Any]] = []
@@ -275,7 +295,8 @@ def _runs(*, days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
         out.append({**row, "args": args, "result": result, "worked": outcome == "ok",
                     "class": target_class(row["action"], args), "subject": subject_of(row["action"], args),
                     "cause": str(payload.get("cause") or cause_of(result, row["action"], args) or ""),
-                    "alternative_of": str(args.get("_alternative_of") or "")})
+                    "alternative_of": str(args.get("_alternative_of") or ""),
+                    "owner": _owner(row.get("user_id"))})
     _cache.update({"at": now, "runs": out, "where": where, "days": days})
     return out
 
@@ -283,37 +304,72 @@ def _runs(*, days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
 def forget() -> None:
     """Read the ledger again on the next question (a run was just recorded)."""
     _cache["at"] = 0.0
+    _owners.clear()
 
 
-def _asked(*, days: float, db_path=None) -> List[Dict[str, Any]]:
+_owners: Dict[str, str] = {}
+
+
+def _owner(user_id: Any) -> str:
+    """Whose a run was, as the memory policy keys every user's rows ("" the owner, else the member)."""
+    uid = str(user_id or "").strip()
+    if uid not in _owners:
+        try:
+            from eli.memory.policy import owner_key
+            _owners[uid] = owner_key(uid or None) if uid else ""
+        except ImportError as failure:      # no policy to say otherwise: one owner
+            log.debug("memory policy unavailable: %s", failure)
+            _owners[uid] = ""
+    return _owners[uid]
+
+
+def _current_owner() -> str:
+    """The user of the turn running in this context, as _owner keys them."""
+    try:
+        from eli.memory.policy import owner_key
+        return owner_key(None)
+    except ImportError as failure:
+        log.debug("memory policy unavailable: %s", failure)
+        return ""
+
+
+def _asked(*, days: float, db_path=None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
     """The runs the user asked for: an alternative ELI tried of its own accord is not evidence that
-    it works, or each try would raise the case for the next."""
-    return [r for r in _runs(days=days, db_path=db_path) if not r["alternative_of"]]
+    it works, or each try would raise the case for the next. With `owner`, only that user's runs."""
+    return [r for r in _runs(days=days, db_path=db_path)
+            if not r["alternative_of"] and (owner is None or r.get("owner", "") == owner)]
 
 
 def _weight(ts: float, now: float) -> float:
-    return 0.5 ** (max(0.0, now - float(ts or 0.0)) / 86400.0 / HALF_LIFE_DAYS)
+    return recency_weight(ts, now, HALF_LIFE_DAYS)
+
+
+def _counts(runs: List[Dict[str, Any]], now: float) -> Tuple[float, float]:
+    """The recency-weighted (worked, ran) counts of these runs."""
+    return (sum(_weight(r["ts"], now) for r in runs if r["worked"]), sum(_weight(r["ts"], now) for r in runs))
 
 
 def _rate(runs: List[Dict[str, Any]], now: float, prior_p: float, prior_runs: float) -> Tuple[float, int, float]:
     """A Beta estimate over these runs, each weighted by its recency, shrunk toward `prior_p` by
     `prior_runs` pseudo-runs: (chance, how many runs, their summed weight)."""
-    ok = sum(_weight(r["ts"], now) for r in runs if r["worked"])
-    total = sum(_weight(r["ts"], now) for r in runs)
-    return (ok + prior_p * prior_runs) / (total + prior_runs), len(runs), total
+    from eli.cognition.epistemics import shrunk_rate
+    ok, total = _counts(runs, now)
+    return shrunk_rate(ok, total, prior_p, prior_runs), len(runs), total
 
 
 def chance(action: str, args: Optional[Dict[str, Any]] = None, *, days: float = DAYS, db_path=None,
-           now: Optional[float] = None) -> Dict[str, Any]:
-    """The chance a run like this works here: the runs of this target class, shrunk toward the
-    action's rate, which is shrunk toward every action's (Beta(1, 1) at the top), each run weighted
-    by recency. {"p", "n", "by": "target" | "action" | "all", "action_p", "action_n", "cause": the
-    commonest cause of its failures}."""
+           now: Optional[float] = None, owner: Optional[str] = None) -> Dict[str, Any]:
+    """The chance a run like this works here, for this user: their runs of this target class, shrunk
+    toward their action's rate, which is shrunk toward every action's rate over every user (Beta(1, 1)
+    at the top: a pooled prior, never another user's run as evidence about this one), each run
+    weighted by recency. {"p", "n", "by": "target" | "action" | "all", "action_p", "action_n",
+    "cause": the commonest cause of its failures, "counts": the weighted (worked, ran) it rests on}."""
     now = time.time() if now is None else now
+    owner = _current_owner() if owner is None else owner
     name = str(action or "").upper()
     cls = target_class(name, args)
-    every = _asked(days=days, db_path=db_path)
-    p_all, _n_all, _w = _rate(every, now, 0.5, 2.0)
+    p_all, _n_all, _w = _rate(_asked(days=days, db_path=db_path), now, 0.5, 2.0)
+    every = _asked(days=days, db_path=db_path, owner=owner)
     mine = [r for r in every if r["action"] == name]
     p_action, n_action, _w = _rate(mine, now, p_all, SHRINK_RUNS)
     same = [r for r in mine if cls and r["class"] == cls]
@@ -322,11 +378,56 @@ def chance(action: str, args: Optional[Dict[str, Any]] = None, *, days: float = 
     cause = max(set(failures), key=failures.count) if failures else ""
     if same:
         return {"p": p_target, "n": n_target, "by": "target", "class": cls, "action_p": p_action,
-                "action_n": n_action, "cause": cause}
+                "action_n": n_action, "cause": cause, "counts": _counts(same, now)}
     if mine:
         return {"p": p_action, "n": n_action, "by": "action", "class": cls, "action_p": p_action,
-                "action_n": n_action, "cause": cause}
-    return {"p": p_all, "n": 0, "by": "all", "class": cls, "action_p": p_action, "action_n": 0, "cause": ""}
+                "action_n": n_action, "cause": cause, "counts": _counts(mine, now)}
+    return {"p": p_all, "n": 0, "by": "all", "class": cls, "action_p": p_action, "action_n": 0, "cause": "",
+            "counts": (0.0, 0.0)}
+
+
+def reliability(action: str, *, days: float = DAYS, since: Optional[float] = None, db_path=None,
+                now: Optional[float] = None) -> Dict[str, Any]:
+    """How reliable an action is here, over every user's runs (the code is shared): {"action", "n",
+    "p"}, its recency-weighted rate shrunk toward every action's. `since` keeps only the runs after
+    that time (a patch's adoption, for the staged-deployment check)."""
+    now = time.time() if now is None else now
+    name = str(action or "").upper()
+    if since is not None:
+        days = max(float(days), (now - float(since)) / 86400.0)
+    every = [r for r in _asked(days=days, db_path=db_path) if since is None or r["ts"] >= float(since)]
+    p_all, _n, _w = _rate(every, now, 0.5, 2.0)
+    p, n, _w = _rate([r for r in every if r["action"] == name], now, p_all, SHRINK_RUNS)
+    return {"action": name, "n": n, "p": p}
+
+
+def unreliable(*, limit: int = 5, days: float = DAYS, db_path=None, now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """The actions whose runs worked less often than every other action's, shown so by the one test
+    (eli/cognition/epistemics.compare), least reliable first: [{"action", "n", "p"}]."""
+    from eli.cognition.epistemics import compare
+    now = time.time() if now is None else now
+    every = _asked(days=days, db_path=db_path)
+    out = []
+    for name in sorted({r["action"] for r in every}):
+        mine = [r for r in every if r["action"] == name]
+        rest = [r for r in every if r["action"] != name]
+        a = (float(sum(1 for r in mine if r["worked"])), float(len(mine)))
+        b = (float(sum(1 for r in rest if r["worked"])), float(len(rest)))
+        if compare(a, b) is True:
+            out.append(reliability(name, days=days, db_path=db_path, now=now))
+    return sorted(out, key=lambda r: r["p"])[:int(limit)]
+
+
+def shown_likelier(alternative: Tuple[float, float], this: Tuple[float, float]) -> bool:
+    """Whether an alternative's chance, from its (worked, tried) counts, is shown greater than this
+    action's from its own: the two Beta(1, 1) posteriors' difference at least Z_SIG of its spread above
+    nothing (the project's one significance point). One success after one failure is not that."""
+    def _posterior(ok: float, n: float) -> Tuple[float, float]:
+        a, b = float(ok) + 1.0, max(0.0, float(n) - float(ok)) + 1.0
+        mean = a / (a + b)
+        return mean, mean * (1.0 - mean) / (a + b + 1.0)
+    (m_alt, v_alt), (m_this, v_this) = _posterior(*alternative), _posterior(*this)
+    return phi((m_alt - m_this) / max(1e-9, (v_alt + v_this) ** 0.5)) >= phi(Z_SIG)
 
 
 def _norm(text: str) -> str:
@@ -354,20 +455,22 @@ def _same_aim(failed: Dict[str, Any], later: Dict[str, Any]) -> bool:
 
 
 def alternatives(action: str, args: Optional[Dict[str, Any]] = None, *, days: float = DAYS, db_path=None,
-                 now: Optional[float] = None) -> List[Dict[str, Any]]:
+                 now: Optional[float] = None, owner: Optional[str] = None) -> List[Dict[str, Any]]:
     """What has worked instead: each action that does the same deed (SAME_DEED) and was asked for the
     same thing within ALTERNATIVE_WINDOW_S of a failure of this action in the same session, with the
     chance it works after such a failure (Beta over the times it was tried that way), how many times,
     the last time, and whether it was proven after a failure on this very thing (`same_target`).
     Each later run answers the one failure nearest before it, so it counts once; ELI's own tries do
-    not count. Likeliest first."""
+    not count, and only this user's runs do (another user's are neither evidence nor replayed).
+    Likeliest first."""
     now = time.time() if now is None else now
+    owner = _current_owner() if owner is None else owner
     name = str(action or "").upper()
     if not any(name in group for group in SAME_DEED):
         return []
     cls = target_class(name, args)
     subject = _norm(subject_of(name, args))
-    every = _asked(days=days, db_path=db_path)
+    every = _asked(days=days, db_path=db_path, owner=owner)
     found: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for j, later in enumerate(every):
         if not same_deed(name, later["action"]):
@@ -395,7 +498,7 @@ def alternatives(action: str, args: Optional[Dict[str, Any]] = None, *, days: fl
         p = (slot["ok"] + 1.0) / (slot["tried"] + 2.0)
         out.append({"action": slot["action"], "args": {k: v for k, v in slot["args"].items() if not k.startswith("_")},
                     "p": p, "n": slot["n"], "last": slot["last"], "subject": slot["subject"],
-                    "same_target": bool(slot["on_this"])})
+                    "same_target": bool(slot["on_this"]), "counts": (slot["ok"], slot["tried"])})
     out.sort(key=lambda a: (a["p"], a["same_target"], a["last"]), reverse=True)
     return out
 
@@ -430,26 +533,52 @@ def advice(action: str, args: Optional[Dict[str, Any]], result: Any, *, days: fl
     failed (over its target class, named in `class`), the alternatives proven for this very thing, and
     `attempt`: the one to try now, or None. One is tried of ELI's own accord only when it does the same
     deed for this same thing, it was proven on it, it writes, sends and destroys nothing, and its chance
-    is better than this action's own; it is built from this request's own arguments."""
+    is shown greater than this action's own (shown_likelier: one success is not enough); it is built
+    from this request's own arguments. Everything is this user's."""
     now = time.time() if now is None else now
+    owner = _current_owner()
     name = str(action or "").upper()
     args = dict(args or {})
     cause = cause_of(result, name, args)
-    odds = chance(name, args, days=days, db_path=db_path, now=now)
-    others = [o for o in alternatives(name, args, days=days, db_path=db_path, now=now) if o["same_target"]]
+    odds = chance(name, args, days=days, db_path=db_path, now=now, owner=owner)
+    others = [o for o in alternatives(name, args, days=days, db_path=db_path, now=now, owner=owner) if o["same_target"]]
     cls = target_class(name, args)
-    recent = [r for r in _asked(days=days, db_path=db_path) if r["action"] == name and (not cls or r["class"] == cls)]
+    recent = [r for r in _asked(days=days, db_path=db_path, owner=owner)
+              if r["action"] == name and (not cls or r["class"] == cls)]
     failed_lately = sum(1 for r in recent if not r["worked"])
     attempt = None
     if not args.get("_alternative_of"):
         for other in others:
-            if other["p"] > odds["p"] and _safe_on_its_own(other["action"]):
+            if shown_likelier(other["counts"], odds["counts"]) and _safe_on_its_own(other["action"]):
                 attempt = {"action": other["action"],
                            "args": {**_attempt_args(other["args"], args, name), "_alternative_of": name}}
                 break
     return {"action": name, "subject": subject_of(name, args), "class": cls, "cause": cause,
             "cause_words": cause_words(cause), "chance": odds, "failed_lately": failed_lately,
             "runs_lately": len(recent), "alternatives": others, "attempt": attempt}
+
+
+def first_choice(action: str, args: Optional[Dict[str, Any]], *, days: float = DAYS, db_path=None,
+                 now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """What to run first in place of this action, when a lesson pulled the lever proven_first on it
+    (eli/runtime/lessons.py: the action was shown to work less often than the rest): the alternative
+    proven for this very thing whose chance is shown greater than the action's own, safe to run of
+    ELI's own accord, with this request's arguments (marked `_proven_first`, so the lesson judges the
+    runs made under it). None otherwise."""
+    name = str(action or "").upper()
+    args = dict(args or {})
+    if not name or args.get("_alternative_of") or args.get("_proven_first"):
+        return None
+    from eli.runtime.lessons import ACTION, PROVEN_FIRST, lever
+    if lever(ACTION, name) != PROVEN_FIRST:
+        return None
+    now = time.time() if now is None else now
+    owner = _current_owner()
+    odds = chance(name, args, days=days, db_path=db_path, now=now, owner=owner)
+    for other in alternatives(name, args, days=days, db_path=db_path, now=now, owner=owner):
+        if other["same_target"] and shown_likelier(other["counts"], odds["counts"]) and _safe_on_its_own(other["action"]):
+            return {"action": other["action"], "args": {**_attempt_args(other["args"], args, name), "_proven_first": name}}
+    return None
 
 
 def plain(action: str) -> str:
@@ -523,7 +652,8 @@ def report(days: float = DAYS, action: str = "", *, limit: Optional[int] = 12, d
     window, oldest first, {"from", "n", "ok"}: epistemics.by_week), as data and in words. Actions with
     failures first, then by how often they ran. `action` keeps it to one; `limit` None keeps every action."""
     now = time.time() if now is None else now
-    every = _asked(days=days, db_path=db_path)
+    owner = _current_owner()
+    every = _asked(days=days, db_path=db_path, owner=owner)
     want = str(action or "").upper()
     by_action: Dict[str, Dict[str, Any]] = {}
     for run in every:
@@ -556,8 +686,8 @@ def report(days: float = DAYS, action: str = "", *, limit: Optional[int] = 12, d
             sample = {"url": "https://" + slot["worst_target"][5:]}
         elif slot["worst_target"].startswith("path:"):
             sample = {"path": "x" + slot["worst_target"][5:] if slot["worst_target"] != "path:folder" else "x/"}
-        slot["alternatives"] = [a for a in alternatives(slot["action"], sample, days=days, db_path=db_path, now=now)
-                                if a["p"] > 0.5][:3]
+        slot["alternatives"] = [a for a in alternatives(slot["action"], sample, days=days, db_path=db_path, now=now,
+                                                        owner=owner) if a["p"] > 0.5][:3]
         rows.append(slot)
     rows.sort(key=lambda s: (s["n"] - s["ok"], s["n"], s["last"]), reverse=True)
     rows = rows[:int(limit)] if limit is not None else rows
@@ -586,5 +716,6 @@ def words(days: float = DAYS, *, limit: int = 6, db_path=None) -> str:
 
 
 __all__ = ["ALTERNATIVE_WINDOW_S", "CAUSE_WORDS", "DAYS", "MISMATCH", "NOTHING_FOUND", "SAME_DEED", "SHRINK_RUNS",
-           "UNKNOWN_CAUSE", "UNVERIFIED", "advice", "alternatives", "cause_of", "cause_words", "chance", "forget",
-           "plain", "report", "said", "same_deed", "subject_of", "target_class", "verify", "words"]
+           "UNKNOWN_CAUSE", "UNVERIFIED", "advice", "alternatives", "cause_of", "cause_words", "chance", "first_choice", "forget",
+           "plain", "reliability", "report", "said", "same_deed", "shown_likelier", "subject_of", "target_class",
+           "unreliable", "verify", "words"]

@@ -68,7 +68,7 @@ FLOOR_PRIOR = 0.25
 # were held to one by one) and stands at least Z_SIG standard deviations from zero (90 %, one-sided:
 # a single read reaches about 0.75, three reads in a row about 1.7).
 STATE_MIN = 0.45
-Z_SIG = 1.282
+from eli.cognition.epistemics import Z_SIG  # noqa: E402  (the project's one significance point)
 HOW_MANY_READS = 40
 
 

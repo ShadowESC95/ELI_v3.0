@@ -450,7 +450,8 @@ def test_how_often_each_kind_of_figure_proved_right_is_told_week_by_week(db):
     assert by_week[week_start(now - 15 * day)] == (2, 0.5), "the share right of the figures given that week"
     assert all(w["right"] is None for w in weeks if not w["n"]), "a week with nothing settled says nothing"
     [row] = ep.measured(days=30.0, db_path=db)
-    assert row == {"kind": "answer", "words": "replies to you", "n": 4, "right": 0.75, "ece": rep["ece"], "weeks": weeks}
+    assert row == {"kind": "answer", "words": "replies to you", "n": 4, "right": 0.75, "ece": rep["ece"],
+                   "n_given": rep["n_given"], "weeks": weeks}
     assert "75% proved right" in ep.measured_lines(days=30.0, db_path=db)[1], "the words are told from the same figures"
 
 

@@ -178,6 +178,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_events_ts ON runtime_events(ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_events_type ON runtime_events(event_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_events_signature ON runtime_events(signature)")
+    # A figure and its outcome are joined by request id (assessment_pairs, open_assessments,
+    # latest_outcome): without this index each join scanned the whole, ever-growing ledger.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_events_request ON runtime_events(request_id, event_type, action)")
 
 
 # Dedup window: identical signature written within this many seconds → skip insert.
@@ -715,36 +718,20 @@ def status_evidence(question: str = "", *, db_path: Optional[str | Path] = None)
         "runtime_events_db": str(Path(db_path).expanduser().resolve() if db_path else _default_db_path()),
     }
 
-_MIN_HISTORY = 3
-
-
 def action_reliability(action: str, *, days: float = 30.0, half_life_days: float = 7.0,
                        since: Optional[float] = None, db_path: Optional[str | Path] = None) -> Dict[str, Any]:
-    """Recency-weighted success rate of an action from its tool_execution events (Beta(1,1) prior).
+    """How reliable an action is here: {"action", "n", "p"}, from the one estimator of whether an action
+    works (eli/runtime/action_outcomes.reliability: its runs checked where their effect shows, a run that
+    changed nothing counted as a failure, recency-weighted and shrunk toward every action's rate). It
+    used to be a second estimate over tool_execution rows that ignored a run with no effect, so the
+    executor predicted success for what the outcome report said usually fails.
 
     `since`, when given, replaces the rolling `days` window with an exact cutoff — e.g.
     self_improvement's staged-deployment check wants reliability strictly after a patch's
-    adoption time, not blended with whatever history came before it.
-    """
-    now = time.time()
-    cutoff = float(since) if since is not None else now - float(days) * 86400.0
-    conn = _connect(db_path)
-    try:
-        rows = conn.execute(
-            "SELECT COALESCE(ts, timestamp, 0), outcome FROM runtime_events WHERE event_type = 'tool_execution' "
-            "AND action = ? AND COALESCE(ts, timestamp, 0) >= ? AND outcome IN (?, ?)",
-            (str(action or "").upper(), cutoff, *DECIDED_OUTCOMES)
-        ).fetchall()
-    finally:
-        conn.close()
-    ws = wf = 0.0
-    for ts, outcome in rows:
-        w = 0.5 ** (max(0.0, now - float(ts or 0)) / 86400.0 / float(half_life_days))
-        if outcome == "ok":
-            ws += w
-        else:
-            wf += w
-    return {"action": str(action or "").upper(), "n": len(rows), "p": (ws + 1.0) / (ws + wf + 2.0)}
+    adoption time, not blended with whatever history came before it. `half_life_days` is kept for
+    the callers that name it; the weighting is the shared one (epistemics.recency_weight)."""
+    from eli.runtime.action_outcomes import reliability
+    return reliability(action, days=days, since=since, db_path=db_path)
 
 
 def verified_actions(*, db_path: Optional[str | Path] = None) -> Dict[str, float]:
@@ -765,41 +752,38 @@ def last_verified_success(action: str, *, db_path: Optional[str | Path] = None) 
 
 
 def predict_success(action: str, *, db_path: Optional[str | Path] = None) -> Optional[float]:
-    """Chance the next run succeeds, or None when there is too little history to say."""
+    """Chance the next run succeeds (action_reliability), or None when this action has never run here."""
     try:
         r = action_reliability(action, db_path=db_path)
     except Exception:
         return None
-    return round(r["p"], 4) if r["n"] >= _MIN_HISTORY else None
+    return round(r["p"], 4) if r["n"] else None
 
 
-def unreliable_actions(*, min_runs: int = 5, below: float = 0.8, limit: int = 5,
-                       db_path: Optional[str | Path] = None) -> List[Dict[str, Any]]:
-    since = time.time() - 30 * 86400.0
-    conn = _connect(db_path)
-    try:
-        names = [r[0] for r in conn.execute(
-            "SELECT action FROM runtime_events WHERE event_type = 'tool_execution' AND COALESCE(ts, timestamp, 0) >= ? "
-            "AND outcome IN (?, ?) GROUP BY action HAVING COUNT(*) >= ?", (since, *DECIDED_OUTCOMES, int(min_runs))).fetchall()]
-    finally:
-        conn.close()
-    out = [r for r in (action_reliability(n, db_path=db_path) for n in names if n) if r["p"] < below]
-    return sorted(out, key=lambda r: r["p"])[:limit]
+def unreliable_actions(*, limit: int = 5, db_path: Optional[str | Path] = None, **_unused: Any) -> List[Dict[str, Any]]:
+    """The actions shown to work less often than the rest (eli/runtime/action_outcomes.unreliable: the one
+    test, epistemics.compare), least reliable first. The old cut-offs (five runs, under 0.8) are gone."""
+    from eli.runtime.action_outcomes import unreliable
+    return unreliable(limit=limit, db_path=db_path)
 
 
 def assessment_pairs(kind: str, *, since: float, assessed_type: str = "answer_assessed",
                      outcome_type: str = "answer_outcome",
                      db_path: Optional[str | Path] = None) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    """Each figure given for a turn (an `assessed_type` event of this kind) with the outcome the next
-    turn recorded for it (an `outcome_type` event with the same request id), newest first, since
-    `since`. A figure nothing has settled yet is left out. For eli/cognition/epistemics.py."""
+    """Each figure given for a turn (an `assessed_type` event of this kind) with the outcome recorded
+    for it (an `outcome_type` event with the same request id), newest first, since `since`: one pair per
+    figure, with its latest outcome (a later verdict takes the place of an earlier one) and its latest
+    assessment. A figure nothing has settled yet is left out. For eli/cognition/epistemics.py."""
     conn = _connect(db_path)
     try:
         rows = conn.execute(
             "SELECT a.payload_json, COALESCE(a.ts, a.timestamp, 0), a.request_id, o.outcome, o.payload_json "
-            "FROM runtime_events a JOIN runtime_events o ON o.request_id = a.request_id "
-            "AND o.event_type = ? AND o.action = a.action AND o.request_id <> '' "
-            "WHERE a.event_type = ? AND a.action = ? AND COALESCE(a.ts, a.timestamp, 0) >= ? "
+            "FROM runtime_events a JOIN runtime_events o ON o.id = ("
+            "  SELECT MAX(o2.id) FROM runtime_events o2 WHERE o2.request_id = a.request_id "
+            "  AND o2.event_type = ? AND o2.action = a.action) "
+            "WHERE a.event_type = ? AND a.action = ? AND a.request_id <> '' AND COALESCE(a.ts, a.timestamp, 0) >= ? "
+            "AND a.id = (SELECT MAX(a2.id) FROM runtime_events a2 WHERE a2.request_id = a.request_id "
+            "  AND a2.event_type = a.event_type AND a2.action = a.action) "
             "ORDER BY a.id DESC",
             (outcome_type, assessed_type, str(kind or "").upper(), float(since))).fetchall()
     finally:
@@ -814,6 +798,19 @@ def assessment_pairs(kind: str, *, since: float, assessed_type: str = "answer_as
 
     return [({"payload": _payload(r[0]), "timestamp": r[1], "request_id": r[2]},
              {"outcome": r[3], "payload": _payload(r[4])}) for r in rows]
+
+
+def latest_outcome(request_id: str, *, outcome_type: str, action: str,
+                   db_path: Optional[str | Path] = None) -> Optional[str]:
+    """The outcome last recorded for this figure ("ok", "failed"), or None when nothing has settled it."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT outcome FROM runtime_events WHERE request_id = ? AND event_type = ? AND action = ? "
+            "ORDER BY id DESC LIMIT 1", (str(request_id), str(outcome_type), str(action or "").upper())).fetchone()
+    finally:
+        conn.close()
+    return str(row[0]) if row and row[0] else None
 
 
 def open_assessments(kind: str, *, assessed_type: str, outcome_type: str, subject_prefix: str,
@@ -839,10 +836,12 @@ def open_assessments(kind: str, *, assessed_type: str, outcome_type: str, subjec
 
 def executor_runs(*, since: float, action: str = "", limit: int = 4000,
                   db_path: Optional[str | Path] = None) -> List[Dict[str, Any]]:
-    """Every execution the executor recorded since `since` (its executor_action rows), oldest first,
+    """The executions the executor recorded since `since` (its executor_action rows), oldest first,
     each with what it ran, what it was about, how it came out and its payload (the arguments and the
-    result as recorded, with what the run was checked against when it was). For
-    eli/runtime/action_outcomes.py, which learns from them."""
+    result as recorded, with what the run was checked against when it was). With more than `limit` in
+    the window, the newest `limit` (the ones that weigh most): it used to be the oldest, so once a
+    month held more than the limit the latest runs were dropped. For eli/runtime/action_outcomes.py,
+    which learns from them."""
     conn = _connect(db_path)
     try:
         sql = ("SELECT id, COALESCE(ts, timestamp, 0), action, subject, outcome, payload_json, session_id, user_id, "
@@ -851,8 +850,8 @@ def executor_runs(*, since: float, action: str = "", limit: int = 4000,
         if action:
             sql += " AND action = ?"
             params.append(str(action).upper())
-        rows = conn.execute(sql + " ORDER BY COALESCE(ts, timestamp, 0) ASC, id ASC LIMIT ?",
-                            (*params, int(limit))).fetchall()
+        rows = conn.execute(sql + " ORDER BY COALESCE(ts, timestamp, 0) DESC, id DESC LIMIT ?",
+                            (*params, int(limit))).fetchall()[::-1]
     except sqlite3.Error:
         return []
     finally:

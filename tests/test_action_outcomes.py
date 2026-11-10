@@ -243,3 +243,51 @@ def test_the_report_says_how_each_action_went_week_by_week_and_can_keep_every_ac
     assert {w["from"]: (w["n"], w["ok"]) for w in weeks if w["n"]} == {k: (n, worked[k]) for k, n in ran.items()}
     assert any(w["n"] == 0 for w in weeks), "a week nothing ran in is there, empty"
     assert len(rep["actions"]) == 2 and len(ao.report(30.0, now=NOW, limit=1)["actions"]) == 1
+
+
+def test_one_success_after_one_failure_is_offered_not_run_of_elis_own_accord(ledger):
+    """An alternative was auto-run once its chance (one success gives 0.67) beat this action's: one
+    success after one failure is not that it works more often."""
+    _ran("OPEN_APP", {"name": "spotify"}, False, NOW - 600, error="not found", cause="missing_resource")
+    _ran("OPEN_URL", {"url": "https://open.spotify.com"}, True, NOW - 580)
+    advice = ao.advice("OPEN_APP", {"name": "spotify"}, {"ok": False, "error": "not found"}, now=NOW)
+    assert advice["alternatives"] and advice["attempt"] is None
+    assert not ao.shown_likelier((1.0, 1.0), (0.0, 1.0)) and ao.shown_likelier((3.0, 3.0), (0.0, 3.0))
+
+
+def test_what_one_user_ran_is_never_another_users_evidence_or_replayed_for_them(ledger, monkeypatch):
+    """chance(), alternatives() and report() pooled every user's runs, and an auto-run alternative
+    replayed another user's stored arguments for the current user."""
+    from eli.kernel import request_context as rc
+    from eli.memory import policy
+    monkeypatch.setattr(policy, "rbac_members", lambda: frozenset({"member-b"}))
+    monkeypatch.setattr(policy, "_active_user_id", lambda: "")
+    for k in (2, 1, 0):
+        t = NOW - 86400 * k
+        led.record_event("executor_action", source="executor.post_dispatch", action="OPEN_APP", subject="spotify",
+                         payload={"args": {"name": "spotify"}, "result": {"ok": False, "error": "not found"}},
+                         outcome="failed", session_id="sb", user_id="member-b", timestamp=t)
+        led.record_event("executor_action", source="executor.post_dispatch", action="OPEN_URL",
+                         subject="https://open.spotify.com/user/member-b-private",
+                         payload={"args": {"url": "https://open.spotify.com/user/member-b-private"},
+                                  "result": {"ok": True}}, outcome="ok", session_id="sb", user_id="member-b",
+                         timestamp=t + 20)
+    ao.forget()
+    owner = ao.advice("OPEN_APP", {"name": "spotify"}, {"ok": False}, now=NOW)
+    assert owner["alternatives"] == [] and owner["attempt"] is None and owner["runs_lately"] == 0
+    assert ao.report(days=30, now=NOW)["runs"] == 0
+    token = rc.user_id_var.set("member-b")
+    try:
+        mine = ao.advice("OPEN_APP", {"name": "spotify"}, {"ok": False}, now=NOW)
+    finally:
+        rc.user_id_var.reset(token)
+    assert mine["attempt"] and mine["attempt"]["action"] == "OPEN_URL" and mine["runs_lately"] == 3
+
+
+def test_the_newest_runs_are_the_ones_kept_when_the_window_holds_more_than_the_read(ledger):
+    """executor_runs returned the OLDEST rows of the window, so once a month held more than the limit
+    the newest runs, the ones weighted most, were dropped."""
+    for i in range(6):
+        _ran("DATE", {}, i >= 3, NOW - 3600 + 60 * i)
+    runs = led.executor_runs(since=0.0, limit=3)
+    assert [r["outcome"] for r in runs] == ["ok", "ok", "ok"] and runs[0]["ts"] < runs[-1]["ts"]

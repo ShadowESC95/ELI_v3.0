@@ -446,27 +446,29 @@ _MEMORY_CONTEXT_LINE = 0.50
 
 def _memory_context_stands(confidence: float) -> bool:
     """Whether memory context at this figure is kept for the reply. Above the line, always. Below it,
-    only when settled replies that used memory context at such a figure proved no worse than those
-    above the line; with no evidence either way, the line holds as it did."""
+    the settled replies that used memory context at such a figure decide (epistemics.gate_open): shown
+    no worse than those above the line, kept; shown worse, dropped; neither shown, a Thompson draw over
+    the two records, so what memory context under the line is worth is learned, not assumed."""
     if confidence >= _MEMORY_CONTEXT_LINE:
         return True
     try:
-        from eli.cognition.epistemics import ANSWER, worse_below
+        from eli.cognition.epistemics import ANSWER, gate_open
         # judged by the replies that kept their memory context, the path this gate decides: under the
         # line those are the replies it let through, not the ones whose context it dropped
-        verdict = worse_below(ANSWER, "memory_conf", _MEMORY_CONTEXT_LINE, class_="", where={"memory_ctx": True})
+        opened, _how = gate_open(ANSWER, "memory_conf", _MEMORY_CONTEXT_LINE, class_="", where={"memory_ctx": True})
     except (OSError, ValueError, ImportError) as failure:
         log.debug("memory context evidence unavailable: %s", failure)
-        verdict = None
-    return verdict is False
+        return False
+    return opened
 
 
 def _outcome_factor(agent: str) -> Optional[float]:
     """How often the replies this agent contributed to proved right, against replies as a whole
     (eli/cognition/epistemics: each settled reply names the agents behind it), as a factor on its
-    share: the agent's rate shrunk toward the whole's by as many pseudo-replies as the calibration
-    needs runs, over the whole's rate, within the factor's bounds. None until a reply with this
-    agent behind it was settled, when the rolling factor stands instead."""
+    share: the agent's rate shrunk toward the whole's by the prior strength the agents' own spread
+    shows (epistemics.prior_strength, empirical Bayes), over the whole's rate, within the factor's
+    bounds. None until a reply with this agent behind it was settled, when the rolling factor stands
+    instead."""
     name = str(agent or "")
     if not name:
         return None
@@ -488,7 +490,13 @@ def _outcome_factor(agent: str) -> Optional[float]:
     whole = sum(y for _s, y, _f in rows) / len(rows)
     if whole <= 0.0:
         return None
-    rate = (sum(mine) + whole * _CALIBRATION_MIN_RUNS) / (len(mine) + _CALIBRATION_MIN_RUNS)
+    from eli.cognition.epistemics import prior_strength, shrunk_rate
+    by_agent: Dict[str, List[float]] = {}
+    for _s, y, f in rows:
+        for agent_name in set(f.get("agent_names") or []):
+            by_agent.setdefault(str(agent_name), []).append(float(y))
+    strength = prior_strength([(sum(v), len(v)) for v in by_agent.values()])
+    rate = shrunk_rate(sum(mine), len(mine), whole, strength)
     return max(0.5, min(1.5, rate / whole))
 
 
