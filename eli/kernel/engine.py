@@ -2394,7 +2394,13 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
                 thoughts.settle(rid, "wrong", how=how or "correction")
                 if revising is not None and (str(revising) == DISPUTES or denied):
                     continue
-                # the memory the claim was read from carried the value the user says is wrong
+                # the claim itself stands contested by the user's word, and the memory it was read
+                # from carried the value the user says is wrong
+                if claim.get("id") and memory is not None:
+                    try:
+                        memory.contradict_claim(claim["id"], by="user_said")
+                    except Exception:
+                        log.debug("corrected claim not marked contested", exc_info=True)
                 if claim.get("memory_id") and memory is not None:
                     try:
                         memory.record_recall_outcome([claim["memory_id"]], helped=False)

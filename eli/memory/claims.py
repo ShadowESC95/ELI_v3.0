@@ -215,7 +215,7 @@ def _first(origin: str, root: Any, vfrom: float) -> str:
 
 def record(conn, relation: str, value: str, *, subject: str = "user", single_valued: bool = True,
            valid_from: Optional[float] = None, source_memory_id: Optional[int] = None,
-           source_text: str = "", origin: str = "user_said", confidence: float = 0.7,
+           source_text: str = "", origin: str = "user_said",
            now: Optional[float] = None, historical: bool = False, root_id: Optional[Any] = None,
            verdict: str = "", changed: Optional[bool] = None) -> Optional[int]:
     """Add a claim. Returns its id, or None when there was nothing to add.
@@ -443,6 +443,21 @@ def retract_from_memory(conn, memory_id: int, *, erase: bool = False) -> int:
     cur = conn.execute("UPDATE memory_claims SET status = 'retracted', superseded_at = ? "
                        "WHERE source_memory_id = ? AND status IN ('current', 'former')", (time.time(), int(memory_id)))
     return int(cur.rowcount or 0)
+
+
+def contradict(conn, claim_id: Any, *, by: str = "user_said") -> bool:
+    """A claim a reply rested on was corrected (by the user's word, `by`) without a value of its own
+    taking its place: it stands contested, as sure as its sources are against that word (confirmed),
+    as a claim disputed by a newcomer is. False when there is no such standing claim."""
+    ensure_schema(conn)
+    row = conn.execute("SELECT origin, source_roots FROM memory_claims WHERE id = ? AND status IN ('current', 'disputed')",
+                       (int(claim_id),)).fetchone()
+    if not row:
+        return False
+    confs = _confirmations(row[1], row[0]) or [{"origin": row[0]}]
+    conn.execute("UPDATE memory_claims SET contested = 1, confidence = ? WHERE id = ?",
+                 (confirmed([c["origin"] for c in confs], contradicted_by=by), int(claim_id)))
+    return True
 
 
 def repoint_sources(conn, doomed_ids: Iterable[Any], keep_id: int) -> int:

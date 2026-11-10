@@ -139,20 +139,24 @@ def test_a_corrected_claims_memory_is_counted_against_once_when_the_model_reads_
     monkeypatch.setattr(thoughts, "settle_prefix", lambda *a, **k: 0)
     noted = []
     monkeypatch.setattr(salience, "note_surprise", lambda kind, magnitude, **k: noted.append(kind) or {"touched": []})
-    calls = []
+    calls, contested = [], []
 
     class Mem:
         def record_recall_outcome(self, ids, helped):
             calls.append((list(ids), helped))
 
-    pending = {"claims": [{"request_id": "claim:3:r1", "relation": "lives_in", "value": "Riverton", "p": 0.7,
-                           "memory_id": 21}]}
+        def contradict_claim(self, claim_id, by=""):
+            contested.append((claim_id, by))
+
+    pending = {"claims": [{"id": "3", "request_id": "claim:3:r1", "relation": "lives_in", "value": "Riverton",
+                           "p": 0.7, "memory_id": 21}]}
     said = "no, I don't live in Riverton"
     words = Judged({"label": "neither", "by": "words"})
     model = Judged({"label": "disputes", "confidence": 0.9, "by": "model"})
     engine._settle_pending(Mem(), "", pending, said, words)
     engine._settle_pending(Mem(), "", pending, said, model, revising=words)
     assert calls == [([21], False)] and noted == ["claim"], "the first reading counted it; the second does not"
+    assert contested == [("3", "user_said")], "the claim itself stands contested by the user's word, once"
     calls.clear()
     noted.clear()
     accepted = Judged({"label": "accepts", "by": "words"})

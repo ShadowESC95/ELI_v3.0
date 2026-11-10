@@ -3087,7 +3087,7 @@ class Memory(metaclass=_MemoryMeta):
         conn = self._claims_conn()
         try:
             cid = _claims.record(conn, relation, value, valid_from=when, source_text=source, origin="observed",
-                                 confidence=0.6, subject=self._claim_subject())
+                                 subject=self._claim_subject())
             conn.commit()
         finally:
             conn.close()
@@ -3124,7 +3124,7 @@ class Memory(metaclass=_MemoryMeta):
                             out["claims"] += 1
                             if not dry_run:
                                 _claims.record(conn, "watching", show, valid_from=when, source_text=inner,
-                                               origin="observed", confidence=0.6, subject=subject)
+                                               origin="observed", subject=subject)
             if not dry_run:
                 self._meta_set(conn, "claims_extract_version", _claims.EXTRACT_VERSION)
                 conn.commit()
@@ -3153,6 +3153,19 @@ class Memory(metaclass=_MemoryMeta):
         if ids:
             self._drop_turn_cache()
         return ids
+
+    def contradict_claim(self, claim_id: Any, *, by: str = "user_said") -> bool:
+        """A claim the user corrected stands contested and less sure (claims.contradict)."""
+        from eli.memory import claims as _claims
+        conn = self._claims_conn()
+        try:
+            done = _claims.contradict(conn, claim_id, by=by)
+            conn.commit()
+        finally:
+            conn.close()
+        if done:
+            self._drop_turn_cache()
+        return done
 
     def _claims_query(self, fn, *args):
         conn = self._claims_conn()

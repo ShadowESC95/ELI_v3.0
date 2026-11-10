@@ -66,6 +66,19 @@ def test_deleting_the_source_withdraws_the_claim():
     assert claims.current(c) == []
 
 
+def test_a_claim_the_user_corrected_stands_contested_and_less_sure():
+    """A correction of a claim a reply rested on settled its figure wrong and counted against its memory,
+    and the claim itself went on as sure as before."""
+    c = sqlite3.connect(":memory:")
+    cid = claims.record(c, "lives_in", "Riverton", origin="user_said", now=_d("2026-03-01"))
+    before = claims.current(c)[0]["confidence"]
+    assert claims.contradict(c, cid, by="user_said")
+    [after] = claims.current(c)
+    assert after["contested"] and after["confidence"] < before
+    assert after["confidence"] == claims.confirmed(["user_said"], contradicted_by="user_said")
+    assert not claims.contradict(c, 999), "no such claim"
+
+
 def test_merged_memories_move_their_claims_sources_in_either_form():
     """A merge of duplicate memories moved bare-root lists only, so a confirmation kept with its own
     source ({root, origin, day}) still pointed at the deleted row; and two statements must stay two."""
@@ -284,9 +297,11 @@ def test_the_chance_is_the_sureness_until_claims_of_that_origin_were_checked(con
 
 def test_a_late_report_of_an_earlier_value_is_as_sure_as_its_source(conn):
     cid = claims.record(conn, "work_schedule", "evenings", valid_from=_d("2026-03-01"), now=_d("2026-07-01"),
-                        origin="document", confidence=0.99)
+                        origin="document")
     row = next(r for r in claims.history(conn, "work_schedule") if r["id"] == cid)
-    assert row["status"] == "superseded" and row["confidence"] == claims.sureness("document", 1) != 0.99
+    assert row["status"] == "superseded" and row["confidence"] == claims.sureness("document", 1)
+    import inspect
+    assert "confidence" not in inspect.signature(claims.record).parameters, "no caller's figure overrides it"
 
 
 def test_the_user_settling_a_conflict_settles_the_figures_given_for_both_claims(ledger):
