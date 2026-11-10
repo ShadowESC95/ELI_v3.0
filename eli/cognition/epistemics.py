@@ -28,7 +28,9 @@ what happened. This is where that check lives, so a figure ELI gives for an answ
                          proved right less often than those at or above it: what a gate asks
                          before it holds a reply to a line nothing has checked
     weights_for(kind, class_)   the fit in force, for a ranking to apply by itself
-    report(kind, days)   Brier score, expected calibration error and reliability by band
+    report(kind, days)   the share right, Brier score, expected calibration error, reliability by
+                         band, and the share right week by week (by_week)
+    measured(days)       that for every kind with settled figures, as data; measured_lines in words
     brier(pairs), ece(pairs), reliability(pairs, edges)   the scoring rules, one owner
     entropy(counts)      the normalised entropy of a vote (self-consistency keeps it with the
                          winner's share: a 3-2 split and five different answers are not alike)
@@ -266,9 +268,9 @@ def _ledger():
 
 
 def outcomes(kind: str = ANSWER, *, class_: str = "", days: float = DAYS,
-             db_path=None) -> List[Tuple[float, float, Dict[str, Any]]]:
+             db_path=None, timed: bool = False) -> List[Tuple[Any, ...]]:
     """(score, outcome, features) for every figure of this kind (and class, when given) that the
-    next turn settled within `days`."""
+    next turn settled within `days`; with `timed`, (score, outcome, features, when the figure was given)."""
     assessed_type, outcome_type = EVENTS.get(kind, (ASSESSED, OUTCOME))
     rows = _ledger().assessment_pairs(kind, since=time.time() - float(days) * 86400.0, assessed_type=assessed_type,
                                       outcome_type=outcome_type, db_path=db_path)
@@ -281,8 +283,35 @@ def outcomes(kind: str = ANSWER, *, class_: str = "", days: float = DAYS,
             score = float(payload.get("score"))
         except (TypeError, ValueError):
             continue
-        out.append((score, 1.0 if outcome.get("outcome") == "ok" else 0.0, dict(payload.get("features") or {})))
+        row = (score, 1.0 if outcome.get("outcome") == "ok" else 0.0, dict(payload.get("features") or {}))
+        out.append(row + (float(assessed.get("timestamp") or 0.0),) if timed else row)
     return out
+
+
+def week_start(ts: float) -> float:
+    """The start of the calendar week a time falls in: Monday 00:00, local time."""
+    t = time.localtime(float(ts))
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday - t.tm_wday, 0, 0, 0, 0, 0, -1))
+
+
+def by_week(points: Iterable[Tuple[float, float]], *, days: float, now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """(time, value) points counted by calendar week (week_start), every week of the last `days` up to
+    now, oldest first, an empty one too: [{"from": the week's start, "n": points, "sum": their values}].
+    One owner for "week by week" in ELI's records (action_outcomes.report and report here)."""
+    now = time.time() if now is None else float(now)
+    weeks: List[Dict[str, Any]] = []
+    start = week_start(now - float(days) * 86400.0)
+    while start <= now:
+        weeks.append({"from": start, "n": 0, "sum": 0.0})
+        start = week_start(start + 8 * 86400.0)      # past the next Monday whatever the clocks did
+    for ts, value in points:
+        begun = week_start(ts)
+        for week in weeks:
+            if week["from"] == begun:
+                week["n"] += 1
+                week["sum"] += float(value)
+                break
+    return weeks
 
 
 _fits: Dict[Tuple[str, str, str], Tuple[float, Dict[str, Any]]] = {}
@@ -411,16 +440,22 @@ def settle_open(kind: str, subject_prefix: str, right: bool, *, how: str = "", b
 
 
 def report(kind: str = ANSWER, *, days: float = DAYS, db_path=None) -> Dict[str, Any]:
-    """How good the figures of this kind have been: count, Brier score, calibration error, the
-    reliability by band, and the fit now in force."""
+    """How good the figures of this kind have been: count, the share that proved right, Brier score,
+    calibration error, the reliability by band, the fit now in force, and the share right week by week
+    of when each figure was given (by_week; "right" None for a week with none settled)."""
     names = features_of(kind)
-    rows = outcomes(kind, days=days, db_path=db_path)
+    timed = outcomes(kind, days=days, db_path=db_path, timed=True)
+    rows = [(s, y, f) for s, y, f, _when in timed]
     pairs = [(s, y) for s, y, _ in rows]
     weights, shift = fit_rows(rows, names=names)
     calibrated = [(apply_rows(s, f, weights, shift, names), y) for s, y, f in rows]
-    return {"kind": kind, "n": len(pairs), "brier": brier(pairs), "brier_calibrated": brier(calibrated),
+    weeks = [{"from": w["from"], "n": w["n"], "right": (w["sum"] / w["n"]) if w["n"] else None}
+             for w in by_week([(when, y) for _s, y, _f, when in timed], days=days)]
+    return {"kind": kind, "n": len(pairs), "right": (sum(y for _s, y in pairs) / len(pairs)) if pairs else None,
+            "brier": brier(pairs), "brier_calibrated": brier(calibrated),
             "ece": ece(pairs), "ece_calibrated": ece(calibrated), "bands": reliability(pairs),
-            "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + tuple(names), weights))}
+            "slope": weights[0], "shift": shift, "weights": dict(zip(("score",) + tuple(names), weights)),
+            "weeks": weeks}
 
 
 # What each kind's figures are of, for the record a reply about ELI's own accuracy is given.
@@ -429,26 +464,35 @@ _KIND_WORDS = {ANSWER: "replies to you", ROUTE: "readings of what a sentence ask
                ACT: "things ELI did of its own accord", PROPOSAL: "fixes ELI proposed for itself"}
 
 
-def measured_lines(*, days: float = DAYS, db_path=None) -> List[str]:
-    """ELI's measured accuracy, one line per kind that has settled figures: how many were settled, the
-    share that proved right, and how far the figures given were from what became of them (calibration
-    error). For a reply asked about ELI's own accuracy: measured here, and the claim check holds
-    figures to what the record says (eli/cognition/self_claims)."""
-    lines: List[str] = []
+def measured(*, days: float = DAYS, db_path=None) -> List[Dict[str, Any]]:
+    """ELI's measured accuracy as data, one row per kind that has settled figures: {"kind", "words" (what
+    the figures are of), "n" settled, "right" (the share that proved right), "ece" (how far the figures
+    given were from what became of them), "weeks" (report's, oldest first)}. measured_lines tells it;
+    a body draws it (eli/world/shown.evidence)."""
+    rows: List[Dict[str, Any]] = []
     for kind, words in _KIND_WORDS.items():
         try:
             rep = report(kind, days=days, db_path=db_path)
-            rows = outcomes(kind, days=days, db_path=db_path)
         except (OSError, ValueError, AttributeError) as failure:
             log.debug("measured accuracy unreadable for %s: %s", kind, failure)
             continue
-        n = int(rep.get("n") or 0)
-        if not n:
+        if not int(rep.get("n") or 0):
             continue
-        right = sum(1 for _s, y, _f in rows if y) / n
-        line = f"- {words}: {n} settled in the last {int(days)} days, {right:.0%} proved right"
-        if rep.get("ece") is not None:
-            line += f"; the chances given were off by {float(rep['ece']):.2f} on average (calibration error)"
+        rows.append({"kind": kind, "words": words, "n": int(rep["n"]), "right": float(rep["right"]),
+                     "ece": rep.get("ece"), "weeks": list(rep.get("weeks") or [])})
+    return rows
+
+
+def measured_lines(*, days: float = DAYS, db_path=None) -> List[str]:
+    """ELI's measured accuracy, one line per kind that has settled figures (measured): how many were
+    settled, the share that proved right, and how far the figures given were from what became of them
+    (calibration error). For a reply asked about ELI's own accuracy: measured here, and the claim check
+    holds figures to what the record says (eli/cognition/self_claims)."""
+    lines: List[str] = []
+    for row in measured(days=days, db_path=db_path):
+        line = f"- {row['words']}: {row['n']} settled in the last {int(days)} days, {row['right']:.0%} proved right"
+        if row.get("ece") is not None:
+            line += f"; the chances given were off by {float(row['ece']):.2f} on average (calibration error)"
         lines.append(line)
     if lines:
         lines.insert(0, "Measured accuracy (settled outcomes in the evidence ledger, not estimates):")

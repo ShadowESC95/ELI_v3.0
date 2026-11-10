@@ -77,6 +77,9 @@ def ensure_tables(cur: sqlite3.Cursor) -> None:
         # Links a stance to its entry in memory_claims (eli.memory.claims) — one
         # fact, one revision history, one provenance graph, extended to stances.
         "ALTER TABLE eli_stances ADD COLUMN claim_id INTEGER",
+        # Whether the position is a liking (1), a disliking (-1) or neither (0), as ELI's own model
+        # judged it (eli/world/stories.py, in idle time); NULL until it has been judged.
+        "ALTER TABLE eli_stances ADD COLUMN valence INTEGER",
     ):
         try:
             cur.execute(stmt)
@@ -271,6 +274,34 @@ def stance_history(cur: sqlite3.Cursor, topic: str, limit: int = 10) -> List[Dic
     } for r in rows]
 
 
+VALENCES = (-1, 0, 1)        # a disliking, neither, a liking
+
+
+def listed(cur: sqlite3.Cursor) -> List[Dict[str, Any]]:
+    """Every position ELI has held, newest first: id, topic, position, how it came (provenance), how
+    often it was argued (corroboration), confidence, first and last held, its valence (None until
+    judged), and, for one given up, what replaced it, when and why. The revisions of each topic are
+    revisions_for's."""
+    ensure_tables(cur)
+    rows = cur.execute(
+        "SELECT id, topic, position, provenance, corroboration, confidence, first_held, last_held, "
+        "       superseded_by, revised_at, revision_reason, valence FROM eli_stances "
+        " ORDER BY COALESCE(last_held, first_held, 0) DESC, id DESC").fetchall()
+    names = ("id", "topic", "position", "provenance", "corroboration", "confidence", "first_held", "last_held",
+             "superseded_by", "revised_at", "revision_reason", "valence")
+    return [dict(zip(names, r), current=r[8] is None) for r in rows]
+
+
+def set_valence(cur: sqlite3.Cursor, stance_id: int, valence: int) -> bool:
+    """Record whether a held position is a liking (1), a disliking (-1) or neither (0). False for a
+    valence that is none of those or a stance that is not there."""
+    if valence not in VALENCES:
+        return False
+    ensure_tables(cur)
+    cur.execute("UPDATE eli_stances SET valence = ? WHERE id = ?", (int(valence), int(stance_id)))
+    return cur.rowcount > 0
+
+
 def compact_revisions(cur: sqlite3.Cursor) -> int:
     """Drop repeats of an identical revision, keeping the first. Returns rows removed."""
     cur.execute("DELETE FROM belief_revisions WHERE id NOT IN "
@@ -314,6 +345,6 @@ def revisions_for(cur: sqlite3.Cursor, topic: str, limit: int = 10) -> List[Dict
 
 
 __all__ = [
-    "ensure_tables", "get_stance", "record_stance", "revise_stance",
+    "VALENCES", "ensure_tables", "get_stance", "listed", "record_stance", "revise_stance", "set_valence",
     "stance_history", "record_revision", "revisions_for",
 ]

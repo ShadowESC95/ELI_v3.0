@@ -350,6 +350,12 @@ _ORIGIN_WORDS = {"user_said": "you said so", "document": "from a document", "obs
                  "eli_said": "ELI's inference", "inferred": "ELI's inference"}
 
 
+def origin_words(origin: Any) -> str:
+    """Where a claim came from, in words ("you said so"); an origin with no words of its own is ELI's
+    inference."""
+    return _ORIGIN_WORDS.get(str(origin or ""), _ORIGIN_WORDS["inferred"])
+
+
 def basis(claim: Dict[str, Any]) -> str:
     """What a claim's sureness rests on, in words: "sure 0.75: you said so twice"."""
     try:
@@ -357,7 +363,7 @@ def basis(claim: Dict[str, Any]) -> str:
     except (TypeError, ValueError):
         sure = 0.0
     n = max(1, int(claim.get("confirmations") or 1))
-    how = _ORIGIN_WORDS.get(str(claim.get("origin") or ""), "ELI's inference")
+    how = origin_words(claim.get("origin"))
     times = {1: "once", 2: "twice"}.get(n, f"{n} times")
     against = ", contradicted" if claim.get("contested") or claim.get("status") == "disputed" else ""
     checked = ""

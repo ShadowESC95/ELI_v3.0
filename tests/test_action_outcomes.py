@@ -223,3 +223,23 @@ def test_the_record_told_what_worked_and_what_did_not(ledger):
     assert rep["words"].startswith("What has worked here in the last 30 days")
     assert ao.report(days=30, action="DATE", now=NOW)["lines"] == ["date worked the one time it ran."]
     assert ao.words(days=30, limit=1).count("\n") == 0
+
+
+def test_the_report_says_how_each_action_went_week_by_week_and_can_keep_every_action(ledger):
+    from collections import Counter
+    from eli.cognition.epistemics import week_start
+    day = 86400.0
+    runs = ((NOW - 20 * day, False), (NOW - 20 * day + 60, True), (NOW - 6 * day, True), (NOW - day, False))
+    for t, ok in runs:
+        _ran("OPEN_APP", {"name": "Notes"}, ok, t, error="" if ok else "Notes is not installed")
+    _ran("WEB_SEARCH", {"query": "tide times"}, True, NOW - 2 * day)
+    rep = ao.report(30.0, now=NOW, limit=None)
+    row = next(r for r in rep["actions"] if r["action"] == "OPEN_APP")
+    weeks = row["weeks"]
+    assert [w["from"] for w in weeks] == sorted({w["from"] for w in weeks}), "every week once, oldest first"
+    assert weeks[0]["from"] == week_start(NOW - 30 * day) and weeks[-1]["from"] == week_start(NOW), "the whole window"
+    ran = Counter(week_start(t) for t, _ok in runs)
+    worked = Counter(week_start(t) for t, ok in runs if ok)
+    assert {w["from"]: (w["n"], w["ok"]) for w in weeks if w["n"]} == {k: (n, worked[k]) for k, n in ran.items()}
+    assert any(w["n"] == 0 for w in weeks), "a week nothing ran in is there, empty"
+    assert len(rep["actions"]) == 2 and len(ao.report(30.0, now=NOW, limit=1)["actions"]) == 1

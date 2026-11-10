@@ -35,19 +35,26 @@ def _cache_path() -> Path:
 _INSIGHT_MAX_AGE_S = 4 * 3600  # stale insight must not drive greetings
 
 
-def get_cached_insight(max_age_s: float = _INSIGHT_MAX_AGE_S) -> str:
-    """Return the most recently synthesised insight (fast, no LLM). '' if none/stale."""
+def cached_insight_record(max_age_s: float = _INSIGHT_MAX_AGE_S) -> dict:
+    """The most recently synthesised insight with when it was made (fast, no LLM): {"insight", "ts"};
+    {} if there is none, or it is older than max_age_s (0: of any age)."""
     try:
         p = _cache_path()
         if p.exists():
             d = json.loads(p.read_text(encoding="utf-8"))
             ts = float(d.get("ts") or 0)
             if max_age_s and ts and (time.time() - ts) > float(max_age_s):
-                return ""
-            return str(d.get("insight") or "").strip()
+                return {}
+            insight = str(d.get("insight") or "").strip()
+            return {"insight": insight, "ts": ts} if insight else {}
     except Exception:
         pass
-    return ""
+    return {}
+
+
+def get_cached_insight(max_age_s: float = _INSIGHT_MAX_AGE_S) -> str:
+    """Return the most recently synthesised insight (fast, no LLM). '' if none/stale."""
+    return str(cached_insight_record(max_age_s).get("insight") or "")
 
 
 def refresh_insight(memory: Any = None, force: bool = False) -> str:

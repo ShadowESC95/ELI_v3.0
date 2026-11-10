@@ -146,6 +146,32 @@ def applicable(action: str, *, now: Optional[float] = None, limit: int = 3, args
             conn.close()
 
 
+_LISTED = ("id", "applies_to", "trigger_text", "evidence", "hypothesis", "proposed_change", "predicted_outcome",
+           "created_at", "expires_at", "status", "checks", "helped", "harmed", "renewals", "last_checked",
+           "retired_reason", "category")
+
+
+def listed(*, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+    """Every lesson on record, active and retired, newest first, each with its evidence as a list: the
+    record ELI's rooms keep of what it learned (eli/world/books.py)."""
+    own = conn is None
+    conn = conn or _connect()
+    try:
+        rows = conn.execute(f"SELECT {', '.join(_LISTED)} FROM lessons ORDER BY created_at DESC, id DESC").fetchall()
+    finally:
+        if own:
+            conn.close()
+    out = []
+    for r in rows:
+        item = dict(zip(_LISTED, r))
+        try:
+            item["evidence"] = [str(e) for e in json.loads(item.get("evidence") or "[]")]
+        except (TypeError, ValueError):
+            item["evidence"] = []
+        out.append(item)
+    return out
+
+
 def record_outcome(lesson_id: int, helped: bool, *, now: Optional[float] = None,
                    conn: Optional[sqlite3.Connection] = None) -> str:
     """Count one check. Returns the lesson's status afterwards."""

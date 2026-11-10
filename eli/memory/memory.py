@@ -427,6 +427,11 @@ def _ensure_policy_schema(conn) -> None:
 # before the column existed is the owner's. memories gets its column with the policy columns
 # (_POLICY_COLUMNS), so its archive table carries it too.
 _OWNED_TABLES = ("user_patterns", "observations", "habits", "habit_events")
+# Conversation rows that are not turns: fragment-guard NOOP entries stored before the NOOP-suppression
+# fix (internal routing events; fed back, the model mimics their JSON). Every reader of turns leaves them out.
+_NOT_A_TURN_LIKE = ('%"event": "input_fragment_guard"%', '%fragmentary_input%')
+# Memories that are ELI's own looking back (a reflection, its own insight), not something it was told.
+_OWN_REFLECTION_KINDS = ("reflection", "assistant_insight")
 
 
 def _ensure_owner_columns(conn) -> None:
@@ -2365,7 +2370,7 @@ class Memory(metaclass=_MemoryMeta):
                 text = str(r[3] or '').strip()
                 if not text:
                     continue
-                if kind in {'reflection', 'assistant_insight', 'conversation', 'session_summary'}:
+                if kind in {*_OWN_REFLECTION_KINDS, 'conversation', 'session_summary'}:
                     continue
                 if 'reflection' in tags or 'session_summary' in tags or 'continuity' in tags:
                     continue
@@ -4712,6 +4717,75 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
+    def conversation_sessions(self, user_id=None) -> List[Dict[str, Any]]:
+        """Each conversation of the turn's user (policy.scope_sql), newest first: its session id, when
+        it began and ended, how many turns it had and how many characters they ran to, read as one
+        aggregate. For the books ELI's rooms keep of its conversations (eli/world/books.py); the turns
+        themselves are get_recent_conversation's."""
+        conn = self._get_connection()
+        try:
+            if not _eli_table_exists(conn, "conversation_turns"):
+                return []
+            from eli.memory import policy as _policy
+            mine, mine_params = _policy.scope_sql("user_id", _policy.owner_key(user_id), raw_ids=True)
+            junk = " AND content NOT LIKE ?" * len(_NOT_A_TURN_LIKE)
+            rows = conn.execute(
+                "SELECT session_id, MIN(COALESCE(timestamp, ts, 0)), MAX(COALESCE(timestamp, ts, 0)), COUNT(*), "
+                "SUM(LENGTH(COALESCE(content, ''))) FROM conversation_turns "
+                "WHERE COALESCE(session_id, '') <> ''" + junk + mine +
+                " GROUP BY session_id ORDER BY MAX(COALESCE(timestamp, ts, 0)) DESC",
+                (*_NOT_A_TURN_LIKE, *mine_params)).fetchall()
+        finally:
+            conn.close()
+        return [{"session_id": str(r[0]), "started": float(r[1] or 0.0), "ended": float(r[2] or 0.0),
+                 "turns": int(r[3] or 0), "chars": int(r[4] or 0)} for r in rows]
+
+    def get_recent_reflections(self, limit=20) -> List[Dict[str, Any]]:
+        """ELI's own looking back, newest first: the memories that are a reflection or an insight of its
+        own (_OWN_REFLECTION_KINDS, or tagged reflection), of the turn's user's memories. limit -1: all."""
+        conn = self._get_connection()
+        try:
+            if not _eli_table_exists(conn, "memories"):
+                return []
+            mine, mine_params = _memory_scope(_memory_table_columns(conn, "memories"))
+            kinds = ",".join("?" * len(_OWN_REFLECTION_KINDS))
+            rows = conn.execute(
+                "SELECT id, COALESCE(timestamp, ts, 0), COALESCE(kind, ''), COALESCE(text, ''), COALESCE(tags, ''), "
+                "COALESCE(source, '') FROM memories WHERE (lower(COALESCE(kind, '')) IN (" + kinds + ") "
+                "OR lower(COALESCE(tags, '')) LIKE '%reflection%')" + mine +
+                " ORDER BY COALESCE(timestamp, ts, 0) DESC, id DESC LIMIT ?",
+                (*_OWN_REFLECTION_KINDS, *mine_params, int(limit))).fetchall()
+        finally:
+            conn.close()
+        return [{"id": r[0], "timestamp": float(r[1] or 0.0), "kind": r[2], "text": " ".join(str(r[3]).split()),
+                 "tags": r[4], "source": r[5]} for r in rows if str(r[3]).strip()]
+
+    def stances(self) -> List[Dict[str, Any]]:
+        """Every position ELI has held, newest first (eli/cognition/stance_store.listed), each with the
+        revisions of its topic."""
+        from eli.cognition import stance_store
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            rows = stance_store.listed(cur)
+            for row in rows:
+                row["revisions"] = stance_store.revisions_for(cur, row["topic"], limit=-1)
+            conn.commit()
+            return rows
+        finally:
+            conn.close()
+
+    def set_stance_valence(self, stance_id: int, valence: int) -> bool:
+        """Whether a held position is a liking (1), a disliking (-1) or neither (0): stance_store.set_valence."""
+        from eli.cognition import stance_store
+        conn = self._get_connection()
+        try:
+            done = stance_store.set_valence(conn.cursor(), int(stance_id), int(valence))
+            conn.commit()
+            return done
+        finally:
+            conn.close()
+
     def search_conversations(self, query, user_id=None, limit=10, session_id=None,
                              include_assistant=False, match_all=False):
         """Turns whose text holds the query's keywords: any one of them, or every one with
@@ -6011,8 +6085,9 @@ class Memory(metaclass=_MemoryMeta):
             # Exclude fragment-guard NOOP entries — they are internal routing
             # events that were stored before the NOOP-suppression fix.
             # Including them in LLM context causes the model to mimic JSON format.
-            where.append("content NOT LIKE '%\"event\": \"input_fragment_guard\"%'")
-            where.append("content NOT LIKE '%fragmentary_input%'")
+            for junk in _NOT_A_TURN_LIKE:
+                where.append("content NOT LIKE ?")
+                params.append(junk)
             if where:
                 sql += " WHERE " + " AND ".join(where)
             sql += " ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT ?"

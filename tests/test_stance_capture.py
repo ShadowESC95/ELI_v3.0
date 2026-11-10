@@ -140,3 +140,24 @@ def test_an_insult_or_complaint_is_not_a_topic_eli_holds_a_position_on(monkeypat
             return con
     Memory._capture_stance(_Fake(), POSITION, "s")
     assert not calls
+
+
+def test_every_held_position_is_listed_and_whether_it_is_a_liking_is_kept_on_it():
+    import sqlite3
+    from eli.cognition import stance_store
+    cur = sqlite3.connect(":memory:").cursor()
+    stance_store.ensure_tables(cur)
+    stance_store.record_stance(cur, "rain sounds", "I am fond of the sound of rain on a roof.", now=1_800_000_000.0)
+    stance_store.record_stance(cur, "machine minds", "I am not a person.", now=1_800_000_100.0)
+    stance_store.revise_stance(cur, "machine minds", "I am not a person, and I do not pretend to be.", reason="said better",
+                               now=1_800_000_200.0)
+    rows = stance_store.listed(cur)
+    assert [r["position"] for r in rows if r["current"]] == ["I am not a person, and I do not pretend to be.",
+                                                             "I am fond of the sound of rain on a roof."], "newest first"
+    assert all(r["valence"] is None for r in rows), "not judged until ELI's model judges it"
+    rain = next(r for r in rows if r["topic"] == "rain sounds")
+    assert stance_store.set_valence(cur, rain["id"], 1) and not stance_store.set_valence(cur, rain["id"], 5)
+    assert not stance_store.set_valence(cur, 999, 0), "no such stance"
+    assert next(r for r in stance_store.listed(cur) if r["id"] == rain["id"])["valence"] == 1
+    gone = [r for r in rows if not r["current"]]
+    assert gone and gone[0]["superseded_by"] == "I am not a person, and I do not pretend to be."

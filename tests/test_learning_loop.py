@@ -430,3 +430,32 @@ def test_measured_accuracy_is_one_line_per_kind_with_settled_figures(db):
     lines = ep.measured_lines(db_path=db)
     assert len(lines) == 2 and "replies to you: 10 settled" in lines[1] and "70% proved right" in lines[1]
     assert "calibration error" in lines[1]
+
+
+def test_how_often_each_kind_of_figure_proved_right_is_told_week_by_week(db):
+    from eli.cognition.epistemics import week_start
+    now = time.time()
+    day = 86400.0
+    given = ((now - 15 * day, True), (now - 15 * day + 60, False), (now - day, True), (now - 30, True))
+    for i, (t, right) in enumerate(given):
+        led.record_event(ep.ASSESSED, source="epistemics", action="ANSWER", subject=f"wk{i}",
+                         payload={"kind": "answer", "class": "", "score": 0.8, "features": {}},
+                         reusable=False, request_id=f"wk{i}", timestamp=t, db_path=db)
+        ep.settle(f"wk{i}", right, db_path=db)
+    rep = ep.report(ep.ANSWER, days=30.0, db_path=db)
+    assert rep["n"] == 4 and rep["right"] == 0.75
+    weeks = rep["weeks"]
+    assert weeks[0]["from"] == week_start(now - 30 * day) and weeks[-1]["from"] == week_start(now)
+    by_week = {w["from"]: (w["n"], w["right"]) for w in weeks if w["n"]}
+    assert by_week[week_start(now - 15 * day)] == (2, 0.5), "the share right of the figures given that week"
+    assert all(w["right"] is None for w in weeks if not w["n"]), "a week with nothing settled says nothing"
+    [row] = ep.measured(days=30.0, db_path=db)
+    assert row == {"kind": "answer", "words": "replies to you", "n": 4, "right": 0.75, "ece": rep["ece"], "weeks": weeks}
+    assert "75% proved right" in ep.measured_lines(days=30.0, db_path=db)[1], "the words are told from the same figures"
+
+
+def test_a_thought_in_the_feed_says_what_it_is_about(db):
+    th.record("action", "open app for the notes failed", chance=0.2, decision="advised", subject="OPEN_APP",
+              ref="action:r1:OPEN_APP", now=1_800_000_000.0)
+    [fed] = th.for_feed(5)
+    assert fed["subject"] == "OPEN_APP" and fed["ref"] == "action:r1:OPEN_APP", "a body can tie it to what it is about"

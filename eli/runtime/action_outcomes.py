@@ -516,11 +516,12 @@ def said(advice_: Dict[str, Any], tried: Any = None) -> str:
 
 # ── the record, told ──────────────────────────────────────────────────────────────────────────────
 
-def report(days: float = DAYS, action: str = "", *, limit: int = 12, db_path=None,
+def report(days: float = DAYS, action: str = "", *, limit: Optional[int] = 12, db_path=None,
            now: Optional[float] = None) -> Dict[str, Any]:
     """What worked and did not: by action (and within it by target class), with the causes of its
-    failures and what worked instead, as data and in words. Actions with failures first, then by
-    how often they ran. `action` keeps it to one."""
+    failures, what worked instead, and how it went week by week ("weeks": every calendar week of the
+    window, oldest first, {"from", "n", "ok"}: epistemics.by_week), as data and in words. Actions with
+    failures first, then by how often they ran. `action` keeps it to one; `limit` None keeps every action."""
     now = time.time() if now is None else now
     every = _asked(days=days, db_path=db_path)
     want = str(action or "").upper()
@@ -539,9 +540,13 @@ def report(days: float = DAYS, action: str = "", *, limit: int = 12, db_path=Non
         t["n"] += 1
         t["ok"] += 1 if run["worked"] else 0
     rows = []
+    from eli.cognition.epistemics import by_week
     for slot in by_action.values():
-        p, n, _w = _rate([r for r in every if r["action"] == slot["action"]], now, 0.5, 2.0)
+        runs = [r for r in every if r["action"] == slot["action"]]
+        p, n, _w = _rate(runs, now, 0.5, 2.0)
         slot["p"] = p
+        slot["weeks"] = [{"from": w["from"], "n": w["n"], "ok": int(w["sum"])}
+                         for w in by_week([(r["ts"], 1.0 if r["worked"] else 0.0) for r in runs], days=days, now=now)]
         worst = min(slot["targets"].items(), key=lambda kv: (kv[1]["ok"] + 1.0) / (kv[1]["n"] + 2.0)) if slot["targets"] else None
         slot["worst_target"] = worst[0] if worst and worst[1]["ok"] < worst[1]["n"] else ""
         sample = {"_alternative_of": ""}
@@ -555,7 +560,7 @@ def report(days: float = DAYS, action: str = "", *, limit: int = 12, db_path=Non
                                 if a["p"] > 0.5][:3]
         rows.append(slot)
     rows.sort(key=lambda s: (s["n"] - s["ok"], s["n"], s["last"]), reverse=True)
-    rows = rows[:int(limit)]
+    rows = rows[:int(limit)] if limit is not None else rows
     lines = []
     for slot in rows:
         line = f"{_plain(slot['action'])} {_rate_words(slot['ok'], slot['n'])}"

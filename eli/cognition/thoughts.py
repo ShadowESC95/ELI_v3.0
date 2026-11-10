@@ -333,14 +333,17 @@ def words(thought: Dict[str, Any]) -> str:
 
 def for_feed(limit: int = 40, *, user_id: str = "", db_path=None) -> List[Dict[str, Any]]:
     """The latest thoughts as a body draws them: id, kind, room, what, why, chance, decision, reason,
-    status, outcome, when (unix time) and words."""
+    status, outcome, when (unix time), words, and what the thought is about: its subject (an action's
+    name, a memory's words, a relation) and its ref (the record it settles with: "claim:<id>:<turn>",
+    "act:<moment>"), so a body can tie a thought to the record it is about."""
     out = []
     for t in recent(limit, user_id=user_id, db_path=db_path):
         out.append({"id": int(t["id"]), "kind": str(t["kind"]), "room": str(t["room"] or room_of(t["kind"])),
                     "what": str(t["what"]), "why": list(t.get("why") or []), "chance": t.get("chance"),
                     "decision": str(t.get("decision") or ""), "reason": str(t.get("reason") or ""),
                     "status": str(t.get("status") or ""), "outcome": str(t.get("outcome") or ""),
-                    "when": float(t.get("ts") or 0.0), "words": str(t.get("words") or "")})
+                    "when": float(t.get("ts") or 0.0), "words": str(t.get("words") or ""),
+                    "subject": str(t.get("subject") or ""), "ref": str(t.get("ref") or "")})
     return out
 
 
