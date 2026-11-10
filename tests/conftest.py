@@ -281,27 +281,68 @@ def reset_gguf_inference_globals():
 
 # Whatever escapes the sandbox anyway (a path built by hand, a new store) is caught: this
 # checkout's own state is listed before the session and compared after it, and every file
-# created or changed there is named. It fails the run in CI and with ELI_TEST_STRICT_ISOLATION=1;
-# otherwise it is only reported, since a copy of ELI running from this checkout (ELI's own
-# RUN_TESTS) writes its state while the tests run.
+# created or changed there, and every folder made there, is named, with the test that made the
+# folder. It fails the run in CI and with ELI_TEST_STRICT_ISOLATION=1; otherwise it is only
+# reported, since a copy of ELI running from this checkout (ELI's own RUN_TESTS) writes its state
+# while the tests run. A folder left empty was missed when only files were listed: a full run left
+# artifacts/runtime and artifacts/vectors in the checkout. The eval's own throwaway folder
+# (tools/eval/eli_driver.new_sandbox) is a sandbox like this run's: what it holds is still watched.
 _OWN_STATE = [ROOT / name for name in ("artifacts", "config", "training", "runtime", "voices", "plugins", "models")]
+_THROWAWAY_FOLDERS = (ROOT / "artifacts" / "_eval_sandbox",)
+FOLDER = "folder"
 
 
 def _own_state() -> dict:
     seen = {}
     for top in _OWN_STATE:
         for path in top.rglob("*") if top.is_dir() else ():
-            if SANDBOX in path.parents or "__pycache__" in path.parts:
+            if path == SANDBOX or SANDBOX in path.parents or "__pycache__" in path.parts:
                 continue
             try:
                 if path.is_file():
                     info = path.stat()
                     seen[path] = (info.st_mtime_ns, info.st_size)
+                elif path.is_dir() and path not in _THROWAWAY_FOLDERS:
+                    seen[path] = FOLDER
             except OSError:
                 continue
     return seen
 
 
+def _written_since(before: dict, asked: Path = ROOT / "-") -> list:
+    """What in this checkout's own state was written or made since `before` (_own_state), each a
+    path relative to the checkout, a folder with the test that made it."""
+    out = []
+    for path, was in _own_state().items():
+        if before.get(path) == was or path.resolve() == asked:
+            continue
+        rel = str(path.relative_to(ROOT))
+        made_by = _FOLDERS_MADE.get(str(path.resolve())) if was == FOLDER else None
+        out.append(f"{rel}/ (made by {made_by})" if made_by else (rel + "/" if was == FOLDER else rel))
+    return sorted(out)
+
+
+# Which test made each folder under this checkout's own state, outside the sandbox (an audit hook:
+# os.mkdir), so the report names it.
+_FOLDERS_MADE: dict = {}
+_WATCHED_ROOTS = tuple(str(top.resolve()) for top in _OWN_STATE)
+
+
+def _note_folder_made(event, args) -> None:
+    if event != "os.mkdir" or not args:
+        return
+    try:
+        path = os.path.realpath(os.fsdecode(args[0]))
+    except (TypeError, ValueError):
+        return
+    sandbox = str(SANDBOX.resolve())
+    if path == sandbox or path.startswith(sandbox + os.sep):
+        return
+    if any(path == top or path.startswith(top + os.sep) for top in _WATCHED_ROOTS):
+        _FOLDERS_MADE.setdefault(path, os.environ.get("PYTEST_CURRENT_TEST", "collection").split(" ")[0])
+
+
+sys.addaudithook(_note_folder_made)
 _STATE_BEFORE = _own_state()
 
 
@@ -325,11 +366,10 @@ def measurements_stay_on_this_machine(monkeypatch, tmp_path):
 # the report is dynamic — never stale. ELI's RUN_TESTS action reads/summarises it.
 def pytest_sessionfinish(session, exitstatus):
     asked = Path(session.config.getoption("xmlpath", None) or ROOT / "-").resolve()   # --junitxml
-    escaped = sorted(str(p.relative_to(ROOT)) for p, was in _own_state().items()
-                     if _STATE_BEFORE.get(p) != was and p.resolve() != asked)
+    escaped = _written_since(_STATE_BEFORE, asked)
     if escaped:
-        print(f"\n[conftest] TEST ISOLATION BREACH: {len(escaped)} files in this checkout's own state were "
-              "written during the run:", *escaped, sep="\n  ")
+        print(f"\n[conftest] TEST ISOLATION BREACH: {len(escaped)} files or folders in this checkout's own "
+              "state were written or made during the run:", *escaped, sep="\n  ")
         if os.environ.get("CI") or os.environ.get("ELI_TEST_STRICT_ISOLATION"):
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
     try:

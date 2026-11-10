@@ -12,15 +12,13 @@ VALID_POLICY_MODES = {
     "observe_only",
 }
 
-def _project_root() -> Path:
-    try:
-        from eli.core.paths import get_paths
-        return get_paths().project_root
-    except Exception:
-        return Path(__file__).resolve().parents[2]
-
 def policy_path() -> Path:
-    return _project_root() / "artifacts" / "runtime" / "operator_policy.json"
+    """Where the autonomy level is kept: ELI's data folder (runtime/), with its other runtime state.
+    It was the install's own tree (project root/artifacts), which is the data folder only by default:
+    where the data folder is set elsewhere (ELI_DATA_DIR, a test run's throwaway one) the level was
+    read and written in the install, and every test run left an empty artifacts/runtime there."""
+    from eli.core.paths import data_dir
+    return Path(data_dir()) / "runtime" / "operator_policy.json"
 
 def load_policy() -> Dict[str, Any]:
     p = policy_path()

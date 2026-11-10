@@ -3,9 +3,11 @@
 Controls how much autonomy ELI has (proposal_only / operator_supervised /
 goal_driven / observe_only). set_policy_mode must reject unknown modes (fail-safe)
 and persist valid ones; load_policy always returns a well-formed record. This is an
-audit-relevant control surface. Pure/file-backed; isolated + restored here.
+audit-relevant control surface. File-backed; each test keeps it in a data folder of its own.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -13,15 +15,24 @@ from eli.execution import operator_policy as op
 
 
 @pytest.fixture(autouse=True)
-def _restore_policy():
-    p = op.policy_path()
-    original = p.read_text(encoding="utf-8") if p.exists() else None
+def _own_data_folder(tmp_path, monkeypatch):
+    from eli.core import paths
+    monkeypatch.setenv("ELI_DATA_DIR", str(tmp_path / "data"))
+    paths.data_dir.cache_clear()
     yield
-    if original is None:
-        if p.exists():
-            p.unlink()
-    else:
-        p.write_text(original, encoding="utf-8")
+    paths.data_dir.cache_clear()
+
+
+def test_the_level_is_kept_in_elis_data_folder_never_the_installs_tree(tmp_path):
+    """The level was kept under the install's tree (project root/artifacts/runtime) wherever the data
+    folder was: a run with its own data folder wrote it into the checkout, and the suite left an
+    empty artifacts/runtime there each time."""
+    from eli.core import paths
+    rec = op.set_policy_mode("observe_only")
+    kept = Path(rec["path"])
+    assert kept == tmp_path / "data" / "runtime" / "operator_policy.json" and kept.is_file()
+    assert paths.project_root().resolve() not in kept.resolve().parents
+    assert op.load_policy()["mode"] == "observe_only" and op.load_policy()["path"] == str(kept)
 
 
 def test_valid_modes_are_defined():
