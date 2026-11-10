@@ -83,3 +83,22 @@ def test_lora_scheduled_kind_and_worker():
     from eli.runtime.scheduled_tasks import infer_kind, _WORKERS
     assert infer_kind("train a lora overnight") == "lora"
     assert "lora" in _WORKERS and callable(_WORKERS["lora"])
+
+
+def test_a_dry_run_keeps_its_dataset_where_eli_keeps_training_never_in_the_install(tmp_path, monkeypatch):
+    """The dataset a dry run builds, and its report, went to <install>/training/datasets: a test run
+    wrote them into the checkout, and a packaged ELI could not write there. They are training state,
+    kept under learning_dir()."""
+    from eli.core.paths import project_root
+    from eli.learning.lora_pipeline import run_pipeline
+
+    def installed():
+        folder = project_root() / "training" / "datasets"
+        return {p: p.stat().st_mtime_ns for p in folder.glob("*")} if folder.is_dir() else {}
+
+    monkeypatch.setenv("ELI_LEARNING_DIR", str(tmp_path / "training"))
+    before = installed()
+    run_pipeline("eli_phi", execute=False)
+    assert sorted(p.name for p in (tmp_path / "training" / "datasets").glob("*")) == [
+        "eli_supervised_v0.eli_phi.trainable.jsonl", "eli_supervised_v0.report.json"]
+    assert installed() == before

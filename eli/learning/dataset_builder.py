@@ -48,8 +48,9 @@ try:
 except Exception:
     CONV_DIR = PROJECT_ROOT / "artifacts" / "conversations"
 
-DEFAULT_OUT = PROJECT_ROOT / "training" / "datasets" / "eli_supervised_v0.jsonl"
-DEFAULT_REPORT = PROJECT_ROOT / "training" / "datasets" / "eli_supervised_v0.report.json"
+# Where ELI keeps its training state (paths.training_path: learning_dir()), read when a build runs.
+DEFAULT_OUT = "training/datasets/eli_supervised_v0.jsonl"
+DEFAULT_REPORT = "training/datasets/eli_supervised_v0.report.json"
 
 
 SECRET_PATTERNS = [
@@ -475,9 +476,11 @@ def _normalise_db_paths(db_paths: Any) -> list[Path]:
 
 def build_dataset(
     db_paths: list[Path] | None = None,
-    out_path: Path = DEFAULT_OUT,
-    report_path: Path = DEFAULT_REPORT,
+    out_path: Path | str = DEFAULT_OUT,
+    report_path: Path | str = DEFAULT_REPORT,
 ) -> dict[str, Any]:
+    from eli.core.paths import training_path
+    out_path, report_path = training_path(out_path), training_path(report_path)
     stats = BuildStats()
     examples: list[SupervisedExample] = []
 

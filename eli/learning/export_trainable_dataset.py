@@ -21,7 +21,7 @@ try:
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_IN = PROJECT_ROOT / "training/datasets/eli_supervised_v0.with_self_model.jsonl"
+DEFAULT_IN = "training/datasets/eli_supervised_v0.with_self_model.jsonl"   # paths.training_path, at the export
 REGISTRY = PROJECT_ROOT / "models/lora/registry/eli_phi_targets.json"
 
 ALLOWED_TARGETS = {"eli_phi", "eli_phi_ultra"}
@@ -70,8 +70,9 @@ def export_for_target(
             f"Allowed targets: {sorted(allowed_targets)}"
         )
 
-    if out is None:
-        out = PROJECT_ROOT / f"training/datasets/eli_supervised_v0.{target}.trainable.jsonl"
+    from eli.core.paths import training_path
+    src = training_path(src)
+    out = training_path(out if out is not None else f"training/datasets/eli_supervised_v0.{target}.trainable.jsonl")
 
     rows = load_jsonl(src)
     kept: list[dict[str, Any]] = []

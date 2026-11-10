@@ -53,13 +53,11 @@ def _config_path() -> Path:
 def get_wake_phrases() -> List[str]:
     """The user's configured wake phrase(s), or the defaults. Any phrase the user
     sets ("change the wake word to athena") is persisted here and used by both the
-    acoustic model (trained on it) and the transcription matcher."""
+    acoustic model (trained on it) and the transcription matcher. Reading them writes nothing: the
+    defaults were written out on the first read, so building the window wrote a wake_config.json into
+    the models folder (a test's into the checkout's)."""
     path = _config_path()
     if not path.is_file():
-        try:
-            path.write_text(json.dumps({"phrases": _DEFAULT_PHRASES}, indent=2))
-        except Exception:
-            log.debug("wakeword: could not seed default config", exc_info=True)
         return list(_DEFAULT_PHRASES)
     try:
         ph = json.loads(path.read_text()).get("phrases")

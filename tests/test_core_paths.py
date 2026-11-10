@@ -332,3 +332,11 @@ def test_a_path_under_the_old_name_that_only_the_package_holds_is_the_packages(t
     assert P.resolve_user_repo_path("~/eli/core") == project / "eli" / "core"
     assert P.resolve_user_repo_path("~/eli/tests") == project / "tests"
     assert P.resolve_user_repo_path("~/eli/nothing/here.md") == project / "nothing" / "here.md"
+
+
+def test_a_training_path_is_where_eli_keeps_its_training(tmp_path, monkeypatch):
+    import eli.core.paths as P
+    monkeypatch.setenv("ELI_LEARNING_DIR", str(tmp_path / "learn"))
+    assert P.training_path("training/datasets/x.jsonl") == (tmp_path / "learn" / "datasets" / "x.jsonl").resolve()
+    assert P.training_path("models/lora/a") == (P.project_root() / "models" / "lora" / "a").resolve()
+    assert P.training_path(tmp_path / "abs.jsonl") == tmp_path / "abs.jsonl"

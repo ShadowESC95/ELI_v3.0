@@ -24,3 +24,14 @@ def test_the_noise_beds_are_white_pink_and_brown(tmp_path, monkeypatch):
     assert abs(white) < 0.3, "white is flat"
     assert 0.7 < pink < 1.3, "pink falls by ten per decade (it used to be brown under that name)"
     assert 1.7 < brown < 2.3, "brown by a hundred"
+
+
+def test_reading_the_wake_phrases_writes_nothing(tmp_path, monkeypatch):
+    """The defaults were written out on the first read: building the window wrote a wake_config.json
+    into the models folder, a test's into the checkout. Set, they are kept and read back."""
+    from eli.perception import wakeword as ww
+    monkeypatch.setattr(ww, "_model_dir", lambda: tmp_path)
+    assert ww.get_wake_phrases() == ww._DEFAULT_PHRASES
+    assert list(tmp_path.iterdir()) == []
+    assert ww.set_wake_phrases(["Hey Juniper"]) == ["hey juniper"]
+    assert ww.get_wake_phrases() == ["hey juniper"]

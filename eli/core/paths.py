@@ -37,6 +37,14 @@ def _env_truthy(name: str) -> bool | None:
         return None
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+def test_mode() -> bool:
+    """Whether this process runs as a test: ELI_TEST_MODE, the one switch (the suite's conftest sets
+    it; a test module run without the conftest sets it itself). PYTEST_CURRENT_TEST and "pytest is
+    imported" were read as well, in three places, so a process a test started (the eval's replay of
+    the real product) ran in test mode too: no session-end flush, replies cut short, no model."""
+    return bool(_env_truthy("ELI_TEST_MODE"))
+
+
 # ── Frozen app detection (PyInstaller / cx_Freeze) ──
 
 def is_frozen() -> bool:
@@ -730,6 +738,20 @@ def lora_merged_dir() -> Path:
 
 def training_root() -> Path:
     return project_root() / "training"
+
+
+def training_path(value: str | os.PathLike) -> Path:
+    """A path the LoRA targets and the dataset tools name ("training/datasets/…", "training/runs/…"),
+    where ELI keeps its training state: learning_dir() (the checkout's training/ in a source tree, the
+    per-user folder of an installed ELI, the sandbox in a test run). Three copies resolved such a path
+    against the install, so a packaged ELI could not write its datasets and a test run wrote them into
+    the checkout. Another relative path is the install's; an absolute one is itself."""
+    p = Path(value).expanduser()
+    if p.is_absolute():
+        return p
+    if p.parts and p.parts[0] == "training":
+        return learning_dir().joinpath(*p.parts[1:]).resolve()
+    return (project_root() / p).resolve()
 
 def get_gguf_model_path() -> str | None:
     env = os.environ.get("ELI_GGUF_MODEL_PATH") or os.environ.get("ELI_MODEL")

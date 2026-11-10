@@ -170,8 +170,8 @@ def _resolve(value: Any) -> Optional[Path]:
     if p.is_absolute():
         return p
     try:
-        from eli.core.paths import project_root
-        return (Path(project_root()) / p).resolve()
+        from eli.core.paths import training_path      # training state under learning_dir(), the rest the install's
+        return training_path(p)
     except Exception:
         return p.resolve()
 

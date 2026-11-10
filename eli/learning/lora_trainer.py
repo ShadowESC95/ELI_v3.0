@@ -33,12 +33,11 @@ def _rel(path: Path) -> str:
 
 
 def _resolve_project_path(value: str | Path | None) -> Path | None:
+    """A target's path: training state under learning_dir(), anything else the install's (paths.training_path)."""
     if value is None:
         return None
-    p = Path(value)
-    if p.is_absolute():
-        return p
-    return PROJECT_ROOT / p
+    from eli.core.paths import training_path
+    return training_path(value)
 
 
 def _stamp() -> str:

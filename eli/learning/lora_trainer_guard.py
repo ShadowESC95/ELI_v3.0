@@ -80,10 +80,15 @@ class TrainerTarget:
     output_dir: str
 
 
-def _project_path(value: str | Path, *, project_root: Path = PROJECT_ROOT) -> Path:
+def _project_path(value: str | Path, *, project_root: Path | None = None) -> Path:
+    """A target's path: training state under learning_dir(), anything else the install's
+    (paths.training_path); against `project_root` when a caller names another tree."""
     p = Path(value).expanduser()
     if p.is_absolute():
         return p
+    if project_root is None:
+        from eli.core.paths import training_path
+        return training_path(p)
     return (project_root / p).resolve()
 
 
@@ -114,7 +119,7 @@ def resolve_target(
     target: str,
     *,
     registry_path: Path = REGISTRY_PATH,
-    project_root: Path = PROJECT_ROOT,
+    project_root: Path | None = None,
     dataset_path: str | Path | None = None,
 ) -> TrainerTarget:
     target = str(target or "").strip()
@@ -251,7 +256,7 @@ def build_training_plan(
     target: str,
     *,
     registry_path: Path = REGISTRY_PATH,
-    project_root: Path = PROJECT_ROOT,
+    project_root: Path | None = None,
     dataset_path: str | Path | None = None,
     execute: bool = False,
 ) -> dict[str, Any]:

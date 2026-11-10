@@ -22,11 +22,11 @@ except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_INPUTS = [
-    PROJECT_ROOT / "training/datasets/eli_supervised_v0.jsonl",
-    PROJECT_ROOT / "training/datasets/eli_self_model_seed.reviewed.jsonl",
+    "training/datasets/eli_supervised_v0.jsonl",
+    "training/datasets/eli_self_model_seed.reviewed.jsonl",
 ]
 
-DEFAULT_OUT = PROJECT_ROOT / "training/datasets/eli_supervised_v0.with_self_model.jsonl"
+DEFAULT_OUT = "training/datasets/eli_supervised_v0.with_self_model.jsonl"   # paths.training_path, at the merge
 
 SELF_MODEL_CANON_RE = re.compile(
     r"birthday|happy birthday|first day|being alive|land of the living|"
@@ -42,6 +42,8 @@ def is_self_model_canon_topic(row) -> bool:
 
 
 def merge(inputs=DEFAULT_INPUTS, out=DEFAULT_OUT):
+    from eli.core.paths import training_path
+    inputs, out = [training_path(p) for p in inputs], training_path(out)
     raw_rows = []
     for path in inputs:
         for row in load_jsonl(path):
