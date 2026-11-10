@@ -24,6 +24,16 @@ def _eli_root() -> Path:
 ELI_ROOT = _eli_root()
 
 
+def manifest_path() -> Path:
+    """Where a regeneration writes the manifest: the install's own capability_manifest.json, or
+    ELI_CAPABILITY_MANIFEST. The test sandbox sets that, so a test that starts an engine (which
+    regenerates the manifest) never rewrites the checkout's: one that did, with what an earlier
+    test had changed, left the claims suite of the next run reading another run's manifest."""
+    import os
+    named = os.environ.get("ELI_CAPABILITY_MANIFEST", "").strip()
+    return Path(named).expanduser() if named else ELI_ROOT / "capability_manifest.json"
+
+
 def _plugin_permission_rollup(plugin_id: str) -> str:
     """permission_state for a plugin-sourced action.
 
@@ -140,14 +150,16 @@ def capability_status(actions=None) -> dict:
     return {"discovered": len(view), **counts, "actions": view}
 
 
-def update_capability_manifest():
+def update_capability_manifest(path=None):
+    """Bring the manifest at `path` (default manifest_path()) up to what the code holds now. It is
+    written only when the capabilities changed."""
     from eli.runtime.capability_sync import CapabilitySync
 
     sync = CapabilitySync(repo_root=ELI_ROOT)
     capabilities_map = sync.discover()
     delta = sync.run()
 
-    manifest_path = ELI_ROOT / "capability_manifest.json"
+    target = Path(path) if path else manifest_path()
 
     capabilities = [
         _build_capability_entry(action, meta)
@@ -164,8 +176,9 @@ def update_capability_manifest():
     # an identical manifest is not an update: this file is tracked, so rewriting
     # it on every start left it permanently modified in git, and a real
     # capability change would have been indistinguishable from that noise.
-    if not _manifest_matches(manifest_path, manifest):
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if not _manifest_matches(target, manifest):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     # Keep the human-readable reference table in sync with the manifest. Best-effort:
     # any newly-discovered routable action without a curated activation phrase is
@@ -173,7 +186,7 @@ def update_capability_manifest():
     doc_needs_phrase = []
     try:
         from eli.tools.registry.capabilities_doc import generate_capabilities_doc
-        _doc = generate_capabilities_doc()
+        _doc = generate_capabilities_doc(manifest=target)
         doc_needs_phrase = _doc.get("needs_phrase", [])
     except Exception:
         pass

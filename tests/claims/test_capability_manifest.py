@@ -5,6 +5,9 @@ The manifest used to be checked one capability at a time (924 cases), and 231 of
 """
 from __future__ import annotations
 
+import importlib.util
+import json
+
 from . import _helpers as H
 
 
@@ -27,3 +30,19 @@ def test_nothing_about_this_machine_is_shipped():
     machine = {"active", "health", "last_verified_success", "reliability", "verification_count", "evidence_state",
                "reachable", "device_available", "dependency_ready", "permission_state", "discovered_at"}
     assert not [c["action"] for c in H.capabilities() if machine & set(c)]
+
+
+def test_a_manifest_older_code_left_behind_is_brought_up_to_date(tmp_path):
+    """The bootstrap kept any manifest with 200+ capabilities, and the manifest is generated, not
+    tracked: one written before an action was added was what the claims read for the whole run, and
+    they passed alone only once a later engine start had rewritten it."""
+    spec = importlib.util.spec_from_file_location("bootstrap_claims_artifacts",
+                                                  H.REPO / "tools" / "bootstrap_claims_artifacts.py")
+    boot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(boot)
+    current = H.manifest()
+    older = dict(current, total=current["total"] - 1, capabilities=current["capabilities"][1:])
+    stale = tmp_path / "capability_manifest.json"
+    stale.write_text(json.dumps(older), encoding="utf-8")
+    boot.refresh_manifest(stale)
+    assert json.loads(stale.read_text(encoding="utf-8"))["capabilities"] == current["capabilities"]

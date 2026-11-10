@@ -355,8 +355,8 @@ _add("Shell & advanced", "NOOP", "Internal no-op (ignored fragment guard)", "(in
 _CAT_ORDER = list(OrderedDict((c, None) for (c, _, _) in _C.values()))
 
 
-def _load_manifest() -> Tuple[List[dict], set, set]:
-    data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+def _load_manifest(path=None) -> Tuple[List[dict], set, set]:
+    data = json.loads(Path(path or MANIFEST).read_text(encoding="utf-8"))
     caps = data.get("capabilities", [])
     routable = {c["action"] for c in caps
                 if c.get("routable") or c.get("in_supported_list")}
@@ -364,10 +364,10 @@ def _load_manifest() -> Tuple[List[dict], set, set]:
     return caps, routable, plugin
 
 
-def generate_capabilities_doc() -> Dict:
-    """Render blueprints/capabilities_and_actions.md from the manifest + curated map.
-    Returns {ok, total, documented, routable, needs_phrase}."""
-    caps, routable, plugin = _load_manifest()
+def generate_capabilities_doc(manifest=None) -> Dict:
+    """Render blueprints/capabilities_and_actions.md from the manifest (`manifest`, the one just
+    written, else the install's) + curated map. Returns {ok, total, documented, routable, needs_phrase}."""
+    caps, routable, plugin = _load_manifest(manifest)
     all_actions = {c["action"] for c in caps}
 
     # New routable actions not yet curated → emitted with a placeholder so the doc

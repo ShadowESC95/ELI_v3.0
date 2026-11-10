@@ -34,35 +34,42 @@ def _run_bootstrap() -> subprocess.CompletedProcess | None:
                           capture_output=True, text=True)
 
 
-def ensure_claims_artifacts() -> None:
-    """Generate the claims artifacts when they are missing.
+_BOOTSTRAPPED: list = []
 
-    A no-op on a warm tree, so the common case costs one stat call. Raises rather than
-    skipping: a clone that cannot generate what it claims to verify is a real failure,
-    not a reason to quietly report success over zero tests.
+
+def ensure_claims_artifacts() -> None:
+    """Generate the claims artifacts, or bring them up to what the code holds now, once per run.
+
+    It ran only when the manifest was missing, so a manifest an older run had generated was what
+    collection read (module-level parametrisation) for the whole run: after a new action, the
+    manifest claims failed in the full run and passed alone once a later test had rewritten the
+    file. Raises rather than skipping: a clone that cannot generate what it claims to verify is a
+    real failure, not a reason to quietly report success over zero tests.
     """
-    if _MANIFEST.is_file():
+    if _BOOTSTRAPPED:
         return
     proc = _run_bootstrap()
+    _BOOTSTRAPPED.append(proc)
+    if _MANIFEST.is_file():
+        return                  # anything else the bootstrap reported fails the session (fixture below)
     if proc is None:
         raise RuntimeError(
             "capability_manifest.json is missing and tools/bootstrap_claims_artifacts.py "
             "is not present, so the claims suite cannot generate what it verifies."
         )
-    if proc.returncode != 0 or not _MANIFEST.is_file():
-        msg = (proc.stderr or proc.stdout or "bootstrap failed").strip()
-        raise RuntimeError(f"claims bootstrap failed: {msg}")
+    msg = (proc.stderr or proc.stdout or "bootstrap failed").strip()
+    raise RuntimeError(f"claims bootstrap failed: {msg}")
 
 
 # Runs before pytest imports the test modules in this directory — which is the whole
-# point; see the module docstring.
+# point; see the module docstring and ensure_claims_artifacts.
 ensure_claims_artifacts()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _bootstrap_claims_artifacts():
-    """Refresh the artifacts for the session (unchanged behaviour on a warm tree)."""
-    proc = _run_bootstrap()
+    """Report how the bootstrap that ran before collection went (it is not run a second time)."""
+    proc = _BOOTSTRAPPED[0] if _BOOTSTRAPPED else None
     if proc is None:
         pytest.skip("bootstrap_claims_artifacts.py missing")
     if proc.returncode != 0:

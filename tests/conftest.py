@@ -90,6 +90,9 @@ os.environ["ELI_KEYS_DIR"] = str(SANDBOX / "eli-keys")   # licence keys every EL
 # Starting an engine regenerates the capabilities table, which lives in blueprints/: a test that
 # built one rewrote the checkout's blueprint.
 os.environ["ELI_CAPABILITIES_DOC"] = str(SANDBOX / "capabilities_and_actions.md")
+# and the manifest at the checkout's root: only the claims bootstrap (tests/claims/conftest.py) brings
+# that one up to date, once, before anything reads it.
+os.environ["ELI_CAPABILITY_MANIFEST"] = str(SANDBOX / "capability_manifest.json")
 
 
 def _fresh_config() -> None:

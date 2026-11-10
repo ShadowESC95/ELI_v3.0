@@ -62,6 +62,27 @@ def test_a_missing_or_corrupt_manifest_is_not_a_match(tmp_path):
     assert _manifest_matches(corrupt, _payload()) is False
 
 
+def test_a_test_that_regenerates_the_manifest_never_rewrites_the_checkouts(monkeypatch):
+    """Every engine start regenerates the manifest. In a test, with what that test had changed (an
+    action it added, a plugin it faked), it rewrote the checkout's capability_manifest.json, the file
+    the claims suite reads, and the claims of a later run read one test's manifest."""
+    from eli.runtime.capability_sync import CapabilitySync, SyncDelta
+    from eli.tools.registry import capability_updater as cu
+
+    shipped = cu.ELI_ROOT / "capability_manifest.json"
+    before = shipped.stat().st_mtime_ns if shipped.exists() else None
+    monkeypatch.setattr(CapabilitySync, "discover",
+                        lambda self: {"A_TEST_ONLY_ACTION": {"source": "executor", "routable": True}})
+    monkeypatch.setattr(CapabilitySync, "run", lambda self: SyncDelta())
+    monkeypatch.setattr("eli.tools.registry.capabilities_doc.generate_capabilities_doc",
+                        lambda manifest=None: {"needs_phrase": []})
+    cu.update_capability_manifest()
+    assert (shipped.stat().st_mtime_ns if shipped.exists() else None) == before, "the checkout's manifest was rewritten"
+    assert cu.manifest_path() != shipped
+    written = json.loads(cu.manifest_path().read_text(encoding="utf-8"))
+    assert [c["action"] for c in written["capabilities"]] == ["A_TEST_ONLY_ACTION"]
+
+
 # ── capability_inventory.generated.json ─────────────────────────────────────
 @pytest.fixture
 def sync(tmp_path, monkeypatch):
