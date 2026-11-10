@@ -473,3 +473,67 @@ def test_the_model_waits_for_a_body_on_its_way_and_not_for_one_that_is_not(monke
     finally:
         with bundles._bodies_lock:
             bundles._bodies_expected.discard("vr")
+
+
+def test_eli_legal_found_by_looking_is_the_highest_version_and_never_its_setup_program(
+    isolated, monkeypatch
+):
+    """A setup program in Downloads is not the application, and the most recently touched copy
+    is not necessarily the newest release."""
+    import os
+    downloads = isolated / "Downloads"
+    downloads.mkdir()
+    setup = downloads / "ELI_Legal-0.9.0-windows-x64-setup.exe"
+    old = downloads / "ELI_Legal-0.6.1-linux-x86_64.AppImage"
+    new = downloads / "ELI_Legal-0.7.0-linux-x86_64.AppImage"
+    for i, path in enumerate((new, setup, old)):  # the old copy was touched last
+        path.write_text("")
+        os.utime(path, (1_000_000 + i, 1_000_000 + i))
+    monkeypatch.setattr(bundles, "_search_folders", lambda: [downloads])
+    found = bundles.discover()["legal"]
+    assert found.command == (str(new),) and found.version == "0.7.0"
+
+
+def test_a_newer_copy_is_preferred_to_an_older_package_or_registration(isolated, monkeypatch):
+    """An old copy must never hide a new release: the installed package, preferred because it can
+    use ELI's own model, and a registration, preferred to a copy found by looking, both give way
+    to a newer version, and only to a newer one."""
+    _fake_package(
+        isolated,
+        monkeypatch,
+        """
+        def describe():
+            return {"id": "legal", "title": "ELI Legal", "version": "0.6.1", "launch": "fakebundle:launch"}
+    """,
+    )
+    desktop = isolated / "Desktop"
+    desktop.mkdir()
+    monkeypatch.setattr(bundles, "_search_folders", lambda: [desktop])
+    older = desktop / "ELI_Legal-0.5.0-linux-x86_64.AppImage"
+    older.write_text("")
+    assert bundles.discover()["legal"].kind == "in-process", "an older copy does not win"
+    newer = desktop / "ELI_Legal-0.7.0-linux-x86_64.AppImage"
+    newer.write_text("")
+    assert bundles.discover()["legal"].command == (str(newer),)
+    monkeypatch.delenv("ELI_EXTRA_BUNDLES")
+    registry = isolated / "registry"
+    registry.mkdir()
+    registered = isolated / "eli-legal-gui"
+    registered.write_text("")
+    record = {"id": "legal", "version": "0.8.0", "command": [str(registered)]}
+    (registry / "legal.json").write_text(json.dumps(record))
+    assert bundles.discover()["legal"].command == (str(registered),), "a newer registration stays"
+    (registry / "legal.json").write_text(json.dumps({**record, "version": "0.6.0"}))
+    assert bundles.discover()["legal"].command == (str(newer),)
+
+
+def test_a_macos_application_found_by_looking_is_started_by_its_own_program(isolated, monkeypatch):
+    import plistlib
+    apps = isolated / "Applications"
+    program = apps / "ELI Legal.app" / "Contents" / "MacOS" / "eli-legal-gui"
+    program.parent.mkdir(parents=True)
+    program.write_text("")
+    with (apps / "ELI Legal.app" / "Contents" / "Info.plist").open("wb") as fh:
+        plistlib.dump({"CFBundleExecutable": "eli-legal-gui"}, fh)
+    monkeypatch.setattr(bundles, "_search_folders", lambda: [apps])
+    assert bundles.discover()["legal"].command == (str(program),)

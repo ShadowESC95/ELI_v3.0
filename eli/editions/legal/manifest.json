@@ -24,9 +24,9 @@
     "files": [
       "ELI_Legal*.AppImage",
       "ELI Legal.app",
-      "ELI_Legal*/eli-legal",
-      "ELI_Legal*.exe"
+      "ELI Legal/eli-legal-gui.exe",
+      "ELI_Legal*/eli-legal-gui"
     ],
-    "releases": ""
+    "releases": "https://github.com/ShadowESC95/ELI_Legal/releases"
   }
 }

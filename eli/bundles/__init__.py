@@ -36,6 +36,8 @@ import importlib
 import json
 import logging
 import os
+import plistlib
+import re
 import subprocess
 import sys
 import threading
@@ -168,18 +170,46 @@ def _search_folders() -> list[Path]:
     return [p for p in out if p.is_dir()]
 
 
+_INSTALLER = re.compile(r"setup|install", re.I)
+
+
+def version_in(text: str) -> tuple[int, ...]:
+    """The version a file or record names: 'ELI_Legal-0.7.0-linux-x86_64.AppImage' -> (0, 7, 0)."""
+    m = re.search(r"(\d+(?:\.\d+)+)", str(text or ""))
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def _program(path: Path) -> Path:
+    """What to run for a copy found: a macOS application is a folder, and its program is the
+    one its Info.plist names."""
+    if path.suffix == ".app" and path.is_dir():
+        try:
+            with (path / "Contents" / "Info.plist").open("rb") as fh:
+                name = plistlib.load(fh).get("CFBundleExecutable")
+            if name and (path / "Contents" / "MacOS" / name).exists():
+                return path / "Contents" / "MacOS" / name
+        except (OSError, plistlib.InvalidFileException):
+            pass
+    return path
+
+
 def find_installed(bundle_id: str) -> Path | None:
     """A copy of an official bundle's application where one is usually put, in the folder itself or
-    one unpacked into it; the newest when there are several. ELI VR registered itself only when
-    told by hand, so ELI v3 had no way in to a copy sitting on the desktop."""
+    one unpacked into it; the highest version when there are several (the newest file when they
+    name none), never a setup program. ELI VR registered itself only when told by hand, so ELI v3
+    had no way in to a copy sitting on the desktop."""
     app = bundle_apps().get(bundle_id)
     if not app:
         return None
     found: list[Path] = []
     for folder in _search_folders():
         for pattern in app["files"]:
-            found += [p for p in (*folder.glob(pattern), *folder.glob(f"*/{pattern}")) if p.exists()]
-    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+            found += [p for p in (*folder.glob(pattern), *folder.glob(f"*/{pattern}"))
+                      if p.exists() and not _INSTALLER.search(p.name)]
+    if not found:
+        return None
+    best = max(found, key=lambda p: (version_in(f"{p.parent.name} {p.name}"), p.stat().st_mtime))
+    return _program(best)
 
 
 def register_program(bundle_id: str, program: Path) -> Path:
@@ -200,9 +230,14 @@ def discover() -> dict[str, Bundle]:
     logged; it never stops ELI starting."""
     found: dict[str, Bundle] = {}
 
-    def add(bundle: Bundle) -> None:
-        if bundle.id in found and found[bundle.id].kind == "in-process":
-            return  # an installed package is preferred: it can use ELI's own model
+    def add(bundle: Bundle, *, fallback: bool = False) -> None:
+        held = found.get(bundle.id)
+        newer = held is not None and version_in(bundle.version) > version_in(held.version) > ()
+        if held is not None and (held.kind == "in-process" or fallback) and not newer:
+            # An installed package is preferred, since it can use ELI's own model, and a
+            # registration to a copy found by looking; either gives way to a newer version,
+            # so an old copy never hides a new release.
+            return
         found[bundle.id] = bundle
 
     try:
@@ -252,12 +287,12 @@ def discover() -> dict[str, Bundle]:
                     "bundle registration %s could not be read", path, exc_info=True
                 )
     for bundle_id, app in bundle_apps().items():
-        if bundle_id in found:
-            continue
         program = find_installed(bundle_id)
         if program is not None:
+            version = ".".join(map(str, version_in(f"{program.parent.name} {program.name}")))
             add(Bundle(id=bundle_id, title=app["label"], edition=bundle_id, kind="external",
-                       command=(str(program),), origin=f"found at {program}", extra={"needs": ["server"]}))
+                       version=version, command=(str(program),), origin=f"found at {program}",
+                       extra={"needs": ["server"]}), fallback=True)
     return dict(sorted(found.items()))
 
 
