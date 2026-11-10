@@ -205,9 +205,10 @@ def test_memory_schema_adds_value_column_on_legacy_db(tmp_path):
     )
     conn.commit()
 
-    from eli.memory.memory import _ensure_memory_schema
+    from eli.memory.memory import _ensure_full_memory_schema, _ensure_profile_schema
 
-    _ensure_memory_schema(conn)
+    _ensure_full_memory_schema(conn)
+    _ensure_profile_schema(conn)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
     assert "value" in cols
 

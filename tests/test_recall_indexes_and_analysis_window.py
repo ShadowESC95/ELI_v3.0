@@ -28,8 +28,9 @@ import pytest
 def db(tmp_path):
     path = tmp_path / "user.sqlite3"
     conn = sqlite3.connect(str(path))
-    from eli.memory.memory import _ensure_memory_schema
-    _ensure_memory_schema(conn)
+    from eli.memory.memory import _ensure_full_memory_schema, _ensure_profile_schema
+    _ensure_full_memory_schema(conn)
+    _ensure_profile_schema(conn)
     conn.commit()
     yield conn
     conn.close()
