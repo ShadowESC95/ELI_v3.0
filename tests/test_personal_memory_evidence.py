@@ -76,9 +76,9 @@ def test_retrieved_memory_reaches_the_synthesis_prompt():
         evidence="I'm ELI. Context window: 8192 tokens. You're alex.",
         action="PERSONAL_MEMORY_SUMMARY",
         mode="self_consistency",
-        memory_context="User's favourite rapper is Immortal Technique.",
+        memory_context="User's favourite band is Quiet Rivers.",
     )
-    assert "Immortal Technique" in prompt, "retrieved memory was dropped from the prompt"
+    assert "Quiet Rivers" in prompt, "retrieved memory was dropped from the prompt"
     assert "RETRIEVED MEMORY" in prompt
 
 
@@ -93,9 +93,9 @@ def test_non_personal_actions_keep_the_tight_single_evidence_prompt():
         evidence="GPU status: RTX 2060 SUPER, 55% util.",
         action="GPU_STATUS",
         mode="chain_of_thought",
-        memory_context="User's favourite rapper is Immortal Technique.",
+        memory_context="User's favourite band is Quiet Rivers.",
     )
-    assert "Immortal Technique" not in prompt
+    assert "Quiet Rivers" not in prompt
     assert "RETRIEVED MEMORY" not in prompt
 
 
@@ -119,7 +119,7 @@ def test_first_person_statements_become_readable_facts():
     """The writer stores the user's own words; the readback patterns required a
     literal 'User ' prefix that nothing ever produced."""
     cases = {
-        "my favourite rapper is Immortal Technique": "favourite rapper",
+        "my favourite rapper is Quiet Rivers": "favourite rapper",
         "I prefer dark themes and terse answers": "prefers",
         "i use arch linux and neovim": "uses",
         "I am a security researcher": "is a security researcher",

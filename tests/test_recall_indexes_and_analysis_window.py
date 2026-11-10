@@ -295,6 +295,22 @@ def test_what_was_just_said_is_read_from_this_conversation_and_its_last_reply():
         rc.session_id_var.reset(token)
 
 
+def test_the_users_own_name_in_the_last_reply_is_not_who_him_means(monkeypatch):
+    """"You remember him?" points at someone ELI just named, never at the user being greeted by name;
+    the user's name comes from their profile, not from a name written into the code."""
+    from eli.execution.effectors import memory_ops
+    from eli.kernel import state
+
+    class Mem:
+        def get_recent_conversation(self, limit=20, session_id=None, **k):
+            return [{"role": "assistant", "content": "Good to hear from you Tomas. Now playing Marigold Avenue by Quiet Rivers."}]
+    monkeypatch.setattr(state, "get_user_name", lambda *a, **k: "Tomas")
+    named = memory_ops._named_in_last_reply(Mem())
+    assert "Tomas" not in named and "Marigold" in " ".join(named), named
+    monkeypatch.setattr(state, "get_user_name", lambda *a, **k: "")
+    assert "Tomas" in memory_ops._named_in_last_reply(Mem()), "someone else's name is still offered"
+
+
 def test_the_last_resort_memory_write_says_when_nothing_was_stored(monkeypatch):
     """When the store's own write raised, the handler fell back to a memory adapter that no longer
     exists and then to Memory.store_memory, and said "memory stored" whatever that returned."""

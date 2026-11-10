@@ -27,7 +27,7 @@ _ASKS_FOR_THE_RECORD = re.compile(r"\b(?:logs?|transcripts?|records?|time\s?stam
 
 def _named_in_last_reply(mem: Any) -> List[str]:
     """Proper names in ELI's last reply, longest first: what a bare "him", "her" or "that" points at
-    when ELI itself just named it ("▶ Playing — spotify (Immortal Technique — Point Of No Return)")."""
+    when ELI itself just named it ("▶ Playing — spotify (Quiet Rivers — Marigold Avenue)")."""
     try:
         from eli.kernel.request_context import turn_session
         last = next((str(t.get("content") or "") for t in reversed(
@@ -36,9 +36,14 @@ def _named_in_last_reply(mem: Any) -> List[str]:
     except Exception:
         return []
     names = re.findall(r"\b(?:[A-Z][\w'’]+(?:\s+(?:of|the|and|&)\s+)?){2,}|\b[A-Z][\w'’]{3,}\b", last)
+    try:
+        from eli.kernel.state import get_user_name
+        own = (get_user_name() or "").strip().lower()      # the user's own name is never what "him" means
+    except Exception:  # noqa: BLE001 - no profile: nothing of the user's to leave out
+        own = ""
     out: List[str] = []
     for name in sorted((n.strip() for n in names), key=len, reverse=True):
-        if name and name.lower() not in ("playing", "paused", "spotify", "eli", "jason") and name not in out:
+        if name and name.lower() not in ("playing", "paused", "spotify", "eli", own) and name not in out:
             out.append(name)
     return out[:4]
 
