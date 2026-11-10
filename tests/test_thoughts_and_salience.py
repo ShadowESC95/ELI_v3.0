@@ -149,3 +149,53 @@ def test_the_store_is_made_once_and_a_settle_by_prefix_uses_the_ref_index(store,
         "EXPLAIN QUERY PLAN UPDATE thoughts SET status = 'x' WHERE status = 'open' AND ref >= ? AND ref < ?", (lo, hi)))
     assert "idx_thoughts_ref" in plan
     assert th.settle_prefix("recall:R9:", "right") == 0, "a prefix is exact, as refs are"
+
+
+def test_a_surprise_is_kept_under_the_turn_it_was_had_in_and_settled_by_the_next_message(store, monkeypatch):
+    """The engine noted a correction's surprise with no request id, so it had no ref and nothing ever
+    settled it. A surprise is kept under its turn's ref (the turn's own request id when none is given)
+    and settled with the reply of that turn by the next message; one a later reading finds was no
+    correction is undone."""
+    from eli.cognition import epistemics
+    from eli.cognition.correction_patterns import Judged
+    from eli.kernel import engine
+    from eli.kernel import request_context as rc
+    from eli.world import world_event_bus
+    monkeypatch.setattr(epistemics, "settle", lambda *a, **k: True)
+    monkeypatch.setattr(epistemics, "settle_open", lambda *a, **k: 0)
+    monkeypatch.setattr(world_event_bus, "fire_world_event", lambda *a, **k: None)
+    disputes = Judged({"label": "disputes", "by": "words"})
+    accepts = Judged({"label": "accepts", "by": "words"})
+
+    def turn(rid, then):
+        token = rc.request_id_var.set(rid)
+        try:
+            return then()
+        finally:
+            rc.request_id_var.reset(token)
+
+    def of(ref):
+        return [(t["status"], t["outcome"]) for t in th.recent(20) if t["ref"] == ref]
+
+    # turn r-1: an action did what its chance said it would not
+    turn("r-1", lambda: salience.note_surprise("action", 0.8, subjects=["the lamp"], why="the lamp was expected to fail"))
+    assert of("surprise:r-1:action") == [("open", None)]
+    # turn r-2: the user corrects the reply of r-1; that turn's surprises go with it, and the
+    # correction is a surprise of r-2's own, open until the next message
+    turn("r-2", lambda: engine._settle_pending(None, "", {"request_id": "r-1", "route": ("r-1", "CHAT"),
+                                                          "asked": "where is the meeting", "asked_p": 0.8},
+                                               "no, that's wrong", disputes))
+    assert of("surprise:r-1:action") == [("settled", "wrong")]
+    assert of("surprise:r-2:answer") == [("open", None)]
+    # turn r-3: the reply given after the surprise is accepted
+    turn("r-3", lambda: engine._settle_pending(None, "", {"request_id": "r-2", "route": ("r-2", "CHAT")},
+                                               "thanks, that's it", accepts))
+    assert of("surprise:r-2:answer") == [("settled", "right")]
+    # turn r-4: the word cues read a correction that ELI's model, reading the message again, does not
+    pending = {"request_id": "r-3", "route": ("r-3", "CHAT"), "asked": "what time is it there", "asked_p": 0.6}
+    turn("r-4", lambda: engine._settle_pending(None, "", pending, "no wait, also tell me the weather", disputes))
+    assert of("surprise:r-4:answer") == [("open", None)]
+    model = Judged({"label": "neither", "confidence": 0.9, "by": "model"})
+    turn("r-4", lambda: engine._settle_pending(None, "", pending, "no wait, also tell me the weather", model,
+                                               revising=disputes))
+    assert of("surprise:r-4:answer") == [("settled", "undone")]

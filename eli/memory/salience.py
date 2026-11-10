@@ -223,13 +223,22 @@ def importance_gain(magnitude: float) -> float:
 
 def note_surprise(kind: str, magnitude: float, *, subjects: Iterable[str], why: str, user_id: str = "",
                   request_id: str = "", now: Optional[float] = None, db_path=None,
-                  memory_ids: Iterable[Any] = (), exclude: Iterable[Any] = ()) -> Dict[str, Any]:
+                  memory_ids: Iterable[Any] = (), exclude: Iterable[Any] = (), about: str = "") -> Dict[str, Any]:
     """Something did not fit what ELI believed. The memories that hold the news (`memory_ids`: the
     correction, the changed fact) matter more by the surprise, never one in `exclude` (the memories
     the same correction just counted against: a correction does not demote and raise one memory);
     `subjects` are what it was about, for ELI's curiosity and the thought kept in the Anomaly Room,
-    under the ref surprise:<request_id>:<kind> so it can be settled. Nothing is looked up by subject:
-    the memories that merely name it are not what was learned. {"touched": ids, "gain": the gain}."""
+    under the ref surprise:<request_id>:<kind>[:<about>] so it can be settled: `request_id` is the
+    turn it was had in, the turn's own (request_context) when none is given, and the next message
+    settles it with that turn's other thoughts (kernel/engine._settle_pending); `about` tells apart
+    two of one kind in a turn (two corrected claims). Nothing is looked up by subject: the memories
+    that merely name it are not what was learned. {"touched": ids, "gain": the gain}."""
+    if not request_id:
+        try:
+            from eli.kernel.request_context import request_id_var
+            request_id = str(request_id_var.get() or "")
+        except ImportError:                 # no turn to have it in: kept without a ref
+            request_id = ""
     gain = importance_gain(magnitude)
     named = [str(s).strip() for s in (subjects or []) if str(s).strip()]
     left_out = {str(i) for i in (exclude or ())}
@@ -261,11 +270,20 @@ def note_surprise(kind: str, magnitude: float, *, subjects: Iterable[str], why: 
                reason=(f"{len(touched)} memor{'y' if len(touched) == 1 else 'ies'} holding it "
                        f"matter {gain:.0%} more") if touched else "kept as something to be curious about",
                subject=", ".join(named[:3]), request_id=request_id, user_id=user_id, now=now, db_path=db_path,
-               **({"ref": f"surprise:{request_id}:{kind}"} if request_id else {}))
+               **({"ref": surprise_ref(request_id, kind, about)} if request_id else {}))
     except (OSError, ValueError, TypeError, ImportError) as failure:  # noqa: BLE001 - the thought store is never in the way of the signal
         log.debug("surprise thought not kept: %s", failure)
     return {"touched": touched, "gain": gain}
 
 
+def surprise_ref(request_id: str, kind: str = "", about: str = "") -> str:
+    """The ref a surprise had in turn `request_id` is kept under (note_surprise): with no kind, the
+    prefix of every surprise of that turn; with a kind and no `about`, of every one of that kind."""
+    ref = f"surprise:{request_id}:"
+    if kind:
+        ref += str(kind) + (f":{about}" if about else "")
+    return ref
+
+
 __all__ = ["GAIN", "beta_mean", "importance_gain", "importance_of", "is_question", "note_surprise", "novelty",
-           "stated_facts", "states_about_user"]
+           "stated_facts", "states_about_user", "surprise_ref"]

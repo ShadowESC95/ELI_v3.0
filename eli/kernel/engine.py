@@ -2259,9 +2259,13 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
     nothing is settled and no memory is counted as of use; a plain no that goes on to speak of a claim
     ("no, I live in Lisbon now") still corrects that claim. `revising` is the earlier reading this
     one replaces: the figures take the later verdict; the memories, already counted on a reading of
-    their own, and a surprise already noted, are not counted again."""
+    their own, and a surprise already noted, are not counted again. The surprises of the turn the
+    reply was given in (an action that defied its chance, a correction ELI took in that turn) are
+    settled with it, right or wrong; a surprise this message raised is this turn's, and the next
+    message settles it, unless a later reading finds the message was no correction: then it is undone."""
     from eli.cognition import epistemics, thoughts
     from eli.cognition.correction_patterns import ACCEPTS, DISPUTES
+    from eli.memory.salience import surprise_ref
     label = str(verdict or "")
     corrected, endorsed = label == DISPUTES, label == ACCEPTS
     how = "correction" if corrected else ("endorsement" if endorsed else "")
@@ -2305,6 +2309,14 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
     turn_id = (route[0] if route else "") or request_id
     if turn_id and how:
         thoughts.settle_prefix(f"action:{turn_id}:", "done" if endorsed else "wrong", how=how)
+        # what surprised ELI in that turn (eli/memory/salience.note_surprise), settled with the reply
+        thoughts.settle_prefix(surprise_ref(turn_id), "right" if endorsed else "wrong", how=how)
+    # A later reading that finds no correction where the first found one: what that first reading
+    # noted as a surprise in this turn was none.
+    here = str(_request_context.request_id_var.get() or "")
+    if here and revising is not None and str(revising) == DISPUTES and not corrected:
+        for kind in ("answer", "claim"):
+            thoughts.settle_prefix(surprise_ref(here, kind), "undone", how=how or "read again as no correction")
     # The claims about the user the last reply rested on: an acceptance settles them all right; a
     # dispute settles wrong the ones it speaks of (its words share the claim's), and leaves the rest
     # open, since a reply corrected on one point was not wrong on every claim it used. A corrected
@@ -2350,7 +2362,8 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
                     from eli.memory.salience import note_surprise
                     note_surprise("claim", float(claim.get("p") or 0.5), subjects=[str(claim.get("value") or "")],
                                   why=f"you corrected {str(claim.get('relation') or '').replace('_', ' ')}: "
-                                      f"{claim.get('value')}", user_id=user_id)
+                                      f"{claim.get('value')}", user_id=user_id,
+                                  about=str(claim.get("id") or claim.get("relation") or rid))
                 except (OSError, ValueError, TypeError, ImportError, AttributeError, KeyError, RuntimeError):
                     log.debug("claim surprise not noted", exc_info=True)
 
