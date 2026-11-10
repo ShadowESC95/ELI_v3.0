@@ -136,11 +136,13 @@ def split_commands(text: str, *, max_parts: int = 5) -> Optional[List[str]]:
 # and run on "yes". What follows is about the form of a sentence only. No action is named here.
 
 # What may stand in front of an instruction without changing it: a greeting, an address, a
-# courtesy, a joining word.
+# courtesy, a joining word, a correction's or a second thought's opening ("no, open firefox",
+# "wait, stop the music", "sorry, play some jazz"). Without those, an instruction after one was
+# read as talk and the engine answered it in words.
 _LEAD = re.compile(
     r"^\s*(?:(?:and|but|so|then|also|now|ok|okay|alright|right|well|hey|hi|hello|yo|eli|please|pls|kindly|"
     r"just|quickly|buddy|bud|mate|man|good|great|nice|cool|thanks|thank you|cheers|yes|yeah|yep|yup|sure|fine|"
-    r"go on|go ahead)\b[\s,.!:;-]*"
+    r"go on|go ahead|no+|nope|nah|wait|hold on|hang on|actually|sorry|oops|oh|hmm+|um+|uh+)\b[\s,.!:;-]*"
     # "see, ..." and "look, ..." call for attention; "see if ..." and "look up ..." are verbs
     r"|(?:see|look|listen)\s*[,.!:;-]+\s*)*",
     re.I)
@@ -168,7 +170,9 @@ _CLAUSE_END = re.compile(
 _SENTENCE_END = re.compile(r"(?<=[.!?])[\s]+(?=[^\s])|\n+")
 # "mr. brightside", "vs. the world", "feat. red tamsin", initials ("p.s. i love you", "r.e.m."): a
 # full stop that does not end a sentence.
-_ABBREVIATION = re.compile(r"\b(?:mr|mrs|ms|dr|st|vs|feat|ft|no|vol|pt|jr|sr|inc|ltd|e\.g|i\.e|etc|[a-z])\.$", re.I)
+_ABBREVIATION = re.compile(r"\b(?:mr|mrs|ms|dr|st|vs|feat|ft|vol|pt|jr|sr|inc|ltd|e\.g|i\.e|etc|[a-z])\.$", re.I)
+# "no. 5" is a number; "No. Open firefox" is a "no" and then an instruction.
+_NUMBER_SIGN = re.compile(r"\bno\.$", re.I)
 
 
 def sentences(text: str) -> List[str]:
@@ -178,7 +182,7 @@ def sentences(text: str) -> List[str]:
         piece = piece.strip()
         if not piece:
             continue
-        if out and _ABBREVIATION.search(out[-1]):
+        if out and (_ABBREVIATION.search(out[-1]) or (_NUMBER_SIGN.search(out[-1]) and piece[:1].isdigit())):
             out[-1] = f"{out[-1]} {piece}"
         else:
             out.append(piece)

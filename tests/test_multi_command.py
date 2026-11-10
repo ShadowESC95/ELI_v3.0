@@ -125,6 +125,24 @@ def test_sentences_are_split_at_their_ends_and_not_inside_a_title():
     assert cs.sentences("can you play some jazz") == ["can you play some jazz"]
 
 
+@pytest.mark.parametrize("text", ["wait, stop the music", "No, open firefox", "No. Open firefox",
+                                  "actually, open firefox", "sorry, play some jazz", "nah, close spotify"])
+def test_an_instruction_after_a_correction_or_a_second_thought_tells_eli_to_do_it(text):
+    """"no", "wait", "actually", "sorry" in front of an instruction were not among what may stand
+    there, and "No." was read as the number sign: the instruction was taken for talk."""
+    assert cs.tells_eli_to_do(text)
+
+
+@pytest.mark.parametrize("text", ["no", "oh no", "sorry I am late", "no, I said it was fine"])
+def test_a_no_or_an_apology_on_its_own_tells_nothing(text):
+    assert not cs.tells_eli_to_do(text)
+
+
+def test_the_number_sign_still_holds_a_title_together():
+    assert cs.sentences("play no. 5 by the band") == ["play no. 5 by the band"]
+    assert cs.sentences("No. Open firefox") == ["No.", "Open firefox"]
+
+
 def test_a_complaint_that_names_a_command_is_talk():
     got = route(COMPLAINT)
     assert got["action"] == "CHAT"
