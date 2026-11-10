@@ -309,4 +309,4 @@ def _h_computer_use(a: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 from eli.execution.effectors.registry import register as _register
 
-_register("COMPUTER_USE", _h_computer_use)
+_register("COMPUTER_USE", _h_computer_use, shown="always")   # the actions really taken, as they were

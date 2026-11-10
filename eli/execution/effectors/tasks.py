@@ -162,10 +162,12 @@ def _h_resume_task(a, args):
 
 from eli.execution.effectors.registry import register as _register
 
+_register("RESUME_TASK", _h_resume_task)
+# what is scheduled and what was changed is the scheduler's word, in every mode: a model once said
+# "no scheduled tasks" while four were armed
 for _action, _fn in {
-    "RESUME_TASK": _h_resume_task,
     "LIST_TASKS": _h_list_tasks,
     "CANCEL_TASK": _h_cancel_task,
     "RESCHEDULE_TASK": _h_reschedule_task,
 }.items():
-    _register(_action, _fn)
+    _register(_action, _fn, shown="always")

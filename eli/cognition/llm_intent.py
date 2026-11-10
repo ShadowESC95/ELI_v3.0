@@ -17,6 +17,7 @@ import threading
 from typing import Dict, Any, List
 
 from . import gguf_inference
+from eli.execution.effectors.registry import Declared as _Declared
 
 from eli.utils.log import get_logger
 log = get_logger(__name__)
@@ -25,29 +26,17 @@ _cache: Dict[str, Any] = {}
 _cache_lock = threading.Lock()
 _CACHE_MAX = 256  # prevent unbounded growth
 
-# Actions not offered to the model as intent targets: confirm/cancel/internal/no-op surfaces reached
-# through dedicated flows. Derived by name, so the catalogue stays the single source of truth.
-_INTERNAL_ACTIONS = frozenset({
-    "CHAT", "NOOP", "ANSWER", "DIRECT_RESPONSE", "TEMPLATE", "SEQUENCE_STEP",
-    "CONFIRM_CODE_FIX", "CANCEL_CODE_FIX", "CONFIRM_HABIT", "DECLINE_HABIT", "APPROVE_CANDIDATE",
-    "CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION",
-    "PREPARE_REMEDIATION", "DIAGNOSE_WRAPPERS", "CHECK_CHRONAL_ALIGNMENT",
-})
+# Actions not offered to the model as intent targets: a yes or no to something ELI asked, an internal
+# step, each reached through its own flow (offered=False), and the router's own answers that are no
+# action at all. Declared by each action (eli/execution/effectors/registry.py), not listed here.
+_INTERNAL_ACTIONS = _Declared("offered", False, extra=("ANSWER", "DIRECT_RESPONSE", "TEMPLATE", "SEQUENCE_STEP"))
 
 
 # Actions that change who ELI thinks the user is, how ELI itself is set up, its code, or the
 # machine, or that erase data. They need the user to have said so (the router's exact phrases),
-# never a model's guess: "Eli, can you not tell me who i am??" was guessed as PERSONA_LOCK_CLEAR,
-# and the agent bus ran it before the turn was downgraded to chat.
-_EXPLICIT_ONLY_ACTIONS = frozenset({
-    "PERSONA_LOCK_SET", "PERSONA_LOCK_CLEAR", "PERSONA_REFRESH", "SET_USER_NAME", "SET_AI_MODE",
-    "SET_VOICE", "SET_TONE", "CLEAR_TONE", "SET_COMMUNICATION_STYLE", "CLEAR_CHAT_HISTORY",
-    "REMOVE_EVENT", "MEMORY_FORGET", "PLUGIN_INSTALL", "PLUGIN_UNINSTALL", "PLUGIN_ENABLE", "PLUGIN_DISABLE",
-    "MCP_ADD", "MCP_REMOVE", "MCP_CALL", "SELF_PATCH", "SELF_UPDATE", "SELF_UPGRADE",
-    "RUN_CMD", "SHELL_EXEC", "LORA_TRAIN", "TRAIN_VOICE", "WAKE_SET", "WAKE_ENROLL",
-    "WAKE_TRAIN", "GAZE_CALIBRATE", "GAZE_CLICK", "GAZE_ENABLE", "GAZE_DISABLE",
-    "PROACTIVE_START", "PROACTIVE_STOP",
-})
+# never a model's guess (explicit=True): "Eli, can you not tell me who i am??" was guessed as
+# PERSONA_LOCK_CLEAR, and the agent bus ran it before the turn was downgraded to chat.
+_EXPLICIT_ONLY_ACTIONS = _Declared("explicit")
 
 
 def _catalogue() -> List[str]:

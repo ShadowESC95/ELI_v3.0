@@ -196,8 +196,8 @@ def test_the_set_did_not_shrink_below_its_pre_audit_size():
 
 def test_every_routable_action_is_covered_or_documented_excluded():
     """Full-coverage guard: every action in capability_manifest.json marked
-    routable must be either in the verbatim set (this file or
-    _verbatim_always_actions in engine.py) or in AUDITED_2026_09_18_EXCLUDED
+    routable must be either in the verbatim set (this file or the
+    shown-in-every-mode set the engine reads) or in AUDITED_2026_09_18_EXCLUDED
     with a reason. Catches a newly-added routable action silently landing in
     neither -- the exact gap this whole audit exists to close."""
     import json
@@ -214,10 +214,9 @@ def test_every_routable_action_is_covered_or_documented_excluded():
     )
     routable = {k for k, v in items if isinstance(v, dict) and v.get("routable")}
 
-    text = ENGINE_PY.read_text(encoding="utf-8")
-    va_start = text.index("_verbatim_always_actions = {")
-    va_end = text.index("\n                        }", va_start)
-    verbatim_always = set(re.findall(r'"([A-Z_]+)"', text[va_start:va_end]))
+    # shown in every mode, declared by each action in the action registry (the engine reads the same)
+    from eli.kernel.stages.fast_actions import _ALWAYS_AS_IS
+    verbatim_always = set(_ALWAYS_AS_IS)
 
     covered = _deterministic_direct_payload_actions() | verbatim_always
     uncovered = routable - covered - AUDITED_2026_09_18_EXCLUDED

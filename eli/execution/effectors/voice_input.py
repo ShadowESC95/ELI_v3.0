@@ -136,8 +136,9 @@ for _action, _fn in {
     "DICTATE": _h_dictate,
     "LISTEN_FOR_COMMAND": _h_listen_for_command,
     "STT_DIAGNOSTICS": _h_stt_diagnostics,
-    "VOICE_DIAGNOSTICS": _h_stt_diagnostics,
 }.items():
     _register(_action, _fn)
+
+_register("VOICE_DIAGNOSTICS", _h_stt_diagnostics, shown="quick")
 
 _register("TRANSCRIBE", _h_transcribe)

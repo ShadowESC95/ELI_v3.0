@@ -7169,46 +7169,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                             _action_upper == "SELF_REPORT"
                             and _followup_kind in {"detail", "challenge"}
                         )
-                        # Deep technical introspection ("explain exactly how your memory pipeline works"). The executor
-                        # builds a full sanitised live audit and that report IS the answer. Re-narrating it on a small
-                        # model invents facts (a "memory.sqlite3 for temporary storage"). Verbatim in every mode.
-                        # RUNTIME_STATUS / RUNTIME_AUDIT / MEMORY_STATUS still synthesise in non-quick, and the news and
-                        # daily reports stay out because they already carry source tags.
-                        _verbatim_always_actions = {
-                            "NEWS_FETCH",
-                            "MORNING_REPORT",
-                            "DAILY_REPORT",
-                            # EXPLAIN_MEMORY_RUNTIME and EXPLAIN_COGNITION_RUNTIME synthesise in non-quick modes, quick
-                            # keeps the dump. The phantom-DB corruption is now guarded by the quote-exact-from-evidence rule
-                            # in _compact_grounded_synthesis.
-                            "RESOLVE_RUNTIME_PATHS",
-                            # Code-examiner tiered report + patch-outcome reports are
-                            # grounded fact; never let a reasoning mode re-narrate them.
-                            "EXAMINE_CODE",
-                            "CONFIRM_CODE_FIX",
-                            # the yes or no to a fix candidate: what each one came to, as the applier said it
-                            "APPROVE_CANDIDATE",
-                            "CANCEL_CODE_FIX",
-                            "CONFIRM_HABIT",
-                            "DECLINE_HABIT",
-                            # Grounded self-report families: the executor already builds the
-                            # complete report, and re-narrating their large evidence on the small
-                            # model returned a lone "-". Return verbatim in every mode.
-                            "SELF_ANALYZE",
-                            "SELF_IMPROVE",
-                            "SELF_IMPROVEMENT_LOG",
-                            "SELF_TEST",
-                            "SELF_UPGRADE",
-                            "SELF_PATCH",
-                            "SELF_UPDATE",
-                            # Scheduler state and deletions: the model once said "no scheduled tasks"
-                            # while four were armed. COMPUTER_USE reports the actions really taken.
-                            "LIST_TASKS",
-                            "CANCEL_TASK",
-                            "RESCHEDULE_TASK",
-                            "MEMORY_FORGET",
-                            "COMPUTER_USE",
-                        }
+                        # Shown as it is in every mode (shown="always", declared by each action: the action
+                        # registry): reports a small model re-narrated into invented facts ("a memory.sqlite3 for
+                        # temporary storage", a lone "-"), the self-maintenance and code-examiner step reports,
+                        # scheduler state and receipts. RUNTIME_STATUS / RUNTIME_AUDIT / MEMORY_STATUS still
+                        # synthesise in non-quick.
+                        _verbatim_always_actions = _ALWAYS_AS_IS
                         # Quick mode skips synthesis for grounded control actions (deterministic evidence, no GGUF).
                         # Non-quick may synthesise on a compact evidence-only context to avoid prompt overflow, except
                         # the verbatim-always introspection family. The gpu_layers/batch/n_ctx diagnostic subset no

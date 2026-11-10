@@ -179,7 +179,8 @@ def _ast_action_modules(source: str) -> Dict[str, Set[str]]:
 
 def _ast_extract_supported_actions(source: str) -> Set[str]:
     """
-    Extract the SUPPORTED_ACTIONS list literal from executor source.
+    Extract the SUPPORTED_ACTIONS list literal from executor source: a list, or the list handed to
+    SupportedActions(...) (the executor's own actions; the registered ones are found in the effectors).
     """
     actions: Set[str] = set()
     try:
@@ -191,8 +192,11 @@ def _ast_extract_supported_actions(source: str) -> Set[str]:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "SUPPORTED_ACTIONS":
-                    if isinstance(node.value, ast.List):
-                        for elt in node.value.elts:
+                    listed = node.value
+                    if isinstance(listed, ast.Call) and listed.args:
+                        listed = listed.args[0]
+                    if isinstance(listed, ast.List):
+                        for elt in listed.elts:
                             if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                                 actions.add(elt.value.upper())
     return actions
@@ -336,28 +340,33 @@ class CapabilitySync:
         # executor `if a == "X"` scan can't see those, so without this an effector-handled
         # action reads as in_dispatch=False even though it genuinely dispatches.
         if executor_path:
+            _eff_acts = self._registered_here()
             _eff_dir = executor_path.parent / "effectors"
-            if _eff_dir.is_dir():
+            if _eff_acts is None and _eff_dir.is_dir():
+                _eff_acts = set()
                 for _ep in sorted(_eff_dir.glob("*.py")):
                     try:
                         _es = _ep.read_text(encoding="utf-8", errors="replace")
                     except Exception:
                         continue
                     # Direct `_register("ACTION", fn)` + dict-loop `{"ACTION": _h_fn, …}`.
-                    _eff_acts = set(re.findall(r'_register\(\s*["\']([A-Z_]+)["\']', _es))
+                    _eff_acts |= set(re.findall(r'_register\(\s*["\']([A-Z_]+)["\']', _es))
                     if "_register(" in _es:
                         _eff_acts |= set(re.findall(r'["\']([A-Z_]{3,})["\']\s*:\s*_h_\w+', _es))
-                    for _act in _eff_acts:
-                        if _act in caps:
-                            caps[_act]["in_dispatch"] = True
-                        else:
-                            caps[_act] = {
-                                "source": "executor",
-                                "in_supported_list": False,
-                                "in_dispatch": True,
-                                "routable": False,
-                                "plugin": None,
-                            }
+            # A registered action is a supported one: SUPPORTED_ACTIONS is the executor's own actions
+            # and every registered one (effectors/registry.SupportedActions).
+            for _act in sorted(_eff_acts or ()):
+                if _act in caps:
+                    caps[_act]["in_dispatch"] = True
+                    caps[_act]["in_supported_list"] = True
+                else:
+                    caps[_act] = {
+                        "source": "executor",
+                        "in_supported_list": True,
+                        "in_dispatch": True,
+                        "routable": False,
+                        "plugin": None,
+                    }
 
         # 2. Router: regex-extract intent names.
         # Keep legacy candidates, but prefer the current canonical layout.
@@ -409,6 +418,23 @@ class CapabilitySync:
                     }
 
         return dict(sorted(caps.items()))
+
+    def _registered_here(self) -> Optional[Set[str]]:
+        """The actions the action registry holds, when the code running is this tree's (it is for
+        every manifest ELI writes of itself); None for another tree, whose effector files are read.
+        A source pattern missed registrations in any other form (a loop over a tuple, a lambda, a
+        helper that registers), so 14 registered actions read as neither supported nor dispatched."""
+        try:
+            import eli as _eli_pkg
+            if Path(_eli_pkg.__file__).resolve().parent.parent != self.repo_root.resolve():
+                return None
+            from eli.execution.effectors import load_all
+            from eli.execution.effectors.registry import registered_actions
+            load_all()
+            return registered_actions()
+        except Exception:
+            log.debug("capability_sync: the action registry could not be read; the effector files are", exc_info=True)
+            return None
 
     def capability_count(self) -> int:
         return len(self.discover())

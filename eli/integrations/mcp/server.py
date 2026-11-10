@@ -27,6 +27,7 @@ import os
 import sys
 from typing import Any, Dict, List
 
+from eli.execution.effectors.registry import Declared
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -35,17 +36,9 @@ _PROTOCOL_VERSION = "2024-11-05"
 
 # Offered to any MCP client by default. Each one only reads, whatever arguments it is given,
 # and reads nothing of the user's own: the clock, the machine's load, and ELI's status. An
-# action is added here only after its handler has been read for that; anything not listed
-# needs the control opt-in.
-_OPEN_ACTIONS = frozenset({
-    "DATE", "GET_DATE", "TIME", "GET_TIME",
-    "CPU_USAGE", "RAM_USAGE", "GPU_STATUS", "SYSTEM_STATS",
-    "HELP", "LIST_CAPABILITIES", "VERSION_CHANGES",
-    "COGNITION_STATUS", "RUNTIME_STATUS", "REASONING_MODE_STATUS",
-    "EXPLAIN_ALL_REASONING_MODES", "EXPLAIN_COGNITION_RUNTIME",
-    "MEMORY_STATS", "ORCHESTRATION_STATUS", "PERSONA_LOCK_STATUS", "LORA_STATUS",
-    "PLUGIN_LIST",
-})
+# action is declared open (open=True, eli/execution/effectors/registry.py) only after its handler
+# has been read for that; anything not declared so needs the control opt-in.
+_OPEN_ACTIONS = Declared("open")
 
 
 def _allow_control() -> bool:
@@ -81,15 +74,16 @@ def _exposed_actions() -> List[str]:
 
 
 def _describe(action: str) -> Dict[str, Any]:
+    # What the catalogue says the action does. This looked for a capabilities_doc.ENTRIES that never
+    # existed, so every tool a client saw was described only as "ELI action <name>".
     description = f"ELI action {action}"
     try:
-        from eli.tools.registry import capabilities_doc
-        for entry in getattr(capabilities_doc, "ENTRIES", []) or []:
-            if isinstance(entry, dict) and entry.get("action") == action:
-                description = str(entry.get("description") or description)
-                break
+        from eli.execution.effectors.registry import facets_of
+        about = facets_of(action).get("about")
+        if about and about[1]:
+            description = str(about[1])
     except Exception:
-        log.debug("mcp.server: capability doc lookup failed", exc_info=True)
+        log.debug("mcp.server: catalogue lookup failed", exc_info=True)
     return {
         "name": action,
         "description": description,

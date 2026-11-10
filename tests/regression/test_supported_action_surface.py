@@ -1,23 +1,8 @@
-import ast
-from pathlib import Path
-
-
 def _extract_supported_actions():
-    src = Path("eli/execution/executor_enhanced.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "SUPPORTED_ACTIONS":
-                    assert isinstance(node.value, ast.List)
-                    return {
-                        elt.value.upper()
-                        for elt in node.value.elts
-                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                    }
-
-    raise AssertionError("SUPPORTED_ACTIONS assignment not found")
+    """The executor's SUPPORTED_ACTIONS as it holds them: its own list and every registered action (the
+    source's literal names only the executor's own since registering an action makes it supported)."""
+    from eli.execution.executor_enhanced import SUPPORTED_ACTIONS
+    return {str(a).upper() for a in SUPPORTED_ACTIONS}
 
 
 def test_user_facing_routable_admin_actions_are_supported():

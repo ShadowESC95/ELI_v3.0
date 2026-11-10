@@ -86,20 +86,10 @@ def extract_if_actions(path: Path, known_actions: set[str]) -> set[str]:
 
 
 def extract_supported(path: Path) -> set[str]:
-    src = path.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    supported = set()
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "SUPPORTED_ACTIONS":
-                    if isinstance(node.value, ast.List):
-                        for elt in node.value.elts:
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                                supported.add(elt.value.strip().upper())
-
-    return supported
+    """SUPPORTED_ACTIONS as the executor has it: the actions it lists as its own (read the way the
+    manifest's own scan reads them, eli.runtime.capability_sync) and every action an effector registers."""
+    from eli.runtime.capability_sync import _ast_extract_supported_actions
+    return _ast_extract_supported_actions(path.read_text(encoding="utf-8")) | extract_registered_actions(EFFECTORS_DIR)
 
 
 def extract_router_actions(path: Path) -> set[str]:

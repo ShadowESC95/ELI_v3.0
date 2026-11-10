@@ -9,6 +9,8 @@ imported back there so existing references are unchanged.
 from __future__ import annotations
 import logging
 
+from eli.execution.effectors.registry import Declared as _Declared
+
 
 # Deterministic OS/media/control actions must never wait for AgentBus,
 # memory retrieval, persona synthesis, or GGUF. Chat/questions still use
@@ -100,192 +102,22 @@ _AUTHORITY_FAILCLOSED_ACTIONS = frozenset({
     "KEYBOARD", "MOUSE_CONTROL",
 })
 
-_DIRECT_FINAL_ACTIONS = frozenset({
-    "OPEN_APP", "OPEN_URL", "OPEN_BROWSER", "OPEN_FILE_SYSTEM",
-    "OPEN_IN_IDE", "OPEN_SYSTEM_SETTINGS", "OPEN_AUDIO_SETTINGS",
-    "OPEN_POWER_SETTINGS", "OPEN_NETWORK_BROWSER",
-    "MEDIA_CONTROL", "PLAY_MEDIA", "PAUSE_MEDIA", "STOP_MEDIA",
-    "NEXT_MEDIA", "PREVIOUS_MEDIA", "NOW_PLAYING", "VOLUME", "TILE_WINDOWS",
-    "KEYBOARD", "MOUSE_CONTROL", "SCREENSHOT",
-    "SPEAK", "DICTATE", "TRANSCRIBE",
-    "NEWS_FETCH", "WEB_SEARCH", "WEB_FETCH", "GET_WEATHER", "IMPORT_MODEL", "FETCH_MODEL", "VERSION_CHANGES",
-    "PLAY_GAME", "STOP_GAME",
-    "GET_TIME", "GET_DATE", "TIME", "DATE",
-    "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS",
-    "RUNTIME_STATUS", "REASONING_MODE_STATUS", "MEMORY_STATUS", "COGNITION_STATUS",
-    "GUI_RUNTIME_AUDIT", "RUNTIME_AUDIT", "IMPORT_AUDIT",
-    "RESOLVE_RUNTIME_PATHS", "EXPLAIN_LAST_RESPONSE",
-    "EXPLAIN_LAST_FAILURE", "EXPLAIN_MEMORY_RUNTIME", "EXPLAIN_COGNITION_RUNTIME",
-    "EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_FAILURE_LOG",
-    "CHECK_TARGET_STATUS", "PREPARE_REMEDIATION",
-    "CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION",
-    "SELF_REPORT", "USER_IDENTITY_SUMMARY", "PERSONAL_MEMORY_SUMMARY",
-    "PERSONAL_MEMORY_DEEP_EXPLAIN", "ROUTING_FAULT_EXPLAIN", "NAME_SOURCE_AUDIT",
-    "SELF_ANALYZE", "SELF_IMPROVE", "SELF_IMPROVEMENT_LOG", "SELF_UPDATE",
-    "SELF_TEST",
-    "SELF_UPGRADE", "SELF_PATCH", "APPROVE_CANDIDATE", "SELF_REPAIR_PLAYBOOK",
-    "EXAMINE_CODE", "CONFIRM_CODE_FIX", "CANCEL_CODE_FIX",
-    "CONFIRM_HABIT", "DECLINE_HABIT",
-    "MORNING_REPORT", "PROACTIVE_STATUS", "HABIT_STATUS", "LIST_CAPABILITIES",
-    "LIST_DIR", "READ_FILE", "SET_TIMER", "SET_ALARM", "WRITE_NOTE",
-    "CREATE_FOLDER", "SET_CLIPBOARD", "GET_CLIPBOARD", "GPU_STATUS",
-    "OPEN_IDE",
-    "OPEN_COMMUNICATION_HUB",
-    "OPEN_MEDIA_HUB",
-    "SCREEN_LOCATE",
-    "SCREEN_READ_ANALYZE",
-})
+# Declared by each action (direct=True: eli/tools/registry/capabilities_doc.py, or where its effector
+# registers it): read from the action registry, not a list kept here.
+_DIRECT_FINAL_ACTIONS = _Declared("direct")
 
 
-# Actions whose handler already returns the finished answer. Their result is shown as it is, on
-# every path that returns an action result. The path the agent bus takes kept a shorter list of
-# its own, so a calendar or timer result was handed to the model to reword.
-_DIRECT_RESULT_ACTIONS = frozenset({
-    # News/report briefings are already a complete persona-voiced synthesis built in the executor
-    # (50/50 stories + interest + follow-ups). Running them through GGUF again collapses them to a
-    # 2-line summary and doubles latency. Return verbatim.
-    "NEWS_FETCH",
-    "MORNING_REPORT",
-    "DAILY_REPORT",
-    "RUNTIME_AUDIT",
-    "IMPORT_AUDIT",
-    "GUI_RUNTIME_AUDIT",
-    "RESOLVE_RUNTIME_PATHS",
-    "EXPLAIN_MEMORY_RUNTIME",
-    "EXPLAIN_COGNITION_RUNTIME",
-    "RUNTIME_STATUS",
-    "REASONING_MODE_STATUS",
-    "MEMORY_STATUS",
-    "COGNITION_STATUS",
-    # GET_PROPOSALS is a data action: its content (the live agenda or a
-    # plain "no active proposals") must surface as-is. Synthesis made the
-    # model invent suggestions on the empty state.
-    "GET_PROPOSALS",
-    "EXPLAIN_LAST_RESPONSE",
-    "EXPLAIN_ALL_REASONING_MODES",
-    "EXPLAIN_FAILURE_LOG",
-    "EXPLAIN_GGUF_DIAGNOSTICS",
-    "EXPLAIN_LAST_FAILURE",
-    "SELF_UPDATE",
-    # Self-maintenance actions (upgrade/improve/patch) produce a complete authoritative step
-    # report in the executor ("Upgrade complete. 6/6 steps succeeded."). Return it verbatim.
-    # Synthesis either invented progress ("running now, check back later" after it finished) or
-    # degenerated to a lone "-Auto".
-    "SELF_UPGRADE",
-    "SELF_IMPROVE",
-    "SELF_PATCH",
-    "SELF_REPAIR_PLAYBOOK",
-    "EXPLAIN_FAILURE_LOG",
-    "EXPLAIN_GGUF_DIAGNOSTICS",
-    "EXPLAIN_LAST_FAILURE",
-    # Code examiner: tiered error report + per-step patch
-    # outcomes are grounded fact — surface verbatim, never
-    # re-narrated (a weak model would corrupt the findings).
-    "EXAMINE_CODE",
-    "CONFIRM_CODE_FIX",
-    "CANCEL_CODE_FIX",
-    "CONFIRM_HABIT",
-    "DECLINE_HABIT",
-    "DIAGNOSE_WRAPPERS",
-    "SELF_REPORT",
-    # Identity/profile actions: the executor evidence is the grounded
-    # answer; compact synthesis avoids the 7K-token prompt overflow they hit
-    # on the standard broker path.
-    "USER_IDENTITY_SUMMARY",
-    "PERSONAL_MEMORY_SUMMARY",
-    "PERSONAL_MEMORY_DEEP_EXPLAIN",
-    # Deterministic OS-command and system-read actions where the executor result is the whole answer
-    # ("Volume set to 40%", "Tiled 5 windows"). Verbatim in quick, synthesised otherwise. Quick still
-    # ran broker synthesis on them and corrupted results ("Wrote note" became "Bought note").
-    # Web/weather/vision aren't here, their result is evidence the model should phrase.
-    "OPEN_APP", "CLOSE_APP", "OPEN_URL", "OPEN_BROWSER",
-    "OPEN_FILE_SYSTEM", "OPEN_IN_IDE", "OPEN_IDE",
-    "OPEN_SYSTEM_SETTINGS", "OPEN_AUDIO_SETTINGS",
-    "OPEN_POWER_SETTINGS", "OPEN_NETWORK_BROWSER",
-    "OPEN_COMMUNICATION_HUB", "OPEN_MEDIA_HUB",
-    "FOCUS_APP", "MINIMIZE_APP", "MINIMISE_APP",
-    "MINIMISE_ALL", "MINIMIZE_WINDOW", "MINIMISE_WINDOW",
-    "MAXIMISE_WINDOW", "NEXT_WINDOW", "PREVIOUS_WINDOW",
-    "RESTORE_WINDOWS", "SWITCH_WORKSPACE", "TILE_WINDOWS",
-    "MEDIA_CONTROL", "PLAY_MEDIA", "PAUSE_MEDIA",
-    "STOP_MEDIA", "NEXT_MEDIA", "PREVIOUS_MEDIA",
-    "NOW_PLAYING",
-    "SHUFFLE_MEDIA", "REPEAT_MEDIA", "VOLUME",
-    "KEYBOARD", "MOUSE_CONTROL", "SCREENSHOT",
-    "SET_CLIPBOARD", "GET_CLIPBOARD",
-    "TIME", "DATE", "GET_TIME", "GET_DATE",
-    "CPU_USAGE", "RAM_USAGE", "SYSTEM_STATS", "GPU_STATUS",
-    "CREATE_FILE", "CREATE_FOLDER", "WRITE_NOTE",
-    "NEW_NOTE", "LIST_NOTES", "SET_TIMER", "SET_ALARM",
-    "LIST_DIR", "SPEAK",
-    # Actions whose handlers already return a complete answer string (checked by reading each),
-    # same as GPU_STATUS/MEMORY_STATUS. Left out, a small model re-narrated them, and READ_FILE
-    # had the file content rewritten instead of shown as it is on disk.
-    "READ_FILE", "HARDWARE_PROFILE", "AWARENESS_STATUS",
-    "FRONTIER_STATUS", "BACKGROUND_JOBS", "CHECK_JOB",
-    "ORCHESTRATION_STATUS", "LORA_STATUS", "PROACTIVE_STATUS",
-    "PERSONA_LOCK_STATUS", "POMODORO_STATUS", "HABIT_STATUS",
-    "GAZE_STATUS", "TIMESTAMP_DIAG", "ELI_IDENTITY_AUDIT",
-    "FILE_AUDIT", "CODEBASE_GRAPH", "AUTOPILOT_DEBUG",
-    "LIST_EVENTS", "SEARCH_NOTES", "MCP_STATUS", "MCP_TOOLS",
-    "MCP_LIST", "STT_DIAGNOSTICS", "NAME_SOURCE_AUDIT",
-    "ROUTING_FAULT_EXPLAIN",
-    # SHELL_EXEC delegates to RUN_CMD's handler, which returns the command's
-    # raw stdout+stderr as content/response. Same danger as READ_FILE: an
-    # LLM synthesis pass could misreport what a command printed.
-    "SHELL_EXEC",
-    # More confirmation/status/report actions whose handler already builds a complete
-    # content/response string, checked by reading each. MCP_CALL is the same danger class as
-    # READ_FILE/SHELL_EXEC: it returns a live tool's raw output, which must not be re-narrated.
-    "ADD_EVENT", "PLUGIN_STATUS", "MEMORY_STORE", "MEMORY_FORGET", "CANCEL_TASK", "COMPUTER_USE", "LIST_TASKS", "RESCHEDULE_TASK",
-    "GET_WEATHER", "PERSONA_LOCK_SET", "PERSONA_LOCK_CLEAR",
-    "SET_TONE", "CLEAR_TONE", "SET_USER_NAME",
-    "SET_COMMUNICATION_STYLE", "SET_VOICE",
-    "POMODORO_START", "POMODORO_STOP",
-    "WAKE_SET", "WAKE_ENROLL", "WAKE_TRAIN", "TRAIN_VOICE",
-    "GAZE_CALIBRATE", "GAZE_CLICK", "GAZE_ENABLE", "GAZE_DISABLE",
-    "MCP_ADD", "MCP_REMOVE", "MCP_DOCTOR", "MCP_CALL",
-    "PLUGIN_LIST", "PLUGIN_SEARCH", "PLUGIN_INSTALL",
-    "PLUGIN_ENABLE", "PLUGIN_DISABLE", "PLUGIN_UNINSTALL",
-    "LIST_VOICES", "DOWNLOAD_VOICE",
-    "SCHEDULE_TASK", "SKIP_YOUTUBE_AD", "SCREEN_LOCATE",
-    "LORA_TRAIN", "LISTEN_FOR_COMMAND", "AMBIENT_VISION",
-    "CANCEL_PENDING_REMEDIATION", "CONFIRM_PENDING_REMEDIATION",
-    "CLEAR_CHAT_HISTORY", "REFRESH_USER_INFO",
-    "MESSAGE_TIME_QUERY",
-    # More confirmation/report/raw-content actions. TRANSCRIBE and OCR_IMAGE return raw recognised
-    # text, same danger as READ_FILE/SHELL_EXEC/MCP_CALL. Deliberately left out: FIX_FILE (content is
-    # a JSON blob) and RUN_TESTS (meant to be summarised).
-    "CODE_CHANGES", "TRANSCRIBE", "DICTATE", "SMART_HOME",
-    "LIST_SPEAKERS", "SPEAKER_ENROLL", "SPEAKER_STATUS", "VOICE_DIAGNOSTICS",
-    "PERSONA_REFRESH", "PROACTIVE_START", "PROACTIVE_STOP",
-    "HELP", "LIST_CAPABILITIES", "MEMORY_RECALL",
-    "TEST_REVIEW", "OCR_IMAGE", "SUMMARIZE_FILE",
-    "CONVERT_DOCUMENT", "ANALYZE_CSV", "GENERATE_TESTS",
-    "CREATE_DOCUMENT", "GENERATE_DOCUMENT", "DOC_GENERATE",
-    "DESIGN_VOICE", "CREATE_VOICE",
-    # These run their own evidence-constrained model call (or none) and already return the final
-    # answer, so a second synthesis is redundant and can drop a fact (a page count, an OCR'd line).
-    # GENERATE_PROJECT embeds real code that mustn't be paraphrased. SEQUENCE and MULTI_COMMAND call
-    # no model, they just join finished sub-steps.
-    "ANALYZE_IMAGE", "ANALYZE_PDF", "ANALYZE_PDF_FOLDER",
-    "SCREEN_READ_ANALYZE", "DATA_FABRICATOR", "GENERATE_PROJECT",
-    "SEQUENCE", "MULTI_COMMAND",
-
-    # calendar and reminder confirmations
-    "REMOVE_EVENT",
-    # RESUME_TASK builds its own message about how stale the task is
-    "RESUME_TASK",
-    # ELI's world: a model brought in is told with what came in and its measured size; a game set or
-    # stopped is told in the words the world gave; the version record says only what was seen here
-    # (reworded, it grew invented diffs). None of these is for a model to retell.
-    "IMPORT_MODEL", "FETCH_MODEL", "PLAY_GAME", "STOP_GAME", "VERSION_CHANGES",
-})
+# Actions whose handler already returns the finished answer: their result is shown as it is, in
+# Quick (shown="quick") or in every reasoning mode (shown="always"), on every path that returns an
+# action result. Declared by each action; the path the agent bus takes kept a shorter list of its own,
+# so a calendar or timer result was handed to the model to reword, and the engine kept a third.
+_DIRECT_RESULT_ACTIONS = _Declared("shown", "quick", "always")
 
 
-# Confirmations with nothing to add: what was put on the calendar, what was set. Shown as they
-# are in every reasoning mode.
-_ALWAYS_AS_IS = frozenset(("ADD_EVENT", "LIST_EVENTS", "REMOVE_EVENT", "SET_ALARM", "SET_TIMER", "MULTI_COMMAND", "SEQUENCE"))
+# Shown as they are in every reasoning mode: confirmations with nothing to add (what was put on the
+# calendar, what was set), the grounded reports a model re-narrated wrongly (self-maintenance steps,
+# code-examiner findings, scheduler state), raw content.
+_ALWAYS_AS_IS = _Declared("shown", "always")
 
 
 def _shown_as_is(action, reasoning_mode=None, result=None) -> bool:

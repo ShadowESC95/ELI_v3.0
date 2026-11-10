@@ -2395,234 +2395,20 @@ def _maybe_background_file_analysis(action, args):
         return None
 
 
-# Enumerated actions for capability_registry bootstrap
-SUPPORTED_ACTIONS = [
-    # Ported from v3: these all had working handlers here but were never listed,
-    # so llm_intent's catalogue (and therefore the grammar-constrained resolver)
-    # could not route to them at all.
-    'DOC_GENERATE',
-    'SET_AI_MODE',
-    'USER_INFO_REPORT',
-    'SET_USER_NAME',
-    'SET_COMMUNICATION_STYLE',
-    'SKIP_YOUTUBE_AD',
-    'ANALYZE_PDF_FOLDER',
-    'IMAGE_STATUS',
-    'MEMORY_FORGET',
-    'LISTEN_FOR_COMMAND',
-    'CANCEL_TASK',
-    'COMPUTER_USE',
-    'GOAL_PROGRESS',
-    'LIST_SPEAKERS',
-    'LIST_TASKS',
-    'RESCHEDULE_TASK',
-    'SPEAKER_ENROLL',
-    'SPEAKER_STATUS',
-    'VOICE_DIAGNOSTICS',
-    'PLUGIN_STATUS',
-    'STT_DIAGNOSTICS',
-    'ADD_EVENT',
-    'BACKGROUND_JOBS',
-    'SCHEDULE_TASK',
-    'AMBIENT_VISION',
-    'ANALYZE_CSV',
-    'ANALYZE_IMAGE',
-    'ANALYZE_PDF',
-    'AWARENESS_STATUS',
-    'CANCEL_CODE_FIX',
-    'CHAT',
-    'CHECK_CHRONAL_ALIGNMENT',
-    'CLEAR_CHAT_HISTORY',
-    'CLOSE_APP',
-    'CONFIRM_CODE_FIX',
-    'APPROVE_CANDIDATE',
-    'CONFIRM_HABIT',
-    'DECLINE_HABIT',
-    'CHECK_JOB',
-    'CODE_CHANGES',
-    'CODE_SOLVE',
-    'COGNITION_STATUS',
-    'CONVERT_DOCUMENT',
-    'CPU_USAGE',
-    'CREATE_DOCUMENT',
-    'CREATE_FILE',
-    'CREATE_FOLDER',
-    'DATA_FABRICATOR',
-    'DATE',
-    'DIAGNOSE_WRAPPERS',
-    'DICTATE',
-    'ELI_IDENTITY_AUDIT',
-    'EXAMINE_CODE',
-    'EXECUTE_GOAL',
-    'EXPLAIN_ALL_REASONING_MODES',
-    'EXPLAIN_COGNITION_RUNTIME',
-    'EXPLAIN_FAILURE_LOG',
-    'EXPLAIN_GGUF_DIAGNOSTICS',
-    'EXPLAIN_LAST_FAILURE',
-    'EXPLAIN_LAST_RESPONSE',
-    'EXPLAIN_MEMORY_RUNTIME',
-    'FILE_AUDIT',
-    'FIX_FILE',
-    'FRONTIER_STATUS',
-    'FOCUS_APP',
-    'GENERATE_DOCUMENT',
-    'GENERATE_PROJECT',
-    'GENERATE_SCRIPT',
-    'GET_CLIPBOARD',
-    'GET_DATE',
-    'GET_STATUS',
-    'GET_TIME',
-    'GET_WEATHER',
-    'GAZE_CALIBRATE',
-    'GAZE_CLICK',
-    'GAZE_DISABLE',
-    'GAZE_ENABLE',
-    'GAZE_STATUS',
-    'GPU_STATUS',
-    'GUI_RUNTIME_AUDIT',
-    'HABIT_STATUS',
-    'HARDWARE_PROFILE',
-    'HELP',
-    'IMPORT_AUDIT',
-    'KEYBOARD',
-    'LIST_CAPABILITIES',
-    'LIST_DIR',
-    'LIST_EVENTS',
-    'REMOVE_EVENT',
-    'LIST_NOTES',
-    'MAXIMISE_WINDOW',
-    'MEDIA_CONTROL',
-    'MEMORY_RECALL',
-    'MESSAGE_TIME_QUERY',
-    'MEMORY_STATS',
-    'MEMORY_STATUS',
-    'MEMORY_STORE',
-    'MINIMISE_ALL',
-    'MINIMISE_APP',
-    'MINIMISE_WINDOW',
-    'MINIMIZE_APP',
-    'MINIMIZE_WINDOW',
-    'HIDE_APP',
-    'MORNING_REPORT',
-    'MOUSE_CONTROL',
-    'NAME_SOURCE_AUDIT',
-    'NEWS_FETCH',
-    'NEW_NOTE',
-    'NEXT_MEDIA',
-    'NEXT_WINDOW',
-    'OCR_IMAGE',
-    'OPEN_APP',
-    'OPEN_AUDIO_SETTINGS',
-    'OPEN_BROWSER',
-    'OPEN_COMMUNICATION_HUB',
-    'OPEN_FILE_SYSTEM',
-    'OPEN_IDE',
-    'OPEN_IN_IDE',
-    'OPEN_MEDIA_HUB',
-    'OPEN_NETWORK_BROWSER',
-    'OPEN_POWER_SETTINGS',
-    'OPEN_SYSTEM_SETTINGS',
-    'OPEN_URL',
-    'PAUSE_MEDIA',
-    'PERSONAL_MEMORY_DEEP_EXPLAIN',
-    'PERSONAL_MEMORY_SUMMARY',
-    'PERSONA_LOCK_CLEAR',
-    'PERSONA_LOCK_SET',
-    'PERSONA_LOCK_STATUS',
-    'PLAY_MEDIA',
-    'MCP_ADD',
-    'MCP_CALL',
-    'MCP_DOCTOR',
-    'MCP_LIST',
-    'MCP_REMOVE',
-    'MCP_STATUS',
-    'MCP_TOOLS',
-    'PLUGIN_DISABLE',
-    'PLUGIN_ENABLE',
-    'PLUGIN_INSTALL',
-    'PLUGIN_LIST',
-    'PLUGIN_SEARCH',
-    'PLUGIN_UNINSTALL',
-    'POMODORO_START',
-    'POMODORO_STATUS',
-    'POMODORO_STOP',
-    'PREVIOUS_MEDIA',
-    'GET_PROPOSALS',
-    'PREVIOUS_WINDOW',
-    'PROACTIVE_START',
-    'PROACTIVE_STATUS',
-    'PROACTIVE_STOP',
-    'RAM_USAGE',
-    'READ_FILE',
-    'REFRESH_USER_INFO',
-    'PERSONA_REFRESH',
-    'REPEAT_MEDIA',
-    'RESOLVE_RUNTIME_PATHS',
-    'RESTORE_WINDOWS',
-    'RESUME_TASK',
-    'RUNTIME_AUDIT',
-    'RUNTIME_STATUS',
-    'REASONING_MODE_STATUS',
-    'RUN_CMD',
-    'SCREENSHOT',
-    'SCREEN_LOCATE',
-    'SCREEN_READ_ANALYZE',
-    'SEARCH_NOTES',
-    'SELF_ANALYZE',
-    'SELF_IMPROVE',
-    'SELF_IMPROVEMENT_LOG',
-    'SELF_PATCH',
-    'SELF_REPAIR_PLAYBOOK',
-    'SELF_REPORT',
-    'SELF_TEST',
-    'RUN_TESTS',
-    'GENERATE_TESTS',
-    'LORA_STATUS',
-    'LORA_TRAIN',
-    'ORCHESTRATION_STATUS',
-    'CODEBASE_GRAPH',
-    'AUTOPILOT_DEBUG',
-    'TEST_REVIEW',
-    'MULTI_COMMAND',
-    'SELF_UPDATE',
-    'SELF_UPGRADE',
-    'SEQUENCE',
-    'SET_ALARM',
-    'SET_CLIPBOARD',
-    'SET_TIMER',
-    'SHELL_EXEC',
-    'SHOW_DIFF',
-    'SHUFFLE_MEDIA',
-    'SMART_HOME',
-    'SPEAK',
-    'LIST_VOICES',
-    'DOWNLOAD_VOICE',
-    'SET_VOICE',
-    'CREATE_VOICE',
-    'DESIGN_VOICE',
-    'SET_TONE',
+# The actions the executor answers itself, here or in its pre-dispatch (no effector registers them),
+# and after them every action an effector registers, read live from the action registry
+# (eli/execution/effectors/registry.py): registering an action makes it a supported one, and nothing
+# else lists it. This list held them all by hand, so a new action had to be written here as well, and a
+# missing one could not be reached by the intent resolver.
+from eli.execution.effectors.registry import SupportedActions as _SupportedActions
+SUPPORTED_ACTIONS = _SupportedActions([
+    'SET_COMMUNICATION_STYLE', 'SCHEDULE_TASK', 'CHAT', 'EXECUTE_GOAL', 'EXPLAIN_LAST_RESPONSE',
+    'HELP', 'LIST_CAPABILITIES', 'NAME_SOURCE_AUDIT', 'OPEN_APP', 'OPEN_IDE',
+    'PERSONAL_MEMORY_DEEP_EXPLAIN', 'PERSONAL_MEMORY_SUMMARY', 'GET_PROPOSALS',
+    'REASONING_MODE_STATUS', 'SELF_REPAIR_PLAYBOOK', 'MULTI_COMMAND', 'SELF_UPDATE', 'SEQUENCE',
+    'LIST_VOICES', 'DOWNLOAD_VOICE', 'SET_VOICE', 'CREATE_VOICE', 'DESIGN_VOICE', 'SET_TONE',
     'CLEAR_TONE',
-    'STOP_MEDIA',
-    'NOW_PLAYING',
-    'SUMMARIZE_FILE',
-    'SWITCH_WORKSPACE',
-    'SYSTEM_STATS',
-    'TILE_WINDOWS',
-    'TIME',
-    'TRANSCRIBE',
-    'WAKE_TRAIN',
-    'WAKE_ENROLL',
-    'WAKE_SET',
-    'TRAIN_VOICE',
-    'USER_IDENTITY_SUMMARY',
-    'VOLUME',
-    'WEB_SEARCH',
-    'WEB_FETCH',  # a linked page read and answered from
-    'IMPORT_MODEL', 'FETCH_MODEL',  # a real thing brought in for ELI's rooms
-    'PLAY_GAME', 'STOP_GAME',  # a small game ELI makes up for its rooms, and the end of one
-    'VERSION_CHANGES',  # which ELI this is and when it was first seen here
-    'WRITE_NOTE',
-]
+])
 
 
 STATE_PATH = Path(os.environ.get("ELI_STATE_FILE", str(get_paths().artifacts_dir / "state.json"))).expanduser().resolve()
@@ -5732,6 +5518,13 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
 # Action dispatch hooks (added by phaseBW2 — replace 5 chained wrappers)
 # ---------------------------------------------------------------------------
 
+# Answered by the pre-dispatch below (grounded_remediation), not by an effector: what is declared of
+# them is declared here (eli/execution/effectors/registry.py).
+from eli.execution.effectors.registry import declare as _declare_action
+_declare_action("CHECK_TARGET_STATUS", direct=True)
+_declare_action("PREPARE_REMEDIATION", direct=True, offered=False)
+
+
 def _action_pre_dispatch(
     action: str,
     args: "Optional[Dict[str, Any]]" = None,
@@ -6411,13 +6204,6 @@ if __name__ == "__main__":
     ns = ap.parse_args()
     print(json.dumps(execute(ns.action, json.loads(ns.args)), indent=2))
 
-# --- AUTO-REGISTER CAPABILITIES (ON IMPORT) ---
-try:
-    from eli.tools.registry.capability_registry import register as _cap_register
-    for _a in SUPPORTED_ACTIONS:
-        _cap_register(_a, {"description": f"Executor action: {_a}"})
-except Exception:
-    log.debug("suppressed exception", exc_info=True)
 
 
 # ----------------------------
@@ -9220,6 +9006,14 @@ try:
     _load_effectors_at_import()
 except Exception:
     log.debug("[EXECUTOR] effector modules failed to load", exc_info=True)
+
+# --- AUTO-REGISTER CAPABILITIES (ON IMPORT) ---
+try:
+    from eli.tools.registry.capability_registry import register as _cap_register
+    for _a in SUPPORTED_ACTIONS:
+        _cap_register(_a, {"description": f"Executor action: {_a}"})
+except Exception:
+    log.debug("suppressed exception", exc_info=True)
 
 
 # The one place a run is finished (_finish_run): the outermost execute. The layers below it (the

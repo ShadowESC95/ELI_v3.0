@@ -155,8 +155,12 @@ for _action, _fn in {
     "WAKE_SET": _h_wake_set,
     "WAKE_TRAIN": _h_wake_train,
     "TRAIN_VOICE": _h_train_voice,
+}.items():
+    _register(_action, _fn)
+
+for _action, _fn in {
     "SPEAKER_ENROLL": _h_speaker_enroll,
     "LIST_SPEAKERS": _h_list_speakers,
     "SPEAKER_STATUS": _h_speaker_status,
 }.items():
-    _register(_action, _fn)
+    _register(_action, _fn, shown="quick")
