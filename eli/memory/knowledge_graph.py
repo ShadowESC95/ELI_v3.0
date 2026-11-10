@@ -324,8 +324,8 @@ def possessions(text: str) -> List[Tuple[str, str]]:
     rel_alt = "|".join(sorted(set(_REL_WORDS), key=len, reverse=True))
     name_grp = r"[A-Z][A-Za-z'’\-]{1,20}"
     patterns = [
-        # name AFTER: my <rel> [is/named/called/'s name is] <Name>
-        rf"\bmy\s+(?P<rel>{rel_alt})"
+        # name AFTER: my <rel> [is/named/called/'s name is] <Name> ("My" opening a sentence too)
+        rf"\b[Mm]y\s+(?P<rel>{rel_alt})"
         rf"(?:’s\s+name\s+is|'s\s+name\s+is|\s+(?:is\s+)?(?:called\s+|named\s+)?)"
         rf"\s*(?P<name>{name_grp})",
         # name BEFORE: <Name> (my <rel>) | <Name>, my <rel> | <Name> is my <rel>

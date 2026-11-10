@@ -67,6 +67,14 @@ def test_a_hedged_reply_is_not_a_stance():
                                 "you would measure that honestly either way.") is None
 
 
+def test_a_question_inside_a_reply_is_not_its_position():
+    """ELI's own question was kept as its stance when more followed it: the sentence that asks is passed
+    over, whatever comes after it."""
+    reply = ("That sounds like a lovely evening plan. I don't think I caught your name in there - what would you "
+             "like me to call you? Either way, enjoy the lessons.")
+    assert detect_stance("I've started cello lessons on Thursday evenings with a teacher", reply) is None
+
+
 def test_a_question_is_not_an_assertion():
     assert detect_stance(ASKED, "Do you mean phenomenal consciousness, or the "
                                 "functional kind that I can actually verify?") is None

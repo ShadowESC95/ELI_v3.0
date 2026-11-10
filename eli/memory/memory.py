@@ -170,8 +170,9 @@ _this_module.__class__ = _MemoryModule
 # activation of its uses, so it fades without use as a memory does (eli/memory/policy.base_activation);
 # and a recall spreads from what it found to what is strongly linked to it, a third channel beside the
 # vector and keyword ones. Kept only while it measurably improves recall: its test switches it off
-# otherwise (tests/test_memory_learning.py, the replay figures).
-ASSOCIATION = True
+# otherwise (tests/test_memory_learning.py, the replay figures, which measure it with
+# ELI_MEMORY_ASSOCIATION=0 against it on).
+ASSOCIATION = os.environ.get("ELI_MEMORY_ASSOCIATION", "1").strip() != "0"
 
 # How many candidates each recall channel fetches for each place in the caller's limit: ELI's own
 # records, deleted rows and stale index entries are dropped after the fetch, and the one ranking
@@ -2502,6 +2503,14 @@ class Memory(metaclass=_MemoryMeta):
             for _row in out:
                 if _row.get("id") in _how_readily:
                     _row["accessibility"] = _how_readily[_row["id"]]
+            # How likely it still holds: a memory whose every fact ELI now holds superseded ("I live in
+            # Fenwick Bay" after "I live in Ashby Green now") still holds only as far as what replaced
+            # it might be wrong (one less the sureness of the claim standing in its place), the
+            # confidence the one ranking takes into its prior (eli/cognition/reranker.prior).
+            for _mid, _chance in self._superseded_chance(conn, [r.get("id") for r in out]).items():
+                for _row in out:
+                    if str(_row.get("id")) == str(_mid):
+                        _row["chance"] = _chance
 
             def _postmerge_noise(hit):
                 _tags = str(hit.get('tags', '') or '').lower()
@@ -2715,6 +2724,31 @@ class Memory(metaclass=_MemoryMeta):
             return out
         finally:
             conn.close()
+
+    @staticmethod
+    def _superseded_chance(conn, ids) -> Dict[int, float]:
+        """{memory id: the chance it still holds} for the memories among `ids` whose facts (the claims
+        read from them) are all superseded: one less the sureness of the claim that now stands for
+        that relation. A memory with a current claim, or none, is not listed."""
+        ids = sorted({int(i) for i in ids if str(i).isdigit()})
+        if not ids or not _has_table(conn, "memory_claims"):
+            return {}
+        marks = ",".join("?" * len(ids))
+        try:
+            rows = conn.execute(
+                f"SELECT c.source_memory_id, c.status, c.relation, c.subject, "
+                f"(SELECT MAX(n.confidence) FROM memory_claims n WHERE n.subject = c.subject AND n.relation = c.relation "
+                f"AND n.status = 'current') FROM memory_claims c WHERE c.source_memory_id IN ({marks})", ids).fetchall()
+        except sqlite3.Error:
+            log.debug("claims not read for the recall", exc_info=True)
+            return {}
+        held: Dict[int, List[Optional[float]]] = {}
+        for mid, status, _rel, _subj, standing in rows:
+            if status == "current":
+                held.setdefault(int(mid), []).append(None)
+            elif status == "superseded" and standing is not None:
+                held.setdefault(int(mid), []).append(1.0 - float(standing))
+        return {mid: max(v) for mid, v in held.items() if v and None not in v}
 
     def _accessibility(self, conn, rows, cols, now: float) -> Dict[int, float]:
         """How readily each stored row among `rows` comes to mind, 0..1 (eli/memory/policy.py): its

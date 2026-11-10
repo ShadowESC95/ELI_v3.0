@@ -97,7 +97,9 @@ def _position_sentence(reply: str) -> str:
     text = re.sub(r"\s+", " ", str(reply or "")).strip()
     for sentence in re.split(r"(?<=[.!?])\s+", text):
         s = sentence.strip()
-        if len(s) < 12 or _HEDGE.search(s) or _NOT_A_STANCE.search(s):
+        # asking is not asserting, whichever sentence of the reply asks ("I don't think I caught your
+        # name — what should I call you?" was kept as a position)
+        if len(s) < 12 or s.endswith("?") or _HEDGE.search(s) or _NOT_A_STANCE.search(s):
             continue
         if _ASSERTION.search(s):
             return s[:MAX_POSITION_CHARS]

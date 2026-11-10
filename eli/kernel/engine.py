@@ -6251,7 +6251,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         tags=["user", "identity", "name"],
                         source="runtime_identity_extractor",
                         kind="identity",
-                        importance=0.92,
                     )
                     if self._working_memory:
                         self._working_memory.pin(
@@ -6281,7 +6280,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                         tags=["user", "relation", _rf["relation"]],
                         source="runtime_relational_extractor",
                         kind="identity",
-                        importance=0.82,
                     )
                     if self._working_memory:
                         self._working_memory.pin(_rf_text, source="relation", importance=0.82)
@@ -6315,7 +6313,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                                 tags=["eli", "identity", "acronym"],
                                 source="user_correction",
                                 kind="identity",
-                                importance=0.95,
                             )
                         except Exception:
                             log.debug("suppressed exception", exc_info=True)

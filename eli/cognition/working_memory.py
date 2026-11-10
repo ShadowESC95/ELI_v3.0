@@ -290,12 +290,14 @@ class WorkingMemory:
                 continue
             if fact.importance >= 0.8 and fact.hit_count >= 2:
                 try:
+                    # its importance is the memory store's to weigh from the evidence (an explicit
+                    # pin is the user asking for it to be kept: eli/memory/salience.importance_of),
+                    # not the pin's own figure for the session's prompt
                     memory_store.store_memory(
                         fact.text,
                         tags=["working_memory", fact.source, "session_pin"],
                         source="working_memory",
                         kind="fact",
-                        importance=fact.importance,
                     )
                     saved += 1
                 except Exception:

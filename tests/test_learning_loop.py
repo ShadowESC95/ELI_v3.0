@@ -553,3 +553,32 @@ def test_settling_by_the_models_label_waits_for_the_owner_and_a_change_of_subjec
         record_recall_outcome=lambda ids, helped=True, out=helped: out.append(("moved on", helped))))
     CognitiveEngine._settle_recall_outcome(fake, "what is the weather like tomorrow", "user")
     assert helped == [True], "moving on is not help"
+
+
+def test_a_topic_is_its_words_forms_taken_together_and_ties_never_rest_on_hash_order(monkeypatch):
+    """"bake", "bakery" and "baking" were three topics, each too thin to lead; a question's "where"
+    counted as a topic; and equal activations were ordered by a set's hash, so the focus changed with
+    the seed."""
+    import eli.memory.memory as memory_module
+    from eli.memory import interest
+    now = 1_800_000_000.0
+    day = 86400.0
+    turns = [{"role": "user", "content": "a long shift at the bakery", "timestamp": now - 9 * day},
+             {"role": "user", "content": "where does the delivery van park", "timestamp": now - 8 * day},
+             {"role": "user", "content": "I bake on Sundays", "timestamp": now - 5 * day},
+             {"role": "user", "content": "where is the timetable for the ferry", "timestamp": now - 4 * day},
+             {"role": "user", "content": "baking rye loaves all week", "timestamp": now - day}]
+    monkeypatch.setattr(memory_module, "get_memory", lambda *a, **k: SimpleNamespace(
+        get_recent_conversation=lambda **k: turns))
+    interest.forget()
+    focus = interest.focus(3, now=now)
+    interest.forget()
+    assert focus and focus[0][0] == "bake" and "where" not in dict(focus), focus
+    assert interest.share("fresh bread from the bakery", now=now) > 0.0
+    interest.forget()
+    tied = [{"role": "user", "content": f"{w} and {w}", "timestamp": now - d * day}
+            for w in ("zither", "kayak") for d in (1, 3)]
+    monkeypatch.setattr(memory_module, "get_memory", lambda *a, **k: SimpleNamespace(
+        get_recent_conversation=lambda **k: tied))
+    assert [w for w, _s in interest.focus(2, now=now)] == ["kayak", "zither"]
+    interest.forget()

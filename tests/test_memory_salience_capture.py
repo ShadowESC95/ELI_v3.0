@@ -55,6 +55,11 @@ def test_a_fact_eli_already_holds_adds_only_what_is_new():
     moved = importance_of("I live in Lakeside", source="conversation", held_claims=held)
     assert new["novelty"] == 1.0 and again["novelty"] == pytest.approx(0.2) and moved["novelty"] == 1.0
     assert new["importance"] == moved["importance"] > again["importance"] > 0.5
+    unread = importance_of("I go sea swimming every Sunday", source="conversation")
+    assert unread["novelty"] is None and 0.5 < unread["importance"] < new["importance"], \
+        "a fact of a kind ELI reads is the user's word on it; another statement is said in passing"
+    asked = importance_of("the spare shed key is under the green watering can", source="chat")
+    assert asked["importance"] > new["importance"], "what the user asked to keep matters most"
     kept = importance_of("I really like green tea", source="conversation", graph_holds=lambda p, o: p == "prefers")
     assert kept["novelty"] == 0.0 and kept["importance"] == 0.5
 
@@ -74,6 +79,13 @@ def test_what_eli_or_a_tool_wrote_carries_no_users_word():
     ("my favourite band is Radiohead", True),
     ("Biscuit (my dog) is very clever", True),
     ("by the way i'm allergic to peanuts", True),
+    ("I've started learning the cello on Thursday evenings", True),
+    ("I mostly listen to podcasts while I bake", True),
+    ("I've been baking rye loaves all week", True),
+    ("I don't eat meat", True),
+    ("I can't remember where I left my reading glasses", False),
+    ("I didn't have time to try the new recipe yet", False),
+    ("I don't know if I will make it", False),
     # non-facts / queries / requests / chit-chat:
     ("what is the weather today", False),
     ("what is my dog's name?", False),
@@ -131,7 +143,10 @@ def test_captured_fact_carries_the_users_word_and_said_again_counts_the_sighting
     conn = sqlite3.connect(mem.db_path)
     imp = conn.execute("SELECT importance FROM memories WHERE text LIKE '%birthday%'").fetchone()
     conn.close()
-    assert imp is not None and imp[0] == pytest.approx(2 / 3, abs=1e-3), "the user's own word once: Beta(2, 1)'s mean"
+    from eli.cognition.belief import PROVENANCE_WEIGHT
+    passing = PROVENANCE_WEIGHT["user_passing"]
+    assert imp is not None and imp[0] == pytest.approx((1 + passing) / (2 + passing), abs=1e-3), \
+        "a statement no reader reads is the user's word in passing"
     # said again in another conversation (one conversation's re-entrant double write is not a sighting)
     mem.add_conversation_turn("user", "my daughter's birthday is on the 3rd of March", session_id="later")
     conn = sqlite3.connect(mem.db_path)

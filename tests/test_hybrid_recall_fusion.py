@@ -230,3 +230,15 @@ def test_a_restated_memory_keeps_the_date_it_was_first_said(tmp_path, monkeypatc
     hit = next(h for h in mem.recall_memory("cat Pebble", limit=3) if h.get("id") == first)
     from eli.cognition.evidence_format import row_time
     assert abs(row_time(hit) - said) < 1.0, "dated when it was first said, not when it was said again"
+
+
+def test_a_memory_whose_fact_was_superseded_comes_after_the_one_that_replaced_it(tmp_path, monkeypatch):
+    mem = _quiet_memory(tmp_path, monkeypatch)
+    old = mem.store_memory("I live in Fenwick Bay near the harbour", source="conversation")["id"]
+    new = mem.store_memory("we moved, I live in Ashby Green now", source="conversation")["id"]
+    for _ in range(3):
+        mem.record_recall_outcome([old], helped=True)        # the old one was used more
+    got = [h["id"] for h in mem.recall_memory("where do I live", limit=3)]
+    assert got.index(new) < got.index(old), got
+    old_hit = next(h for h in mem.recall_memory("where do I live", limit=3) if h["id"] == old)
+    assert 0.0 < old_hit["chance"] < 0.5

@@ -80,6 +80,16 @@ def classify_origin(source: str = "user", kind: str = "memory", tags=None, text:
     return ORIGIN_USER if src in _USER else ORIGIN_ELI
 
 
+# A fact one of ELI's readers wrote down from what the user said ("User's dog is named Biscuit."): the
+# user's word on a fact of a kind ELI reads (eli/memory/salience.importance_of).
+_READ_FROM_USER = {"identity", "identity_extract", "runtime_identity_extractor", "runtime_relational_extractor",
+                   "relation"}
+
+
+def is_read_from_user(source: str = "") -> bool:
+    return str(source or "").lower() in _READ_FROM_USER
+
+
 def is_explicit(source: str = "", tags=None) -> bool:
     """The user asked for this to be kept (eli/memory/salience.importance_of counts it as their word)."""
     return str(source or "").lower() in _EXPLICIT or bool(_tags(tags) & _USER_TAGS)

@@ -114,20 +114,36 @@ def agreement(hit: Dict[str, Any]) -> float:
 def relevance(hit: Dict[str, Any], query_tokens: Iterable[str]) -> float:
     """How well a hit answers the question, 0..1, in the units it is measured in: the share of the
     question's content words it holds (coverage), and among the words it does not hold, the
-    retrievers' agreement on it counted as at most one word more:
+    retrievers' agreement on it, weighed by how likely it is wanted and right before the question
+    (prior: the two as independent chances), counted as at most one word more:
 
-        relevance = coverage + (1 - coverage) * agreement / (words in the question + 1)
+        relevance = coverage + (1 - coverage) * agreement * prior / (words in the question + 1)
 
-    So holding more of what was asked always comes first (a retriever's confidence never beats what
-    the user said), and agreement orders what holds the same. A row found by the period the question
-    asked about (Memory.memories_between, _source "window") is relevant by being in it."""
+    So holding more of what was asked always comes first (neither a retriever's confidence nor a
+    memory's importance ever beats what the user said), and among what holds the same, what the
+    retrievers agree on and what is more likely wanted and still true comes first: a retriever's
+    rank of one place or two no longer outweighed a memory superseded since. A row found by the
+    period the question asked about (Memory.memories_between, _source "window") is relevant by being
+    in it."""
     source = str(_get(hit, "source") or _get(hit, "_source") or _get(hit, "kind") or "").lower()
     if source == "window":
         return 1.0
     q = set(query_tokens or ())
     text = str(hit.get("text") or hit.get("content") or "")
-    coverage = (len(q & set(_tok(text))) / len(q)) if q else 0.0
-    return coverage + (1.0 - coverage) * agreement(hit) / (len(q) + 1)
+    coverage = held_share(q, _tok(text))
+    return coverage + (1.0 - coverage) * agreement(hit) * prior(hit) / (len(q) + 1)
+
+
+def held_share(query_tokens: Iterable[str], text_tokens: Iterable[str]) -> float:
+    """The share of the question's content words the text holds, a word in another of its forms
+    counting as itself ("where does my sister work" is held by "my sister works as a pilot":
+    eli/execution/route_contracts._same_word)."""
+    q = set(query_tokens or ())
+    if not q:
+        return 0.0
+    t = set(text_tokens or ())
+    from eli.execution.route_contracts import _same_word
+    return sum(1 for w in q if w in t or any(_same_word(w, x) for x in t)) / len(q)
 
 
 def prior(hit: Dict[str, Any]) -> float:
@@ -156,9 +172,10 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
     """The one ranking of recalled evidence (memories, claims, turns, archive rows): relevance first,
     what is known of the hit before the question as its prior.
 
-    Before any outcome is known the order is relevance (relevance()), and among hits equally relevant
-    the number of retrievers that found each, then how likely each is wanted and right (prior()),
-    then the retrievers' own ranks. Once the next turns
+    Before any outcome is known the order is relevance (relevance(): what of the question a hit holds,
+    then the retrievers' agreement on it times how likely it is wanted and right, prior()), and among
+    hits equally relevant the number of retrievers that found each, then the prior, then the
+    retrievers' own ranks. Once the next turns
     have said which memories shown went into answers that were endorsed or corrected, the chance a
     hit is of use, fitted on those outcomes (eli/cognition/epistemics, kind recall: the relevance's
     logit with how readily it came to mind, its importance, how much of the question it holds and
@@ -181,8 +198,7 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
             continue
         seen.add(dedupe_key)
 
-        t_toks = set(_tok(text))
-        overlap = (len(q_toks & t_toks) / max(1, len(q_toks))) if q_toks else 0.0
+        overlap = held_share(q_toks, _tok(text))
         channels = _get(c, "_channels") or []
 
         row = dict(c)

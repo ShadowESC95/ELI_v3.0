@@ -17,11 +17,13 @@ weights claims and beliefs are counted by):
                    action, a correction, an onboarding answer (eli/memory/policy.is_explicit), their
                    own word: user_explicit
   stated about     a statement the user makes about themselves (states_about_user: a first-person
-  themselves       statement, not a question, a request, a wish or a hedge), counted by its novelty:
-                   one less the chance ELI already gave it. A fact ELI held at 0.8, said again, adds
-                   0.2; a new fact, or a changed one, adds its whole weight. That is the
-                   Rescorla–Wagner prediction error (Rescorla & Wagner, 1972): the surprise of the
-                   statement against what ELI holds (novelty).
+  themselves       statement, not a question, a request, a wish or a hedge, nor what did not happen
+                   or what they do not know). A fact of a kind ELI's readers read (stated_facts) is
+                   their word on it, user_explicit, counted by its novelty: one less the chance ELI
+                   already gave it. A fact ELI held at 0.8, said again, adds 0.2; a new fact, or a
+                   changed one, adds its whole weight. That is the Rescorla–Wagner prediction error
+                   (Rescorla & Wagner, 1972): the surprise of the statement against what ELI holds
+                   (novelty). A statement no reader reads is said in passing: user_passing.
   what became of   later, the answers it went into, endorsed or corrected (Memory.record_recall_outcome,
   it               settled from the next turn), which the day's upkeep folds in (Memory.promote_used).
 
@@ -77,6 +79,14 @@ _OPENER = re.compile(r"^(?:(?:by\s+the\s+way|btw|fyi|well|so|also|oh|and|but|any
 _FIRST_PERSON = re.compile(r"^(?:i|i['’]m|im|i['’]ve|i['’]d|i['’]ll|we|we['’]re|we['’]ve|my|our|mine)\b", re.I)
 # A clause put to ELI ("I want you to…", "I need you…"): about the exchange, not the user's life.
 _TO_ELI = re.compile(r"\b(?:you|your|yours|u)\b", re.I)
+# What did not happen ("I didn't have time to…", "I wasn't there"): a past negation tells of an
+# episode that did not take place, nothing standing about the user. A standing negation ("I don't eat
+# meat", "I never drive") is a fact and stays one.
+_PAST_NEGATION = re.compile(r"\b(?:didn['’]?t|did\s+not|wasn['’]?t|was\s+not|weren['’]?t|were\s+not|hadn['’]?t|"
+                            r"had\s+not|couldn['’]?t|could\s+not)\b", re.I)
+# A question inside a statement ("I can't remember where I left…", "I don't know if…"): what follows
+# the negation is something the user does not know, not something they say is so.
+_EMBEDDED_QUESTION = re.compile(r"\b(?:what|where|when|why|how|which|who|whom|whose|whether|if)\b", re.I)
 
 
 def _clauses(text: str) -> List[str]:
@@ -118,12 +128,22 @@ def stated_facts(text: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _states_nothing_known(clause: str) -> bool:
+    """A negated clause that tells of what did not happen, or of what the user does not know."""
+    from eli.memory.knowledge_graph import _NEGATION
+    negated = _NEGATION.search(clause)
+    if not negated:
+        return False
+    return bool(_PAST_NEGATION.search(clause) or _EMBEDDED_QUESTION.search(clause, negated.end()))
+
+
 def states_about_user(text: str) -> bool:
     """The user states something about themselves: a fact one of ELI's readers reads (stated_facts),
     or a clause whose subject is the first person that is not a question, a hedge or a wish, is not
-    put to ELI ("I want you to…") and says something of something (two content words at least: a
-    statement relates the speaker to what it is about). Questions ("what is my dog's name?"),
-    requests ("remind me…"), "I can't remember where…" put as a question, and chit-chat are not."""
+    put to ELI ("I want you to…"), does not tell of what did not happen or of what they do not know
+    ("I didn't have time to…", "I can't remember where…"), and says something of something (two
+    content words at least: a statement relates the speaker to what it is about). Questions ("what
+    is my dog's name?"), requests ("remind me…") and chit-chat are not."""
     t = str(text or "").strip()
     if not t or is_question(t):
         return False
@@ -133,7 +153,7 @@ def states_about_user(text: str) -> bool:
     for clause in _clauses(t):
         body = _OPENER.sub("", clause).strip()
         if (_FIRST_PERSON.match(body) and not is_question(body) and not _hedged(body)
-                and not _TO_ELI.search(body) and len(tokenize(body)) >= 2):
+                and not _TO_ELI.search(body) and not _states_nothing_known(body) and len(tokenize(body)) >= 2):
             return True
     return False
 
@@ -176,14 +196,20 @@ def importance_of(text: str, *, source: str = "user", kind: str = "memory", tags
     out: Dict[str, Any] = {"asked": False, "stated": False, "novelty": None}
     evidence = 0.0
     if origin == _policy.ORIGIN_USER:
-        if _policy.is_explicit(source, tags):
+        asked = _policy.is_explicit(source, tags)
+        if asked:
             out["asked"] = True
             evidence += _weight("user_explicit")
-        if states_about_user(text):
+        # What it states, by the novelty of what it states: a fact of a kind ELI's readers read is the
+        # user's word on it (user_explicit, "I am a physicist"); any other statement of theirs, or what
+        # they asked to keep, is said as they went (user_passing).
+        if asked or states_about_user(text) or _policy.is_read_from_user(source):
             out["stated"] = True
             new = novelty(text, held_claims=held_claims, graph_holds=graph_holds)
+            if new is None and _policy.is_read_from_user(source):
+                new = 1.0          # written down by one of ELI's readers: a fact of a kind it reads
             out["novelty"] = new
-            evidence += _weight("user_explicit") * (1.0 if new is None else new)
+            evidence += (_weight("user_passing") if new is None else _weight("user_explicit") * new)
     out["importance"] = round(beta_mean(evidence), 4)
     return out
 

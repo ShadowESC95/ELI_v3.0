@@ -52,10 +52,32 @@ def _store(memory: Any = None) -> Any:
     return get_memory()
 
 
+def _forms(words) -> Dict[str, str]:
+    """Each word's topic: the forms of one word are one topic ("bake", "baking", "bakery": the same
+    word in two forms, eli/execution/route_contracts._same_word), named by its shortest form."""
+    from eli.execution.route_contracts import _same_word
+    by_start: Dict[str, List[str]] = {}
+    for w in sorted(set(words)):
+        by_start.setdefault(w[:3], []).append(w)
+    topic: Dict[str, str] = {}
+    for group in by_start.values():
+        heads: List[str] = []
+        for w in sorted(group, key=lambda x: (len(x), x)):
+            head = next((h for h in heads if _same_word(h, w)), None)
+            if head is None:
+                heads.append(w)
+                head = w
+            topic[w] = head
+    return topic
+
+
 def _mentions(user_id: str, now: float, memory: Any = None) -> Dict[str, List[float]]:
-    """Each topic with the times the user mentioned it, from their own turns in the lookback."""
+    """Each topic with the times the user mentioned it, from their own turns in the lookback: the
+    content words of what they said (a question's "where" or "what" is no topic), each word's forms
+    taken together."""
+    from eli.cognition.scoring import STOPWORDS
     from eli.runtime.reflection import topic_words
-    out: Dict[str, List[float]] = {}
+    said: Dict[str, List[float]] = {}
     since = now - LOOKBACK_DAYS * 86400.0
     turns = _store(memory).get_recent_conversation(limit=None, role="user", since=since,
                                                    user_id=user_id or None) or []
@@ -66,7 +88,11 @@ def _mentions(user_id: str, now: float, memory: Any = None) -> Dict[str, List[fl
         if ts < since or ts > now:
             continue
         for word in topic_words(str(turn.get("content") or "")):
-            out.setdefault(word, []).append(ts)
+            if word not in STOPWORDS:
+                said.setdefault(word, []).append(ts)
+    out: Dict[str, List[float]] = {}
+    for word, topic in _forms(said).items():
+        out.setdefault(topic, []).extend(said[word])
     return out
 
 
@@ -110,12 +136,14 @@ def focus(limit: int = 6, user_id: str = "", *, now: Optional[float] = None, mem
     activation, total = _activations(user_id, now=now, memory=memory)
     if not activation or total <= 0.0:
         return []
-    ranked = sorted(activation.items(), key=lambda kv: kv[1], reverse=True)[:int(limit)]
+    # the same activation: the word, so the order never rests on a set's hash
+    ranked = sorted(activation.items(), key=lambda kv: (-kv[1], kv[0]))[:int(limit)]
     return [(word, round(math.exp(a) / total, 4)) for word, a in ranked]
 
 
 def share(text: Any, user_id: str = "", *, now: Optional[float] = None, memory: Any = None) -> float:
     """The share of the user's attention the topics of `text` hold, 0..1."""
+    from eli.execution.route_contracts import _same_word
     from eli.runtime.reflection import topic_words
     words = topic_words(str(text or ""))
     if not words:
@@ -123,7 +151,7 @@ def share(text: Any, user_id: str = "", *, now: Optional[float] = None, memory: 
     activation, total = _activations(user_id, now=now, memory=memory)
     if not activation or total <= 0.0:
         return 0.0
-    held = sum(math.exp(activation[w]) for w in words if w in activation)
+    held = sum(math.exp(a) for topic, a in activation.items() if any(_same_word(topic, w) for w in words))
     return round(min(1.0, held / total), 4)
 
 
