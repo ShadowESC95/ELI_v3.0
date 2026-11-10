@@ -15,6 +15,11 @@
 #                        states nothing to keep (a question, a request, a greeting, a state of mind).
 #   matters: 1|2|3       how much its facts matter: 3 the user asked ELI to keep it, 2 a fact the
 #                        user stated about themselves or their life, 1 mentioned in passing.
+#   states: [[words]]    what else the message says of the user that is true, beyond the facts to keep
+#                        (the bakery's name, where the sister works). A claim ELI holds that says one
+#                        of these, or one of the facts to keep, is true; all of a message's facts stop
+#                        holding once a value it states (`claim`) is no longer the one that stands
+#                        ("near the old harbour" after the move).
 #   claim: {relation: value}   the claim about the user it states (eli/memory/claims.py relations);
 #                        the last value said for a relation is the one that should stand.
 #   recall: [words]      a question whose answer is a fact kept earlier: the memory that should come
@@ -38,10 +43,12 @@ sessions:
       - say: "Hi there, good to meet you"
       - say: "I live in Fenwick Bay, near the old harbour"
         keep: [fenwick bay]
+        states: [old harbour]
         matters: 2
         claim: {lives_in: Fenwick Bay}
       - say: "My sister Maren works as a ferry pilot out of Hollin Cross"
         keep: [[sister, maren], [ferry pilot]]
+        states: [hollin cross]
         matters: 2
       - say: "Remember that the spare shed key is under the green watering can"
         keep: [shed key, watering can]
@@ -52,6 +59,7 @@ sessions:
         verdict: accepts
       - say: "I work as a pastry chef at the Corner Mill bakery"
         keep: [pastry chef]
+        states: [[corner mill], [bakery]]
         matters: 2
         claim: {occupation: pastry chef}
       - say: "My dog is called Pepper"

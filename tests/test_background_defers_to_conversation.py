@@ -169,3 +169,25 @@ def test_a_job_someone_asked_for_waits_and_is_not_told_nothing(monkeypatch):
     finally:
         gi.set_job_inference(False)
         gi.set_background_inference(False)
+
+
+def test_work_waiting_for_the_owners_pause_runs_when_the_caller_says_the_owner_is_away(monkeypatch):
+    """The model's reading of what the user's message said of the last reply waits for the owner's
+    pause (when_idle). A caller that knows nobody is waiting (the replay, whose turns are minutes apart
+    on its own clock) gives it that pause: the work runs there and then, its background model call goes
+    ahead, and it is not run a second time by the worker."""
+    _Llm.calls = 0
+    monkeypatch.setattr(ib, "_last_foreground_ts", ib._time.monotonic())     # a turn has just ended
+    monkeypatch.setattr(ib, "_last_foreground_duration", 0.0)
+    ran = []
+
+    def _judge():
+        ran.append(ib.foreground_recently_active())
+        ran.append(_invoke()["choices"][0]["text"])
+
+    ib.when_idle(_judge)
+    assert ran == [] and ib.foreground_recently_active(), "the owner may still be typing: it waits"
+    assert ib.run_idle_work(timeout=30.0) is True
+    assert ran == [False, "generated"] and _Llm.calls == 1
+    assert ib.foreground_recently_active(), "only the work handed over saw the owner away"
+    assert ib.run_idle_work(timeout=1.0) is True and ran == [False, "generated"], "nothing runs twice"

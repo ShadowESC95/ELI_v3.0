@@ -52,6 +52,7 @@ def test_the_replay_script_loads_and_every_fact_names_its_words():
     ({"say": "hello", "verdict": "maybe"}, "verdict"),
     ({"say": "my cat is Tom", "conflict": {"relation": "cat_name", "from": "Ann", "to": "Tom"}}, "conflict"),
     ({"say": "hi", "tone": "warm"}, "unknown keys"),
+    ({"say": "I keep bees", "states": [[]]}, "states of the user"),
 ])
 def test_a_mistake_in_the_script_fails_when_it_is_read(tmp_path, turn, why):
     with pytest.raises(ValueError, match=why):
@@ -129,6 +130,39 @@ def test_claims_standing_at_the_end_are_held_to_the_last_value_said(tmp_path):
     state["claims"][0]["value"] = "Newfield"
     got = R.score(script, _obs([{}, {}]), state)["figures"]
     assert got["claims_precision"] == 0.5 and got["claims_recall"] == 1.0   # the stray mood claim stays a miss
+
+
+def test_a_claim_the_script_does_not_name_is_right_when_true_and_wrong_when_it_no_longer_holds(tmp_path):
+    """Every claim on a relation the script names no value for counted as wrong, so a model that kept
+    true facts about the user (their sister's name, the shop they work at) scored as if it invented
+    them. What the script says of the user is the truth; a message's facts stop holding once a value
+    it stated has changed."""
+    script = _script(tmp_path, [
+        {"say": "I live in Oldtown, by the mill", "keep": ["oldtown"], "states": ["mill"], "matters": 2,
+         "claim": {"lives_in": "Oldtown"}},
+        {"say": "My brother Tam runs the Pike Lane bakery", "keep": [["brother", "tam"]], "matters": 2,
+         "states": [["pike lane"]]},
+        {"say": "I live in Newfield now", "keep": ["newfield"], "matters": 2, "claim": {"lives_in": "Newfield"}},
+    ])
+    standing = [("lives_in", "Newfield"), ("brother_name", "Tam"), ("identity.fact", "Works at Pike Lane"),
+                ("identity.fact", "Lives by the mill in Oldtown"), ("identity.fact", "Lives near the mill"),
+                ("identity.fact", "Collects stamps")]
+    state = {"claims": [{"relation": r, "value": v, "status": "current", "subject": "user"} for r, v in standing]}
+    got = R.score(script, _obs([{}, {}, {}]), state)
+    assert [c["stands"] for c in got["info"]["claims"]] == [True, True, True, False, False, False]
+    assert got["figures"]["claims_precision"] == 0.5 and got["figures"]["claims_recall"] == 1.0
+
+
+def test_the_reading_scored_is_the_one_that_stood_after_elis_pause():
+    """With a model loaded, the word cues read the message at once and the model's reading, worked out
+    in the pause before the next message, takes its place: the replay scored the first."""
+    from eli.cognition.correction_patterns import Judged
+    cues = Judged({"label": "neither", "confidence": None, "by": "words", "words": "none"})
+    model = Judged({"label": "accepts", "confidence": 0.8, "by": "model", "words": "none"})
+    assert str(R._applied_reading([cues, model])) == "accepts"
+    again = Judged({"label": "accepts", "confidence": None, "by": "words", "words": "endorsement"})
+    assert R._applied_reading([cues, again]) is cues, "a second reading by the cues alone changes nothing"
+    assert R._applied_reading([]) is None
 
 
 def test_recall_is_read_where_the_memory_stands_among_those_shown_to_the_reply(tmp_path):

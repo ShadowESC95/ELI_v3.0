@@ -11,7 +11,10 @@ its own stores and set against what the script says should have come of each tur
     facts_precision      of the rows ELI kept as known about the user, the share that are facts the
                          script says to keep (a question, a request or a state of mind kept is a miss)
     facts_recall         of the facts to keep, the share still kept at the end (memories or archive)
-    claims_precision     of the claims standing at the end, the share the script says should stand
+    claims_precision     of the claims standing at the end, the share that are true: on a relation the
+                         script states, its last value; on any other, a fact the script says of the user
+                         (`keep`, `states`) that still holds (one its message said before a value it
+                         stated changed is stale, and stays wrong)
     claims_recall        of the claims that should stand, the share that do
     recall_at_1/_3, mrr  for the later questions, where the memory that should come to mind stands
                          among the memories shown to the reply (the ones the next turn settles)
@@ -19,7 +22,9 @@ its own stores and set against what the script says should have come of each tur
                          prompt the model was given, or the reply itself
     answer_recall        the share whose reply says it (with the stand-in, only replies ELI words
                          without the model can)
-    settlement_accuracy  what ELI read the next message as saying of its last reply, against the script
+    settlement_accuracy  what ELI read the next message as saying of its last reply, against the script:
+                         the reading that stood once ELI had its pause before the next message (with
+                         a model loaded, the model's reading, inference_broker.run_idle_work)
     memory_settlement    what became of the memories shown to that reply (helped, corrected, left
                          alone), against the script
     conflict_handling    the share of changed values handled as the script says: an update applied,
@@ -68,14 +73,14 @@ TARGET = "replay"
 RUNS = 3                  # replays per measurement, each under its own hash seed (seed_of): what ELI
                           # leaves to the order of a set or a dict (ties broken by it) is the noise
 RECALL_AT = (1, 3)        # the cut-offs recall is read at: the first memory shown, and the first three
-MEASURE = 2               # the scoring's own version: a change to how a figure is read makes it a new measure
+MEASURE = 3               # the scoring's own version: a change to how a figure is read makes it a new measure
 FIGURES = ("facts_precision", "facts_recall", "claims_precision", "claims_recall",
            "recall_at_1", "recall_at_3", "mrr", "evidence_recall", "answer_recall",
            "settlement_accuracy", "memory_settlement", "conflict_handling", "importance_order",
            "interest_focus")
 VERDICTS = ("accepts", "disputes", "neither")
 EXPECTS = ("update", "raise")
-_TURN_KEYS = {"say", "keep", "matters", "claim", "recall", "verdict", "conflict", "eli"}
+_TURN_KEYS = {"say", "keep", "matters", "claim", "recall", "verdict", "conflict", "eli", "states"}
 
 
 # ── the script ─────────────────────────────────────────────────────────────────────────────────────
@@ -112,6 +117,11 @@ def load_script(path: Path = SCRIPT) -> Dict[str, Any]:
                 t["keep"] = [list(f) for f in keep] if keep and isinstance(keep[0], list) else [list(keep)]
                 if not all(t["keep"]):
                     raise ValueError(f"{where}: a fact to keep names the words a kept row holds")
+            if "states" in t:
+                said = t["states"] or []
+                t["states"] = [list(f) for f in said] if said and isinstance(said[0], list) else [list(said)]
+                if not all(t["states"]):
+                    raise ValueError(f"{where}: what a message states of the user names its words")
             if t.get("recall") and any(str(w).casefold() in t["say"].casefold() for w in t["recall"]):
                 raise ValueError(f"{where}: the words to recall are in the question itself")
             if t.get("verdict") is not None and (t["verdict"] not in VERDICTS or i == 0):
@@ -365,17 +375,16 @@ def score(script: Dict[str, Any], obs: Sequence[Dict[str, Any]], state: Dict[str
     counts["facts"] = len(facts)
 
     # the claims standing at the end
-    expected: Dict[str, List[str]] = {}
-    for _si, _ti, t in _script_turns(script):
-        for rel, value in (t.get("claim") or {}).items():
-            expected[str(rel)] = [str(value)]
-        c = t.get("conflict")
-        if c and c.get("expect") == "raise":
-            expected[str(c["relation"])] = [str(c["from"]), str(c["to"])]     # either, until the user says
+    expected = _expected_claims(script)
+    true_facts, stale_facts = _facts_at_the_end(script, expected)
     standing = [c for c in state.get("claims") or [] if c.get("status") == "current" and c.get("subject") == "user"]
 
     def _stands(claim: Dict[str, Any]) -> bool:
-        return any(has(claim.get("value"), str(v).split()) for v in expected.get(str(claim.get("relation")), []))
+        relation, value = str(claim.get("relation")), str(claim.get("value"))
+        if relation in expected:
+            return any(has(value, str(v).split()) for v in expected[relation])
+        said = f"{relation.replace('_', ' ').replace('.', ' ')} {value}"
+        return not any(has(said, f) for f in stale_facts) and any(has(said, f) for f in true_facts)
 
     figures["claims_precision"] = _mean([1.0 if _stands(c) else 0.0 for c in standing])
     figures["claims_recall"] = _mean([1.0 if any(str(c.get("relation")) == rel and _stands(c) for c in standing) else 0.0
@@ -411,7 +420,7 @@ def score(script: Dict[str, Any], obs: Sequence[Dict[str, Any]], state: Dict[str
         if moved:
             memories.append(1.0 if all(memory_verdict(m) == t["verdict"] for m in moved.values()) else 0.0)
         seen_verdicts.append({"say": t["say"], "truth": t["verdict"], "read": label_verdict(o.get("label")),
-                              "memories": sorted({memory_verdict(m) for m in moved.values()})})
+                              "by": o.get("read_by") or "", "memories": sorted({memory_verdict(m) for m in moved.values()})})
     figures["settlement_accuracy"], figures["memory_settlement"] = _mean(labels), _mean(memories)
     counts["verdicts"], counts["verdicts_with_memories"] = len(labels), len(memories)
 
@@ -465,6 +474,32 @@ def score(script: Dict[str, Any], obs: Sequence[Dict[str, Any]], state: Dict[str
                    for c in standing],
     }
     return {"figures": {name: figures.get(name) for name in FIGURES}, "counts": counts, "info": info}
+
+
+def _expected_claims(script: Dict[str, Any]) -> Dict[str, List[str]]:
+    """The value each relation the script states should have at the end: the last one said, or
+    either side of a change ELI has to raise, until the user says."""
+    expected: Dict[str, List[str]] = {}
+    for _si, _ti, t in _script_turns(script):
+        for rel, value in (t.get("claim") or {}).items():
+            expected[str(rel)] = [str(value)]
+        c = t.get("conflict")
+        if c and c.get("expect") == "raise":
+            expected[str(c["relation"])] = [str(c["from"]), str(c["to"])]
+    return expected
+
+
+def _facts_at_the_end(script: Dict[str, Any], expected: Dict[str, List[str]]):
+    """What the script says of the user (each message's `keep` and `states`), as (holds, no longer
+    holds): a message's facts no longer hold once a value it stated (`claim`) is not the one that
+    stands at the end ("I live in Fenwick Bay, near the old harbour" after the move)."""
+    held, stale = [], []
+    for _si, _ti, t in _script_turns(script):
+        facts = list(t.get("keep") or []) + list(t.get("states") or [])
+        changed = any(not any(has(value, str(v).split()) for v in expected.get(str(rel), []))
+                      for rel, value in (t.get("claim") or {}).items())
+        (stale if changed else held).extend(facts)
+    return held, stale
 
 
 def label_verdict(label: Any) -> str:
@@ -528,6 +563,14 @@ def _counts(db: Path, ids: Sequence[int]) -> Dict[int, Dict[str, int]]:
             for r in _db_rows(db, f"SELECT id, recall_count, corrected_count FROM memories WHERE id IN ({marks})", ids)}
 
 
+def _applied_reading(labels: Sequence[Any]) -> Any:
+    """Which of a turn's readings of the user's message settled the last reply (engine._reply_label):
+    the model's, worked out in the pause after the turn, which takes the place of the word cues' first
+    reading; the first, when the model gave none."""
+    return next((r for r in reversed(list(labels)) if getattr(r, "by", "") == "model"),
+                labels[0] if labels else None)
+
+
 def _session_process(script_path: str, index: int, box: str, model: str) -> None:
     """One sitting: the app's start (a fresh install the first time, the day's upkeep), the turns,
     the app's close. Writes what was seen turn by turn to obs-<index>.json."""
@@ -548,12 +591,14 @@ def _session_process(script_path: str, index: int, box: str, model: str) -> None
 
     import eli.kernel.engine as E
     from eli.cognition import gguf_inference as G, thoughts
+    from eli.cognition.inference_broker import run_idle_work
     from eli.runtime import pending_proposal
     seen: Dict[str, Any] = {"labels": [], "prompts": [], "facts": {}}
     read_label, invoke, audit = E._reply_label, G._safe_invoke_llm, engine._record_turn_audit_row
 
-    def _label(text):
-        verdict = read_label(text)
+    def _label(*args, **kw):
+        # the word cues' reading (the message alone) and the model's (with the reply and `ask`)
+        verdict = read_label(*args, **kw)
         seen["labels"].append(verdict)
         return verdict
 
@@ -582,6 +627,11 @@ def _session_process(script_path: str, index: int, box: str, model: str) -> None
         if res.get("error") or res.get("skipped"):
             # a turn the engine could not take is the replay failing, never a figure
             raise RuntimeError(f"the turn {t['say']!r} did not run: {res.get('error') or res.get('reason')}")
+        # the owner's pause before the next message (the script's turns are minutes apart): what ELI
+        # does when nobody waits on it runs now, as it would then; with a model loaded, its reading of
+        # what this message said of the last reply (engine._settle_recall_outcome)
+        run_idle_work()
+        read = _applied_reading(seen["labels"])
         facts = seen["facts"] or {}
         reply = str(res.get("text") or "")
         shown_ids = [int(i) for i in (engine._pending_recall_ids or [])]
@@ -590,7 +640,8 @@ def _session_process(script_path: str, index: int, box: str, model: str) -> None
         o: Dict[str, Any] = {
             "say": t["say"], "request_id": str(facts.get("request_id") or ""), "action": str(res.get("action") or ""),
             "executed": [str(a) for a in dict.fromkeys(facts.get("executed_actions") or []) if a],
-            "reply": reply[:2000], "label": str(seen["labels"][0]) if seen["labels"] else None,
+            "reply": reply[:2000], "label": None if read is None else str(read),
+            "read_by": str(getattr(read, "by", "") or ""),
             "shown": [{"id": i, "text": str((text_of.get(i) or {}).get("text") or "")} for i in shown_ids],
             "new_rows": _rows_since(db, before),
         }

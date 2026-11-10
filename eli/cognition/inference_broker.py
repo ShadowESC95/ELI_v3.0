@@ -171,9 +171,13 @@ def foreground_recently_active(window: Optional[float] = None) -> bool:
     CPU-offloaded model where one turn takes minutes, background chores then defer for about
     as long as a turn takes (bounded by _MAX_ADAPTIVE_DEFER), so they don't fire in the brief
     gap right after a turn and collide with the user's next message. On fast hardware the
-    duration is tiny, so the base `window` dominates and behaviour is unchanged."""
+    duration is tiny, so the base `window` dominates and behaviour is unchanged. False, with no turn
+    in progress, on the thread run_idle_work runs the owner's-pause work on: its caller says the
+    owner is not waiting."""
     if _fg_inflight > 0:
         return True
+    if getattr(_owner_away, "on", False):
+        return False
     if window is None:
         window = _PACE.usual()
     try:
@@ -186,8 +190,13 @@ def foreground_recently_active(window: Optional[float] = None) -> bool:
 # Work that needs the model but must never hold a turn up (judging what the user's message said of the
 # last reply): one worker runs it, in the context it was handed over in, once the foreground has been
 # quiet for the owner's usual pause (background_defer_window), as background inference a turn preempts.
-_idle_jobs: Any = None
+# The worker takes a piece of work only once the pause is over, so a caller that knows the owner is not
+# waiting can run what waits there and then (run_idle_work).
+_idle_jobs: Any = None            # (context, fn), oldest first
 _idle_lock = threading.Lock()
+_idle_cv = threading.Condition(_idle_lock)
+_idle_running = 0
+_owner_away = threading.local()   # set on the thread run_idle_work runs the work on
 
 
 def when_idle(fn) -> None:
@@ -196,24 +205,72 @@ def when_idle(fn) -> None:
     background, so a turn that starts meanwhile takes the model first."""
     global _idle_jobs
     import contextvars
-    import queue
-    with _idle_lock:
+    from collections import deque
+    with _idle_cv:
         if _idle_jobs is None:
-            _idle_jobs = queue.Queue()
+            _idle_jobs = deque()
             threading.Thread(target=_idle_worker, name="eli-when-idle", daemon=True).start()
-    _idle_jobs.put((contextvars.copy_context(), fn))
+        _idle_jobs.append((contextvars.copy_context(), fn))
+        _idle_cv.notify_all()
+
+
+def _take_idle_job():
+    global _idle_running
+    with _idle_cv:
+        if not _idle_jobs:
+            return None
+        _idle_running += 1
+        return _idle_jobs.popleft()
+
+
+def _run_idle_job(job) -> None:
+    global _idle_running
+    ctx, fn = job
+    try:
+        ctx.run(_run_in_background, fn)
+    except Exception:
+        log.debug("idle-time work failed", exc_info=True)
+    finally:
+        with _idle_cv:
+            _idle_running -= 1
+            _idle_cv.notify_all()
 
 
 def _idle_worker() -> None:
     while True:
-        ctx, fn = _idle_jobs.get()
+        with _idle_cv:
+            while not _idle_jobs:
+                _idle_cv.wait()
+        while foreground_recently_active(background_defer_window()):
+            # wait out the owner's pause (or, with the wait turned off, as long as the last turn took)
+            _time.sleep(max(background_defer_window(), float(_last_foreground_duration)) or BASE_WINDOW_S)
+        job = _take_idle_job()
+        if job is not None:
+            _run_idle_job(job)
+
+
+def run_idle_work(timeout: Optional[float] = None) -> bool:
+    """The owner is not waiting on ELI now (the replay's sittings, whose turns are minutes apart on the
+    script's clock: tools/eval/replay.py): what waits for their pause (when_idle) runs here, on this
+    thread, as it would once they paused, and this returns once none of it waits or runs; False when
+    `timeout` ran out first. Its model calls are background ones and go ahead (foreground_recently_active
+    is False on this thread meanwhile); a turn started elsewhere still takes the model first."""
+    deadline = None if timeout is None else _time.monotonic() + float(timeout)
+    while True:
+        _owner_away.on = True
         try:
-            while foreground_recently_active(background_defer_window()):
-                # wait out the owner's pause (or, with the wait turned off, as long as the last turn took)
-                _time.sleep(max(background_defer_window(), float(_last_foreground_duration)) or BASE_WINDOW_S)
-            ctx.run(_run_in_background, fn)
-        except Exception:
-            log.debug("idle-time work failed", exc_info=True)
+            while (job := _take_idle_job()) is not None:
+                _run_idle_job(job)
+        finally:
+            _owner_away.on = False
+        with _idle_cv:
+            if not _idle_jobs and not _idle_running:
+                return True
+            if not _idle_jobs:       # the worker took one meanwhile: it is done when it is done
+                left = None if deadline is None else deadline - _time.monotonic()
+                if left is not None and left <= 0:
+                    return False
+                _idle_cv.wait(left)
 
 
 def _run_in_background(fn) -> None:
