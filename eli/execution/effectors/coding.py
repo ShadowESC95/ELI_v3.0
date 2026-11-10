@@ -6,6 +6,7 @@ from datetime import datetime
 import json
 import os
 import re
+import time
 
 from eli.utils.log import get_logger
 from eli.execution.effectors._base import _save_artifact
@@ -678,6 +679,9 @@ def _h_generate_tests(a, args):
 
 def _h_examine_code(a, args):
     request = (args or {}).get('request') or (args or {}).get('query') or ''
+    # when this examination was asked for (a background job carries the time it was asked, not the
+    # time it ran): an offer made since then is newer than its result and stands
+    asked_at = float((args or {}).get('_asked_at') or time.time())
     try:
         from eli.runtime import code_examiner as _ce
         # Fix provenance: "how did you fix that file/LOC?" — answer from the
@@ -723,9 +727,9 @@ def _h_examine_code(a, args):
         _named = bool(_named)
         _fixable = [f for f in findings if _ce.is_real_breakage(f)]
         if _named and _fixable:
-            _ce.set_pending_fix(_fixable, paths)
+            _ce.set_pending_fix(_fixable, paths, asked_at=asked_at)
         else:
-            _ce.clear_pending_fix()
+            _ce.clear_pending_fix(asked_at=asked_at)
         report = _ce.format_report(paths, findings, allow_fix=(_named and bool(_fixable)))
         return {'ok': True, 'action': a, 'content': report, 'response': report,
                 'evidence_source': 'code_examiner'}

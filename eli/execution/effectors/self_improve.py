@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from eli.utils.log import get_logger
 
@@ -442,6 +443,7 @@ def _h_self_report(a, args):
 
 def _h_self_upgrade(a, args):
     request = (args or {}).get('request', '')
+    _asked_at = time.time()        # an offer of a fix made while the upgrade ran stands
     try:
         from eli.kernel.self_upgrade import SelfUpgrader
         inst = SelfUpgrader()
@@ -470,9 +472,9 @@ def _h_self_upgrade(a, args):
                     _named = bool(_ce._extract_named_paths(request))
                     _fixable = [f for f in _findings if _ce.is_real_breakage(f)]
                     if _named and _fixable:
-                        _ce.set_pending_fix(_fixable, _paths)
+                        _ce.set_pending_fix(_fixable, _paths, asked_at=_asked_at)
                     else:
-                        _ce.clear_pending_fix()
+                        _ce.clear_pending_fix(asked_at=_asked_at)
                     result = result + "\n\n— Code examination —\n" + \
                         _ce.format_report(_paths, _findings,
                                           allow_fix=(_named and bool(_fixable)))

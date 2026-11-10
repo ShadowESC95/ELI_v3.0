@@ -2265,6 +2265,7 @@ def _maybe_background_code_work(action, args):
         bt = get_background_tasks()
         _bg_args = dict(args)
         _bg_args["_no_background"] = True
+        _bg_args.setdefault("_asked_at", time.time())      # what it finds is as old as the asking
         _label = (
             str(_bg_args.get("path") or "")[:60]
             if a == "FIX_FILE"

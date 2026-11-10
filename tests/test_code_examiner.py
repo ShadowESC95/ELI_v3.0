@@ -182,12 +182,38 @@ def test_sweep_audit_is_report_only(tmp_module, monkeypatch):
     p = tmp_module("_ce_sweep.py", "def g():\n    return undefined_xyz\n")
     # Force the sweep to target our file (no named path in the request).
     monkeypatch.setattr(CE, "resolve_targets", lambda _req: [p])
-    res = EX.execute("EXAMINE_CODE", {"request": "run a full audit of your files"})
-    assert res["ok"]
+    # in the foreground: run in the background this test checked nothing, and its job went on to
+    # clear the next test's offer
+    res = EX.execute("EXAMINE_CODE", {"request": "run a full audit of your files", "_no_background": True})
+    assert res["ok"] and not res.get("background"), res.get("content")
     assert CE.get_pending_fix() is None       # report-only: nothing pending to patch
     assert "Say 'yes'" not in res["content"]
     # Pending cleared after a confirm.
     assert CE.get_pending_fix() is None
+
+
+def test_an_offer_made_after_an_examination_was_asked_for_outlives_it(tmp_module, monkeypatch):
+    """A sweep left running in the background finishes after the user examined a file and was offered
+    its fix: the sweep's result is older than the offer, so it neither clears nor replaces it, and the
+    user's yes still applies the fix they were offered. An examination asked for after the offer does."""
+    import time as _time
+    from eli.execution import executor_enhanced as EX
+    p = tmp_module("_ce_offer.py", "VALUE = 1\n")
+    offered = CE.Finding(file="eli/_ce_offer.py", tier=1, confidence=CE.TIER_CONF[1], kind="syntax",
+                         message="the offered one", line=1)
+    asked = _time.time()
+    _time.sleep(0.01)
+    CE.set_pending_fix([offered], [p])
+    monkeypatch.setattr(CE, "resolve_targets", lambda _req: [p])
+    res = EX.execute("EXAMINE_CODE", {"request": "run a full audit of your files", "_no_background": True,
+                                      "_asked_at": asked})
+    assert res["ok"]
+    kept = CE.get_pending_fix()
+    assert kept and kept["findings"][0]["message"] == "the offered one", "the older sweep cleared the offer"
+    CE.set_pending_fix([], [p], asked_at=asked)
+    assert CE.get_pending_fix()["findings"][0]["message"] == "the offered one", "nor replaced it"
+    EX.execute("EXAMINE_CODE", {"request": "run a full audit of your files", "_no_background": True})
+    assert CE.get_pending_fix() is None, "an examination asked for since the offer does withdraw it"
 
 
 def test_tier3_findings_gated_until_confirmed(tmp_module, monkeypatch):

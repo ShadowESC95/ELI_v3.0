@@ -751,7 +751,24 @@ def get_last_file() -> Optional[str]:
     return conversation_value("last_file")
 
 
-def set_pending_fix(findings: List[Finding], paths: List[Path]) -> None:
+def _offer_made_since(asked_at: Optional[float]) -> bool:
+    """Whether the fix now waiting for the user's yes was offered after `asked_at`: then an examination
+    asked for before it is older news and neither replaces nor clears it (a sweep left running in the
+    background finishes after the user examined a file and was offered its fix)."""
+    if asked_at is None:
+        return False
+    try:
+        made = float(json.loads(_pending_file().read_text(encoding="utf-8")).get("created_at") or 0.0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return made > float(asked_at)
+
+
+def set_pending_fix(findings: List[Finding], paths: List[Path], *, asked_at: Optional[float] = None) -> None:
+    """Offer these findings' fix, to be applied on the user's yes. `asked_at`, when the examination was
+    asked for: an offer made since then stands (see _offer_made_since)."""
+    if _offer_made_since(asked_at):
+        return
     payload = {
         "created_at": time.time(),
         "paths": [_rel(p) for p in paths],
@@ -775,7 +792,10 @@ def get_pending_fix() -> Optional[Dict[str, Any]]:
     return payload
 
 
-def clear_pending_fix() -> None:
+def clear_pending_fix(*, asked_at: Optional[float] = None) -> None:
+    """Withdraw the fix waiting for the user's yes; with `asked_at`, not one offered since then."""
+    if _offer_made_since(asked_at):
+        return
     # missing_ok: "clear" on an already-absent file is the success case. The except branch caught it
     # but logged a full traceback, so every EXAMINE_CODE with no pending fix (the normal one)
     # printed a FileNotFoundError stack and looked like a crash.
