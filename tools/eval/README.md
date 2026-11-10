@@ -167,15 +167,23 @@ python tools/eval/run_eval.py --target replay --record-baseline  # accept it for
 python tools/eval/run_eval.py --target replay --model models/small.gguf
 ```
 
-Each measurement is `replay.RUNS` replays side by side; the spread between them is the run-to-run
-noise. A figure regresses when it falls below the last recorded comparable run (same model, script,
-scoring and switches; the newest in `<data>/eval/history/trend.jsonl` that did not regress, else
-`replay_baseline.json`) by more than the noise either run measured; the command then exits 1, and
-`tests/test_eval_replay.py` fails the same way against the baseline. A change that moves a figure
-on purpose records a new baseline in the same commit. To measure a mechanism on and off, pass its
-switch: `replay.run(env={"ELI_SOME_SWITCH": "0"})`. Only `time.time()` and the `time` module's
-readings of now follow the script's calendar; `datetime` keeps the real one, so questions about
-dates belong in the last sitting, which runs on the real day.
+Each measurement is `replay.RUNS` replays side by side, each under its own fixed hash seed: the same
+code gives the same figures, and what ELI leaves to the order of a set or a dict (a tie broken by
+it) shows as the spread between the runs, the run-to-run noise. A figure regresses when it falls
+below the last recorded comparable run (same model, script, scoring, seeds and switches; the newest
+in `<data>/eval/history/trend.jsonl` that did not regress, else `replay_baseline.json`) by more than
+the noise either run measured; the command then exits 1, and `tests/test_eval_replay.py` fails the
+same way against the baseline. A change that moves a figure on purpose records a new baseline in
+the same commit. To measure a mechanism on and off, pass its switch:
+`replay.run(env={"ELI_SOME_SWITCH": "0"})`; `info` in the result lists what each figure rests on
+(the memories shown to each question, each verdict as read, each changed value, the focus).
+
+Each sitting starts on its day at its own time of day (`at`), and the last one is today, so a run
+gives the same figures whenever it is started. Only `time.time()` and the `time` module's readings
+of now follow the script's calendar; `datetime` keeps the real one, so questions about dates belong
+in the last sitting. The stand-in (`eli:` in the script) is never told what to say to a question
+being recalled or to a changed value: that is what is measured. A turn the engine cannot take fails
+the replay; it is never scored.
 
 ## Comparing models ("is the 24B worth the latency?")
 

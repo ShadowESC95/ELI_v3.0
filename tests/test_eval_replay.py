@@ -236,6 +236,29 @@ def test_the_run_held_to_is_the_last_recorded_one_that_did_not_regress(tmp_path,
         "20261101T000000-replay.json", "20261102T000000-replay.json"]
 
 
+# ── the replay's processes ─────────────────────────────────────────────────────────────────────────
+
+def test_a_replay_starts_as_a_fresh_install_offline_with_the_named_model(tmp_path):
+    R._fresh_install(tmp_path, "stub")
+    settings = json.loads((tmp_path / "config" / "settings.json").read_text(encoding="utf-8"))
+    template = json.loads((_REPO / "config" / "templates" / "settings.template.json").read_text(encoding="utf-8"))
+    assert settings == dict(template, network_enabled=False)
+    R._fresh_install(tmp_path, str(tmp_path / "small.gguf"))
+    settings = json.loads((tmp_path / "config" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["model_path"] == str((tmp_path / "small.gguf").resolve())
+
+
+def test_a_process_of_the_replay_that_fails_fails_the_replay_with_its_cause(tmp_path):
+    import os
+    with pytest.raises(RuntimeError, match="(?s)session process 0 failed.*no-such-script"):
+        R._child(dict(os.environ), tmp_path, "session", str(tmp_path / "no-such-script.yaml"), "0", str(tmp_path), "stub")
+
+
+def test_each_run_of_a_measurement_has_its_own_fixed_hash_seed():
+    seeds = [R.seed_of(i) for i in range(R.RUNS)]
+    assert len(set(seeds)) == R.RUNS and "0" not in seeds and seeds == [R.seed_of(i) for i in range(R.RUNS)]
+
+
 # ── the replay itself ──────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.slow

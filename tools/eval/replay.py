@@ -575,6 +575,9 @@ def _session_process(script_path: str, index: int, box: str, model: str) -> None
         last_shown = [int(m["id"]) for m in (turns[-1]["shown"] if turns else [])]
         counts_before = _counts(db, last_shown)
         res = D.run_engine(t["say"], reasoning_mode=str(script["mode"]), session_id=engine.session_id)
+        if res.get("error") or res.get("skipped"):
+            # a turn the engine could not take is the replay failing, never a figure
+            raise RuntimeError(f"the turn {t['say']!r} did not run: {res.get('error') or res.get('reason')}")
         facts = seen["facts"] or {}
         reply = str(res.get("text") or "")
         shown_ids = [int(i) for i in (engine._pending_recall_ids or [])]
