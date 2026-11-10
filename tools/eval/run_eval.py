@@ -137,7 +137,10 @@ def run_board(target: str = "router", *, cases_path=None, coding_cases_path=None
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--target", choices=["router", "executor", "engine", "coding_agent", "all"], default="router")
+    ap.add_argument("--target", choices=["router", "executor", "engine", "coding_agent", "all", "replay"],
+                    default="router",
+                    help="replay: the multi-session replay (tools/eval/replay.py), figures held to the last "
+                         "recorded run; not part of 'all'")
     ap.add_argument("--cases", default=str(Path(__file__).with_name("cases.yaml")))
     ap.add_argument("--coding-cases", default=str(Path(__file__).with_name("coding_cases.yaml")),
                     help="Additional coding-agent cases merged when --target coding_agent|all")
@@ -151,8 +154,17 @@ def main(argv=None) -> int:
     ap.add_argument("--history", action="store_true",
                     help="append a timestamped record + trend line under artifacts/eval/history/ "
                          "and write artifacts/eval/regressions.json on any failure")
+    ap.add_argument("--runs", type=int, default=0,
+                    help="replay: replays per measurement (default replay.RUNS), their spread is the noise")
+    ap.add_argument("--model", default="",
+                    help="replay: a local GGUF to replay with instead of the stand-in model")
+    ap.add_argument("--record-baseline", action="store_true",
+                    help="replay: accept this run as the repository's last recorded run "
+                         "(tools/eval/replay_baseline.json)")
     args = ap.parse_args(argv)
 
+    if args.target == "replay":
+        return _replay_main(args)
     if args.target in ("engine", "all"):
         D.enter_sandbox()       # before eli is imported (see eli_driver)
     board = run_board(args.target, cases_path=args.cases,
@@ -191,6 +203,27 @@ def main(argv=None) -> int:
     return 1 if failed else 0
 
 
+def _replay_main(args) -> int:
+    """The replay's figures beside the last recorded run; non-zero when one regressed."""
+    from tools.eval import replay as R
+    result = R.run(runs=args.runs or R.RUNS, model=args.model or D.STUB)
+    ref = R.reference_for(result)
+    regs = R.regressions(result, ref) if ref else []
+    print("\n" + R.table(result, ref))
+    if ref is None:
+        print(f"  {_Y}no earlier comparable run{_X}: nothing to hold these figures to yet")
+    for r in regs:
+        print(f"  {_R}REGRESSED{_X} {r['figure']}: {r['now']} (last {r['was']}, noise {r['noise']})")
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if args.history:
+        print(f"  history -> {R.record(result, regs)}")
+    if args.record_baseline:
+        print(f"  baseline -> {R.record_baseline(result)}")
+    print()
+    return 1 if regs else 0
+
+
 def _loaded_model_name() -> str:
     """The model the eval actually ran against — for per-model trend/A-B comparison."""
     try:
@@ -204,20 +237,52 @@ def _loaded_model_name() -> str:
     return ""
 
 
+def eval_dir() -> Path:
+    """Where the eval keeps its records: <data>/eval. A sandboxed run keeps its history with the
+    real data, not in the folder thrown away."""
+    try:
+        from eli.core.paths import get_paths
+        return Path(D.REAL_DATA_DIR or get_paths().artifacts_dir) / "eval"
+    except Exception:
+        return Path("artifacts/eval")
+
+
+def append_history(summary: dict, payload: dict, *, suffix: str = "") -> Path:
+    """Keep one run: its full record as history/<ts>[-<suffix>].json and its summary as one line of
+    history/trend.jsonl, the line every later run is compared with. Returns the record's path."""
+    hist = eval_dir() / "history"
+    hist.mkdir(parents=True, exist_ok=True)
+    path = hist / (f"{summary['ts']}-{suffix}.json" if suffix else f"{summary['ts']}.json")
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with (hist / "trend.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(summary) + "\n")
+    return path
+
+
+def last_recorded(target: str, match=None):
+    """The newest summary in history/trend.jsonl for `target` that `match` accepts, else None."""
+    try:
+        lines = (eval_dir() / "history" / "trend.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("target") == target and (match is None or match(rec)):
+            return rec
+    return None
+
+
 def _write_history(records, target, passed, failed, skipped) -> None:
     """Append a timestamped run record + a one-line trend entry, and persist the
     current regressions — so quality/latency/grounding are tracked across model and
     code changes instead of a single overwritten file (P3), and overnight failures
     become an actionable list (P5). All under artifacts/eval/."""
     import datetime
-    try:
-        from eli.core.paths import get_paths
-        # a sandboxed run keeps its history with the real data, not in the folder thrown away
-        evdir = Path(D.REAL_DATA_DIR or get_paths().artifacts_dir) / "eval"
-    except Exception:
-        evdir = Path("artifacts/eval")
+    evdir = eval_dir()
     hist = evdir / "history"
-    hist.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     scored = [r for r in records if r.get("status") in ("pass", "fail")]
 
@@ -232,12 +297,9 @@ def _write_history(records, target, passed, failed, skipped) -> None:
         "pass_rate": round(passed / max(1, passed + failed), 4),
         "mean_latency_s": _mean("latency_s"), "mean_grounding": _mean("grounding"),
     }
-    (hist / f"{ts}.json").write_text(
-        json.dumps({"summary": summary, "records": records}, indent=2), encoding="utf-8")
-    with (hist / "trend.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(summary) + "\n")
+    append_history(summary, {"summary": summary, "records": records})
 
-    regs = [{"id": r["id"], "checks": r.get("checks")}
+    regs =[{"id": r["id"], "checks": r.get("checks")}
             for r in records if r.get("status") == "fail"]
     (evdir / "regressions.json").write_text(
         json.dumps({"ts": ts, "target": target, "model": summary["model"],

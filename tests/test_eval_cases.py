@@ -126,6 +126,33 @@ def test_cases_that_act_on_the_desktop_run_only_when_asked_for(monkeypatch):
     assert _run_case(case, desktop=True) == {"text": "ok"} and ran
 
 
+def test_a_measured_run_is_started_in_its_copy_off_the_desktop_offline_and_out_of_test_mode(monkeypatch, tmp_path):
+    """A replay started from a test inherited PYTEST_CURRENT_TEST, which ELI reads as test mode: its
+    sittings skipped the session-end flush and the figures differed from the same run from a shell."""
+    D = _driver()
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/x.py::y (call)")
+    monkeypatch.setenv("ELI_TEST_MODE", "1")
+    monkeypatch.setenv("ELI_USER_DB", "/somewhere/else/user.sqlite3")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+    env = D.isolated_env(tmp_path)
+    assert not any(k == "ELI_TEST_MODE" or k.startswith("PYTEST_") for k in env)
+    assert "ELI_USER_DB" not in env and env["ELI_DATA_DIR"] == str(tmp_path / "artifacts")
+    assert env["ELI_CAPABILITIES_DOC"].startswith(str(tmp_path)), "the tracked blueprint was rewritten"
+    assert "DISPLAY" not in env and "DBUS_SESSION_BUS_ADDRESS" not in env and env["ELI_OFFLINE"] == "1"
+    opener = Path(env["PATH"].split(os.pathsep)[0]) / "xdg-open"
+    assert opener.is_file() and opener.read_text().strip().endswith("exit 0")
+
+
+def test_the_stand_in_model_answers_as_told_and_leaves_structured_calls_empty():
+    D = _driver()
+    stub = D.StubModel(4096, reply="Fine.")
+    assert stub.n_ctx() == 4096
+    assert stub("prompt")["choices"][0]["text"] == "Fine."
+    assert stub("prompt", grammar=object())["choices"][0]["text"] == "{}"
+    assert [c["choices"][0]["text"] for c in stub("prompt", stream=True)] == ["Fine."]
+
+
 _SANDBOXED = """
 import json, sys
 sys.path.insert(0, sys.argv[1])

@@ -27,6 +27,12 @@ turn the user typed. They run only in a throwaway copy of ELI's folders (enter_s
 the command line does before eli is imported); in a process using the real folders, such as the
 window, they are skipped and say why. Cases marked `desktop: true` act on the real desktop or
 read the real screen and run only when asked for (run_eval.py --desktop).
+
+The replay (replay.py) runs one throwaway copy across several processes, one per conversation,
+as the app is started once per sitting: new_sandbox() makes the folder, isolated_env() is the
+environment each process is started with (the copy's folders, no desktop session, the network
+off), and start_engine(STUB, background=False) builds the engine with the stand-in model
+(StubModel) and none of the background loops, so what is measured is what the turns did.
 """
 from __future__ import annotations
 
@@ -108,30 +114,18 @@ def _real_state_paths() -> Dict[str, str]:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def enter_sandbox() -> Path:
-    """Point every place ELI keeps state at a fresh folder for the rest of this process, with a
-    copy of the user's settings and persona overlay so the same model and character are used.
-    Must run before eli is imported. The folder sits inside the project (ELI drops path settings
-    that point outside it) and is removed when the process ends."""
-    global SANDBOX, REAL_DATA_DIR
-    if SANDBOX is not None:
-        return SANDBOX
-    if any(name == "eli" or name.startswith("eli.") for name in sys.modules):
-        raise RuntimeError("the eval sandbox has to be entered before eli is imported")
-    real = _real_state_paths()
+def new_sandbox() -> Path:
+    """A fresh, empty folder for one throwaway copy of ELI's state. It sits inside the project
+    (ELI drops path settings that point outside it); whoever made it removes it."""
     parent = _ROOT / "artifacts" / "_eval_sandbox"
     parent.mkdir(parents=True, exist_ok=True)
-    box = Path(tempfile.mkdtemp(prefix="run-", dir=str(parent)))
-    import atexit
-    atexit.register(shutil.rmtree, str(box), True)
-    if Path(real["config"]).is_dir():
-        shutil.copytree(real["config"], box / "config")
-    if Path(real["persona"]).is_file():
-        shutil.copy2(real["persona"], box / "persona.auto.txt")
-    for name in list(os.environ):
-        if name.startswith("ELI_") and name.endswith(_PATH_ENV_ENDINGS) and name not in _KEEP_FROM_ENV:
-            os.environ.pop(name)
-    os.environ.update({
+    return Path(tempfile.mkdtemp(prefix="run-", dir=str(parent)))
+
+
+def sandbox_env(box: Path) -> Dict[str, str]:
+    """Where every place ELI keeps state points for a copy kept in `box`."""
+    box = Path(box)
+    return {
         "ELI_DATA_DIR": str(box / "artifacts"),
         "ELI_ARTIFACTS_DIR": str(box / "artifacts"),
         "ELI_CONFIG_DIR": str(box / "config"),
@@ -140,7 +134,74 @@ def enter_sandbox() -> Path:
         "ELI_PERSONA_AUTO_PATH": str(box / "persona.auto.txt"),
         "ELI_NOTEBOOK_DIR": str(box / "notebook"),
         "ELI_VOICE_REFS_DIR": str(box / "voice_profiles"),
-    })
+        # a starting engine writes the capabilities table, by default over the tracked blueprint
+        "ELI_CAPABILITIES_DOC": str(box / "capabilities_and_actions.md"),
+    }
+
+
+def _without_state_paths(env) -> None:
+    """Take every ELI_*_DB/_DIR/_PATH/... override out of `env` (the code, the models and the keys
+    stay), so nothing resolves to the folders they named."""
+    for name in list(env):
+        if name.startswith("ELI_") and name.endswith(_PATH_ENV_ENDINGS) and name not in _KEEP_FROM_ENV:
+            env.pop(name)
+
+
+_LAUNCHERS = ("xdg-open", "gio", "gtk-launch", "open")
+
+
+def isolated_env(box: Path) -> Dict[str, str]:
+    """The environment a process of a measured run is started with: ELI's state in `box`, the
+    user's session out of reach (eli/plugins/subprocess_sandbox.scrub_env: no display, session
+    bus, sound server or agent; the desktop's openers do nothing) and the network off, so nothing
+    a run says reaches this desktop or the internet. Test mode is off: the run is the product's."""
+    from eli.plugins.subprocess_sandbox import scrub_env
+    env = scrub_env(dict(os.environ))
+    _without_state_paths(env)
+    # ELI reads either as test mode (kernel/stages/_common._eli_test_mode): started from a test,
+    # the run skipped the session-end flush and capped every reply
+    for name in [n for n in env if n == "ELI_TEST_MODE" or n.startswith("PYTEST_")]:
+        env.pop(name)
+    env.update(sandbox_env(box))
+    openers = Path(box) / "no-launchers"
+    openers.mkdir(parents=True, exist_ok=True)
+    for name in _LAUNCHERS:
+        (openers / name).write_text("#!/bin/sh\nexit 0\n")
+        (openers / name).chmod(0o755)
+    env["PATH"] = str(openers) + os.pathsep + env.get("PATH", "")
+    env.update({"ELI_OFFLINE": "1", "ELI_HEADLESS": "1", "ELI_NO_GUI": "1",
+                "PYTHONPATH": str(_ROOT) + os.pathsep + env.get("PYTHONPATH", "")})
+    return env
+
+
+def enter_sandbox(box: Optional[Path] = None) -> Path:
+    """Point every place ELI keeps state at a fresh folder for the rest of this process, with a
+    copy of the user's settings and persona overlay so the same model and character are used.
+    Must run before eli is imported. The folder sits inside the project (ELI drops path settings
+    that point outside it) and is removed when the process ends.
+
+    With `box`, the copy already made there by the process that started this one (a replay's
+    conversation) is used as it is, and left for that process to remove."""
+    global SANDBOX, REAL_DATA_DIR
+    if SANDBOX is not None:
+        return SANDBOX
+    if any(name == "eli" or name.startswith("eli.") for name in sys.modules):
+        raise RuntimeError("the eval sandbox has to be entered before eli is imported")
+    if box is not None:
+        _without_state_paths(os.environ)
+        os.environ.update(sandbox_env(box))
+        SANDBOX = Path(box)
+        return SANDBOX
+    real = _real_state_paths()
+    box = new_sandbox()
+    import atexit
+    atexit.register(shutil.rmtree, str(box), True)
+    if Path(real["config"]).is_dir():
+        shutil.copytree(real["config"], box / "config")
+    if Path(real["persona"]).is_file():
+        shutil.copy2(real["persona"], box / "persona.auto.txt")
+    _without_state_paths(os.environ)
+    os.environ.update(sandbox_env(box))
     SANDBOX, REAL_DATA_DIR = box, Path(real["data"])
     return box
 
@@ -211,16 +272,75 @@ def run_executor(action: str, args: Optional[Dict[str, Any]] = None,
 
 _ENGINE = None
 
+STUB = "stub"           # start_engine(STUB): the stand-in model below instead of a GGUF
+STUB_REPLY = "I see."   # what the stand-in says when its caller gives it nothing to say
 
-def get_engine():
-    """Lazily build (and cache) one headless CognitiveEngine. Returns None if it
-    can't initialise (e.g. no model) so engine cases degrade to SKIP, not crash."""
+
+class StubModel:
+    """A stand-in for llama.cpp's Llama, as far as gguf_inference calls it, so the whole engine
+    runs with nothing behind the generation: every free generation returns `reply` (its caller
+    sets it per turn), a call held to a grammar (a structured, JSON-shaped call) returns an empty
+    object, as a model that found nothing to fill in would. Its window is the one ELI asks for
+    (gguf_inference._requested_ctx: the operator's setting, else the smallest window). It has no
+    tokenizer, so ELI's own estimate sizes and fits the prompt, as for any model it cannot
+    tokenize; no token figures come back, as from a model that gives none."""
+
+    def __init__(self, window: int, reply: str = STUB_REPLY) -> None:
+        self._window = int(window)
+        self.reply = reply
+
+    def n_ctx(self) -> int:
+        return self._window
+
+    def __call__(self, prompt: str, *, grammar: Any = None, stream: bool = False, **_: Any):
+        out = {"choices": [{"text": "{}" if grammar is not None else str(self.reply)}]}
+        return iter([out]) if stream else out
+
+    def reset(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def start_engine(model: Optional[str] = None, *, background: bool = True):
+    """Build one headless CognitiveEngine: with `model` None the configured model, with STUB the
+    StubModel (gguf_inference holds it as the loaded model, so every generation path reaches it).
+    background=False builds it without its background loops (reflection, habits, self-improvement,
+    the schedulers, the proactive daemon), the hardware check and the exit hooks, as the engine
+    does in test mode, and then leaves test mode, so its turns run as the product's do and nothing
+    else writes while they run; its caller ends it with shutdown()."""
+    from eli.cognition import gguf_inference as G
+    stub = None
+    if model == STUB:
+        stub = StubModel(G._requested_ctx(G._load_runtime_settings(), None))
+        G._llm = stub
+    prior = os.environ.get("ELI_TEST_MODE")
+    if not background:
+        os.environ["ELI_TEST_MODE"] = "1"
+    try:
+        from eli.kernel.engine import CognitiveEngine
+        engine = CognitiveEngine(auto_init_gguf=stub is None)
+    finally:
+        if prior is None:
+            os.environ.pop("ELI_TEST_MODE", None)
+        else:
+            os.environ["ELI_TEST_MODE"] = prior
+    if stub is not None:
+        engine._gguf_available, engine._gguf_load_error = True, None
+        engine._model_path, engine._ctx = STUB, engine._runtime_n_ctx()
+    return engine
+
+
+def get_engine(model: Optional[str] = None, *, background: bool = True):
+    """Lazily build (and cache) one headless CognitiveEngine (start_engine; the first call says
+    how). Returns None if it can't initialise (e.g. no model) so engine cases degrade to SKIP,
+    not crash."""
     global _ENGINE
     if _ENGINE is not None:
         return _ENGINE
     try:
-        from eli.kernel.engine import CognitiveEngine
-        _ENGINE = CognitiveEngine(auto_init_gguf=True)
+        _ENGINE = start_engine(model, background=background)
     except Exception as e:  # pragma: no cover
         print(f"[eli_driver] engine init failed: {e}")
         _ENGINE = None
@@ -260,8 +380,11 @@ def run_engine(
             return {"target": "engine", "text": f"[error] {e}", "action": "",
                     "grounding": None, "response_mode": "",
                     "latency_s": round(time.perf_counter() - t0, 4), "error": str(e)}
-    latency = round(time.perf_counter() - t0, 4)
+    return engine_result(res, eng, round(time.perf_counter() - t0, 4))
 
+
+def engine_result(res: Any, eng: Any, latency: float) -> Dict[str, Any]:
+    """process()'s return, whatever shape it took, as the driver's normalised fields."""
     if isinstance(res, str):
         # Some quick paths intentionally return DIRECT VISIBLE TEXT (a bare string),
         # which carries no 'action' field — read it from the engine's side channel

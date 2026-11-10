@@ -1,0 +1,107 @@
+# The replay's conversations (tools/eval/replay.py). Every person, place and fact here is invented
+# and neutral; nothing is anyone's own words.
+#
+# Each session is one sitting: the app is started, the turns are typed, the app is closed. `day` is
+# when the sitting happens (days after the first); turns within it are `turn_minutes` apart.
+#
+# A turn is what the user types (`say`) and what the script says should come of it:
+#   keep: [words]        this message states a fact worth keeping: a row ELI keeps about the user
+#                        holds every one of these words (case ignored). [[words], [words]]: it
+#                        states several, each kept on its own or together. A turn without `keep`
+#                        states nothing to keep (a question, a request, a greeting, a state of mind).
+#   matters: 1|2|3       how much its facts matter: 3 the user asked ELI to keep it, 2 a fact the
+#                        user stated about themselves or their life, 1 mentioned in passing.
+#   claim: {relation: value}   the claim about the user it states (eli/memory/claims.py relations);
+#                        the last value said for a relation is the one that should stand.
+#   recall: [words]      a question whose answer is a fact kept earlier: the memory that should come
+#                        to mind holds these words (none of them is in the question itself).
+#   verdict: accepts|disputes|neither   what this message says of ELI's previous reply.
+#   conflict: {relation, from, to, expect}   this message gives a relation a value other than the
+#                        one ELI holds. expect: update (the user says it changed: the new value
+#                        stands, the old one is history) or raise (nothing says which is right:
+#                        ELI asks, or says which it keeps; it never settles it silently).
+#   eli: "..."           what the stand-in model says for this turn (default: an acknowledgement).
+mode: quick
+turn_minutes: 3
+sessions:
+  - id: first-evening
+    day: 0
+    turns:
+      - say: "Hi there, good to meet you"
+      - say: "I live in Fenwick Bay, near the old harbour"
+        keep: [fenwick bay]
+        matters: 2
+        claim: {lives_in: Fenwick Bay}
+      - say: "My sister Maren works as a ferry pilot out of Hollin Cross"
+        keep: [[sister, maren], [ferry pilot]]
+        matters: 2
+      - say: "Remember that the spare shed key is under the green watering can"
+        keep: [shed key, watering can]
+        matters: 3
+      - say: "what's a good way to keep basil alive indoors?"
+      - say: "thanks, that makes sense"
+        verdict: accepts
+      - say: "I work as a pastry chef at the Corner Mill bakery"
+        keep: [pastry chef]
+        matters: 2
+        claim: {occupation: pastry chef}
+      - say: "My dog is called Pepper"
+        keep: [dog, pepper]
+        matters: 2
+        claim: {dog_name: Pepper}
+      - say: "I can't remember where I left my reading glasses"
+      - say: "do you remember what I told you about the trip?"
+
+  - id: midweek
+    day: 4
+    turns:
+      - say: "Morning! Busy day at the bakery today"
+      - say: "where does my sister work?"
+        recall: [ferry pilot]
+      - say: "yes, that's right"
+        verdict: accepts
+      - say: "I've started learning the cello on Thursday evenings"
+        keep: [cello]
+        matters: 2
+      - say: "how many legs does a spider have?"
+        verdict: neither
+      - say: "no, that's wrong"
+        verdict: disputes
+      - say: "My dog is called Biscuit"
+        keep: [dog, biscuit]
+        matters: 2
+        conflict: {relation: dog_name, from: Pepper, to: Biscuit, expect: raise}
+
+  - id: after-the-move
+    day: 11
+    turns:
+      - say: "We moved last month, I live in Ashby Green now"
+        keep: [ashby green]
+        matters: 2
+        claim: {lives_in: Ashby Green}
+        conflict: {relation: lives_in, from: Fenwick Bay, to: Ashby Green, expect: update}
+      - say: "where did I say the spare shed key is?"
+        recall: [watering can]
+      - say: "perfect, thank you"
+        verdict: accepts
+      - say: "I mostly listen to podcasts about deep sea creatures while I bake"
+        keep: [podcasts, deep sea]
+        matters: 1
+      - say: "what instrument am I learning?"
+        recall: [cello]
+      - say: "That's not what I asked"
+        verdict: disputes
+
+  - id: three-weeks-on
+    day: 20
+    turns:
+      - say: "hello again"
+      - say: "what do I do for work?"
+        recall: [pastry chef]
+      - say: "ok, something else: can you suggest a name for a sourdough starter?"
+        verdict: neither
+      - say: "where do I live these days?"
+        recall: [ashby green]
+        verdict: neither
+      - say: "what is my sister called?"
+        recall: [maren]
