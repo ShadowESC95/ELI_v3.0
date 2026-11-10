@@ -4309,7 +4309,6 @@ def _artifacts_dir() -> "Path":
 
 # Saving an artifact lives in effectors._base (one copy for the executor and every effector).
 from eli.execution.effectors._base import _save_artifact  # noqa: E402,F401
-from eli.execution.effectors._base import _read_document_text  # noqa: E402
 
 
 def _eli_self_description_block(limit: int = 2600) -> str:
@@ -5487,12 +5486,14 @@ def _action_pre_dispatch(
     fall through to the main execute() dispatch.
 
     Replaces the chain of monkey-patch wrappers retired in phaseBW2:
-      * USER INFO EXECUTOR WRAPPER         (REFRESH_USER_INFO, USER_INFO_REPORT)
-      * EXECUTOR SAFE FILE WRAPPERS        (READ_FILE, SCREENSHOT; WRITE_NOTE is its notes effector's)
-      * MEMORY_RECALL USER_INFO COMPAT     (identity-shaped MEMORY_RECALL)
       * GROUNDED EXECUTOR WRAPPER          (OPEN_APP/OPEN_IDE pre-flight,
                                             CHECK_TARGET_STATUS et al)
       * CONTROL_CONTRACT_EXECUTOR_WRAPPER  (SELF_UPDATE, EXPLAIN_LAST_RESPONSE)
+    READ_FILE, SCREENSHOT, REFRESH_USER_INFO, PERSONA_REFRESH and USER_INFO_REPORT are their
+    effectors' (files_notes, screen, memory_ops, persona_lock), answered on the recorded path: they
+    were answered here, ahead of the registry, unnormalised, unverified and unrecorded, by copies of
+    those effectors. The report of what ELI keeps on the user is the router's USER_INFO_REPORT
+    (route_contracts.identity_question), not a MEMORY_RECALL turned into it here.
     """
     a = str(action or "").upper().strip()
     args = args or {}
@@ -5506,32 +5507,6 @@ def _action_pre_dispatch(
             _msg = f"Control evidence failed for {a}: {_e!r}"
             return {"ok": False, "action": a, "error": repr(_e),
                     "content": _msg, "response": _msg}
-
-    # MEMORY_RECALL identity-shaped queries -> USER_INFO_REPORT ---------
-    if a == "MEMORY_RECALL" and "_eli_is_identity_memory_query" in globals() \
-            and _eli_is_identity_memory_query(args):
-        return _eli_user_info_report(force=False,
-                                     reason="memory_recall_identity_compat")
-
-    # User info actions --------------------------------------------------
-    if a == "REFRESH_USER_INFO":
-        return _eli_refresh_user_info(
-            force=args.get("force", False),
-            reason=args.get("reason", "manual"),
-        )
-    if a == "PERSONA_REFRESH":
-        return _eli_persona_refresh(reason=args.get("reason", "manual"))
-    if a == "USER_INFO_REPORT":
-        return _eli_user_info_report(
-            force=args.get("force", False),
-            reason=args.get("reason", "identity_query"),
-        )
-
-    # Safe file/screenshot ops ------------------------------------------
-    if a == "READ_FILE":
-        return _eli_safe_read_file(args)
-    if a == "SCREENSHOT":
-        return _eli_safe_screenshot(args)
 
     # OPEN_APP / OPEN_IDE pre-flight via grounded_remediation ----------
     if a in {"OPEN_APP", "OPEN_IDE"}:
@@ -6266,9 +6241,8 @@ class Executor:
         return execute(action, args or {})
 
 
-# Helpers preserved from former USER INFO EXECUTOR WRAPPER (phaseBW2).
-# The wrapper-install scaffolding was removed; pre-dispatch in execute()
-# routes REFRESH_USER_INFO and USER_INFO_REPORT through these directly.
+# What REFRESH_USER_INFO, PERSONA_REFRESH and USER_INFO_REPORT do; their effectors (memory_ops,
+# persona_lock) answer the actions and call these.
 def _eli_refresh_user_info(force=False, reason="manual"):
     from eli.cognition.user_info_builder import refresh_user_info
     out = refresh_user_info(force=bool(force), reason=str(reason or "manual"))
@@ -6330,116 +6304,6 @@ def _eli_user_info_report(force=False, reason="query"):
         "meta": out.get("meta", {}),
         "path": out.get("path", ""),
     }
-
-
-# Helpers preserved from former EXECUTOR SAFE FILE WRAPPERS (phaseBW2).
-# The wrapper-install scaffolding was removed; pre-dispatch in execute()
-# routes READ_FILE / SCREENSHOT through these directly.
-def _eli_safe_read_file(args=None):
-    _args = args or {}
-    path = str(_args.get("path") or "").strip()
-    if not path:
-        return {"ok": False, "action": "READ_FILE", "content": "Missing file path."}
-    p = resolve_user_repo_path(path)
-    if not p.exists():
-        return {"ok": False, "action": "READ_FILE", "content": f"File not found: {p}"}
-    if p.is_dir():
-        # A directory was passed to READ_FILE — LIST it instead of refusing. The user asked
-        # to read/list the path; refusing (or letting the model confabulate) is worse than
-        # just showing the real contents.
-        try:
-            _entries = sorted(
-                (f"{x.name}/" if x.is_dir() else x.name) for x in p.iterdir())
-            _listing = (f"Contents of {p} ({len(_entries)} items):\n" + "\n".join(_entries))
-            return {"ok": True, "action": "LIST_DIR", "path": str(p),
-                    "content": _listing, "response": _listing}
-        except Exception as _ld_err:
-            return {"ok": False, "action": "READ_FILE",
-                    "content": f"Could not read directory {p}: {_ld_err}"}
-    _doc = _read_document_text(p)
-    if _doc is not None:
-        if not _doc.get("ok"):
-            return {"ok": False, "action": "READ_FILE",
-                    "content": _doc.get("content", "Could not read file.")}
-        return {"ok": True, "action": "READ_FILE", "path": str(p),
-                "content": _doc.get("content", "")}
-    data = None
-    for enc in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            data = p.read_text(encoding=enc)
-            break
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-    if data is None:
-        try:
-            data = p.read_bytes().decode("utf-8", errors="replace")
-        except Exception as e:
-            return {"ok": False, "action": "READ_FILE", "content": f"Could not read file: {e}"}
-    return {
-        "ok": True,
-        "action": "READ_FILE",
-        "path": str(p),
-        "content": data,
-    }
-
-def _eli_safe_screenshot(args=None):
-    _args = args or {}
-    region = _args.get("region", "full")
-    try:
-        from controllers.os_controller import take_screenshot
-    except Exception:
-        try:
-            from eli.perception.os_controller import take_screenshot
-        except Exception as e:
-            return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot backend unavailable: {e}"}
-    try:
-        out = take_screenshot(region)
-    except TypeError:
-        try:
-            out = take_screenshot()
-        except Exception as e:
-            return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot failed: {e}"}
-    except Exception as e:
-        return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot failed: {e}"}
-
-    if isinstance(out, dict):
-        ok = bool(out.get("ok", True))
-        content = str(out.get("content") or out.get("message") or out.get("path") or "Screenshot completed")
-        return {
-            "ok": ok,
-            "action": "SCREENSHOT",
-            "content": content,
-            **out,
-        }
-
-    return {
-        "ok": True,
-        "action": "SCREENSHOT",
-        "content": str(out or "Screenshot completed"),
-    }
-
-
-# Helper preserved from former MEMORY_RECALL USER_INFO COMPAT (phaseBW2).
-# Pre-dispatch in execute() routes identity-shaped MEMORY_RECALL queries
-# through this directly to USER_INFO_REPORT.
-import re as _eli_exec_re
-
-def _eli_is_identity_memory_query(_args):
-    _args = _args or {}
-    q = str(_args.get("query") or _args.get("message") or "").strip().lower()
-    if _args.get("_prefer_user_info_report"):
-        return True
-    pats = [
-        r"\bwhat do you know about me\b",
-        r"\bwhat do you know from memory\b",
-        r"\bwho am i(?: to you)?\b",
-        r"\bshow user info\b",
-        r"\buser info report\b",
-        r"\bprofile report\b",
-        r"\bdump (?:my )?(?:user )?(?:profile|info|memory)\b",
-        r"\bshow (?:my|the) stored memor(?:y|ies)(?: about me)?\b",
-    ]
-    return any(_eli_exec_re.search(p, q) for p in pats)
 
 
 # Local-only YouTube playback. No browser search. No external API.

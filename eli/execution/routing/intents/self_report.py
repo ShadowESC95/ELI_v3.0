@@ -341,8 +341,9 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
         return _mk("EXPLAIN_COGNITION_RUNTIME", {"question": raw}, 0.99,
                    matched_by="router.agents_architecture", allow_chat_without_evidence=False)
 
-    if re.search(r"\b(what do you know about me from memory|what do you know about me|what do you remember of me|who am i|what is my name|do you remember me|do you know me|my preferences|my persona|my ethos)\b", low):
-        return _mk("USER_IDENTITY_SUMMARY", {}, 0.99, matched_by="router.user_identity_summary", allow_chat_without_evidence=False)
+    # Who the user is ("who am i", "what is my name", "my persona") is route_contracts.identity_question's,
+    # read by the router's identity stage before this one; what ELI holds about the user is the
+    # personal memory contract's.
 
     # Static profile vs learned understanding is route_contracts.wants_user_model_provenance, taken
     # by the precedence stage before this one (a second copy here routed "explain dynamic memory
@@ -363,9 +364,6 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
     # --- dynamic evidence preempts ---
     if re.search(r"\b(who are you.*running on right now|model.*context size.*gpu layers|what are you actually running on right now|you know who you are)\b", low):
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.runtime_status_to_chat", allow_chat_without_evidence=False)
-
-    if re.search(r"\b(what do you know about me from memory|what do you know about me|what do you remember of me|who am i|what is my name|do you remember me)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.memory_status_to_chat", allow_chat_without_evidence=False)
 
     if re.search(r"\b(explain exactly how your memory system works internally|memory system works internally|which files.*which db tables.*which functions)\b", low):
         return _mk("EXPLAIN_MEMORY_RUNTIME", {}, 0.99, matched_by="router.memory_runtime_to_grounded", allow_chat_without_evidence=False)

@@ -115,29 +115,7 @@ def route_input_agents(text: str, raw: str, low: str, text_l: str):
     if re.search(r"\b(cognition pipeline|input to output|every step|no vague descriptions)\b", low):
         return _mk("CHAT", {"message": raw}, 0.95, matched_by="router.cognition_status_to_chat")
 
-    # "What do you know about me from memory" is open-ended and needs HyDE expansion and rerank. The
-    # MEMORY_RECALL preempt produced single weak hits (conf 0.34) and the LLM filled gaps with
-    # invented details. CHAT engages the full retrieval path.
-
-
-    if re.search(
-        r"\b("
-        r"what do you know about me|"
-        r"what do you know from memory|"
-        r"show (?:my|the) stored memor(?:y|ies)(?: about me)?|"
-        r"dump (?:my )?(?:user )?(?:profile|info|memory)|"
-        r"who am i(?: to you)?|"
-        r"show user info|"
-        r"user info report|"
-        r"profile report"
-        r")\b",
-        text_l,
-    ):
-        return _mk(
-            "MEMORY_RECALL",
-            {"query": text, "_prefer_user_info_report": True},
-            0.99,
-            matched_by="identity.user_info.report",
-            allow_chat_without_evidence=False,
-        )
+    # The report of what ELI keeps on the user ("show user info", "dump my profile") is
+    # route_contracts.identity_question's USER_INFO_REPORT, read by the router's identity stage; it
+    # was a MEMORY_RECALL here that the executor turned into the report before its registry.
     return None

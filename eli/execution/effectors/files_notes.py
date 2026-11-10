@@ -38,6 +38,14 @@ def _eli_safe_read_file(args=None):
         except Exception as _ld_err:
             return {"ok": False, "action": "READ_FILE",
                     "content": f"Could not read directory {p}: {_ld_err}"}
+    # a document (PDF, Word, ...) is read as text by its reader; only the executor's copy of this
+    # function did, and that copy answered READ_FILE ahead of this effector
+    from eli.execution.effectors._base import _read_document_text
+    doc = _read_document_text(p)
+    if doc is not None:
+        if not doc.get("ok"):
+            return {"ok": False, "action": "READ_FILE", "content": doc.get("content", "Could not read file.")}
+        return {"ok": True, "action": "READ_FILE", "path": str(p), "content": doc.get("content", "")}
     data = None
     for enc in ("utf-8", "utf-8-sig", "latin-1"):
         try:

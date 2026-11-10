@@ -161,3 +161,40 @@ def test_a_final_contract_that_changes_the_action_is_held_to_it_too(monkeypatch)
         "meta": {"matched_by": "media.test_rewrite"}})
     assert r.route("you did not open the folder i asked for")["action"] != "PLAY_MEDIA"
     assert r.route("play golden hour by jvke")["action"] == "PLAY_MEDIA"
+
+
+def test_who_the_user_is_is_decided_in_one_place_with_the_scope_it_asks_for():
+    """'Who am I' was decided by eight copies of the same words in the router, its intent stages and
+    the executor, with four different actions: which answered depended on their order. One classifier
+    (route_contracts.identity_question) decides it now, scope and all: a bare "and my name?" is a name
+    question, the report of what ELI keeps is the report (it was a MEMORY_RECALL the executor turned
+    into one), and a request to remake that report is the refresh, not the reading."""
+    import inspect
+    from eli.execution import executor_enhanced, router_enhanced, route_contracts
+    from eli.execution.router_enhanced import route
+    from eli.execution.routing.intents import input_agents, self_report
+    cases = {
+        "who am i": ("USER_IDENTITY_SUMMARY", "identity_only"),
+        "and my name?": ("USER_IDENTITY_SUMMARY", "name_only"),
+        "what's my name": ("USER_IDENTITY_SUMMARY", "name_only"),
+        "do you remember me": ("USER_IDENTITY_SUMMARY", "memory_presence_only"),
+        "you don't know me": ("USER_IDENTITY_SUMMARY", "memory_presence_only"),
+        "my persona": ("USER_IDENTITY_SUMMARY", "identity_only"),
+        "show user info": ("USER_INFO_REPORT", None),
+        "dump my profile": ("USER_INFO_REPORT", None),
+    }
+    for said, (action, scope) in cases.items():
+        decided = route_contracts.identity_question(said)
+        assert decided and decided["action"] == action, said
+        routed = route(said)
+        assert routed["action"] == action, (said, routed["action"])
+        assert (routed.get("args") or {}).get("identity_scope") == scope, (said, routed.get("args"))
+    assert route_contracts.identity_question("what do you know about me") is None, "the personal memory summary's"
+    assert route_contracts.identity_question("my name is Sky") is None
+    assert route("rebuild profile report")["action"] == "REFRESH_USER_INFO"
+    for module in (router_enhanced, self_report, input_agents, executor_enhanced):
+        source = inspect.getsource(module)
+        for copy in ("identity.user_summary_preempt", "router.user_identity_summary", "memory.identity.preempt",
+                     "memory.user_recall\"", "memory.user_recall.chat_handoff", "_prefer_user_info_report",
+                     "router.memory_status_to_chat"):
+            assert copy not in source, (module.__name__, copy)
