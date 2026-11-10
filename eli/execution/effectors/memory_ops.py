@@ -2,7 +2,7 @@
 
 Core memory operations (via the canonical Memory bridge). Lifted from
 executor_enhanced.py (v3 modularisation); MEMORY_PATH/MAX_HISTORY_MESSAGES reproduced
-locally as pure config derivations. Memory *reports* stay with system_intel.
+locally as pure config derivations. Memory *reports* are the executor's (executor_enhanced.py).
 """
 from __future__ import annotations
 

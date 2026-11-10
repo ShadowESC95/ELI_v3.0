@@ -2987,33 +2987,6 @@ def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) 
 # CHAT with persistent conversation + lock enforcement
 # ----------------------------
 
-def _memory_capability_truth() -> str:
-    """Truth-only memory capability statement. Never fabricate recall."""
-    try:
-        has_sqlite = False
-        try:
-            import sqlite3 as _sql  # noqa: F401
-            has_sqlite = True
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-        if has_sqlite:
-            return (
-                "I use two memory layers: session context and persistent local memory. "
-                "Persistent memory is stored locally (SQLite/artifacts via memory adapters) "
-                "and can be recalled across restarts if saved and retrievable by query."
-            )
-        return (
-            "I currently have session context in this runtime; persistent memory backends are "
-            "not available right now. I won’t claim cross-session recall unless retrieval succeeds."
-        )
-    except Exception:
-        return (
-            "I won’t guess about memory state. Session context is available; persistent recall "
-            "depends on configured local memory backends and successful retrieval."
-        )
-
-
 def _live_memory_audit() -> dict:
     """
     Real local-memory audit:

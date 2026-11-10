@@ -120,6 +120,24 @@ def test_registry_is_consulted_before_any_inline_handler():
     )
 
 
+def test_system_intel_holds_no_copy_of_an_executor_helper():
+    """The memory capability statement, the memory audit and its formatter, and the runtime reports
+    were defined word for word in the executor and again in effectors/system_intel.py, with shims
+    there back to the rest; nothing called system_intel's, and its copies drifted from the ones that
+    ran. A helper has one home: no name is defined in both, and the statement nothing called is gone."""
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import system_intel
+
+    def defined(path: Path) -> set:
+        return {n.name for n in ast.parse(path.read_text(encoding="utf-8")).body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    both = sorted(defined(EXECUTOR) & defined(Path(system_intel.__file__)))
+    assert not both, f"defined in the executor and again in system_intel: {both}"
+    assert not hasattr(ex, "_memory_capability_truth") and not hasattr(system_intel, "_memory_capability_truth")
+    assert callable(system_intel.gpu_use_facts), "what is system_intel's own stays"
+
+
 def test_a_note_is_written_by_its_notes_effector_not_a_copy_in_the_executor(monkeypatch):
     # the executor kept its own WRITE_NOTE, writing to a folder under wherever ELI was started from,
     # ahead of the notes effector
