@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from eli.memory.memory import Memory, flush_recall_writes
+from eli.memory.memory import Memory
 
 DAY = 86400.0
 
@@ -82,10 +82,9 @@ def test_recall_is_exposure_and_only_a_used_answer_resets_the_curve(mem):
     before = _rows(mem, "select weight from memories where id=?", mid)[0][0]
     assert before < 1.0
     mem.recall_memory("dune films", limit=3)
-    flush_recall_writes()
-    w, n, exposed = _rows(mem, "select weight, recall_count, exposure_count from memories where id=?", mid)[0]
-    assert w == before and n == 0 and exposed == 1
-    assert _rows(mem, "select count(*) from recall_log where memory_id=?", mid)[0][0] >= 1
+    w, n = _rows(mem, "select weight, recall_count from memories where id=?", mid)[0]
+    assert w == before and n == 0, "retrieval alone changes nothing about the memory"
+    assert _rows(mem, "select count(*) from recall_log where memory_id=?", mid)[0][0] == 1, "logged at once"
     mem.record_recall_outcome([mid], helped=True)
     w, n = _rows(mem, "select weight, recall_count from memories where id=?", mid)[0]
     assert w == 1.0 and n == 1

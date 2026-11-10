@@ -85,8 +85,11 @@ def test_a_surprise_raises_only_the_memories_that_hold_the_news_and_is_a_thought
     kept = th.recent(5)[0]
     assert kept["kind"] == "surprise" and kept["room"] == "anomaly_room" and kept["decision"] == "noted"
     assert kept["subject"] == "spotify" and kept["chance"] == pytest.approx(0.9)
-    held = salience.note_surprise("claim", 0.5, subjects=["the canal"], why="a fact changed", memory_ids=[12, "x", 0])
-    assert held["touched"] == [12] and mem.raised == [([12], pytest.approx(0.125), "surprise: claim")]
+    held = salience.note_surprise("claim", 0.5, subjects=["the canal"], why="a fact changed", memory_ids=[12, 13, "x", 0],
+                                  exclude=[13], request_id="req-4")
+    assert held["touched"] == [12] and mem.raised == [([12], pytest.approx(0.125), "surprise: claim")], \
+        "a memory the same correction counted against is not raised"
+    assert th.recent(5)[0]["ref"] == "surprise:req-4:claim", "a surprise can be settled by its ref"
     assert th.recent(5)[0]["decision"] == "raised" and "1 memory holding it matter 12% more" in th.recent(5)[0]["reason"]
     assert salience.note_surprise("x", 0.0, subjects=["spotify"], why="no surprise") == {"touched": [], "gain": 0.0}
     assert salience.importance_gain(2.0) == salience.GAIN and salience.importance_gain(-1) == 0.0

@@ -93,53 +93,6 @@ _memory = None
 _agent_memory_singleton = None
 _agent_memory = None
 
-# ── Recall write queue ────────────────────────────────────────────────────────
-# recall_memory() fires UPDATE + INSERT on every read, creating write contention
-# on the hot path. Queue write callables and flush in a background daemon thread.
-_recall_write_queue: List = []  # list of (db_path, callable(conn))
-_recall_write_lock = threading.Lock()
-_RECALL_FLUSH_BATCH = 50  # flush when queue reaches this size
-
-
-def _enqueue_recall_write(db_path: Path, fn) -> None:
-    """Queue a write callable `fn(conn)` to be applied against `db_path`."""
-    with _recall_write_lock:
-        _recall_write_queue.append((db_path, fn))
-        if len(_recall_write_queue) >= _RECALL_FLUSH_BATCH:
-            _flush_recall_writes_locked()
-
-
-def _flush_recall_writes_locked() -> None:
-    """Drain the queue. Must be called with _recall_write_lock held."""
-    if not _recall_write_queue:
-        return
-    batch = list(_recall_write_queue)
-    _recall_write_queue.clear()
-    by_db: Dict[Path, List] = {}
-    for db_path, fn in batch:
-        by_db.setdefault(db_path, []).append(fn)
-    for db_path, fns in by_db.items():
-        try:
-            conn = sqlite3.connect(str(db_path), timeout=5)
-            try:
-                for fn in fns:
-                    try:
-                        fn(conn)
-                    except Exception:
-                        log.debug("[MEMORY] recall write callback failed", exc_info=True)
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            log.debug("[MEMORY] recall write batch flush failed", exc_info=True)
-
-
-def flush_recall_writes() -> None:
-    """Public flush — call on idle or shutdown to drain the queue."""
-    with _recall_write_lock:
-        _flush_recall_writes_locked()
-
-
 def _clear_memory_singletons() -> None:
     """Clear all cached Memory instances (call between tests)."""
     with _memory_lock:
@@ -2677,50 +2630,21 @@ class Memory(metaclass=_MemoryMeta):
             from eli.cognition.scoring import mmr_select as _mmr
             out = _mmr(_rank(q, out, limit=len(out)), limit, score=_hit_score)
 
-            # Retrieval only counts as exposure. Strength is reinforced later, by record_recall_outcome,
-            # when the answer these memories went into was endorsed.
+            # The recall log: one row per memory this recall returned, when and how many came with it,
+            # written at once (a queue flushed every fiftieth write dropped what it held at shutdown) and
+            # without the question (every question ever asked was kept, and forgetting a memory left
+            # them). Kept for RECALL_LOG_DAYS (the upkeep, prune_recall_log). Retrieval alone never
+            # strengthens a memory: that is record_recall_outcome's, when the answer was endorsed.
             try:
-                _boost_ids = [
-                    int(_h["id"]) for _h in out[:5]
-                    if not str(_h.get("id", "")).startswith(("kg:", "sem:", "conv", "vec:"))
-                    and _h.get("id") is not None
-                ]
                 _rnow = _now_ts()
-                _rq = q
-                _rn = len(out)
-                for _bid in _boost_ids:
-                    _enqueue_recall_write(
-                        self.db_path,
-                        lambda c, bid=_bid, now=_rnow: c.execute(
-                            "UPDATE memories SET exposure_count = COALESCE(exposure_count, 0) + 1 WHERE id = ?",
-                            (bid,),
-                        ),
-                    )
-                    _enqueue_recall_write(
-                        self.db_path,
-                        lambda c, bid=_bid, now=_rnow, query=_rq, cnt=_rn: _insert_payload(
-                            c, "recall_log",
-                            {"ts": now, "timestamp": now, "query": query,
-                             "results_count": cnt, "result_count": cnt, "memory_id": bid},
-                        ),
-                    )
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-
-            try:
-                _now = _now_ts()
-                _q_cap = q
-                _cnt = len(out)
-                _enqueue_recall_write(
-                    self.db_path,
-                    lambda c, ts=_now, query=_q_cap, cnt=_cnt: _insert_payload(
-                        c, "recall_log",
-                        {"ts": ts, "timestamp": ts, "query": query,
-                         "results_count": cnt, "result_count": cnt},
-                    ),
-                )
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
+                _logged = [int(_h["id"]) for _h in out if str(_h.get("id", "")).isdigit()]
+                if _logged and _has_table(conn, "recall_log"):
+                    conn.executemany(
+                        "INSERT INTO recall_log (ts, timestamp, query, results_count, result_count, memory_id) "
+                        "VALUES (?, ?, '', ?, ?, ?)", [(_rnow, _rnow, len(out), len(out), _mid) for _mid in _logged])
+                    conn.commit()
+            except sqlite3.Error:
+                log.debug("recall not logged", exc_info=True)
             return out
         finally:
             conn.close()
@@ -3008,6 +2932,31 @@ class Memory(metaclass=_MemoryMeta):
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
+    @staticmethod
+    def _repoint(conn, doomed_ids, keep_id: int) -> None:
+        """What pointed at a merged-away duplicate points at the row it was merged into: the claims read
+        from it (so forgetting the row still takes them back), its lineage, its recall log and its
+        links. They were left pointing at a deleted id."""
+        doomed = [int(i) for i in doomed_ids if int(i) != int(keep_id)]
+        if not doomed:
+            return
+        marks = ",".join("?" * len(doomed))
+        if _has_table(conn, "memory_claims"):
+            from eli.memory.claims import repoint_sources
+            repoint_sources(conn, doomed, keep_id)
+        if _has_table(conn, "memory_lineage"):
+            for column in ("child_id", "parent_id"):
+                conn.execute(f"UPDATE OR IGNORE memory_lineage SET {column} = ? WHERE {column} IN ({marks})",
+                             [keep_id] + doomed)
+            conn.execute("DELETE FROM memory_lineage WHERE child_id = parent_id")
+        if _has_table(conn, "recall_log"):
+            conn.execute(f"UPDATE recall_log SET memory_id = ? WHERE memory_id IN ({marks})", [keep_id] + doomed)
+        if _has_table(conn, "memory_links"):
+            for column in ("a", "b"):
+                conn.execute(f"UPDATE OR IGNORE memory_links SET {column} = ? WHERE {column} IN ({marks})",
+                             [keep_id] + doomed)
+            conn.execute("DELETE FROM memory_links WHERE a = b")
+
     def consolidate_memories(self, dry_run: bool = False) -> Dict[str, Any]:
         """Merge duplicates: earliest date kept, seen/recall counts summed, latest sighting as timestamp."""
         from eli.memory import policy as _policy
@@ -3020,7 +2969,8 @@ class Memory(metaclass=_MemoryMeta):
                    "COALESCE(importance, 0.5), COALESCE(weight, 1.0), COALESCE(timestamp, ts, 0)")
             if have:
                 sel += (", COALESCE(event_ts, 0), COALESCE(seen_count, 1), COALESCE(last_seen, 0), "
-                        "COALESCE(recall_count, 0), COALESCE(last_recalled, 0), COALESCE(origin, '')")
+                        "COALESCE(recall_count, 0), COALESCE(last_recalled, 0), COALESCE(origin, ''), "
+                        + ("COALESCE(corrected_count, 0)" if "corrected_count" in cols else "0"))
             rows = conn.execute(f"SELECT {sel} FROM memories ORDER BY id ASC").fetchall()
             summary["scanned"] = len(rows)
             groups: Dict[tuple, List[dict]] = {}
@@ -3029,7 +2979,8 @@ class Memory(metaclass=_MemoryMeta):
                      "importance": r[5], "weight": r[6], "ts": r[7]}
                 if have:
                     d.update({"event_ts": r[8], "seen_count": r[9], "last_seen": r[10],
-                              "recall_count": r[11], "last_recalled": r[12], "origin": r[13]})
+                              "recall_count": r[11], "last_recalled": r[12], "origin": r[13],
+                              "corrected_count": r[14]})
                 key = _policy.text_key(d["text"])
                 if not key:
                     continue
@@ -3060,8 +3011,12 @@ class Memory(metaclass=_MemoryMeta):
                              "last_recalled = ?, origin = ?, text_key = ?")
                     vals += [merged["seen_count"], merged["event_ts"] or keep["ts"], merged["last_seen"],
                              merged["recall_count"], merged["last_recalled"], origin, _key]
+                    if "corrected_count" in cols:
+                        sets += ", corrected_count = ?"
+                        vals.append(merged["corrected_count"])
                 conn.execute(f"UPDATE memories SET {sets} WHERE id = ?", vals + [keep["id"]])
                 _fts_reindex(conn, keep["id"], keep["text"], ",".join(tags))
+                self._repoint(conn, [m["id"] for m in doomed], keep["id"])
                 self._remove_rows(conn, doomed)
             if not dry_run:
                 if summary["removed"]:
@@ -3220,6 +3175,7 @@ class Memory(metaclass=_MemoryMeta):
         if not ids:
             return 0
         conn = self._get_connection()
+        back: List[int] = []
         try:
             cols = _memory_table_columns(conn, "memories")
             names = ", ".join(f'"{c}"' for c in cols)
@@ -3234,12 +3190,20 @@ class Memory(metaclass=_MemoryMeta):
                         _fts_reindex(conn, i, row[0], row[1])
                     conn.execute("DELETE FROM memories_archive WHERE id = ?", (i,))
                     n += 1
+                    back.append(i)
             conn.commit()
-            return n
         except Exception:
             return 0
         finally:
             conn.close()
+        # letting it go was undone: its thought ("let go: ...", archive_faded) says so
+        try:
+            from eli.cognition.thoughts import settle as _settle
+            for i in back:
+                _settle(f"memory:{i}", "undone", how="restored from the archive")
+        except (sqlite3.Error, OSError, ValueError, ImportError):
+            log.debug("let-go thoughts not settled", exc_info=True)
+        return n
 
     def link_derivation(self, child_id: int, parent_ids, kind: str = "derived") -> int:
         """Record that a memory was made from others (a summary, a reflection), so it never counts as independent evidence."""
@@ -3963,6 +3927,30 @@ class Memory(metaclass=_MemoryMeta):
                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                      (key, value, time.time()))
 
+    # The bookkeeping tables nothing learns from past the window ELI's learning reads its outcomes over
+    # (eli/cognition/epistemics.DAYS): the recall log, the learning replay buffer (a copy of every
+    # turn and command result) and the corrections log. They grew without end, copies of the user's
+    # words that informed nothing.
+    _LOGS = (("recall_log", "COALESCE(ts, timestamp, 0)"), ("learning_replay", "COALESCE(ts, timestamp, 0)"),
+             ("corrections", "COALESCE(ts, timestamp, 0)"))
+
+    def _prune_logs(self, conn, *, dry_run: bool = False, now: Optional[float] = None) -> Dict[str, int]:
+        from eli.cognition.epistemics import DAYS
+        cutoff = float(now if now is not None else time.time()) - float(DAYS) * 86400.0
+        out: Dict[str, int] = {}
+        for table, when in self._LOGS:
+            if not _has_table(conn, table):
+                continue
+            cols = set(_memory_table_columns(conn, table))
+            expr = when if {"ts", "timestamp"} <= cols else ("ts" if "ts" in cols else "timestamp" if "timestamp" in cols else "")
+            if not expr:
+                continue
+            n = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {expr} < ?", (cutoff,)).fetchone()[0]
+            out[f"{table}_pruned"] = int(n or 0)
+            if n and not dry_run:
+                conn.execute(f"DELETE FROM {table} WHERE {expr} < ?", (cutoff,))
+        return out
+
     def tidy_learning_tables(self, dry_run: bool = False) -> Dict[str, Any]:
         """Drop repeated belief revisions; cap corroboration at the days the user has used ELI. The ledger
         copies of replay rows an older version wrote stay where they are: runtime_events is the hash-chained
@@ -3971,6 +3959,7 @@ class Memory(metaclass=_MemoryMeta):
         out: Dict[str, Any] = {"revisions_removed": 0, "corroboration_capped": 0}
         conn = self._get_connection()
         try:
+            out.update(self._prune_logs(conn, dry_run=dry_run))
             from eli.cognition.stance_store import compact_revisions
             if _eli_table_exists(conn, "eli_stances") and _eli_table_exists(conn, "memory_claims"):
                 from eli.memory import claims as _claims

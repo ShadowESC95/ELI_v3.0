@@ -224,18 +224,21 @@ def rerank_candidates(query: str, candidates: Iterable[Dict[str, Any]], limit: i
         row["rerank_score"] = round(row["rerank_score"], 6)
 
     try:
-        from eli.cognition.epistemics import RECALL, apply_rows, weights_for
-        fit = weights_for(RECALL)
+        from eli.cognition import epistemics as _ep
+        fit = _ep.weights_for(_ep.RECALL)
     except Exception:  # noqa: BLE001 - no outcomes to be had: relevance orders
         fit = {"n": 0}
     if fit.get("n"):
+        # the fit applied as it was made (its features read on its own scale: epistemics.apply_fit)
+        apply_fit = getattr(_ep, "apply_fit", None)
         for row in out:
-            row["recall_chance"] = round(apply_rows(
-                min(1.0 - 1e-3, max(1e-3, _as_float(row.get("rerank_score"), 0.0))),
-                {"accessibility": _as_float(_get(row, "accessibility"), 0.0),
-                 "importance": _as_float(_get(row, "importance", 0.5), 0.5),
-                 "overlap": row["_overlap"], "agreement": row["_agreement"]},
-                fit["weights"], fit["shift"], fit["names"]), 6)
+            score = min(1.0 - 1e-3, max(1e-3, _as_float(row.get("rerank_score"), 0.0)))
+            features = {"accessibility": _as_float(_get(row, "accessibility"), 0.0),
+                        "importance": _as_float(_get(row, "importance", 0.5), 0.5),
+                        "overlap": row["_overlap"], "agreement": row["_agreement"]}
+            chance = (apply_fit(fit, score, features) if callable(apply_fit)
+                      else _ep.apply_rows(score, features, fit["weights"], fit["shift"], fit["names"]))
+            row["recall_chance"] = round(chance, 6)
 
     out.sort(key=lambda x: (
         _as_float(x.get("recall_chance", x.get("rerank_score", 0.0)), 0.0),

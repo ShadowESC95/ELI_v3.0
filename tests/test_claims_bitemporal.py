@@ -66,6 +66,23 @@ def test_deleting_the_source_withdraws_the_claim():
     assert claims.current(c) == []
 
 
+def test_merged_memories_move_their_claims_sources_in_either_form():
+    """A merge of duplicate memories moved bare-root lists only, so a confirmation kept with its own
+    source ({root, origin, day}) still pointed at the deleted row; and two statements must stay two."""
+    import json
+    c = sqlite3.connect(":memory:")
+    cid = claims.record(c, "lives_in", "Ashford", source_memory_id=7, root_id=7, now=_d("2026-03-01"))
+    claims.record(c, "lives_in", "Ashford", source_memory_id=8, root_id=8, now=_d("2026-03-05"))
+    old = claims.record(c, "employer", "Northwind", source_memory_id=7)
+    c.execute("UPDATE memory_claims SET source_roots = ? WHERE id = ?", (json.dumps([7, 3, 7]), old))
+    assert claims.repoint_sources(c, [7, 8], 3) == 2, "both claims, each counted once"
+    roots = {r[0]: json.loads(r[1]) for r in c.execute("SELECT id, source_roots FROM memory_claims")}
+    assert [x["root"] for x in roots[cid]] == [3, 3], "two statements on two days are still two confirmations"
+    assert roots[old] == [3], "a bare root list, as rows before each confirmation kept its source, moves too"
+    assert {r[0] for r in c.execute("SELECT source_memory_id FROM memory_claims")} == {3}
+    assert claims.repoint_sources(c, [3], 3) == 0
+
+
 @pytest.fixture()
 def mem(tmp_path, monkeypatch):
     monkeypatch.setenv("ELI_TEST_MODE", "1")

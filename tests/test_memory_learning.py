@@ -136,3 +136,17 @@ def test_association_improves_recall_or_it_is_switched_off(tmp_path, monkeypatch
     monkeypatch.setattr(mm, "ASSOCIATION", False)
     without_links = _recall_at(on, 3)
     assert with_links > without_links, (with_links, without_links)
+
+
+def test_a_memory_brought_back_from_the_archive_settles_the_thought_that_let_it_go(mem):
+    c = mem.store_memory("the old ferry timetable for the island", source="eli", kind="observation")["id"]
+    conn = mem._get_connection()
+    try:
+        conn.execute("UPDATE memories SET weight = 0.05, origin = 'eli_said' WHERE id = ?", (int(c),))
+        conn.commit()
+    finally:
+        conn.close()
+    assert mem.archive_faded()["archived"] == 1
+    assert mem.restore_from_archive([c]) == 1
+    kept = th.recent(5, kinds=["memory"])
+    assert kept and kept[0]["ref"] == f"memory:{c}" and kept[0]["outcome"] == "undone"

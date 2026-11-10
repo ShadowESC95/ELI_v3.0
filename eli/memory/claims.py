@@ -22,7 +22,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from eli.utils.log import get_logger
 
@@ -443,6 +443,42 @@ def retract_from_memory(conn, memory_id: int, *, erase: bool = False) -> int:
     cur = conn.execute("UPDATE memory_claims SET status = 'retracted', superseded_at = ? "
                        "WHERE source_memory_id = ? AND status IN ('current', 'former')", (time.time(), int(memory_id)))
     return int(cur.rowcount or 0)
+
+
+def repoint_sources(conn, doomed_ids: Iterable[Any], keep_id: int) -> int:
+    """Memories merged into `keep_id` (Memory.consolidate_memories): the claims read from them are read
+    from it, as their source_memory_id and in each confirmation's root (either form _confirmations
+    reads), so forgetting the row it joined still takes them back. Each confirmation stays one
+    statement; only an entry that became the very same one is kept once. Returns the claims changed."""
+    doomed = {int(i) for i in doomed_ids if int(i) != int(keep_id)}
+    if not doomed:
+        return 0
+    ensure_schema(conn)
+    marks = ",".join("?" * len(doomed))
+    changed = {int(r[0]) for r in conn.execute(f"SELECT id FROM memory_claims WHERE source_memory_id IN ({marks})",
+                                                sorted(doomed)).fetchall()}
+    conn.execute(f"UPDATE memory_claims SET source_memory_id = ? WHERE source_memory_id IN ({marks})",
+                 [int(keep_id), *sorted(doomed)])
+    for cid, roots in conn.execute("SELECT id, source_roots FROM memory_claims WHERE source_roots IS NOT NULL "
+                                   "AND source_roots != '[]'").fetchall():
+        try:
+            have = json.loads(roots or "[]")
+        except ValueError:
+            continue
+        if not isinstance(have, list):
+            continue
+        moved: List[Any] = []
+        for item in have:
+            if isinstance(item, dict):
+                item = dict(item, root=int(keep_id)) if item.get("root") in doomed else item
+            elif item in doomed:
+                item = int(keep_id)
+            if item not in moved:
+                moved.append(item)
+        if moved != have:
+            conn.execute("UPDATE memory_claims SET source_roots = ? WHERE id = ?", (json.dumps(moved), cid))
+            changed.add(int(cid))
+    return len(changed)
 
 
 def erase_claims(conn, where: str, args: Tuple[Any, ...]) -> int:

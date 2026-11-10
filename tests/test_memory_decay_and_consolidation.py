@@ -224,3 +224,34 @@ def test_empty_text_is_not_treated_as_a_duplicate_group(mem):
     _insert(mem, "", importance=0.5)
     _insert(mem, "   ", importance=0.5)
     assert mem.consolidate_memories()["removed"] == 0
+
+
+def test_a_merge_keeps_the_corrections_and_what_pointed_at_the_duplicates(mem):
+    """consolidate_memories dropped the merged rows' corrections and left their claims, lineage, recall
+    log and links pointing at deleted ids, so forgetting the survivor could not take those claims back."""
+    import json
+    a = _insert(mem, "I work nights at the depot", importance=0.5)
+    b = _insert(mem, "I work nights at the depot", importance=0.5)
+    conn = mem._get_connection()
+    try:
+        conn.execute("UPDATE memories SET corrected_count = 2 WHERE id = ?", (b,))
+        from eli.memory import claims
+        claims.ensure_schema(conn)
+        cid = claims.record(conn, "work_schedule", "nights", source_memory_id=b, origin="user_said")
+        conn.execute("INSERT INTO recall_log (ts, timestamp, query, memory_id) VALUES (1, 1, '', ?)", (b,))
+        conn.commit()
+    finally:
+        conn.close()
+    other = _insert(mem, "the depot is by the river", importance=0.5)
+    mem.strengthen_links([b, other])
+    mem.consolidate_memories()
+    conn = mem._get_connection()
+    try:
+        assert conn.execute("SELECT id, corrected_count FROM memories WHERE text LIKE 'I work%'").fetchall() == [(a, 2)]
+        src, roots = conn.execute("SELECT source_memory_id, source_roots FROM memory_claims WHERE id = ?", (cid,)).fetchone()
+        assert src == a and [r["root"] for r in json.loads(roots)] == [a], "each confirmation's root moves too"
+        assert conn.execute("SELECT memory_id FROM recall_log").fetchall() == [(a,)]
+        assert conn.execute("SELECT a, b FROM memory_links").fetchall() == [(min(a, other), max(a, other))]
+    finally:
+        conn.close()
+    assert mem.forget([a])["claims"] == 1, "forgetting the survivor takes the claim back"

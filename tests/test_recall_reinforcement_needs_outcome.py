@@ -159,3 +159,28 @@ def test_a_corrected_claims_memory_is_counted_against_once_when_the_model_reads_
     engine._settle_pending(Mem(), "", pending, "lovely, Riverton it is", accepted)
     engine._settle_pending(Mem(), "", pending, "lovely, Riverton it is", model, revising=accepted)
     assert calls == [([21], False)], "read as accepted first, the model's dispute counts against it"
+
+
+def test_a_recall_is_logged_at_once_without_the_question_and_old_logs_leave(mem):
+    """Recall writes were queued and applied only at the fiftieth, so up to 49 were lost at every exit
+    (nothing flushed the queue); each row kept the user's question, which forgetting a memory left
+    behind; and the log grew without end."""
+    import time as _time
+    rid = mem.store_memory("the spare key hangs by the back door", source="user")["id"]
+    mem.recall_memory("spare key back door", limit=3)
+    c = sqlite3.connect(mem.db_path)
+    try:
+        rows = c.execute("select memory_id, query from recall_log").fetchall()
+        assert rows == [(rid, "")], rows
+        c.execute("update recall_log set ts = ?, timestamp = ?", (_time.time() - 365 * 86400,) * 2)
+        c.execute("insert into learning_replay (event_type, ts, timestamp) values ('x', ?, ?)", (_time.time() - 365 * 86400,) * 2)
+        c.commit()
+    finally:
+        c.close()
+    out = mem.tidy_learning_tables()
+    assert out["recall_log_pruned"] == 1 and out["learning_replay_pruned"] == 1
+    c = sqlite3.connect(mem.db_path)
+    try:
+        assert c.execute("select count(*) from recall_log").fetchone() == (0,)
+    finally:
+        c.close()

@@ -238,7 +238,7 @@ def should_archive(origin: str, weight: float, recall_count: int, importance: fl
 
 
 def merge_group(rows: Iterable[dict]) -> dict:
-    """Earliest event time survives; sightings and recalls sum; latest sighting is last_seen."""
+    """Earliest event time survives; sightings, recalls and corrections sum; latest sighting is last_seen."""
     rows = list(rows)
     firsts = [f for f in (float(r.get("event_ts") or r.get("ts") or 0.0) for r in rows) if f > 0]
     return {
@@ -247,6 +247,7 @@ def merge_group(rows: Iterable[dict]) -> dict:
         "event_ts": min(firsts) if firsts else 0.0,
         "last_seen": max(float(r.get("last_seen") or r.get("ts") or 0.0) for r in rows),
         "recall_count": sum(int(r.get("recall_count") or 0) for r in rows),
+        "corrected_count": sum(int(r.get("corrected_count") or 0) for r in rows),
         "last_recalled": max(float(r.get("last_recalled") or 0.0) for r in rows),
     }
 

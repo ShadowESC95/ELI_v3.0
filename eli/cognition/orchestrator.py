@@ -1519,7 +1519,9 @@ def _assess_recalls(user_input: str, hits: Any, limit: int = 5) -> None:
     items, notes = [], []
     for h in shown:
         text = " ".join(str(h.get("text") or h.get("content") or "").split())
-        raw = h.get("recall_chance", h.get("rerank_score", h.get("_rank_score", h.get("score", 0.5))))
+        # the ranking's own score, never the calibrated chance: the next fit is fitted on what the
+        # ranking gave, not on its own output
+        raw = h.get("rerank_score", h.get("score", 0.5))
         try:
             score = min(1.0 - 1e-3, max(1e-3, float(raw or 0.5)))
         except (TypeError, ValueError):

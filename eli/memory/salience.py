@@ -223,14 +223,18 @@ def importance_gain(magnitude: float) -> float:
 
 def note_surprise(kind: str, magnitude: float, *, subjects: Iterable[str], why: str, user_id: str = "",
                   request_id: str = "", now: Optional[float] = None, db_path=None,
-                  memory_ids: Iterable[Any] = ()) -> Dict[str, Any]:
+                  memory_ids: Iterable[Any] = (), exclude: Iterable[Any] = ()) -> Dict[str, Any]:
     """Something did not fit what ELI believed. The memories that hold the news (`memory_ids`: the
-    correction, the changed fact) matter more by the surprise; `subjects` are what it was about, for
-    ELI's curiosity and the thought kept in the Anomaly Room. Nothing is looked up by subject: the
-    memories that merely name it are not what was learned. {"touched": ids, "gain": the gain}."""
+    correction, the changed fact) matter more by the surprise, never one in `exclude` (the memories
+    the same correction just counted against: a correction does not demote and raise one memory);
+    `subjects` are what it was about, for ELI's curiosity and the thought kept in the Anomaly Room,
+    under the ref surprise:<request_id>:<kind> so it can be settled. Nothing is looked up by subject:
+    the memories that merely name it are not what was learned. {"touched": ids, "gain": the gain}."""
     gain = importance_gain(magnitude)
     named = [str(s).strip() for s in (subjects or []) if str(s).strip()]
-    touched: List[int] = sorted({int(i) for i in (memory_ids or ()) if str(i).isdigit() and int(i) > 0})
+    left_out = {str(i) for i in (exclude or ())}
+    touched: List[int] = sorted({int(i) for i in (memory_ids or ())
+                                 if str(i).isdigit() and int(i) > 0 and str(i) not in left_out})
     if gain <= 0.0:
         return {"touched": [], "gain": gain}
     if touched:
@@ -256,7 +260,8 @@ def note_surprise(kind: str, magnitude: float, *, subjects: Iterable[str], why: 
                chance=max(0.0, min(1.0, float(magnitude or 0.0))), decision="raised" if touched else "noted",
                reason=(f"{len(touched)} memor{'y' if len(touched) == 1 else 'ies'} holding it "
                        f"matter {gain:.0%} more") if touched else "kept as something to be curious about",
-               subject=", ".join(named[:3]), request_id=request_id, user_id=user_id, now=now, db_path=db_path)
+               subject=", ".join(named[:3]), request_id=request_id, user_id=user_id, now=now, db_path=db_path,
+               **({"ref": f"surprise:{request_id}:{kind}"} if request_id else {}))
     except (OSError, ValueError, TypeError, ImportError) as failure:  # noqa: BLE001 - the thought store is never in the way of the signal
         log.debug("surprise thought not kept: %s", failure)
     return {"touched": touched, "gain": gain}
