@@ -297,3 +297,100 @@ def test_the_boot_backfill_reads_each_turn_once(tmp_path):
     assert [r[0] for r in con.execute("SELECT pattern_data FROM user_patterns "
                                       "WHERE pattern_type='identity.role'")] == ["User is an engineer."]
     con.close()
+
+
+# ── a verdict is voiced, never applied silently ──────────────────────────────
+
+@pytest.fixture()
+def turn(tmp_path, monkeypatch):
+    """A turn of the owner's, with the thoughts store in the test's own folder."""
+    from eli.cognition import thoughts as th
+    from eli.kernel import request_context as rc
+    monkeypatch.setattr(th, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")
+    facts = {"request_id": "req-belief"}
+    token = rc.turn_facts_var.set(facts)
+    yield facts
+    rc.turn_facts_var.reset(token)
+
+
+def test_holding_a_position_is_said_in_the_reply_and_kept_as_a_thought(cur, turn):
+    """On HOLD the user's statement was dropped with a debug line: ELI never said it was keeping its
+    position, nor why."""
+    from eli.cognition import thoughts as th
+    from eli.kernel.stages.prompt_assembly import _belief_line
+    _establish(cur)
+    assert _insert_user_pattern(cur, "identity.role", "User is a chef", provenance="user_passing") is False
+    [verdict] = turn["belief_verdicts"]
+    assert verdict["action"] == "hold" and verdict["standing"] == "User is a physicist" and verdict["reasons"]
+    line = _belief_line()
+    assert "You kept what you hold" in line and "User is a chef" in line
+    [thought] = th.recent(5, kinds=["conflict"])
+    assert thought["decision"] == "held" and thought["status"] == "open"
+
+
+def test_a_question_is_asked_and_the_users_answer_settles_both_stores(cur, turn, monkeypatch):
+    """On QUESTION the value was replaced silently. Now the reply asks, the claims spine holds both as
+    disputed, and the user's answer to that question settles it in the profile and the spine alike."""
+    from eli.cognition import thoughts as th
+    from eli.memory import claims
+    from eli.runtime import profile_extractor as pe
+    from eli.kernel.stages.prompt_assembly import _belief_line
+    _insert_user_pattern(cur, "identity.role", "User is a physicist", provenance="user_explicit")
+    _insert_user_pattern(cur, "identity.role", "User is an engineer", provenance="user_explicit")
+    assert turn["belief_verdicts"][-1]["action"] == "question" and "Ask the user" in _belief_line()
+    assert {r["value"]: r["status"] for r in claims.history(cur, "identity.role")} == {
+        "User is a physicist": "current", "User is an engineer": "disputed"}
+    assert th.recent(5, kinds=["conflict"])[0]["decision"] == "raised"
+    asked = "You said physicist before and engineer just now - User is a physicist or User is an engineer?"
+    assert pe._answer_open_conflicts(cur, "user is a physicist, still", asked, "", None) == ["identity.role"]
+    assert [r["value"] for r in claims.current(cur)] == ["User is a physicist"]
+    assert [r[0] for r in _role(cur)] == ["User is a physicist"], "the profile takes the value that stands"
+    assert th.recent(5, kinds=["conflict"])[0]["outcome"] == "done"
+
+
+def test_a_members_profile_facts_are_their_claims_not_the_owners(cur, monkeypatch):
+    from eli.memory import claims, policy
+    monkeypatch.setattr(policy, "rbac_members", lambda: frozenset({"member-b"}))
+    monkeypatch.setattr(policy, "_active_user_id", lambda: "")
+    _insert_user_pattern(cur, "identity.role", "User is a baker", provenance="user_explicit", user_id="member-b")
+    assert claims.current(cur) == []
+    assert [r["value"] for r in claims.current(cur, subject=claims.user_subject("member-b"))] == ["User is a baker"]
+
+
+def test_a_fact_said_again_on_another_day_is_another_confirmation_of_its_claim(cur):
+    from eli.memory import claims
+    _establish(cur, times=3)
+    [row] = claims.current(cur)
+    assert row["confirmations"] == 3 and row["origin"] == "user_explicit"
+    assert "you said so 3 times" in claims.basis(row)
+
+
+def test_a_verdict_kept_in_the_same_database_never_waits_behind_the_profiles_own_write(tmp_path, monkeypatch):
+    """The thoughts live in the same file as the profile: written on a second connection while the
+    profile's write was open, the thought waited out the lock's timeout (seconds on the turn) and was
+    lost. It is written beside the open write instead, as soon as that commits."""
+    import threading
+    from eli.cognition import thoughts as th
+    from eli.kernel import request_context as rc
+    db = tmp_path / "user.sqlite3"
+    ensure_profile_tables(db)
+    monkeypatch.setattr(th, "_default_db_path", lambda: db)
+    con = sqlite3.connect(str(db), timeout=5.0)
+    cur = con.cursor()
+    _establish(cur)
+    con.commit()
+    token = rc.turn_facts_var.set({})
+    try:
+        # an earlier fact of the same message is written and not yet committed: the profile holds the lock
+        _insert_user_pattern(cur, "interest.topic", "tide tables", provenance="user_passing")
+        started = time.monotonic()
+        assert _insert_user_pattern(cur, "identity.role", "User is a chef", provenance="user_passing") is False
+        took = time.monotonic() - started
+    finally:
+        rc.turn_facts_var.reset(token)
+    con.commit()
+    for t in [t for t in threading.enumerate() if t.name == "eli-write-beside"]:
+        t.join()
+    con.close()
+    assert took < 5.0, f"the profile write waited {took:.1f}s behind its own lock"
+    assert [t["decision"] for t in th.recent(5, kinds=["conflict"], db_path=db)] == ["held"]

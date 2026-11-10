@@ -125,3 +125,36 @@ def _fallback_to_delete(conn: sqlite3.Connection, db_path: str | None,
         # own error handling / init_data.store_blocker() surfaces an actionable
         # message rather than a bare traceback.
         log.debug("could not set journal_mode=DELETE either for %s", key, exc_info=True)
+
+
+def database_file(conn) -> str:
+    """The file a connection (or cursor) is open on; "" for an in-memory database or one that cannot say."""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        return str(row[2] or "") if row else ""
+    except sqlite3.Error:
+        return ""
+
+
+def write_beside(conn, other_file, fn) -> None:
+    """Run `fn` (a write to `other_file` on a connection of its own) without waiting on `conn`'s write.
+    When both are the same file, `conn` may hold its write lock until its caller commits, and a second
+    connection's write would wait out its timeout behind it and fail; then `fn` runs on a thread of its
+    own, which writes as soon as `conn`'s caller commits. Otherwise at once, here."""
+    from pathlib import Path
+    mine = database_file(conn) if conn is not None else ""
+    try:
+        same = bool(mine) and Path(mine).resolve() == Path(str(other_file)).resolve()
+    except (OSError, ValueError, TypeError):
+        same = False
+    if not same:
+        fn()
+        return
+    import threading
+
+    def _run() -> None:
+        try:
+            fn()
+        except (sqlite3.Error, OSError, ValueError, TypeError, ImportError, AttributeError, KeyError) as failure:
+            log.warning("[SQLITE] a write beside %s failed: %s", mine, failure)
+    threading.Thread(target=_run, name="eli-write-beside", daemon=True).start()

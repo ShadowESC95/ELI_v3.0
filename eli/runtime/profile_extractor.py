@@ -371,9 +371,10 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
                             pattern_data: str,
                             provenance: str = "user_passing",
                             said_at: float | None = None,
-                            who: str = "") -> bool:
+                            who: str = "") -> str:
     """Weigh a replacement for a single-valued key, and retire the old value only
-    if it actually loses.
+    if it actually loses. Returns the verdict the caller applies to the claims
+    spine too ("concede" or "question"), or "" when the standing value holds.
 
     This used to delete unconditionally: whoever wrote last won. That is the
     yes-man mechanism sitting in the data layer — it makes ASSERTION equal to
@@ -384,10 +385,12 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
     `eli.cognition.belief`), each as of when it was said: `said_at` is the new
     statement's own time (a replayed old turn is weighed as old, not as said now),
     and a statement older than the value it would replace cannot correct it.
-    Returns True when the replacement should proceed. False means the standing
+    A truthy verdict means the replacement should proceed. "" means the standing
     value held and the CALLER MUST NOT INSERT — an unweighed insert would leave
-    both values present, which is worse than either outcome. Only `who`'s rows
-    (pattern_owner) are weighed or retired: one user's statement never touches
+    both values present, which is worse than either outcome. Neither a hold nor a
+    question is kept silent: each is voiced (eli/cognition/belief.voice), so the
+    reply says ELI is keeping what it holds, or asks which is right. Only `who`'s
+    rows (pattern_owner) are weighed or retired: one user's statement never touches
     another's facts.
 
     Retiring still DELETES rather than flagging, for the original reason: several
@@ -398,10 +401,12 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
     """
     now = time.time()
     said = float(said_at) if said_at else now
+    decided = "concede"
     try:
         from eli.cognition.belief import (
-            Belief, HOLD, assess_claim,
+            Belief, HOLD, QUESTION, assess_claim, voice,
         )
+        from eli.memory.claims import user_subject
         from eli.cognition.stance_store import ensure_tables, record_revision
         ensure_tables(cur)
         row = cur.execute(
@@ -421,7 +426,7 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
                 # An earlier statement cannot correct a later one: replaying history at boot used
                 # to set the name, role or style back to whatever the oldest window said.
                 log.debug("profile_extractor: keeping %s=%r, said after %r", pattern_type, row[0], pattern_data)
-                return False
+                return ""
             standing = Belief(statement=row[0], corroboration=int(row[1] or 1),
                               provenance=row[2], last_seen=standing_seen)
             challenger = Belief(statement=pattern_data, corroboration=1,
@@ -432,10 +437,14 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
             # them isn't caving (caving is yielding when you hold the better evidence, which HOLD catches).
             # Refusing here would bring back the original defect of a correction leaving two mutually
             # exclusive values.
+            if verdict.action in (HOLD, QUESTION):
+                voice(verdict.action, about=pattern_type, standing=row[0], challenger=pattern_data,
+                      reasons=verdict.reasons, subject=user_subject(who), conn=cur)
             if verdict.action == HOLD:
                 log.debug("profile_extractor: keeping %s=%r over %r (%s)",
                           pattern_type, row[0], pattern_data, verdict.action)
-                return False
+                return ""
+            decided = "question" if verdict.action == QUESTION else "concede"
             record_revision(cur, "user_pattern", pattern_type, row[0], pattern_data,
                             reason="; ".join(verdict.reasons),
                             standing_weight=verdict.standing_weight,
@@ -471,16 +480,22 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
         )
     except Exception:
         log.debug("could not retire earlier semantic %s rows", pattern_type, exc_info=True)
-    return True
+    return decided
 
 
 def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data: str,
-                          provenance: str, now: float, who: str = "") -> None:
+                          provenance: str, now: float, who: str = "", verdict: str = "") -> None:
     """Give this user_patterns row a real entry in the bitemporal claims spine
     (eli.memory.claims) instead of being a disconnected free-text duplicate.
     pattern_type/pattern_data are already relation/value-shaped — this is a
     direct claims.record(), not the first-person-text extraction claims.py
     also offers, which would re-parse text that's already structured.
+
+    The claim is the user's (`who`, as claims.user_subject keys members), its
+    origin the fact's provenance (one vocabulary: claims.ORIGINS), the day it was
+    said what makes a restatement another confirmation, and `verdict` the one
+    the profile's weighing reached, so the two stores never decide one fact two
+    ways (the spine used to dispute a value the profile had already replaced).
 
     Best-effort: a failure here must never break the user_patterns write it
     rides alongside, so every exception is swallowed after a debug log.
@@ -489,8 +504,9 @@ def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data:
         from eli.memory import claims as _claims
         claim_id = _claims.record(
             cur, pattern_type, pattern_data,
+            subject=_claims.user_subject(who),
             single_valued=pattern_type.lower() in _SINGLE_VALUED_PATTERNS,
-            origin=provenance, now=now,
+            origin=provenance, valid_from=now, now=time.time(), verdict=verdict,
         )
         if claim_id is not None:
             cur.execute(
@@ -537,11 +553,13 @@ def _insert_user_pattern(
 
     _ensure_user_column(cur)
     same = _same_fact_row(cur, pattern_type, pattern_data, who)
+    verdict = ""
     if same is None and pattern_type.lower() in _SINGLE_VALUED_PATTERNS:
         # A refusal means the standing value won. Inserting anyway would leave
         # both values present on a key that is single-valued by definition.
-        if not _supersede_single_valued(cur, pattern_type, pattern_data,
-                                        provenance=provenance, said_at=now, who=who):
+        verdict = _supersede_single_valued(cur, pattern_type, pattern_data,
+                                           provenance=provenance, said_at=now, who=who)
+        if not verdict:
             return False
 
     if same is not None:
@@ -612,7 +630,7 @@ def _insert_user_pattern(
     # Must run on BOTH insert paths. An earlier cut returned straight after the
     # new insert and skipped it, so nothing reached the semantic tier at all.
     _promote_to_semantic(cur, pattern_type, pattern_data, now, who=who)
-    _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now, who=who)
+    _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now, who=who, verdict=verdict)
     return True
 
 
@@ -865,22 +883,74 @@ def write_patterns_from_turn(
 
     db = db_path or _user_db()
     patterns = extract_patterns_from_text(user_text)
+    question = _open_question()
 
-    if not patterns:
+    if not patterns and not question:
         return 0
 
     con = sqlite3.connect(str(db))
     cur = con.cursor()
 
     inserted = 0
-    for ptype, pdata in patterns:
-        if _insert_user_pattern(cur, ptype, pdata, ts_value=ts_value,
-                                provenance=provenance_of(ptype), user_id=user_id):
-            inserted += 1
-
-    con.commit()
-    con.close()
+    try:
+        if question:
+            _answer_open_conflicts(cur, str(user_text or ""), question, pattern_owner(user_id), ts_value)
+        for ptype, pdata in patterns:
+            if _insert_user_pattern(cur, ptype, pdata, ts_value=ts_value,
+                                    provenance=provenance_of(ptype), user_id=user_id):
+                inserted += 1
+        con.commit()
+    finally:
+        con.close()
     return inserted
+
+
+def _open_question() -> str:
+    """The question ELI's last reply in this conversation left open, if any (pending_proposal)."""
+    try:
+        from eli.runtime.pending_proposal import get_follow_up
+        return str((get_follow_up() or {}).get("question") or "")
+    except (OSError, ValueError, ImportError, AttributeError, TypeError) as failure:
+        log.debug("open question unreadable: %s", failure)
+        return ""
+
+
+def _answer_open_conflicts(cur: sqlite3.Cursor, user_text: str, question: str, who: str,
+                           said_at: float | None) -> list:
+    """The user's answer to the question ELI asked about a dispute settles it in the claims spine
+    (claims.answer_conflicts), and the profile takes the value that stands: one fact, decided once."""
+    try:
+        from eli.memory import claims as _claims
+        subject = _claims.user_subject(who)
+        settled = _claims.answer_conflicts(cur, user_text, question, subject=subject)
+    except (sqlite3.Error, ImportError, ValueError, TypeError) as failure:
+        log.debug("conflict answer not read: %s", failure)
+        return []
+    for relation in settled:
+        row = cur.execute("SELECT value FROM memory_claims WHERE subject = ? AND relation = ? AND status = 'current' "
+                          "ORDER BY id DESC LIMIT 1", (subject, relation)).fetchone()
+        if not row or not _table_exists(cur, "user_patterns"):
+            continue
+        kept = str(row[0])
+        try:
+            has = cur.execute("SELECT 1 FROM user_patterns WHERE lower(COALESCE(pattern_type,'')) = lower(?) "
+                              "AND lower(COALESCE(pattern_data,'')) = lower(?) AND COALESCE(user_id, '') = ?",
+                              (relation, kept, who)).fetchone()
+            cur.execute("DELETE FROM user_patterns WHERE lower(COALESCE(pattern_type,'')) = lower(?) "
+                        "AND lower(COALESCE(pattern_data,'')) <> lower(?) AND COALESCE(user_id, '') = ?",
+                        (relation, kept, who))
+            when = float(said_at or time.time())
+            if has:
+                cur.execute("UPDATE user_patterns SET provenance = 'user_explicit', timestamp = ?, ts = ? "
+                            "WHERE lower(COALESCE(pattern_type,'')) = lower(?) AND COALESCE(user_id, '') = ?",
+                            (when, when, relation, who))
+            else:
+                cur.execute("INSERT INTO user_patterns(pattern_type, pattern_data, timestamp, ts, corroboration, "
+                            "provenance, user_id) VALUES (?, ?, ?, ?, 1, 'user_explicit', ?)",
+                            (relation, kept, when, when, who or None))
+        except sqlite3.Error as failure:
+            log.debug("profile not brought in line with the settled claim: %s", failure)
+    return settled
 
 
 def backfill_user_patterns(db_path: Path | None = None, limit: int = 2500) -> dict[str, Any]:

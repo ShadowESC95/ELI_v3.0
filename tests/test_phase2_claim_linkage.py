@@ -75,10 +75,12 @@ def test_reaffirming_the_same_pattern_reuses_the_same_claim_id(cur):
 
 
 def test_a_single_valued_pattern_change_supersedes_its_claim(cur):
-    """project.current is in _SINGLE_VALUED_PATTERNS — a new value replaces the
-    old one in user_patterns AND must supersede (not duplicate) the old claim."""
-    _insert_user_pattern(cur, "project.current", "building the GUI")
-    _insert_user_pattern(cur, "project.current", "building the API")
+    """project.current is in _SINGLE_VALUED_PATTERNS — a new value the weighing concedes to replaces
+    the old one in user_patterns AND supersedes (not duplicates) the old claim: one verdict, both stores."""
+    import time
+    old = time.time() - 400 * 86400
+    _insert_user_pattern(cur, "project.current", "building the GUI", ts_value=old)
+    _insert_user_pattern(cur, "project.current", "building the API", provenance="user_explicit")
 
     history = claims.history(cur, "project.current")
     assert [h["value"] for h in history] == ["building the GUI", "building the API"]
@@ -89,6 +91,16 @@ def test_a_single_valued_pattern_change_supersedes_its_claim(cur):
         "SELECT claim_id FROM user_patterns WHERE pattern_data = 'building the API'"
     ).fetchone()[0]
     assert linked == current_claim_id
+
+
+def test_a_change_the_evidence_does_not_settle_is_disputed_in_the_claims_too(cur):
+    """The weighing said QUESTION and the profile took the newer value, while the claims spine applied
+    a rule of its own: the two stores decided one fact two ways. The spine follows the one verdict."""
+    _insert_user_pattern(cur, "project.current", "building the GUI")
+    _insert_user_pattern(cur, "project.current", "building the API")
+    rows = {h["value"]: h["status"] for h in claims.history(cur, "project.current")}
+    assert rows == {"building the GUI": "current", "building the API": "disputed"}
+    assert claims.open_conflicts(cur)[0]["relation"] == "project.current"
 
 
 # ── eli_stances ───────────────────────────────────────────────────────────────

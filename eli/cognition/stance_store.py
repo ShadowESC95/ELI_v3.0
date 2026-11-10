@@ -151,14 +151,36 @@ def _overlap(a: str, b: str) -> float:
     return len(sa & sb) / min(len(sa), len(sb))
 
 
+def _ensure_words(cur: sqlite3.Cursor) -> None:
+    """The index of the words of every topic held, so finding a topic reads only the topics that share
+    a word with it. Made when a stance is first looked up or written, and filled once from the stances
+    held before it existed."""
+    cur.execute("CREATE TABLE IF NOT EXISTS eli_stance_words (word TEXT NOT NULL, topic TEXT NOT NULL, "
+                "PRIMARY KEY (word, topic))")
+    if cur.execute("SELECT 1 FROM eli_stance_words LIMIT 1").fetchone():
+        return
+    for (topic,) in cur.execute("SELECT DISTINCT lower(topic) FROM eli_stances").fetchall():
+        _index_topic(cur, topic)
+
+
+def _index_topic(cur: sqlite3.Cursor, topic: str) -> None:
+    t = _norm(topic)
+    cur.executemany("INSERT OR IGNORE INTO eli_stance_words (word, topic) VALUES (?, ?)",
+                    [(w, t) for w in set(t.split()) if w])
+
+
 def _find_topic(cur: sqlite3.Cursor, topic: str) -> Optional[str]:
-    """The stored topic key this one is about, if any."""
+    """The stored topic key this one is about, if any: among the held topics that share a word with
+    it (the word index), the one sharing the most."""
     t = _norm(topic)
     if not t:
         return None
+    _ensure_words(cur)
+    words = sorted(set(t.split()))
     rows = cur.execute(
-        "SELECT DISTINCT topic FROM eli_stances WHERE superseded_by IS NULL"
-    ).fetchall()
+        "SELECT DISTINCT w.topic FROM eli_stance_words w WHERE w.word IN (%s) AND EXISTS ("
+        "SELECT 1 FROM eli_stances s WHERE lower(s.topic) = w.topic AND s.superseded_by IS NULL)"
+        % ",".join("?" * len(words)), words).fetchall()
     best, score = None, 0.0
     for (candidate,) in rows:
         o = _overlap(t, candidate or "")
@@ -227,13 +249,15 @@ def record_stance(cur: sqlite3.Cursor, topic: str, position: str,
         "VALUES (?, ?, ?, 1, 0.8, ?, ?)",
         (topic_n, position, provenance, now, now),
     )
+    _index_topic(cur, topic_n)
     _link_stance_to_claim(cur, topic_n, position, provenance, now)
     return True
 
 
 def revise_stance(cur: sqlite3.Cursor, topic: str, new_position: str,
-                  reason: str = "", now: Optional[float] = None) -> bool:
-    """Change position, keeping the old one and why it was abandoned."""
+                  reason: str = "", now: Optional[float] = None, provenance: str = "user_explicit") -> bool:
+    """Change position, keeping the old one and why it was abandoned. `provenance` is how the new
+    position came about: the user's correction (the default), or ELI's own argued change ("observed")."""
     topic_n = _norm(topic)
     now = float(now or time.time())
     topic_n = _find_topic(cur, topic_n) or topic_n
@@ -252,10 +276,11 @@ def revise_stance(cur: sqlite3.Cursor, topic: str, new_position: str,
     cur.execute(
         "INSERT INTO eli_stances (topic, position, provenance, corroboration, "
         "                         confidence, first_held, last_held) "
-        "VALUES (?, ?, 'user_explicit', 1, 0.8, ?, ?)",
-        (topic_n, str(new_position).strip(), now, now),
+        "VALUES (?, ?, ?, 1, 0.8, ?, ?)",
+        (topic_n, str(new_position).strip(), provenance, now, now),
     )
-    _link_stance_to_claim(cur, topic_n, str(new_position).strip(), "user_explicit", now)
+    _index_topic(cur, topic_n)
+    _link_stance_to_claim(cur, topic_n, str(new_position).strip(), provenance, now)
     return True
 
 

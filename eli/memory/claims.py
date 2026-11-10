@@ -4,10 +4,22 @@ Each claim has a valid interval (valid_from .. valid_to, open while it still hol
 interval (recorded_at .. superseded_at, open while ELI still believes it). A single-valued fact such
 as where someone lives supersedes the old value instead of sitting beside it, and the old claim is
 kept, so "what did I do for work last spring" and "what did you think on 1 March" both have answers.
+
+Where a claim came from is one vocabulary (ORIGINS, as eli/cognition/belief.PROVENANCE_WEIGHT weighs
+it): the user's own word (user_said, user_explicit, user_passing), a document, something observed, ELI's
+inference. Each confirmation is kept with its own source, so a claim is as sure as what bore it out
+(each source by its weight, the user's word once per day it was said), and a restatement on another day
+is another confirmation.
+
+A disputed claim is never settled silently: when something that is not the user's word contradicts the
+user's, both stand marked disputed, ELI raises it (a "conflict" thought, and a turn fact the reply reads,
+eli/cognition/belief.voice), and the user's next word on it settles it: their statement of either value,
+or their answer to the question ELI asked (answer_conflicts).
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,7 +50,7 @@ CREATE TABLE IF NOT EXISTS memory_claims (
     source_roots TEXT,
     contested INTEGER DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_claims_rel ON memory_claims(subject, relation, status);
+CREATE INDEX IF NOT EXISTS idx_claims_rel ON memory_claims(subject, relation, status)
 """
 
 _KEY = re.compile(r"\s+")
@@ -63,34 +75,104 @@ CHANGES_OFTEN = frozenset({"watching", "playing", "reading", "listening_to"})
 # Bumped when extraction changes, so the history is read again (Memory.backfill_claims).
 EXTRACT_VERSION = "2"
 
-# A claim's origin as belief revision names provenance (eli/cognition/belief.PROVENANCE_WEIGHT), so a
-# source counts toward a claim exactly as it counts toward a belief: the user's own word 1, a document
-# 0.6, something observed 0.5, ELI's own inference 0.35.
-_ORIGIN_AS_PROVENANCE = {"user_said": "user_explicit", "document": "document", "observed": "observed",
-                         "eli_said": "inferred", "inferred": "inferred"}
+# Where a claim came from, as belief revision names provenance (eli/cognition/belief.PROVENANCE_WEIGHT),
+# so a source counts toward a claim exactly as it counts toward a belief: the user's own word 1 (said
+# outright) or 0.65 (in passing), a document 0.6, something observed 0.5, ELI's own inference 0.35, a
+# source nobody recorded 0.3. Profile facts and ELI's stances are recorded under the belief names.
+ORIGINS = {"user_said": "user_explicit", "user_explicit": "user_explicit", "user_passing": "user_passing",
+           "document": "document", "observed": "observed", "eli_said": "inferred", "inferred": "inferred"}
+# The origins that are the user's own word: a newer one replaces an older one (the user's life
+# changed), and one of them is what a claim of anything else is disputed against.
+USERS_WORD = frozenset({"user_said", "user_explicit", "user_passing"})
+
+
+def provenance_of(origin: str) -> str:
+    """The belief provenance an origin counts as ("unknown" for one nobody recorded)."""
+    return ORIGINS.get(str(origin or ""), "unknown")
+
+
+def is_users_word(origin: str) -> bool:
+    return str(origin or "") in USERS_WORD
 
 
 def _weight(origin: str) -> float:
     from eli.cognition.belief import PROVENANCE_WEIGHT
-    return PROVENANCE_WEIGHT[_ORIGIN_AS_PROVENANCE.get(str(origin or ""), "inferred")]
+    return PROVENANCE_WEIGHT[provenance_of(origin)]
 
 
 def sureness(origin: str, confirmations: int, contradicted_by: str = "") -> float:
-    """How sure ELI is of a claim: a Beta posterior over its confirmations, each weighted by its
-    source, and the contradiction standing against it, if any (eli/memory/policy.claim_confidence).
-    One user statement 0.67, two 0.75, five 0.86; the user's word contradicted by an inference 0.6,
-    the inference 0.4."""
+    """How sure ELI is of a claim borne out `confirmations` times by one kind of source (confirmed()
+    for several): a Beta posterior over its confirmations, each weighted by its source, and the
+    contradiction standing against it, if any (eli/memory/policy.claim_confidence). One user statement
+    0.67, two 0.75, five 0.86; the user's word contradicted by an inference 0.6, the inference 0.4."""
+    return confirmed([origin] * max(1, int(confirmations)), contradicted_by)
+
+
+def confirmed(origins: List[str], contradicted_by: str = "") -> float:
+    """How sure ELI is of a claim confirmed once by each of these sources: one user statement and one
+    observation is 1 + 0.5 of evidence (0.71), not two user statements (0.75)."""
     from eli.memory.policy import claim_confidence
     against = [_weight(contradicted_by)] if contradicted_by else []
-    return round(claim_confidence([_weight(origin)] * max(1, int(confirmations)), against), 4)
+    return round(claim_confidence([_weight(o) for o in (origins or ["unknown"])], against), 4)
+
+
+def _day(ts: float) -> str:
+    return time.strftime("%Y-%m-%d", time.localtime(float(ts)))
+
+
+def _confirmations(roots_json: Any, origin: str) -> List[Dict[str, Any]]:
+    """A claim's confirmations, each {"root", "origin", "day"}. Rows written before each confirmation
+    kept its own source list bare roots; those count as the claim's own origin."""
+    try:
+        raw = json.loads(roots_json or "[]")
+    except (TypeError, ValueError):
+        raw = []
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, dict):
+            out.append({"root": item.get("root"), "origin": str(item.get("origin") or origin or ""),
+                        "day": str(item.get("day") or "")})
+        else:
+            out.append({"root": item, "origin": str(origin or ""), "day": ""})
+    return out
+
+
+def _is_new(confs: List[Dict[str, Any]], root: Any, origin: str, day: str) -> bool:
+    """Whether a statement is another confirmation: never the same source again (a summary of a
+    statement shares its root, and is no corroboration), and the user's own word at most once a day
+    (one statement is read by the turn and again by the memory it was kept as)."""
+    if root is not None and any(c["root"] == root for c in confs):
+        return False
+    if is_users_word(origin) and any(is_users_word(c["origin"]) and c["day"] == day for c in confs):
+        return False
+    return True
+
+
+# The databases whose claims table this process has made sure of (PRAGMA database_list's file).
+_ensured: set = set()
 
 
 def ensure_schema(conn) -> None:
-    conn.executescript(SCHEMA)
+    """Make sure of the claims table and its columns, once per database. Each statement runs on its
+    own: executescript commits whatever the caller had open first (Memory.forget's deletions were
+    committed before its claims were withdrawn), so it is never used inside a caller's transaction."""
+    try:
+        path = str((conn.execute("PRAGMA database_list").fetchone() or ("", "", ""))[2] or "")
+        # the file as it is now: a store wiped and made again is a new one
+        where = f"{path}:{os.stat(path).st_ino}" if path else ""
+    except Exception:  # noqa: BLE001 - a connection that cannot say its file is made sure of each time
+        where = ""
+    if where and where in _ensured:
+        return
+    for statement in SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
     have = {r[1] for r in conn.execute("PRAGMA table_info(memory_claims)")}
     for name, decl in (("source_roots", "TEXT"), ("contested", "INTEGER DEFAULT 0")):
         if name not in have:
             conn.execute(f"ALTER TABLE memory_claims ADD COLUMN {name} {decl}")
+    if where:
+        _ensured.add(where)
 
 
 def _norm(value: str) -> str:
@@ -109,17 +191,44 @@ def _same(a: str, b: str) -> bool:
     return False
 
 
+def _confirm(conn, cid: int, roots_json: Any, c_origin: str, origin: str, root: Any, vfrom: float, now: float,
+             contradicted_by: str = "") -> None:
+    """One more statement of a standing claim's value: counted when it is another confirmation
+    (_is_new), and the claim as sure as all its sources together (confirmed)."""
+    confs = _confirmations(roots_json, c_origin)
+    if not confs:       # a claim from before its first statement was kept: that statement counts
+        confs = [{"root": None, "origin": str(c_origin or ""), "day": ""}]
+    day = _day(vfrom)
+    if not _is_new(confs, root, origin, day):
+        return
+    confs.append({"root": root, "origin": str(origin or ""), "day": day})
+    held = c_origin if _weight(c_origin) >= _weight(origin) else origin
+    conn.execute("UPDATE memory_claims SET confirmations = ?, source_roots = ?, last_confirmed = ?, confidence = ?, "
+                 "origin = ? WHERE id = ?",
+                 (len(confs), json.dumps(confs), now, confirmed([c["origin"] for c in confs], contradicted_by),
+                  held, int(cid)))
+
+
+def _first(origin: str, root: Any, vfrom: float) -> str:
+    return json.dumps([{"root": root, "origin": str(origin or ""), "day": _day(vfrom)}])
+
+
 def record(conn, relation: str, value: str, *, subject: str = "user", single_valued: bool = True,
            valid_from: Optional[float] = None, source_memory_id: Optional[int] = None,
            source_text: str = "", origin: str = "user_said", confidence: float = 0.7,
-           now: Optional[float] = None, historical: bool = False, root_id: Optional[int] = None) -> Optional[int]:
+           now: Optional[float] = None, historical: bool = False, root_id: Optional[Any] = None,
+           verdict: str = "") -> Optional[int]:
     """Add a claim. Returns its id, or None when there was nothing to add.
 
-    The same value again confirms the standing claim, but only a source with a different root counts as
-    another confirmation (a summary of the same statement is not corroboration). A different value on a
-    single-valued relation closes the standing claim at valid_from and replaces it, unless the newcomer
-    is not the user's own word and the standing claim is: then both stand, marked as disputed.
-    ``historical`` records something that was true and no longer is ("I used to work nights").
+    The same value again confirms the standing claim when it is another confirmation (another source,
+    or the user's word on another day). A different value on a single-valued relation closes the
+    standing claim at valid_from and replaces it, unless the newcomer is not the user's own word and
+    the standing claim is: then both stand, marked as disputed, and ELI raises it. The user's word on a
+    relation in dispute settles the dispute (resolve_conflict): the value they state stands.
+    ``historical`` records something that was true and no longer is ("I used to work nights"): it held
+    up to when it was said, from a time not known, and a standing claim of that value is closed then.
+    ``verdict`` is a decision already weighed (eli/cognition/belief, by the profile's writer, which
+    voices it): "concede" replaces the standing value, "question" disputes it, "hold" adds nothing.
     """
     ensure_schema(conn)
     now = float(now if now is not None else time.time())
@@ -127,69 +236,139 @@ def record(conn, relation: str, value: str, *, subject: str = "user", single_val
     value = str(value or "").strip()
     if not relation or not value:
         return None
+    if verdict == "hold":
+        return None
     root = root_id if root_id is not None else source_memory_id
+    if historical:
+        return _record_former(conn, relation, value, subject=subject, said_at=vfrom, now=now,
+                              source_memory_id=source_memory_id, source_text=source_text, origin=origin, root=root)
+    if is_users_word(origin) and verdict != "question":
+        settled = _settle_dispute_by_word(conn, relation, value, subject=subject, now=now)
+        if settled is not None:
+            return settled
     cur = conn.execute(
         "SELECT id, value, origin, source_roots, valid_from FROM memory_claims "
         "WHERE subject = ? AND relation = ? AND status = 'current'",
         (subject, relation)).fetchall()
-    if not historical:
-        for cid, cval, c_origin, roots_json, _vf in cur:
-            if _same(cval, value):
-                roots = json.loads(roots_json or "[]")
-                if root is not None and root not in roots:
-                    roots.append(root)
-                    held_origin = c_origin if _weight(c_origin) >= _weight(origin) else origin
-                    conn.execute("UPDATE memory_claims SET confirmations = ?, source_roots = ?, last_confirmed = ?, "
-                                 "confidence = ?, origin = ? WHERE id = ?",
-                                 (max(len(roots), 1), json.dumps(roots), now,
-                                  sureness(held_origin, max(len(roots), 1)), held_origin, cid))
-                return int(cid)
+    for cid, cval, c_origin, roots_json, _vf in cur:
+        if _same(cval, value):
+            _confirm(conn, cid, roots_json, c_origin, origin, root, vfrom, now)
+            return int(cid)
     # Said before what ELI already holds (history read back in order, or a late report): it held until
     # the newer value took over, and it does not replace it.
     standing_from = max((float(r[4] or 0.0) for r in cur), default=0.0)
-    if not historical and single_valued and cur and vfrom < standing_from:
+    if single_valued and cur and vfrom < standing_from:
         cursor = conn.execute(
             "INSERT INTO memory_claims (subject, relation, value, single_valued, valid_from, valid_to, recorded_at, "
             "superseded_at, status, source_memory_id, source_text, origin, confidence, last_confirmed, source_roots) "
             "VALUES (?,?,?,1,?,?,?,?,'superseded',?,?,?,?,?,?)",
             (subject, relation, value, vfrom, standing_from, now, now, source_memory_id, str(source_text or "")[:400],
-             origin, sureness(origin, 1), now, json.dumps([root] if root is not None else [])))
+             origin, sureness(origin, 1), now, _first(origin, root, vfrom)))
         return int(cursor.lastrowid)
-    if (not historical and single_valued and cur and relation not in CHANGES_OFTEN and origin != "user_said"
-            and any(o == "user_said" for _c, _v, o, _r, _f in cur)):
+    disputes = (verdict == "question" or (
+        verdict != "concede" and not is_users_word(origin)
+        and any(is_users_word(o) for _c, _v, o, _r, _f in cur)))
+    if single_valued and cur and relation not in CHANGES_OFTEN and disputes:
         # the standing claim is now contradicted: its sureness carries that, as the newcomer's carries it
         for cid, _cval, c_origin, roots_json, _vf in cur:
+            confs = _confirmations(roots_json, c_origin) or [{"origin": c_origin}]
             conn.execute("UPDATE memory_claims SET contested = 1, confidence = ? WHERE id = ?",
-                         (sureness(c_origin, max(len(json.loads(roots_json or "[]")), 1), contradicted_by=origin), cid))
+                         (confirmed([c["origin"] for c in confs], contradicted_by=origin), cid))
+        standing_origin = next((o for _c, _v, o, _r, _f in cur if is_users_word(o)), cur[-1][2])
         cursor = conn.execute(
             "INSERT INTO memory_claims (subject, relation, value, single_valued, valid_from, recorded_at, status, "
             "source_memory_id, source_text, origin, confidence, last_confirmed, source_roots, contested) "
             "VALUES (?,?,?,?,?,?,'disputed',?,?,?,?,?,?,1)",
             (subject, relation, value, 1 if single_valued else 0, vfrom, now, source_memory_id,
-             str(source_text or "")[:400], origin, sureness(origin, 1, contradicted_by="user_said"), now,
-             json.dumps([root] if root is not None else [])))
-        return int(cursor.lastrowid)
+             str(source_text or "")[:400], origin, sureness(origin, 1, contradicted_by=standing_origin), now,
+             _first(origin, root, vfrom)))
+        disputed_id = int(cursor.lastrowid)
+        if not verdict:      # ELI weighed this one itself: it says so (a verdict passed in was voiced by its writer)
+            _raise_conflict(conn, subject, relation, [str(r[1]) for r in cur], value, origin, disputed_id)
+        return disputed_id
     superseded = None
-    if not historical and single_valued and cur:
+    if single_valued and cur:
         superseded = int(cur[-1][0])
         conn.execute("UPDATE memory_claims SET status = 'superseded', valid_to = ?, superseded_at = ? "
                      "WHERE subject = ? AND relation = ? AND status = 'current'", (vfrom, now, subject, relation))
     cursor = conn.execute(
         "INSERT INTO memory_claims (subject, relation, value, single_valued, valid_from, valid_to, recorded_at, "
         "status, supersedes, source_memory_id, source_text, origin, confidence, last_confirmed, source_roots) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (subject, relation, value, 1 if single_valued else 0, vfrom, vfrom if historical else None, now,
-         "former" if historical else "current", superseded, source_memory_id, str(source_text or "")[:400],
-         origin, sureness(origin, 1), now, json.dumps([root] if root is not None else [])))
+        "VALUES (?,?,?,?,?,NULL,?,'current',?,?,?,?,?,?,?)",
+        (subject, relation, value, 1 if single_valued else 0, vfrom, now, superseded, source_memory_id,
+         str(source_text or "")[:400], origin, sureness(origin, 1), now, _first(origin, root, vfrom)))
     return int(cursor.lastrowid)
 
 
-def retire(conn, relation: str, *, subject: str = "user", at: Optional[float] = None,
+def _record_former(conn, relation: str, value: str, *, subject: str, said_at: float, now: float,
+                   source_memory_id: Optional[int], source_text: str, origin: str, root: Any) -> Optional[int]:
+    """Something that held and no longer does ("I used to work nights"): it held, from a time the
+    statement does not give, until it was said. A standing claim of that value ends there; the same
+    former claim said again confirms it."""
+    for cid, cval, c_origin, roots_json in conn.execute(
+            "SELECT id, value, origin, source_roots FROM memory_claims WHERE subject = ? AND relation = ? "
+            "AND status = 'former'", (subject, relation)).fetchall():
+        if _same(cval, value):
+            _confirm(conn, cid, roots_json, c_origin, origin, root, said_at, now)
+            return int(cid)
+    retire(conn, relation, subject=subject, value=value, at=said_at, now=now)
+    cursor = conn.execute(
+        "INSERT INTO memory_claims (subject, relation, value, single_valued, valid_from, valid_to, recorded_at, "
+        "status, source_memory_id, source_text, origin, confidence, last_confirmed, source_roots) "
+        "VALUES (?,?,?,1,NULL,?,?,'former',?,?,?,?,?,?)",
+        (subject, relation, value, said_at, now, source_memory_id, str(source_text or "")[:400], origin,
+         sureness(origin, 1), now, _first(origin, root, said_at)))
+    return int(cursor.lastrowid)
+
+
+def _settle_dispute_by_word(conn, relation: str, value: str, *, subject: str, now: float) -> Optional[int]:
+    """The user's own word on a relation in dispute settles it: the value they state stands (a value
+    of either side; a third is a new statement, and supersedes both). The id of the claim that stands,
+    or None when nothing was in dispute or they named neither side."""
+    rows = conn.execute("SELECT id, value FROM memory_claims WHERE subject = ? AND relation = ? AND status = 'disputed'",
+                        (subject, relation)).fetchall()
+    if not rows:
+        return None
+    sides = rows + conn.execute("SELECT id, value FROM memory_claims WHERE subject = ? AND relation = ? "
+                                "AND status = 'current'", (subject, relation)).fetchall()
+    match = next((str(v) for _i, v in sides if _same(v, value)), None)
+    if match is None:
+        return None
+    resolve_conflict(conn, relation, match, subject=subject, now=now)
+    row = conn.execute("SELECT id FROM memory_claims WHERE subject = ? AND relation = ? AND status = 'current' "
+                       "ORDER BY id DESC LIMIT 1", (subject, relation)).fetchone()
+    return int(row[0]) if row else None
+
+
+def _raise_conflict(conn, subject: str, relation: str, standing: List[str], disputed: str, origin: str,
+                    claim_id: int) -> None:
+    """A dispute ELI found is raised, never kept silently (eli/cognition/belief.voice)."""
+    try:
+        from eli.cognition.belief import QUESTION, voice
+        voice(QUESTION, about=relation, standing=", ".join(standing), challenger=disputed,
+              reasons=[f"{origin.replace('_', ' ')} says otherwise than what you said"], subject=subject,
+              ref=f"conflict:{subject}:{relation}", claim_id=claim_id, conn=conn)
+    except (ImportError, OSError, ValueError, TypeError, AttributeError) as failure:
+        log.debug("conflict not raised: %s", failure)
+
+
+def retire(conn, relation: str, *, subject: str = "user", value: str = "", at: Optional[float] = None,
            now: Optional[float] = None) -> int:
-    """The standing claim on this relation stopped being true ("I no longer work nights")."""
+    """The standing claim on this relation stopped being true ("I no longer work nights"). With
+    `value`, only a standing claim of that value ends: "I no longer work at Acme" says nothing of
+    another employer ELI holds."""
     ensure_schema(conn)
     now = float(now if now is not None else time.time())
     at = float(at if at is not None else now)
+    if value:
+        ids = [cid for cid, cval in conn.execute(
+            "SELECT id, value FROM memory_claims WHERE subject = ? AND relation = ? AND status = 'current'",
+            (subject, relation)).fetchall() if _same(cval, value)]
+        if not ids:
+            return 0
+        cur = conn.execute(f"UPDATE memory_claims SET status = 'superseded', valid_to = ?, superseded_at = ? "
+                           f"WHERE id IN ({','.join('?' * len(ids))})", (at, now, *ids))
+        return int(cur.rowcount or 0)
     cur = conn.execute("UPDATE memory_claims SET status = 'superseded', valid_to = ?, superseded_at = ? "
                        "WHERE subject = ? AND relation = ? AND status = 'current'", (at, now, subject, relation))
     return int(cur.rowcount or 0)
@@ -290,25 +469,67 @@ def conflict_question(conflict: Dict[str, Any]) -> str:
 
 
 def resolve_conflict(conn, relation: str, value: str, subject: str = "user", now: Optional[float] = None) -> int:
-    """The user said which one is right: that value stands, the others are closed as superseded."""
+    """The user said which one is right: that value stands, with their word as one more confirmation
+    and nothing standing against it now; the others are closed as superseded, the figures given for
+    each settled with it, and the conflict thought ELI raised is settled. How many claims were closed."""
     ensure_schema(conn)
     now = float(now if now is not None else time.time())
     keep = _norm(value)
-    n = 0
-    for cid, cval, status, roots_json in conn.execute(
-            "SELECT id, value, status, source_roots FROM memory_claims WHERE subject = ? AND relation = ? "
+    closed = 0
+    settled: List[Tuple[int, bool]] = []
+    for cid, cval, status, roots_json, c_origin in conn.execute(
+            "SELECT id, value, status, source_roots, origin FROM memory_claims WHERE subject = ? AND relation = ? "
             "AND status IN ('current', 'disputed')", (subject, relation)).fetchall():
         if _norm(cval) == keep:
             # the user settled it: one more statement of theirs, and nothing stands against it now
-            n = max(len(json.loads(roots_json or "[]")), 1) + 1
+            confs = _confirmations(roots_json, c_origin) or [{"root": None, "origin": str(c_origin or ""), "day": ""}]
+            confs.append({"root": None, "origin": "user_said", "day": _day(now)})
             conn.execute("UPDATE memory_claims SET status = 'current', contested = 0, confidence = ?, origin = 'user_said', "
-                         "confirmations = ? WHERE id = ?", (sureness("user_said", n), n, cid))
-            _settle_figures(cid, True)
+                         "confirmations = ?, source_roots = ?, last_confirmed = ? WHERE id = ?",
+                         (confirmed([c["origin"] for c in confs]), len(confs), json.dumps(confs), now, cid))
+            settled.append((cid, True))
         else:
             conn.execute("UPDATE memory_claims SET status = 'superseded', valid_to = ?, superseded_at = ?, contested = 0 WHERE id = ?", (now, now, cid))
-            _settle_figures(cid, False)
-            n += 1
-    return n
+            settled.append((cid, False))
+            closed += 1
+
+    def _settle_all() -> None:
+        for claim_id, right in settled:
+            _settle_figures(claim_id, right)
+        from eli.cognition.thoughts import settle as _settle_thought
+        _settle_thought(f"conflict:{subject}:{relation}", "done", how=f"you said {value}"[:120])
+    try:
+        from eli.cognition import thoughts
+        from eli.core.sqlite_util import write_beside
+        write_beside(conn, thoughts._default_db_path(), _settle_all)
+    except (ImportError, OSError, ValueError) as failure:
+        log.debug("conflict figures not settled: %s", failure)
+    return closed
+
+
+def answer_conflicts(conn, text: str, question: str, *, subject: str = SUBJECT_USER, now: Optional[float] = None) -> List[str]:
+    """The user's answer to the question ELI asked about a dispute (`question`, the one its last reply
+    left open, eli/runtime/pending_proposal): for each relation in dispute whose sides the question
+    named, the side the answer names, alone, stands (resolve_conflict). The relations settled."""
+    if not str(text or "").strip() or not str(question or "").strip():
+        return []
+    said, asked = _norm(text), _norm(question)
+    settled: List[str] = []
+    for conflict in open_conflicts(conn, subject):
+        sides = [str(r["value"]) for r in conflict["standing"] + conflict["disputed"]]
+        if not all(_mentions(asked, v) for v in sides):
+            continue
+        named = [v for v in sides if _mentions(said, v)]
+        if len(named) == 1:
+            resolve_conflict(conn, conflict["relation"], named[0], subject=subject, now=now)
+            settled.append(str(conflict["relation"]))
+    return settled
+
+
+def _mentions(text_norm: str, value: str) -> bool:
+    """Whether normalised text names a value: its words in order, as whole words."""
+    v = _norm(value)
+    return bool(v) and re.search(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", text_norm) is not None
 
 
 def _settle_figures(claim_id: int, right: bool) -> int:
@@ -340,20 +561,25 @@ def describe(claim: Dict[str, Any]) -> str:
     def day(ts):
         return time.strftime("%Y-%m-%d", time.localtime(float(ts))) if ts else "?"
     rel = str(claim["relation"]).replace("_", " ")
-    span = f"since {day(claim['valid_from'])}" if not claim.get("valid_to") else \
-        f"{day(claim['valid_from'])} to {day(claim['valid_to'])}"
+    if not claim.get("valid_to"):
+        span = f"since {day(claim['valid_from'])}"
+    elif claim.get("valid_from") is None:          # held, from a time not said, until then
+        span = f"until {day(claim['valid_to'])}"
+    else:
+        span = f"{day(claim['valid_from'])} to {day(claim['valid_to'])}"
     flag = "; DISPUTED, unresolved" if claim.get("status") == "disputed" else ("; contested" if claim.get("contested") else "")
     return f"{rel}: {claim['value']} ({span}; learned {day(claim['recorded_at'])}{flag}; {basis(claim)})"
 
 
-_ORIGIN_WORDS = {"user_said": "you said so", "document": "from a document", "observed": "seen",
-                 "eli_said": "ELI's inference", "inferred": "ELI's inference"}
+_ORIGIN_WORDS = {"user_said": "you said so", "user_explicit": "you said so", "user_passing": "you mentioned it",
+                 "document": "from a document", "observed": "seen", "eli_said": "ELI's inference",
+                 "inferred": "ELI's inference"}
 
 
 def origin_words(origin: Any) -> str:
-    """Where a claim came from, in words ("you said so"); an origin with no words of its own is ELI's
-    inference."""
-    return _ORIGIN_WORDS.get(str(origin or ""), _ORIGIN_WORDS["inferred"])
+    """Where a claim came from, in words ("you said so"); an origin not in ORIGINS is unknown and says
+    so, never ELI's inference."""
+    return _ORIGIN_WORDS.get(str(origin or ""), "its source was not recorded")
 
 
 def basis(claim: Dict[str, Any]) -> str:
@@ -497,7 +723,8 @@ def record_from_text(conn, text: str, *, source_memory_id: Optional[int] = None,
     ids: List[int] = []
     for c in extract(text):
         if c["retire"]:
-            retire(conn, c["relation"], subject=subject, at=when)
+            # only the value the user said ended ("I no longer work at Acme" leaves another employer)
+            retire(conn, c["relation"], subject=subject, value=c["value"], at=when)
             continue
         cid = record(conn, c["relation"], c["value"], subject=subject, single_valued=c["single_valued"],
                      valid_from=when, source_memory_id=source_memory_id, source_text=text, origin=origin,

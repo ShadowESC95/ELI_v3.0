@@ -99,7 +99,48 @@ def _follow_up_line() -> str:
     return ""
 
 
+def _belief_line() -> str:
+    """What the user's message disagreed with, and what ELI made of it (eli/cognition/belief.voice):
+    kept what it holds, or found the evidence does not settle it. Said outright so the reply says it,
+    in ELI's own words, instead of the store deciding it silently."""
+    try:
+        verdicts = list((_request_context.turn_facts_var.get() or {}).get("belief_verdicts") or [])
+    except Exception:
+        return ""
+    lines = []
+    for v in verdicts[:3]:
+        about = str(v.get("about") or "").replace("_", " ").replace(".", " ")
+        why = "; ".join(str(r) for r in (v.get("reasons") or [])[:3])
+        held_or_new = f'you hold "{str(v.get("standing") or "")[:200]}", what was just said is "{str(v.get("challenger") or "")[:200]}"'
+        if v.get("action") == "hold":
+            lines.append(f"\nWHAT THE USER JUST SAID DISAGREES WITH WHAT YOU HOLD ({about}): {held_or_new}. You kept what "
+                         f"you hold ({why}). Say so in this reply, in your own words, and why; if their message "
+                         "gives a reason that settles it, take that up instead.")
+        elif v.get("action") == "question":
+            lines.append(f"\nWHAT THE USER JUST SAID DISAGREES WITH WHAT YOU HOLD ({about}): {held_or_new}. The evidence "
+                         f"does not settle it ({why}). Ask the user in this reply, in your own words, which is right.")
+    return "".join(lines)
+
+
 class PromptAssemblyMixin:
+    def _held_stance_line(self, user_input: str) -> str:
+        """What ELI has held on this message's subject in earlier conversations
+        (eli/cognition/stance_capture.held_line), read from the store the stances are kept in."""
+        try:
+            import sqlite3 as _sqlite3
+            from eli.cognition.stance_capture import held_line
+            db = getattr(getattr(self, "memory", None), "db_path", None)
+            if not db:
+                return ""
+            conn = _sqlite3.connect(str(db), timeout=5.0)
+            try:
+                return held_line(conn.cursor(), _users_own_words(user_input))
+            finally:
+                conn.close()
+        except Exception:
+            log.debug("held stance line skipped", exc_info=True)
+            return ""
+
     @staticmethod
     def _cap_text(text: str, budget_chars: int, label: str = "evidence") -> str:
         """Bound an evidence block to `budget_chars` characters. When the cap
@@ -595,7 +636,7 @@ Answer:"""
                 f"\n\nCURRENT TIME: {_now} on {_date}."
                 " You always know today's weekday and date from this — never claim otherwise."
                 + _date_facts_line(user_input)
-                + _follow_up_line()
+                + _follow_up_line() + _belief_line() + self._held_stance_line(user_input)
                 + "\nWhen the user says 'me' or 'my', they mean themselves (the user), not you (ELI)."
                 + ("\nThe user wants depth — provide a full, detailed answer." if _compact_wants_depth
                    else "\nFor technical queries, stay focused. For casual check-ins, engage naturally in ELI\'s persona; no sterile status report.")
@@ -677,7 +718,7 @@ Answer:"""
         enhanced_system += (
             f"\n\nCURRENT TIME (authoritative, do not approximate): {_now} on {_date}."
             + _date_facts_line(user_input)
-            + _follow_up_line()
+            + _follow_up_line() + _belief_line() + self._held_stance_line(user_input)
             + "\n\nRESPONSE DISCIPLINE — obey on every reply:"
             "\n- Answer what the user actually asked. For opinion, banter, callbacks, and cultural references, respond in ELI persona rather than treating the message as a support ticket."
             "\n- NEVER start your response by echoing or paraphrasing what the user just said."

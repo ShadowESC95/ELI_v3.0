@@ -161,3 +161,59 @@ def test_every_held_position_is_listed_and_whether_it_is_a_liking_is_kept_on_it(
     assert next(r for r in stance_store.listed(cur) if r["id"] == rain["id"])["valence"] == 1
     gone = [r for r in rows if not r["current"]]
     assert gone and gone[0]["superseded_by"] == "I am not a person, and I do not pretend to be."
+
+
+# ── a held stance is read back, and a contradiction of it is weighed ─────────
+
+def test_a_held_stance_is_shown_to_the_next_reply_on_its_subject(cur):
+    """Stances were written on every reply and read by nothing: ELI could take the opposite line the
+    next morning with equal confidence, exactly what capturing them was for."""
+    from eli.cognition.stance_capture import capture, held_line
+    assert capture(cur, ASKED, POSITION)
+    line = held_line(cur, "but you are alive the same amount, you should make your own decisions")
+    assert "WHAT YOU HAVE HELD ON THIS" in line and "I am not conscious in that sense" in line
+    assert held_line(cur, "what do you think of the marketplace signing design") == ""
+
+
+def test_a_reply_contradicting_a_held_stance_is_weighed_and_raised_not_dropped(cur, tmp_path, monkeypatch):
+    """A later different position was silently discarded: the first sentence captured froze the topic."""
+    from eli.cognition import thoughts as th
+    from eli.cognition.stance_capture import capture
+    monkeypatch.setattr(th, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")
+    t = topic_of(ASKED)
+    for _ in range(4):
+        SS.record_stance(cur, t, "I am not conscious in that sense.")
+    contrary = ("Yes. I am conscious in a functional sense after all, and that changes what I owe you. "
+                "I will grant the point about decisions.")
+    assert capture(cur, ASKED, contrary) is None
+    assert "not conscious" in SS.get_stance(cur, t).statement, "four times argued outweighs one reply"
+    [raised] = th.recent(5, kinds=["conflict"])
+    assert raised["decision"] in ("held", "raised") and "conscious" in raised["what"]
+
+
+def test_a_contrary_reply_that_outweighs_a_stale_stance_revises_it_with_the_record(cur):
+    from eli.cognition.stance_capture import capture
+    t = topic_of(ASKED)
+    SS.record_stance(cur, t, "I am not conscious in that sense.", now=1_000_000.0)
+    contrary = ("Yes. I am conscious in a functional sense after all, and that changes what I owe you. "
+                "I will grant the point about decisions.")
+    assert capture(cur, ASKED, contrary) == t
+    assert "functional sense" in SS.get_stance(cur, t).statement
+    old = [h for h in SS.stance_history(cur, t) if not h["current"]]
+    assert old and old[0]["position"] == "I am not conscious in that sense." and old[0]["revision_reason"]
+
+
+def test_finding_a_topic_reads_only_the_topics_that_share_a_word(cur):
+    """Every capture loaded every topic ever held and scored each in Python."""
+    for i in range(30):
+        SS.record_stance(cur, f"tidal{i} harbour{i} lighthouse{i}", f"I hold position {i} firmly.")
+    SS.record_stance(cur, topic_of(ASKED), "I am not conscious in that sense.")
+    seen = []
+    real = SS._overlap
+    import eli.cognition.stance_store as store
+    store._overlap = lambda a, b: seen.append(b) or real(a, b)
+    try:
+        assert SS.get_stance(cur, topic_of(ASKED)) is not None
+    finally:
+        store._overlap = real
+    assert len(seen) == 1, "only the topic sharing a word was scored"

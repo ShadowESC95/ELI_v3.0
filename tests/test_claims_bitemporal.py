@@ -37,11 +37,13 @@ def test_what_eli_knew_at_a_date(conn):
 
 
 def test_the_same_value_confirms_instead_of_duplicating(conn):
+    """The first statement is one (it was not counted when it had no root), a summary of it (the same
+    root) is none, another source is another."""
     claims.record(conn, "work_schedule", "Nights", now=_d("2026-07-01"), root_id=11)
     claims.record(conn, "work_schedule", "nights", now=_d("2026-07-02"), root_id=11)
     claims.record(conn, "work_schedule", "nights", now=_d("2026-07-03"), root_id=12)
     rows = claims.history(conn, "work_schedule")
-    assert len(rows) == 2 and rows[-1]["confirmations"] == 2
+    assert len(rows) == 2 and rows[-1]["confirmations"] == 3
 
 
 def test_no_longer_retires_and_used_to_is_only_history(conn):
@@ -224,14 +226,16 @@ def test_how_sure_a_claim_is_follows_what_bore_it_out(conn):
     [c] = claims.current(conn)
     assert c["confidence"] == pytest.approx(0.6667, abs=1e-3)
     claims.record(conn, "work_schedule", "nights", now=_d("2026-07-01"), root_id=11)
-    claims.record(conn, "work_schedule", "nights", now=_d("2026-07-02"), root_id=12)
     [c] = claims.current(conn)
     assert c["confirmations"] == 2 and c["confidence"] == pytest.approx(0.75, abs=1e-3)
     assert "sure 0.75: you said so twice" in claims.describe(c)
+    claims.record(conn, "work_schedule", "nights", now=_d("2026-07-02"), root_id=12)
+    [c] = claims.current(conn)
+    assert c["confirmations"] == 3 and c["confidence"] == pytest.approx(0.8, abs=1e-3)
     claims.record(conn, "work_schedule", "days", now=_d("2026-07-03"), origin="observed")
     [standing] = claims.current(conn)
     disputed = conn.execute("SELECT confidence FROM memory_claims WHERE status = 'disputed'").fetchone()[0]
-    assert standing["contested"] and disputed < 0.5 < standing["confidence"] < 0.75
+    assert standing["contested"] and disputed < 0.5 < standing["confidence"] < 0.8
     assert "contradicted" in claims.describe(standing)
 
 
@@ -301,3 +305,104 @@ def test_a_claim_reaches_the_evidence_scored_by_its_chance_and_assessed_for_the_
     assert len(used) == 1 and next(iter(used.values()))["request_id"].endswith(":turn-9")
     assert len(ep._ledger().open_assessments("claim", assessed_type="claim_assessed", outcome_type="claim_outcome",
                                              subject_prefix="claim:")) == 1
+
+
+# ── where a claim came from, and what bore it out ────────────────────────────────────────────────
+
+def test_every_origin_a_writer_uses_is_known_to_the_weighting_and_the_words():
+    """The profile wrote 'user_passing' and a revised stance 'user_explicit', which the weighting did
+    not know: both fell to ELI's own inference (0.574, "ELI's inference once"), and an explicit user
+    statement was not the user's word to the dispute rule."""
+    assert claims.sureness("user_passing", 1) == pytest.approx(0.6226, abs=1e-3)
+    assert claims.sureness("user_explicit", 1) == claims.sureness("user_said", 1)
+    assert claims.basis({"origin": "user_passing", "confidence": 0.62}).startswith("sure 0.62: you mentioned it once")
+    assert "inference" not in claims.basis({"origin": "nobody-recorded", "confidence": 0.5})
+    assert all(claims.is_users_word(o) for o in ("user_said", "user_explicit", "user_passing"))
+    c = sqlite3.connect(":memory:")
+    claims.record(c, "lives_in", "Lisbon", origin="user_explicit", now=_d("2026-05-01"))
+    claims.record(c, "lives_in", "Porto", origin="user_passing", now=_d("2026-06-01"))
+    assert [r["value"] for r in claims.current(c)] == ["Porto"] and claims.open_conflicts(c) == [], \
+        "the user's newer word replaces their older word"
+
+
+def test_a_claim_is_as_sure_as_each_of_its_sources_and_a_restatement_another_day_counts():
+    c = sqlite3.connect(":memory:")
+    claims.record(c, "employer", "Harbour Works", origin="user_said", now=_d("2026-05-01"), root_id=1)
+    claims.record(c, "employer", "Harbour Works", origin="observed", now=_d("2026-05-02"), root_id=2)
+    [row] = claims.current(c)
+    assert row["confirmations"] == 2 and row["confidence"] == pytest.approx(0.7143, abs=1e-3), "1 + 0.5, not 1 + 1"
+    claims.record_from_text(c, "I work at Harbour Works", when=_d("2026-05-03"))          # said again, no root
+    claims.record_from_text(c, "I work at Harbour Works", when=_d("2026-05-03"))          # the same day again
+    [row] = claims.current(c)
+    assert row["confirmations"] == 3
+
+
+def test_what_used_to_hold_is_found_for_a_period_before_it_was_said():
+    """'I used to work nights' was valid only at the instant it was said, so no period found it."""
+    c = sqlite3.connect(":memory:")
+    claims.record_from_text(c, "I work nights at the depot", when=_d("2026-01-01"))
+    claims.record_from_text(c, "I used to work nights", when=_d("2026-07-01"))
+    spring = claims.valid_during(c, _d("2026-03-01"), _d("2026-04-01"))
+    assert {(r["value"], r["status"]) for r in spring} == {("nights", "superseded"), ("nights", "former")}
+    assert claims.current(c) == [], "the standing claim of what used to hold ends when it was said"
+    only = sqlite3.connect(":memory:")
+    claims.record_from_text(only, "I used to work evenings", when=_d("2026-07-01"))
+    assert [r["value"] for r in claims.valid_during(only, _d("2026-03-01"), _d("2026-04-01"))] == ["evenings"]
+    former = [r for r in claims.history(c, "work_schedule") if r["status"] == "former"]
+    assert former and former[0]["valid_from"] is None and former[0]["valid_to"] == _d("2026-07-01")
+    assert "until 2026-07-01" in claims.describe(former[0])
+
+
+def test_no_longer_ends_only_the_value_it_names():
+    c = sqlite3.connect(":memory:")
+    claims.record_from_text(c, "I work at Harbour Works", when=_d("2026-01-01"))
+    claims.record_from_text(c, "I don't work at Quarry Lane anymore", when=_d("2026-02-01"))
+    assert [r["value"] for r in claims.current(c)] == ["Harbour Works"]
+    claims.record_from_text(c, "I don't work at Harbour Works anymore", when=_d("2026-03-01"))
+    assert claims.current(c) == []
+
+
+def test_settling_a_conflict_says_how_many_claims_it_closed():
+    c = sqlite3.connect(":memory:")
+    claims.record(c, "lives_in", "Berlin", origin="user_said", now=_d("2026-05-01"))
+    claims.record(c, "lives_in", "Oslo", origin="eli_said", now=_d("2026-06-01"))
+    claims.record(c, "lives_in", "Bergen", origin="document", now=_d("2026-06-02"))
+    assert claims.resolve_conflict(c, "lives_in", "Bergen", now=_d("2026-06-05")) == 2
+    [kept] = claims.current(c)
+    assert kept["value"] == "Bergen" and kept["confirmations"] == 2 and kept["origin"] == "user_said"
+
+
+def test_the_users_word_on_a_disputed_relation_settles_it():
+    """A dispute could never close: nothing called resolve_conflict and a later statement of the
+    disputed value left the 'disputed' row standing for ever."""
+    c = sqlite3.connect(":memory:")
+    claims.record(c, "lives_in", "Berlin", origin="user_said", now=_d("2026-05-01"))
+    claims.record(c, "lives_in", "Oslo", origin="eli_said", now=_d("2026-06-01"))
+    claims.record_from_text(c, "I live in Oslo", when=_d("2026-06-03"))
+    assert [r["value"] for r in claims.current(c)] == ["Oslo"] and claims.open_conflicts(c) == []
+    assert [r["status"] for r in claims.history(c, "lives_in")] == ["superseded", "current"]
+
+
+def test_the_answer_to_the_question_asked_about_a_dispute_settles_it():
+    c = sqlite3.connect(":memory:")
+    claims.record(c, "lives_in", "Berlin", origin="user_said", now=_d("2026-05-01"))
+    claims.record(c, "lives_in", "Oslo", origin="document", now=_d("2026-06-01"))
+    asked = "I have Berlin for where you live, but a document says Oslo. Which is it?"
+    assert claims.answer_conflicts(c, "Oslo is lovely", "what do you want for dinner?") == [], "not that question"
+    assert claims.answer_conflicts(c, "both, really", asked) == [], "naming neither, or both, settles nothing"
+    assert claims.answer_conflicts(c, "still Berlin", asked) == ["lives_in"]
+    assert [r["value"] for r in claims.current(c)] == ["Berlin"] and claims.open_conflicts(c) == []
+
+
+def test_making_sure_of_the_claims_table_never_commits_the_callers_work(tmp_path):
+    """ensure_schema ran executescript on every call, which commits whatever the caller had open:
+    a forget's deletions were committed before its claims were withdrawn."""
+    db = tmp_path / "x.sqlite3"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE notes (t TEXT)")
+    c.commit()
+    c.execute("INSERT INTO notes VALUES ('half done')")
+    claims.current(c)
+    claims.retract_from_memory(c, 7)
+    c.rollback()
+    assert c.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 0, "the caller's transaction was left open"

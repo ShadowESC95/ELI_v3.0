@@ -34,7 +34,12 @@ Two properties worth stating because both are easy to get backwards:
 This module decides and explains. It does NOT phrase the reply — the verdict and
 its evidence go to the persona layer so ELI says it in its own words. A canned
 "I disagree because..." string would be the same yes-man problem wearing a
-different hat.
+different hat. `voice` is how a verdict gets there: a HOLD or a QUESTION is put on
+the turn's facts (`belief_verdicts`, which the reply's prompt reads, so ELI says it
+is keeping its position or asks which is right) and kept as a "conflict" thought,
+never applied silently. Both stores of what ELI holds about the user apply the one
+verdict: the profile (eli/runtime/profile_extractor) and the claims spine
+(eli/memory/claims.record, which disputes, replaces or holds as the verdict says).
 """
 from __future__ import annotations
 
@@ -232,8 +237,44 @@ def concede(standing: Belief, challenger: Belief, reason: str = "",
     return standing
 
 
+def voice(action: str, *, about: str, standing: str, challenger: str, reasons: Optional[List[str]] = None,
+          subject: str = "", ref: str = "", claim_id: Optional[int] = None, conn: Any = None) -> None:
+    """Make a verdict known instead of applying it silently. A HOLD (ELI keeps what it holds) or a
+    QUESTION (the evidence does not settle it) goes on the turn's facts as `belief_verdicts`, for the
+    reply to say in ELI's own words, and is kept as a "conflict" thought (decision "held" or "raised")
+    that the user's answer settles (eli/memory/claims.resolve_conflict). A CONCEDE is no conflict: the
+    change is in the record of revisions. `subject` is whose fact it is ("user", or "user:<id>" for an
+    API member); `ref` names the thought for settling; `conn` the caller's open connection, beside whose
+    write the thought is kept (eli/core/sqlite_util.write_beside: never behind its lock)."""
+    if action not in (HOLD, QUESTION):
+        return
+    verdict = {"action": action, "about": str(about or ""), "standing": str(standing or "")[:300],
+               "challenger": str(challenger or "")[:300], "reasons": [str(r) for r in (reasons or [])][:4]}
+    try:
+        from eli.kernel.request_context import turn_facts_var
+        facts = turn_facts_var.get()
+        if facts is not None:
+            facts.setdefault("belief_verdicts", []).append(verdict)
+    except (ImportError, LookupError) as failure:
+        log.debug("verdict not put on the turn: %s", failure)
+    member = str(subject or "").partition(":")[2]
+    what = str(about or "").replace("_", " ").replace(".", " ")
+    try:
+        from eli.cognition import thoughts
+        from eli.core.sqlite_util import write_beside
+        write_beside(conn, thoughts._default_db_path(), lambda: thoughts.record(
+            "conflict", f"{what}: {verdict['standing'][:100]} or {verdict['challenger'][:100]}",
+            why=verdict["reasons"] or ["what was said disagrees with what ELI holds"],
+            decision="held" if action == HOLD else "raised",
+            reason=("what ELI holds is better supported" if action == HOLD else "the evidence does not settle it"),
+            subject=what, ref=ref or f"conflict:{subject or 'user'}:{about}", user_id=member,
+            request_id=str(claim_id or "")))
+    except (ImportError, OSError, ValueError) as failure:
+        log.debug("conflict thought not kept: %s", failure)
+
+
 __all__ = [
-    "Belief", "Verdict", "assess_claim", "corroborate", "concede",
+    "Belief", "Verdict", "assess_claim", "corroborate", "concede", "voice",
     "HOLD", "QUESTION", "CONCEDE", "PROVENANCE_WEIGHT",
     "CONCEDE_MARGIN", "QUESTION_BAND",
 ]

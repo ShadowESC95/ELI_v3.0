@@ -130,22 +130,59 @@ def capture(cur: sqlite3.Cursor, user_text: str, reply: str) -> Optional[str]:
     """Record the position ELI just took, or reinforce the one it already held.
 
     Returns the topic when something was recorded. A position that CONTRADICTS a
-    held one is deliberately not auto-revised here: `record_stance` declines it,
-    and the change should go through `belief.assess_claim` where it can be
-    weighed and explained rather than silently swapped.
+    held one is not swapped in silently: `record_stance` declines it, and it is
+    weighed against the held one (`belief.assess_claim`). Outweighing it, it is a
+    revision, kept with what it replaced and why (`revise_stance`); otherwise the
+    held stance stands and the contradiction is raised as a conflict thought
+    (`belief.voice`), which the next reply on the topic is shown beside the stance.
     """
     found = detect_stance(user_text, reply)
     if not found:
         return None
     topic, position = found
     try:
-        from eli.cognition.stance_store import ensure_tables, record_stance
+        from eli.cognition.stance_store import ensure_tables, get_stance, record_stance, revise_stance
         ensure_tables(cur)
         if record_stance(cur, topic, position, provenance="observed"):
             return topic
+        held = get_stance(cur, topic)
+        if held is None:
+            return None
+        from eli.cognition.belief import CONCEDE, Belief, assess_claim, voice
+        verdict = assess_claim(held, Belief(statement=position, provenance="observed", corroboration=1))
+        if verdict.action == CONCEDE:
+            revise_stance(cur, topic, position, reason="; ".join(verdict.reasons), provenance="observed")
+            return topic
+        voice(verdict.action, about=topic, standing=held.statement, challenger=position,
+              reasons=verdict.reasons, subject="eli", ref=f"conflict:eli:{topic}", conn=cur)
     except Exception:
         log.debug("stance capture failed", exc_info=True)
     return None
 
 
-__all__ = ["capture", "detect_stance", "topic_of", "MIN_REPLY_CHARS"]
+def held_line(cur: sqlite3.Cursor, user_text: str) -> str:
+    """What ELI has held on the subject of this message in earlier conversations, as a line for the
+    reply's prompt (eli/kernel/stages/prompt_assembly): the stance, how often it was argued and since
+    when. "" when ELI holds nothing on it. Only the record: the reply decides whether to keep the
+    position or say why it has changed."""
+    topic = topic_of(user_text)
+    if not topic:
+        return ""
+    try:
+        from eli.cognition.stance_store import ensure_tables, get_stance
+        ensure_tables(cur)
+        held = get_stance(cur, topic)
+    except Exception:
+        log.debug("held stance unreadable", exc_info=True)
+        return ""
+    if held is None:
+        return ""
+    import time as _time
+    since = _time.strftime("%Y-%m-%d", _time.localtime(float(held.first_seen)))
+    times = {1: "once"}.get(int(held.corroboration), f"{int(held.corroboration)} times")
+    return (f'\nWHAT YOU HAVE HELD ON THIS IN EARLIER CONVERSATIONS: "{held.statement[:MAX_POSITION_CHARS]}" '
+            f"(argued {times}, since {since}). Stay consistent with it, or say plainly that and why you now "
+            "think otherwise.")
+
+
+__all__ = ["capture", "detect_stance", "held_line", "topic_of", "MIN_REPLY_CHARS"]
