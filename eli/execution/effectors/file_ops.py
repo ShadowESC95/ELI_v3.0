@@ -90,30 +90,10 @@ def _h_convert_document(a, args):
 def _h_list_dir(a, args):
     path = str((args or {}).get("path") or "~")
     try:
-        from eli.core.paths import project_root as _pr
-        repo_root = _pr()  # project root (location-independent; was __file__.parents[2])
-        package_root = repo_root / "eli"
-        legacy_root = Path.home() / "eli"
-        raw = Path(path).expanduser()
-
-        package_toplevel = {
-            "api", "brain", "controllers", "core", "gui",
-            "integrations", "plugins", "tools", "utils"
-        }
-
-        if raw == legacy_root:
-            p = package_root.resolve()
-        else:
-            try:
-                rel = raw.relative_to(legacy_root)
-                if not rel.parts:
-                    p = package_root.resolve()
-                elif rel.parts[0] in package_toplevel:
-                    p = (package_root / rel).resolve()
-                else:
-                    p = (repo_root / rel).resolve()
-            except Exception:
-                p = raw.resolve()
+        # One reader of "~/eli/...": eli.core.paths.resolve_user_repo_path (the project only where no
+        # folder ~/eli of the user's exists). This kept its own copy, which took every path under ~/eli
+        # for the project: a folder of the user's named ~/eli was listed from inside ELI instead.
+        p = Path(resolve_user_repo_path(path)).resolve()
 
         if not p.exists():
             return {"ok": False, "action": a, "error": f"Path not found: {p}", "content": f"Path not found: {p}", "response": f"Path not found: {p}"}

@@ -160,10 +160,7 @@ def test_the_executor_records_what_a_result_listed(tmp_path, monkeypatch):
 
 
 def test_a_folder_listing_follows_up_into_the_entry(tmp_path, monkeypatch):
-    from pathlib import Path
     from eli.execution.effectors.file_ops import _h_list_dir
-    # LIST_DIR maps ~/eli/... onto the project (an old layout); keep the test folder out of it.
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     (tmp_path / "sub").mkdir()
     (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     got = _h_list_dir("LIST_DIR", {"path": str(tmp_path)})

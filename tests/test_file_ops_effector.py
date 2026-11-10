@@ -41,3 +41,30 @@ def test_summarize_on_a_folder_reads_it_and_does_not_guess_from_names(tmp_path, 
     file_ops._h_summarize_file("SUMMARIZE_FILE", {"path": str(tmp_path), "instruction": "what is this folder"})
     assert ran == [("ANALYZE_PDF_FOLDER", {"folder": str(tmp_path), "recursive": True,
                                            "instruction": "what is this folder"})]
+
+
+def test_a_folder_of_mine_named_eli_is_listed_as_it_is(tmp_path, monkeypatch):
+    """LIST_DIR kept its own reading of "~/eli/...": any path under it was taken for ELI's own folder,
+    so a folder of the user's named ~/eli was listed from inside the project ("Path not found")."""
+    from eli.execution.effectors.file_ops import _h_list_dir
+
+    home = tmp_path / "home"
+    (home / "eli" / "recipes").mkdir(parents=True)
+    (home / "eli" / "recipes" / "soup.txt").write_text("leek and potato", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    got = _h_list_dir("LIST_DIR", {"path": "~/eli/recipes"})
+    assert got["ok"] is True and got["path"] == str((home / "eli" / "recipes").resolve())
+    assert [i["title"] for i in got["listed"]] == ["soup.txt"]
+
+
+def test_with_no_folder_of_mine_named_eli_it_still_stands_for_the_project(tmp_path, monkeypatch):
+    from eli.core.paths import canonical_project_root
+    from eli.execution.effectors.file_ops import _h_list_dir
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    got = _h_list_dir("LIST_DIR", {"path": "~/eli/core"})
+    assert got["ok"] is True and got["path"] == str(canonical_project_root() / "eli" / "core")

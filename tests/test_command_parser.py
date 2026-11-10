@@ -323,14 +323,6 @@ def test_it_is_the_place_the_executor_found_and_a_recall_does_not_replace_it(tmp
     from eli.execution.executor_enhanced import execute
     from eli.execution.routing.command_parser import place_referred_to
     from eli.kernel.engine import CognitiveEngine
-    import pathlib
-    import eli.execution.effectors.file_ops as file_ops
-
-    class _Elsewhere(type(pathlib.Path())):      # this machine keeps its checkouts under ~/eli, which
-        @classmethod                              # LIST_DIR reads as ELI's own legacy folder
-        def home(cls):
-            return tmp_path / "home"
-    monkeypatch.setattr(file_ops, "Path", _Elsewhere)
     eng = CognitiveEngine()
     found = tmp_path / "projects" / "garden-planner"
     found.mkdir(parents=True)

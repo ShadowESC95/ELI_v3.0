@@ -317,3 +317,18 @@ def test_a_real_folder_named_eli_in_the_home_is_the_users_not_the_project(tmp_pa
     (home / "eli" / "notes").mkdir(parents=True)
     assert P.resolve_user_repo_path("~/eli/notes/todo.md") == (home / "eli" / "notes" / "todo.md").resolve()
     assert P.resolve_user_repo_path(str(project / "eli" / "core")) == project / "eli" / "core"
+
+
+def test_a_path_under_the_old_name_that_only_the_package_holds_is_the_packages(tmp_path, monkeypatch):
+    """In the old layout the package sat at the top of ~/eli: "~/eli/core" is the package's core
+    (LIST_DIR kept that in a list of its own; it now reads paths here)."""
+    from pathlib import Path
+    import eli.core.paths as P
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    project = P.canonical_project_root()
+    assert P.resolve_user_repo_path("~/eli/core") == project / "eli" / "core"
+    assert P.resolve_user_repo_path("~/eli/tests") == project / "tests"
+    assert P.resolve_user_repo_path("~/eli/nothing/here.md") == project / "nothing" / "here.md"
