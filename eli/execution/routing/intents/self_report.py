@@ -255,8 +255,10 @@ def route_self_report(text: str, raw: str, low: str, text_l: str):
         _is_runtime_recheck = lambda t: False  # noqa: E731
         _is_codebase_health = lambda t: False  # noqa: E731
     if _is_model_dispute(low):
+        # a dispute of which model ELI runs is said as a remark ("no, you are Mistral!"): its own
+        # vocabulary is the test (meta "spoken_as_remark", route_contracts.fits)
         return _mk("RUNTIME_STATUS", {}, 0.98, matched_by="router.model_identity_dispute",
-                   allow_chat_without_evidence=False)
+                   allow_chat_without_evidence=False, meta_extra={"spoken_as_remark": True})
     if _is_runtime_recheck(low):
         return _mk("RUNTIME_STATUS", {"question": raw}, 0.96,
                    matched_by="router.runtime_recheck_correction",

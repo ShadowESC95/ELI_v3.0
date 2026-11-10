@@ -28,13 +28,13 @@ def engine(small_chat_model):
         pytest.skip("no small chat GGUF available for the live lane")
     _env_before = {k: os.environ.get(k) for k in ("ELI_GGUF_MODEL_PATH", "ELI_MODEL_PATH")}
     # ELI_GGUF_MODEL_PATH is the STRONGEST override and is honoured before the
-    # loader's own PYTEST_CURRENT_TEST guard (gguf_inference.get_model_path); a bare
-    # ELI_MODEL_PATH is checked after that guard, so it never loads under pytest.
+    # loader's own test-mode guard (gguf_inference.get_model_path); a bare
+    # ELI_MODEL_PATH is checked after that guard, so it never loads in a test run.
     os.environ["ELI_GGUF_MODEL_PATH"] = model
     os.environ["ELI_MODEL_PATH"] = model
     os.environ.setdefault("ELI_ARTIFACTS_DIR", "/tmp/eli_live_artifacts")
-    # `_eli_test_mode()` is forced True under pytest (it detects PYTEST_CURRENT_TEST /
-    # the pytest module), which deliberately skips the real GGUF load + daemons. For
+    # `_eli_test_mode()` is True in a test run (ELI_TEST_MODE, which the conftest sets),
+    # which deliberately skips the real GGUF load + daemons. For
     # THIS lane we genuinely want a live model, so patch it False for the fixture's
     # lifetime, then restore.
     import eli.kernel.engine as eng_mod

@@ -84,21 +84,15 @@ def test_trailing_chatter_is_still_dropped(tmp_path):
 
 # ── 2. the model path the process is already running ────────────────────────
 def _resolve():
-    """Call get_model_path() as the app does.
-
-    It short-circuits to None when PYTEST_CURRENT_TEST is set, and pytest re-sets
-    that variable at the start of every phase — so deleting it in a fixture (setup
-    phase) does not hold into the test body. It has to be dropped here, in the
-    call phase, or this whole section silently tests the short-circuit.
-    """
-    os.environ.pop("PYTEST_CURRENT_TEST", None)
+    """Call get_model_path() as the app does: the fixture below turns test mode (ELI_TEST_MODE, the
+    one switch) off, or this whole section would test the short-circuit."""
     return gi.get_model_path()
 
 
 @pytest.fixture
 def no_configured_model(monkeypatch, tmp_path):
     """A GUI-loaded install: nothing in settings, env or config points at a model."""
-    for var in ("ELI_GGUF_MODEL_PATH", "ELI_GGUF_MODEL", "ELI_MODELS_DIR"):
+    for var in ("ELI_GGUF_MODEL_PATH", "ELI_GGUF_MODEL", "ELI_MODELS_DIR", "ELI_TEST_MODE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(gi, "_load_runtime_settings", lambda *a, **k: {})
 
