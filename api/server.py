@@ -214,10 +214,10 @@ def require_admin(request: Request, authorization: str = Header(default="")) -> 
     return p
 
 
-def _require_token(request: Request, authorization: str = Header(default="")):
+def _require_token(request: Request, authorization: str = Header(default="")) -> Principal:
     """Read-level dependency (kept as the name read-only endpoints already reference) —
-    permits any authenticated caller, including a viewer."""
-    _authenticated(authorization, _is_loopback_client(request))
+    permits any authenticated caller, including a viewer, and gives who it is."""
+    return _authenticated(authorization, _is_loopback_client(request))
 
 
 def _effective_user(principal: Optional[Principal], supplied: str) -> str:
@@ -5384,7 +5384,7 @@ try:
     from eli.world.spatial_feed import build_router as _build_world_router
     app.include_router(_build_world_router(_require_token, require_member, _ws_authorised,
                                            chat=_world_chat, require_admin=require_admin,
-                                           remember=_world_remember))
+                                           remember=_world_remember, reader=_turn_user))
 except Exception as _world_err:  # the world is never on the server's critical path
     print(f"[ELI] world feed unavailable: {_world_err}")
 

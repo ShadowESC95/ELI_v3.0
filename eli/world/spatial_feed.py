@@ -387,13 +387,15 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
                  ws_allowed: Callable[[Any], bool],
                  chat: Optional[Callable[[str, Any, str], str]] = None,
                  require_admin: Optional[Callable[..., Any]] = None,
-                 remember: Optional[Callable[[str, str, Any, str], Any]] = None):
+                 remember: Optional[Callable[[str, str, Any, str], Any]] = None,
+                 reader: Optional[Callable[[Any], Optional[str]]] = None):
     """The routes, gated by the server's own checks. ``ws_allowed`` gets the
     WebSocket and answers whether its handshake may proceed. ``chat`` is the
     server's own conversation: (text, principal, session) -> ELI's reply.
     ``require_admin`` gates choosing the model, as it does in the server.
     ``remember`` is the server's turn store: (said, answer, principal, session), for a sentence the
-    game or the building answered."""
+    game or the building answered. ``reader`` is whose records a caller reads: (principal, as
+    require_read gives it) -> a member's user id, or None for the owner's."""
     from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
     from pydantic import BaseModel
 
@@ -552,15 +554,18 @@ def build_router(require_read: Callable[..., Any], require_act: Callable[..., An
         return building.apply([{"op": "undo"}], actor="user", asked=True, source="spatial_client",
                               summary="The user asked for the last change to be taken back")
 
-    @router.get("/v1/world/thoughts", dependencies=[Depends(require_read)])
-    def world_thoughts(room: str = "", kinds: str = "", limit: int = 40):
+    @router.get("/v1/world/thoughts")
+    def world_thoughts(room: str = "", kinds: str = "", limit: int = 40, principal: Any = Depends(require_read)):
         """ELI's thoughts lately: what it recalled, believed, read a sentence as, made, tried and proposed,
         each with why, how sure, what it decided and what became of it. `room` keeps it to one room of
-        the house, `kinds` to a comma-separated list of kinds."""
+        the house, `kinds` to a comma-separated list of kinds. The caller's own (``reader``): a member
+        never reads the owner's thoughts about the owner, nor the owner a member's."""
         from eli.world import shown
+        who = reader(principal) if reader else None
         wanted = [k.strip() for k in str(kinds or "").split(",") if k.strip()]
-        return {"thoughts": shown.kept(room=room, kinds=wanted or None, limit=max(1, min(int(limit), shown.THOUGHTS)))
-                if (room or wanted) else shown.kept()[:max(1, min(int(limit), shown.THOUGHTS))]}
+        size = max(1, min(int(limit), shown.THOUGHTS))
+        return {"thoughts": shown.kept(room=room, kinds=wanted or None, limit=size, user_id=who)
+                if (room or wanted) else shown.kept(user_id=who)[:size]}
 
     @router.get("/v1/world/book/{book_id}", dependencies=[Depends(require_read)])
     def world_book(book_id: str):

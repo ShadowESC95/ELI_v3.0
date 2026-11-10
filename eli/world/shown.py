@@ -236,7 +236,8 @@ def _mind() -> List[Dict[str, str]]:
 
 
 _thoughts_cache: Tuple[float, List[Dict[str, str]]] = (0.0, [])
-_kept_cache: Tuple[float, List[Dict[str, Any]]] = (-REFRESH_SECONDS, [])
+# the thoughts last read, per reader (thoughts.for_feed's user_id; "" the turn's own, the owner outside one)
+_kept_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 THOUGHTS = 60               # the latest thoughts a body is handed, across the rooms
 _coming_cache: Tuple[float, List[Dict[str, Any]]] = (-REFRESH_SECONDS, [])
 AHEAD_HOURS = 36            # how far ahead the agenda a room shows reaches, as ELI's own prompt does
@@ -275,27 +276,31 @@ def thoughts(now: float | None = None) -> List[Dict[str, str]]:
     return _thoughts_cache[1]
 
 
-def kept(now: float | None = None, *, room: str = "", kinds: List[str] | None = None, limit: int = THOUGHTS) -> List[Dict[str, Any]]:
+def kept(now: float | None = None, *, room: str = "", kinds: List[str] | None = None, limit: int = THOUGHTS,
+         user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """The thoughts ELI has had lately (eli/cognition/thoughts.py), each with why, its chance, what was
     decided and what became of it, for the rooms' screens; refreshed as often as the records. With a
-    room or kinds, only those, read fresh."""
-    global _kept_cache
+    room or kinds, only those, read fresh. `user_id` is whose they are (thoughts.for_feed: a member's
+    own and ELI's shared ones; None the turn's user, the owner outside a turn), each reader's kept apart."""
     clock = time.monotonic() if now is None else now
     if room or kinds:
         try:
             from eli.cognition.thoughts import for_feed
-            out = [t for t in for_feed(limit) if (not room or t["room"] == room) and (not kinds or t["kind"] in kinds)]
+            out = [t for t in for_feed(limit, user_id=user_id)
+                   if (not room or t["room"] == room) and (not kinds or t["kind"] in kinds)]
         except Exception:
             out = []
         return out
-    if clock - _kept_cache[0] < REFRESH_SECONDS:
-        return _kept_cache[1]
+    reader = str(user_id or "")
+    held = _kept_cache.get(reader)
+    if held and clock - held[0] < REFRESH_SECONDS:
+        return held[1]
     try:
         from eli.cognition.thoughts import for_feed
-        _kept_cache = (clock, for_feed(limit))
+        _kept_cache[reader] = (clock, for_feed(limit, user_id=user_id))
     except Exception:
-        _kept_cache = (clock, [])
-    return _kept_cache[1]
+        _kept_cache[reader] = (clock, [])
+    return _kept_cache[reader][1]
 
 
 def free(now: float | None = None) -> bool:
@@ -703,4 +708,4 @@ def forget() -> None:
     _thoughts_cache = (0.0, [])
     _coming_cache = (-REFRESH_SECONDS, [])
     _free_cache = (-REFRESH_SECONDS, False)
-    _kept_cache = (-REFRESH_SECONDS, [])
+    _kept_cache.clear()
