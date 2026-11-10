@@ -166,7 +166,7 @@ class TestShellExecReadsEveryCommand:
         "find ~ -name '*.txt' -delete",      # a read-only command told to delete
         "cat /dev/null > ~/.bashrc",         # a file written by redirection
         "echo hi; touch ~/probe_file",       # a command that is not one that only reads
-        "ls 'unclosed",                      # a line the shell could not read either
+        'ls "unclosed',                      # a line no shell could read (cmd.exe has no single quotes)
     ])
     def test_a_line_that_would_change_something_never_reaches_the_shell(self, line, _no_owner_allowlist):
         with patch("subprocess.run") as sp_mock:
@@ -302,7 +302,7 @@ class TestACommandTheOwnerApproved:
         "bash -c 'whoami'",
         "pip install requests > ~/.bashrc",               # a file written by redirection
         "python3 -m pip freeze >> /tmp/reqs.txt",
-        "pip install 'unclosed",                          # a line the shell could not read
+        'pip install "unclosed',                          # a line no shell could read, on any OS
     ])
     def test_a_yes_never_lifts_the_hard_floor(self, line, _no_owner_allowlist):
         from eli.execution.shell_gate import check_command
