@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
 
+from eli.runtime.identity_validation import extract_explicit_identity_facts
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -134,23 +135,10 @@ def _sql_time_expr(cols: set[str]) -> str:
     return _sql_coalesce_expr(cols, ["created_at", "timestamp", "ts", "id"], "0")
 
 
-_BAD_FACT_VALUES = {"asking", "not asking", "unknown", "none", "null"}
-
 
 def _clean_value(v: str) -> str:
     s = re.sub(r"\s+", " ", str(v or "")).strip(" .,:;!?-")
     return s
-
-
-def _accept_value(v: str) -> bool:
-    s = _clean_value(v).lower()
-    if not s:
-        return False
-    if s in _BAD_FACT_VALUES:
-        return False
-    if len(s) > 60:
-        return False
-    return True
 
 
 def mine_user_fact_candidates(limit: int = 12) -> List[str]:
@@ -269,32 +257,11 @@ def mine_user_fact_candidates(limit: int = 12) -> List[str]:
         if "?" in text:
             continue
 
-        for m in re.finditer(r"\bmy name is\s+([A-Za-z][A-Za-z' -]{1,30})\b", text, flags=re.I):
-            val = _clean_value(m.group(1))
-            if _accept_value(val):
-                add(f"name: {val}")
-
-        for m in re.finditer(r"\b(?:call me|i go by)\s+([A-Za-z][A-Za-z' -]{1,30})\b", text, flags=re.I):
-            val = _clean_value(m.group(1))
-            if _accept_value(val):
-                add(f"preferred_name: {val}")
-
-        for m in re.finditer(
-            r"\bit is\s+([A-Za-z][A-Za-z' -]{1,30})\s*,?\s*or\s*([A-Za-z][A-Za-z' -]{1,30})\s*\(nickname\)",
-            text,
-            flags=re.I,
-        ):
-            a = _clean_value(m.group(1))
-            b = _clean_value(m.group(2))
-            if _accept_value(a):
-                add(f"name: {a}")
-            if _accept_value(b):
-                add(f"nickname: {b}")
-
-        for m in re.finditer(r"\bnickname\s*[:=-]?\s*([A-Za-z][A-Za-z' -]{1,30})\b", text, flags=re.I):
-            val = _clean_value(m.group(1))
-            if _accept_value(val):
-                add(f"nickname: {val}")
+        # A name, preferred name or nickname only from what the one extractor takes as a declaration
+        # (identity_validation): its own patterns here took "my name is not listed anywhere" for the
+        # name "not listed anywhere" and handed it to the identity summary as evidence.
+        for key, val in extract_explicit_identity_facts(text).items():
+            add(f"{key}: {val}")
 
         for m in re.finditer(r"\bi prefer\s+([^.!?\n]{3,120})", text, flags=re.I):
             val = _clean_value(m.group(1))

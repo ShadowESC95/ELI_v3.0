@@ -386,7 +386,7 @@ def build_clean_personal_memory_response(user_input: str = "", mode_label: str =
         from eli.kernel.state import get_user_name as _gun
         _name = (_gun(user_id=request_user()[0] or None) or "").strip()
         if _name and _name.lower() not in {"unknown", "user", "none"}:
-            lines.append(f"- The active user's name is {_name.title()} (from your runtime profile).")
+            lines.append(f"- The active user's name is {_name} (from your runtime profile).")   # as stored: .title() made McKenna "Mckenna"
     except Exception:
         pass
     for fact in facts:

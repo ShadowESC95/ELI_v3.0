@@ -79,3 +79,11 @@ def test_the_owner_still_sees_their_own(two_users):
     surface = personal_memory_surface("who am i")
     assert "green" in clean and "Rowan" in clean
     assert "Rowan" in surface and "oolong" in surface and "Tamsin" not in surface
+
+
+def test_the_name_is_shown_as_it_is_kept(monkeypatch):
+    """str.title() turned "McKenna van der Berg" into "Mckenna Van Der Berg"."""
+    from eli.runtime import personal_memory_clean_response as clean
+    monkeypatch.setattr(clean, "_collect_facts", lambda *a, **k: (["Drinks oolong tea"], {}))
+    monkeypatch.setattr("eli.kernel.state.get_user_name", lambda user_id=None: "McKenna van der Berg")
+    assert "name is McKenna van der Berg " in clean.build_clean_personal_memory_response("what do you know about me")

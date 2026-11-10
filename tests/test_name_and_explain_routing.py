@@ -183,3 +183,32 @@ def test_a_name_that_is_not_the_users_is_not_the_name_source_audit(asked):
 @pytest.mark.parametrize("asked", ["how do you know my name", "where is my name stored", "which file is my name in"])
 def test_where_the_users_name_comes_from_is_still_the_audit(asked):
     assert route(asked)["action"] == "NAME_SOURCE_AUDIT"
+
+
+def test_a_members_new_name_clears_only_their_own_name_rows(tmp_path, monkeypatch):
+    """The purge of name rows that no longer match ran over every user's rows, so an API member
+    naming themself deleted the owner's name."""
+    import sqlite3
+    from types import SimpleNamespace
+    from eli.execution import executor_enhanced as ex
+    db = tmp_path / "user.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE user_patterns (id INTEGER PRIMARY KEY, pattern_type TEXT, pattern_data TEXT, "
+                     "timestamp REAL, ts REAL, user_id TEXT)")
+        conn.executemany("INSERT INTO user_patterns (pattern_type, pattern_data, user_id) VALUES (?, ?, ?)", [
+            ("identity.name", "Rowan", None), ("identity.name", "Kit", "member-b")])
+    monkeypatch.setattr("eli.memory.memory.get_memory", lambda *a, **k: SimpleNamespace(db_path=db))
+    monkeypatch.setattr("eli.runtime.profile_extractor.pattern_owner", lambda user_id=None: "member-b")
+    assert ex._purge_conflicting_identity_patterns("Jules") == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT pattern_data FROM user_patterns").fetchall() == [("Rowan",)]
+
+
+def test_a_members_name_is_not_written_where_status_reads_the_owners(executor_name_store, monkeypatch):
+    ex, stored = executor_name_store
+    monkeypatch.setattr("eli.runtime.profile_extractor.pattern_owner", lambda user_id=None: "member-b")
+    assert ex.set_user_name("Jules")["ok"] is True and stored.get("profile") == "Jules"
+    assert "user_name" not in stored
+    monkeypatch.setattr("eli.runtime.profile_extractor.pattern_owner", lambda user_id=None: "")
+    ex.set_user_name("Rowan")
+    assert stored.get("user_name") == "Rowan"

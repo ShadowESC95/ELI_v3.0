@@ -3674,11 +3674,18 @@ def set_user_name(name: str, declared_by: str = "") -> Dict[str, Any]:
                    f"\"my name is\"). Not changed. A yes replaces {stored} with {n}.")
             return {"ok": True, "action": "SET_USER_NAME", "changed": False, "user_name": stored,
                     "asked_to_replace_with": n, "explain_in_words": True, "content": msg, "response": msg}
-    # Write to runtime state (legacy path)
-    st = _load_state()
-    st["user_name"] = n
-    st["updated_at"] = time.time()
-    _save_state(st)
+    # The runtime state's copy (legacy path, what GET_STATUS reports) is the machine owner's: an API
+    # member naming themself wrote it for everyone.
+    try:
+        from eli.runtime.profile_extractor import pattern_owner as _whose
+        _owners = not _whose()
+    except Exception:
+        _owners = True
+    if _owners:
+        st = _load_state()
+        st["user_name"] = n
+        st["updated_at"] = time.time()
+        _save_state(st)
     # Write to user_profile.json (authoritative path read by get_user_name())
     try:
         from eli.kernel.state import set_user_name as _state_set_user_name
@@ -3697,15 +3704,17 @@ def set_user_name(name: str, declared_by: str = "") -> Dict[str, Any]:
 
 
 def _purge_conflicting_identity_patterns(new_name: str) -> int:
-    """Delete identity.* user_patterns rows whose value conflicts with new_name.
-
-    Generic, user-agnostic: keeps only identity name/preferred/nickname patterns
-    that actually contain the confirmed name; removes the rest. Returns count.
+    """Delete this user's identity.* user_patterns rows whose value conflicts with new_name: only
+    name/preferred/nickname patterns that contain the confirmed name are kept. Whose rows they are
+    is profile_extractor.pattern_owner's (the owner's are ""): the purge ran over every user's, so an
+    API member naming themself deleted the owner's name rows. Returns count.
     """
     import sqlite3 as _sq
     nm = (new_name or "").strip().lower()
     if not nm:
         return 0
+    from eli.runtime.profile_extractor import pattern_owner
+    who = pattern_owner()
     try:
         from eli.memory.memory import get_memory as _gm
         _db = str(_gm().db_path)
@@ -3713,12 +3722,14 @@ def _purge_conflicting_identity_patterns(new_name: str) -> int:
         from eli.core.paths import get_paths as _gp
         _db = str(_gp().artifacts_dir / "db" / "user.sqlite3")
     conn = _sq.connect(_db)
+    names = ("SELECT rowid, COALESCE(pattern_data,'') FROM user_patterns WHERE lower(COALESCE(pattern_type,'')) "
+             "IN ('identity.preferred_name','identity.name','identity.nickname')")
     try:
-        rows = conn.execute(
-            "SELECT rowid, COALESCE(pattern_data,'') FROM user_patterns "
-            "WHERE lower(COALESCE(pattern_type,'')) IN "
-            "('identity.preferred_name','identity.name','identity.nickname')"
-        ).fetchall()
+        try:
+            rows = conn.execute(names + " AND COALESCE(user_id,'') = ?", (who,)).fetchall()
+        except _sq.OperationalError:
+            # written before rows carried a user: every row is the owner's
+            rows = [] if who else conn.execute(names).fetchall()
         stale = [rid for (rid, data) in rows if nm not in str(data).lower()]
         for rid in stale:
             conn.execute("DELETE FROM user_patterns WHERE rowid=?", (rid,))
