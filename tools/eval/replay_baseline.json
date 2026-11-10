@@ -4,27 +4,27 @@
     "claims_standing": 4,
     "conflicts": 3,
     "facts": 13,
-    "importance_pairs": 9,
+    "importance_pairs": 32,
     "interests": 2,
     "recall_questions": 7,
-    "rows_kept": 14,
+    "rows_kept": 16,
     "verdicts": 12,
-    "verdicts_with_memories": 8
+    "verdicts_with_memories": 7
   },
   "figures": {
     "answer_recall": 0.0,
     "claims_precision": 1.0,
     "claims_recall": 1.0,
     "conflict_handling": 1.0,
-    "evidence_recall": 0.8571,
-    "facts_precision": 0.9286,
-    "facts_recall": 0.7692,
-    "importance_order": 0.9444,
+    "evidence_recall": 1.0,
+    "facts_precision": 0.9375,
+    "facts_recall": 1.0,
+    "importance_order": 0.9375,
     "interest_focus": 0.5,
-    "memory_settlement": 0.75,
-    "mrr": 0.7857,
-    "recall_at_1": 0.7143,
-    "recall_at_3": 0.8571,
+    "memory_settlement": 0.7143,
+    "mrr": 1.0,
+    "recall_at_1": 1.0,
+    "recall_at_3": 1.0,
     "settlement_accuracy": 0.8333
   },
   "noise": {
@@ -57,6 +57,6 @@
     "semantic": false
   },
   "target": "replay",
-  "ts": "20261110T065513",
+  "ts": "20261110T080000",
   "version": "3.0.158"
 }
