@@ -1,12 +1,5 @@
 from __future__ import annotations
 
-def _path_value(obj, key, default=None):
-    if obj is None:
-        return default
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
 
 # eli/memory/memory.py
 
@@ -24,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from eli.core import paths as core_paths
+from eli.core.paths import path_get as _path_value
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
@@ -43,8 +37,6 @@ class DBPaths:
 def _resolve_project_artifacts_dir() -> Path:
     """Single source of truth: follow eli.core.paths first."""
     try:
-        if hasattr(core_paths, "get_artifact_dir"):
-            return Path(core_paths.get_artifact_dir()).expanduser().resolve()
         return core_paths.get_paths().artifacts_dir.resolve()
     except Exception:
         log.debug("[MEMORY] core_paths artifact dir lookup failed", exc_info=True)
@@ -85,7 +77,7 @@ def resolve_db_paths() -> DBPaths:
     return DBPaths(
         user_db=_pick("get_user_db_path", _path_value(paths, 'user_db')),
         agent_db=_pick("get_agent_db_path", _path_value(paths, 'agent_db')),
-        memory_db=_pick("get_memory_db_path", _path_value(paths, 'memory_db')),
+        memory_db=Path(_path_value(paths, 'memory_db') or _pick("get_user_db_path", None)).expanduser().resolve(),
     )
 
 
@@ -187,12 +179,6 @@ ASSOCIATION = True
 _OVERFETCH = 3
 
 
-def _active_user_id() -> str:
-    try:
-        from eli.kernel.state import get_active_user_id
-        return str(get_active_user_id() or "")
-    except Exception:
-        return ""
 
 
 def get_memory(db_path: Union[str, Path, None] = None) -> "Memory":
@@ -214,7 +200,7 @@ def get_memory(db_path: Union[str, Path, None] = None) -> "Memory":
         if key not in _memory_singletons:
             # Canonical rule: default user memory writes only to its own DB.
             # No implicit fan-out into agent.sqlite3 or any secondary store.
-            _memory_singletons[key] = Memory(db_path=db_path, secondary_paths=[])
+            _memory_singletons[key] = Memory(db_path=db_path)
         return _memory_singletons[key]
 
 
@@ -281,21 +267,6 @@ def _validate_identifier(name: str, context: str = "identifier") -> str:
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-
-
-def _cols(conn: sqlite3.Connection, table: str) -> List[str]:
-    t = _validate_identifier(table, "table")
-    return [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
-
-
-def _ensure_column(conn: sqlite3.Connection, table: str, col: str, ddl: str) -> None:
-    t = _validate_identifier(table, "table")
-    cols = _cols(conn, table)
-    if col not in cols:
-        # ddl is e.g. "col_name TEXT DEFAULT NULL" — validate first token as the column name
-        col_name = ddl.split()[0] if ddl else ""
-        _validate_identifier(col_name, "column")
-        conn.execute(f"ALTER TABLE {t} ADD COLUMN {ddl}")
 
 
 # ---------------------------------------------------------------------
@@ -1846,8 +1817,6 @@ def _ensure_profile_schema(conn):
         ]:
             _add_memory_column(conn, "observations", n, d)
 
-def _profile_now_ts():
-    return float(time.time())
 
 def _eli_table_exists(conn, table_name):
     try:
@@ -1917,13 +1886,12 @@ def _fts_reindex(conn, rowid: int, text: str, tags: str) -> None:
 
 class Memory(metaclass=_MemoryMeta):
     """
-    SQLite-backed memory store with optional secondary writes.
+    SQLite-backed memory store.
     """
 
-    def __init__(self, db_path=None, db_type=None, secondary_paths=None, *args, **kwargs):
+    def __init__(self, db_path=None, db_type=None, *args, **kwargs):
         dtype = db_type or kwargs.get("db_type")
         self.db_path = _path_from_args(db_path=db_path, db_type=dtype)
-        self.secondary_paths = secondary_paths or []
         if dtype:
             self.db_type = str(dtype)
         else:
@@ -2097,7 +2065,8 @@ class Memory(metaclass=_MemoryMeta):
             pass
         elif callable(_eli_should_store_memory_text):
             if not _eli_should_store_memory_text(t, role=str(source or "user"), tags=tags):
-                return {"ok": True, "skipped": True, "reason": "persistence_gate"}
+                # nothing was stored: every caller reading only ok counted it as kept
+                return {"ok": False, "skipped": True, "reason": "persistence_gate"}
 
         meta = metadata or {}
         if isinstance(meta, dict):
@@ -2232,25 +2201,6 @@ class Memory(metaclass=_MemoryMeta):
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        # Write to secondaries
-        from eli.core.sqlite_util import apply_pragmas
-        for sec_path in self.secondary_paths:
-            try:
-                sec_conn = sqlite3.connect(sec_path)
-                apply_pragmas(sec_conn, db_path=str(sec_path), synchronous="NORMAL")
-                _ensure_memory_schema(sec_conn)
-                self._store_to_db(sec_conn, t, tags, source, kind, confidence, ts,
-                                   importance=importance,
-                                   event_ts=event_ts, origin=origin, text_key=_key)
-                sec_conn.commit()
-                sec_conn.close()
-            except Exception as e:
-                log.debug(f"[MEMORY] Failed to write to secondary {sec_path}: {e}")
-
-        # World-model sync is part of the normal write path.
-        _eli_sync_world_model_from_memory(self, kind="memory",
-                                          role=str(source or "user"),
-                                          text=t, tags=tags)
 
         return {"ok": True, "id": rowid, "importance": importance, "vector_indexed": vector_indexed}
 
@@ -2925,12 +2875,7 @@ class Memory(metaclass=_MemoryMeta):
     # Decay and consolidation
     # ------------------------------------------------------------------
 
-    # Half-life in days for a memory of importance 0. Importance stretches it:
-    # a fact ELI keeps recalling (importance is reinforced +0.02 per recall in
-    # recall_memory) survives far longer than one nothing ever asked for.
-    DECAY_HALF_LIFE_DAYS = 30.0
-    DECAY_IMPORTANCE_STRETCH = 3.0
-    DECAY_PIN_IMPORTANCE = 0.85
+    # The forgetting curve's numbers live in eli/memory/policy.py.
     # Smallest weight change worth a write. `now` advances between calls, so every row's ideal
     # weight drifts a hair each run; without a floor the UPDATE rewrites the whole table every time
     # and "rows updated" always equals "rows eligible", hiding whether decay does anything.
@@ -4350,23 +4295,6 @@ class Memory(metaclass=_MemoryMeta):
         if _was_deduped[0]:
             return rid
 
-        # Secondaries
-        from eli.core.sqlite_util import apply_pragmas
-        for sec_path in self.secondary_paths:
-            try:
-                sec_conn = sqlite3.connect(sec_path)
-                apply_pragmas(sec_conn, db_path=str(sec_path), synchronous="NORMAL")
-                _ensure_memory_schema(sec_conn)
-                _write_to_conn(sec_conn)
-                sec_conn.commit()
-                sec_conn.close()
-            except Exception as e:
-                log.debug(f"[MEMORY] Failed to add conversation turn to secondary {sec_path}: {e}")
-
-        # World-model sync is part of the normal write path.
-        _eli_sync_world_model_from_memory(self, kind="conversation_turn",
-                                          role=str(role or ""), text=content,
-                                          tags=None)
 
         # What the user states about themselves becomes a durable memory, recallable without "remember
         # this", and its facts become dated claims and graph relations read from that memory (their
@@ -5006,7 +4934,7 @@ class Memory(metaclass=_MemoryMeta):
         conn = self._get_connection()
         try:
             if _has_table(conn, "user_patterns"):
-                window = _profile_now_ts() - float(days) * 86400.0
+                window = _now_ts() - float(days) * 86400.0
                 mine, mine_params = _owned_scope(conn, "user_patterns")
                 rows = conn.execute(
                     """
@@ -5148,305 +5076,6 @@ class Memory(metaclass=_MemoryMeta):
             return cur.rowcount > 0
         finally:
             conn.close()
-
-    # ... (remaining methods unchanged) ...
-
-    # Note: The rest of the class (get_dashboard_counts, get_recent_improvements, etc.)
-    # are unchanged from the original. They are omitted here for brevity but must be kept.
-    # The full file should include them as in the original.
-
-
-
-    def _eli_habit_rows_to_dicts(self, rows):
-        out = []
-        for r in rows or []:
-            try:
-                out.append(dict(r))
-                continue
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            try:
-                out.append({k: r[k] for k in r.keys()})
-                continue
-            except Exception:
-                log.debug("suppressed exception", exc_info=True)
-            out.append(r)
-        return out
-
-    def _eli_habit_table_exists(self, conn, table_name):
-        try:
-            row = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                (table_name,),
-            ).fetchone()
-            return bool(row)
-        except Exception:
-            return False
-
-    def _eli_habit_columns(self, conn, table_name):
-        try:
-            t = _validate_identifier(table_name, "table")
-            rows = conn.execute(f"PRAGMA table_info({t})").fetchall()
-            cols = []
-            for r in rows:
-                try:
-                    cols.append(r["name"])
-                except Exception:
-                    try:
-                        cols.append(r[1])
-                    except Exception:
-                        log.debug("suppressed exception", exc_info=True)
-            return cols
-        except Exception:
-            return []
-
-    def _eli_habit_count(self, conn, table_name):
-        try:
-            row = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
-            if row is None:
-                return 0
-            try:
-                return int(row[0])
-            except Exception:
-                try:
-                    return int(list(row)[0])
-                except Exception:
-                    return 0
-        except Exception:
-            return 0
-
-    def _eli_habit_insert_dynamic(self, conn, table_name, preferred):
-        import json as _json
-        import time as _time
-
-        cols = self._eli_habit_columns(conn, table_name)
-        if not cols:
-            return False
-
-        now = float(_time.time())
-        row = {}
-
-        preferred = preferred or {}
-        for key, value in preferred.items():
-            if key in cols and value is not None:
-                if isinstance(value, (dict, list, tuple)):
-                    try:
-                        value = _json.dumps(value, ensure_ascii=False)
-                    except Exception:
-                        value = str(value)
-                row[key] = value
-
-        for key in ("created_at", "updated_at", "timestamp", "ts", "last_seen", "first_seen"):
-            if key in cols and key not in row:
-                row[key] = now
-
-        defaults = {
-            "confidence": 0.65,
-            "score": 0.65,
-            "weight": 1.0,
-            "count": 1,
-            "occurrences": 1,
-            "enabled": 1,
-            "active": 1,
-        }
-        for key, value in defaults.items():
-            if key in cols and key not in row:
-                row[key] = value
-
-        if not row:
-            return False
-
-        col_sql = ", ".join(f'"{k}"' for k in row.keys())
-        q_sql = ", ".join("?" for _ in row.keys())
-        conn.execute(
-            f'INSERT INTO "{table_name}" ({col_sql}) VALUES ({q_sql})',
-            list(row.values()),
-        )
-        return True
-
-    def _eli_habit_pick_text(self, row_dict):
-        if not isinstance(row_dict, dict):
-            return ""
-        for key in (
-            "message", "text", "content", "user_text", "assistant_text",
-            "command", "cmd", "app_name", "preference", "value", "summary",
-            "event_name", "rule_name", "name", "query", "prompt"
-        ):
-            v = row_dict.get(key)
-            if v:
-                s = str(v).strip()
-                if s:
-                    return s
-        for key, value in row_dict.items():
-            if isinstance(value, str):
-                s = value.strip()
-                if s:
-                    return s
-        return ""
-
-    def _eli_habit_pick_ts(self, row_dict):
-        if not isinstance(row_dict, dict):
-            return None
-        for key in (
-            "updated_at", "created_at", "timestamp", "ts", "time",
-            "last_seen", "first_seen", "date"
-        ):
-            v = row_dict.get(key)
-            if v is not None:
-                return v
-        return None
-
-    def _eli_backfill_habit_tables(self, conn):
-        import time as _time
-
-        has_events = self._eli_habit_table_exists(conn, "habit_events")
-        has_rules = self._eli_habit_table_exists(conn, "habit_rules")
-        if not has_events and not has_rules:
-            return
-
-        events_count = self._eli_habit_count(conn, "habit_events") if has_events else 0
-        rules_count = self._eli_habit_count(conn, "habit_rules") if has_rules else 0
-        if events_count > 0 and rules_count > 0:
-            return
-
-        try:
-            table_rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall()
-        except Exception:
-            return
-
-        names = []
-        for r in table_rows:
-            try:
-                names.append(r["name"])
-            except Exception:
-                try:
-                    names.append(r[0])
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-
-        preferred = [
-            "conversation_history",
-            "conversations",
-            "conversation_turns",
-            "app_commands",
-            "app_cmds",
-            "memories",
-            "observations",
-            "events",
-        ]
-
-        ordered = []
-        for t in preferred:
-            if t in names:
-                ordered.append(t)
-        for t in names:
-            if t not in ordered and not t.startswith("sqlite_") and t not in ("habit_events", "habit_rules"):
-                ordered.append(t)
-
-        src_table = None
-        src_row = None
-
-        for table_name in ordered:
-            try:
-                cnt = self._eli_habit_count(conn, table_name)
-                if cnt <= 0:
-                    continue
-                rows = conn.execute(f'SELECT * FROM "{table_name}" ORDER BY ROWID DESC LIMIT 3').fetchall()
-                if not rows:
-                    continue
-                row0 = rows[0]
-                try:
-                    row0 = dict(row0)
-                except Exception:
-                    try:
-                        row0 = {k: row0[k] for k in row0.keys()}
-                    except Exception:
-                        row0 = {}
-                src_table = table_name
-                src_row = row0
-                break
-            except Exception:
-                continue
-
-        if not src_table:
-            return
-
-        text = self._eli_habit_pick_text(src_row)
-        ts = self._eli_habit_pick_ts(src_row)
-        if ts is None:
-            ts = float(_time.time())
-
-        base_name = (text or src_table or "observed_activity").strip()
-        if not base_name:
-            base_name = "observed_activity"
-        base_name = base_name[:160]
-
-        payload = {
-            "source_table": src_table,
-            "seed_row": src_row,
-        }
-
-        if has_events and events_count == 0:
-            self._eli_habit_insert_dynamic(
-                conn,
-                "habit_events",
-                {
-                    "event_type": "observed_activity",
-                    "event_name": base_name,
-                    "pattern": base_name,
-                    "source": src_table,
-                    "details": base_name,
-                    "payload": payload,
-                    "metadata": payload,
-                    "json": payload,
-                    "timestamp": ts,
-                    "ts": ts,
-                    "created_at": ts,
-                    "updated_at": ts,
-                    "last_seen": ts,
-                    "first_seen": ts,
-                    "count": 1,
-                    "occurrences": 1,
-                    "confidence": 0.65,
-                },
-            )
-
-        if has_rules and rules_count == 0:
-            self._eli_habit_insert_dynamic(
-                conn,
-                "habit_rules",
-                {
-                    "rule_type": "observed_pattern",
-                    "rule_name": f"derived_from_{src_table}",
-                    "pattern": base_name,
-                    "source": src_table,
-                    "details": base_name,
-                    "payload": payload,
-                    "metadata": payload,
-                    "json": payload,
-                    "timestamp": ts,
-                    "ts": ts,
-                    "created_at": ts,
-                    "updated_at": ts,
-                    "last_seen": ts,
-                    "first_seen": ts,
-                    "count": 1,
-                    "occurrences": 1,
-                    "confidence": 0.65,
-                    "score": 0.65,
-                    "weight": 1.0,
-                    "enabled": 1,
-                    "active": 1,
-                },
-            )
-
-        try:
-            conn.commit()
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
 
     # Meta/introspection/system actions that land in the `habits` table because the
     # user repeatedly *tested* ELI — they are NOT user behavioural habits. Excluded
@@ -5626,7 +5255,7 @@ class Memory(metaclass=_MemoryMeta):
 
 
     def store_app_cmd(self, name, cmd, method=None):
-        now = _profile_now_ts()
+        now = _now_ts()
         name = _norm_text(name).strip()
         if isinstance(cmd, (list, tuple)):
             cmd_str = " ".join(_norm_text(x).strip() for x in cmd if _norm_text(x).strip())
@@ -5715,7 +5344,27 @@ class Memory(metaclass=_MemoryMeta):
         "validation failed", "empty args", "no topic", "no app name",
     )
 
+    # How many of the wordings that hit one fault a failure row keeps beside its count, to show it by.
+    FAILURE_EXAMPLES = 5
+
+    @staticmethod
+    def failure_signature(error: str, action: str = "", said: str = "") -> str:
+        """The fault a failure is, whatever the request that hit it: the action with the error's own
+        template, its paths, addresses, quoted values and numbers taken out ("cannot open '/tmp/a.txt'"
+        and "cannot open '/home/x/b.pdf'" are one fault). With no error text, the request is all there is."""
+        t = str(error or "").lower() or str(said or "").lower()
+        t = re.sub(r"(['\"`]).*?\1", "<value>", t)
+        t = re.sub(r"(?:[a-z]:)?(?:[\\/][\w.\-~]+)+", "<path>", t)
+        t = re.sub(r"0x[0-9a-f]+", "<addr>", t)
+        t = re.sub(r"\d+(?:\.\d+)?", "<n>", t)
+        t = " ".join(t.split())
+        return hashlib.sha1(f"{str(action or '').upper()}|{t}".encode("utf-8", "ignore")).hexdigest()
+
     def log_failure(self, user_input, error="", confidence=0.0, context=None, details=None, source="manual", **kwargs):
+        """One row per fault (failure_signature: the action and the error's template), counted each time
+        it recurs, with the last few requests that hit it as examples. It was keyed by the exact pair
+        (the user's sentence, the error text), so one code fault hit by differently worded requests
+        stayed a pile of single rows no detector ever saw recur."""
         user_input = str(user_input or "").strip()
         error_text = str(error or kwargs.get("error") or "").strip()
         # Skip non-actionable transient/user errors so they don't pollute the
@@ -5728,26 +5377,38 @@ class Memory(metaclass=_MemoryMeta):
         details_text = _jsonify_contract_value(details if details not in (None, "") else ctx)
         source = str(source or kwargs.get("source") or "manual").strip() or "manual"
         now = _now_ts()
-        signature = hashlib.sha1(f"{user_input}|{error_text}".encode("utf-8", "ignore")).hexdigest()
+        action = str(kwargs.get("action") or (ctx.get("action") if isinstance(ctx, dict) else "") or "").strip()
+        signature = self.failure_signature(error_text, action, user_input)
+        # the failing action is the command; the request that hit it is an example
+        command = action.upper() or user_input
 
         conn = self._get_connection()
         try:
             _ensure_contract_schema(conn)
+            _add_contract_column(conn, "failures", "examples", "TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)")
 
             row = conn.execute(
-                "SELECT id, COALESCE(occurrence_count, 0) FROM failures WHERE user_input = ? AND error = ?",
-                (user_input, error_text),
+                "SELECT id, COALESCE(occurrence_count, 0), COALESCE(examples, '[]') FROM failures "
+                "WHERE signature = ? ORDER BY id LIMIT 1",
+                (signature,),
             ).fetchone()
 
             if row:
                 row_id = int(row[0])
                 occ = int(row[1] or 0) + 1
+                try:
+                    examples = [e for e in json.loads(row[2] or "[]") if isinstance(e, str)]
+                except ValueError:
+                    examples = []
+                examples = ([e for e in examples if e != user_input] + [user_input])[-self.FAILURE_EXAMPLES:]
                 conn.execute(
                     """
                     UPDATE failures
                     SET timestamp = ?, ts = ?, last_seen = ?, occurrence_count = ?, count = ?,
                         confidence = ?, low_confidence = ?, context = ?, context_json = ?,
-                        details = ?, description = ?, source = ?, signature = ?, status = COALESCE(status, 'open')
+                        details = ?, description = ?, source = ?, user_input = ?, examples = ?,
+                        status = COALESCE(status, 'open')
                     WHERE id = ?
                     """,
                     (
@@ -5755,7 +5416,7 @@ class Memory(metaclass=_MemoryMeta):
                         float(confidence or 0.0), 1 if float(confidence or 0.0) < 0.5 else 0,
                         ctx_text, ctx_text,
                         details_text, details_text or error_text or user_input,
-                        source, signature,
+                        source, user_input, json.dumps(examples),
                         row_id,
                     ),
                 )
@@ -5768,17 +5429,17 @@ class Memory(metaclass=_MemoryMeta):
                     ts, timestamp, user_input, command, error, confidence, low_confidence,
                     context, context_json, occurrence_count, first_seen, last_seen,
                     failure, name, text, content, details, description, source,
-                    signature, status, count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    signature, status, count, examples
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    now, now, user_input, user_input, error_text, float(confidence or 0.0),
+                    now, now, user_input, command, error_text, float(confidence or 0.0),
                     1 if float(confidence or 0.0) < 0.5 else 0,
                     ctx_text, ctx_text, 1, now, now,
-                    user_input, user_input, details_text or error_text or user_input,
+                    error_text or user_input, command, details_text or error_text or user_input,
                     details_text or error_text or user_input,
                     details_text, details_text or error_text or user_input,
-                    source, signature, "open", 1,
+                    source, signature, "open", 1, json.dumps([user_input] if user_input else []),
                 ),
             )
             conn.commit()
@@ -5858,56 +5519,6 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
-
-    def add_capability_proposal(self, *args, **kwargs):
-        capability = kwargs.pop("capability", None)
-        proposed_name = kwargs.pop("proposed_name", None)
-        description = kwargs.pop("description", "")
-        examples = kwargs.pop("examples", None)
-        plugin_code = kwargs.pop("plugin_code", kwargs.pop("code", ""))
-        status = kwargs.pop("status", "pending")
-        reasoning = kwargs.pop("reasoning", "")
-        rationale = kwargs.pop("rationale", None)
-
-        if len(args) >= 1:
-            if proposed_name is None:
-                proposed_name = args[0]
-            elif capability is None:
-                capability = args[0]
-        if len(args) >= 2 and not description:
-            description = args[1]
-        if len(args) >= 3 and examples is None:
-            examples = args[2]
-        if len(args) >= 4 and not plugin_code:
-            plugin_code = args[3]
-
-        if capability is None:
-            capability = proposed_name or ""
-        if proposed_name is None:
-            proposed_name = capability or ""
-
-        now = _now_ts()
-        conn = self._get_connection()
-        try:
-            payload = {
-                "ts": now,
-                "timestamp": now,
-                "proposed_name": _norm_text(proposed_name),
-                "capability": _norm_text(capability),
-                "description": _norm_text(description),
-                "examples": _examples_json(examples),
-                "plugin_code": _norm_text(plugin_code),
-                "reasoning": _norm_text(reasoning or rationale or description),
-                "rationale": _norm_text(rationale or description or reasoning),
-                "status": _norm_text(status or "pending"),
-                "created_at": now,
-                "updated_at": now,
-            }
-            rid = _insert_payload(conn, "capability_proposals", payload)
-            conn.commit()
-            return rid
-        finally:
-            conn.close()
 
     def get_dashboard_counts(self):
         conn = self._get_connection()
@@ -6277,17 +5888,6 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
-    def propose_capability(self, capability, reasoning="", description="", examples=None, plugin_code=""):
-        return self.add_capability_proposal(
-            proposed_name=capability,
-            capability=capability,
-            description=description or f"Proposed capability: {capability}",
-            examples=examples or [],
-            plugin_code=plugin_code or "",
-            reasoning=reasoning or "",
-            status="pending",
-        )
-
     def save_session_summary(self, session_id, user_id=None, summary="", turns_count=0, started_at=None, ended_at=None, source="gui.autosave"):
         now = _now_ts()
         started_at = now if started_at is None else float(started_at)
@@ -6311,94 +5911,6 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
-    # ════════════════════════════════════════════════════════════
-    # LAYERED MEMORY FACADE
-    # ════════════════════════════════════════════════════════════
-
-    def store_episodic(self, role, content, session_id=None, user_id=None):
-        """Store a conversation turn (episodic memory)."""
-        self.add_conversation_turn(role, content, session_id, user_id)
-
-    def store_semantic(self, fact, tags="", confidence=0.8):
-        """Store a user fact/preference in the semantic tier.
-
-        The tier's routine writer is profile_extractor._promote_to_semantic, which
-        records a fact as it is learned. This stays as the direct API for callers
-        with a fact already in hand, and dedupes on the fact text so the two paths
-        cannot double-insert the same thing.
-        """
-        fact = str(fact or "").strip()
-        if not fact:
-            return False
-        conn = self._get_connection()
-        try:
-            conn.execute("""CREATE TABLE IF NOT EXISTS semantic (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT, fact TEXT, tags TEXT,
-                confidence REAL DEFAULT 0.8, created_at REAL)""")
-            if conn.execute(
-                    "SELECT 1 FROM semantic WHERE lower(COALESCE(fact,'')) = lower(?) LIMIT 1",
-                    (fact,)).fetchone():
-                return False
-            conn.execute(
-                "INSERT INTO semantic (user_id, fact, tags, confidence, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("default", fact, tags, confidence, time.time()))
-            conn.commit()
-            return True
-        except Exception:
-            # Was a bare `pass`: a tier nothing wrote, failing silently when it did.
-            log.debug("store_semantic failed", exc_info=True)
-            return False
-        finally:
-            conn.close()
-        # Also extract entity/relation triples into the KG so semantic facts are
-        # recallable for ANY query (recall_memory only reads the `semantic` table
-        # for identity queries; the KG is consulted for all queries).
-        try:
-            from eli.memory.knowledge_graph import get_knowledge_graph
-            get_knowledge_graph().extract_from_memory(str(fact or ""), source="user")
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
-    def recall_semantic(self, query="", limit=10):
-        """Recall user facts from semantic table."""
-        conn = self._get_connection()
-        try:
-            if query:
-                rows = conn.execute(
-                    "SELECT fact, tags, confidence FROM semantic WHERE fact LIKE ? ORDER BY confidence DESC LIMIT ?",
-                    (f"%{query}%", limit)).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT fact, tags, confidence FROM semantic ORDER BY created_at DESC LIMIT ?",
-                    (limit,)).fetchall()
-            return [{"fact": r[0], "tags": r[1], "confidence": r[2]} for r in rows]
-        except Exception:
-            return []
-        finally:
-            conn.close()
-
-    def store_reflective(self, category, content, **kwargs):
-        """Store failure/improvement/observation."""
-        if category == "failure":
-            self.log_failure(content, **kwargs)
-        elif category == "improvement":
-            self.log_improvement(content, **kwargs)
-        else:
-            self.add_observation(category or "system", content)
-
-    def get_db_routing_info(self):
-        """Return which DB this instance uses."""
-        try:
-            my_path = str(getattr(self, "db_path", ""))
-            paths = resolve_db_paths()
-            role = "user" if "user" in my_path else "agent" if "agent" in my_path else "unknown"
-            return {"db_path": my_path, "role": role,
-                    "user_db": str(_path_value(paths, 'user_db')), "agent_db": str(_path_value(paths, 'agent_db')),
-                    "memory_db": str(_path_value(paths, 'memory_db')) if _path_value(paths, 'memory_db') else None}
-        except Exception as e:
-            return {"db_path": str(getattr(self, "db_path", "")), "role": "unknown", "error": str(e)}
-
 
 # Persistence-gate + world-model-sync helpers.
 # Lazily import to keep the module loadable when these are missing.
@@ -6412,50 +5924,6 @@ except Exception:
     _eli_should_store_conversation_turn = None
     _eli_should_store_memory_text = None
     _eli_is_internal_report_dump = None
-
-try:
-    from eli.kernel.world_model import (
-        merge_memory_snapshot as _eli_merge_memory_snapshot,
-        append_observation as _eli_append_world_observation,
-    )
-except Exception:
-    _eli_merge_memory_snapshot = None
-    _eli_append_world_observation = None
-
-
-def _eli_sync_world_model_from_memory(mem_obj, *, kind: str, role: str = "", text: str = "", tags=None) -> None:
-    """Update world_model.json with a snapshot of the latest persisted record.
-
-    Uses canonical DB path resolution and appends a compact persistence
-    observation when memory writes succeed.
-    """
-    try:
-        dbp = str(getattr(mem_obj, "db_path", "") or "")
-        paths = resolve_db_paths()
-        snap = {
-            "user_db": str(getattr(paths, "user_db", "") or ""),
-            "agent_db": str(getattr(paths, "agent_db", "") or ""),
-            "memory_db": str(getattr(paths, "memory_db", "") or dbp or ""),
-            "last_write_db": dbp,
-            "last_write_kind": str(kind or ""),
-            "last_write_role": str(role or ""),
-        }
-        if callable(_eli_merge_memory_snapshot):
-            _eli_merge_memory_snapshot(snap)
-        if callable(_eli_append_world_observation):
-            _eli_append_world_observation(
-                "persistence",
-                {
-                    "kind": str(kind or ""),
-                    "role": str(role or ""),
-                    "db_path": dbp,
-                    "size": len(str(text or "")),
-                    "tags": list(tags or []) if isinstance(tags, (list, tuple, set)) else ([str(tags)] if tags else []),
-                },
-            )
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
 
 # Explicit FAISS persistence helper. vs.flush() should persist the index but has been unreliable, so
 # this writes faiss.write_index() to the canonical artifacts/vectors/ paths so post-rebuild state

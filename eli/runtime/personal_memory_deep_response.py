@@ -159,7 +159,6 @@ def _static_memory_functions() -> List[str]:
     root = _root()
     files = [
         root / "eli" / "memory" / "memory.py",
-        root / "eli" / "memory" / "memory_adapter.py",
         root / "eli" / "memory" / "retrieval.py",
         root / "eli" / "memory" / "vector_store.py",
         root / "eli" / "memory" / "knowledge_graph.py",

@@ -82,7 +82,6 @@ ALL_MODULES = [
     # eli.memory.db_paths — module does not exist (stale entry; use eli.core.db_paths), removed 2026-06-01
     # eli.memory.habits_memory_db — deleted module, superseded by memory.py + planning/habits.py (fc5b8b6b's sibling removal), removed 2026-09-29
     "eli.memory.knowledge_graph",
-    "eli.memory.memory_adapter",
     "eli.memory.memory",
     "eli.memory.system_index",
     "eli.memory.vector_store",

@@ -29,23 +29,8 @@ __all__ = [
     "recall_recent",
     "log_event",
     "get_memory_status",
-    "memory_store_fn",
-    "memory_search_fn",
-    "memory_recent_fn",
 ]
 
-
-def __getattr__(name: str):
-    """Lazy-load memory_adapter exports to avoid circular import at package init."""
-    if name in ("memory_store_fn", "memory_search_fn", "memory_recent_fn"):
-        from .memory_adapter import memory_store_fn, memory_search_fn, memory_recent_fn  # noqa: F401
-        _map = {
-            "memory_store_fn": memory_store_fn,
-            "memory_search_fn": memory_search_fn,
-            "memory_recent_fn": memory_recent_fn,
-        }
-        return _map[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _legacy_memory_singleton: Optional[Memory] = None
 

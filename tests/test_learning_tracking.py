@@ -11,7 +11,7 @@ def _count(db, table):
 
 def test_user_turn_updates_profile_patterns_and_replay_buffer(tmp_path):
     db = tmp_path / "user.sqlite3"
-    mem = Memory(db_path=db, secondary_paths=[])
+    mem = Memory(db_path=db)
 
     mem.add_conversation_turn(
         "user",
@@ -28,7 +28,7 @@ def test_user_turn_updates_profile_patterns_and_replay_buffer(tmp_path):
 
 def test_app_command_updates_habit_tables_and_replay_buffer(tmp_path):
     db = tmp_path / "user.sqlite3"
-    mem = Memory(db_path=db, secondary_paths=[])
+    mem = Memory(db_path=db)
 
     mem.store_app_cmd("spotify", "spotify", method="test")
     mem.log_learning_event(
@@ -51,7 +51,7 @@ def test_app_command_updates_habit_tables_and_replay_buffer(tmp_path):
 def test_a_rule_without_a_time_is_never_read_as_midnight(tmp_path):
     import sqlite3
     db = tmp_path / "user.sqlite3"
-    mem = Memory(db_path=db, secondary_paths=[])
+    mem = Memory(db_path=db)
     mem._get_connection().close()
     conn = sqlite3.connect(db)
     conn.execute("INSERT INTO habit_rules (name, command, enabled) VALUES ('notes', 'notes', 1)")

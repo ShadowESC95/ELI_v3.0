@@ -50,3 +50,23 @@ def test_mark_resolved_by_id_and_noop(tmp_path):
     assert m.mark_failure_resolved() == 0           # no criteria
     assert m.mark_failure_resolved(id=3) == 1       # the Spotify row, by id
     assert len(m.get_recent_failures()) == 2
+
+
+def test_one_fault_hit_by_differently_worded_requests_is_one_recurring_failure(tmp_path):
+    """Failures were keyed by the exact (sentence, error) pair, so a code fault hit from three wordings
+    stayed three rows of one occurrence each, and nothing that looks for recurring faults saw it."""
+    import json
+    m = Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent")
+    for said, path in (("open my notes", "/tmp/a.txt"), ("show the notes file", "/home/x/b.txt"),
+                       ("can you open notes", "/srv/c.txt")):
+        m.log_failure(said, error=f"FileNotFoundError: cannot open '{path}' (errno 2)", context={"action": "OPEN_FILE"})
+    m.log_failure("open the music", error="FileNotFoundError: cannot open '/tmp/song.mp3' (errno 2)",
+                  context={"action": "PLAY_MEDIA"})
+    conn = sqlite3.connect(m.db_path)
+    try:
+        rows = conn.execute("SELECT command, occurrence_count, user_input, examples FROM failures ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    assert [(r[0], r[1]) for r in rows] == [("OPEN_FILE", 3), ("PLAY_MEDIA", 1)], "the action's fault, counted"
+    assert rows[0][2] == "can you open notes" and json.loads(rows[0][3]) == [
+        "open my notes", "show the notes file", "can you open notes"], "the requests that hit it, as examples"

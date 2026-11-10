@@ -87,34 +87,12 @@ def test_promotion_carries_the_pattern_type_as_a_tag(db):
     assert "user_fact" in tags and "identity.name" in tags
 
 
-def test_the_direct_api_also_dedupes(tmp_path, monkeypatch):
-    """store_semantic() stays usable for callers holding a fact, and must not
-    double-insert what the extractor already recorded."""
+def test_the_tier_has_one_writer():
+    """The extractor is the tier's one writer: the unused store_semantic() facade (whose graph extraction
+    after its returns could never run) is gone."""
     from eli.memory.memory import Memory
-
-    # Memory is a metaclass-managed singleton and closes the connection it hands
-    # out, so the stub hands back a FRESH connection per call — which is what a
-    # real pooled _get_connection does anyway. Dedupe therefore has to hold via
-    # the file, not via a single live handle.
-    path = tmp_path / "user.sqlite3"
-
-    class _Stub:
-        def _get_connection(self):
-            return sqlite3.connect(str(path))
-
-    store = Memory.__dict__["store_semantic"]
-    stub = _Stub()
-
-    assert store(stub, "User's name is Alex.") is True
-    assert store(stub, "user's NAME is alex.") is False   # case-insensitive
-    assert store(stub, "") is False
-    assert store(stub, "   ") is False
-
-    conn = sqlite3.connect(str(path))
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM semantic").fetchone()[0] == 1
-    finally:
-        conn.close()
+    assert not any(hasattr(Memory, n) for n in ("store_semantic", "recall_semantic", "store_episodic",
+                                                "store_reflective", "get_db_routing_info"))
 
 
 # ── backfill: an existing install must not start with an empty tier ─────────
