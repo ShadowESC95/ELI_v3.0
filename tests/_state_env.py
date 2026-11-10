@@ -8,8 +8,11 @@ on a developer's machine.
 """
 from __future__ import annotations
 
+import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterator, List, Tuple
 
 
 def state_env(root: Path) -> Dict[str, str]:
@@ -26,9 +29,8 @@ def state_env(root: Path) -> Dict[str, str]:
         "ELI_GPU_PACK_LOG": str(root / "gpu-pack.log"),          # beside the checkout's runtime/ otherwise
         "ELI_VOICE_REFS_DIR": str(root / "voice_profiles"),      # and a cloned voice beside its models/
         "ELI_KEYS_DIR": str(root / "eli-keys"),                  # licence keys every ELI product shares
-        # starting an engine regenerates the capabilities table and the manifest at the checkout's root
+        # starting an engine regenerates the capabilities table (data_dir() otherwise; never the blueprint)
         "ELI_CAPABILITIES_DOC": str(root / "capabilities_and_actions.md"),
-        "ELI_CAPABILITY_MANIFEST": str(root / "capability_manifest.json"),
         # the user DB is resolved by user_db_path(), which honours ELI_USER_DB/ELI_MEMORY_DB before
         # anything else; the agent DB by ELI_AGENT_DB first
         "ELI_USER_DB": str(db / "user.sqlite3"),
@@ -84,3 +86,94 @@ def outside(root: Path) -> Dict[str, Path]:
     """The stores that resolve anywhere but under `root`."""
     safe = Path(root).resolve()
     return {name: p for name, p in stores().items() if p != safe and safe not in p.parents}
+
+
+# ── a module of its own, without the conftest ────────────────────────────────────────────────────
+
+class OwnState:
+    """What `own_state` holds: the folder, and every file or database opened meanwhile under this
+    machine's own state folders (test, path)."""
+
+    def __init__(self, root: Path, roots: Tuple[str, ...], callers_sandbox: str = "") -> None:
+        self.root = Path(root)
+        self.roots = roots
+        # a run that was a test before the module (the suite's conftest) has its own throwaway
+        # sandbox: a world object built there earlier in the run is the run's, not the machine's
+        self.callers_sandbox = callers_sandbox
+        self.opened_elsewhere: List[Tuple[str, str]] = []
+
+
+_HELD: List[OwnState] = []
+_HOOKED = [False]
+
+
+def _note_opened(event, args) -> None:
+    """Audit hook: a database connected or a file opened under the machine's own state, while held."""
+    if not _HELD or event not in ("open", "sqlite3.connect") or not args:
+        return
+    try:
+        path = os.path.realpath(os.fsdecode(args[0]))
+    except (TypeError, ValueError):
+        return                                         # a file descriptor and the like
+    held = _HELD[-1]
+    for own in (str(held.root.resolve()), held.callers_sandbox):
+        if own and (path == own or path.startswith(own + os.sep)):
+            return
+    if any(path == r or path.startswith(r + os.sep) for r in held.roots):
+        held.opened_elsewhere.append((os.environ.get("PYTEST_CURRENT_TEST", "").split(" ")[0], path))
+
+
+def machines_own_state() -> Tuple[str, ...]:
+    """This machine's state folders as ELI resolves them now (before a module sets its own): the data
+    and config folders, the per-user root of an installed ELI, the checkout's artifacts and config,
+    the generic id file, every store as it resolves, and every store the caller's environment names."""
+    from eli.core import paths
+    roots = {paths.data_dir(), paths.config_dir(), paths._frozen_user_root(), paths.project_root() / "artifacts",
+             paths.project_root() / "config", Path.home() / ".eli_user_id", *stores().values()}
+    names = state_env(Path(os.sep))
+    roots |= {Path(v) for k, v in os.environ.items() if k in names and os.sep in v}
+    return tuple(sorted({str(Path(r).expanduser().resolve()) for r in roots}))
+
+
+def _forget_resolved_paths() -> None:
+    from eli.core import paths
+    for cached in (paths.data_dir, paths.config_dir, paths.cache_dir):
+        cached.cache_clear()
+
+
+@contextmanager
+def own_state(root: Path) -> Iterator[OwnState]:
+    """Every store under `root`, and test mode on (ELI_TEST_MODE), for as long as it is held, for a
+    module that runs without the suite conftest (the --noconftest lane); what it opens under the
+    machine's own state meanwhile is noted (`opened_elsewhere`). Put back as it was afterwards."""
+    import pytest
+    from eli.core.paths import data_dir, test_mode
+    root = Path(root)
+    held = OwnState(root, machines_own_state(), str(data_dir().resolve()) if test_mode() else "")
+    # the owner's id is never brought over from ~/.eli_user_id (paths.adopt_legacy_file): the run's own
+    (root / "config").mkdir(parents=True, exist_ok=True)
+    (root / "config" / "user_id").write_text("a-test-owner", encoding="utf-8")
+    with pytest.MonkeyPatch.context() as mp:
+        for name, value in state_env(root).items():
+            mp.setenv(name, value)
+        mp.setenv("ELI_TEST_MODE", "1")
+        _forget_resolved_paths()
+        # the world's storage freezes its paths when it is first imported (on the same lane, by an
+        # earlier module): they are pointed here as well
+        from eli.world.persistence import snapshots, storage
+        world = Path(os.environ["ELI_WORLD_DIR"])
+        for name, value in (("WORLD_DIR", world), ("STATE_PATH", world / "eli_world_state.json"),
+                            ("EVENTS_PATH", world / "events.jsonl"), ("ACTIONS_PATH", world / "actions.jsonl")):
+            mp.setattr(storage, name, value)
+        mp.setattr(snapshots, "STATE_PATH", world / "eli_world_state.json", raising=False)
+        # EliWorldStorage(state_path=STATE_PATH) took the constant as its default when it was defined
+        mp.setattr(storage.EliWorldStorage.__init__, "__defaults__", (world / "eli_world_state.json",))
+        if not _HOOKED[0]:
+            sys.addaudithook(_note_opened)
+            _HOOKED[0] = True
+        _HELD.append(held)
+        try:
+            yield held
+        finally:
+            _HELD.remove(held)
+    _forget_resolved_paths()

@@ -340,3 +340,23 @@ def test_a_training_path_is_where_eli_keeps_its_training(tmp_path, monkeypatch):
     assert P.training_path("training/datasets/x.jsonl") == (tmp_path / "learn" / "datasets" / "x.jsonl").resolve()
     assert P.training_path("models/lora/a") == (P.project_root() / "models" / "lora" / "a").resolve()
     assert P.training_path(tmp_path / "abs.jsonl") == tmp_path / "abs.jsonl"
+
+
+def test_test_mode_is_one_switch_read_in_one_place(monkeypatch):
+    """PYTEST_CURRENT_TEST and "pytest is imported" were read as test mode as well, in three places, so
+    a process a test started (the eval's replay of the real product) ran in test mode: no session-end
+    flush, replies cut short, no model. ELI_TEST_MODE is the switch, and core.paths reads it."""
+    import pathlib
+    import re
+    import eli.core.paths as P
+    from eli.kernel.stages._common import _eli_test_mode
+    monkeypatch.delenv("ELI_TEST_MODE", raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_x.py::test_y (call)")
+    assert P.test_mode() is False and _eli_test_mode() is False
+    monkeypatch.setenv("ELI_TEST_MODE", "1")
+    assert P.test_mode() is True and _eli_test_mode() is True
+    package = pathlib.Path(P.__file__).resolve().parents[1]
+    readers = sorted(str(f.relative_to(package)) for f in package.rglob("*.py")
+                     if re.search(r"getenv\(\s*[\"']PYTEST_CURRENT_TEST|environ[^\n]{0,20}PYTEST_CURRENT_TEST"
+                                  r"|[\"']pytest[\"'] in sys\.modules", f.read_text(encoding="utf-8")))
+    assert not readers, readers

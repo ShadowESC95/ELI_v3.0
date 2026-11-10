@@ -932,83 +932,18 @@ def test_a_book_is_read_whole_over_http_and_anything_else_is_not_found(monkeypat
 # on a developer's machine the owner's live data, and brought the owner's ~/.eli_user_id along. The
 # module puts every store in a folder of its own, the way the conftest does for the suite
 # (tests/_state_env.py), and the last test checks nothing was opened anywhere else.
-import os as _os
-import sys as _sys
-from pathlib import Path
-
 from tests import _state_env
-
-_OPENED_ELSEWHERE: list = []
-_WATCH = {"on": False, "roots": (), "own": ""}
-
-
-def _note_store_opened(event, args):
-    """Audit hook: a database connected or a file opened under one of this machine's own state
-    folders, while the module's tests run."""
-    if not _WATCH["on"] or event not in ("open", "sqlite3.connect") or not args:
-        return
-    try:
-        path = _os.path.realpath(_os.fsdecode(args[0]))
-    except (TypeError, ValueError):
-        return                                         # a file descriptor, ":memory:" and the like
-    if path.startswith(_WATCH["own"]):
-        return
-    if any(path == root or path.startswith(root + _os.sep) for root in _WATCH["roots"]):
-        _OPENED_ELSEWHERE.append((_os.environ.get("PYTEST_CURRENT_TEST", "").split(" ")[0], path))
-
-
-def _machines_own_state() -> tuple:
-    """This machine's state folders as ELI resolves them before the module sets its own: the data
-    and config folders, the per-user root of an installed ELI, the checkout's artifacts and config,
-    the generic id file, and every store the caller's environment names."""
-    from eli.core import paths
-    roots = {paths.data_dir(), paths.config_dir(), paths._frozen_user_root(), paths.project_root() / "artifacts",
-             paths.project_root() / "config", Path.home() / ".eli_user_id", *_state_env.stores().values()}
-    roots |= {Path(v) for k, v in _os.environ.items()
-              if k in _state_env.state_env(Path("/")) and _os.sep in v}
-    return tuple(sorted({str(Path(r).expanduser().resolve()) for r in roots}))
-
-
-def _forget_resolved_paths() -> None:
-    from eli.core import paths
-    for cached in (paths.data_dir, paths.config_dir, paths.cache_dir):
-        cached.cache_clear()
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _every_store_in_this_modules_own_folder(tmp_path_factory):
-    root = tmp_path_factory.mktemp("eli_state")
-    roots = _machines_own_state()
-    # the owner's id is never brought over from ~/.eli_user_id (paths.adopt_legacy_file): this run's own
-    (root / "config").mkdir(parents=True)
-    (root / "config" / "user_id").write_text("a-test-owner", encoding="utf-8")
-    with pytest.MonkeyPatch.context() as mp:
-        for name, value in _state_env.state_env(root).items():
-            mp.setenv(name, value)
-        _forget_resolved_paths()
-        # the world's storage freezes its paths when it is first imported (by an earlier module on
-        # the same lane, test_api_server): they are pointed here as well
-        from eli.world.persistence import snapshots, storage
-        world = Path(_os.environ["ELI_WORLD_DIR"])
-        for name, value in (("WORLD_DIR", world), ("STATE_PATH", world / "eli_world_state.json"),
-                            ("EVENTS_PATH", world / "events.jsonl"), ("ACTIONS_PATH", world / "actions.jsonl")):
-            mp.setattr(storage, name, value)
-        mp.setattr(snapshots, "STATE_PATH", world / "eli_world_state.json", raising=False)
-        # EliWorldStorage(state_path=STATE_PATH) took the constant as its default when it was defined
-        mp.setattr(storage.EliWorldStorage.__init__, "__defaults__", (world / "eli_world_state.json",))
-        if not _WATCH.get("hooked"):
-            _sys.addaudithook(_note_store_opened)
-            _WATCH["hooked"] = True
-        _WATCH.update(on=True, roots=roots, own=str(root.resolve()))
-        try:
-            yield root
-        finally:
-            _WATCH["on"] = False
-    _forget_resolved_paths()
+    with _state_env.own_state(tmp_path_factory.mktemp("eli_state")) as held:
+        yield held
 
 
 def test_zz_no_test_here_reads_or_writes_this_machines_own_records(_every_store_in_this_modules_own_folder):
     """Runs last in the module (by name and place): every store resolves inside the module's own
     folder, and no test above opened a file or a database under this machine's own state."""
-    assert not _state_env.outside(_every_store_in_this_modules_own_folder)
-    assert not _OPENED_ELSEWHERE, sorted(set(_OPENED_ELSEWHERE))[:20]
+    held = _every_store_in_this_modules_own_folder
+    assert not _state_env.outside(held.root)
+    assert not held.opened_elsewhere, sorted(set(held.opened_elsewhere))[:20]

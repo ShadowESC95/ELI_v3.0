@@ -7,7 +7,6 @@ with its own try/except.
 from __future__ import annotations
 
 import os
-import sys
 
 import re
 from eli.cognition import context_budget as _ctx_budget
@@ -326,13 +325,8 @@ def _is_autonomous_source(source: str) -> bool:
 
 
 def _eli_test_mode() -> bool:
-    if os.environ.get("ELI_TEST_MODE", "").strip().lower() in {
-        "1", "true", "yes", "on"
-    }:
-        return True
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return True
-    return "pytest" in sys.modules
+    from eli.core.paths import test_mode     # the one switch, ELI_TEST_MODE
+    return test_mode()
 
 
 

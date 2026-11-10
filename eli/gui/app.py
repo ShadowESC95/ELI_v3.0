@@ -4,7 +4,6 @@ ELI Launcher — hardware-aware model selector with auto-tuned parameters.
 from __future__ import annotations
 import json
 import multiprocessing
-import os
 import sys
 from pathlib import Path
 
@@ -348,10 +347,9 @@ def main():
 
     import eli.gui.gui_eli_original as _gui_mod
 
-    # User-info background updater (inlined from former bottom-of-file
-    # User-info startup refresh. Skipped under pytest so test
-    # isolation isn't broken.
-    if "PYTEST_CURRENT_TEST" not in os.environ:
+    # User-info startup refresh and its background updater. Not in a test run (ELI_TEST_MODE).
+    from eli.core.paths import test_mode as _test_mode
+    if not _test_mode():
         try:
             from eli.cognition.user_info_builder import (
                 ensure_user_info_background_updater,

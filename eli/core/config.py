@@ -16,7 +16,6 @@ Canonical key mapping (legacy -> canonical):
 
 from typing import Optional
 import os
-import sys
 import json
 
 from eli.core.runtime_settings import (
@@ -33,12 +32,6 @@ from eli.core.paths import (
 from eli.utils.log import get_logger
 
 log = get_logger(__name__)
-
-
-def _running_under_pytest() -> bool:
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return True
-    return "pytest" in sys.modules
 
 
 # Exposed for back-compat with any caller that reads the path directly.

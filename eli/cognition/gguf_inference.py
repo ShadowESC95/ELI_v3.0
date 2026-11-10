@@ -205,7 +205,8 @@ def get_model_path() -> Optional[Path]:
                         + (f"; the loaded model {loaded} is the model in use" if loaded else ""))
         return loaded
 
-    if os.getenv("PYTEST_CURRENT_TEST"):
+    from eli.core.paths import test_mode
+    if test_mode():                      # a test never finds this machine's model through its settings
         return None
 
     settings = _load_runtime_settings()

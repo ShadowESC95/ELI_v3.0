@@ -37,7 +37,8 @@ def _h_create_document(a, args):
 
     fmt = (args.get("format") or "md").lower().strip()
     import os as _os
-    if _os.environ.get("ELI_TEST_MODE", "").strip().lower() in {"1", "true", "yes", "on"}:
+    from eli.core.paths import test_mode as _test_mode
+    if _test_mode():
         import re as _re
         from pathlib import Path as _DPath
 

@@ -854,3 +854,23 @@ def test_accepting_a_suggestion_automates_what_was_suggested(tokenless_client, m
     assert tokenless_client.post("/v1/home/suggestions/accept", json=no_command).status_code == 422
     page = tokenless_client.get("/").text
     assert "command:x.command" in page and "minute:x.minute" in page and "command:'on'" not in page
+
+
+# ── every store in this module's own folder, with or without the suite conftest ─────────────────
+# On the --noconftest lane (CI's API lane, where these tests run with real fastapi) nothing set the
+# stores aside: they wrote the checkout's databases, world, settings and licence activation, took
+# up the key every ELI product shares from ~/.config/eli-keys and wrote it back there, and read the
+# owner's ~/.eli_user_id. The module keeps every store in a folder of its own (tests/_state_env.py).
+from tests import _state_env
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _every_store_in_this_modules_own_folder(tmp_path_factory):
+    with _state_env.own_state(tmp_path_factory.mktemp("eli_state")) as held:
+        yield held
+
+
+def test_zz_no_test_here_reads_or_writes_this_machines_own_records(_every_store_in_this_modules_own_folder):
+    held = _every_store_in_this_modules_own_folder
+    assert not _state_env.outside(held.root)
+    assert not held.opened_elsewhere, sorted(set(held.opened_elsewhere))[:20]
