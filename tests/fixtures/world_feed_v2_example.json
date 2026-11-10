@@ -32,7 +32,7 @@
    "importance": 0.5,
    "meaning": "I moved to Harbour Town last spring.",
    "made_by": "memory",
-   "when": 1792550382.556891,
+   "when": 1792551170.0052276,
    "form": {
     "shape": "orb",
     "colour": "#9fd8ff",
@@ -82,9 +82,9 @@
     "value": "Harbour Town",
     "chance": 0.597,
     "sure": 0.597,
-    "since": 1792550382.556891,
+    "since": 1792551170.0052276,
     "until": null,
-    "learned": 1792550382.556891,
+    "learned": 1792551170.0052276,
     "origin": "user_said",
     "basis": "sure 0.60: you said so once, contradicted",
     "confirmations": 1,
@@ -95,7 +95,7 @@
       "id": "memory_1",
       "kind": "memory",
       "text": "I moved to Harbour Town last spring.",
-      "when": 1792550382.556891,
+      "when": 1792551170.0052276,
       "origin": "you said so"
      }
     ]
@@ -148,10 +148,10 @@
     "made a lamp for the reading corner",
     "taken",
     "chance 60%",
-    "Mon 09 Nov 02:39"
+    "Mon 09 Nov 02:52"
    ],
    "made_by": "thoughts",
-   "when": 1794191982.556891,
+   "when": 1794192770.0052276,
    "thought": {
     "kind": "act",
     "chance": 0.6,
@@ -172,13 +172,13 @@
    }
   },
   {
-   "id": "book_goals_goal-06c3da9ee96c",
+   "id": "book_goals_goal-057b9cda9cc0",
    "kind": "book",
    "room": "own_room",
    "name": "Tidy the index",
    "meaning": "active",
    "made_by": "eli",
-   "when": 1794278382.6830182,
+   "when": 1794279170.1298983,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -188,9 +188,9 @@
     "size": 1.0,
     "glow": 0.0,
     "pos": [
-     0.88,
-     1.57,
-     -6.05
+     4.7,
+     1.9,
+     2.74
     ]
    },
    "book": {
@@ -198,15 +198,15 @@
     "title": "Tidy the index",
     "spine": "Tidy the index",
     "about": "active",
-    "from": 1794278382.6830182,
-    "to": 1794278382.6830268,
+    "from": 1794279170.1298983,
+    "to": 1794279170.1299064,
     "status": "active",
     "progress": 0.0,
     "length": 35,
     "sections": [
      {
       "heading": "What it is for",
-      "when": 1794278382.6830182,
+      "when": 1794279170.1298983,
       "text": "Fewer duplicate rows."
      }
     ]
@@ -219,7 +219,7 @@
    "name": "We found the kettle.",
    "meaning": "2 turns",
    "made_by": "memory",
-   "when": 1794019182.556891,
+   "when": 1794019970.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -239,18 +239,18 @@
     "title": "We found the kettle.",
     "spine": "We found the kettle.",
     "about": "2 turns",
-    "from": 1794019182.556891,
-    "to": 1794019242.556891,
+    "from": 1794019970.0052276,
+    "to": 1794020030.0052276,
     "length": 62,
     "sections": [
      {
-      "heading": "You, 02:39",
-      "when": 1794019182.556891,
+      "heading": "You, 02:52",
+      "when": 1794019970.0052276,
       "text": "Where did I leave the blue kettle?"
      },
      {
-      "heading": "ELI, 02:40",
-      "when": 1794019242.556891,
+      "heading": "ELI, 02:53",
+      "when": 1794020030.0052276,
       "text": "On the windowsill, you said."
      }
     ]
@@ -263,7 +263,7 @@
    "name": "open app: open the site instead",
    "meaning": "active, 0 checks: helped 0, harmed 0",
    "made_by": "lessons",
-   "when": 1794019182.556891,
+   "when": 1794019970.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -283,8 +283,8 @@
     "title": "open app: open the site instead",
     "spine": "open app",
     "about": "active, 0 checks: helped 0, harmed 0",
-    "from": 1794019182.556891,
-    "to": 1794019182.556891,
+    "from": 1794019970.0052276,
+    "to": 1794019970.0052276,
     "applies_to": "OPEN_APP",
     "record": {
      "status": "active",
@@ -297,7 +297,7 @@
     "sections": [
      {
       "heading": "When",
-      "when": 1794019182.556891,
+      "when": 1794019970.0052276,
       "text": "the app is not installed"
      },
      {
@@ -325,7 +325,7 @@
    "name": "Tue 10 Nov 2026",
    "meaning": "A note from the rooms",
    "made_by": "eli",
-   "when": 1794278382.0,
+   "when": 1794279170.0,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -345,13 +345,13 @@
     "title": "Tue 10 Nov 2026",
     "spine": "Tue 10 Nov 2026",
     "about": "A note from the rooms",
-    "from": 1794278382.0,
-    "to": 1794278382.0,
+    "from": 1794279170.0,
+    "to": 1794279170.0,
     "length": 54,
     "sections": [
      {
       "heading": "A note from the rooms",
-      "when": 1794278382.0,
+      "when": 1794279170.0,
       "text": "The reading corner is warmer now."
      }
     ]
@@ -364,7 +364,7 @@
    "name": "We found the kettle.",
    "meaning": "2 turns",
    "made_by": "memory",
-   "when": 1794019182.556891,
+   "when": 1794019970.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -384,13 +384,13 @@
     "title": "We found the kettle.",
     "spine": "We found the kettle.",
     "about": "2 turns",
-    "from": 1794019182.556891,
-    "to": 1794019242.556891,
+    "from": 1794019970.0052276,
+    "to": 1794020030.0052276,
     "length": 40,
     "sections": [
      {
       "heading": "",
-      "when": 1794019242.556891,
+      "when": 1794020030.0052276,
       "text": "We found the kettle. It was on the sill."
      }
     ]
@@ -403,7 +403,7 @@
    "name": "made a lamp for the reading corner",
    "meaning": "taken",
    "made_by": "eli",
-   "when": 1794191982.556891,
+   "when": 1794192770.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.6,
@@ -423,14 +423,14 @@
     "title": "made a lamp for the reading corner",
     "spine": "made a lamp for the\u2026",
     "about": "taken",
-    "from": 1794191982.556891,
-    "to": 1794191982.556891,
+    "from": 1794192770.0052276,
+    "to": 1794192770.0052276,
     "length": 68,
     "sections": [
      {
       "heading": "",
-      "when": 1794191982.556891,
-      "text": "made a lamp for the reading corner\ntaken\nchance 60%\nMon 09 Nov 02:39"
+      "when": 1794192770.0052276,
+      "text": "made a lamp for the reading corner\ntaken\nchance 60%\nMon 09 Nov 02:52"
      }
     ]
    }
@@ -442,7 +442,7 @@
    "name": "The Blue Kettle",
    "meaning": "The kettle waited on the sill.",
    "made_by": "memory",
-   "when": 1794019182.556891,
+   "when": 1794019970.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -462,8 +462,8 @@
     "title": "The Blue Kettle",
     "spine": "The Blue Kettle",
     "about": "The kettle waited on the sill.",
-    "from": 1794019182.556891,
-    "to": 1794019242.556891,
+    "from": 1794019970.0052276,
+    "to": 1794020030.0052276,
     "by": "ELI, with small-model",
     "fiction": true,
     "drawn_from": [
@@ -473,7 +473,7 @@
     "sections": [
      {
       "heading": "",
-      "when": 1794191982.556891,
+      "when": 1794192770.0052276,
       "text": "The kettle waited on the sill."
      }
     ]
@@ -486,7 +486,7 @@
    "name": "I am fond of the sound of rain on a roof.",
    "meaning": "argued \u00d71, sure 80%",
    "made_by": "eli",
-   "when": 1793846382.556891,
+   "when": 1793847170.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.8,
@@ -506,13 +506,13 @@
     "title": "I am fond of the sound of rain on a roof.",
     "spine": "rain sounds",
     "about": "argued \u00d71, sure 80%",
-    "from": 1793846382.556891,
-    "to": 1793846382.556891,
+    "from": 1793847170.0052276,
+    "to": 1793847170.0052276,
     "length": 67,
     "sections": [
      {
       "heading": "held since Thu 05 Nov 2026",
-      "when": 1793846382.556891,
+      "when": 1793847170.0052276,
       "text": "I am fond of the sound of rain on a roof."
      }
     ]
@@ -525,7 +525,7 @@
    "name": "Notes is not installed",
    "meaning": "1 of 2 actions failed",
    "made_by": "memory",
-   "when": 1794019192.556891,
+   "when": 1794019980.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -545,18 +545,18 @@
     "title": "Notes is not installed",
     "spine": "Notes is not installed",
     "about": "1 of 2 actions failed",
-    "from": 1794019192.556891,
-    "to": 1794019202.556891,
+    "from": 1794019980.0052276,
+    "to": 1794019990.0052276,
     "length": 133,
     "sections": [
      {
-      "heading": "open app, 02:39",
-      "when": 1794019192.556891,
+      "heading": "open app, 02:53",
+      "when": 1794019980.0052276,
       "text": "Notes is not installed\nfailed: the cause is not known"
      },
      {
-      "heading": "open url, 02:40",
-      "when": 1794019202.556891,
+      "heading": "open url, 02:53",
+      "when": 1794019990.0052276,
       "text": "Opened notes.example.org\ntried instead of open app"
      }
     ]
@@ -567,9 +567,9 @@
    "kind": "book",
    "room": "memory_archive",
    "name": "The week of 02 Nov 2026",
-   "meaning": "1 conversations, 2 actions",
+   "meaning": "1 conversation, 2 actions",
    "made_by": "memory",
-   "when": 1794019182.556891,
+   "when": 1794019970.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -588,15 +588,15 @@
     "of": "period",
     "title": "The week of 02 Nov 2026",
     "spine": "The week of 02 Nov 2026",
-    "about": "1 conversations, 2 actions",
-    "from": 1794019182.556891,
-    "to": 1794019182.556891,
+    "about": "1 conversation, 2 actions",
+    "from": 1794019970.0052276,
+    "to": 1794019970.0052276,
     "length": 91,
     "sections": [
      {
       "heading": "Sat 07 Nov 2026",
-      "when": 1794019182.556891,
-      "text": "02:39\u201302:40 2 turns: We found the kettle.\nopen app \u00d71 (1 failed)\nopen url \u00d71"
+      "when": 1794019970.0052276,
+      "text": "02:52\u201302:53 2 turns: We found the kettle.\nopen app \u00d71 (1 failed)\nopen url \u00d71"
      }
     ]
    }
@@ -606,9 +606,9 @@
    "kind": "book",
    "room": "memory_archive",
    "name": "The week of 26 Oct 2026",
-   "meaning": "0 conversations, 1 actions",
+   "meaning": "0 conversations, 1 action",
    "made_by": "memory",
-   "when": 1793414382.556891,
+   "when": 1793415170.0052276,
    "x": 0.0,
    "y": 0.0,
    "importance": 0.5,
@@ -627,14 +627,14 @@
     "of": "period",
     "title": "The week of 26 Oct 2026",
     "spine": "The week of 26 Oct 2026",
-    "about": "0 conversations, 1 actions",
-    "from": 1793414382.556891,
-    "to": 1793414382.556891,
+    "about": "0 conversations, 1 action",
+    "from": 1793415170.0052276,
+    "to": 1793415170.0052276,
     "length": 26,
     "sections": [
      {
       "heading": "Sat 31 Oct 2026",
-      "when": 1793414382.556891,
+      "when": 1793415170.0052276,
       "text": "open app \u00d71"
      }
     ]
@@ -653,7 +653,7 @@
    "reason": "",
    "status": "open",
    "outcome": "",
-   "when": 1794191982.556891,
+   "when": 1794192770.0052276,
    "words": "Made a lamp for the reading corner. Taken. Chance 60%.",
    "subject": "a lamp",
    "ref": "act:1"
@@ -678,7 +678,7 @@
       }
      ],
      "worst_target": "app:notes",
-     "last": 1794019192.556891,
+     "last": 1794019980.0052276,
      "weeks": [
       {
        "from": 1791154800.0,
