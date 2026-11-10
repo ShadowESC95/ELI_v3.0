@@ -72,18 +72,22 @@ class _Memory:
         return len(ids)
 
 
-def test_a_surprise_raises_the_memories_about_its_subject_and_is_a_thought(store, monkeypatch):
+def test_a_surprise_raises_only_the_memories_that_hold_the_news_and_is_a_thought(store, monkeypatch):
+    """A failed action is a fact about the action: the memories that merely name its target are not
+    looked up and raised (every failed request to play a song used to raise the memories naming it).
+    What is raised is the memory holding the news, by id."""
     mem = _Memory()
     import eli.memory.memory as memory_module
     monkeypatch.setattr(memory_module, "get_memory", lambda *a, **k: mem)
     out = salience.note_surprise("action", 0.9, subjects=["spotify"], why="open app for spotify was expected to work (90%) and failed")
-    assert out["touched"] == [11, 12] and out["gain"] == pytest.approx(0.9 * salience.GAIN)
-    assert mem.raised == [([11, 12], pytest.approx(0.225), "surprise: action")]
+    assert out["touched"] == [] and out["gain"] == pytest.approx(0.9 * salience.GAIN)
+    assert mem.raised == [], "nothing is looked up by subject"
     kept = th.recent(5)[0]
-    assert kept["kind"] == "surprise" and kept["room"] == "anomaly_room" and kept["decision"] == "raised"
-    assert "2 memories about spotify matter 22% more" in kept["reason"] and kept["chance"] == pytest.approx(0.9)
-    nothing = salience.note_surprise("claim", 0.5, subjects=["unknown thing"], why="a claim was corrected")
-    assert nothing["touched"] == [] and th.recent(5)[0]["decision"] == "noted"
+    assert kept["kind"] == "surprise" and kept["room"] == "anomaly_room" and kept["decision"] == "noted"
+    assert kept["subject"] == "spotify" and kept["chance"] == pytest.approx(0.9)
+    held = salience.note_surprise("claim", 0.5, subjects=["the canal"], why="a fact changed", memory_ids=[12, "x", 0])
+    assert held["touched"] == [12] and mem.raised == [([12], pytest.approx(0.125), "surprise: claim")]
+    assert th.recent(5)[0]["decision"] == "raised" and "1 memory holding it matter 12% more" in th.recent(5)[0]["reason"]
     assert salience.note_surprise("x", 0.0, subjects=["spotify"], why="no surprise") == {"touched": [], "gain": 0.0}
     assert salience.importance_gain(2.0) == salience.GAIN and salience.importance_gain(-1) == 0.0
 

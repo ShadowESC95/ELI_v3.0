@@ -149,3 +149,34 @@ def test_the_engine_keeps_one_working_memory_per_user_and_conversation(monkeypat
     as_user("member-b", "s2", lambda: eng._working_memory.advance_turn())
     assert as_user("member-a", "s1", lambda: eng._working_memory._turn) == 0, "another session moved the counter"
     assert as_user("member-a", "s1", lambda: eng._engagement) is not eng._engagement
+
+
+# ── what is pinned: statements, not questions or denials ─────────────────────
+
+@pytest.mark.parametrize("said", [
+    "do you remember what I said about the trip yesterday?",
+    "I can't remember where I left the charger",
+    "I don't remember the address",
+    "remember where I parked?",
+    "I'd like to book a table for two",
+    "what do I like to eat?",
+])
+def test_a_question_or_a_denial_pins_nothing(wm, said):
+    wm.absorb_user_message(said)
+    assert wm.context_block() == "", said
+
+
+@pytest.mark.parametrize("said,kept", [
+    ("remember that my locker is number 42", "my locker is number 42"),
+    ("please note that the boiler service is due in May", "the boiler service is due in May"),
+    ("ok, remember I park on level 3", "I park on level 3"),
+    ("can you remember that my sister is called Ana?", "my sister is called Ana"),
+])
+def test_a_request_to_keep_a_statement_pins_the_statement_as_said(wm, said, kept):
+    wm.absorb_user_message(said)
+    assert f"• {kept} (user_explicit)" in wm.context_block()
+
+
+def test_a_taste_is_pinned_as_the_graph_reads_it(wm):
+    wm.absorb_user_message("I don't like mushrooms")
+    assert "User dislikes mushrooms" in wm.context_block()

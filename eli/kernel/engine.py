@@ -2368,12 +2368,15 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
         thoughts.settle_prefix(f"action:{turn_id}:", "done" if endorsed else "wrong", how=how)
     # The claims about the user the last reply rested on: an acceptance settles them all right; a
     # dispute settles wrong the ones it speaks of (its words share the claim's), and leaves the rest
-    # open, since a reply corrected on one point was not wrong on every claim it used.
+    # open, since a reply corrected on one point was not wrong on every claim it used. A corrected
+    # claim counts against the memory it was read from (its memory_id), once: a later reading that
+    # corrects it again does not count that memory or note its surprise a second time.
     if claims:
         from eli.cognition.correction_patterns import denies
         from eli.cognition.scoring import tokenize
         from eli.execution.route_contracts import _same_word
         said = set(tokenize(user_input))
+        denied = denies(user_input)
 
         def _speaks_of(claim: dict) -> bool:
             words = tokenize(f"{claim.get('relation', '')} {claim.get('value', '')}".replace("_", " "))
@@ -2386,9 +2389,17 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
             if endorsed:
                 epistemics.settle(rid, True, how=how, kind=epistemics.CLAIM)
                 thoughts.settle(rid, "right", how=how)
-            elif (corrected or denies(user_input)) and _speaks_of(claim):
+            elif (corrected or denied) and _speaks_of(claim):
                 epistemics.settle(rid, False, how=how or "correction", kind=epistemics.CLAIM)
                 thoughts.settle(rid, "wrong", how=how or "correction")
+                if revising is not None and (str(revising) == DISPUTES or denied):
+                    continue
+                # the memory the claim was read from carried the value the user says is wrong
+                if claim.get("memory_id") and memory is not None:
+                    try:
+                        memory.record_recall_outcome([claim["memory_id"]], helped=False)
+                    except Exception:
+                        log.debug("claim source not counted against", exc_info=True)
                 # a claim the user corrected is a surprise about what it was about
                 try:
                     from eli.memory.salience import note_surprise

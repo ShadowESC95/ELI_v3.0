@@ -193,3 +193,24 @@ def test_add_conversation_turn_promotes_fact_to_kg(tmp_path):
     rels = {(r["predicate"], r["object"]) for r in (get_knowledge_graph().query_entity("User") or {}).get("outbound", [])}
     assert ("has_dog", "Rexington") in rels, f"promotion did not reach the KG; got {rels}"
     reset_knowledge_graph()
+
+
+def test_a_newer_taste_retires_its_contrary_and_holds_reads_what_stands(kg):
+    """A changed preference does not stand beside the old one as a current fact (only names were
+    retired): the dislike retires the liking of the same thing, and a liking said again revives it."""
+    kg.extract_from_memory("I love olives", source="user")
+    assert kg.holds("prefers", "olives") and not kg.holds("dislikes", "olives")
+    kg.extract_from_memory("I don't like olives any more", source="user")
+    assert kg.holds("dislikes", "olives") and not kg.holds("prefers", "olives")
+    assert "prefers" not in kg.context_for_prompt("olives")
+    kg.extract_from_memory("I really like olives again", source="user")
+    assert kg.holds("prefers", "olives") and not kg.holds("dislikes", "olives")
+
+
+@pytest.mark.parametrize("obj,junk", [
+    ("engineering student", False), ("nursing student", False), ("sibling", False), ("king fan", False),
+    ("bit tired", True), ("little worried about it", True), ("going to bed now", True), ("trying my best", True),
+])
+def test_a_kind_is_a_noun_phrase_and_a_state_or_activity_is_not(obj, junk):
+    from eli.memory.knowledge_graph import _junk_name_relation
+    assert _junk_name_relation({"predicate": "is_a", "object": obj}) is junk, obj

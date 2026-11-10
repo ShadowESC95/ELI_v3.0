@@ -24,20 +24,45 @@ def mem(monkeypatch):
     return Memory(db_path=pathlib.Path(tempfile.mktemp(suffix=".sqlite3")))
 
 
-# ── Salience scoring is content-driven ──────────────────────────────────────
+# ── Importance is the evidence for it (eli/memory/salience.importance_of) ────
 
-def test_facts_outscore_chitchat():
-    fact = Memory._score_importance("i'm allergic to peanuts", None, "user", "fact")
-    chat = Memory._score_importance("yeah that makes sense", None, "user", "memory")
-    assert fact > chat
-    assert fact >= 0.6
-    assert chat <= 0.6
+def test_a_stated_fact_outweighs_chitchat_and_a_question():
+    from eli.memory.salience import importance_of
+    fact = importance_of("i'm allergic to peanuts", source="conversation", kind="fact")
+    chat = importance_of("yeah that makes sense", source="conversation", kind="memory")
+    q = importance_of("what is my dog's name?", source="conversation", kind="fact")
+    assert fact["stated"] and not chat["stated"] and not q["stated"]
+    assert fact["importance"] > chat["importance"] == q["importance"] == 0.5, "nothing stated: nothing known"
 
 
-def test_questions_are_not_high_salience():
-    q = Memory._score_importance("what is my dog's name?", None, "user", "fact")
-    s = Memory._score_importance("my dog is called Biscuit", None, "user", "fact")
-    assert s > q, "a stated fact must outweigh a question"
+def test_asking_for_it_to_be_kept_adds_the_users_word():
+    from eli.memory.salience import importance_of
+    passing = importance_of("my locker is number 42 at the gym", source="conversation")
+    asked = importance_of("my locker is number 42 at the gym", source="chat")
+    pinned = importance_of("my locker is number 42 at the gym", source="working_memory",
+                           tags=["working_memory", "user_explicit", "session_pin"])
+    assert asked["asked"] and pinned["asked"] and not passing["asked"]
+    assert asked["importance"] == pinned["importance"] > passing["importance"] > 0.5
+
+
+def test_a_fact_eli_already_holds_adds_only_what_is_new():
+    """Novelty is one less the chance ELI gave the fact (the Rescorla-Wagner error): a fact held at
+    0.8 said again adds 0.2 of the user's word; a changed fact adds the whole of it."""
+    from eli.memory.salience import importance_of
+    held = [{"relation": "lives_in", "value": "Riverton", "confidence": 0.8}]
+    new = importance_of("I live in Riverton", source="conversation", held_claims=[])
+    again = importance_of("I live in Riverton", source="conversation", held_claims=held)
+    moved = importance_of("I live in Lakeside", source="conversation", held_claims=held)
+    assert new["novelty"] == 1.0 and again["novelty"] == pytest.approx(0.2) and moved["novelty"] == 1.0
+    assert new["importance"] == moved["importance"] > again["importance"] > 0.5
+    kept = importance_of("I really like green tea", source="conversation", graph_holds=lambda p, o: p == "prefers")
+    assert kept["novelty"] == 0.0 and kept["importance"] == 0.5
+
+
+def test_what_eli_or_a_tool_wrote_carries_no_users_word():
+    from eli.memory.salience import importance_of
+    assert importance_of("remember that my locker is 42", source="eli", kind="observation")["importance"] == 0.5
+    assert importance_of("I live in Riverton", source="document_reader", kind="document")["importance"] == 0.5
 
 
 @pytest.mark.parametrize("text,memorable", [
@@ -48,15 +73,21 @@ def test_questions_are_not_high_salience():
     ("we adopted a rescue dog last week", True),
     ("my favourite band is Radiohead", True),
     ("Biscuit (my dog) is very clever", True),
-    # non-facts / queries / chit-chat:
+    ("by the way i'm allergic to peanuts", True),
+    # non-facts / queries / requests / chit-chat:
     ("what is the weather today", False),
     ("what is my dog's name?", False),
+    ("do you remember what I said about the trip yesterday?", False),
+    ("I want you to play something calm", False),
+    ("remind me to water the plants", False),
+    ("maybe I'll move to the coast", False),
     ("ok cool thanks", False),
     ("yeah", False),
     ("haha nice one", False),
 ])
-def test_is_memorable_statement(text, memorable):
-    assert Memory._is_memorable_statement(text) is memorable, text
+def test_states_about_user(text, memorable):
+    from eli.memory.salience import states_about_user
+    assert states_about_user(text) is memorable, text
 
 
 # ── Auto-capture on the conversation-turn path ──────────────────────────────
@@ -95,11 +126,25 @@ def test_capture_is_deduplicated(mem):
     assert n <= 1, f"same fact promoted {n} times"
 
 
-def test_captured_fact_carries_content_salience(mem):
+def test_captured_fact_carries_the_users_word_and_said_again_counts_the_sighting(mem):
     mem.add_conversation_turn("user", "my daughter's birthday is on the 3rd of March")
     conn = sqlite3.connect(mem.db_path)
-    imp = conn.execute(
-        "SELECT importance FROM memories WHERE text LIKE '%birthday%'"
-    ).fetchone()
+    imp = conn.execute("SELECT importance FROM memories WHERE text LIKE '%birthday%'").fetchone()
     conn.close()
-    assert imp is not None and imp[0] >= 0.7, "high-salience fact stored with low importance"
+    assert imp is not None and imp[0] == pytest.approx(2 / 3, abs=1e-3), "the user's own word once: Beta(2, 1)'s mean"
+    # said again in another conversation (one conversation's re-entrant double write is not a sighting)
+    mem.add_conversation_turn("user", "my daughter's birthday is on the 3rd of March", session_id="later")
+    conn = sqlite3.connect(mem.db_path)
+    rows = conn.execute("SELECT seen_count FROM memories WHERE text = ?",
+                        ("my daughter's birthday is on the 3rd of March",)).fetchall()
+    conn.close()
+    assert rows == [(2,)], "the same statement is one memory, seen twice"
+
+
+def test_a_stated_fact_gets_its_claim_from_the_memory_it_was_stored_as(mem):
+    mem.add_conversation_turn("user", "I live in Riverton these days")
+    conn = sqlite3.connect(mem.db_path)
+    mid = conn.execute("SELECT id FROM memories WHERE text LIKE '%Riverton%'").fetchone()[0]
+    claim = conn.execute("SELECT source_memory_id, origin FROM memory_claims WHERE relation = 'lives_in'").fetchone()
+    conn.close()
+    assert claim == (mid, "user_said"), "the claim says where it came from"

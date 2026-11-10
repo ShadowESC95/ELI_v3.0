@@ -33,6 +33,10 @@ _USER_TAGS = {"user_confirmed", "user_explicit"}
 _USER = {"user", "chat", "conversation", "voice_direct", "user_correction", "user_explicit",
          "onboarding_interview", "identity", "identity_extract", "session_context", "relation",
          "runtime_identity_extractor", "runtime_relational_extractor"}
+# What the user asked to be kept, by the way it reached memory: the MEMORY_STORE action ("chat"), a
+# "remember that…" pin (its tag user_explicit), a correction, an onboarding answer, or a row they
+# confirmed. The words of the request are not read here: the route that took them is.
+_EXPLICIT = {"chat", "user_explicit", "user_correction", "onboarding_interview"}
 # A working-memory row carries the source of the pin it was flushed from among its tags. Besides the
 # user sources above, a pin of a recalled memory ("memory_recall", no longer flushed; the older rows
 # are the user's statements recalled) and one the turn's fact reader took from the user's message
@@ -74,6 +78,11 @@ def classify_origin(source: str = "user", kind: str = "memory", tags=None, text:
             return ORIGIN_USER
         return ORIGIN_TOOL if pinned_from & _TOOL else ORIGIN_ELI
     return ORIGIN_USER if src in _USER else ORIGIN_ELI
+
+
+def is_explicit(source: str = "", tags=None) -> bool:
+    """The user asked for this to be kept (eli/memory/salience.importance_of counts it as their word)."""
+    return str(source or "").lower() in _EXPLICIT or bool(_tags(tags) & _USER_TAGS)
 
 
 # Bumped when classify_origin changes, so rows labelled by an older rule are labelled again

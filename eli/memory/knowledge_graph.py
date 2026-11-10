@@ -169,8 +169,12 @@ def _junk_name_relation(rel: Dict[str, Any]) -> bool:
     predicate = str(rel.get("predicate") or "").lower()
     obj = str(rel.get("object") or "").strip()
     if predicate == "is_a":
-        first = (obj.split() or [""])[0].lower()
-        return first in _NOT_A_KIND or first.endswith("ing") or len(obj.split()) > 4
+        # A kind is a noun phrase ("an engineering student", "a sibling"); a state ("a bit tired") opens
+        # with a degree word, and an activity an earlier extractor stored ("going to bed now", "trying
+        # my best") carries function words a kind never has.
+        words = [w.lower() for w in obj.split()]
+        return (not words or words[0] in _NOT_A_KIND or len(words) > 4
+                or any(w in _STOPWORDS for w in words[1:]))
     if predicate == "has_attribute":
         first = (obj.split() or [""])[0].lower()
         return first in _VOLATILE_ACTIVITY_VERBS
@@ -223,6 +227,8 @@ _OBJ = r"(?P<obj>[A-Za-z0-9][A-Za-z0-9 _\-\.'’]{1,39}?)"
 _OBJ_END = (r"(?=\s+(?:but|because|though|although|whereas|unless|except|when|if|while)\b"
             r"|\s+(?:and|or)\s+(?:i|i'm|i'd|i've|my|he|she|they|we|you)\b"
             r"|\s+(?:a\s+lot|a\s+bit|so\s+much|very\s+much|too\s+much|as\s+well|too)(?=[\s.,;:!?]|$)"
+            # when it holds is not part of what is liked: "olives any more", "olives again"
+            r"|\s+(?:any\s*more|again|now|these\s+days|nowadays|lately|recently)(?=[\s.,;:!?]|$)"
             r"|[,;:!?\n]|\.(?:\s|$)|$)")
 _ADV = (r"(?:\s+(?:really|actually|still|also|just|truly|honestly|generally|usually|always|definitely|"
         r"quite|totally|absolutely|much|kind\s+of|sort\s+of))*")
@@ -297,6 +303,9 @@ def statements(text: str) -> List[Tuple[str, str, str]]:
 # turns or internal memory synthesis, so a hallucinated reply cannot poison the graph.
 _TRUSTED_SOURCES = frozenset({"user", "user_explicit", "identity_extract"})
 _IDENTITY_PREDICATES = frozenset({"has_name", "nickname"})
+# A statement that undoes another about the same thing: a liking and a dislike of one object cannot
+# both stand, so the newer retires the older ("I don't like X any more" after "I love X").
+_CONTRARY = {"prefers": "dislikes", "dislikes": "prefers"}
 _IDENTITY_PATTERNS = (
     # "User's name is X" / "my name is X"
     (r"(?:user(?:'s)?\s+name\s+is|my\s+name\s+is)\s+([A-Za-z][a-zA-Z ]{1,24})", "has_name"),
@@ -780,11 +789,45 @@ class KnowledgeGraph:
         for subj, predicate, obj in read_triples(text, source):
             if predicate in _IDENTITY_PREDICATES:
                 self._retire_other_identity(predicate, obj, who)
+            if predicate in _CONTRARY:
+                self._retire_relation(subj, _CONTRARY[predicate], obj, who)
             self.upsert_entity(subj, "person" if subj == "User" else "concept")
             self.upsert_entity(obj, "concept" if predicate in _POSSESSIVE or subj != "User" else "value")
             if self.add_relation(subj, predicate, obj, source=source, user_id=who):
                 added += 1
         return added
+
+    def holds(self, predicate: str, obj: str, user_id: Optional[str] = None, subject: str = "User") -> bool:
+        """The graph stands by subject —[predicate]→ obj for this user (a live relation, live_relation)."""
+        sid, oid = self.get_entity_id(subject), self.get_entity_id(obj)
+        if sid is None or oid is None:
+            return False
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT r.predicate, r.weight, e.name AS object FROM kg_relations r JOIN kg_entities e ON e.id = r.object_id "
+                "WHERE r.subject_id=? AND r.object_id=? AND LOWER(r.predicate)=? AND COALESCE(r.user_id, '')=?",
+                (sid, oid, str(predicate or "").strip().lower(), _who(user_id))).fetchall()
+        finally:
+            conn.close()
+        return any(live_relation(dict(r)) for r in rows)
+
+    def _retire_relation(self, subject: str, predicate: str, obj: str, who: str = "") -> int:
+        """A newer statement undid this one: its weight drops to RETIRED_WEIGHT (kept, never shown), as
+        a corrected name's does. How many were retired."""
+        sid, oid = self.get_entity_id(subject), self.get_entity_id(obj)
+        if sid is None or oid is None:
+            return 0
+        with self._lock:
+            conn = self._conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE kg_relations SET weight = ? WHERE subject_id=? AND object_id=? AND LOWER(predicate)=? "
+                    "AND COALESCE(user_id, '')=? AND weight > ?", (RETIRED_WEIGHT, sid, oid, predicate, who, LIVE_WEIGHT))
+                conn.commit()
+                return int(cur.rowcount or 0)
+            finally:
+                conn.close()
 
     def _retire_other_identity(self, predicate: str, value: str, who: str = "") -> None:
         """Contradiction detection for identity predicates: a different has_name/nickname the user

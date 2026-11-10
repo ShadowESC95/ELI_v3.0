@@ -184,28 +184,31 @@ class WorkingMemory:
 
     def absorb_user_message(self, user_input: str) -> None:
         """
-        Scan user message for explicit pin triggers and extract
-        the fact to be pinned.
+        Pin what the user asked to be kept and what they state about themselves. Only statements are
+        pinned: a request to keep something opens its own clause ("remember that…", "please note
+        that…", "can you remember that…"), so "do you remember what I said…?" and "I can't remember
+        where I left…" pin nothing, and what is kept must itself be a statement, not a question
+        ("what I said about…", "where I left…": eli/memory/salience.is_question).
         """
-        low = (user_input or "").lower().strip()
-        # Detect: "remember that X", "note that X", "keep in mind X", etc.
-        _triggers = (
-            r"(?:please\s+)?remember\s+(?:that\s+)?(.+)",
-            r"(?:please\s+)?note\s+that\s+(.+)",
-            r"keep\s+in\s+mind\s+(?:that\s+)?(.+)",
-            r"don'?t\s+forget\s+(?:that\s+)?(.+)",
-            r"make\s+a\s+note\s+(?:that\s+)?(.+)",
-            r"store\s+this[:\s]+(.+)",
-            r"save\s+this[:\s]+(.+)",
-        )
-        for pat in _triggers:
-            m = re.search(pat, low, re.IGNORECASE)
-            if m:
-                fact = m.group(1).strip().rstrip(".!?,")
-                if len(fact) >= 8:
-                    self.pin(fact, source="user_explicit", importance=0.95)
-                return  # only process first trigger per message
+        from eli.memory.salience import is_question
+        text = str(user_input or "").strip()
+        low = text.lower()
+        # The ways an English request to keep something opens: at the start of a clause, after at most
+        # a "please" or a "can you". The verb after "do you"/"can't"/"don't" asks or denies, not requests.
+        _trigger = re.compile(
+            r"(?:^|[.!?;:]\s+|,\s*|\band\s+|\bso\s+)(?:(?:can|could|will|would)\s+you\s+)?(?:please\s+)?"
+            r"(?:remember|note|keep\s+in\s+mind|don'?t\s+forget|make\s+a\s+note|store\s+this|save\s+this)"
+            r"(?:\s+(?:that|this))?[:\s]+(?P<fact>.+)", re.IGNORECASE)
+        m = _trigger.search(text)
+        if m:
+            fact = m.group("fact").strip().rstrip(".!?,").strip()
+            # a statement relates something to something: at least two words, and not a question
+            if len(fact.split()) >= 2 and not is_question(fact):
+                self.pin(fact, source="user_explicit", importance=0.95)
+            return  # only process first trigger per message
 
+        if is_question(text):
+            return
         # A name only through the shared extractor: the old "my name is (.+)" pinned
         # "User identity: my name is not fucking listed", and "i'm X" pinned moods.
         try:
@@ -216,18 +219,16 @@ class WorkingMemory:
                 self.pin(f"User's name is {_nm}", source="identity_extract", importance=0.85)
         except Exception:
             pass
-        _identity = (
-            r"i\s+work\s+(?:at|for|as)\s+(.+?)(?:\s+and|\.|,|$)",
-            r"i\s+prefer\s+(.+?)(?:\s+and|\.|,|$)",
-            r"i\s+like\s+(.+?)(?:\s+and|\.|,|$)",
-        )
-        for pat in _identity:
-            m = re.search(pat, low, re.IGNORECASE)
-            if m:
-                raw = m.group(1).strip().rstrip(".!?,")
-                if len(raw) >= 2:
-                    full = f"User identity: {m.group(0).strip()}"
-                    self.pin(full, source="identity_extract", importance=0.85)
+        # Tastes and kinds through the graph's statement reader (eli/memory/knowledge_graph.statements),
+        # the one that reads "I'd like to book a table" as a wish and "I don't like X" as a dislike;
+        # the old "i like (.+)" pinned both as likings.
+        try:
+            from eli.memory.knowledge_graph import statements
+            for subject, predicate, obj in statements(text):
+                if subject == "User":
+                    self.pin(f"User {predicate.replace('_', ' ')} {obj}", source="identity_extract", importance=0.85)
+        except Exception:
+            pass
 
         # Session/device/plan corrections — pin immediately so ELI does not
         # confuse this machine with prior sessions (laptop vs PC, travel, etc.).
