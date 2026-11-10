@@ -5,50 +5,26 @@ from eli.gui.main_window._common import *  # noqa: F401,F403
 
 class ScreenCaptureMixin:
     def _sc_capture(self):
-        """Take a screenshot in a worker thread, show preview on main thread."""
+        """Take a screenshot in a worker thread, show preview on main thread.
+
+        The capture is os_controller.take_screenshot's, the one that knows every OS and desktop and
+        which way worked here; a failure shows what each way it tried did. A second Linux-only chain
+        (mss, scrot, gnome-screenshot, import) used to run after it into a temp file that was never
+        removed, leaving copies of the screen in the temp folder."""
         self._sc_capture_btn.setEnabled(False)
         self._sc_capture_btn.setText("Capturing…")
 
         def worker():
             try:
-                import tempfile, time as _t
-                # Use NamedTemporaryFile to atomically claim the path (avoids mktemp TOCTOU race).
-                with tempfile.NamedTemporaryFile(prefix="eli_sc_", suffix=".png", delete=False) as _tf:
-                    out = _tf.name
-                try:
-                    from eli.perception.os_controller import take_screenshot
+                from eli.perception.os_controller import take_screenshot
 
-                    captured = take_screenshot("full", keep=False)
-                    cap_path = str(captured.get("path") or "")
-                    if captured.get("ok") and cap_path:
-                        self._sc_screenshot_path = cap_path
-                        self._sc_capture_sig.emit(cap_path)
-                        return
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-                # Try mss (fast), fall back to scrot/gnome-screenshot
-                try:
-                    import mss, mss.tools
-                    with mss.mss() as sct:
-                        mon = sct.monitors[0]
-                        img = sct.grab(mon)
-                        mss.tools.to_png(img.rgb, img.size, output=out)
-                except Exception:
-                    import subprocess
-                    for cmd in [["scrot", out], ["gnome-screenshot", "-f", out],
-                                ["import", "-window", "root", out]]:
-                        try:
-                            subprocess.run(cmd, timeout=10, check=True,
-                                           capture_output=True)
-                            break
-                        except Exception:
-                            continue
-                import os
-                if os.path.exists(out):
-                    self._sc_screenshot_path = out
-                    self._sc_capture_sig.emit(out)
-                else:
-                    self._sc_capture_sig.emit("")
+                captured = take_screenshot("full", keep=False) or {}
+                cap_path = str(captured.get("path") or "")
+                if captured.get("ok") and cap_path:
+                    self._sc_screenshot_path = cap_path
+                    self._sc_capture_sig.emit(cap_path)
+                    return
+                self._sc_capture_sig.emit(f"ERROR:{captured.get('error') or captured.get('response') or ''}")
             except Exception as exc:
                 self._sc_capture_sig.emit(f"ERROR:{exc}")
 
@@ -64,7 +40,7 @@ class ScreenCaptureMixin:
         self._sc_capture_btn.setEnabled(True)
         self._sc_capture_btn.setText("📸 Capture Full Screen")
         if not path or path.startswith("ERROR:"):
-            self._sc_preview.setText(f"❌ Capture failed: {path}")
+            self._sc_preview.setText(f"❌ Capture failed: {path[len('ERROR:'):] if path else ''}")
             return
         pix = QPixmap(path)
         if not pix.isNull():
@@ -184,7 +160,10 @@ class ScreenCaptureMixin:
                         "prefer_fast": depth == "quick",
                     }) or {}
                     resp = str(res.get("content") or res.get("response") or "").strip()
-                    if not resp:
+                    if res.get("ok") is False:
+                        # the analysis's own reason (no vision model, no projector...), not a stock line
+                        resp = f"❌ {str(res.get('error') or resp or 'the image analysis failed').strip()}"
+                    elif not resp:
                         resp = "I captured the screen but couldn't produce a description."
                 else:
                     # No screenshot — analyse the pasted/typed text with the text model.
