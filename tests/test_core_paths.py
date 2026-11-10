@@ -360,6 +360,11 @@ def test_test_mode_is_one_switch_read_in_one_place(monkeypatch):
                      if re.search(r"getenv\(\s*[\"']PYTEST_CURRENT_TEST|environ[^\n]{0,20}PYTEST_CURRENT_TEST"
                                   r"|[\"']pytest[\"'] in sys\.modules", f.read_text(encoding="utf-8")))
     assert not readers, readers
+    # and ELI_TEST_MODE itself is read through test_mode(), not by each module on its own terms
+    own = sorted(str(f.relative_to(package)) for f in package.rglob("*.py") if f.resolve() != pathlib.Path(P.__file__).resolve()
+                 and re.search(r"(?:getenv|environ\.get)\(\s*[\"']ELI_TEST_MODE|environ\[\s*[\"']ELI_TEST_MODE[\"']\s*\](?!\s*=)",
+                               f.read_text(encoding="utf-8")))
+    assert not own, own
 
 
 def test_the_suite_runs_as_its_own_owner_never_this_machines():

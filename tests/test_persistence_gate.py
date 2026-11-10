@@ -76,3 +76,25 @@ class TestShouldStoreMemoryText:
         assert should_store_memory_text(
             "Alex enjoys working on local AI systems.", role="user"
         )
+
+
+def test_a_memory_write_goes_through_the_real_gate_in_a_test_run_too(tmp_path, monkeypatch):
+    """store_memory skipped the gate whenever ELI_TEST_MODE was set, so no test ever reached the gate
+    the product runs: a question or a greeting would have been kept, as far as any test could tell."""
+    from eli.core.paths import test_mode
+    from eli.memory import memory as memory_module
+    from eli.memory.memory import Memory
+    assert test_mode(), "this runs as a test"
+    monkeypatch.setattr(memory_module, "_eli_should_store_memory_text", should_store_memory_text)
+    mem = Memory(db_path=tmp_path / "user.sqlite3")
+    for refused in ("where did I put the blue kettle?", "haha that is funny"):
+        out = mem.store_memory(refused, source="user")
+        assert out == {"ok": False, "skipped": True, "reason": "persistence_gate"}, refused
+    kept = mem.store_memory("The blue kettle lives on the kitchen windowsill now.", source="user")
+    assert kept.get("ok") and kept.get("id")
+    conn = mem._get_connection()
+    try:
+        assert [r[0] for r in conn.execute("SELECT text FROM memories")] == [
+            "The blue kettle lives on the kitchen windowsill now."]
+    finally:
+        conn.close()

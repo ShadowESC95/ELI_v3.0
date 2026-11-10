@@ -903,8 +903,8 @@ def _migrate_legacy_index_location(index_path, vdir) -> None:
     """
     from pathlib import Path
     import shutil
-    if (os.environ.get("ELI_ARTIFACTS_DIR") or os.environ.get("ELI_DATA_DIR")
-            or os.environ.get("ELI_TEST_MODE") == "1"):
+    from eli.core.paths import test_mode
+    if os.environ.get("ELI_ARTIFACTS_DIR") or os.environ.get("ELI_DATA_DIR") or test_mode():
         return
     try:
         legacy_dir = _project_root() / "artifacts" / "vectors"

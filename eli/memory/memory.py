@@ -1545,11 +1545,10 @@ class Memory(metaclass=_MemoryMeta):
         if not t:
             return {"ok": False, "error": "empty_text"}
 
-        # Persistence gate is part of the normal write path.
-        # Skip persistence gate in test mode
-        if os.environ.get("ELI_TEST_MODE") == "1":
-            pass
-        elif callable(_eli_should_store_memory_text):
+        # Persistence gate is part of the normal write path, in a test run too: it was skipped in test
+        # mode, so no test could reach the gate the product runs (a test that stores fragments turns
+        # the gate aside itself: tests/conftest.py force_persistence_gate).
+        if callable(_eli_should_store_memory_text):
             if not _eli_should_store_memory_text(t, role=str(source or "user"), tags=tags):
                 # nothing was stored: every caller reading only ok counted it as kept
                 return {"ok": False, "skipped": True, "reason": "persistence_gate"}
@@ -3691,7 +3690,8 @@ class Memory(metaclass=_MemoryMeta):
 
     def upkeep_async(self) -> bool:
         """Start today's upkeep in the background if it is due and not already running."""
-        if os.environ.get("ELI_TEST_MODE") == "1" or not self.upkeep_due() \
+        from eli.core.paths import test_mode
+        if test_mode() or not self.upkeep_due() \
                 or not Memory._upkeep_lock.acquire(blocking=False):
             return False
 
