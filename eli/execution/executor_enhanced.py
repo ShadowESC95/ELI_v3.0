@@ -2854,13 +2854,16 @@ def _is_origin_question(msg: str) -> bool:
     return any(t in low for t in triggers)
 
 
-def _state_user_name(st: Dict[str, Any]) -> str:
-    """The stored name if it is one; "listed" and other since-rejected values read as unset."""
+def _state_user_name(st: Dict[str, Any] = None) -> str:
+    """The name of whoever is asking, as their own profile keeps it (kernel/state.get_user_name, the
+    one place a name is kept); "listed" and other since-rejected values read as unset. The executor's
+    state file kept a copy of the owner's, which status read for every caller."""
     try:
-        from eli.kernel.state import _clean_name
-        return _clean_name(str(st.get("user_name") or ""))
+        from eli.kernel.state import get_user_name
+        return str(get_user_name("") or "").strip()
     except Exception:
-        return str(st.get("user_name") or "").strip()
+        log.debug("the name was not read", exc_info=True)
+        return ""
 
 
 def _origin_facts(st: Dict[str, Any]) -> str:
@@ -3418,19 +3421,8 @@ def set_user_name(name: str, declared_by: str = "") -> Dict[str, Any]:
                    f"\"my name is\"). Not changed. A yes replaces {stored} with {n}.")
             return {"ok": True, "action": "SET_USER_NAME", "changed": False, "user_name": stored,
                     "asked_to_replace_with": n, "explain_in_words": True, "content": msg, "response": msg}
-    # The runtime state's copy (legacy path, what GET_STATUS reports) is the machine owner's: an API
-    # member naming themself wrote it for everyone.
-    try:
-        from eli.runtime.profile_extractor import pattern_owner as _whose
-        _owners = not _whose()
-    except Exception:
-        _owners = True
-    if _owners:
-        st = _load_state()
-        st["user_name"] = n
-        st["updated_at"] = time.time()
-        _save_state(st)
-    # Write to user_profile.json (authoritative path read by get_user_name())
+    # Written to the caller's own user_profile.json, the one place a name is kept (what GET_STATUS
+    # reads too): the executor's state file kept a copy of the owner's, read for every caller.
     try:
         from eli.kernel.state import set_user_name as _state_set_user_name
         _state_set_user_name(n)

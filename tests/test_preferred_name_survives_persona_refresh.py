@@ -108,17 +108,46 @@ def test_the_profile_is_written_only_when_something_in_it_changed(tmp_path, monk
         state.set_user_name(before)
 
 
-def test_a_chosen_style_writes_only_that_setting(monkeypatch):
+def test_a_chosen_style_is_kept_in_the_profile_alone_and_writes_no_other_setting(monkeypatch):
     """The whole load_settings() view went back to save_settings: every default and this session's
-    environment overrides were written into the file as if chosen."""
+    environment overrides were written into the file as if chosen. And the tone, the user's own, was
+    copied into settings.json, which every caller shares, where the window read it: it is kept in the
+    user's profile alone, and a copy the file held is cleared, that key and nothing else."""
     from eli.kernel import state
     import eli.core.runtime_settings as rs
-    saved = []
+    saved, profiles = [], []
+    on_disk = {"theme": "a-default", "n_ctx": 12288, "communication_style": "an older tone"}
     monkeypatch.setattr(state, "load_user_profile", lambda user_id=None: {})
-    monkeypatch.setattr(state, "save_user_profile", lambda profile, user_id=None: profile)
+    monkeypatch.setattr(state, "save_user_profile", lambda profile, user_id=None: profiles.append(dict(profile)) or profile)
     monkeypatch.setattr(state, "_is_active_user", lambda user_id=None: True)
-    monkeypatch.setattr(rs, "load_settings", lambda *a, **k: {"theme": "a-default", "n_ctx": 12288})
-    monkeypatch.setattr(rs, "save_settings", lambda delta: saved.append(dict(delta)))
+    monkeypatch.setattr(rs, "load_settings", lambda *a, **k: dict(on_disk))
+    monkeypatch.setattr(rs, "save_settings", lambda delta: saved.append(dict(delta)) or on_disk.update(delta))
     monkeypatch.setattr("eli.cognition.persona_updater.update_persona_overlay", lambda *a, **k: None)
     assert state.set_communication_style("short and plain") == "short and plain"
-    assert saved == [{"communication_style": "short and plain"}]
+    assert profiles == [{"communication_style": "short and plain"}]
+    assert saved == [{"communication_style": ""}]
+    state.set_communication_style("warmer")
+    assert saved == [{"communication_style": ""}], "with no copy there, nothing is written"
+
+
+def test_a_name_is_kept_in_the_profile_alone_and_never_written_into_settings_by_hand(monkeypatch, tmp_path):
+    """set_user_name copied the active user's name into settings.json, writing the file by hand past
+    the settings lock, and the window read that copy before the profile. The name is the profile's
+    alone; a copy left in settings.json is cleared through the settings' own writer."""
+    import json
+    from eli.kernel import state
+    import eli.core.runtime_settings as rs
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"theme": "dark", "user_name": "Robin"}), encoding="utf-8")
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(settings))
+    profile = {}
+    monkeypatch.setattr(state, "load_user_profile", lambda user_id=None: dict(profile))
+    monkeypatch.setattr(state, "save_user_profile", lambda p, user_id=None: profile.update(p) or p)
+    monkeypatch.setattr(state, "_is_active_user", lambda user_id=None: True)
+    monkeypatch.setattr(state, "sync_identity_to_world_model", lambda **k: None)
+    through = []
+    real_save = rs.save_settings
+    monkeypatch.setattr(rs, "save_settings", lambda delta: through.append(dict(delta)) or real_save(delta))
+    assert state.set_user_name("Sky") == "Sky" and profile["name"] == "Sky"
+    on_disk = json.loads(settings.read_text(encoding="utf-8"))
+    assert on_disk.get("user_name") == "" and on_disk["theme"] == "dark" and through == [{"user_name": ""}]
