@@ -116,3 +116,19 @@ def test_dataset_builder_rejects_old_ai_language_model_identity_poison(tmp_path)
     assert result["ok"] is True
     assert result["count"] == 0
     assert result["rejected"].get("bad_surface_or_traceback", 0) >= 1
+
+
+def test_a_full_text_index_of_the_turns_is_not_read_as_a_turn_table(tmp_path):
+    """Memory keeps a full-text index of its conversation turns (conversation_turns_fts); its own tables
+    have no rowid, and the builder's read of every table named for turns failed on them."""
+    db = tmp_path / "user.sqlite3"
+    make_db(db, [("What is ELI?", "ELI is the local assistant runtime connected to memory, tools, and the local model.")])
+    con = sqlite3.connect(db)
+    con.execute("CREATE VIRTUAL TABLE conversation_turns_fts USING fts5(content, content='conversation_turns', "
+                "content_rowid='id')")
+    con.execute("INSERT INTO conversation_turns_fts(conversation_turns_fts) VALUES ('rebuild')")
+    con.commit()
+    con.close()
+    result = build_dataset(db, tmp_path / "dataset.jsonl", tmp_path / "report.json")
+    assert result["ok"] is True and result["count"] == 1
+    assert read_jsonl(tmp_path / "dataset.jsonl")[0]["instruction"] == "What is ELI?"

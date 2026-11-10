@@ -164,11 +164,14 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def list_tables(conn: sqlite3.Connection) -> list[str]:
-    return [
-        r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).fetchall()
-    ]
+    """The store's own tables: not a full-text index (a virtual table) or the tables it keeps for
+    itself (named after it, some without a rowid), which hold no rows of their own. A conversation
+    full-text index (conversation_turns_fts) made every read of the turn tables fail."""
+    rows = conn.execute("SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+    virtual = [str(name) for name, sql in rows if str(sql).lstrip().upper().startswith("CREATE VIRTUAL TABLE")]
+    return [str(name) for name, _sql in rows
+            if not str(name).startswith("sqlite_") and str(name) not in virtual
+            and not any(str(name).startswith(v + "_") for v in virtual)]
 
 
 def columns(conn: sqlite3.Connection, table: str) -> list[str]:
