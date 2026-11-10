@@ -193,7 +193,10 @@ class ProactiveDaemon:
         from eli.planning.habits import offer_threshold
         bar = offer_threshold(mem)
         out: List[Dict[str, Any]] = []
-        for hb in mem.get_detected_habits(min_count=1, limit=5) or []:
+        # Every habit of the window: the user's own counts below decide what is offered or repaired.
+        # The first five by use were all that was looked at, so a sixth that failed more often than it
+        # worked never reached repair.
+        for hb in mem.get_detected_habits(min_count=1, limit=sys.maxsize) or []:
             if not isinstance(hb, dict):
                 continue
             name = str(hb.get("name") or hb.get("command") or "").strip()

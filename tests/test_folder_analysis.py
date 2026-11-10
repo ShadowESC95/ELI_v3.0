@@ -214,3 +214,43 @@ def test_a_folder_with_no_pdfs_is_counted_by_its_files_for_the_background_job(tm
     assert submitted == ["Analyse 6 files: garden_tool"]
     assert fa.files_to_read(folder, ordered=False)[1] is True
     assert sorted(fa.files_to_read(folder, ordered=False)[0]) == sorted(fa.folder_files(folder))
+
+
+def _jobs_measured(monkeypatch, per_file, submitted):
+    from eli.runtime import background_tasks
+
+    class _Jobs:
+        def seconds_per(self, action, unit):
+            assert (action, unit) == ("ANALYZE_PDF_FOLDER", "files")
+            return per_file
+
+        def submit(self, name, fn, *a, **k):
+            submitted.append((name, k.get("meta")))
+            return 8
+
+    monkeypatch.setattr(background_tasks, "get_background_tasks", lambda: _Jobs())
+    monkeypatch.delenv("ELI_FILE_ANALYSIS_BACKGROUND", raising=False)
+    monkeypatch.delenv("ELI_FILE_ANALYSIS_BG_THRESHOLD", raising=False)
+
+
+@pytest.mark.parametrize("per_file,pause,background", [(2.0, 45.0, False), (30.0, 45.0, True),
+                                                        (2.0, 5.0, True), (None, 45.0, True)])
+def test_a_folder_goes_to_the_background_when_reading_it_would_hold_the_turn_up(tmp_path, monkeypatch,
+                                                                                per_file, pause, background):
+    """A fixed five files decided it, whatever the files or the machine. It is the time each file took in
+    earlier analyses against the owner's usual pause between turns; before any is measured, the first
+    runs as a job and is measured."""
+    from eli.cognition import inference_broker
+    from eli.execution import executor_enhanced as ex
+    folder = _project(tmp_path)
+    for n in range(3):
+        (folder / "garden" / f"bed{n}.txt").write_text(f"Bed {n}: tomatoes.\n")
+    submitted = []
+    _jobs_measured(monkeypatch, per_file, submitted)
+    monkeypatch.setattr(inference_broker.owner_pace(), "usual", lambda: pause)
+    out = ex._maybe_background_file_analysis("ANALYZE_PDF_FOLDER", {"folder": str(folder)})
+    if background:
+        assert out and out["background"] is True and out["job_id"] == 8, out
+        assert submitted and submitted[0][1]["files"] == 6, "the job carries what its time is measured per"
+    else:
+        assert out is None and not submitted, "six files at 2 s each read inline within the usual pause"

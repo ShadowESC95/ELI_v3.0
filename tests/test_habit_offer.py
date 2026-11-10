@@ -223,3 +223,18 @@ def test_an_action_that_fails_more_than_it_works_goes_to_repair_not_to_an_offer(
     assert ("frequent_behavior", "OPEN_NEWS") in kinds, "the bar he set reaches the goal too, not a second 8"
     assert ("recurring_error", "PLAY_MEDIA fails more often than it works") in kinds
     assert ("frequent_behavior", "PLAY_MEDIA") not in kinds
+
+
+def test_every_habit_of_the_window_is_weighed_not_the_first_five(tmp_artifacts):
+    """The daemon read the five most used habits only: a sixth that failed more often than it worked
+    never reached repair, and a sixth past the offer bar was never offered."""
+    from eli.planning.proactive_daemon import ProactiveDaemon
+    for rid in (1, 2, 3):
+        H.mark_offered(rid)
+    daemon = ProactiveDaemon.__new__(ProactiveDaemon)
+    used = [{"name": f"OPEN_APP_{n}", "count": 40 - n, "failed": 0} for n in range(5)]
+    daemon.user_mem = _Rules({1: True, 2: True, 3: True}, habits=used + [
+        {"name": "SET_TIMER", "count": 3, "failed": 9}, {"name": "OPEN_NEWS", "count": 2, "failed": 0}])
+    found = {(p["type"], p.get("behavior") or p.get("error")) for p in daemon._frequent_behaviour_patterns()}
+    assert ("recurring_error", "SET_TIMER fails more often than it works") in found
+    assert ("frequent_behavior", "OPEN_NEWS") in found
