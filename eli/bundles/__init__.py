@@ -38,6 +38,7 @@ import logging
 import os
 import plistlib
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -422,6 +423,25 @@ def _core(bundle: Bundle) -> Iterator[int | None]:
         yield port
 
 
+def _runnable(program: str) -> str:
+    """'' when `program` can be started; otherwise why not, in words. A program downloaded through a
+    browser arrives without the execute bit (an AppImage in Downloads): one the user owns is marked
+    runnable for them, as their file manager's "Allow executing as program" does, since starting it
+    is what they asked; one they do not own is told, never changed."""
+    path = Path(program)
+    if os.name == "nt" or not path.is_file() or os.access(path, os.X_OK):
+        return ""
+    try:
+        info = path.stat()
+        if info.st_uid != os.getuid():
+            return f"{path} is not marked as a program, and it is not yours to mark"
+        path.chmod(info.st_mode | stat.S_IXUSR)
+    except OSError as exc:
+        return f"{path} is not marked as a program and could not be marked ({exc.strerror or exc})"
+    log.info("marked %s as a program, to start it", path)
+    return ""
+
+
 def launch(bundle_id: str, argv: list[str] | None = None) -> int:
     """Start a bundle in this process, in place of ELI v3's own window. An external bundle is
     started as its own program and this process waits for it."""
@@ -440,11 +460,19 @@ def launch(bundle_id: str, argv: list[str] | None = None) -> int:
     with _expecting(bundle), _core(bundle) as port:
         if bundle.kind == "external":
             command = [*bundle.command, *(argv or [])]
-            if port is None:
-                return subprocess.call(command)
-            return subprocess.call(
-                command, env={**os.environ, "ELI_API_PORT": str(port)}
-            )
+            why_not = _runnable(command[0]) if command else "it names no program"
+            if why_not:
+                print(f"{bundle.title} cannot start: {why_not}", file=sys.stderr)
+                return 4
+            try:
+                if port is None:
+                    return subprocess.call(command)
+                return subprocess.call(
+                    command, env={**os.environ, "ELI_API_PORT": str(port)}
+                )
+            except OSError as exc:   # not a program this system can run (wrong format, gone, refused)
+                print(f"{bundle.title} cannot start: {command[0]}: {exc.strerror or exc}", file=sys.stderr)
+                return 4
         module, _, attr = bundle.launch.partition(":")
         run: Callable[..., Any] = getattr(importlib.import_module(module), attr)
         host = _host()

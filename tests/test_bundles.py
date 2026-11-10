@@ -537,3 +537,26 @@ def test_a_macos_application_found_by_looking_is_started_by_its_own_program(isol
         plistlib.dump({"CFBundleExecutable": "eli-legal-gui"}, fh)
     monkeypatch.setattr(bundles, "_search_folders", lambda: [apps])
     assert bundles.discover()["legal"].command == (str(program),)
+
+
+def test_a_downloaded_program_is_marked_runnable_and_one_that_cannot_start_is_told(isolated, monkeypatch, capsys):
+    """ELI VR downloaded through a browser has no execute bit: starting it raised PermissionError out
+    of launch() and ELI v3 died with a traceback. A program the user owns is marked runnable for them
+    (what their file manager's "Allow executing" does) and started; one that still cannot start is
+    told in words, with no traceback."""
+    import os
+    import stat as _stat
+    program = isolated / "ELI_VR-9.9.9-x86_64.AppImage"
+    program.write_text("#!/bin/sh\nexit 0\n")
+    program.chmod(0o644)
+    registry = isolated / "registry"
+    registry.mkdir()
+    (registry / "vr.json").write_text(json.dumps({"id": "vr", "edition": "vr", "command": [str(program)]}))
+    _served_on(monkeypatch, 18999)
+    assert bundles.launch("vr") == 0, "it ran"
+    assert program.stat().st_mode & _stat.S_IXUSR
+    if os.name != "nt":
+        program.chmod(0o644)
+        monkeypatch.setattr(bundles.subprocess, "call", lambda *a, **k: (_ for _ in ()).throw(OSError(8, "Exec format error")))
+        assert bundles.launch("vr") == 4
+        assert "cannot start" in capsys.readouterr().err
