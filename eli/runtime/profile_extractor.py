@@ -982,12 +982,15 @@ def backfill_user_patterns(db_path: Path | None = None, limit: int = 2500) -> di
     scanned = 0
     inserted = 0
 
-    def _replay(rows: list, source: str, text_of) -> None:
+    def _replay(rows: list, source: str, text_of, keep=lambda r: True) -> None:
         nonlocal scanned, inserted
         upto = _upto(source)
         for r in rows:
             scanned += 1
             said_at = float(r["at"] or 0.0) or time.time()
+            if not keep(r):          # read past, never as the user's words
+                upto = max(upto, float(r["at"] or 0.0))
+                continue
             for ptype, pdata in extract_patterns_from_text(text_of(r)):
                 if _insert_user_pattern(cur, ptype, pdata, ts_value=said_at, provenance=provenance_of(ptype),
                                         user_id=str(r["who"] or "")):
@@ -1012,9 +1015,11 @@ def backfill_user_patterns(db_path: Path | None = None, limit: int = 2500) -> di
     if _table_exists(cur, "memories"):
         cols = {r[1] for r in cur.execute("PRAGMA table_info(memories)")}
         who = "user_id" if "user_id" in cols else "NULL"
+        kind = "kind" if "kind" in cols else "''"
         rows = cur.execute(
             f"""
-            SELECT text, value, content, {who} AS who, COALESCE(ts, timestamp, 0) AS at
+            SELECT text, value, content, {who} AS who, COALESCE(ts, timestamp, 0) AS at,
+                   COALESCE(source, '') AS source, COALESCE(tags, '') AS tags, {kind} AS kind
             FROM memories
             WHERE (lower(COALESCE(source, '')) = 'user'
                OR lower(COALESCE(tags, '')) LIKE '%identity%'
@@ -1025,7 +1030,16 @@ def backfill_user_patterns(db_path: Path | None = None, limit: int = 2500) -> di
             """,
             (_upto("memories"), int(limit)),
         ).fetchall()
-        _replay(rows, "memories", lambda r: r["text"] or r["value"] or r["content"] or "")
+        # Only the user's own words are facts about the user: a row whose tags merely mention "user"
+        # (ELI's reflection telemetry, "User correction/challenge signals: 1 recent events") was read as
+        # if the user had said it, and became a claim about them. Who wrote a row is the memory
+        # policy's one rule (classify_origin).
+        from eli.memory.policy import ORIGIN_USER, classify_origin
+
+        def _users_own(r) -> bool:
+            text = r["text"] or r["value"] or r["content"] or ""
+            return classify_origin(r["source"] or "", r["kind"] or "memory", r["tags"] or "", text) == ORIGIN_USER
+        _replay(rows, "memories", lambda r: r["text"] or r["value"] or r["content"] or "", keep=_users_own)
 
     con.commit()
 

@@ -249,12 +249,16 @@ def voice(action: str, *, about: str, standing: str, challenger: str, reasons: O
     if action not in (HOLD, QUESTION):
         return
     verdict = {"action": action, "about": str(about or ""), "standing": str(standing or "")[:300],
-               "challenger": str(challenger or "")[:300], "reasons": [str(r) for r in (reasons or [])][:4]}
+               "challenger": str(challenger or "")[:300], "reasons": [str(r) for r in (reasons or [])][:4],
+               **({"claim_id": int(claim_id)} if claim_id else {})}
+    turn = ""
     try:
-        from eli.kernel.request_context import turn_facts_var
+        from eli.kernel.request_context import request_id_var, turn_facts_var
         facts = turn_facts_var.get()
         if facts is not None:
             facts.setdefault("belief_verdicts", []).append(verdict)
+        # the thought is of the turn it was had in, as every thought is
+        turn = str((facts or {}).get("request_id") or request_id_var.get() or "")
     except (ImportError, LookupError) as failure:
         log.debug("verdict not put on the turn: %s", failure)
     member = str(subject or "").partition(":")[2]
@@ -267,8 +271,7 @@ def voice(action: str, *, about: str, standing: str, challenger: str, reasons: O
             why=verdict["reasons"] or ["what was said disagrees with what ELI holds"],
             decision="held" if action == HOLD else "raised",
             reason=("what ELI holds is better supported" if action == HOLD else "the evidence does not settle it"),
-            subject=what, ref=ref or f"conflict:{subject or 'user'}:{about}", user_id=member,
-            request_id=str(claim_id or "")))
+            subject=what, ref=ref or f"conflict:{subject or 'user'}:{about}", user_id=member, request_id=turn))
     except (ImportError, OSError, ValueError) as failure:
         log.debug("conflict thought not kept: %s", failure)
 

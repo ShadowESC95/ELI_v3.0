@@ -570,6 +570,19 @@ _JUDGE_SYSTEM = (
     "Give your confidence in the label from 0 to 1. Output one JSON object.")
 
 
+class Judged(str):
+    """A label (disputes, accepts, neither) that carries how it was reached: `confidence` (the
+    model's, None from the word cues), `by` ("model" or "words"), and `words` (reply_verdict)."""
+
+    def __new__(cls, judged: dict) -> "Judged":
+        out = super().__new__(cls, str((judged or {}).get("label") or NEITHER))
+        out.label = str(out)
+        out.confidence = (judged or {}).get("confidence")
+        out.by = str((judged or {}).get("by") or "words")
+        out.words = str((judged or {}).get("words") or NONE)
+        return out
+
+
 def judge_reply(message: str, reply: str = "", asked: str = "", *, ask=None) -> dict:
     """What `message` says of the reply ELI gave to `asked`: {"label": disputes | accepts | neither,
     "confidence" (the model's, None from the cues alone), "by": "model" | "words", "words": the cue

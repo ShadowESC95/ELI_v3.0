@@ -498,8 +498,9 @@ def test_a_reply_too_long_for_the_window_is_kept_by_its_start_and_end():
 
 
 def test_settling_by_the_models_label_waits_for_the_owner_and_a_change_of_subject_helps_nothing(db, monkeypatch):
-    """With a model loaded the judgement runs when the foreground is idle, never on the turn; and a
-    change of subject no longer counts the memories shown to the reply as of use."""
+    """With a model loaded the model's reading comes when the foreground is idle, never on the turn: the
+    word cues settle at once, and a different reading of the model's takes their place (here the cues
+    saw nothing in "that got me to the right ferry"). A change of subject no longer counts the memories as of use."""
     from eli.cognition import correction_patterns as cp
     from eli.cognition import inference_broker as ib
     from eli.kernel.engine import CognitiveEngine
@@ -510,10 +511,18 @@ def test_settling_by_the_models_label_waits_for_the_owner_and_a_change_of_subjec
     ep.assess(ep.ANSWER, 0.8, request_id="req-m", db_path=db)
     fake = _engine(_pending_assessment="req-m", _pending_recall_ids=[3], _pending_reply="It is the north quay.",
                    memory=SimpleNamespace(record_recall_outcome=lambda ids, helped=True, out=helped: out.append(helped)))
-    CognitiveEngine._settle_recall_outcome(fake, "lovely, cheers", "user")
-    assert ep.outcomes(ep.ANSWER, db_path=db) == [] and len(queued) == 1, "nothing settled on the turn"
+    CognitiveEngine._settle_recall_outcome(fake, "that got me to the right ferry", "user")
+    assert ep.outcomes(ep.ANSWER, db_path=db) == [] and len(queued) == 1, "the cues saw nothing: nothing yet"
     queued[0]()
     assert [y for _s, y, _f in ep.outcomes(ep.ANSWER, db_path=db)] == [1.0] and helped == [True]
+    # the cues settle a plain correction at once; the model's later, different reading takes its place
+    monkeypatch.setattr(cp, "local_judge", lambda: (lambda p, s, g: '{"label": "accepts", "confidence": 0.7}'))
+    ep.assess(ep.ANSWER, 0.8, request_id="req-n", db_path=db)
+    fake = _engine(_pending_assessment="req-n")
+    CognitiveEngine._settle_recall_outcome(fake, "that's not true", "user")
+    assert dict((r["request_id"], r["y"]) for r in ep.settled(ep.ANSWER, db_path=db))["req-n"] == 0.0
+    queued[-1]()
+    assert dict((r["request_id"], r["y"]) for r in ep.settled(ep.ANSWER, db_path=db))["req-n"] == 1.0
     monkeypatch.setattr(cp, "local_judge", lambda: None)
     fake = _engine(_pending_recall_ids=[4], memory=SimpleNamespace(
         record_recall_outcome=lambda ids, helped=True, out=helped: out.append(("moved on", helped))))

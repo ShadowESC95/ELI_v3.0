@@ -2301,24 +2301,37 @@ def _under_lever(intent: Dict[str, Any], rule: str) -> Dict[str, Any]:
     return intent
 
 
+def _reply_label(user_input: str, reply: str = "", asked: str = "", *, ask: Any = None):
+    """What the user's next message says of the last reply, as the settlement reads it: disputes,
+    accepts or neither (eli/cognition/correction_patterns.judge_reply), a str carrying its
+    `confidence`, `by` ("model" or "words") and the word cues (`words`). With `ask` (the local model,
+    correction_patterns.local_judge) the model reads the message against `reply` and `asked`; without,
+    the word cues decide. Everything _settle_recall_outcome settles reads this."""
+    from eli.cognition.correction_patterns import Judged, judge_reply
+    return Judged(judge_reply(user_input, reply, asked, ask=ask))
+
+
 def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_input: str,
-                    verdict: Dict[str, Any]) -> None:
-    """Settle what the last reply rested on by the judged label of the user's next message (verdict:
-    correction_patterns.judge_reply). Disputes: the reply's figure wrong, the route it was read as
-    wrong, the memories shown to it not of use, and wrong the claims the message speaks of. Accepts:
-    all of them right, the memories of use. Neither (a new request, a change of subject, the user's
-    news, a complaint about the doing): nothing is settled and no memory is counted as of use; a
-    plain no that goes on to speak of a claim ("no, I live in Lisbon now") still corrects that claim."""
+                    verdict: Any, revising: Any = None) -> None:
+    """Settle what the last reply rested on by the label of the user's next message (_reply_label).
+    Disputes: the reply's figure wrong, the route it was read as wrong, the memories shown to it not of
+    use, and wrong the claims the message speaks of. Accepts: all of them right, the memories of use.
+    Neither (a new request, a change of subject, the user's news, a complaint about the doing):
+    nothing is settled and no memory is counted as of use; a plain no that goes on to speak of a claim
+    ("no, I live in Lisbon now") still corrects that claim. `revising` is the earlier reading this
+    one replaces: the figures take the later verdict; the memories, already counted on a reading of
+    their own, and a surprise already noted, are not counted again."""
     from eli.cognition import epistemics, thoughts
     from eli.cognition.correction_patterns import ACCEPTS, DISPUTES
-    label = str((verdict or {}).get("label") or "")
+    label = str(verdict or "")
     corrected, endorsed = label == DISPUTES, label == ACCEPTS
     how = "correction" if corrected else ("endorsement" if endorsed else "")
-    if how and (verdict or {}).get("by") == "model":
-        how += f" (judged {float(verdict.get('confidence') or 0.0):.2f})"
+    if how and getattr(verdict, "by", "") == "model":
+        how += f" (judged {float(getattr(verdict, 'confidence', 0.0) or 0.0):.2f})"
+    counted_before = str(revising or "") in (ACCEPTS, DISPUTES)
     ids, request_id, route, claims = pending.get("ids"), pending.get("request_id"), pending.get("route"), pending.get("claims")
     asked, asked_p = str(pending.get("asked") or ""), float(pending.get("asked_p") or 0.5)
-    if ids and how and memory is not None:
+    if ids and how and memory is not None and not counted_before:
         try:
             memory.record_recall_outcome(ids, helped=endorsed)
         except Exception:
@@ -2331,7 +2344,7 @@ def _settle_pending(memory: Any, user_id: str, pending: Dict[str, Any], user_inp
         thoughts.settle_prefix(f"recall:{request_id}:", "right" if endorsed else "wrong", how=how)
         # A correction is a surprise: what the reply was about matters more for it
         # (eli/memory/salience.py), by the chance that was given for the reply.
-        if corrected:
+        if corrected and not counted_before:
             try:
                 from eli.cognition.scoring import tokenize as _tok
                 from eli.memory.salience import note_surprise
@@ -4703,14 +4716,22 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         if not (pending["ids"] or pending["request_id"] or pending["route"] or pending["claims"]):
             return
         memory, who = getattr(self, "memory", None), str(getattr(self, "user_id", "") or "")
-        from eli.cognition.correction_patterns import judge_reply, local_judge
+        # at once, by the word cues; then, with a model loaded, by the model when the owner is not
+        # waiting on it: a different reading takes the place of the first (epistemics.settle keeps the
+        # latest verdict), and one where the cues saw nothing settles what they left open
+        first = _reply_label(user_input)
+        _settle_pending(memory, who, pending, user_input, first)
+        from eli.cognition.correction_patterns import local_judge
         ask = local_judge()
         if ask is None:
-            _settle_pending(memory, who, pending, user_input, judge_reply(user_input))
             return
         from eli.cognition.inference_broker import when_idle
-        when_idle(lambda: _settle_pending(memory, who, pending, user_input,
-                                          judge_reply(user_input, pending["reply"], pending["asked"], ask=ask)))
+
+        def _judged() -> None:
+            second = _reply_label(user_input, pending["reply"], pending["asked"], ask=ask)
+            if getattr(second, "by", "") == "model" and str(second) != str(first):
+                _settle_pending(memory, who, pending, user_input, second, revising=first)
+        when_idle(_judged)
 
     def _assess_route(self, intent: Dict[str, Any], user_input: str) -> None:
         """The route this sentence was read as, assessed: its own figure calibrated on what became of

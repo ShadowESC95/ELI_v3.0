@@ -394,3 +394,25 @@ def test_a_verdict_kept_in_the_same_database_never_waits_behind_the_profiles_own
     con.close()
     assert took < 5.0, f"the profile write waited {took:.1f}s behind its own lock"
     assert [t["decision"] for t in th.recent(5, kinds=["conflict"], db_path=db)] == ["held"]
+
+
+def test_the_backfill_reads_only_the_users_own_words_as_facts_about_them(tmp_path):
+    """Memory rows whose tags merely mentioned 'user' were replayed as the user's words: ELI's own
+    reflection telemetry became a claim about the user (preference.challenge)."""
+    from eli.runtime.profile_extractor import backfill_user_patterns
+    db = tmp_path / "user.sqlite3"
+    ensure_profile_tables(db)
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT, value TEXT, content TEXT, source TEXT, "
+                "tags TEXT, kind TEXT, user_id TEXT, ts REAL, timestamp REAL)")
+    now = time.time()
+    con.execute("INSERT INTO memories (text, source, tags, kind, ts) VALUES (?, 'eli_reflection', "
+                "'eli_insight,auto,user_model', 'insight', ?)",
+                ("User correction/challenge signals: 1 recent events; challenge me on my assumptions", now - 60))
+    con.execute("INSERT INTO memories (text, source, tags, kind, ts) VALUES (?, 'user', 'user', 'memory', ?)",
+                ("I'm an engineer, be thorough please", now - 30))
+    con.commit()
+    assert backfill_user_patterns(db_path=db)["scanned"] == 2
+    kinds = {r[0] for r in con.execute("SELECT pattern_type FROM user_patterns")}
+    assert "identity.role" in kinds and "preference.challenge" not in kinds
+    con.close()

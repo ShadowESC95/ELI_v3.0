@@ -406,3 +406,34 @@ def test_making_sure_of_the_claims_table_never_commits_the_callers_work(tmp_path
     claims.retract_from_memory(c, 7)
     c.rollback()
     assert c.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 0, "the caller's transaction was left open"
+
+
+def test_a_statement_is_read_whatever_its_case_and_anything_the_user_names_has_its_name():
+    """'My dog is called Pepper' recorded no claim (the pet pattern alone was case-sensitive, so a
+    sentence's capital M missed), and only five animals could have a name."""
+    assert [(c["relation"], c["value"]) for c in claims.extract("My dog is called Pepper")] == [("dog_name", "Pepper")]
+    assert [(c["relation"], c["value"]) for c in claims.extract("My sister is named Ines, she paints")] == [
+        ("sister_name", "Ines")]
+    assert [(c["relation"], c["value"]) for c in claims.extract("I Live In Fenwick Bay these days")] == [
+        ("lives_in", "Fenwick Bay")]
+    assert claims.extract("my brother is Irish, as it happens") == []
+    assert [(c["relation"], c["value"]) for c in claims.extract("my dog is Max")] == [("dog_name", "Max")]
+
+
+def test_a_contradiction_of_the_users_own_word_that_says_no_change_is_raised(tmp_path, monkeypatch):
+    """The user's newer word replaced their older one whatever they said: 'My dog is called Biscuit'
+    after 'Pepper' silently renamed the dog. A statement that says its value changed is an update; one
+    that does not is weighed and, the evidence not settling it, raised."""
+    from eli.cognition import thoughts as th
+    monkeypatch.setattr(th, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")
+    c = sqlite3.connect(":memory:")
+    claims.record_from_text(c, "My dog is called Pepper", when=_d("2026-05-01"))
+    claims.record_from_text(c, "My dog is called Biscuit", when=_d("2026-05-08"))
+    # the same statement read again (the turn, then the memory it was kept as) settles nothing
+    claims.record_from_text(c, "My dog is called Biscuit", when=_d("2026-05-08"), source_memory_id=9, root_id=9)
+    assert {r["value"]: r["status"] for r in claims.history(c, "dog_name")} == {"Pepper": "current", "Biscuit": "disputed"}
+    [raised] = th.recent(5, kinds=["conflict"])
+    assert raised["decision"] == "raised" and "Pepper" in raised["what"] and "Biscuit" in raised["what"]
+    claims.record_from_text(c, "I live in Fenwick Bay", when=_d("2026-05-01"))
+    claims.record_from_text(c, "We moved last month, I live in Ashby Green now", when=_d("2026-06-01"))
+    assert [r["value"] for r in claims.current(c) if r["relation"] == "lives_in"] == ["Ashby Green"]

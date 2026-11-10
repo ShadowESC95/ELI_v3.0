@@ -49,7 +49,8 @@ def test_a_lesson_that_helps_survives_and_is_renewed(conn):
     lid = _make(conn, now=0.0, ttl_days=1, baseline=(0.3, 10))
     for i in range(6):
         lessons.record_outcome(lid, True, now=10.0 + i, conn=conn)
-    assert lessons.review(now=2 * DAY, conn=conn) == {"retired": 0, "renewed": 1}
+    out = lessons.review(now=2 * DAY, conn=conn)       # (review also judges and opens lever lessons)
+    assert (out["retired"], out["renewed"]) == (0, 1)
     assert lessons.applicable("SCREENSHOT", now=2 * DAY + 1, conn=conn)
 
 
@@ -64,7 +65,8 @@ def test_a_lesson_on_an_action_that_nearly_always_works_can_still_be_kept(conn):
 
 def test_an_unconfirmed_lesson_expires(conn):
     _make(conn, now=0.0, ttl_days=1)
-    assert lessons.review(now=2 * DAY, conn=conn) == {"retired": 1, "renewed": 0}
+    out = lessons.review(now=2 * DAY, conn=conn)
+    assert (out["retired"], out["renewed"]) == (1, 0)
     assert conn.execute("select retired_reason from lessons").fetchone()[0] == "expired unconfirmed"
 
 
