@@ -2989,20 +2989,14 @@ def _volume_fallback(direction: str, delta: int = 10, level: int | None = None) 
 def _memory_capability_truth() -> str:
     """Truth-only memory capability statement. Never fabricate recall."""
     try:
-        has_adapter = False
         has_sqlite = False
-        try:
-            from eli.memory.memory_adapter import memory_recall as _mr  # noqa: F401
-            has_adapter = True
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
         try:
             import sqlite3 as _sql  # noqa: F401
             has_sqlite = True
         except Exception:
             log.debug("suppressed exception", exc_info=True)
 
-        if has_adapter or has_sqlite:
+        if has_sqlite:
             return (
                 "I use two memory layers: session context and persistent local memory. "
                 "Persistent memory is stored locally (SQLite/artifacts via memory adapters) "

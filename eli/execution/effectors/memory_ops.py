@@ -377,24 +377,16 @@ def _h_memory_store(a, args):
             result["response"] = _msg
         return result
     except Exception as e:
-        # If local fails, try adapter
-        try:
-            from eli.memory.memory_adapter import memory_store as adapter_store
-            result = adapter_store(txt, tags=tags)
-            if isinstance(result, dict):
-                result.setdefault("action", a)
-                result.setdefault("ok", True)
-                result.setdefault("content", result.get("content") or "memory stored")
-                result.setdefault("response", result.get("response") or result["content"])
-            return result
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-
         # Last resort: canonical Memory class
         try:
             from eli.memory.memory import get_memory
             _mem = get_memory()
-            _mem.store_memory(txt, tags=",".join(tags) if isinstance(tags, list) else str(tags))
+            stored = _mem.store_memory(txt, tags=",".join(tags) if isinstance(tags, list) else str(tags)) or {}
+            if not stored.get("ok"):        # a write the filter refused or that failed is not stored
+                why = stored.get("reason") or stored.get("error") or "the memory write failed"
+                msg = f"Not stored: {why}."
+                return {"ok": False, "action": a, "skipped": bool(stored.get("skipped")), "error": str(why),
+                        "content": msg, "response": msg}
             msg = "memory stored"
             return {"ok": True, "action": a, "content": msg, "response": msg}
         except Exception as e2:
@@ -648,53 +640,6 @@ def _h_memory_recall(a, args):
         if not content.strip():
             content = _recall_in_words(q, [])
         return {"ok": True, "action": a, "hits": hits, "content": content, "response": content}
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
-    # 2) Legacy fallback: brain.memory_adapter.memory_search (may not exist)
-    try:
-        from eli.memory.memory_adapter import memory_search
-        result = memory_search(q, k=lim)
-        # Ensure consistent envelope
-        if isinstance(result, dict):
-            result.setdefault("action", a)
-            result.setdefault("ok", True)
-            if "content" not in result:
-                # memory_adapter may return 'results' (common) or 'hits' (legacy).
-                hits = result.get("results")
-                if hits is None:
-                    hits = result.get("hits")
-                if hits is None:
-                    hits = result.get("items")
-                if hits is None:
-                    hits = []
-                content = ""
-                if isinstance(hits, list) and hits:
-                    # Friendly readable render (top-k)
-                    lines = []
-                    for h in hits:
-                        if not isinstance(h, dict):
-                            continue
-                        t = (h.get("text") or "").strip()
-                        if not t:
-                            continue
-                        t = _dated(h, t)
-                        score = h.get("score", None)
-                        tags = h.get("tags", "")
-                        if score is not None:
-                            try:
-                                lines.append(f"- ({float(score):.3f}) {t} [{tags}]")
-                            except Exception:
-                                lines.append(f"- {t} [{tags}]")
-                        else:
-                            lines.append(f"- {t} [{tags}]")
-                    content = "\n".join(lines).strip()
-                result["content"] = content or "Memory recall:\n(no matches)"
-                # Also expose a consistent 'hits' key for any callers expecting it.
-                if "hits" not in result:
-                    result["hits"] = hits
-            result.setdefault("response", result.get("response") or result["content"])
-        return result
     except Exception:
         log.debug("suppressed exception", exc_info=True)
 

@@ -293,3 +293,21 @@ def test_what_was_just_said_is_read_from_this_conversation_and_its_last_reply():
         assert rc.turn_session() == "api-7", "the caller's own session first"
     finally:
         rc.session_id_var.reset(token)
+
+
+def test_the_last_resort_memory_write_says_when_nothing_was_stored(monkeypatch):
+    """When the store's own write raised, the handler fell back to a memory adapter that no longer
+    exists and then to Memory.store_memory, and said "memory stored" whatever that returned."""
+    from eli.execution.effectors import memory_ops
+
+    def broken(text, tags=None):
+        raise OSError("the store could not be opened")
+
+    class Refusing:
+        def store_memory(self, text, tags=""):
+            return {"ok": False, "skipped": True, "reason": "persistence_gate"}
+
+    monkeypatch.setattr(memory_ops, "memory_store", broken)
+    monkeypatch.setattr("eli.memory.memory.get_memory", lambda *a, **k: Refusing())
+    out = memory_ops._h_memory_store("MEMORY_STORE", {"text": "where did I put the kettle?"})
+    assert out["ok"] is False and out["skipped"] is True and "persistence_gate" in out["content"]
