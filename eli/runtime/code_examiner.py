@@ -736,19 +736,19 @@ def _pending_file() -> Path:
     return path
 
 
-# Last concrete file path the user referred to this session — so a bare follow-up
+# Last concrete file path the user referred to in this conversation — so a bare follow-up
 # ("please fix the file") can recover the file named a turn earlier instead of failing
-# with "Path not found: missing path".
-_LAST_FILE: Optional[str] = None
-
-
+# with "Path not found: missing path". Kept for the conversation (request_context), not in a
+# module global: one value for the process gave one user's file to another's "fix the file",
+# and one test's to the next test's.
 def set_last_file(path: Any) -> None:
-    global _LAST_FILE
-    _LAST_FILE = str(path or "").strip() or None
+    from eli.kernel.request_context import keep_for_conversation
+    keep_for_conversation("last_file", str(path or "").strip() or None)
 
 
 def get_last_file() -> Optional[str]:
-    return _LAST_FILE
+    from eli.kernel.request_context import conversation_value
+    return conversation_value("last_file")
 
 
 def set_pending_fix(findings: List[Finding], paths: List[Path]) -> None:

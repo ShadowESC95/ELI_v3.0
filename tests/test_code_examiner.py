@@ -326,3 +326,21 @@ def test_a_request_that_names_no_target_is_asked_not_answered_with_a_sweep(tmp_m
     monkeypatch.setattr(CE, "get_last_file", lambda: str(p))
     assert CE.resolve_targets("check it again for errors") == [p.resolve()]
     assert CE.resolve_targets("are there any problems with my essay?") == []
+
+
+def test_the_file_last_named_belongs_to_its_own_conversation():
+    """The file named last was one value for the whole process: another user's "fix the file" (and
+    a later test's) got it."""
+    from eli.kernel import request_context as rc
+
+    def in_conversation(key, fn, *args):
+        token = rc.turn_facts_var.set({"conversation": key})
+        try:
+            return fn(*args)
+        finally:
+            rc.turn_facts_var.reset(token)
+
+    in_conversation("engine:ann:s1", CE.set_last_file, "/tmp/garden/plan.py")
+    assert in_conversation("engine:ann:s1", CE.get_last_file) == "/tmp/garden/plan.py"
+    assert in_conversation("engine:bo:s2", CE.get_last_file) is None
+    assert CE.get_last_file() is None

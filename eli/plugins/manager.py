@@ -210,8 +210,7 @@ class PluginManager:
         return list(found.values())
 
     def _auto_load(self) -> None:
-        """Load all enabled plugins from disk at startup."""
-        enabled = set(self._state.get("enabled", []))
+        """Load every plugin on disk that has not been disabled, at startup."""
         for pkg_dir in self._all_plugin_dirs():
             plugin_py = pkg_dir / "plugin.py"
             if not plugin_py.exists():
