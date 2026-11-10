@@ -106,6 +106,8 @@ def _fresh_config() -> None:
 
 
 _fresh_config()
+from tests._state_env import seed_identity as _seed_identity  # noqa: E402
+_seed_identity(SANDBOX / "config")      # the run's own owner, never this machine's ~/.eli_user_id
 os.environ.setdefault("ELI_CPU_PREFLIGHT", "0")  # no smoke subprocess in tests
 # Every store is in the sandbox (state_env above): the user and memory DB (user_db_path() honours
 # ELI_USER_DB/ELI_MEMORY_DB first: tests once wrote rows into the real user.sqlite3), the agent DB, the

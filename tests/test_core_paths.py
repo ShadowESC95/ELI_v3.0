@@ -360,3 +360,11 @@ def test_test_mode_is_one_switch_read_in_one_place(monkeypatch):
                      if re.search(r"getenv\(\s*[\"']PYTEST_CURRENT_TEST|environ[^\n]{0,20}PYTEST_CURRENT_TEST"
                                   r"|[\"']pytest[\"'] in sys\.modules", f.read_text(encoding="utf-8")))
     assert not readers, readers
+
+
+def test_the_suite_runs_as_its_own_owner_never_this_machines():
+    """With no id in the sandbox's config folder, ELI brought the generic ~/.eli_user_id over, so every
+    test ran as this machine's real owner (and a run outside the suite left a copy in a checkout)."""
+    from tests._state_env import TEST_OWNER_ID
+    from eli.kernel.engine import CognitiveEngine
+    assert CognitiveEngine.__new__(CognitiveEngine)._get_user_id() == TEST_OWNER_ID

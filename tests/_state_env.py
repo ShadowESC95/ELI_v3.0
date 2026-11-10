@@ -57,6 +57,17 @@ def state_env(root: Path) -> Dict[str, str]:
     }
 
 
+# The run's own owner. With none in its config folder, ELI brings the generic ~/.eli_user_id over
+# (paths.adopt_legacy_file), so every test ran as this machine's real owner.
+TEST_OWNER_ID = "a-test-owner"
+
+
+def seed_identity(config_dir: Path) -> None:
+    folder = Path(config_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "user_id").write_text(TEST_OWNER_ID, encoding="utf-8")
+
+
 def stores() -> Dict[str, Path]:
     """Each store as ELI resolves it now, module constants frozen at import included."""
     from eli.cognition import persona
@@ -150,9 +161,7 @@ def own_state(root: Path) -> Iterator[OwnState]:
     from eli.core.paths import data_dir, test_mode
     root = Path(root)
     held = OwnState(root, machines_own_state(), str(data_dir().resolve()) if test_mode() else "")
-    # the owner's id is never brought over from ~/.eli_user_id (paths.adopt_legacy_file): the run's own
-    (root / "config").mkdir(parents=True, exist_ok=True)
-    (root / "config" / "user_id").write_text("a-test-owner", encoding="utf-8")
+    seed_identity(root / "config")
     with pytest.MonkeyPatch.context() as mp:
         for name, value in state_env(root).items():
             mp.setenv(name, value)
