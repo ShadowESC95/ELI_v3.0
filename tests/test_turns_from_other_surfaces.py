@@ -27,3 +27,23 @@ def test_the_window_names_where_a_turn_was_said_from_the_one_map(monkeypatch):
     monkeypatch.setattr(surfaces, "SURFACES", surfaces.SURFACES + (("watch-", "on the watch"),))
     _Window()._show_turns_from_other_surfaces()
     assert [line.split(" (")[1].split(",")[0] for line in shown] == ["in VR", "on the watch", "elsewhere"]
+
+
+def test_a_turn_the_window_could_not_finish_is_logged_where_every_failure_is(monkeypatch, tmp_path):
+    """The window kept its own failures table in the memory database, which no reader looked at, named
+    by the person's own message: the self-repair loop never saw the window's faults."""
+    from eli.gui.main_window._mixins.conversation import ConversationMixin
+    from eli.memory.memory import Memory
+    agent = Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent")
+    monkeypatch.setattr("eli.memory.get_agent_memory", lambda *a, **k: agent)
+    try:
+        {}["missing"]
+    except KeyError as failure:
+        ConversationMixin._log_turn_failure(failure)
+    conn = agent._get_connection()
+    try:
+        rows = conn.execute("SELECT command, error, source FROM failures").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1 and rows[0][0] == "GUI chat turn" and rows[0][2] == "gui"
+    assert "KeyError" in rows[0][1] and "Traceback" in rows[0][1], "its traceback is kept for self-repair"

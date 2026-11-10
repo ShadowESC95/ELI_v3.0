@@ -4,6 +4,21 @@ from eli.gui.main_window._common import *  # noqa: F401,F403
 
 
 class ConversationMixin:
+    @staticmethod
+    def _log_turn_failure(error: BaseException) -> None:
+        """A chat turn the window's worker could not finish, kept where every failure is (the agent
+        memory's log_failure: one row per fault, counted as it recurs, its traceback for self-repair to
+        find the code by). It had its own failures table in the memory database, which nothing read,
+        and it kept the person's message as the fault's name."""
+        import traceback as _tb
+        try:
+            from eli.memory import get_agent_memory
+            get_agent_memory().log_failure(
+                "GUI chat turn", error="".join(_tb.format_exception(type(error), error, error.__traceback__)),
+                context={"component": "gui", "exception": type(error).__name__}, source="gui")
+        except Exception:
+            log.debug("the window's failed turn was not logged", exc_info=True)
+
     def _speak_response(self, text: str):
         import re as _re, threading, unicodedata
         if not text or not isinstance(text, str): return
@@ -1236,20 +1251,7 @@ class ConversationMixin:
 
             except Exception as e:
                 self.chat_response_signal.emit(f"❌ Error: {str(e)}")
-                try:
-                    import sqlite3 as _sq2, time as _t2, traceback as _tb2
-                    from eli.core.paths import memory_db_path as _mdp
-                    _c2 = _sq2.connect(str(_mdp()))
-                    _c2.execute(
-                        "CREATE TABLE IF NOT EXISTS failures "
-                        "(id INTEGER PRIMARY KEY, ts REAL, user_input TEXT, error TEXT, traceback TEXT)")
-                    _c2.execute(
-                        "INSERT INTO failures (ts, user_input, error, traceback) VALUES (?,?,?,?)",
-                        (_t2.time(), str(locals().get('user_message', ''))[:500],
-                         str(e)[:500], _tb2.format_exc()[:1000]))
-                    _c2.commit(); _c2.close()
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
+                self._log_turn_failure(e)
             finally:
                 self.is_generating = False
                 self._cancel_stream_requested = False
