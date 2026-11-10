@@ -459,6 +459,10 @@ def score(script: Dict[str, Any], obs: Sequence[Dict[str, Any]], state: Dict[str
         "recall": seen_recall, "verdicts": seen_verdicts, "conflicts": seen_conflicts,
         "importance": sorted(((m, round(i, 3)) for m, i in weight), reverse=True),
         "focus": focus,
+        # every claim about the user standing at the end, and whether the script says it should
+        "claims": [{"relation": str(c.get("relation")), "value": str(c.get("value"))[:120],
+                    "origin": str(c.get("origin") or c.get("source_kind") or ""), "stands": _stands(c)}
+                   for c in standing],
     }
     return {"figures": {name: figures.get(name) for name in FIGURES}, "counts": counts, "info": info}
 
