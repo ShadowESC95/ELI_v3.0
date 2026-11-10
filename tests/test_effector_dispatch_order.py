@@ -65,6 +65,30 @@ def test_the_outer_execute_answers_no_registered_action_above_the_registry():
     )
 
 
+def test_the_outer_execute_answers_no_action_itself():
+    """EXPLAIN_GGUF_DIAGNOSTICS, EXPLAIN_FAILURE_LOG and EXPLAIN_LAST_FAILURE were still answered
+    inline in execute(), with no effector (and EXPLAIN_LAST_FAILURE a second time by the remediation
+    pre-dispatch): every action has one owner, its registered effector."""
+    from eli.execution.effectors import load_all
+    from eli.execution.effectors.registry import registered_actions
+
+    load_all()
+    inline = sorted(_inline_actions(_outer_execute()))
+    assert not inline, f"answered inline in execute(): {inline}"
+    explain = {"EXPLAIN_GGUF_DIAGNOSTICS", "EXPLAIN_FAILURE_LOG", "EXPLAIN_LAST_FAILURE"}
+    assert explain <= registered_actions()
+    pre = next(n for n in ast.parse(EXECUTOR.read_text(encoding="utf-8")).body
+               if isinstance(n, ast.FunctionDef) and n.name == "_action_pre_dispatch")
+    assert not explain & set(_inline_actions(pre)), "a registered action is answered again before the registry"
+
+
+def test_what_works_is_answered_by_the_failure_log_effector(monkeypatch):
+    from eli.execution import executor_enhanced as ex
+    monkeypatch.setattr("eli.runtime.action_outcomes.report", lambda *a, **k: {"words": "Opening apps has worked 4 of 5 times."})
+    got = ex.execute("EXPLAIN_FAILURE_LOG", {"scope": "outcomes", "question": "what works for you?"})
+    assert got["ok"] is True and got["content"] == "Opening apps has worked 4 of 5 times."
+
+
 def test_no_action_is_handled_both_inline_and_by_an_effector():
     from eli.execution.effectors import load_all
     from eli.execution.effectors.registry import registered_actions

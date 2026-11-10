@@ -233,6 +233,51 @@ def _h_autopilot_debug(a, args):
         return {"ok": False, "action": a, "error": str(e), "content": msg, "response": msg}
 
 
+def _h_explain_gguf_diagnostics(a, args):
+    from eli.runtime.gguf_runtime_report import format_gguf_diagnostics_report
+    _a = args if isinstance(args, dict) else {}
+    txt = format_gguf_diagnostics_report(question=str(_a.get("question") or _a.get("message") or ""),
+                                         model_path=_a.get("model_path"))
+    return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
+
+
+def _h_explain_failure_log(a, args):
+    """What has worked and what has not, by action and target, with the causes and what worked instead
+    (runtime/action_outcomes): ELI's own record of its abilities, in words, ahead of the raw failure log.
+    Asked what works (scope "outcomes"), that is the answer; asked for the log, it comes first."""
+    from eli.runtime.gguf_runtime_report import format_failure_log_report
+    _a = args if isinstance(args, dict) else {}
+    try:
+        from eli.runtime.action_outcomes import report as _outcomes_report
+        told = _outcomes_report()["words"]
+    except Exception:
+        log.debug("action outcomes unavailable", exc_info=True)
+        told = ""
+    if str(_a.get("scope") or "") == "outcomes":
+        txt = told or "No action has run here lately, so there is nothing to say about what works."
+        return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
+    txt = format_failure_log_report(limit=int(_a.get("limit") or 50), last_only=False)
+    if told:
+        txt = told + "\n\n" + txt
+    return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
+
+
+def _h_explain_last_failure(a, args):
+    """The grounded failure record (runtime/grounded_remediation), which also offers its repair, else
+    the newest entry of the failure log."""
+    from eli.runtime.gguf_runtime_report import format_failure_log_report
+    _a = args if isinstance(args, dict) else {}
+    try:
+        from eli.runtime import grounded_remediation as _gr
+        said = _gr.explain_last_failure(str(_a.get("subject") or _a.get("query") or "") or None)
+        if said and "no grounded failure record" not in said.lower():
+            return _gr.as_executor_result(said, ok=True)
+    except Exception:
+        log.debug("grounded_remediation explain_last_failure unavailable", exc_info=True)
+    txt = format_failure_log_report(limit=10, last_only=True)
+    return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
+
+
 from eli.execution.effectors.registry import register as _register
 
 for _action, _fn in {
@@ -248,6 +293,9 @@ for _action, _fn in {
     "GPU_STATUS": _h_gpu_status,
     "MEMORY_STATUS": _h_memory_status,
     "COGNITION_STATUS": _h_cognition_status,
+    "EXPLAIN_GGUF_DIAGNOSTICS": _h_explain_gguf_diagnostics,
+    "EXPLAIN_FAILURE_LOG": _h_explain_failure_log,
+    "EXPLAIN_LAST_FAILURE": _h_explain_last_failure,
 }.items():
     _register(_action, _fn)
 

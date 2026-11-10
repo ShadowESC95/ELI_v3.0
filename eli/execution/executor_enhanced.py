@@ -5806,8 +5806,9 @@ def _action_pre_dispatch(
                     return _gr.as_executor_result(_offer, ok=False)
                 return _result
 
-    # CHECK_TARGET_STATUS / EXPLAIN_LAST_FAILURE / etc -----------------
-    if a in {"CHECK_TARGET_STATUS", "EXPLAIN_LAST_FAILURE",
+    # CHECK_TARGET_STATUS and the pending repair -----------------------
+    # (EXPLAIN_LAST_FAILURE is its effector's: effectors/introspection.py)
+    if a in {"CHECK_TARGET_STATUS",
              "PREPARE_REMEDIATION", "CONFIRM_PENDING_REMEDIATION",
              "CANCEL_PENDING_REMEDIATION"}:
         try:
@@ -6298,50 +6299,10 @@ def execute(action: str, args: Optional[Dict[str, Any]] = None, **kwargs) -> Dic
     _override = _action_pre_dispatch(action, args, **kwargs)
     if _override is not None:
         return _override
-    # A registered action is its effector's alone (eli/execution/effectors, reached through
-    # _execute_impl's registry lookup): fifteen status and audit actions were answered here, above
-    # it, from copies that had drifted from their effectors (tests/test_effector_dispatch_order.py).
-    if a == 'EXPLAIN_GGUF_DIAGNOSTICS':
-        from eli.runtime.gguf_runtime_report import format_gguf_diagnostics_report
-        _q = str((args or {}).get("question") or (args or {}).get("message") or "")
-        _mp = (args or {}).get("model_path")
-        txt = format_gguf_diagnostics_report(question=_q, model_path=_mp)
-        return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
-    if a == 'EXPLAIN_FAILURE_LOG':
-        from eli.runtime.gguf_runtime_report import format_failure_log_report
-        _lim = int((args or {}).get("limit") or 50)
-        # What has worked and what has not, by action and target, with the causes and what worked
-        # instead (runtime/action_outcomes): ELI's own record of its abilities, in words, ahead of the
-        # raw failure log. Asked what works, that is the answer; asked for the log, it comes first.
-        try:
-            from eli.runtime.action_outcomes import report as _outcomes_report
-            _told = _outcomes_report()["words"]
-        except Exception:
-            log.debug("action outcomes unavailable", exc_info=True)
-            _told = ""
-        if str((args or {}).get("scope") or "") == "outcomes":
-            txt = _told or "No action has run here lately, so there is nothing to say about what works."
-            return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
-        txt = format_failure_log_report(limit=_lim, last_only=False)
-        if _told:
-            txt = _told + "\n\n" + txt
-        return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
-    if a == 'EXPLAIN_LAST_FAILURE':
-        from eli.runtime.gguf_runtime_report import format_failure_log_report
-        try:
-            from eli.runtime import grounded_remediation as _gr
-            _subj = str((args or {}).get("subject") or (args or {}).get("query") or "")
-            _gr_msg = _gr.explain_last_failure(_subj or None)
-            if _gr_msg and "no grounded failure record" not in _gr_msg.lower():
-                return _gr.as_executor_result(_gr_msg, ok=True)
-        except Exception:
-            log.debug("grounded_remediation explain_last_failure unavailable", exc_info=True)
-        txt = format_failure_log_report(limit=10, last_only=True)
-        return {'ok': True, 'action': a, 'content': txt, 'response': txt, 'grounded': True}
-    # GPU_STATUS is its effector's (introspection._h_gpu_status): the reading with what it means.
-    _mem = None  # _mkvi_memory_dispatch removed (was undefined)
-    if _mem is not None:
-        return _mem
+    # An action is its effector's alone (eli/execution/effectors, reached through _execute_impl's
+    # registry lookup): eighteen status and audit actions were answered here, above it, fifteen from
+    # copies that had drifted from their effectors and three with no effector at all
+    # (tests/test_effector_dispatch_order.py).
     merged: Dict[str, Any] = {}
     if isinstance(args, dict):
         merged.update(args)
