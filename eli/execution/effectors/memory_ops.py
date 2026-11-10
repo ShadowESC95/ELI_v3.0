@@ -29,7 +29,9 @@ def _named_in_last_reply(mem: Any) -> List[str]:
     """Proper names in ELI's last reply, longest first: what a bare "him", "her" or "that" points at
     when ELI itself just named it ("▶ Playing — spotify (Immortal Technique — Point Of No Return)")."""
     try:
-        last = next((str(t.get("content") or "") for t in mem.get_recent_conversation(limit=6) or []
+        from eli.kernel.request_context import turn_session
+        last = next((str(t.get("content") or "") for t in reversed(
+                     mem.get_recent_conversation(limit=6, session_id=turn_session()) or [])
                      if str(t.get("role", "")).lower() in ("assistant", "eli")), "")
     except Exception:
         return []
@@ -56,7 +58,8 @@ def _when_said_answer(a: str, topic: str, turn_args: Optional[Dict[str, Any]] = 
     candidates = [topic] if topic else []
     if not topic:
         recent = []
-        for turn in mem.get_recent_conversation(role="user") or []:
+        from eli.kernel.request_context import turn_session
+        for turn in mem.get_recent_conversation(role="user", session_id=turn_session()) or []:
             asked = when_said_topic(turn.get("content"))
             if asked != "":
                 recent.append({**turn, "content": asked} if asked else turn)

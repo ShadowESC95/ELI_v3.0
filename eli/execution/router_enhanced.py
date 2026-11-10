@@ -1892,8 +1892,9 @@ def _recent_turns_for_search(limit: int = 8) -> List[Dict[str, str]]:
     """The last few messages, for a search that points back at them ("search again", "look it up").
     Read only; nothing when memory cannot be read."""
     try:
+        from eli.kernel.request_context import turn_session
         from eli.memory import get_memory
-        turns = get_memory().get_recent_conversation(limit=limit) or []
+        turns = get_memory().get_recent_conversation(limit=limit, session_id=turn_session()) or []
         return [{"role": str(t.get("role") or ""), "content": str(t.get("content") or "")} for t in turns
                 if isinstance(t, dict)]
     except Exception:

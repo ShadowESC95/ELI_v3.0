@@ -3618,7 +3618,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         except Exception:
             log.debug("suppressed exception", exc_info=True)
         try:
-            _recent = self.memory.get_recent_conversation(limit=4) or []
+            _recent = self.memory.get_recent_conversation(limit=4, session_id=self.session_id) or []
             _thread = []
             for _t in _recent[-3:]:
                 _role = str((_t or {}).get("role", "") or "").lower()
@@ -4624,7 +4624,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
         _recent_eli: List[str] = []
         _recent_user: List[str] = []
         try:
-            for _t in (self.memory.get_recent_conversation(limit=16) or []):
+            for _t in (self.memory.get_recent_conversation(limit=16, session_id=self.session_id) or []):
                 _role = str((_t or {}).get("role", "")).lower()
                 _c = str((_t or {}).get("content", "") or "").strip()
                 if not _c:
@@ -4841,6 +4841,7 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             # command was about, for a pronoun in this one (routing/command_parser). Both were read
             # before, so an API caller's turn got the engine's own conversation's last command.
             facts["conversation"] = self._sticky_key()
+            facts["session_id"] = self.session_id       # request_context.turn_session for a desktop turn
             facts["last_command"] = dict(getattr(self, "_last_command_action", None) or {})
             _request_context.turn_facts_var.set(facts)
             return self._process_impl(
@@ -8753,7 +8754,8 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                     try:
                         from eli.cognition.scoring import term_overlap as _ov
                         _last_reply = ""
-                        for _t in reversed(self.memory.get_recent_conversation(limit=6) or []):
+                        for _t in reversed(self.memory.get_recent_conversation(
+                                limit=6, session_id=self.session_id) or []):
                             if str((_t or {}).get("role", "")).lower() in ("assistant", "eli"):
                                 _last_reply = str((_t or {}).get("content", "") or "")
                                 break

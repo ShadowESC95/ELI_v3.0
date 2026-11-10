@@ -547,7 +547,7 @@ class ReasoningModesMixin:
         try:
             _recent_eli: list = []
             _recent_user: list = []
-            for _t in (self.memory.get_recent_conversation(limit=16) or []):
+            for _t in (self.memory.get_recent_conversation(limit=16, session_id=self.session_id) or []):
                 _role = str((_t or {}).get("role", "")).lower()
                 _c = str((_t or {}).get("content", "") or "").strip()
                 if not _c:

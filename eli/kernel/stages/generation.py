@@ -1209,7 +1209,7 @@ class GenerationMixin:
         _gov_hist = None
         try:
             from eli.memory.memory import get_memory as _gm
-            _gov_hist = _gm().get_recent_conversation(limit=8)
+            _gov_hist = _gm().get_recent_conversation(limit=8, session_id=self.session_id)
         except Exception:
             log.debug("[GOVERNOR] recent-turn lookup skipped", exc_info=True)
         response = govern_output(response, is_grounded=evidence_used, history=_gov_hist,
@@ -1231,7 +1231,7 @@ class GenerationMixin:
         try:
             _prev_replies = []
             try:
-                for _t in (self.memory.get_recent_conversation(limit=8) or []):
+                for _t in (self.memory.get_recent_conversation(limit=8, session_id=self.session_id) or []):
                     _role = (_t.get("role") if isinstance(_t, dict) else None) or ""
                     _content = (_t.get("content") if isinstance(_t, dict) else "") or ""
                     if str(_role).lower() in ("assistant", "eli") and _content:

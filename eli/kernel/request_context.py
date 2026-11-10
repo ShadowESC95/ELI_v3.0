@@ -67,6 +67,18 @@ input_channel_var: ContextVar[Optional[str]] = ContextVar("eli_input_channel", d
 OWNER_STANDIN_IDS = frozenset({"default", "anon", "operator"})
 
 
+def turn_session() -> Optional[str]:
+    """The conversation the turn going on belongs to: the caller's session, or, for a turn whose
+    caller named none (the desktop window), the engine's own session (turn_facts "session_id"), as
+    its turns are stored. None outside a turn. What a reader means by "this conversation" (the last
+    reply, what was just said) is this; across conversations is the memory's own default."""
+    sid = session_id_var.get()
+    if sid:
+        return sid
+    facts = turn_facts_var.get()
+    return (facts.get("session_id") or None) if isinstance(facts, dict) else None
+
+
 def user_scope(user_id: Optional[str] = None) -> Optional[str]:
     """Whose own records (name, profile, user model, learned patterns, pinned facts) a turn reads and
     writes: `user_id` when given, else this turn's caller's. None means the machine's owner (no id,

@@ -263,3 +263,33 @@ def test_with_no_user_named_a_conversation_read_is_the_turns_own_users(tmp_path,
         assert [h["content"] for h in mem.search_conversations("words", limit=10)] == ["a member's private words here"]
     finally:
         rc.user_id_var.reset(token)
+
+
+def test_what_was_just_said_is_read_from_this_conversation_and_its_last_reply():
+    """The readers that mean "this conversation" (the last reply a pronoun points at, the turns a
+    search points back at) read the user's turns of every conversation; and the last-reply reader took
+    the oldest of the last six turns, oldest first as they come, for the last reply."""
+    from eli.execution.effectors import memory_ops
+    from eli.kernel import request_context as rc
+    asked = []
+
+    class Mem:
+        def get_recent_conversation(self, limit=20, session_id=None, **k):
+            asked.append(session_id)
+            return [{"role": "assistant", "content": "Playing — spotify (Harbour Lights — Old Pier)"},
+                    {"role": "user", "content": "nice"},
+                    {"role": "assistant", "content": "Now playing Marigold Avenue by Quiet Rivers."}]
+    assert rc.turn_session() is None, "outside a turn there is none"
+    token = rc.turn_facts_var.set({"session_id": "desk-1"})
+    try:
+        assert rc.turn_session() == "desk-1", "a desktop turn's conversation is the engine's own session"
+        named = memory_ops._named_in_last_reply(Mem())
+    finally:
+        rc.turn_facts_var.reset(token)
+    assert asked == ["desk-1"]
+    assert "Marigold" in named and not {"Harbour", "Lights", "Pier"} & set(named), "the last reply, not the oldest"
+    token = rc.session_id_var.set("api-7")
+    try:
+        assert rc.turn_session() == "api-7", "the caller's own session first"
+    finally:
+        rc.session_id_var.reset(token)
