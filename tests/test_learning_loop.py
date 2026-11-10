@@ -374,19 +374,44 @@ def test_the_users_interest_is_the_activation_of_their_own_mentions(monkeypatch)
     import eli.memory.memory as memory_module
     from eli.memory import interest
     now = 1_800_000_000.0
+    day = 86400.0
     turns = [{"role": "user", "content": "the router keeps dropping the wifi", "timestamp": now - 60},
-             {"role": "user", "content": "router again, the wifi router", "timestamp": now - 3600},
-             {"role": "user", "content": "is the router worth replacing", "timestamp": now - 7200},
-             {"role": "user", "content": "bought a kayak last spring", "timestamp": now - 20 * 86400},
+             {"role": "user", "content": "router again, the wifi router", "timestamp": now - 2 * day},
+             {"role": "user", "content": "is the router worth replacing", "timestamp": now - 5 * day},
+             {"role": "user", "content": "bought a kayak last spring", "timestamp": now - 20 * day},
+             {"role": "user", "content": "the kayak needs a new seat", "timestamp": now - 21 * day},
              {"role": "assistant", "content": "router router router router", "timestamp": now - 10}]
-    monkeypatch.setattr(memory_module, "get_memory", lambda *a, **k: SimpleNamespace(
-        get_recent_conversation=lambda limit=500, user_id=None: turns))
+    asked = []
+
+    def _recent(**k):
+        asked.append(k)
+        return [t for t in turns if not k.get("role") or t["role"] == k["role"]]
+    monkeypatch.setattr(memory_module, "get_memory", lambda *a, **k: SimpleNamespace(get_recent_conversation=_recent))
     interest.forget()
     focus = interest.focus(3, now=now)
     assert focus[0][0] == "router" and focus[0][1] > focus[-1][1] and sum(s for _w, s in interest.focus(50, now=now)) == pytest.approx(1.0, abs=1e-3)
     assert interest.share("my wifi router", now=now) > interest.share("the kayak", now=now) > 0.0
     assert interest.share("nothing of note", now=now) == 0.0 and interest.share("", now=now) == 0.0
+    assert asked[0]["role"] == "user" and asked[0]["limit"] is None and asked[0]["since"] == now - interest.LOOKBACK_DAYS * day, \
+        "the user's own turns of the whole lookback, not 500 turns of both roles"
     interest.forget()
+
+
+def test_interest_is_not_the_last_message_and_needs_more_than_one_day(monkeypatch):
+    """With ages floored at one second the words of the last message weighed about 300 against 6 for a
+    topic mentioned twenty times over the month, and were always "the focus"."""
+    import eli.memory.memory as memory_module
+    from eli.memory import interest
+    now = 1_800_000_000.0
+    turns = [{"role": "user", "content": "thinking about a kayak", "timestamp": now - 10}]
+    turns += [{"role": "user", "content": f"the garden needs work, part {i}", "timestamp": now - (1.5 * i + 1) * 86400}
+              for i in range(20)]
+    monkeypatch.setattr(memory_module, "get_memory", lambda *a, **k: SimpleNamespace(
+        get_recent_conversation=lambda **k: turns))
+    interest.forget()
+    focus = dict(interest.focus(5, now=now))
+    interest.forget()
+    assert "garden" in focus and "kayak" not in focus, focus
 
 
 def test_elis_curiosity_is_what_surprised_it_lately_and_what_is_still_open(db, monkeypatch):

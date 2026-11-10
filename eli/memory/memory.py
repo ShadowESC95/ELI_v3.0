@@ -492,6 +492,16 @@ def _ensure_memory_indexes(conn) -> None:
         # get_recent_observations — was scanning the whole table
         ("idx_observations_timestamp",
          "CREATE INDEX IF NOT EXISTS idx_observations_timestamp ON observations(timestamp DESC)"),
+        # Every recency read orders by COALESCE(timestamp, ts, 0), and SQLite uses an index for an
+        # ORDER BY only when it is on that same expression: the plain-column indexes above served none
+        # of them (SCAN + TEMP B-TREE on every read, about ten a turn).
+        ("idx_conversation_turns_time",
+         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_time ON conversation_turns(COALESCE(timestamp, ts, 0))"),
+        ("idx_conversation_turns_session_time",
+         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_session_time "
+         "ON conversation_turns(session_id, COALESCE(timestamp, ts, 0))"),
+        ("idx_memories_time",
+         "CREATE INDEX IF NOT EXISTS idx_memories_time ON memories(COALESCE(timestamp, ts, 0))"),
     ]
     created = 0
     for name, ddl in indexes:
@@ -1465,6 +1475,37 @@ def _ensure_full_memory_schema(conn):
 
     conn.execute("DROP TABLE IF EXISTS error_tracking")     # the second failure store (see above)
     _ensure_owner_columns(conn)
+    _ensure_conversation_search(conn)
+    # The recall indexes were created only by the test schema (_ensure_memory_schema): a live database
+    # carried none of them and every recency read scanned and sorted the whole table.
+    _ensure_memory_indexes(conn)
+
+
+def _ensure_conversation_search(conn) -> None:
+    """A full-text index over what was said (conversation_turns), kept by triggers whoever writes the
+    turn: search_conversations ORed LIKE '%word%' over the whole table on every turn."""
+    try:
+        have = _has_table(conn, "conversation_turns_fts")
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversation_turns_fts
+                USING fts5(content, content='conversation_turns', content_rowid='id');
+            CREATE TRIGGER IF NOT EXISTS conversation_turns_fts_ai AFTER INSERT ON conversation_turns BEGIN
+                INSERT INTO conversation_turns_fts(rowid, content) VALUES (new.id, COALESCE(new.content, ''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS conversation_turns_fts_ad AFTER DELETE ON conversation_turns BEGIN
+                INSERT INTO conversation_turns_fts(conversation_turns_fts, rowid, content)
+                VALUES ('delete', old.id, COALESCE(old.content, ''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS conversation_turns_fts_au AFTER UPDATE OF content ON conversation_turns BEGIN
+                INSERT INTO conversation_turns_fts(conversation_turns_fts, rowid, content)
+                VALUES ('delete', old.id, COALESCE(old.content, ''));
+                INSERT INTO conversation_turns_fts(rowid, content) VALUES (new.id, COALESCE(new.content, ''));
+            END;
+        """)
+        if not have:
+            conn.execute("INSERT INTO conversation_turns_fts(conversation_turns_fts) VALUES('rebuild')")
+    except sqlite3.Error as exc:
+        log.debug("[MEMORY] conversation search index not created: %s", exc)
 
 def _plugin_may(capability: str, what: str) -> None:
     """A plugin behind this call must have declared `capability` (eli/plugins/sandbox.enforce, which
@@ -1587,12 +1628,42 @@ def _open_memory_db(p: Path):
     raise last  # unreachable; keeps the contract explicit
 
 
+# The schema each database was last brought up to in this process, by its PRAGMA schema_version: a
+# connection whose database still has that version needs no migration. Every connection used to run
+# the whole migration again (about 190 PRAGMA table_info calls and twenty CREATE ... IF NOT EXISTS),
+# dozens of times a turn. A database replaced underneath (a memory wipe, a restore) or changed by
+# another writer reads another version, and is brought up again.
+_SCHEMA_SEEN: Dict[str, int] = {}
+_SCHEMA_LOCK = threading.Lock()
+
+
+def _schema_version(conn) -> Optional[int]:
+    try:
+        return int(conn.execute("PRAGMA schema_version").fetchone()[0])
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+
+
+def _ensure_schema_once(conn, p) -> None:
+    key = str(p)
+    if _SCHEMA_SEEN.get(key) is not None and _SCHEMA_SEEN.get(key) == _schema_version(conn):
+        return
+    with _SCHEMA_LOCK:
+        if _SCHEMA_SEEN.get(key) is not None and _SCHEMA_SEEN.get(key) == _schema_version(conn):
+            return
+        _ensure_full_memory_schema(conn)
+        _ensure_profile_schema(conn)
+        conn.commit()
+        version = _schema_version(conn)
+        if version is not None:
+            _SCHEMA_SEEN[key] = version
+
+
 def _memory_connection(self):
     p = _path_from_args(db_path=getattr(self, "db_path", None), db_type=getattr(self, "db_type", None))
     self.db_path = p
     conn = _open_memory_db(p)  # sets journal mode (WAL or DELETE) + synchronous + cache
-    _ensure_full_memory_schema(conn)
-    conn.commit()
+    _ensure_schema_once(conn, p)
     return conn
 
 def _habit_key(event_type, details) -> Tuple[str, str]:
@@ -1865,10 +1936,7 @@ class Memory(metaclass=_MemoryMeta):
     # -----------------------------
 
     def _get_connection(self):
-        conn = _memory_connection(self)
-        _ensure_profile_schema(conn)
-        conn.commit()
-        return conn
+        return _memory_connection(self)
 
     def _ensure_tables(self):
         from eli.core.sqlite_util import apply_pragmas
@@ -4586,11 +4654,17 @@ class Memory(metaclass=_MemoryMeta):
 
         conn = self._get_connection()
         try:
-            # Build OR conditions — a turn is relevant if ANY keyword appears in it.
-            conditions = (" AND " if match_all else " OR ").join(
-                "LOWER(COALESCE(content, '')) LIKE ?" for _ in keywords
-            )
-            params: list = [f"%{kw}%" for kw in keywords]
+            # A turn is relevant if ANY keyword is in it (every one with match_all): looked up in the
+            # turns' full-text index (each keyword as a word or the start of one: "drive" finds
+            # "driving"), the whole table's LIKE scan only where the index is missing.
+            joiner = " AND " if match_all else " OR "
+            params: list = []
+            if _has_table(conn, "conversation_turns_fts"):
+                conditions = ("id IN (SELECT rowid FROM conversation_turns_fts WHERE conversation_turns_fts MATCH ?)")
+                params.append(joiner.join('"{}"*'.format(kw.replace('"', '')) for kw in keywords))
+            else:
+                conditions = joiner.join("LOWER(COALESCE(content, '')) LIKE ?" for _ in keywords)
+                params.extend(f"%{kw}%" for kw in keywords)
             # Keyword recall doesn't return ELI's own past statements by default: one fabrication
             # otherwise becomes permanent truth. Labelling it in the prompt didn't hold, an instruction
             # isn't a filter. The sibling search already does `AND role = 'user'`. Assistant turns are
@@ -4605,6 +4679,13 @@ class Memory(metaclass=_MemoryMeta):
             if user_id:
                 sql += " AND user_id = ?"
                 params.append(user_id)
+            else:
+                # the turn's own user's turns (eli/memory/policy.owner_key): never an API member's
+                # in the owner's search, nor the owner's in a member's
+                from eli.memory import policy as _scope_policy
+                _scope, _scope_params = _scope_policy.scope_sql("user_id", _scope_policy.owner_key(None), raw_ids=True)
+                sql += _scope
+                params.extend(_scope_params)
             # Fetch DESC then reverse so caller gets chronological order,
             # consistent with get_recent_conversation().
             sql += " ORDER BY COALESCE(timestamp, ts, 0) DESC"
@@ -5829,6 +5910,9 @@ class Memory(metaclass=_MemoryMeta):
 
     def get_recent_conversation(self, limit=20, session_id=None, user_id=None,
                                 since=None, until=None, role=None):
+        """The last `limit` turns, oldest first (limit None: every turn in the range). The turn's own
+        user's when no user is named; one conversation's when session_id is given."""
+        unbounded = limit is None
         limit = int(limit) if limit else 20
         conn = self._get_connection()
         try:
@@ -5843,6 +5927,15 @@ class Memory(metaclass=_MemoryMeta):
             if user_id:
                 where.append("user_id = ?")
                 params.append(user_id)
+            else:
+                # With no user named, the turn's own user's turns (eli/memory/policy.owner_key): an API
+                # member's turns never reach the owner's readers (the anti-repeat guard, the output
+                # governor, follow-ups), nor the owner's a member's.
+                from eli.memory import policy as _scope_policy
+                _scope, _scope_params = _scope_policy.scope_sql("user_id", _scope_policy.owner_key(None), raw_ids=True)
+                if _scope:
+                    where.append(_scope.replace(" AND ", "", 1))
+                    params.extend(_scope_params)
             if role:
                 where.append("role = ?")
                 params.append(role)
@@ -5860,8 +5953,10 @@ class Memory(metaclass=_MemoryMeta):
                 params.append(junk)
             if where:
                 sql += " WHERE " + " AND ".join(where)
-            sql += " ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT ?"
-            params.append(int(limit))
+            sql += " ORDER BY COALESCE(timestamp, ts, 0) DESC"
+            if not unbounded:
+                sql += " LIMIT ?"
+                params.append(int(limit))
             rows = conn.execute(sql, params).fetchall()
             # Reverse to chronological order for the synthesiser
             rows = list(reversed(rows))

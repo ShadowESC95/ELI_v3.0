@@ -181,30 +181,6 @@ class ProactiveDaemon:
 
     # Reads: USER DB. Writes: AGENT DB.
 
-    # ─── stop-words for topic extraction ──────────────────────────────────────
-    _STOPWORDS = frozenset({
-        'the','a','an','is','are','was','were','be','been','being','have','has','had',
-        'do','does','did','will','would','could','should','may','might','can','shall',
-        'to','of','in','for','on','with','at','by','from','as','or','and','but','not',
-        'it','i','you','we','they','he','she','that','this','what','how','why','when',
-        'where','there','here','so','if','then','just','really','like','get','got','go',
-        'up','out','also','about','into','than','which','who','more','some','no','any',
-        'my','your','its','our','their','me','him','her','us','them','yes','okay','ok',
-        'well','now','still','even','much','many','all','very','too','make','made','use',
-        'used','using','run','ran','running','sure','need','want','think','know','see',
-        'look','let','try','work','working','works','right','wrong','good','bad','new',
-        'old','same','different','way','time','thing','things','something','nothing',
-        'everything','anything','else','please','thanks','sorry','hi','hey','hello',
-        'yeah','yep','nope','actually','basically','maybe','probably','definitely',
-        'already','only','both','each','other','another','again','always','never',
-        'every','few','most','least','great','nice','pretty','quite','rather','really',
-        'seems','seem','seemed','better','best','worse','worst','big','small','little',
-        'long','short','first','last','next','back','down','over','through','after',
-        'before','during','without','within','between','among','around','against',
-        'going','gone','came','come','give','given','take','taken','put','keep','kept',
-        'start','started','stop','stopped','end','ended','want','wanted','tell','told',
-    })
-
     def _frequent_behaviour_patterns(self) -> List[Dict[str, Any]]:
         """Things the user does a lot that never become time-scheduled rules (screenshots, media, news)
         make ELI offer to streamline them: 'frequent_behavior' signals for goal autogenesis. The bar is
@@ -360,52 +336,18 @@ class ProactiveDaemon:
                     "suggestion": f"Activity spread across {_top}",
                 })
 
-        # Pattern 2: Meaningful topic focus (top 5 non-trivial words) from genuine user text only. ELI's own
-        # auto-generated insight/reflection/news memories carry meta vocabulary ("Conversation volume:
-        # 51 user messages", "Top topics: ...") that fed back as the user's "focus areas", a
-        # self-reinforcing loop. User turns have empty tags, so skipping auto-tagged rows keeps real
-        # topics and drops the echo.
-        from eli.core.self_provenance import has_auto_tag as _has_auto_tag
-        # Topic extraction is shared with the reflection report. This loop had its own ~180-word
-        # `self._STOPWORDS` that never got the reflection list's fixes and had no notion of small talk,
-        # so "afternoon, Eli" made "afternoon (x11), doing, today, memory, world" the operator's focus
-        # areas. Four of those are in the shared set now and the greeting is skipped whole. Imported
-        # lazily, like the part_of_day() import below.
-        try:
-            from eli.runtime.reflection import topic_words as _topic_words
-        except Exception:
-            _topic_words = None
-        word_counts: Dict[str, int] = {}
-        for _ts, text, _tags in rows:
-            if not text:
-                continue
-            _tg = str(_tags or "").lower()
-            if _has_auto_tag(_tags):
-                continue
-            if _topic_words is not None:
-                for w in _topic_words(str(text)):
-                    word_counts[w] = word_counts.get(w, 0) + 1
-                continue
-            for w in str(text).lower().split():
-                w = w.strip('.,!?;:\'"()[]{}')
-                if len(w) > 4 and w not in self._STOPWORDS and w.isalpha():
-                    word_counts[w] = word_counts.get(w, 0) + 1
-        # The user's focus is measured as memory is (eli/memory/interest.py): each topic's base-level
-        # activation over their own mentions, so ten mentions over months and one yesterday are told
-        # apart; the share is of their whole attention. The counts stand in only when it cannot be read.
+        # Pattern 2: the user's focus, from the one estimator of their interests (eli/memory/interest.py):
+        # each topic's base-level activation over their own mentions, on the time scale of days and only
+        # once it came up on more than one day, so ten mentions over months and one yesterday are told
+        # apart; the share is of their whole attention. A second counter here (its own stopword list,
+        # "at least three mentions") disagreed with it, and nothing is reported when it cannot be read.
         try:
             from eli.memory.interest import focus as _focus
-            _ranked = [(w, s) for w, s in _focus(5) if s > 0.0]
+            top = [(w, s) for w, s in _focus(5) if s > 0.0]
         except Exception:
             _SWLOG.debug("interest unreadable", exc_info=True)
-            _ranked = []
-        if _ranked:
-            top = _ranked
-            topics = ", ".join(f"{w} ({s:.0%} of your attention)" for w, s in top)
-        else:
-            top = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-            top = [(w, c) for w, c in top if c >= 3]
-            topics = ", ".join(f"{w} (×{c})" for w, c in top)
+            top = []
+        topics = ", ".join(f"{w} ({s:.0%} of your attention)" for w, s in top)
         if top:
             patterns.append({
                 "type": "topic_focus",

@@ -178,3 +178,87 @@ def test_the_report_states_its_window_and_the_backlog(engine_with_old_failures):
     assert "last 14 day" in text, "the unified 14-day window should be stated"
     assert "7 open issue" in text, "the older backlog is still hidden"
     assert "No recent failures found." not in text, "the misleading phrasing survives"
+
+
+# ── the live schema path, not only the test one ─────────────────────────────────────────────────
+
+def _live(tmp_path, monkeypatch):
+    from eli.memory.memory import Memory
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: None)
+    return Memory(db_path=tmp_path / "live.sqlite3")
+
+
+def test_the_live_schema_creates_the_recall_indexes_and_the_reads_use_them(tmp_path, monkeypatch):
+    """Only _ensure_memory_schema (init_db, tests) created the indexes: a live database opened through
+    Memory carried none of them, and every recency read was SCAN + TEMP B-TREE."""
+    mem = _live(tmp_path, monkeypatch)
+    conn = mem._get_connection()
+    try:
+        assert {"idx_conversation_turns_time", "idx_conversation_turns_session_time", "idx_memories_time"} <= _indexes(conn)
+        for sql in ("SELECT content FROM conversation_turns ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT 16",
+                    "SELECT content FROM conversation_turns WHERE session_id = 's' ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT 8",
+                    "SELECT text FROM memories ORDER BY COALESCE(timestamp, ts, 0) DESC LIMIT 10"):
+            plan = " ".join(str(r[-1]) for r in conn.execute("EXPLAIN QUERY PLAN " + sql))
+            assert "TEMP B-TREE" not in plan, (sql, plan)
+    finally:
+        conn.close()
+
+
+def test_conversation_search_uses_the_turns_full_text_index(tmp_path, monkeypatch):
+    mem = _live(tmp_path, monkeypatch)
+    mem.add_conversation_turn("user", "we were driving to the coast on saturday", session_id="a")
+    mem.add_conversation_turn("user", "the drive home took forever", session_id="a")
+    mem.add_conversation_turn("user", "something else entirely", session_id="a")
+    hits = [h["content"] for h in mem.search_conversations("drive coast", limit=10)]
+    assert hits == ["we were driving to the coast on saturday", "the drive home took forever"]
+    both = [h["content"] for h in mem.search_conversations("drive home", limit=10, match_all=True)]
+    assert both == ["the drive home took forever"]
+    assert [h["content"] for h in mem.search_conversations("satur", limit=10)] == [
+        "we were driving to the coast on saturday"], "a keyword finds the words it starts"
+    conn = mem._get_connection()
+    try:
+        conn.execute("UPDATE conversation_turns SET content = 'gone' WHERE content LIKE '%coast%'")
+        conn.commit()
+    finally:
+        conn.close()
+    assert [h["content"] for h in mem.search_conversations("coast", limit=10)] == [], "the index follows the turn"
+
+
+def test_a_connection_does_not_migrate_a_database_already_brought_up(tmp_path, monkeypatch):
+    """Every connection re-ran the whole migration (about 190 PRAGMA table_info calls)."""
+    import eli.memory.memory as mm
+    mem = _live(tmp_path, monkeypatch)
+    mem._get_connection().close()
+    ran = []
+    real = mm._ensure_full_memory_schema
+    monkeypatch.setattr(mm, "_ensure_full_memory_schema", lambda conn: ran.append(1) or real(conn))
+    for _ in range(5):
+        mem._get_connection().close()
+    assert ran == []
+    (tmp_path / "live.sqlite3").unlink()
+    for extra in ("-wal", "-shm"):
+        (tmp_path / f"live.sqlite3{extra}").unlink(missing_ok=True)
+    conn = mem._get_connection()
+    try:
+        assert ran == [1] and conn.execute("SELECT COUNT(*) FROM memories").fetchone() == (0,), \
+            "a database replaced underneath is brought up again"
+    finally:
+        conn.close()
+
+
+def test_with_no_user_named_a_conversation_read_is_the_turns_own_users(tmp_path, monkeypatch):
+    """An API member's turns reached the owner's per-turn readers (anti-repeat, output governor)."""
+    from eli.kernel import request_context as rc
+    from eli.memory import policy
+    mem = _live(tmp_path, monkeypatch)
+    mem.add_conversation_turn("user", "the owner's own words here", user_id="default-user")
+    mem.add_conversation_turn("user", "a member's private words here", user_id="member-7")
+    monkeypatch.setattr(policy, "rbac_members", lambda: frozenset({"member-7"}))
+    owner = [t["content"] for t in mem.get_recent_conversation(limit=10)]
+    assert owner == ["the owner's own words here"]
+    token = rc.user_id_var.set("member-7")
+    try:
+        assert [t["content"] for t in mem.get_recent_conversation(limit=10)] == ["a member's private words here"]
+        assert [h["content"] for h in mem.search_conversations("words", limit=10)] == ["a member's private words here"]
+    finally:
+        rc.user_id_var.reset(token)

@@ -308,84 +308,19 @@ _INTEREST_NOISE = {
 }
 
 
-def _conversation_focus_terms(user_id=None, limit: int = 5, min_count: int = 2) -> list:
-    """Topic keywords from recent genuine user conversation (shared logic with proactive).
-
-    Uses the same de-noising as proactive_daemon topic_focus: skips auto-tagged
-    ELI memories, filters small talk via reflection.topic_words, and drops
-    self-referential noise so news interest reflects what the user actually talks
-    about (physics, streaming, research tools) — not meta vocabulary.
-    """
-    import sqlite3
-    import time as _time
-    from collections import Counter
-    from pathlib import Path
-
+def _conversation_focus_terms(user_id=None, limit: int = 5) -> list:
+    """What the user talks about, from the one estimator of their interests (eli/memory/interest.focus:
+    each topic's base-level activation over their own turns, once it came up on more than one day), so
+    the news follows the same interests the proactive daemon reports. Self-referential noise
+    (_INTEREST_NOISE) is left out. A second counter here (its own word list, two mentions in fourteen
+    days, ELI's own memories counted with the user's turns) disagreed with it."""
     try:
-        from eli.memory import get_memory
-        user_db = Path(get_memory(user_id).db_path)
+        from eli.memory.interest import focus
+        ranked = focus(limit * 3, str(user_id or ""))
     except Exception:
+        log.debug("interest unreadable for the news", exc_info=True)
         return []
-    if not user_db.exists():
-        return []
-
-    try:
-        from eli.core.self_provenance import has_auto_tag as _has_auto_tag
-    except Exception:
-        def _has_auto_tag(_tags):
-            return False
-
-    try:
-        from eli.runtime.reflection import topic_words as _topic_words
-    except Exception:
-        _topic_words = None
-
-    rows: list = []
-    try:
-        con = sqlite3.connect(str(user_db))
-        cur = con.cursor()
-        _cutoff = _time.time() - 14 * 24 * 3600
-        try:
-            cur.execute(
-                "SELECT ts, text, tags FROM memories "
-                "WHERE kind NOT IN ('reflection','assistant_insight','session_summary','conversation') "
-                "AND ts > ? ORDER BY ts DESC LIMIT 200",
-                (_cutoff,),
-            )
-            rows.extend(cur.fetchall())
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        try:
-            cur.execute(
-                "SELECT timestamp, content, '' FROM conversation_turns "
-                "WHERE role='user' AND timestamp > ? ORDER BY timestamp DESC LIMIT 150",
-                (_cutoff,),
-            )
-            rows.extend(cur.fetchall())
-        except Exception:
-            log.debug("suppressed exception", exc_info=True)
-        con.close()
-    except Exception:
-        return []
-
-    counts: Counter = Counter()
-    for _ts, text, tags in rows:
-        if not text:
-            continue
-        if _has_auto_tag(tags):
-            continue
-        if _topic_words is not None:
-            for w in _topic_words(str(text)):
-                if w not in _INTEREST_NOISE:
-                    counts[w] += 1
-            continue
-        import re as _re
-        for w in _re.findall(r"[a-z][a-z\-]{3,}", str(text).lower()):
-            if w not in _INTEREST_NOISE:
-                counts[w] += 1
-
-    ranked = [(w, c) for w, c in counts.most_common(limit * 3) if c >= min_count]
-    return [w for w, _ in ranked[:limit]]
+    return [w for w, share in ranked if share > 0.0 and w not in _INTEREST_NOISE][:limit]
 
 
 def _derive_interest_terms(user_id=None, limit: int = 8) -> list:
