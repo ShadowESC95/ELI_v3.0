@@ -158,6 +158,26 @@ def test_every_folder_a_message_names_is_read(tmp_path):
         assert got["args"]["folders"] == [str(d) for d in dirs], lead
 
 
+def test_the_folder_a_conversation_named_is_that_conversations_alone(tmp_path, monkeypatch):
+    """The router kept the last file or folder named in one module global: the folder one API user
+    named was "that folder" in another user's next message, and one test's in a later test's."""
+    from eli.execution.router_enhanced import route
+    from eli.kernel.engine import CognitiveEngine
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    (papers / "notes.pdf").write_bytes(b"")
+    eng = CognitiveEngine()
+    routed = []
+    monkeypatch.setattr(eng, "_process_impl",
+                        lambda text, **k: routed.append(route(text)) or {"ok": True, "content": "ok"})
+    eng.process(f"summarise {papers}", user_id="ann", session_id="s-1")
+    eng.process("summarise the pdfs in that folder", user_id="bo", session_id="s-2")
+    eng.process("summarise the pdfs in that folder", user_id="ann", session_id="s-1")
+    assert (routed[1].get("args") or {}).get("folder") != str(papers)
+    assert routed[2]["action"] == "ANALYZE_PDF_FOLDER" and routed[2]["args"]["folder"] == str(papers)
+    assert (route("summarise the pdfs in that folder").get("args") or {}).get("folder") != str(papers)
+
+
 def test_a_path_with_nothing_asked_of_it_is_left_alone(tmp_path):
     from eli.execution.router_enhanced import paths_named
     a, b = tmp_path / "a b", tmp_path / "c"

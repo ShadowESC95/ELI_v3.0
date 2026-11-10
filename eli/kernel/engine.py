@@ -4814,8 +4814,6 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
             "t0": time.perf_counter(),
             "user_input": user_input,
             "autonomous": _is_autonomous_source(source),
-            # what the last command was about, for a pronoun in this one (routing/command_parser)
-            "last_command": dict(getattr(self, "_last_command_action", None) or {}),
         }
         if not facts["autonomous"]:
             try:
@@ -4832,6 +4830,12 @@ class CognitiveEngine(LifecycleMixin, GenerationMixin, PromptAssemblyMixin, Reas
                 _request_context.session_id_var.set(session_id)
             _request_context.reasoning_mode_var.set(mode)
             _request_context.request_id_var.set(facts["request_id"])
+            # Read once the caller's identity is set: the conversation the turn belongs to (where the
+            # router keeps what it holds for it: request_context.conversation_value), and what its last
+            # command was about, for a pronoun in this one (routing/command_parser). Both were read
+            # before, so an API caller's turn got the engine's own conversation's last command.
+            facts["conversation"] = self._sticky_key()
+            facts["last_command"] = dict(getattr(self, "_last_command_action", None) or {})
             _request_context.turn_facts_var.set(facts)
             return self._process_impl(
                 user_input, source=source, stream=stream,

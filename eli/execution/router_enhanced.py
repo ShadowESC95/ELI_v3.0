@@ -127,8 +127,18 @@ _RE_GROUNDED_PIPELINE = re.compile(
 _RE_URL = re.compile(r"https?://\S+|www\.\S+", re.I)
 _RE_SHELL_CMD = re.compile(r"^(sudo|bash|sh|python|pip|apt|dnf|brew|npm|git)\s", re.I)
 
-# Tracks the last successfully resolved filesystem path across router calls
-_last_used_path: str | None = None
+def _last_used_path() -> str | None:
+    """The file or folder this conversation last named ("summarise the pdfs in that folder"). Kept
+    for the conversation (request_context.conversation_value), not in a module global: one value for
+    the whole process gave one API user's folder to the next user's "that folder"."""
+    from eli.kernel.request_context import conversation_value
+    value = conversation_value("last_used_path")
+    return str(value) if value else None
+
+
+def _keep_last_used_path(path: str) -> None:
+    from eli.kernel.request_context import keep_for_conversation
+    keep_for_conversation("last_used_path", str(path))
 
 
 def _eli_latest_screenshot() -> str | None:
@@ -1262,7 +1272,6 @@ def _holds_a_pdf(path: str) -> bool:
 
 def _route_several_paths(text: str, low: str):
     """Several files or folders and a word asking to read them: all of them, as one piece of work."""
-    global _last_used_path
     if "/" not in text and "\\" not in text:
         return None
     named = paths_named(text)
@@ -1274,7 +1283,7 @@ def _route_several_paths(text: str, low: str):
     if not _DOC_ASK.search(rest):
         return None
     paths = [p for _, p in named]
-    _last_used_path = paths[-1]
+    _keep_last_used_path(paths[-1])
     if all(_holds_a_pdf(p) for p in paths):
         return _mk("ANALYZE_PDF_FOLDER", {"folders": paths, "recursive": True, "instruction": text},
                    0.95, matched_by="analyze.several_paths")
@@ -1293,8 +1302,9 @@ def _route_work_in_hand(raw: str, low: str):
     targets = work_targets(unfinished_only=remaining)
     if not targets and remaining and work_targets():
         return _mk("CHAT", {"message": raw}, 0.85, matched_by="chat.nothing_remaining")
-    if not targets and _last_used_path and not remaining:
-        targets = [_last_used_path]
+    _last = _last_used_path()
+    if not targets and _last and not remaining:
+        targets = [_last]
     targets = [t for t in targets if os.path.exists(os.path.expanduser(str(t)))]
     if not targets:
         return None
@@ -3948,8 +3958,8 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
     # Per-file / "put it in a document" follow-up on the last analysed folder ("i want the summary
     # for each file"). It fell into CHAT and the model invented filenames and a document it never
     # wrote. Route to ANALYZE_PDF_FOLDER's per-file mode. Only when a folder is in context.
-    global _last_used_path
-    if _last_used_path and os.path.isdir(os.path.expanduser(str(_last_used_path))):
+    _last = _last_used_path()
+    if _last and os.path.isdir(os.path.expanduser(_last)):
         _per_file_intent = bool(
             re.search(r"\b(?:each|every|per[\s-]?|individual|one[\s-]by[\s-]one)\b", low)
             and re.search(r"(?:file|files|document|documents|doc|docs|pdf|pdfs|summar)", low)
@@ -3978,7 +3988,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             if re.search(r"\bmark ?down\b|\bmd\b", low):
                 _fmt = "md"
             return _mk("ANALYZE_PDF_FOLDER",
-                       {"folder": _last_used_path, "recursive": True,
+                       {"folder": _last, "recursive": True,
                         "per_file": True, "_force_background": True, "format": _fmt},
                        0.9, matched_by="analyze.pdf_per_file_followup")
 
@@ -4048,7 +4058,7 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         if (_has_path_prefix or _path_exists or _has_file_ext):
             abs_path = os.path.abspath(expanded)
             if _path_exists:
-                _last_used_path = abs_path
+                _keep_last_used_path(abs_path)
             # Route PDFs → ANALYZE_PDF, CSVs → ANALYZE_CSV, everything else →
             # SUMMARIZE_FILE
             if abs_path.lower().endswith(".pdf"):
@@ -4067,8 +4077,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
         # Referential: "summarise the pdfs in that directory" with no explicit path
         if any(w in low for w in ["pdf", "pdfs"]) and any(
                 w in low for w in ["that", "there", "those", "the folder", "the directory"]):
-            if _last_used_path and os.path.isdir(_last_used_path):
-                return _mk("ANALYZE_PDF_FOLDER", {"folder": _last_used_path, "recursive": True},
+            _last = _last_used_path()
+            if _last and os.path.isdir(_last):
+                return _mk("ANALYZE_PDF_FOLDER", {"folder": _last, "recursive": True},
                            0.90, matched_by="analyze.pdf_referential")
         # Referential: "analyse the recent/last screenshot" → resolve newest
         # screenshot file and OCR it, rather than confabulating from memory.
@@ -4139,8 +4150,9 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
                        matched_by="analyze.pdf", entities={"path": path_match})
         # Referential: "the pdfs in that directory" → use last resolved path
         _is_referential = any(w in low for w in ["that", "there", "those", "the folder", "the directory"])
-        if _is_referential and _last_used_path and os.path.isdir(_last_used_path):
-            return _mk("ANALYZE_PDF_FOLDER", {"folder": _last_used_path, "recursive": True},
+        _last = _last_used_path()
+        if _is_referential and _last and os.path.isdir(_last):
+            return _mk("ANALYZE_PDF_FOLDER", {"folder": _last, "recursive": True},
                        0.90, matched_by="analyze.pdf_referential")
         _in_hand = _route_work_in_hand(raw, low)
         if _in_hand is not None:

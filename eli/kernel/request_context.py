@@ -135,3 +135,20 @@ def set_session_sticky(session_id: Optional[str], field: str, value: Any) -> Non
         bucket[field] = value
         while len(_session_sticky) > _SESSION_STICKY_MAX:
             _session_sticky.popitem(last=False)
+
+
+# ── this conversation's own values, read where the engine is not in hand ─────
+# The engine names its conversation on the turn (facts["conversation"] = CognitiveEngine._sticky_key:
+# this engine, this user, this session). A part of ELI with no engine in hand (the router, an
+# effector) keeps what belongs to the conversation there, never in a module global: the router's
+# last-named folder was one value for the whole process, so one API user's folder became the next
+# user's "that folder", and one test's became a later test's. Outside a turn nothing is kept.
+
+def conversation_value(field: str, default: Any = None) -> Any:
+    facts = turn_facts_var.get() or {}
+    return get_session_sticky(facts.get("conversation"), field, default)
+
+
+def keep_for_conversation(field: str, value: Any) -> None:
+    facts = turn_facts_var.get() or {}
+    set_session_sticky(facts.get("conversation"), field, value)

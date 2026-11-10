@@ -56,6 +56,27 @@ def test_get_weather_no_location_refuses():
     assert r["ok"] is False and r.get("error") == "missing_location"
 
 
+def test_the_place_last_asked_about_is_kept_for_that_conversation(monkeypatch):
+    """Kept under the API's session id alone: a desktop turn has none, so the place was never kept
+    there, and two callers with the same session id shared it."""
+    from eli.kernel import request_context as rc
+    monkeypatch.setattr("eli.core.netguard.should_block_network", lambda: False)
+    monkeypatch.setattr("eli.plugins.weather.plugin.get_weather",
+                        lambda place, day=None: {"ok": True, "location": f"{place}, Coastland",
+                                                 "content": f"Mild in {place}.", "response": f"Mild in {place}."})
+
+    def asked(conversation, args):
+        token = rc.turn_facts_var.set({"conversation": conversation})
+        try:
+            return get("GET_WEATHER")("GET_WEATHER", args)
+        finally:
+            rc.turn_facts_var.reset(token)
+
+    assert asked("engine:ann:desk", {"location": "Porto"})["ok"] is True
+    assert asked("engine:ann:desk", {})["content"] == "Mild in Porto."
+    assert asked("engine:bo:desk", {}).get("error") == "missing_location"
+
+
 def test_pomodoro_status_when_idle():
     r = _contract(get("POMODORO_STATUS")("POMODORO_STATUS", {}), "POMODORO_STATUS")
     assert r["ok"] is True

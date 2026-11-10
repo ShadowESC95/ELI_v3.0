@@ -70,10 +70,10 @@ def _h_get_weather(a, args):
             log.debug("weather: day not read", exc_info=True)
 
         from eli.kernel import request_context as _rc_weather
-        _sid = _rc_weather.session_id_var.get()
         if not location:
-            # the place last asked about in this session, before asking again
-            location = str(_rc_weather.get_session_sticky(_sid, "weather_place") or "")
+            # the place last asked about in this conversation, before asking again (kept by the
+            # conversation, so a desktop turn, which carries no session id of its own, keeps it too)
+            location = str(_rc_weather.conversation_value("weather_place") or "")
         if not location:
             _msg = "Where? Give me a town or city."
             return {"ok": False, "action": a, "error": "missing_location", "content": _msg, "response": _msg,
@@ -94,7 +94,7 @@ def _h_get_weather(a, args):
         if isinstance(result, dict):
             result.setdefault("action", a)
             if result.get("location"):
-                _rc_weather.set_session_sticky(_sid, "weather_place", str(result["location"]).split(",")[0])
+                _rc_weather.keep_for_conversation("weather_place", str(result["location"]).split(",")[0])
             return result
         return {"ok": True, "action": a, "content": str(result), "response": str(result)}
 

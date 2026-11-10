@@ -545,6 +545,7 @@ def test_where_is_asked_once_and_the_answer_completes_the_request(monkeypatch, p
     from eli.execution.router_enhanced import route
     _weather_net(monkeypatch, [])
     token = rc.session_id_var.set("weather-test-session")
+    in_conversation = rc.turn_facts_var.set({"conversation": "engine:user:weather-test-session"})   # as a turn has it
     try:
         asked = ex.execute("GET_WEATHER", {"location": None, "_raw_user_text": "check the weather for tomorrow"})
         assert asked["response"] == "Where? Give me a town or city." and asked["error"] == "missing_location"
@@ -555,6 +556,7 @@ def test_where_is_asked_once_and_the_answer_completes_the_request(monkeypatch, p
         again = ex.execute("GET_WEATHER", {"location": None, "_raw_user_text": "and the weather now"})   # remembered
         assert again["response"].startswith("Weather for Dublin, Leinster, IE: 12°C")
     finally:
+        rc.turn_facts_var.reset(in_conversation)
         rc.session_id_var.reset(token)
 
 
