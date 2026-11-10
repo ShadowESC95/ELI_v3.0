@@ -191,3 +191,51 @@ def test_work_waiting_for_the_owners_pause_runs_when_the_caller_says_the_owner_i
     assert ran == [False, "generated"] and _Llm.calls == 1
     assert ib.foreground_recently_active(), "only the work handed over saw the owner away"
     assert ib.run_idle_work(timeout=1.0) is True and ran == [False, "generated"], "nothing runs twice"
+
+
+def test_a_reading_still_waiting_when_the_session_ends_is_run_before_eli_closes(monkeypatch):
+    """Nothing in the product ran what waits for the owner's pause itself: ELI's model reading of the
+    last message, still waiting when the session ended, went with the worker at exit. The session's
+    end runs it while the model is still loaded, beside the session summary, before the model is told
+    to stop."""
+    from eli.kernel.stages import lifecycle
+    order = []
+    monkeypatch.setattr(lifecycle, "_eli_test_mode", lambda: False)
+    monkeypatch.setattr(lifecycle, "_ELI_NATIVE_TEARDOWN_DONE", True)      # the shared teardown is not this test's
+    monkeypatch.setattr("eli.runtime.profile_extractor.write_llm_session_summary",
+                        lambda **k: order.append("summary") or {})
+    monkeypatch.setattr(gi, "signal_shutdown", lambda: order.append("stop"))
+    monkeypatch.setattr(ib, "_last_foreground_ts", ib._time.monotonic())     # a turn has just ended
+    monkeypatch.setattr(ib, "_last_foreground_duration", 0.0)
+
+    def _reading():
+        order.append(("reading", ib.foreground_recently_active()))
+
+    ib.when_idle(_reading)
+
+    class _Engine(lifecycle.LifecycleMixin):
+        memory = None
+        _engagement = None
+
+        def _all_working_memories(self):
+            return []
+
+    _Engine().shutdown()
+    assert order == [("reading", False), "summary", "stop"]
+    assert ib.run_idle_work(timeout=1.0) is True and order.count(("reading", False)) == 1, "nothing runs twice"
+    # a reply still being generated has the model: the shutdown does not wait on it, and says so
+    order.clear()
+    ib.when_idle(_reading)
+    monkeypatch.setattr(ib, "foreground_in_progress", lambda: True)
+    import logging
+    seen = []
+    handler = logging.Handler()
+    handler.emit = lambda record: seen.append(record.getMessage())
+    lifecycle.log.addHandler(handler)
+    try:
+        _Engine().shutdown()
+    finally:
+        lifecycle.log.removeHandler(handler)
+    assert order == ["summary", "stop"] and any("word cues' reading stands" in m for m in seen)
+    monkeypatch.setattr(ib, "foreground_in_progress", lambda: False)
+    assert ib.run_idle_work(timeout=5.0) is True and order[-1] == ("reading", False)
