@@ -97,6 +97,22 @@ def test_content_overlap_still_outranks_fusion_bonus():
     assert ranked[0]["text"] == "fallout 4 has AI"
 
 
+def test_the_recall_fit_is_applied_on_its_own_scale(monkeypatch):
+    """The fit standardises its features over the outcomes it was fitted on; the reranker applied its
+    weights to the raw features (the scale left out), so a fitted ranking was not the fit's."""
+    from eli.cognition import epistemics as ep
+    rows = [(0.3 + 0.05 * i, float(i % 3 != 0), {"accessibility": 2.0 + i, "importance": 0.2 + 0.07 * i,
+                                                 "overlap": 0.1 * i, "agreement": float(i % 2)}) for i in range(10)]
+    fit = dict(ep.fit_model(rows, ep.features_of(ep.RECALL)), n=len(rows))
+    assert fit.get("scale"), "the fit carries the scale its features were read on"
+    monkeypatch.setattr(ep, "weights_for", lambda kind, **k: fit)
+    [row] = rerank_candidates("harbour lights", [_c("the harbour lights at dusk", accessibility=3.5, importance=0.6)], limit=1)
+    score = min(1.0 - 1e-3, max(1e-3, row["rerank_score"]))
+    want = ep.apply_fit(fit, score, {"accessibility": 3.5, "importance": 0.6, "overlap": row["_overlap"],
+                                     "agreement": row["_agreement"]})
+    assert row["recall_chance"] == round(want, 6)
+
+
 # ── the keyword query itself ──────────────────────────────────────────────────
 
 def test_fts_query_drops_stopwords():
