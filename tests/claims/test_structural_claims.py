@@ -69,7 +69,10 @@ _DBS = ["user.sqlite3", "agent.sqlite3", "system_index.sqlite3", "coding_memory.
 
 @pytest.mark.parametrize("db", _DBS, ids=_DBS)
 def test_sqlite_store_present(db):
-    assert (H.REPO / "artifacts" / "db" / db).exists(), f"{db} missing"
+    """Where ELI keeps its databases this run (paths.db_dir(): the checkout's artifacts/db from a
+    source tree, the sandbox under the suite), seeded by the claims bootstrap."""
+    from eli.core.paths import db_dir
+    assert (db_dir() / db).exists(), f"{db} missing from {db_dir()}"
 
 
 # ── load-bearing callables the blueprints describe ───────────────────────────
@@ -170,3 +173,21 @@ def test_the_project_config_makes_an_unregistered_marker_an_error(tmp_path):
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0 and "not_a_registered_marker" in out, (
         "pytest.ini's strict markers did not take effect for this pytest version:\n" + out[-800:])
+
+
+def test_the_bootstrap_seeds_the_databases_where_eli_keeps_them_not_the_checkouts(tmp_path, monkeypatch):
+    """It seeded <checkout>/artifacts/db from the templates whatever the run, so on a fresh clone the
+    suite wrote the checkout's own databases."""
+    import importlib.util
+    import shutil
+    from eli.core.paths import db_dir
+    spec = importlib.util.spec_from_file_location("bootstrap_claims_artifacts",
+                                                  H.REPO / "tools" / "bootstrap_claims_artifacts.py")
+    boot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(boot)
+    clone = tmp_path / "clone"
+    shutil.copytree(H.REPO / "config" / "templates" / "db", clone / "config" / "templates" / "db")
+    monkeypatch.setattr(boot, "ROOT", clone)
+    assert boot._ensure_db_stores() is True
+    assert not (clone / "artifacts").exists()
+    assert all((db_dir() / name).exists() for name in _DBS)

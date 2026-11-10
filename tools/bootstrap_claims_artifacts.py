@@ -24,10 +24,13 @@ _EXPECTED_DBS = (
 
 
 def _ensure_db_stores() -> bool:
-    """Mirror install.sh: seed blank templates, then init full schema for claims."""
-    artifact_dir = ROOT / "artifacts" / "db"
+    """Mirror install.sh: seed blank templates, then init full schema for claims. Where ELI keeps its
+    databases (paths.db_dir()): the checkout's artifacts/db in a source tree, the sandbox under the test
+    suite. It seeded the checkout's own folder whatever the run, so the suite wrote into it."""
     template_dir = ROOT / "config" / "templates" / "db"
     try:
+        from eli.core.paths import db_dir
+        artifact_dir = db_dir()
         if template_dir.is_dir():
             artifact_dir.mkdir(parents=True, exist_ok=True)
             if not any(artifact_dir.glob("*.sqlite3")):
