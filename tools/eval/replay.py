@@ -26,6 +26,9 @@ its own stores and set against what the script says should have come of each tur
                          a conflict raised with the user
     importance_order     how far the importance ELI gave the kept facts orders them as the script
                          does (pairwise, a tie counts half)
+    interest_focus       of the topics the user keeps coming back to (the script's `interests`), the
+                         share among the user's focus as ELI reads it at the end (memory/interest.focus,
+                         as many topics as the script names)
 
 Every figure is a share in 0..1, higher is better, None when the script gave it nothing to rest on.
 A run of several replays (RUNS) gives each figure's mean and its spread, the run-to-run noise. A
@@ -42,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -61,12 +65,14 @@ BASELINE = Path(__file__).with_name("replay_baseline.json")
 TARGET = "replay"
 
 # Method constants.
-RUNS = 2                  # replays per measurement: the fewest a spread (the run-to-run noise) is read from
+RUNS = 3                  # replays per measurement, each under its own hash seed (seed_of): what ELI
+                          # leaves to the order of a set or a dict (ties broken by it) is the noise
 RECALL_AT = (1, 3)        # the cut-offs recall is read at: the first memory shown, and the first three
-MEASURE = 1               # the scoring's own version: a change to how a figure is read makes it a new measure
+MEASURE = 2               # the scoring's own version: a change to how a figure is read makes it a new measure
 FIGURES = ("facts_precision", "facts_recall", "claims_precision", "claims_recall",
            "recall_at_1", "recall_at_3", "mrr", "evidence_recall", "answer_recall",
-           "settlement_accuracy", "memory_settlement", "conflict_handling", "importance_order")
+           "settlement_accuracy", "memory_settlement", "conflict_handling", "importance_order",
+           "interest_focus")
 VERDICTS = ("accepts", "disputes", "neither")
 EXPECTS = ("update", "raise")
 _TURN_KEYS = {"say", "keep", "matters", "claim", "recall", "verdict", "conflict", "eli"}
@@ -90,6 +96,9 @@ def load_script(path: Path = SCRIPT) -> Dict[str, Any]:
     days = [float(s.get("day", 0)) for s in sessions]
     if days != sorted(days):
         raise ValueError(f"{path}: sessions must be in the order of their days")
+    for at in [data.get("at")] + [s.get("at") for s in sessions]:
+        if at is not None and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(at)):
+            raise ValueError(f"{path}: a time of day is HH:MM, not {at!r}")
     for s in sessions:
         for i, t in enumerate(s.get("turns") or []):
             where = f"{path}: session {s.get('id')!r} turn {i + 1}"
@@ -110,6 +119,10 @@ def load_script(path: Path = SCRIPT) -> Dict[str, Any]:
             c = t.get("conflict")
             if c is not None and (c.get("expect") not in EXPECTS or not {"relation", "from", "to"} <= set(c)):
                 raise ValueError(f"{where}: a conflict names relation, from, to and expect ({EXPECTS})")
+            if "eli" in t and (t.get("recall") or c is not None):
+                raise ValueError(f"{where}: what ELI says to a question to recall or a changed value is "
+                                 "what is measured; the stand-in is not told it")
+    data["interests"] = [str(w) for w in data.get("interests") or []]
     data.setdefault("mode", "quick")
     data.setdefault("turn_minutes", 1)
     data["sessions"] = sessions
@@ -147,10 +160,22 @@ class Clock:
         self.shift += float(seconds)
 
 
-def _shift_of(script: Dict[str, Any], index: int) -> float:
-    """Seconds from the real clock to the start of sitting `index` (the last sitting starts now)."""
+def _shift_of(script: Dict[str, Any], index: int, now: Optional[float] = None) -> float:
+    """Seconds from the real clock to the start of sitting `index`: its day counted back from the
+    last sitting, which is today, at its own time of day (`at`, else the script's, else the real
+    time now), so a run gives the same figures whenever it is started."""
+    import datetime
     sessions = script["sessions"]
-    return (float(sessions[index].get("day", 0)) - float(sessions[-1].get("day", 0))) * 86400.0
+    now = time.time() if now is None else float(now)
+    days_back = float(sessions[-1].get("day", 0)) - float(sessions[index].get("day", 0))
+    at = str(sessions[index].get("at") or script.get("at") or "")
+    if not at:
+        return -days_back * 86400.0
+    # the calendar date first, then its wall-clock time: a summer-time change between the two days
+    # moves neither the day nor the hour
+    day = datetime.date.fromtimestamp(now) - datetime.timedelta(days=days_back)
+    hour, minute = (int(x) for x in at.split(":"))
+    return time.mktime((day.year, day.month, day.day, hour, minute, 0, 0, 0, -1)) - now
 
 
 # ── one replay: a process per sitting, then one that reads the stores ──────────────────────────────
@@ -179,11 +204,18 @@ def _child(env: Dict[str, str], box: Path, *args: str) -> None:
         raise RuntimeError(f"the replay's {args[0]} process {args[2]} failed (exit {done.returncode}):\n{tail}")
 
 
+def seed_of(run_index: int) -> str:
+    """The hash seed of a measurement's run `run_index`: fixed, so the same code gives the same
+    figures, and different from run to run, so what ELI leaves to the order of a set or a dict (a
+    tie broken by it) shows as the spread between them. 0 would turn the hashing's randomness off."""
+    return str(int(run_index) + 1)
+
+
 def replay_once(script_path: Path = SCRIPT, model: str = D.STUB,
-                env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                env: Optional[Dict[str, str]] = None, run_index: int = 0) -> Dict[str, Any]:
     """One replay in its own throwaway copy of ELI's folders: the figures, what they rest on, and
     what was seen on the way (info). `env`: variables for the replay's processes (a switch under
-    test, so a mechanism can be measured on and off)."""
+    test, so a mechanism can be measured on and off). `run_index` picks its hash seed (seed_of)."""
     script = load_script(script_path)
     box = D.new_sandbox()
     try:
@@ -194,6 +226,7 @@ def replay_once(script_path: Path = SCRIPT, model: str = D.STUB,
             # and no model state to save between calls (the stand-in has none)
             env["ELI_EMBED_MODEL_PATH"] = str(box / "no-embedder.gguf")
             env["ELI_PROMPT_STATE_REUSE"] = "0"
+        env["PYTHONHASHSEED"] = seed_of(run_index)
         env.update(extra)
         for i in range(len(script["sessions"])):
             _child(env, box, "session", str(script_path), str(i), str(box), model)
@@ -213,7 +246,7 @@ def run(runs: int = RUNS, model: str = D.STUB, script_path: Path = SCRIPT,
     runs = max(1, int(runs))
     t0 = time.perf_counter()
     with ThreadPoolExecutor(max_workers=runs) as pool:
-        results = list(pool.map(lambda _i: replay_once(script_path, model, env), range(runs)))
+        results = list(pool.map(lambda i: replay_once(script_path, model, env, i), range(runs)))
     figures, noise = {}, {}
     for name in FIGURES:
         values = [r["figures"].get(name) for r in results]
@@ -226,6 +259,7 @@ def run(runs: int = RUNS, model: str = D.STUB, script_path: Path = SCRIPT,
         "signature": {"model": D.STUB if model == D.STUB else Path(model).name,
                       "semantic": bool(results[0]["info"].get("semantic")), "script": script_id(script_path),
                       "mode": load_script(script_path)["mode"], "measure": MEASURE,
+                      "seeds": [seed_of(i) for i in range(len(results))],
                       **({"env": dict(sorted(env.items()))} if env else {})},
         "runs": len(results), "figures": figures, "noise": noise, "counts": results[0]["counts"],
         "info": results[0]["info"], "per_run": [r["figures"] for r in results],
@@ -251,7 +285,8 @@ def regressions(current: Dict[str, Any], reference: Dict[str, Any]) -> List[Dict
 
 
 def comparable(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
-    """Two runs measure the same thing: the same model, script, mode and semantic search."""
+    """Two runs measure the same thing: the same model, script, scoring, mode, semantic search,
+    hash seeds and switches."""
     return dict(a.get("signature") or {}) == dict(b.get("signature") or {})
 
 
@@ -408,6 +443,12 @@ def score(script: Dict[str, Any], obs: Sequence[Dict[str, Any]], state: Dict[str
     figures["importance_order"] = _mean([1.0 if a[1] > b[1] else (0.5 if a[1] == b[1] else 0.0) for a, b in pairs])
     counts["importance_pairs"] = len(pairs)
 
+    # what the user keeps coming back to, against what ELI reads as their focus
+    focus = [str(w) for w in state.get("focus") or []]
+    figures["interest_focus"] = _mean([1.0 if any(has(w, [stem]) for w in focus) else 0.0
+                                       for stem in script.get("interests") or []])
+    counts["interests"] = len(script.get("interests") or [])
+
     info = {
         "semantic": bool(state.get("semantic")),
         "duplicate_rows": sum(max(0, sum(1 for r in kept_rows if has(r.get("text"), w)) - 1) for _s, _t, w, _m in facts),
@@ -417,6 +458,7 @@ def score(script: Dict[str, Any], obs: Sequence[Dict[str, Any]], state: Dict[str
         "facts_lost": [" ".join(w) for _si, _ti, w, _m in facts if not any(has(r.get("text"), w) for r in kept_rows)],
         "recall": seen_recall, "verdicts": seen_verdicts, "conflicts": seen_conflicts,
         "importance": sorted(((m, round(i, 3)) for m, i in weight), reverse=True),
+        "focus": focus,
     }
     return {"figures": {name: figures.get(name) for name in FIGURES}, "counts": counts, "info": info}
 
@@ -584,10 +626,12 @@ def _measure_process(script_path: str, box: str) -> None:
     """What the stores hold at the end of the replay, read the way ELI reads them."""
     script = load_script(Path(script_path))
     last = script["sessions"][-1]
-    Clock(float(script["turn_minutes"]) * 60.0 * len(last.get("turns") or [])).install()
+    Clock(_shift_of(script, len(script["sessions"]) - 1)
+          + float(script["turn_minutes"]) * 60.0 * len(last.get("turns") or [])).install()
     D.enter_sandbox(Path(box))
     from eli.core import paths
     from eli.memory import policy
+    from eli.memory.interest import focus
     from eli.memory.vector_store import resolve_embedder_path
     db = Path(paths.user_db_path())
 
@@ -603,6 +647,7 @@ def _measure_process(script_path: str, box: str) -> None:
         "memories": _rows("memories"), "archive": _rows("memories_archive"),
         "claims": _db_rows(db, "SELECT relation, value, status, subject, origin FROM memory_claims"),
         "semantic": Path(resolve_embedder_path()).is_file() and not str(resolve_embedder_path()).startswith(str(box)),
+        "focus": [w for w, _share in focus(limit=max(1, len(script["interests"])))],
     }
     (Path(box) / "replay" / "state.json").write_text(json.dumps(state, indent=1, default=str), encoding="utf-8")
 

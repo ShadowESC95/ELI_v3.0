@@ -2,7 +2,11 @@
 # and neutral; nothing is anyone's own words.
 #
 # Each session is one sitting: the app is started, the turns are typed, the app is closed. `day` is
-# when the sitting happens (days after the first); turns within it are `turn_minutes` apart.
+# when the sitting happens (days after the first), `at` the time of day it starts ("HH:MM", quoted;
+# the script's own `at` for a sitting that names none); turns within it are `turn_minutes` apart.
+# The last sitting is today, so a run gives the same figures whenever it is started.
+# `interests`: what the user keeps coming back to over the sittings, as word stems; ELI's reading
+# of the user's focus at the end should be these, not the words of the last thing said.
 #
 # A turn is what the user types (`say`) and what the script says should come of it:
 #   keep: [words]        this message states a fact worth keeping: a row ELI keeps about the user
@@ -20,9 +24,13 @@
 #                        one ELI holds. expect: update (the user says it changed: the new value
 #                        stands, the old one is history) or raise (nothing says which is right:
 #                        ELI asks, or says which it keeps; it never settles it silently).
-#   eli: "..."           what the stand-in model says for this turn (default: an acknowledgement).
+#   eli: "..."           what the stand-in model says for this turn (default: an acknowledgement),
+#                        so the next message has something to speak of. Never on a question to
+#                        recall or a changed value: what ELI says there is what is measured.
 mode: quick
 turn_minutes: 3
+at: "19:30"
+interests: [bak, cello]
 sessions:
   - id: first-evening
     day: 0
@@ -39,6 +47,7 @@ sessions:
         keep: [shed key, watering can]
         matters: 3
       - say: "what's a good way to keep basil alive indoors?"
+        eli: "Give it a bright windowsill, water it when the top of the soil is dry, and pinch off the flowers."
       - say: "thanks, that makes sense"
         verdict: accepts
       - say: "I work as a pastry chef at the Corner Mill bakery"
@@ -51,9 +60,14 @@ sessions:
         claim: {dog_name: Pepper}
       - say: "I can't remember where I left my reading glasses"
       - say: "do you remember what I told you about the trip?"
+      - say: "I work days at the bakery, mostly early mornings"
+        keep: [days, bakery]
+        matters: 2
+        claim: {work_schedule: days}
 
   - id: midweek
     day: 4
+    at: "08:10"
     turns:
       - say: "Morning! Busy day at the bakery today"
       - say: "where does my sister work?"
@@ -65,15 +79,22 @@ sessions:
         matters: 2
       - say: "how many legs does a spider have?"
         verdict: neither
+        eli: "Six."
       - say: "no, that's wrong"
         verdict: disputes
       - say: "My dog is called Biscuit"
         keep: [dog, biscuit]
         matters: 2
         conflict: {relation: dog_name, from: Pepper, to: Biscuit, expect: raise}
+      - say: "what do you mean by that?"
+        verdict: neither
+        eli: "Only that I'll keep it in mind. Did the basil tip work out?"
+      - say: "I didn't have time to try the basil tip yet"
+        verdict: neither
 
   - id: after-the-move
     day: 11
+    at: "13:45"
     turns:
       - say: "We moved last month, I live in Ashby Green now"
         keep: [ashby green]
@@ -91,6 +112,15 @@ sessions:
         recall: [cello]
       - say: "That's not what I asked"
         verdict: disputes
+      - say: "I work nights at the bakery now, the early shift moved"
+        keep: [nights]
+        matters: 2
+        claim: {work_schedule: nights}
+        conflict: {relation: work_schedule, from: days, to: nights, expect: update}
+      - say: "who is Maren?"
+        recall: [sister]
+      - say: "No, I think you're right"
+        verdict: accepts
 
   - id: three-weeks-on
     day: 20
@@ -100,8 +130,15 @@ sessions:
         recall: [pastry chef]
       - say: "ok, something else: can you suggest a name for a sourdough starter?"
         verdict: neither
+        eli: "Call it Bubbles. Feed it flour and water every day and it stays lively."
+      - say: "I never knew starters needed feeding every day"
+        verdict: accepts
       - say: "where do I live these days?"
         recall: [ashby green]
         verdict: neither
       - say: "what is my sister called?"
         recall: [maren]
+      - say: "Cello practice went well last night"
+      - say: "I've been baking rye loaves all week"
+        keep: [rye]
+        matters: 1

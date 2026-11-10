@@ -63,6 +63,36 @@ def test_a_verdict_has_a_reply_of_the_same_sitting_to_speak_of(tmp_path):
         _script(tmp_path, [{"say": "hello"}], [{"say": "thanks", "verdict": "accepts"}])
 
 
+@pytest.mark.parametrize("turn", [{"say": "what is my cat called?", "recall": ["tom"], "eli": "Tom."},
+                                  {"say": "My cat is Tom", "eli": "Not Ann?",
+                                   "conflict": {"relation": "cat_name", "from": "Ann", "to": "Tom", "expect": "raise"}}])
+def test_the_stand_in_is_never_told_what_is_measured(tmp_path, turn):
+    with pytest.raises(ValueError, match="what is measured"):
+        _script(tmp_path, [{"say": "hello"}, turn])
+
+
+def test_each_sitting_starts_on_its_day_at_its_time_whenever_the_run_is_started(tmp_path):
+    """The sittings ran at whatever hour the run was started, so a run at night gave a 'Morning!'
+    sitting at two in the morning; and days counted in seconds moved the hour across summer time."""
+    import time
+    script = _script(tmp_path, [{"say": "hi"}], [{"say": "hi"}], [{"say": "hi"}], at="19:30")
+    script["sessions"][1]["at"] = "08:10"
+    script["sessions"][0]["day"], script["sessions"][1]["day"], script["sessions"][2]["day"] = 0, 4, 20
+    for started in ("2026-11-10 02:48", "2026-11-10 23:59", "2026-07-01 12:00"):
+        now = time.mktime(time.strptime(started, "%Y-%m-%d %H:%M"))
+        starts = [time.strftime("%H:%M", time.localtime(now + R._shift_of(script, i, now))) for i in range(3)]
+        days = [time.localtime(now + R._shift_of(script, i, now)) for i in range(3)]
+        assert starts == ["19:30", "08:10", "19:30"]
+        assert time.strftime("%Y-%m-%d", days[2]) == started[:10], "the last sitting is today"
+        assert (time.mktime(days[2][:3] + (12, 0, 0, 0, 0, -1)) - time.mktime(days[0][:3] + (12, 0, 0, 0, 0, -1))) \
+            == pytest.approx(20 * 86400, abs=3600)
+
+
+def test_a_time_of_day_is_written_as_hours_and_minutes(tmp_path):
+    with pytest.raises(ValueError, match="HH:MM"):
+        _script(tmp_path, [{"say": "hi"}], at="7pm")
+
+
 # ── the figures ────────────────────────────────────────────────────────────────────────────────────
 
 def test_a_question_kept_as_a_fact_counts_against_precision_and_a_lost_fact_against_recall(tmp_path):
@@ -152,6 +182,12 @@ def test_importance_is_read_pairwise_and_a_tie_counts_half(tmp_path):
     rows = [_row(1, "gate code 4411", 0.9), _row(2, "I keep bees", 0.9), _row(3, "soup at lunch", 0.95)]
     got = R.score(script, _obs([{}, {}, {}]), {"memories": rows})["figures"]
     assert got["importance_order"] == round((0.5 + 0.0 + 0.0) / 3, 4)
+
+
+def test_the_users_focus_is_held_to_what_they_keep_coming_back_to(tmp_path):
+    script = _script(tmp_path, [{"say": "hi there"}], interests=["garden", "chess"])
+    got = R.score(script, _obs([{}]), {"focus": ["week", "gardening"]})   # the last message's 'week' is no interest
+    assert got["figures"]["interest_focus"] == 0.5 and got["info"]["focus"] == ["week", "gardening"]
 
 
 def test_a_figure_with_nothing_to_rest_on_is_not_measured(tmp_path):
