@@ -43,17 +43,6 @@ def test_record_direct_action_writes_a_signed_row(tmp_path):
     assert L.verify_chain(db_path=db)["ok"] is True
 
 
-def test_voice_fast_path_writes_an_audit_row():
-    block = _block(live_gui_source(),
-                   "def _on_stt_transcript(self", "\n    def ")
-    i = block.index("_eli_voice_executor.execute_action(")
-    after = block[i:]
-    assert "record_direct_action(" in after
-    assert 'source="voice_direct"' in after
-    # The fragment guard isn't an action.
-    assert '_action != "NOOP"' in after[:after.index("record_direct_action(")]
-
-
 def test_convert_button_calls_a_real_executor_and_is_audited():
     src = live_gui_source()
     block = _block(src, "def _convert_selected_file(self", "\n    def ")

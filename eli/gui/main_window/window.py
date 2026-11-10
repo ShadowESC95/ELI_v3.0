@@ -165,7 +165,8 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
     status_signal = pyqtSignal(str)
 
-    chat_response_signal = pyqtSignal(str)
+    chat_response_signal = pyqtSignal(str)   # a complete message for the transcript
+    chat_stream_signal = pyqtSignal(str)     # the reply being written: its markers and its tokens
 
     self_improve_failures_signal = pyqtSignal(str)
 
@@ -276,7 +277,8 @@ class EliMainWindow(QMainWindow, ChromeIoMixin, ConversationMixin, FeaturesMixin
 
         self.log_signal.connect(self._append_log)
         self.status_signal.connect(self._update_status, Qt.ConnectionType.QueuedConnection)
-        self.chat_response_signal.connect(self._append_chat_response, Qt.ConnectionType.QueuedConnection)
+        self.chat_response_signal.connect(self._on_chat_message, Qt.ConnectionType.QueuedConnection)
+        self.chat_stream_signal.connect(self._append_chat_response, Qt.ConnectionType.QueuedConnection)
         self.stt_transcript.connect(self._on_stt_transcript)
         self.self_improve_failures_signal.connect(self._update_failures_display, Qt.ConnectionType.QueuedConnection)
         self.self_improve_improvements_signal.connect(self._update_improvements_display, Qt.ConnectionType.QueuedConnection)

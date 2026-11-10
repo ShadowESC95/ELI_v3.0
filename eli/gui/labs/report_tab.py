@@ -3106,6 +3106,9 @@ class _ReportTab(QWidget):
         if not text.strip():
             QMessageBox.information(self, "Empty", "Nothing to export yet.")
             return
+        if getattr(self, "_export_running", False):
+            self._status.setText("An export is still running; it says here when it is done.")
+            return
 
         title = self._title.text().strip() or "Untitled"
         author = self._author.text().strip() or "Author"
@@ -3118,11 +3121,13 @@ class _ReportTab(QWidget):
             self._export_docx(text, title, author)
             return
 
+        # Each payload is made only for the kind asked for: the LaTeX one runs pandoc, and it ran for
+        # every export, Markdown and HTML included.
         ext_map = {
-            "md":   ("Markdown (*.md)",   ".md",   text),
-            "qmd":  ("Quarkdown (*.qmd)", ".qmd",  self._md_to_quarkdown(text, title, author)),
-            "html": ("HTML (*.html)",     ".html", self._md_to_html(text)),
-            "tex":  ("LuaLaTeX (*.tex)",  ".tex",  self._md_to_latex(text, title, author)),
+            "md":   ("Markdown (*.md)",   ".md",   lambda: text),
+            "qmd":  ("Quarkdown (*.qmd)", ".qmd",  lambda: self._md_to_quarkdown(text, title, author)),
+            "html": ("HTML (*.html)",     ".html", lambda: self._md_to_html(text)),
+            "tex":  ("LuaLaTeX (*.tex)",  ".tex",  lambda: self._md_to_latex(text, title, author)),
         }
         if kind not in ext_map:
             return
@@ -3130,17 +3135,20 @@ class _ReportTab(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Export Report", f"report{suffix}", flt)
         if not path:
             return
-        try:
-            Path(path).write_text(payload, encoding="utf-8")
-            QMessageBox.information(self, "Exported", f"Report saved to:\n{path}")
-        except Exception as ex:
-            QMessageBox.critical(self, "Export Error", str(ex))
+
+        def write() -> Dict[str, Any]:
+            Path(path).write_text(payload(), encoding="utf-8")
+            return {"ok": True, "path": path, "what": "Report"}
+
+        self._run_export(f"Writing {Path(path).name}…", write)
 
     # ── PDF / DOCX export. The LaTeX or Markdown a converter reads, and everything it writes
     #    beside it, live in a folder of the export's own that is removed afterwards; only the
     #    finished file is moved to the name the user chose. They were written next to that file
     #    under its name, so exporting report.docx overwrote and then deleted the user's report.md
     #    (and a PDF replaced report.tex and deleted report.aux/.log/.toc).
+    #    The converters run on a worker thread (_run_export): they ran in the button's handler, so
+    #    the window froze until lualatex or pandoc finished.
     @staticmethod
     def _export_workdir():
         return tempfile.TemporaryDirectory(prefix=_temp_path("report-export-").name)
@@ -3153,6 +3161,31 @@ class _ReportTab(QWidget):
         shutil.move(str(produced), str(out))
         return True
 
+    def _run_export(self, doing: str, convert) -> None:
+        """`convert()` on a worker thread; what it returns ({ok, path, what} or {ok: False, error})
+        is said on the window's thread by _export_done."""
+        self._export_running = True
+        self._status.setText(doing)
+        if getattr(self, "_export_workers", None) is None:
+            self._export_workers = []
+        _start_bg(self._export_workers, convert, self._export_done)
+
+    def _export_done(self, result) -> None:
+        self._export_running = False
+        result = result if isinstance(result, dict) else {"ok": False, "error": str(result)}
+        if result.get("ok"):
+            what, where = result.get("what") or "Report", result.get("path") or ""
+            self._status.setText(f"{what} saved: {where}")
+            QMessageBox.information(self, "Exported", f"{what} saved to:\n{where}")
+            return
+        why = str(result.get("error") or result.get("__error__") or "the export failed")
+        self._status.setText(f"Export failed: {why.splitlines()[0] if why else ''}")
+        QMessageBox.critical(self, "Export Error", why)
+
+    @staticmethod
+    def _converter_said(proc) -> str:
+        return ((getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or "")[-1500:]) if proc else ""
+
     # lualatex (preferred), else pandoc with --pdf-engine=lualatex.
     def _export_pdf(self, md_text: str, title: str, author: str):
         path, _ = QFileDialog.getSaveFileName(
@@ -3162,54 +3195,45 @@ class _ReportTab(QWidget):
             return
         out_pdf = Path(path)
         engine = self._find_executable(["lualatex", "xelatex", "pdflatex"])
-        if engine:
-            try:
-                with self._export_workdir() as work:
-                    tex = Path(work) / "report.tex"
-                    tex.write_text(self._md_to_latex(md_text, title, author), encoding="utf-8")
-                    cmd = [engine, "-interaction=nonstopmode", "-output-directory", work, str(tex)]
-                    self._status.setText(f"Running {engine} → {out_pdf.name}…")
-                    proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=240)
-                    if self._deliver(tex.with_suffix(".pdf"), out_pdf):
-                        self._status.setText(f"PDF saved: {out_pdf}")
-                        QMessageBox.information(self, "Exported", f"PDF saved to:\n{out_pdf}")
-                        return
-                msg = (proc.stderr or proc.stdout or "")[-1500:]
-                QMessageBox.critical(self, "Export Error",
-                                     f"{engine} did not produce a PDF.\n\n{msg}")
-                return
-            except subprocess.TimeoutExpired:
-                QMessageBox.critical(self, "Export Error", f"{engine} timed out.")
-                return
-            except Exception as ex:
-                QMessageBox.critical(self, "Export Error", f"{engine} failed: {ex}")
-                return
-
-        # Fallback: pandoc
-        pandoc = self._find_executable(["pandoc"])
-        if not pandoc:
+        pandoc = None if engine else self._find_executable(["pandoc"])
+        if not engine and not pandoc:
             QMessageBox.critical(
                 self, "PDF export",
                 "Neither lualatex/xelatex/pdflatex nor pandoc are installed.\n"
                 "Install TeX Live (e.g. apt: texlive-luatex) or pandoc to export PDFs."
             )
             return
-        try:
-            with self._export_workdir() as work:
-                md = Path(work) / "report.md"
-                md.write_text(md_text, encoding="utf-8")
-                produced = Path(work) / "report.pdf"
-                cmd = [pandoc, str(md), "-o", str(produced),
-                       "--pdf-engine=lualatex", "-V", f"title={title}", "-V", f"author={author}"]
-                proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=240)
-                if self._deliver(produced, out_pdf):
-                    self._status.setText(f"PDF (pandoc) saved: {out_pdf}")
-                    QMessageBox.information(self, "Exported", f"PDF saved to:\n{out_pdf}")
-                    return
-            msg = (proc.stderr or proc.stdout or "")[-1500:]
-            QMessageBox.critical(self, "Export Error", f"pandoc failed:\n{msg}")
-        except Exception as ex:
-            QMessageBox.critical(self, "Export Error", f"pandoc invocation failed: {ex}")
+        latex = self._md_to_latex
+
+        def convert() -> Dict[str, Any]:
+            proc = None
+            if engine:
+                try:
+                    with self._export_workdir() as work:
+                        tex = Path(work) / "report.tex"
+                        tex.write_text(latex(md_text, title, author), encoding="utf-8")
+                        cmd = [engine, "-interaction=nonstopmode", "-output-directory", work, str(tex)]
+                        proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True)
+                        if self._deliver(tex.with_suffix(".pdf"), out_pdf):
+                            return {"ok": True, "path": str(out_pdf), "what": "PDF"}
+                except Exception as ex:
+                    return {"ok": False, "error": f"{engine} failed: {ex}"}
+                return {"ok": False, "error": f"{engine} did not produce a PDF.\n\n{self._converter_said(proc)}"}
+            try:
+                with self._export_workdir() as work:
+                    md = Path(work) / "report.md"
+                    md.write_text(md_text, encoding="utf-8")
+                    produced = Path(work) / "report.pdf"
+                    cmd = [pandoc, str(md), "-o", str(produced),
+                           "--pdf-engine=lualatex", "-V", f"title={title}", "-V", f"author={author}"]
+                    proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True)
+                    if self._deliver(produced, out_pdf):
+                        return {"ok": True, "path": str(out_pdf), "what": "PDF (pandoc)"}
+            except Exception as ex:
+                return {"ok": False, "error": f"pandoc invocation failed: {ex}"}
+            return {"ok": False, "error": f"pandoc failed:\n{self._converter_said(proc)}"}
+
+        self._run_export(f"Running {Path(engine or pandoc).name} → {out_pdf.name}…", convert)
 
     def _export_docx(self, md_text: str, title: str, author: str):
         path, _ = QFileDialog.getSaveFileName(
@@ -3225,22 +3249,24 @@ class _ReportTab(QWidget):
             )
             return
         out_docx = Path(path)
-        try:
-            with self._export_workdir() as work:
-                md = Path(work) / "report.md"
-                md.write_text(md_text, encoding="utf-8")
-                produced = Path(work) / "report.docx"
-                cmd = [pandoc, str(md), "-o", str(produced),
-                       "-V", f"title={title}", "-V", f"author={author}"]
-                proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True, timeout=180)
-                if self._deliver(produced, out_docx):
-                    self._status.setText(f"DOCX saved: {out_docx}")
-                    QMessageBox.information(self, "Exported", f"DOCX saved to:\n{out_docx}")
-                    return
-            msg = (proc.stderr or proc.stdout or "")[-1500:]
-            QMessageBox.critical(self, "Export Error", f"pandoc failed:\n{msg}")
-        except Exception as ex:
-            QMessageBox.critical(self, "Export Error", f"pandoc failed: {ex}")
+
+        def convert() -> Dict[str, Any]:
+            proc = None
+            try:
+                with self._export_workdir() as work:
+                    md = Path(work) / "report.md"
+                    md.write_text(md_text, encoding="utf-8")
+                    produced = Path(work) / "report.docx"
+                    cmd = [pandoc, str(md), "-o", str(produced),
+                           "-V", f"title={title}", "-V", f"author={author}"]
+                    proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True)
+                    if self._deliver(produced, out_docx):
+                        return {"ok": True, "path": str(out_docx), "what": "DOCX"}
+            except Exception as ex:
+                return {"ok": False, "error": f"pandoc failed: {ex}"}
+            return {"ok": False, "error": f"pandoc failed:\n{self._converter_said(proc)}"}
+
+        self._run_export(f"Running pandoc → {out_docx.name}…", convert)
 
     @staticmethod
     def _find_executable(names: List[str]) -> Optional[str]:
@@ -3301,7 +3327,7 @@ class _ReportTab(QWidget):
                      "-V", "documentclass=article",
                      "-V", "fontfamily=lmodern",
                      "-V", "geometry=a4paper,margin=2.5cm"],
-                    input=md, capture_output=True, text=True, timeout=60,
+                    input=md, capture_output=True, text=True,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     return proc.stdout
