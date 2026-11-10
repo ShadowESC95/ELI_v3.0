@@ -84,6 +84,13 @@ ORIGINS = {"user_said": "user_explicit", "user_explicit": "user_explicit", "user
 # The origins that are the user's own word: a newer one replaces an older one (the user's life
 # changed), and one of them is what a claim of anything else is disputed against.
 USERS_WORD = frozenset({"user_said", "user_explicit", "user_passing"})
+# ELI's own reading of what the user said: a line its model wrote about them (the session summary's
+# facts, eli/runtime/profile_extractor), read by the same patterns as their own words (extract_about).
+# It is no source of its own against their word: agreeing with a claim of theirs it is one more source,
+# counted once however often it is read again; on a side of a dispute it supports that side and settles
+# nothing; contradicting their word it is no claim at all (record returns None); on a relation they have
+# not spoken to it stands, as ELI's inference, until they do.
+READING = "inferred"
 
 
 def provenance_of(origin: str) -> str:
@@ -93,6 +100,10 @@ def provenance_of(origin: str) -> str:
 
 def is_users_word(origin: str) -> bool:
     return str(origin or "") in USERS_WORD
+
+
+def is_reading(origin: str) -> bool:
+    return str(origin or "") == READING
 
 
 def _weight(origin: str) -> float:
@@ -139,11 +150,14 @@ def _confirmations(roots_json: Any, origin: str) -> List[Dict[str, Any]]:
 
 def _is_new(confs: List[Dict[str, Any]], root: Any, origin: str, day: str) -> bool:
     """Whether a statement is another confirmation: never the same source again (a summary of a
-    statement shares its root, and is no corroboration), and the user's own word at most once a day
-    (one statement is read by the turn and again by the memory it was kept as)."""
+    statement shares its root, and is no corroboration), the user's own word at most once a day
+    (one statement is read by the turn and again by the memory it was kept as), and ELI's reading of
+    what they said once in all (each session's summary reads the same words again: READING)."""
     if root is not None and any(c["root"] == root for c in confs):
         return False
     if is_users_word(origin) and any(is_users_word(c["origin"]) and c["day"] == day for c in confs):
+        return False
+    if is_reading(origin) and any(is_reading(c["origin"]) for c in confs):
         return False
     return True
 
@@ -201,12 +215,28 @@ def _confirm(conn, cid: int, roots_json: Any, c_origin: str, origin: str, root: 
     day = _day(vfrom)
     if not _is_new(confs, root, origin, day):
         return
+    if not contradicted_by and not is_users_word(origin):
+        contradicted_by = _contradicted_by(conn, cid)
     confs.append({"root": root, "origin": str(origin or ""), "day": day})
     held = c_origin if _weight(c_origin) >= _weight(origin) else origin
     conn.execute("UPDATE memory_claims SET confirmations = ?, source_roots = ?, last_confirmed = ?, confidence = ?, "
                  "origin = ? WHERE id = ?",
                  (len(confs), json.dumps(confs), now, confirmed([c["origin"] for c in confs], contradicted_by),
                   held, int(cid)))
+
+
+def _contradicted_by(conn, cid: int) -> str:
+    """What stands against a contested claim: the other side of its dispute that weighs most, or the
+    user's word when they corrected it (contradict); "" when nothing does. Another source bearing a
+    contested claim out leaves the contradiction standing: only the user's word settles it."""
+    row = conn.execute("SELECT subject, relation, COALESCE(contested, 0) FROM memory_claims WHERE id = ?",
+                       (int(cid),)).fetchone()
+    if not row or not row[2]:
+        return ""
+    others = [str(o or "") for (o,) in conn.execute(
+        "SELECT origin FROM memory_claims WHERE subject = ? AND relation = ? AND status IN ('current', 'disputed') "
+        "AND id != ?", (row[0], row[1], int(cid))).fetchall()]
+    return max(others, key=_weight) if others else "user_said"
 
 
 def _first(origin: str, root: Any, vfrom: float) -> str:
@@ -233,6 +263,8 @@ def record(conn, relation: str, value: str, *, subject: str = "user", single_val
     sentence (record_from_text), a contradiction of the user's own word that does not is weighed
     (belief.assess_claim) and, unless it clearly outweighs what they said before, raised or held, and
     voiced either way. None (a caller with no sentence) takes the user's newer word as the change.
+    An origin of READING is ELI's reading of what the user said, weighed against their word (READING):
+    None when it contradicts it.
     """
     ensure_schema(conn)
     now = float(now if now is not None else time.time())
@@ -243,6 +275,8 @@ def record(conn, relation: str, value: str, *, subject: str = "user", single_val
     if verdict == "hold":
         return None
     root = root_id if root_id is not None else source_memory_id
+    if historical and is_reading(origin) and _reading_contradicts(conn, subject, relation, value, historical=True):
+        return None
     if historical:
         return _record_former(conn, relation, value, subject=subject, said_at=vfrom, now=now,
                               source_memory_id=source_memory_id, source_text=source_text, origin=origin, root=root)
@@ -259,6 +293,16 @@ def record(conn, relation: str, value: str, *, subject: str = "user", single_val
         if _same(cval, value):
             _confirm(conn, cid, roots_json, c_origin, origin, root, vfrom, now)
             return int(cid)
+    if is_reading(origin) and single_valued:
+        side = next((r for r in conn.execute(
+            "SELECT id, value, origin, source_roots FROM memory_claims WHERE subject = ? AND relation = ? "
+            "AND status = 'disputed'", (subject, relation)).fetchall() if _same(r[1], value)), None)
+        if side is not None:       # one side of a dispute: borne out, nothing settled
+            _confirm(conn, side[0], side[3], side[2], origin, root, vfrom, now)
+            return int(side[0])
+        if _reading_contradicts(conn, subject, relation, value):
+            log.debug("claims: ELI's reading %s=%r is not what the user said; not a claim", relation, value)
+            return None
     weighed = ""
     if (not verdict and changed is False and single_valued and cur and relation not in CHANGES_OFTEN
             and is_users_word(origin) and any(is_users_word(o) for _c, _v, o, _r, _f in cur)
@@ -334,6 +378,21 @@ def _weigh(conn, cur: List[tuple], value: str, origin: str, said_at: float, now:
     voice(verdict.action, about=relation, standing=str(cval), challenger=value, reasons=verdict.reasons,
           subject=subject, ref=f"conflict:{subject}:{relation}", conn=conn)
     return "hold" if verdict.action == HOLD else "question"
+
+
+def _reading_contradicts(conn, subject: str, relation: str, value: str, *, historical: bool = False) -> bool:
+    """Whether ELI's reading of `value` on a relation goes against what the user said: their word holds
+    another value (standing, or a side of a dispute), or ended this one; read as what used to hold,
+    their word says it still does. A reading never brings back what the user's word ended."""
+    rows = conn.execute("SELECT value, origin, status FROM memory_claims WHERE subject = ? AND relation = ? "
+                        "AND status IN ('current', 'disputed', 'superseded', 'former')", (subject, relation)).fetchall()
+    standing = [(v, o) for v, o, st in rows if st in ("current", "disputed")]
+    if historical:
+        return any(_same(v, value) and is_users_word(o) for v, o in standing)
+    if any(_same(v, value) for v, _o in standing):
+        return False
+    return (any(is_users_word(o) for _v, o in standing)
+            or any(_same(v, value) and is_users_word(o) for v, o, st in rows if st in ("superseded", "former")))
 
 
 def _record_former(conn, relation: str, value: str, *, subject: str, said_at: float, now: float,
@@ -625,6 +684,11 @@ def _mentions(text_norm: str, value: str) -> bool:
     return bool(v) and re.search(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", text_norm) is not None
 
 
+def mentions(text: str, value: str) -> bool:
+    """Whether `text` names `value`: its words in order, as whole words, case and spacing aside."""
+    return _mentions(_norm(text), value)
+
+
 def _settle_figures(claim_id: int, right: bool) -> int:
     """The user settled the claim itself: every figure given for it that a reply rested on, and that
     nothing settled yet, is settled with it (eli/cognition/epistemics, kind "claim")."""
@@ -706,16 +770,21 @@ _SCHEDULE = r"(nights?|days?|evenings?|weekends?|mornings?|part[- ]time|full[- ]
 _PLACE = r"((?-i:[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*){0,3}))"
 _NAME = r"((?-i:[A-Z][\w'-]{1,20}))"
 _PATTERNS: List[Tuple[str, str, bool, "re.Pattern"]] = [
-    ("work_schedule", "single", True, re.compile(rf"\bI(?:'m| am)?\s+(?:now\s+|currently\s+)?work(?:ing)?\s+{_SCHEDULE}\b", re.I)),
+    ("work_schedule", "single", True, re.compile(
+        rf"\bI(?:'m| am)?\s+(?:now\s+|currently\s+)?work(?:ing)?\s+(?:the\s+|a\s+)?{_SCHEDULE}\b", re.I)),
     ("employer", "single", True, re.compile(rf"\bI\s+(?:now\s+)?work\s+(?:at|for)\s+{_PLACE}", re.I)),
     ("occupation", "single", True, re.compile(r"\bI\s+work\s+as\s+(?:an?\s+)?([a-z][a-z -]{2,40}?)(?=[.,;!?]|\s+(?:at|for|in|now|but|and)\b|$)", re.I)),
     ("lives_in", "single", True, re.compile(rf"\bI(?:'ve| have)?\s+(?:now\s+)?(?:live in|moved to|relocated to|am based in|'m based in)\s+{_PLACE}", re.I)),
 ]
 # Whatever the user names: "my <one word> is called / is named / 's name is <Name>" is that thing's
-# name (dog_name, sister_name, boat_name). A bare "my <x> is <Word>" says a name only of an animal
-# (the kinds this always read): "my brother is Irish" is not his name.
+# name (dog_name, sister_name, boat_name), and so is "I have / own a <one word> called / named <Name>".
+# A bare "my <x> is <Word>" says a name only of an animal (the kinds this always read): "my brother is
+# Irish" is not his name.
 _PET = re.compile(rf"\bmy\s+([a-z]+)(?:'s\s+name\s+is|\s+is\s+(?:called|named)|,?\s+(?:called|named))\s+{_NAME}\b"
-                  rf"|\bmy\s+(dog|cat|rabbit|parrot|horse)\s+is\s+{_NAME}\b", re.I)
+                  rf"|\bmy\s+(dog|cat|rabbit|parrot|horse)\s+is\s+{_NAME}\b"
+                  rf"|\bI\s+(?:have|own|keep)\s+(?:a|an|one)\s+([a-z]+),?\s+(?:called|named)\s+{_NAME}\b", re.I)
+# A schedule said in the singular ("the night shift") is the one said in the plural ("nights").
+_ONE_SHIFT = re.compile(r"^(night|day|evening|morning|weekend)$")
 # A change the statement itself says happened ("now", "we moved", "the shift changed"): the user's new
 # word replaces their old one. Without one, a value that contradicts what they said is weighed, and
 # raised when the evidence does not settle it (record(changed=False)).
@@ -773,10 +842,13 @@ def _title(raw: str) -> str:
     return value
 
 
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+
+
 def activities(text: str) -> List[Dict[str, Any]]:
     """What the user says they are doing now, sentence by sentence (a question is not a statement)."""
     out: List[Dict[str, Any]] = []
-    for sentence in re.split(r"(?<=[.!?])\s+", str(text or "").strip()):
+    for sentence in _SENTENCE_BREAK.split(str(text or "").strip()):
         sentence = _TAG_QUESTION.sub("", sentence.strip())
         if not sentence or sentence.endswith("?") or _HEDGED.search(sentence):
             continue
@@ -815,12 +887,12 @@ def extract(text: str) -> List[Dict[str, Any]]:
             continue
         value = m.group(1).strip()
         if relation == "work_schedule":
-            value = re.sub(r"^night$", "nights", value.lower())
+            value = _ONE_SHIFT.sub(r"\1s", value.lower())
         out.append({"relation": relation, "value": value, "single_valued": single,
                     "historical": past, "retire": stop})
     m = _PET.search(t)
     if m:
-        thing, name = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        thing, name = next((m.group(i), m.group(i + 1)) for i in (1, 3, 5) if m.group(i))
         out.append({"relation": f"{thing.lower()}_name", "value": name, "single_valued": True,
                     "historical": past, "retire": False})
     changed = bool(_CHANGED.search(t))
@@ -843,4 +915,79 @@ def record_from_text(conn, text: str, *, source_memory_id: Optional[int] = None,
                      historical=c["historical"], root_id=root_id, changed=c.get("changed"))
         if cid:
             ids.append(cid)
+    return ids
+
+
+# ── a line written about the user ──────────────────────────────────────────────────────────────────
+# ELI's model writes what it learned of the user in the third person, or with no subject at all: "The
+# user lives in Fenwick Bay", "They have a dog named Biscuit", "Owns a dog named Pepper", "Their sister
+# is called Maren". Said in the first person, the patterns above read it as they read the user's own
+# words: one reader for both. "He" and "she" are left alone: in a line about the user they are as often
+# someone the line has just named ("Has a sister named Maren. She is a ferry pilot").
+_ABOUT_SUBJECT = re.compile(r"^(?:the\s+user|user|they)\b(?!['’])\s*", re.I)
+_ABOUT_OWNER = re.compile(r"\b(?:the\s+)?user(?:'s|’s)|\btheir\b", re.I)
+_VERB_FIRST = re.compile(r"^((?:(?:now|currently|still|also|recently|usually|mostly|often|just)\s+)*)([a-z]+)\b", re.I)
+_BASE_FORM = {"is": "am", "are": "am", "has": "have", "does": "do", "goes": "go", "was": "was", "were": "was"}
+
+
+def _base_verb(word: str) -> str:
+    """'lives' → 'live', 'has' → 'have', 'studies' → 'study', 'watches' → 'watch'."""
+    low = word.lower()
+    if low in _BASE_FORM:
+        return _BASE_FORM[low]
+    if re.search(r"[^aeiou]ies$", low):
+        return low[:-3] + "y"
+    if re.search(r"(?:ch|sh|ss|x|zz)es$", low):
+        return low[:-2]
+    if low.endswith("s") and not low.endswith("ss"):
+        return low[:-1]
+    return low
+
+
+def first_person(line: str) -> str:
+    """A sentence written about the user, as the user would say it: "Owns a dog named Pepper" →
+    "I own a dog named Pepper", "The user's sister is called Maren" → "my sister is called Maren".
+    A sentence that is not about the user (it names someone else first) comes back as it was."""
+    s = _ABOUT_OWNER.sub("my", str(line or "").strip())
+    subject = _ABOUT_SUBJECT.match(s)
+    rest = s[subject.end():] if subject else s
+    verb = _VERB_FIRST.match(rest)
+    if not verb or verb.group(2).lower() in ("i", "my"):
+        return s
+    word = verb.group(2)
+    # with no subject, the line starts with what is said of the user: a verb in the third person or
+    # the past ("Moved to Ashby Green")
+    low = word.lower()
+    if not subject and not (low in _BASE_FORM or (len(low) > 2 and low.endswith(("s", "ed")))):
+        return s
+    # the adverbs before the verb ("currently works", "recently moved") say nothing the patterns read
+    return f"I {_base_verb(word)}{rest[verb.end():]}"
+
+
+def extract_about(text: str) -> List[Dict[str, Any]]:
+    """The claims a line written about the user states, sentence by sentence (first_person, extract)."""
+    out: List[Dict[str, Any]] = []
+    for sentence in _SENTENCE_BREAK.split(str(text or "").strip()):
+        if sentence.strip():
+            out += extract(first_person(sentence))
+    return out
+
+
+def record_reading(conn, text: str, *, subject: str = SUBJECT_USER, when: Optional[float] = None,
+                   now: Optional[float] = None) -> Optional[List[int]]:
+    """ELI's reading of what the user said (a line its model wrote about them) weighed against their
+    claims (READING): the ids of the claims it bears out or adds, [] when it speaks to no relation the
+    claims know, None when it contradicts what the user said (no part of it is then a fact). What the
+    line says ended is not acted on: only the user's word ends a claim of theirs."""
+    ensure_schema(conn)
+    found = [c for c in extract_about(text) if not c["retire"]]
+    if any(c["single_valued"] and _reading_contradicts(conn, subject, c["relation"], c["value"],
+                                                       historical=c["historical"]) for c in found):
+        return None
+    ids: List[int] = []
+    for c in found:
+        cid = record(conn, c["relation"], c["value"], subject=subject, single_valued=c["single_valued"],
+                     valid_from=when, source_text=text, origin=READING, historical=c["historical"], now=now)
+        if cid is not None:
+            ids.append(int(cid))
     return ids

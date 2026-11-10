@@ -153,3 +153,16 @@ def test_the_brief_inside_a_members_turn_is_the_members(db, members):
         assert "surveyor" in um.get_user_brief(db_path=db)
     finally:
         rc.user_id_var.reset(token)
+
+
+def test_a_brief_rebuilt_after_a_fact_stopped_holding_does_not_say_it(db):
+    """The narrative written at the last session's end went on naming a home the user had moved from,
+    in every turn's brief, until the next synthesis."""
+    _seed(db, "identity.fact", "Keeps bees on the roof.")
+    con = sqlite3.connect(str(db))
+    con.execute("INSERT INTO user_model (user_id, dossier, brief) VALUES (?, ?, 'old')",
+                (um._resolve_user_id(), "A beekeeper in Fenwick Bay. Keeps bees on the roof and sells the honey."))
+    con.commit(); con.close()
+    brief = um.refresh_user_model_brief(db_path=db, retired=["Fenwick Bay"])
+    assert "Fenwick" not in brief and "sells the honey" in brief
+    assert um.read_user_model(db_path=db)["dossier"] == "Keeps bees on the roof and sells the honey."

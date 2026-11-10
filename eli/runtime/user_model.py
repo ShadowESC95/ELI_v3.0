@@ -297,19 +297,33 @@ def get_user_brief(user_id: Optional[str] = None, turn_count: int = 0,
 # Updates                                                                     #
 # --------------------------------------------------------------------------- #
 def refresh_user_model_brief(memory: Any = None, user_id: Optional[str] = None,
-                             db_path: Optional[Path | str] = None) -> str:
+                             db_path: Optional[Path | str] = None, retired: Any = ()) -> str:
     """Cheap, non-LLM: re-render the structured columns + brief from current user_patterns
-    + name. Keeps the per-turn read fresh between full LLM syntheses. Returns the brief."""
+    + name. Keeps the per-turn read fresh between full LLM syntheses. Returns the brief.
+    `retired`: values that no longer hold (profile_extractor.retire_unfounded_readings): the
+    narrative's sentences naming one are left out until the next synthesis writes it anew."""
     uid = _resolve_user_id(user_id)
     name = _get_name(user_id)
     grouped = _read_patterns_grouped(db_path, user_id)
-    if not (name or any(grouped[c] for c in _COLS)):
-        return ""
     row = _read_row(uid, db_path)
-    dossier = (row or {}).get("dossier") or ""
+    dossier = _without_mentions((row or {}).get("dossier") or "", retired)
+    if not (name or any(grouped[c] for c in _COLS)):
+        if row and retired:      # nothing left to tell: the brief that told it goes
+            _upsert(uid, grouped, dossier, "", db_path, confidence=(row or {}).get("confidence") or 0.4)
+        return ""
     brief = render_brief(name, grouped, dossier)
     _upsert(uid, grouped, dossier, brief, db_path, confidence=(row or {}).get("confidence") or 0.4)
     return brief
+
+
+def _without_mentions(text: str, values: Any) -> str:
+    """`text` without its sentences that name one of `values` (eli/memory/claims.mentions)."""
+    values = [str(v) for v in (values or ()) if str(v or "").strip()]
+    if not values or not text:
+        return text
+    from eli.memory.claims import mentions
+    from eli.runtime.command_splitter import sentences
+    return " ".join(s for s in sentences(str(text)) if not any(mentions(s, v) for v in values)).strip()
 
 
 def synthesize_user_model(memory: Any = None, user_id: Optional[str] = None,

@@ -198,9 +198,101 @@ def ensure_profile_tables(db_path: Path | None = None) -> None:
 
     backfill_semantic_from_patterns(cur)
     reconcile_single_valued_patterns(cur)
+    retired = retire_unfounded_readings(cur)
 
     con.commit()
     con.close()
+    _refresh_after_retiring(db, retired)
+
+
+def retire_unfounded_readings(cur: sqlite3.Cursor, *, reweigh: bool = False) -> dict[str, list[str]]:
+    """Take out of the profile ELI's readings of the user that no longer hold.
+
+    A reading (a fact ELI's model wrote about the user, provenance "inferred") that bears out a claim
+    of the user's stands on that claim (_insert_user_pattern links it there). When the user's word on
+    it changes ("we moved, I live in Ashby Green now"), the claim is superseded and the readings that
+    rest on it go with it: each written to belief_revisions first, as every retired value is, so history
+    keeps it, then out of user_patterns and its semantic copy. They used to accumulate: "Lives in Fenwick
+    Bay" stood in the profile, and in every prompt, beside the user's word that they had moved.
+
+    `reweigh` (the summariser's pass, once a session) also weighs the readings kept before they were
+    weighed, which stand on a claim of their own: one that contradicts what the user said is retired
+    the same way, and one that bears a claim of theirs out is moved onto it (its own claim closed).
+
+    Returns {owner: [values that no longer hold]}, for the brief rebuilt from these rows."""
+    retired: dict[str, list[str]] = {}
+    if not (_table_exists(cur, "user_patterns") and _table_exists(cur, "memory_claims")):
+        return retired
+    try:
+        from eli.memory import claims as _claims
+        from eli.cognition.stance_store import ensure_tables, record_revision
+        ensure_tables(cur)
+    except (ImportError, sqlite3.Error) as failure:
+        log.debug("profile_extractor: readings not checked: %s", failure)
+        return retired
+    _ensure_user_column(cur)
+    now = time.time()
+
+    def _retire(row_id: int, ptype: str, data: str, who: str, rested: str, standing: str, why: str) -> None:
+        record_revision(cur, "user_pattern", ptype, data, standing, reason=why, now=now)
+        cur.execute("DELETE FROM user_patterns WHERE id = ?", (row_id,))
+        cur.execute("DELETE FROM semantic WHERE lower(COALESCE(fact, '')) = lower(?) "
+                    "AND COALESCE(NULLIF(user_id, ''), 'default') = ? "
+                    "AND ',' || lower(COALESCE(tags, '')) || ',' LIKE ?",
+                    (split_evidence(data)[0], _semantic_user(who), f"%,{str(ptype).lower()},%"))
+        retired.setdefault(who, []).append(rested)
+
+    def _standing(subject: str, relation: str) -> str:
+        row = cur.execute("SELECT value FROM memory_claims WHERE subject = ? AND relation = ? AND status = 'current' "
+                          "ORDER BY id DESC LIMIT 1", (subject, relation)).fetchone()
+        return str(row[0]) if row else ""
+
+    try:
+        if reweigh:
+            for row_id, ptype, data, who, ts in cur.execute(
+                    "SELECT p.id, p.pattern_type, p.pattern_data, COALESCE(p.user_id, ''), COALESCE(p.ts, p.timestamp) "
+                    "FROM user_patterns p LEFT JOIN memory_claims c ON c.id = p.claim_id "
+                    "WHERE COALESCE(p.provenance, '') = 'inferred' "
+                    "AND (c.id IS NULL OR lower(c.relation) = lower(p.pattern_type))").fetchall():
+                found = [c for c in _claims.extract_about(split_evidence(str(data or ""))[0]) if not c["retire"]]
+                if not found:
+                    continue
+                read_as = _weigh_reading(cur, str(data or ""), who, float(ts or now))
+                if read_as is None or read_as:
+                    # its own claim is closed: the reading is now the claim it bears out, or no fact at all
+                    _claims.retire(cur, str(ptype), subject=_claims.user_subject(who), value=str(data or ""), now=now)
+                if read_as is None:
+                    rel = found[0]["relation"]
+                    _retire(row_id, ptype, str(data or ""), who, found[0]["value"],
+                            _standing(_claims.user_subject(who), rel),
+                            f"ELI's reading of {rel.replace('_', ' ')} is not what you said")
+                elif read_as:
+                    cur.execute("UPDATE user_patterns SET claim_id = ? WHERE id = ?", (int(read_as[0]), row_id))
+        for row_id, ptype, data, who, subject, relation, value in cur.execute(
+                "SELECT p.id, p.pattern_type, p.pattern_data, COALESCE(p.user_id, ''), c.subject, c.relation, c.value "
+                "FROM user_patterns p JOIN memory_claims c ON c.id = p.claim_id "
+                "WHERE COALESCE(p.provenance, '') = 'inferred' AND c.status IN ('superseded', 'retracted') "
+                "AND lower(c.relation) != lower(p.pattern_type)").fetchall():
+            _retire(row_id, ptype, str(data or ""), who, str(value or ""), _standing(subject, relation),
+                    f"rested on {str(relation).replace('_', ' ')} = {value}, which no longer holds")
+    except sqlite3.Error as failure:
+        log.debug("profile_extractor: readings not checked: %s", failure)
+    for who, values in retired.items():
+        log.debug("profile_extractor: %d reading(s) of %s no longer hold: %s", len(values), who or "the owner", values)
+    return retired
+
+
+def _refresh_after_retiring(db: Path, retired: dict[str, list[str]]) -> None:
+    """What is built from the profile's rows is built again once readings were taken out of them: the
+    per-turn brief (eli/runtime/user_model), its narrative without the sentences naming what no longer
+    holds, until the next synthesis writes it anew."""
+    for who, values in retired.items():
+        try:
+            from eli.runtime.user_model import refresh_user_model_brief
+            refresh_user_model_brief(user_id=who or None, db_path=db, retired=values)
+        except Exception:
+            log.debug("user model refresh after retiring readings skipped", exc_info=True)
+
 
 def _scrub_onboarding_snapshot(cur: sqlite3.Cursor, stale_values: list) -> None:
     """Drop the onboarding baseline row when it embeds a value we just retired.
@@ -484,7 +576,8 @@ def _supersede_single_valued(cur: sqlite3.Cursor, pattern_type: str,
 
 
 def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data: str,
-                          provenance: str, now: float, who: str = "", verdict: str = "") -> None:
+                          provenance: str, now: float, who: str = "", verdict: str = "",
+                          claim_id: int | None = None) -> None:
     """Give this user_patterns row a real entry in the bitemporal claims spine
     (eli.memory.claims) instead of being a disconnected free-text duplicate.
     pattern_type/pattern_data are already relation/value-shaped — this is a
@@ -497,17 +590,21 @@ def _link_pattern_to_claim(cur: sqlite3.Cursor, pattern_type: str, pattern_data:
     the profile's weighing reached, so the two stores never decide one fact two
     ways (the spine used to dispute a value the profile had already replaced).
 
+    `claim_id`: the claim this row is ELI's reading of (_weigh_reading), which it is linked to in
+    place of a claim of its own, so it stands and falls with what the user said.
+
     Best-effort: a failure here must never break the user_patterns write it
     rides alongside, so every exception is swallowed after a debug log.
     """
     try:
         from eli.memory import claims as _claims
-        claim_id = _claims.record(
-            cur, pattern_type, pattern_data,
-            subject=_claims.user_subject(who),
-            single_valued=pattern_type.lower() in _SINGLE_VALUED_PATTERNS,
-            origin=provenance, valid_from=now, now=time.time(), verdict=verdict,
-        )
+        if claim_id is None:
+            claim_id = _claims.record(
+                cur, pattern_type, pattern_data,
+                subject=_claims.user_subject(who),
+                single_valued=pattern_type.lower() in _SINGLE_VALUED_PATTERNS,
+                origin=provenance, valid_from=now, now=time.time(), verdict=verdict,
+            )
         if claim_id is not None:
             cur.execute(
                 "UPDATE user_patterns SET claim_id = ? "
@@ -552,6 +649,12 @@ def _insert_user_pattern(
         return False
 
     _ensure_user_column(cur)
+    # ELI's reading of what the user said is weighed against their word before it is kept: one that
+    # contradicts it is no fact about them; one that bears a claim of theirs out stands on that claim
+    read_as = _weigh_reading(cur, pattern_data, who, now) if provenance == "inferred" else []
+    if read_as is None:
+        return False
+    rests_on = read_as[0] if read_as else None
     same = _same_fact_row(cur, pattern_type, pattern_data, who)
     verdict = ""
     if same is None and pattern_type.lower() in _SINGLE_VALUED_PATTERNS:
@@ -605,7 +708,7 @@ def _insert_user_pattern(
             log.debug("could not upgrade provenance", exc_info=True)
         if same.lower() != pattern_data.lower():
             _promote_to_semantic(cur, pattern_type, pattern_data, now, who=who)   # the new words are evidence
-        _link_pattern_to_claim(cur, pattern_type, same, provenance, now, who=who)
+        _link_pattern_to_claim(cur, pattern_type, same, provenance, now, who=who, claim_id=rests_on)
         return False
 
     try:
@@ -630,8 +733,22 @@ def _insert_user_pattern(
     # Must run on BOTH insert paths. An earlier cut returned straight after the
     # new insert and skipped it, so nothing reached the semantic tier at all.
     _promote_to_semantic(cur, pattern_type, pattern_data, now, who=who)
-    _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now, who=who, verdict=verdict)
+    _link_pattern_to_claim(cur, pattern_type, pattern_data, provenance, now, who=who, verdict=verdict,
+                           claim_id=rests_on)
     return True
+
+
+def _weigh_reading(cur: sqlite3.Cursor, pattern_data: str, who: str, when: float) -> list | None:
+    """ELI's reading of the user (a fact its model wrote about them) weighed in the claims spine as the
+    claims it states (claims.record_reading): the ids of the claims it bears out or adds, [] when it
+    states none the claims read, None when it contradicts what the user said."""
+    try:
+        from eli.memory import claims as _claims
+        return _claims.record_reading(cur, split_evidence(pattern_data)[0], subject=_claims.user_subject(who),
+                                      when=when, now=time.time())
+    except (sqlite3.Error, ImportError, ValueError, TypeError) as failure:
+        log.debug("profile_extractor: reading not weighed: %s", failure)
+        return []
 
 
 # Which pattern kinds are durable facts about the user and not transient session state. Only these
@@ -1208,15 +1325,22 @@ _WORK_STOP = frozenset("""the a an and or of to in on for with from by about int
 their they user users working work currently actively specifically technical reasons behind""".split())
 
 
-def _said_by_user(claim: str, user_text: str) -> bool:
+def _said_by_user(claim: str, user_text: str, *, statements: bool = False) -> bool:
     """Whether the user's own words carry this claim. Text they quote back ("...") is ELI's:
     a user who pasted ELI's offer of "a deep dive into why the vector search is drifting" and
-    said yes had that stored as their project."""
-    own = _QUOTED.sub(" ", str(user_text or "")).lower()
+    said yes had that stored as their project. With `statements`, what they asked carries
+    nothing: "what should I call a sourdough starter?" says nothing of keeping one. A word is
+    carried in any of its forms ("learns" by "learning": route_contracts._same_word)."""
+    from eli.execution.route_contracts import _same_word
+    own = _QUOTED.sub(" ", str(user_text or ""))
+    if statements:
+        from eli.runtime.command_splitter import sentences
+        own = " ".join(x for x in sentences(own) if not x.rstrip().endswith("?"))
+    said = set(re.findall(r"[a-z]{3,}", own.lower()))
     words = {w for w in re.findall(r"[a-z]{4,}", str(claim or "").lower()) if w not in _WORK_STOP}
     if len(words) < 3:
         return True
-    return sum(1 for w in words if w[:6] in own) >= (len(words) + 1) // 2
+    return sum(1 for w in words if any(_same_word(w, o) for o in said)) >= (len(words) + 1) // 2
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
@@ -1312,7 +1436,8 @@ def _fact_pattern_type(line: str) -> str:
     return "identity.fact"
 
 
-def _route_facts_to_patterns(cur: "sqlite3.Cursor", facts_text: str, user_id: Any = None) -> int:
+def _route_facts_to_patterns(cur: "sqlite3.Cursor", facts_text: str, user_id: Any = None,
+                             user_text: str = "") -> int:
     """Write each durable fact the model found as its own accumulating pattern.
 
     This is the width of the funnel. The regex extractor upstream recognises about
@@ -1328,34 +1453,75 @@ def _route_facts_to_patterns(cur: "sqlite3.Cursor", facts_text: str, user_id: An
     refreshes recency on reaffirmation, so a fact repeated across sessions stays
     fresh rather than duplicating.
 
+    A line that says several things ("Lives in Fenwick Bay. Has a sister named Maren. Works days at
+    the bakery.") is each of its sentences, each its own fact, weighed on its own against what the
+    user said (_insert_user_pattern), so one that no longer holds cannot ride on the ones that do
+    (_facts_of: a sentence that points back to the one before is part of that fact).
+    With `user_text` (what the user typed in the session summarised), a fact the claims cannot weigh
+    (it states no relation they read) that the user's own words do not carry is not kept
+    (_said_by_user): the summary also reads ELI's replies, and what ELI said of the user is not a fact
+    about them unless the user said it too. One the claims read is weighed against what the user
+    said instead, whatever words it is put in.
+
     Returns the number of facts written.
     """
     if not _summary_section_meaningful(facts_text):
         return 0
     written = 0
     seen: set[str] = set()
-    for raw_line in (facts_text or "").splitlines():
-        line = _clean(raw_line, 300).strip().lstrip("-•*0123456789. ").strip()
-        # Too short to be a fact, or no letters at all.
-        if len(line) < 12 or not re.search(r"[A-Za-z]", line):
-            continue
-        if _FACT_REJECT.search(line) or _ABOUT_THIS_SOFTWARE.search(line):
-            log.debug("profile_extractor: dropped self-referential 'fact': %s", line[:80])
-            continue
-        key = line.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        ptype = _fact_pattern_type(line)
-        if ptype in _SINGLE_VALUED_PATTERNS:
-            ptype = "identity.fact"
-        try:
-            # the model's reading of the conversation: weighed below anything the user said outright
-            if _insert_user_pattern(cur, ptype, line, provenance="inferred", user_id=user_id):
-                written += 1
-        except Exception:
-            log.debug("profile_extractor: fact insert failed", exc_info=True)
+    for raw in (facts_text or "").splitlines():
+        for part in _facts_of(str(raw or "").strip().lstrip("-•*0123456789. ")):
+            line = _clean(part, 300).strip().lstrip("-•*0123456789. ").strip()
+            # Too short to be a fact, or no letters at all.
+            if len(line) < 12 or not re.search(r"[A-Za-z]", line):
+                continue
+            if _FACT_REJECT.search(line) or _ABOUT_THIS_SOFTWARE.search(line):
+                log.debug("profile_extractor: dropped self-referential 'fact': %s", line[:80])
+                continue
+            if user_text and not _states_a_claim(line) and not _said_by_user(line, user_text, statements=True):
+                log.debug("profile_extractor: a 'fact' the user's words do not carry: %s", line[:80])
+                continue
+            key = line.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ptype = _fact_pattern_type(line)
+            if ptype in _SINGLE_VALUED_PATTERNS:
+                ptype = "identity.fact"
+            try:
+                # the model's reading of the conversation: weighed against what the user said
+                if _insert_user_pattern(cur, ptype, line, provenance="inferred", user_id=user_id):
+                    written += 1
+            except Exception:
+                log.debug("profile_extractor: fact insert failed", exc_info=True)
     return written
+
+
+# A sentence that points back to the one before it says nothing on its own: "Likes podcasts about the
+# sea. Bakes while listening to them." is one fact, not "Bakes while listening to them."
+_POINTS_BACK = re.compile(r"\b(?:them|it|its|there|these|those)\b", re.I)
+
+
+def _facts_of(line: str) -> list[str]:
+    """The facts a line of the summary states: its sentences (command_splitter.sentences), a sentence
+    that points back joined to the one it points to."""
+    from eli.runtime.command_splitter import sentences
+    out: list[str] = []
+    for part in sentences(line):
+        if out and _POINTS_BACK.search(part):
+            out[-1] = f"{out[-1]} {part}"
+        else:
+            out.append(part)
+    return out
+
+
+def _states_a_claim(line: str) -> bool:
+    """Whether the claims read a relation in a line written about the user (claims.extract_about)."""
+    try:
+        from eli.memory.claims import extract_about
+        return bool(extract_about(line))
+    except ImportError:
+        return False
 
 
 def _summary_section_meaningful(s: str) -> bool:
@@ -1375,6 +1541,8 @@ def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text
     what the user is ACTUALLY working on now (not a frozen 'developing ELI' literal)."""
     if not llm_summary:
         return
+    # the readings kept so far, weighed against what the user said before new ones join them
+    retire_unfounded_readings(cur, reweigh=True)
     sections = {m.group(1).upper().replace(" ", "_"): m.group(2).strip()
                 for m in _SUMMARY_SECTION_RE.finditer(llm_summary)}
     work = _clean(sections.get("CURRENT_WORK", ""), 300)
@@ -1398,6 +1566,7 @@ def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text
             )
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+        _close_claims(cur, "project.current", who)
         _insert_user_pattern(cur, "project.current", work, provenance="inferred", user_id=who)
     if _summary_section_meaningful(prefs):
         who = pattern_owner(user_id)
@@ -1406,6 +1575,7 @@ def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text
                         "AND COALESCE(user_id, '') = ?", (who,))
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+        _close_claims(cur, "preference.session", who)
         _insert_user_pattern(cur, "preference.session", prefs, provenance="inferred", user_id=who)
 
     # Durable facts accumulate. CURRENT_WORK and USER_PREFERENCES above are both
@@ -1413,9 +1583,19 @@ def _route_summary_to_profile(cur: "sqlite3.Cursor", llm_summary: str, user_text
     # session — which is exactly why they could never widen the funnel.
     facts = sections.get("USER_FACTS", "")
     if facts:
-        n = _route_facts_to_patterns(cur, facts, user_id=user_id)
+        n = _route_facts_to_patterns(cur, facts, user_id=user_id, user_text=user_text)
         if n:
             log.debug("profile_extractor: %d durable user fact(s) captured", n)
+
+
+def _close_claims(cur: "sqlite3.Cursor", relation: str, who: str) -> None:
+    """A single-slot row the profile replaces closes its claim with it: the session's preference was
+    deleted and written again each session while every one of its claims went on standing."""
+    try:
+        from eli.memory import claims as _claims
+        _claims.retire(cur, relation, subject=_claims.user_subject(who))
+    except (ImportError, sqlite3.Error) as failure:
+        log.debug("profile_extractor: %s claims left standing: %s", relation, failure)
 
 
 def _build_transcript(rows: list[Any], max_chars: int = 6000) -> str:
@@ -1589,7 +1769,7 @@ def write_llm_session_summary(
             try:
                 _route_summary_to_profile(
                     cur, llm_summary,
-                    user_text=" ".join(str(r["content"] or "") for r in rows if str(r["role"]).lower() == "user"),
+                    user_text="\n".join(str(r["content"] or "") for r in rows if str(r["role"]).lower() == "user"),
                     user_id=uid if uid != "unknown" else None)
             except Exception:
                 log.debug("suppressed exception", exc_info=True)

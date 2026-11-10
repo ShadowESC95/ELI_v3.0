@@ -213,3 +213,111 @@ def test_evidence_does_not_start_or_end_mid_word():
     assert q.startswith(' Said: "') and q.endswith('"')
     inner = q[len(' Said: "'):-1]
     assert inner in text, "the quote must be a verbatim span of what was said"
+
+
+# ── ELI's readings weighed against what the user said ────────────────────────────────────────────
+
+def _claims_now(cur):
+    return sorted((r[0], r[1]) for r in cur.execute(
+        "SELECT relation, value FROM memory_claims WHERE subject = 'user' AND status = 'current'").fetchall())
+
+
+def _user_says(cur, text, when=None):
+    from eli.memory import claims
+    claims.record_from_text(cur, text, when=when)
+
+
+def test_a_fact_line_of_several_sentences_is_each_of_its_facts(cur):
+    """The summariser put a whole session's facts on one line; stored as one fact, a part that stopped
+    holding stood on the parts that still did."""
+    PE._route_facts_to_patterns(cur, "Has a sister named Ines who drives trams. Works days at the Quay Street "
+                                     "garage, mostly early mornings. Keeps bees on the roof. Sells their honey "
+                                     "at the market. Likes podcasts about the sea. Listens to them while baking.")
+    data = sorted(d for _t, d in _patterns(cur))
+    assert data == ["Has a sister named Ines who drives trams.", "Keeps bees on the roof.",
+                    "Likes podcasts about the sea. Listens to them while baking.",
+                    "Sells their honey at the market.",
+                    "Works days at the Quay Street garage, mostly early mornings."], \
+        "each sentence its own fact; one that points back is part of the fact it points to"
+
+
+def test_a_reading_that_contradicts_what_the_user_said_is_no_fact_about_them(cur):
+    _user_says(cur, "I live in Ashby Green")
+    PE._route_facts_to_patterns(cur, "- Lives in Fenwick Bay\n- Keeps bees on the roof\n")
+    assert [d for _t, d in _patterns(cur)] == ["Keeps bees on the roof"]
+    assert ("lives_in", "Ashby Green") in _claims_now(cur)
+    assert not any("Fenwick" in v for _r, v in _claims_now(cur))
+    assert cur.execute("SELECT COUNT(*) FROM semantic WHERE fact LIKE '%Fenwick%'").fetchone()[0] == 0
+
+
+def test_a_reading_that_bears_the_users_word_out_is_that_claim_not_one_of_its_own(cur):
+    _user_says(cur, "I work nights at the depot")
+    for _session in range(3):
+        PE._route_facts_to_patterns(cur, "- Works nights at the depot\n")
+    assert _claims_now(cur) == [("work_schedule", "nights")]
+    row = cur.execute("SELECT confirmations, origin FROM memory_claims WHERE status = 'current'").fetchone()
+    assert tuple(row) == (2, "user_said"), "ELI's reading is one more source, counted once"
+    linked = cur.execute("SELECT c.relation FROM user_patterns p JOIN memory_claims c ON c.id = p.claim_id").fetchall()
+    assert [r[0] for r in linked] == ["work_schedule"]
+
+
+def test_readings_resting_on_a_value_the_user_changed_retire_with_it(cur, tmp_path):
+    """'Lives in Fenwick Bay' stood in the profile, the semantic tier and every prompt beside the user's
+    word that they had moved. It goes with the claim it rests on, kept as history."""
+    import time as _t
+    db = tmp_path / "user.sqlite3"
+    t0 = _t.time() - 30 * 86400
+    _user_says(cur, "I live in Fenwick Bay", when=t0)
+    PE._route_facts_to_patterns(cur, "Lives in Fenwick Bay, near the harbour. Keeps bees on the roof.")
+    from eli.runtime import user_model as um
+    cur.execute("INSERT INTO user_model (user_id, dossier, brief) VALUES (?, "
+                "'A beekeeper who lives in Fenwick Bay. Keeps bees on the roof.', 'stale')", (um._resolve_user_id(),))
+    cur.connection.commit()
+    _user_says(cur, "We moved, I live in Ashby Green now", when=t0 + 20 * 86400)
+    cur.connection.commit()
+    PE.ensure_profile_tables(db)          # every profile write passes here
+    assert [d for _t2, d in _patterns(cur)] == ["Keeps bees on the roof."]
+    assert cur.execute("SELECT COUNT(*) FROM semantic WHERE fact LIKE '%Fenwick%'").fetchone()[0] == 0
+    revision = cur.execute("SELECT old_value, new_value FROM belief_revisions WHERE kind = 'user_pattern'").fetchall()
+    assert [tuple(r) for r in revision] == [("Lives in Fenwick Bay, near the harbour.", "Ashby Green")]
+    old = cur.execute("SELECT status, source_roots FROM memory_claims WHERE relation = 'lives_in' "
+                      "AND value = 'Fenwick Bay'").fetchone()
+    assert old[0] == "superseded" and '"inferred"' in old[1], "history keeps what the reading bore out"
+    model = um.read_user_model(db_path=db)
+    assert "Fenwick" not in model["dossier"] and "Keeps bees" in model["dossier"]
+    assert "Fenwick" not in um.get_user_brief(db_path=db), "the per-turn brief no longer says it"
+
+
+def test_readings_kept_before_they_were_weighed_are_weighed_at_the_next_summary(cur):
+    """An install's profile already holds readings stored as facts of their own: the summariser's pass
+    weighs them as it weighs new ones."""
+    for line in ("Lives in Fenwick Bay", "Works nights at the depot", "Keeps bees on the roof"):
+        cur.execute("INSERT INTO user_patterns (pattern_type, pattern_data, timestamp, ts, corroboration, provenance) "
+                    "VALUES ('identity.fact', ?, 1, 1, 1, 'inferred')", (line,))
+        PE._link_pattern_to_claim(cur, "identity.fact", line, "inferred", 1.0)
+    _user_says(cur, "I live in Ashby Green")
+    _user_says(cur, "I work nights at the depot")
+    PE._route_summary_to_profile(cur, "SUMMARY: a quiet evening.\nUSER FACTS: none\n")
+    assert sorted(d for _t, d in _patterns(cur)) == ["Keeps bees on the roof", "Works nights at the depot"]
+    assert _claims_now(cur) == [("identity.fact", "Keeps bees on the roof"), ("lives_in", "Ashby Green"),
+                                ("work_schedule", "nights")]
+
+
+def test_the_sessions_preference_replaced_closes_its_claim(cur):
+    """Rewritten every session in the profile, each session's preference went on standing as a claim."""
+    for prefs in ("Likes short answers.", "Wants the steps written out."):
+        PE._route_summary_to_profile(cur, f"SUMMARY: a session.\nUSER PREFERENCES: {prefs}\n")
+    assert _claims_now(cur) == [("preference.session", "Wants the steps written out.")]
+
+
+def test_a_summary_fact_the_users_own_words_do_not_carry_is_not_kept(cur):
+    """The summary reads ELI's replies too: what ELI said of the user is no fact about them unless they
+    said it. One the claims can weigh is weighed against what they said instead, whatever its words."""
+    _user_says(cur, "My dog is called Pepper")
+    PE._route_summary_to_profile(cur, "SUMMARY: a session.\nUSER FACTS: Keeps bees on the roof. "
+                                      "Maintains a sourdough starter. Owns a dog named Pepper. "
+                                      "Learns to play the cello.\n",
+                                 user_text="I keep bees on the roof\nMy dog is called Pepper\nWhat should I "
+                                           "call a sourdough starter?\nI've started learning the cello to play duets")
+    data = sorted(d for _t, d in _patterns(cur))
+    assert data == ["Keeps bees on the roof.", "Learns to play the cello.", "Owns a dog named Pepper."]

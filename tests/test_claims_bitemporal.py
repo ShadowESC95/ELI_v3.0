@@ -479,3 +479,85 @@ def test_a_contradiction_of_the_users_own_word_that_says_no_change_is_raised(tmp
     claims.record_from_text(c, "I live in Fenwick Bay", when=_d("2026-05-01"))
     claims.record_from_text(c, "We moved last month, I live in Ashby Green now", when=_d("2026-06-01"))
     assert [r["value"] for r in claims.current(c) if r["relation"] == "lives_in"] == ["Ashby Green"]
+
+
+# ── ELI's reading of what the user said (claims.READING) ─────────────────────────────────────────
+
+@pytest.mark.parametrize("line, read", [
+    ("Lives in Fenwick Bay near the old harbour.", [("lives_in", "Fenwick Bay")]),
+    ("The user works nights at the depot", [("work_schedule", "nights")]),
+    ("User works the night shift at a bakery.", [("work_schedule", "nights")]),
+    ("They have a dog named Biscuit.", [("dog_name", "Biscuit")]),
+    ("Owns a dog named Pepper", [("dog_name", "Pepper")]),
+    ("The user's sister is called Ines", [("sister_name", "Ines")]),
+    ("Recently moved to Ashby Green", [("lives_in", "Ashby Green")]),
+    ("Works as a tram driver", [("occupation", "tram driver")]),
+    # someone the line has just named is not the user: "she" is left alone
+    ("Has a sister named Ines. She works as a tram driver.", [("sister_name", "Ines")]),
+    ("Sister Ines lives in Oslo", []),
+    ("Is learning the cello", []),
+])
+def test_a_line_written_about_the_user_is_read_as_their_own_words_are(line, read):
+    """The summariser writes what it learned of the user in the third person or with no subject, and
+    the claims read only "I ..." and "my ...": every such line stood as a free-text fact, never weighed."""
+    assert [(c["relation"], c["value"]) for c in claims.extract_about(line)] == read
+
+
+def test_what_the_user_owns_and_names_is_read_from_their_own_words_too():
+    assert [(c["relation"], c["value"]) for c in claims.extract("I have a dog called Pepper")] == [("dog_name", "Pepper")]
+    assert [(c["relation"], c["value"]) for c in claims.extract("I work the day shift")] == [("work_schedule", "days")]
+
+
+def test_elis_reading_bears_the_users_word_out_once_and_never_stands_against_it(tmp_path, monkeypatch):
+    """A reading of the user's words is no source of its own against them: it confirms their claim
+    once however often each session's summary says it again, it supports a side of a dispute without
+    settling it, and one that contradicts what they said is no claim at all (it used to be disputed
+    against their word, or to stand beside it as a fact)."""
+    from eli.cognition import thoughts as th
+    monkeypatch.setattr(th, "_default_db_path", lambda: tmp_path / "thoughts.sqlite3")
+    c = sqlite3.connect(":memory:")
+    claims.record_from_text(c, "I live in Fenwick Bay", when=_d("2026-05-01"))
+    for day in ("2026-05-02", "2026-05-09"):
+        assert claims.record_reading(c, "Lives in Fenwick Bay", when=_d(day))
+    [row] = claims.current(c)
+    assert row["confirmations"] == 2 and row["origin"] == "user_said", "the reading counts once, as a reading"
+    assert claims.record_reading(c, "Lives in Oslo", when=_d("2026-05-10")) is None
+    assert [(r["value"], r["status"]) for r in claims.history(c, "lives_in")] == [("Fenwick Bay", "current")]
+    assert th.recent(5, kinds=["conflict"]) == [], "ELI's misreading is not put to the user as a conflict"
+    # a side of a dispute: borne out, nothing settled
+    claims.record_from_text(c, "My dog is called Pepper", when=_d("2026-05-01"))
+    claims.record_from_text(c, "My dog is called Biscuit", when=_d("2026-05-08"))
+    side = claims.record_reading(c, "They have a dog named Biscuit", when=_d("2026-05-09"))
+    rows = {r["value"]: r for r in claims.history(c, "dog_name")}
+    assert side == [rows["Biscuit"]["id"]] and rows["Biscuit"]["status"] == "disputed" and rows["Pepper"]["status"] == "current"
+    assert rows["Biscuit"]["confirmations"] == 2 and rows["Biscuit"]["confidence"] < claims.confirmed(["user_said", "inferred"])
+    assert claims.record_reading(c, "Owns a dog named Rex", when=_d("2026-05-09")) is None
+    # where the user said nothing, it stands as ELI's inference until they do
+    [sister] = claims.record_reading(c, "Has a sister named Ines", when=_d("2026-05-09"))
+    claims.record_from_text(c, "My sister is called Ines", when=_d("2026-05-12"))
+    [held] = [r for r in claims.current(c) if r["relation"] == "sister_name"]
+    assert held["id"] == sister and held["origin"] == "user_said" and held["confirmations"] == 2
+    # what the line says ended is not acted on, nor what it says used to hold where the user says it holds
+    assert claims.record_reading(c, "No longer lives in Fenwick Bay", when=_d("2026-05-13")) == []
+    assert claims.record_reading(c, "Used to live in Fenwick Bay", when=_d("2026-05-13")) is None
+    assert [r["value"] for r in claims.current(c) if r["relation"] == "lives_in"] == ["Fenwick Bay"]
+    # nor does it bring back what the user's word ended, and a line with a part that goes against
+    # their word is no part of a claim
+    claims.record_from_text(c, "I work nights at the depot", when=_d("2026-05-01"))
+    claims.record_from_text(c, "I no longer work nights", when=_d("2026-05-14"))
+    assert claims.record_reading(c, "Works nights", when=_d("2026-05-15")) is None
+    claims.record_from_text(c, "I work as a tram driver", when=_d("2026-05-01"))
+    before = {r["id"]: r["confirmations"] for r in claims.current(c)}
+    assert claims.record_reading(c, "Works as a tram driver. Works nights.", when=_d("2026-05-16")) is None
+    assert {r["id"]: r["confirmations"] for r in claims.current(c)} == before
+
+
+def test_a_contradiction_stands_until_the_user_settles_it_whatever_else_bears_the_claim_out():
+    """A contested claim borne out by another source was scored as if nothing stood against it."""
+    c = sqlite3.connect(":memory:")
+    claims.record(c, "lives_in", "Berlin", origin="user_said", now=_d("2026-05-01"))
+    claims.record(c, "lives_in", "Oslo", origin="document", now=_d("2026-06-01"))
+    claims.record(c, "lives_in", "Berlin", origin="observed", now=_d("2026-06-02"), root_id=5)
+    [berlin] = claims.current(c)
+    assert berlin["confirmations"] == 2 and berlin["contested"]
+    assert berlin["confidence"] == claims.confirmed(["user_said", "observed"], contradicted_by="document")
