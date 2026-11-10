@@ -829,8 +829,10 @@ def test_jsq_turns_any_device_id_into_a_literal_that_cannot_end_anything():
       // ASCII only on the way back: a console code page (Windows) turns U+2028 into a space
       console.log(JSON.stringify(out).replace(/[\u007f-\uffff]/g,
                   c => "\\\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")));"""
+    # no limit of its own: a cold node start on a CI runner (virus scan on first launch) outlasted the
+    # lock wait this borrowed; the job's own time limit still stops a real hang
     res = subprocess.run([node, "-e", script, _json.dumps(hostile)], capture_output=True, text=True,
-                         encoding="utf-8", timeout=_LOCK_WAIT_S)
+                         encoding="utf-8")
     assert res.returncode == 0, res.stderr
     for value, got in zip(hostile, _json.loads(res.stdout)):
         assert got["ok"], value          # nothing that ends the attribute or the tag
