@@ -702,12 +702,18 @@ def onboarding_intercept(user_input: str, user_id: Optional[str] = None, db_path
         if text.lower() in _SKIP_WORDS:
             clear_onboarding_state()
             return "No problem — I'll pick it up as we go. Ask me anything."
+        # What the router carries out is carried out, before the words that ask about the interview
+        # are looked for: "what do you know about me" holds "know about me" and was told "we're doing
+        # that now" in place of the answer the router had for it.
+        if _is_a_command(step, text, route):
+            clear_onboarding_state()
+            return None
         if _is_onboarding_meta_question(text):
             return (
                 "Yes — we're doing that now. "
                 + _question(step, answers)
             )
-        if _is_not_an_answer(text) or _is_a_command(step, text, route):
+        if _is_not_an_answer(text):
             clear_onboarding_state()
             return None
         canonical = _apply_answer(step, text, db_path=db_path)
@@ -736,7 +742,8 @@ def onboarding_intercept(user_input: str, user_id: Optional[str] = None, db_path
         _set_onboarding_state(step, answers)
         return _finish(db_path=db_path)
 
-    if _profile_missing(db_path=db_path) and _is_onboarding_meta_question(text):
+    if (_profile_missing(db_path=db_path) and _is_onboarding_meta_question(text)
+            and not _is_a_command(None, text, route)):
         return _begin_or_resume(db_path=db_path)
 
     # Offered once. It came back on every short message of a new profile, in place of the answer:

@@ -181,3 +181,19 @@ def test_it_is_offered_once_and_a_question_is_answered_not_met_with_it(interview
     assert I.onboarding_intercept("skip", route=route)
     assert I.onboarding_intercept("hi there", route=route) is None
     assert I.onboarding_intercept("i know what day it is", route=route) is None
+
+
+def test_what_eli_knows_of_me_is_answered_on_a_new_profile_and_during_the_interview(interview, monkeypatch):
+    """"what do you know about me" holds "know about me", one of the phrases that ask for the
+    interview: on a new profile it began the interview in place of the answer the router had for
+    it, and while the interview ran it was told "we're doing that now". Which one a test got
+    depended on whether an earlier test had made a profile."""
+    from eli.execution.router_enhanced import route
+
+    monkeypatch.setattr(I, "_profile_missing", lambda db_path=None: True)
+    assert I.onboarding_intercept("what do you know about me", route=route) is None
+    assert not I.is_onboarding_active()
+    I._set_onboarding_state("role", {"name": "Robin"})
+    assert I.onboarding_intercept("what do you know about me?", route=route) is None
+    assert not I.is_onboarding_active()
+    assert "call you" in (I.onboarding_intercept("can we do the onboarding questions?", route=route) or "").lower()
