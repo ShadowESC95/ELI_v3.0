@@ -496,3 +496,21 @@ def test_the_session_log_eli_reads_back_is_on_by_default_and_can_be_switched_off
     save_settings({"log_to_file": False})
     assert load_settings()["log_to_file"] is False, "switched off after that, it stays off"
     assert _bring_up_to_date({"settings_revision": 1})[0].get("log_to_file") is None
+
+
+def test_reading_settings_never_saved_writes_no_file_and_an_unreadable_one_is_kept(tmp_path, monkeypatch):
+    """Reading settings that were never saved wrote a settings file (a tool or a test run from a
+    checkout wrote its config/settings.json), and a file that could not be read was replaced by one
+    holding only the revision count."""
+    import json
+    from eli.core import runtime_settings as rs
+    saved = tmp_path / "settings.json"
+    monkeypatch.setenv("ELI_SETTINGS_FILE", str(saved))
+    rs.load_settings()
+    assert not saved.exists()
+    saved.write_text("{not json", encoding="utf-8")
+    rs.load_settings()
+    assert saved.read_text(encoding="utf-8") == "{not json"
+    saved.write_text('{"n_threads": 4}', encoding="utf-8")
+    rs.load_settings()
+    assert json.loads(saved.read_text(encoding="utf-8"))["settings_revision"] == len(rs._REVISIONS)
