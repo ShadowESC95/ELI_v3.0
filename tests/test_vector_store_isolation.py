@@ -114,6 +114,24 @@ def test_a_redirected_store_starts_empty_while_the_checkout_has_an_index(tmp_pat
     assert not Path(index_path).exists() and not Path(meta_path).exists()
 
 
+def test_asking_where_the_index_is_makes_nothing_and_copies_nothing(tmp_path, monkeypatch):
+    """A status report, and the suite's check of where every store resolves, asked the index's path,
+    and asking made the folder (the --noconftest lane left an empty artifacts/vectors in the checkout)
+    and could carry the old index over."""
+    import eli.memory.vector_store as vs
+    root = _checkout_with_an_index(tmp_path)
+    own = tmp_path / "installed_data"
+    for env in ("ELI_ARTIFACTS_DIR", "ELI_DATA_DIR", "ELI_TEST_MODE"):
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setattr(vs, "_project_root", lambda: root)
+    monkeypatch.setattr("eli.core.paths.artifacts_dir", lambda: own)
+    index_path, meta_path = vs._get_index_paths(create=False)
+    assert Path(index_path) == (own / "vectors" / "index.faiss").resolve() and not own.exists()
+    from eli.memory import memory_truth
+    assert memory_truth._store_paths()["index"] == Path(index_path) and not own.exists()
+    assert Path(vs._get_index_paths()[0]).read_bytes() == b"THE-DEVELOPERS-OWN-INDEX", "the store itself still does"
+
+
 def test_the_installation_s_own_folder_still_takes_the_old_index(tmp_path, monkeypatch):
     """What the copy is for: an installed build whose index used to live inside the installation."""
     import eli.memory.vector_store as vs

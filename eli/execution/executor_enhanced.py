@@ -1326,7 +1326,7 @@ def _explain_memory_runtime_report() -> Dict[str, Any]:
     vector_status: Dict[str, Any] = {}
     try:
         from eli.memory import vector_store as _vs
-        idx_path, meta_path = _vs._get_index_paths()
+        idx_path, meta_path = _vs._get_index_paths(create=False)
         vector_status = {
             "faiss_available": bool(getattr(_vs, "FAISS_AVAILABLE", False)),
             "index_path": str(idx_path),

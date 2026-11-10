@@ -836,9 +836,12 @@ class VectorStore:
 
 
 
-def _get_index_paths() -> tuple:
+def _get_index_paths(create: bool = True) -> tuple:
     """
-    Resolve FAISS artifacts into the vector dir, honouring the standard overrides.
+    Resolve FAISS artifacts into the vector dir, honouring the standard overrides. With
+    `create` False (a reader asking where the index is: a status report, a check of where
+    the stores are), nothing is made and no legacy index is carried over: asking used to
+    create the folder, in this machine's own data folder for a check run outside a sandbox.
 
     Expected files:
     - <artifacts>/vectors/index.faiss
@@ -873,6 +876,8 @@ def _get_index_paths() -> tuple:
             base = _project_root() / "artifacts"
 
     vdir = base / "vectors"
+    if not create:
+        return str((vdir / "index.faiss").resolve()), str((vdir / "meta.json").resolve())
     try:
         vdir.mkdir(parents=True, exist_ok=True)
     except OSError:

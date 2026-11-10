@@ -12,7 +12,7 @@ def _store_paths() -> Dict[str, Path]:
     <data>/db/user.sqlite3 and <data>/vectors whatever the stores actually used."""
     from eli.core import paths as _paths
     from eli.memory.vector_store import _get_index_paths
-    index, meta = _get_index_paths()
+    index, meta = _get_index_paths(create=False)
     return {"user_db": Path(_paths.user_db_path()), "agent_db": Path(_paths.agent_db_path()),
             "index": Path(index), "meta": Path(meta)}
 

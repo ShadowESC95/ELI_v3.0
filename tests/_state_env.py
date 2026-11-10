@@ -88,7 +88,7 @@ def stores() -> Dict[str, Path]:
         "notebook": paths.notebook_dir(), "settings": _settings_file(), "goal store": _default_goal_store(),
         "evidence ledger": _default_db_path(), "world state": storage.state_file(), "world folder": storage.world_dir(),
     }
-    found.update({f"vector index {Path(p).name}": p for p in _get_index_paths()})
+    found.update({f"vector index {Path(p).name}": p for p in _get_index_paths(create=False)})
     return {name: Path(p).expanduser().resolve() for name, p in found.items()}
 
 
