@@ -1260,25 +1260,13 @@ def _explain_memory_runtime_report() -> Dict[str, Any]:
         recent = []
 
     def _table_counts(path: Any) -> Dict[str, int]:
-        out: Dict[str, int] = {}
-        try:
-            p = Path(path)
-            if not p.exists():
-                return out
-            conn = sqlite3.connect(str(p))
-            rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            ).fetchall()
-            for (table_name,) in rows:
-                try:
-                    count_row = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
-                    out[str(table_name)] = int((count_row or [0])[0] or 0)
-                except Exception:
-                    out[str(table_name)] = -1
-            conn.close()
-        except Exception:
-            return out
-        return out
+        # the one counter of a store's tables (eli/memory/memory_truth.inspect_sqlite); -1 one it
+        # could not count
+        if path in (None, ""):
+            return {}
+        from eli.memory.memory_truth import inspect_sqlite
+        counts = inspect_sqlite(Path(path)).get("counts") or {}
+        return {str(t): (-1 if n is None else int(n)) for t, n in counts.items() if not str(t).startswith("sqlite_")}
 
     def _identity_hits_from_sqlite(*db_paths: Any, limit: int = 5) -> List[str]:
         hits: List[str] = []

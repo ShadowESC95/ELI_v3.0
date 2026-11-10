@@ -1745,27 +1745,17 @@ def _mw_mc_turns_is_question(text) -> bool:
 
 
 def _mw_mc_turns_result(mode) -> dict:
-    import sqlite3
-    from pathlib import Path as _Path
-    from eli.core.paths import user_db_path, agent_db_path
-    user_db = _Path(user_db_path())
-    agent_db = _Path(agent_db_path())
-    def _count(path, table):
-        try:
-            con = sqlite3.connect(str(path))
-            try:
-                row = con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
-                return int((row or [0])[0] or 0)
-            finally:
-                con.close()
-        except Exception:
-            return None
-    user_memories = _count(user_db, "memories")
-    user_turns = _count(user_db, "conversation_turns")
-    user_recall_log = _count(user_db, "recall_log")
-    user_runtime_events = _count(user_db, "runtime_events")
-    agent_improvements = _count(agent_db, "improvements")
-    agent_failures = _count(agent_db, "failures")
+    # the one count of what the stores hold (eli/memory/memory_truth), read where they are
+    from eli.memory.memory_truth import memory_truth_report
+    truth = memory_truth_report()
+    user, agent = truth["databases"]["user"], truth["databases"]["agent"]
+    user_db, agent_db = user["path"], agent["path"]
+    user_memories = user["counts"].get("memories")
+    user_turns = user["counts"].get("conversation_turns")
+    user_recall_log = user["counts"].get("recall_log")
+    user_runtime_events = user["counts"].get("runtime_events")
+    agent_improvements = agent["counts"].get("improvements")
+    agent_failures = agent["counts"].get("failures")
     lines = [
         "Memory/count telemetry from live SQLite:",
         f"- user_db: {user_db}",
@@ -1896,76 +1886,25 @@ def _eli_recent_mem_v3_execute(user_input):
 
 # -- Memory-count v4/v5 helpers (used by MEMORY_COUNT_V5 inline middleware) ---
 
-def _eli_mc_table_count_v4(conn, table):
-    try:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if not row:
-            return 0
-        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
-    except Exception:
-        return 0
-
-
-def _eli_mc_faiss_count_v4():
-    from pathlib import Path as _Path
-    try:
-        from eli.core.paths import data_dir as _data_dir
-        artifacts = _Path(_data_dir())
-    except Exception:
-        try:
-            artifacts = _Path(__file__).resolve().parents[2] / "artifacts"
-        except Exception:
-            artifacts = _Path.cwd() / "artifacts"
-    index_path = artifacts / "vectors" / "index.faiss"
-    if not index_path.exists():
-        return 0
-    try:
-        import faiss  # type: ignore
-        return int(faiss.read_index(str(index_path)).ntotal)
-    except Exception:
-        return 0
-
-
 def _eli_mc_counts_v4():
-    import sqlite3 as _sqlite3
-    from pathlib import Path as _Path
-    try:
-        from eli.core.paths import user_db_path as _user_db_path
-        db_path = _Path(_user_db_path())
-    except Exception:
-        try:
-            root = _Path(__file__).resolve().parents[2]
-        except Exception:
-            root = _Path.cwd()
-        db_path = root / "artifacts" / "db" / "user.sqlite3"
+    """The counts a memory-count answer gives, from the one count of what the stores hold
+    (eli/memory/memory_truth: the stores where they are, a table not made yet holding nothing)."""
+    from eli.memory.memory_truth import memory_truth_report
+    truth = memory_truth_report()
+    user = truth["databases"]["user"]
+    have = user.get("counts") or {}
     counts = {
-        "long_term_memory_rows": 0,
-        "memory_fts_rows": 0,
-        "faiss_vector_entries": _eli_mc_faiss_count_v4(),
-        "conversation_turns": 0,
-        "conversation_records": 0,
-        "learning_replay_rows": 0,
-        "observations": 0,
-        "user_patterns": 0,
-        "recall_log_rows": 0,
+        "long_term_memory_rows": int(have.get("memories") or 0),
+        "memory_fts_rows": int(have.get("memories_fts") or 0),
+        "faiss_vector_entries": int(truth["summary"].get("vector_ntotal") or 0),
+        "conversation_turns": int(have.get("conversation_turns") or 0),
+        "conversation_records": int(user.get("conversations") or 0),
+        "learning_replay_rows": int(have.get("learning_replay") or 0),
+        "observations": int(have.get("observations") or 0),
+        "user_patterns": int(have.get("user_patterns") or 0),
+        "recall_log_rows": int(have.get("recall_log") or 0),
     }
-    if db_path.exists():
-        try:
-            with _sqlite3.connect(str(db_path)) as conn:
-                counts["long_term_memory_rows"] = _eli_mc_table_count_v4(conn, "memories")
-                counts["memory_fts_rows"] = _eli_mc_table_count_v4(conn, "memories_fts")
-                counts["conversation_turns"] = _eli_mc_table_count_v4(conn, "conversation_turns")
-                counts["conversation_records"] = _eli_mc_table_count_v4(conn, "conversations")
-                counts["learning_replay_rows"] = _eli_mc_table_count_v4(conn, "learning_replay")
-                counts["observations"] = _eli_mc_table_count_v4(conn, "observations")
-                counts["user_patterns"] = _eli_mc_table_count_v4(conn, "user_patterns")
-                counts["recall_log_rows"] = _eli_mc_table_count_v4(conn, "recall_log")
-        except Exception:
-            logging.getLogger(__name__).debug("suppressed exception", exc_info=True)
-    return str(db_path), counts
+    return str(user["path"]), counts
 
 
 # Whole words only. These were substring tests, and "count" is inside "encountered", "total" inside

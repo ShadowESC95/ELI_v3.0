@@ -138,3 +138,35 @@ def test_the_memory_count_reads_the_stores_where_they_are_and_counts_conversatio
     assert status["ok"] and status["conversation_turns"] == 2 and status["distinct_sessions"] == 2
     gone = get_memory_status(tmp_path / "nothing.sqlite3")
     assert gone["ok"] is False and "database_not_found" in gone["error"]
+
+
+def test_every_memory_count_answer_reads_the_one_counter(tmp_path, monkeypatch):
+    """The engine's two count answers, the memory-runtime report and MEMORY_STATS each counted the
+    stores their own way: one counted a table nothing writes for conversations, one looked for the
+    failures in the user's store, one read the vector index from a fixed folder."""
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import status_reports
+    from eli.kernel import engine
+    from eli.memory import memory_truth
+    from eli.memory.memory import Memory
+    user, agent = tmp_path / "user.sqlite3", tmp_path / "agent.sqlite3"
+    monkeypatch.setenv("ELI_USER_DB", str(user))
+    monkeypatch.setenv("ELI_MEMORY_DB", str(user))
+    monkeypatch.setenv("ELI_AGENT_DB", str(agent))
+    monkeypatch.setattr("eli.memory.vector_store.get_vector_store", lambda: None)
+    mem = Memory(db_path=user)
+    for session in ("morning", "evening"):
+        mem.add_conversation_turn("user", f"hello from the {session} chat", session_id=session)
+    mem.store_memory("The blue kettle lives on the kitchen windowsill now.", source="user")
+    Memory(db_path=str(agent), db_type="agent").log_failure("OPEN_APP (name)", error="KeyError: 'name'")
+    monkeypatch.setattr("eli.memory.get_memory", lambda *a, **k: mem)
+    truth = memory_truth.memory_truth_report()
+    have = truth["databases"]["user"]["counts"]
+    _path, counts = engine._eli_mc_counts_v4()
+    assert counts["long_term_memory_rows"] == have["memories"] and counts["conversation_turns"] == 2
+    assert counts["conversation_records"] == 2, "conversations are the sessions the turns belong to"
+    turns = engine._mw_mc_turns_result("quick")["report"]
+    assert (turns["memories"], turns["conversation_turns"]) == (have["memories"], 2)
+    stats = status_reports._h_memory_stats("MEMORY_STATS", {})["counts"]
+    assert stats["conversations"] == 2 and stats["failures"] == truth["databases"]["agent"]["counts"]["failures"] == 1
+    assert stats["memories"] == have["memories"]

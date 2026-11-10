@@ -177,20 +177,18 @@ def _h_cpu_usage(a, args):
 
 def _h_memory_stats(a, args):
         try:
-            from eli.memory import get_memory
-            mem = get_memory()
-            conn = mem._get_connection()
-            try:
-                counts = {}
-                for table in ["memories", "conversations", "observations", "failures"]:
-                    try:
-                        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-                        counts[table] = row[0] if row else 0
-                    except Exception:
-                        counts[table] = "N/A"
-                msg = "Memory Stats:\n" + "\n".join(f"  {k}: {v}" for k, v in counts.items())
-            finally:
-                conn.close()
+            # the one count of what the stores hold (eli/memory/memory_truth), where they are: this
+            # counted a table nothing writes ("conversations") and looked for the failures in the user's
+            # store, where none are kept
+            from eli.memory.memory_truth import memory_truth_report
+            truth = memory_truth_report()
+            user, agent = truth["databases"]["user"], truth["databases"]["agent"]
+            counts = {"memories": user["counts"].get("memories", "N/A"),
+                      "conversations": user.get("conversations") if user.get("conversations") is not None else "N/A",
+                      "conversation_turns": user["counts"].get("conversation_turns", "N/A"),
+                      "observations": user["counts"].get("observations", "N/A"),
+                      "failures": agent["counts"].get("failures", "N/A")}
+            msg = "Memory Stats:\n" + "\n".join(f"  {k}: {v}" for k, v in counts.items())
             # Append conversation log stats from the rotation module
             try:
                 from eli.perception.log_rotation import convlog_stats
