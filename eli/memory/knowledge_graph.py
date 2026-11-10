@@ -461,6 +461,11 @@ class KnowledgeGraph:
                 conn.close()
 
     def get_entity_id(self, name: str) -> Optional[int]:
+        """The entity of this name, or of this alias exactly. An alias was matched as a substring of the
+        alias list, so a short name resolved to whichever entity's aliases held it, and "" to the first."""
+        name = str(name or "").strip()
+        if not name:
+            return None
         conn = self._conn()
         try:
             row = conn.execute(
@@ -468,10 +473,10 @@ class KnowledgeGraph:
             ).fetchone()
             if row:
                 return row["id"]
-            # Check aliases
+            # an alias, as one whole entry of the comma-separated list
             row = conn.execute(
-                "SELECT id FROM kg_entities WHERE LOWER(aliases) LIKE ?",
-                (f"%{name.lower()}%",)
+                "SELECT id FROM kg_entities WHERE ',' || REPLACE(LOWER(COALESCE(aliases, '')), ', ', ',') || ',' "
+                "LIKE '%,' || ? || ',%'", (name.lower(),)
             ).fetchone()
             return row["id"] if row else None
         finally:
@@ -626,11 +631,12 @@ class KnowledgeGraph:
                     f'"{t}"' for t in re.split(r"[^a-zA-Z0-9_]+", q) if len(t) > 1
                 )
                 if fts_q:
+                    # by how well they match (BM25), then the newest: confidence was 1.0 for every entity
                     rows = conn.execute(
                         """SELECT e.* FROM kg_entities e
                            JOIN kg_entities_fts f ON e.id=f.rowid
                            WHERE kg_entities_fts MATCH ?
-                           ORDER BY e.confidence DESC LIMIT ?""",
+                           ORDER BY bm25(kg_entities_fts), e.ts DESC LIMIT ?""",
                         (fts_q, limit)
                     ).fetchall()
                     return [dict(r) for r in rows]
@@ -641,8 +647,8 @@ class KnowledgeGraph:
             rows = conn.execute(
                 """SELECT * FROM kg_entities
                    WHERE LOWER(name) LIKE ? OR LOWER(aliases) LIKE ? OR LOWER(description) LIKE ?
-                   ORDER BY confidence DESC LIMIT ?""",
-                (like, like, like, limit)
+                   ORDER BY (LOWER(name) LIKE ?) DESC, ts DESC LIMIT ?""",
+                (like, like, like, like, limit)
             ).fetchall()
             return [dict(r) for r in rows]
         finally:

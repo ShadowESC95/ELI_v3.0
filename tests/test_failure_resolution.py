@@ -70,3 +70,23 @@ def test_one_fault_hit_by_differently_worded_requests_is_one_recurring_failure(t
     assert [(r[0], r[1]) for r in rows] == [("OPEN_FILE", 3), ("PLAY_MEDIA", 1)], "the action's fault, counted"
     assert rows[0][2] == "can you open notes" and json.loads(rows[0][3]) == [
         "open my notes", "show the notes file", "can you open notes"], "the requests that hit it, as examples"
+
+
+def test_an_improvement_not_found_again_is_closed_and_one_found_again_reopens(tmp_path):
+    """Every improvement was written 'pending' and nothing ever closed one: the prompt counted every
+    suggestion ever made, fixed or not."""
+    import time as _time
+    m = Memory(db_path=str(tmp_path / "agent.sqlite3"), db_type="agent")
+    m.log_improvement("code_quality", "long function in module a")
+    m.log_improvement("code_quality", "unused import in module b")
+    assert m.close_improvements("code_quality", ["unused import in module b"]) == 1
+    open_now = [i["description"] for i in m.get_recent_improvements(open_only=True)]
+    assert open_now == ["unused import in module b"]
+    m.log_improvement("code_quality", "long function in module a")
+    assert len(m.get_recent_improvements(open_only=True)) == 2, "found again: open again"
+    conn = sqlite3.connect(m.db_path)
+    conn.execute("UPDATE improvements SET timestamp = ?, ts = ?", (_time.time() - 365 * 86400,) * 2)
+    conn.commit()
+    conn.close()
+    assert m.tidy_learning_tables()["improvements_closed"] == 2
+    assert m.get_recent_improvements(open_only=True) == [] and len(m.get_recent_improvements()) == 2

@@ -3938,6 +3938,14 @@ class Memory(metaclass=_MemoryMeta):
         from eli.cognition.epistemics import DAYS
         cutoff = float(now if now is not None else time.time()) - float(DAYS) * 86400.0
         out: Dict[str, int] = {}
+        # an improvement proposal nothing found again in that window is closed as obsolete
+        if _has_table(conn, "improvements"):
+            stale = conn.execute("SELECT COUNT(*) FROM improvements WHERE COALESCE(status, 'pending') IN ('pending', 'open') "
+                                 "AND COALESCE(timestamp, ts, created_at, 0) < ?", (cutoff,)).fetchone()[0]
+            out["improvements_closed"] = int(stale or 0)
+            if stale and not dry_run:
+                conn.execute("UPDATE improvements SET status = 'obsolete' WHERE COALESCE(status, 'pending') IN "
+                             "('pending', 'open') AND COALESCE(timestamp, ts, created_at, 0) < ?", (cutoff,))
         for table, when in self._LOGS:
             if not _has_table(conn, table):
                 continue
@@ -5751,13 +5759,15 @@ class Memory(metaclass=_MemoryMeta):
         finally:
             conn.close()
 
-    def get_recent_improvements(self, limit=20):
+    def get_recent_improvements(self, limit=20, open_only: bool = False):
+        """The newest improvement proposals; with open_only, only those still open (not applied, rejected
+        or closed as no longer found)."""
         conn = self._get_connection()
         try:
             if not _eli_table_exists(conn, "improvements"):
                 return []
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     COALESCE(category, area, 'runtime') AS category,
                     COALESCE(area, category, 'runtime') AS area,
@@ -5765,6 +5775,7 @@ class Memory(metaclass=_MemoryMeta):
                     COALESCE(status, 'pending') AS status,
                     COALESCE(timestamp, created_at, ts, id) AS sort_ts
                 FROM improvements
+                {"WHERE COALESCE(status, 'pending') IN ('pending', 'open')" if open_only else ""}
                 ORDER BY sort_ts DESC
                 LIMIT ?
                 """,
@@ -5879,11 +5890,12 @@ class Memory(metaclass=_MemoryMeta):
             ).fetchone()
 
             if row:
+                # found again: seen once more, and open again if it had been closed as no longer found
                 row_id = int(row[0])
                 conn.execute(
                     "UPDATE improvements SET timestamp = ?, ts = ?, priority = ?, status = ?, details = ?, "
-                    "text = ?, content = ?, improvement = ?, suggestion = ?, source = COALESCE(source, ?) "
-                    "WHERE id = ?",
+                    "text = ?, content = ?, improvement = ?, suggestion = ?, source = COALESCE(source, ?), "
+                    "count = COALESCE(count, 1) + 1 WHERE id = ?",
                     (
                         now, now, int(priority or 1), str(status or "pending"), details_text,
                         body, body, body, body, str(kwargs.get("source") or "manual"),
@@ -5908,6 +5920,30 @@ class Memory(metaclass=_MemoryMeta):
             )
             conn.commit()
             return int(cur.lastrowid)
+        finally:
+            conn.close()
+
+    def close_improvements(self, category: str, still_found, *, area: Optional[str] = None,
+                           status: str = "obsolete") -> int:
+        """A rescan of `category` (and `area`) found only `still_found` (descriptions): every open item of
+        it that was not found again is closed with `status`. Proposals were only ever written 'pending',
+        so the store held every suggestion ever made, fixed or not, and the prompt counted them all.
+        How many were closed."""
+        keep = {str(d or "").strip() for d in (still_found or ())}
+        conn = self._get_connection()
+        try:
+            _ensure_contract_schema(conn)
+            where = "COALESCE(category, '') = ? AND COALESCE(status, 'pending') IN ('pending', 'open')"
+            args: list = [str(category or "")]
+            if area is not None:
+                where += " AND COALESCE(area, '') = ?"
+                args.append(str(area))
+            rows = conn.execute(f"SELECT id, COALESCE(description, '') FROM improvements WHERE {where}", args).fetchall()
+            gone = [int(r[0]) for r in rows if str(r[1]).strip() not in keep]
+            if gone:
+                conn.executemany("UPDATE improvements SET status = ? WHERE id = ?", [(status, i) for i in gone])
+                conn.commit()
+            return len(gone)
         finally:
             conn.close()
 

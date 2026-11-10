@@ -44,8 +44,12 @@ _EXPLICIT = {"chat", "user_explicit", "user_correction", "onboarding_interview"}
 _PIN_TAGS = {"working_memory", "session_pin"}
 _USER_PINS = {"memory_recall"}
 
+# The forgetting curve's method constants (named here, the one place they live; nothing else sets
+# them). Not yet fitted from what became of the memories shown (the recall outcomes are settled only
+# by an endorsement or a correction, too few to fit a survival model on): their fit is the next step.
+# A floor under the half-life (14 days) could never apply: the gap between two days of use is at
+# least a day, so the scaled half-life is never under the default, and it is gone.
 DEFAULT_HALF_LIFE_DAYS = 30.0
-MIN_HALF_LIFE_DAYS = 14.0
 MAX_HALF_LIFE_DAYS = 120.0
 IMPORTANCE_STRETCH = 3.0
 REINFORCEMENT = 0.6
@@ -211,7 +215,7 @@ def adaptive_half_life_days(active_day_gaps: Sequence[float]) -> float:
         return DEFAULT_HALF_LIFE_DAYS
     mid = len(gaps) // 2
     median = gaps[mid] if len(gaps) % 2 else (gaps[mid - 1] + gaps[mid]) / 2.0
-    return max(MIN_HALF_LIFE_DAYS, min(MAX_HALF_LIFE_DAYS, DEFAULT_HALF_LIFE_DAYS * math.sqrt(max(median, 1.0))))
+    return min(MAX_HALF_LIFE_DAYS, DEFAULT_HALF_LIFE_DAYS * math.sqrt(max(median, 1.0)))
 
 
 def strength(now: float, last_touch_ts: float, importance: float, origin: str,

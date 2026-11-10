@@ -214,3 +214,19 @@ def test_a_newer_taste_retires_its_contrary_and_holds_reads_what_stands(kg):
 def test_a_kind_is_a_noun_phrase_and_a_state_or_activity_is_not(obj, junk):
     from eli.memory.knowledge_graph import _junk_name_relation
     assert _junk_name_relation({"predicate": "is_a", "object": obj}) is junk, obj
+
+
+def test_an_alias_resolves_only_as_a_whole_alias_and_an_empty_name_to_nothing(kg):
+    """get_entity_id matched an alias as a substring of the alias list: "Al" resolved to whichever
+    entity had "Alexandra" among its aliases, and "" to the first entity."""
+    first = kg.upsert_entity("Northgate Library", aliases=["the library", "Alexandra Hall"])
+    assert kg.get_entity_id("") is None
+    assert kg.get_entity_id("Al") is None
+    assert kg.get_entity_id("alexandra hall") == first and kg.get_entity_id("The Library") == first
+
+
+def test_entity_search_ranks_by_match_not_a_confidence_that_is_always_one(kg):
+    kg.upsert_entity("river path")
+    kg.upsert_entity("river path bridge over the river")
+    names = [e["name"] for e in kg.search_entities("bridge", limit=5)]
+    assert names == ["river path bridge over the river"]
