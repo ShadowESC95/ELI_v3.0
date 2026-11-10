@@ -55,3 +55,18 @@ def test_a_new_date_over_an_unchanged_table_is_not_written(tmp_path, monkeypatch
     target.write_text(dated_earlier.replace("| `", "| `CHANGED_", 1), encoding="utf-8")
     cd.generate_capabilities_doc()
     assert "CHANGED_" not in target.read_text(encoding="utf-8"), "a real change was not written"
+
+
+def test_an_engine_start_never_writes_the_blueprint_even_with_no_sandbox_named(monkeypatch):
+    """Every engine start rewrote blueprints/capabilities_and_actions.md, so a test or an eval run from a
+    checkout without ELI_CAPABILITIES_DOC did too. The start writes this install's own copy (its data
+    folder); the blueprint is written when asked for by name."""
+    from pathlib import Path
+    from eli.core.paths import data_dir
+    from eli.tools.registry import capabilities_doc as cd
+
+    monkeypatch.delenv("ELI_CAPABILITIES_DOC", raising=False)
+    before = cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None
+    written = Path(cd.generate_capabilities_doc()["path"])
+    assert data_dir() in written.parents and written.is_file()
+    assert (cd.OUT.stat().st_mtime_ns if cd.OUT.exists() else None) == before

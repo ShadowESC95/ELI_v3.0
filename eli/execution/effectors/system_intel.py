@@ -389,8 +389,10 @@ def _runtime_boot_status() -> Dict[str, Any]:
             "project_root": Path(paths.project_root),
             "user_db": Path(paths.user_db),
             "agent_db": Path(paths.agent_db),
-            "settings": Path(paths.project_root) / "config" / "settings.json",
-            "capability_manifest": Path(paths.project_root) / "capability_manifest.json",
+            # where they really are: the settings file runtime_settings reads, the manifest this install reads
+            "settings": __import__("eli.core.runtime_settings", fromlist=["_settings_file"])._settings_file(),
+            "capability_manifest": __import__("eli.tools.registry.capability_updater",
+                                              fromlist=["current_manifest_path"]).current_manifest_path(),
         }
         for label, path in path_checks.items():
             checks[f"path.{label}"] = path.exists()

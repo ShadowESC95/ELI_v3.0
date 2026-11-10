@@ -145,3 +145,15 @@ def test_a_yes_to_listed_goal_proposals_confirms_them_through_the_one_consent_re
     agreed = pp.goals_agreed("yes please")
     assert [g["proposal_id"] for g in agreed] == [waiting["proposal_id"]]
     assert pp.goals_agreed("what is the weather") == []
+
+
+def test_every_goal_proposal_is_listed_when_asked(tmp_path, monkeypatch):
+    """The listing kept the first eight goals and said nothing of the rest."""
+    from eli.execution import executor_enhanced as ex
+    goal_store = _queue_and_goals(tmp_path, monkeypatch)
+    titles = [f"Sort shelf number {n}" for n in range(12)]
+    for n, title in enumerate(titles):
+        goal_store.upsert_goal({"goal_id": f"shelf{n}", "title": title, "objective": "", "cadence_sec": 60,
+                                "autonomy_mode": "proposal_only", "status": "proposed"})
+    text = ex.execute("GET_PROPOSALS", {})["content"]
+    assert all(title in text for title in titles), text

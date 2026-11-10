@@ -387,3 +387,15 @@ def test_a_correction_lead_stands_in_front_of_the_instruction():
     assert action("i said it's raining") == "CHAT"
     from eli.cognition.llm_intent import is_plain_statement
     assert not is_plain_statement("i said play golden hour by jvke")
+
+
+def test_the_routers_pipeline_trace_is_a_log_of_this_install_not_a_file_in_its_tree():
+    """It was appended to <install>/ops/reports/..., so a test or an eval run from a checkout wrote there."""
+    from eli.core.paths import logs_dir, project_root
+    from eli.execution import router_enhanced as router
+    trace = logs_dir() / "pipeline_visibility" / "runtime_pipeline_trace.jsonl"
+    old = project_root() / "ops" / "reports" / "pipeline_visibility" / "runtime_pipeline_trace.jsonl"
+    before = old.stat().st_mtime_ns if old.exists() else None
+    router._eli_pipeline_trace("test_stage", note="a line for this test")
+    assert '"test_stage"' in trace.read_text(encoding="utf-8").splitlines()[-1]
+    assert (old.stat().st_mtime_ns if old.exists() else None) == before

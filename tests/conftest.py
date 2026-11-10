@@ -80,9 +80,9 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 # covers everything resolved through them, so no test can write into this checkout's own state.
 # The config dir starts each run as a fresh install has it: the tracked files and nothing else.
 # Which variable puts which store there is tests/_state_env.py's (a module run without this conftest
-# uses the same list). Starting an engine regenerates the capabilities table, which lives in
-# blueprints/, and the manifest at the checkout's root: both go to the sandbox too, and only the
-# claims bootstrap (tests/claims/conftest.py) brings the checkout's manifest up to date.
+# uses the same list). Starting an engine regenerates the capabilities table and the manifest into
+# the data folder, the sandbox here; only the claims bootstrap (tests/claims/conftest.py) brings the
+# checkout's shipped manifest up to date.
 SANDBOX = ROOT / "artifacts" / "_pytest"
 from tests._state_env import outside as _stores_outside, state_env as _state_env  # noqa: E402
 os.environ.update(_state_env(SANDBOX))

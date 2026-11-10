@@ -24,14 +24,24 @@ def _eli_root() -> Path:
 ELI_ROOT = _eli_root()
 
 
+def shipped_manifest_path() -> Path:
+    """The manifest the build ships at the install's root (written by tools/bootstrap_claims_artifacts.py)."""
+    return ELI_ROOT / "capability_manifest.json"
+
+
 def manifest_path() -> Path:
-    """Where a regeneration writes the manifest: the install's own capability_manifest.json, or
-    ELI_CAPABILITY_MANIFEST. The test sandbox sets that, so a test that starts an engine (which
-    regenerates the manifest) never rewrites the checkout's: one that did, with what an earlier
-    test had changed, left the claims suite of the next run reading another run's manifest."""
-    import os
-    named = os.environ.get("ELI_CAPABILITY_MANIFEST", "").strip()
-    return Path(named).expanduser() if named else ELI_ROOT / "capability_manifest.json"
+    """Where an engine start regenerates the manifest: this install's runtime state (paths.data_dir(),
+    beside the capability inventory), never the install's root. Written there, a test or an eval that
+    started an engine rewrote the checkout's manifest with what it had changed, and the claims suite
+    of the next run read that run's manifest."""
+    from eli.core.paths import data_dir
+    return data_dir() / "runtime" / "capability_manifest.json"
+
+
+def current_manifest_path() -> Path:
+    """The manifest to read: the one this install regenerated, else the one the build shipped."""
+    regenerated = manifest_path()
+    return regenerated if regenerated.is_file() else shipped_manifest_path()
 
 
 def _plugin_permission_rollup(plugin_id: str) -> str:
@@ -129,7 +139,7 @@ def capability_status(actions=None) -> dict:
     from eli.runtime.evidence_ledger import verified_actions
     if actions is None:
         try:
-            actions = [c["action"] for c in json.loads((ELI_ROOT / "capability_manifest.json").read_text(
+            actions = [c["action"] for c in json.loads(current_manifest_path().read_text(
                 encoding="utf-8")).get("capabilities", [])]
         except Exception:
             actions = []

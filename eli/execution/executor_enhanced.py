@@ -2041,8 +2041,10 @@ def _runtime_boot_status() -> Dict[str, Any]:
             "project_root": Path(paths.project_root),
             "user_db": Path(paths.user_db),
             "agent_db": Path(paths.agent_db),
-            "settings": Path(paths.project_root) / "config" / "settings.json",
-            "capability_manifest": Path(paths.project_root) / "capability_manifest.json",
+            # where they really are: the settings file runtime_settings reads, the manifest this install reads
+            "settings": __import__("eli.core.runtime_settings", fromlist=["_settings_file"])._settings_file(),
+            "capability_manifest": __import__("eli.tools.registry.capability_updater",
+                                              fromlist=["current_manifest_path"]).current_manifest_path(),
         }
         for label, path in path_checks.items():
             checks[f"path.{label}"] = path.exists()
@@ -4967,7 +4969,7 @@ def _execute_impl(action: str, args: Optional[Dict[str, Any]] = None) -> Dict[st
                     and str(getattr(g, "autonomy_mode", "")).lower() == "proposal_only"
                 ]
                 goals.sort(key=lambda g: float(getattr(g, "priority", 0.5) or 0.5), reverse=True)
-                for g in goals[:8]:
+                for g in goals:          # every one: the first eight were listed and the rest left unsaid
                     _obj = str(getattr(g, "objective", "") or "").strip()
                     lines.append(f"• {getattr(g, 'title', '(goal)')}" + (f" — {_obj}" if _obj else ""))
             except Exception:
@@ -8291,9 +8293,12 @@ try:
         if not runtime_snapshot:
             runtime_snapshot = _eli_self_read_json(root / "artifacts" / "runtime_snapshot.json")
 
-        # The manifest ships inside the bundle for a frozen build and is rewritten
-        # into the per-user root at runtime; take whichever exists.
-        manifest = _eli_self_read_json(root / "capability_manifest.json")
+        # The one this install regenerated, else the one the build shipped (capability_updater).
+        try:
+            from eli.tools.registry.capability_updater import current_manifest_path as _cur_manifest
+            manifest = _eli_self_read_json(_cur_manifest())
+        except Exception:
+            manifest = {}
         if not manifest:
             try:
                 manifest = _eli_self_read_json(

@@ -183,3 +183,12 @@ def test_git_queries_the_code_monitor_makes_are_answered_and_writes_are_not_run(
     assert wrote.returncode != 0 and "not run" in wrote.stderr
     out = tmp_path / "leak.txt"
     assert safe_git_completed(["git", "diff", f"--output={out}"], cwd=str(repo)).returncode != 0 and not out.exists()
+
+
+def test_what_the_code_monitor_saw_is_kept_in_the_data_folder_not_the_tree():
+    """Kept in the source tree, every engine start in a test or an eval wrote .code_monitor_state.json
+    into the checkout."""
+    from eli.core.paths import data_dir, project_root
+    from eli.runtime.code_monitor import CodeMonitor
+    for mon in (CodeMonitor(), CodeMonitor(project_root())):        # awareness_boot names the install's root
+        assert mon.state_path.parent == data_dir() / "runtime"
