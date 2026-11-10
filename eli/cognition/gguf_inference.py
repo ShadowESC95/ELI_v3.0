@@ -783,6 +783,13 @@ def _fg_preempt_enabled() -> bool:
     return os.environ.get("ELI_FG_PREEMPT", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def _stopped_by_shutdown() -> bool:
+    """Shutdown is signalled and this call is not the one exempted for it: the call does not start a
+    decode at all. One that waited (for a quiet foreground, for the lock) through the signal went
+    ahead, the decode was aborted while teardown unloaded the model, and the process died (SIGSEGV)."""
+    return _SHUTDOWN.is_set() and not getattr(_bg_tls, "allow_during_shutdown", False)
+
+
 def _should_abort_generation(background: bool) -> bool:
     """True when an in-flight generation should yield at the next token: shutdown is
     signalled (aborts ANY call, except one deliberately exempted via
@@ -1670,6 +1677,8 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
                     time.sleep(1.0)
         except Exception:
             _SWLOG.debug("background deferral check failed", exc_info=True)
+    if _stopped_by_shutdown():
+        return iter(()) if stream else {"choices": [{"text": ""}]}
     # Every generation carries a cooperative abort: it yields at the next token when
     # shutdown is signalled (so teardown never blocks on a long native call) and, for
     # background work, when a foreground turn announces priority on the shared lock.
@@ -1753,6 +1762,8 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
                 def _open_stream(_max=attempt_max, _prompt=full_prompt, _kw=_stream_extra):
                     _acquire_lock_fg_priority()
                     try:
+                        if _stopped_by_shutdown():
+                            return iter(())      # the reader's end gives the lock back (_stream_done)
                         _resume()
                         return llm(
                             _prompt,
@@ -1793,6 +1804,8 @@ def _safe_invoke_llm(llm, full_prompt: str, *, temperature, max_tokens, top_p, t
 
             _acquire_lock_fg_priority()
             try:
+                if _stopped_by_shutdown():
+                    return {"choices": [{"text": ""}]}
                 _resume()
                 _result = llm(
                     full_prompt,
