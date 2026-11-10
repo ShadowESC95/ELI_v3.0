@@ -74,6 +74,23 @@ def test_a_habit_is_a_sentence_for_eli_and_only_a_shell_line_meets_the_gate(monk
     assert len(ran) == 4 and "Refused" in capsys.readouterr().out
 
 
+def test_a_habits_shell_line_waits_for_the_setting_that_allows_it(monkeypatch, tmp_path, capsys):
+    """habit_shell_enabled promised a switch for shell lines from an imported habit store, and nothing
+    read it. Off, a shell line is reported and never run; a sentence for ELI still runs."""
+    s = _scheduler(monkeypatch, tmp_path)
+    ran = []
+    monkeypatch.setitem(sys.modules, "eli.kernel.engine",
+                        SimpleNamespace(get_engine=lambda: SimpleNamespace(
+                            process=lambda cmd, source="": ran.append(cmd) or {"ok": True})))
+    monkeypatch.setattr("eli.core.full_control.is_full_control", lambda: False)
+    monkeypatch.setenv("ELI_ALLOWED_CMDS", "")
+    monkeypatch.setattr("eli.core.runtime_settings.load_settings", lambda *a, **k: {"habit_shell_enabled": False})
+    s._execute_rule({"name": "count", "command": "ls ~/notes | wc -l", "id": 1})
+    s._execute_rule({"name": "news", "command": "watch the news", "id": 2})
+    assert ran == ["watch the news"]
+    assert "habit_shell_enabled is off" in capsys.readouterr().out
+
+
 def test_the_proactive_daemon_no_longer_fires_habits_itself():
     """Every habit ran twice: at its minute through the engine, and again by the daemon's tick as a
     raw shell line within five minutes of it."""

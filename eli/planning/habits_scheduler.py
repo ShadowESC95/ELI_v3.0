@@ -121,8 +121,16 @@ class HabitScheduler:
         # user's own word, and a line the gate refuses (under the same Full Control policy as a typed
         # command) is reported, never run. The gate's only-reads rule is for shell lines: held to it,
         # every ordinary habit was refused.
+        # A shell line runs only while habit_shell_enabled is on (the setting promised that switch,
+        # and nothing read it once the daemon's own shell path was gone).
         from eli.execution.shell_gate import check_command, written_for_the_shell
-        refused = check_command(_cmd) if written_for_the_shell(_cmd) else None
+        refused = None
+        if written_for_the_shell(_cmd):
+            from eli.core.runtime_settings import load_settings
+            if not (load_settings() or {}).get("habit_shell_enabled", True):
+                refused = {"content": "habit_shell_enabled is off, so a habit's shell line is not run"}
+            else:
+                refused = check_command(_cmd)
         if refused:
             why = str(refused.get("content") or "refused by the shell gate")
             log.warning("[SCHEDULER] habit '%s' was not run: %s", rule.get("name", "?"), why)
