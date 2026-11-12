@@ -47,8 +47,8 @@ def test_set_user_name_rejects_a_command(tmp_path, monkeypatch):
     saved = {}
     monkeypatch.setattr(state, "save_user_profile", lambda p, uid=None: saved.update(p))
     monkeypatch.setattr(state, "sync_identity_to_world_model", lambda **k: None)
-    # set_user_name also mirrors the name into settings.json; without this the suite
-    # blanked user_name in the repo's own config/settings.json on every run.
+    # set_user_name once wrote a copy of the name into config/settings.json by hand, and the suite
+    # blanked user_name in the repo's own file on every run; paths stay this test's own.
     from types import SimpleNamespace
     monkeypatch.setattr("eli.core.paths.get_paths", lambda: SimpleNamespace(config_dir=tmp_path))
     returned = state.set_user_name("pause spotify")
@@ -204,11 +204,16 @@ def test_a_members_new_name_clears_only_their_own_name_rows(tmp_path, monkeypatc
         assert conn.execute("SELECT pattern_data FROM user_patterns").fetchall() == [("Rowan",)]
 
 
-def test_a_members_name_is_not_written_where_status_reads_the_owners(executor_name_store, monkeypatch):
+def test_a_name_is_kept_once_in_the_callers_profile_and_status_reads_it_there(executor_name_store, monkeypatch):
+    """The executor's state file kept a copy of the owner's name, which status read for every caller
+    (a member asking was told the owner's). A name is written to the caller's own profile alone, and
+    status reads that."""
+    from eli.kernel import state
     ex, stored = executor_name_store
-    monkeypatch.setattr("eli.runtime.profile_extractor.pattern_owner", lambda user_id=None: "member-b")
-    assert ex.set_user_name("Jules")["ok"] is True and stored.get("profile") == "Jules"
-    assert "user_name" not in stored
-    monkeypatch.setattr("eli.runtime.profile_extractor.pattern_owner", lambda user_id=None: "")
-    ex.set_user_name("Rowan")
-    assert stored.get("user_name") == "Rowan"
+    for whose, name in (("member-b", "Jules"), ("", "Rowan")):
+        monkeypatch.setattr("eli.runtime.profile_extractor.pattern_owner", lambda user_id=None, _w=whose: _w)
+        assert ex.set_user_name(name)["ok"] is True and stored.get("profile") == name
+        assert "user_name" not in stored, "no copy beside the profile"
+    monkeypatch.setattr(state, "get_user_name", lambda default="", user_id=None: "Jules")
+    monkeypatch.setattr(ex, "_ollama_ps", lambda: {})
+    assert ex.get_status()["user_name"] == "Jules"

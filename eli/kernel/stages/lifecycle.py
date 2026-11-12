@@ -48,6 +48,8 @@ class LifecycleMixin:
         Ordering matters — see numbered steps:
         1. Stop the proactive daemon before further state changes.
         2-3. Persist working memory + engagement narrative.
+        3.3-3.4. Run the model readings waiting for the owner's pause, then the session summary,
+            both before the inference abort, while the model is loaded.
         4-5. Reflection + self-improvement passes (read-only of memory).
         6.  Close the memory store (final WAL checkpoint, SQLite handles).
         7.  Close the vector-store embedder.
@@ -112,6 +114,23 @@ class LifecycleMixin:
                     log.debug(f"[COGNITIVE] Shutdown: session narrative skipped (depth={depth:.2f} < 0.25, casual session)")
         except Exception as _eng_err:
             log.debug(f"[COGNITIVE] Shutdown: engagement flush failed (non-fatal): {_eng_err}")
+
+        # 3.3 What waits for the owner's pause (inference_broker.when_idle: ELI's model reading what
+        # the last message said of the reply before it) runs now, on this thread, while the model is
+        # still loaded: the owner is not waiting any more. The worker that would have run it dies with
+        # the process, so a reading still waiting when the session ended was lost. With a reply still
+        # being generated the model is not free (a background call gives way to it), so the word
+        # cues' reading, settled at once, stands, and the log says so.
+        try:
+            from eli.cognition.inference_broker import foreground_in_progress, run_idle_work
+            if foreground_in_progress():
+                log.info("[COGNITIVE] Shutdown: a reply was still being generated, so the model's readings "
+                         "waiting for the owner's pause were not run; the word cues' reading stands")
+            else:
+                run_idle_work()
+                log.debug("[COGNITIVE] Shutdown: the readings waiting for the owner's pause are done")
+        except Exception as _iw_err:
+            log.warning(f"[COGNITIVE] Shutdown: the readings waiting for the owner's pause did not run: {_iw_err}")
 
         # 3.4 The in-depth LLM end-of-session summary (session_summaries, user_patterns, semantic
         # tier, memories FTS) runs before aborting inference, while shutdown isn't yet signalled;

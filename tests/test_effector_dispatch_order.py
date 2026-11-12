@@ -120,6 +120,24 @@ def test_registry_is_consulted_before_any_inline_handler():
     )
 
 
+def test_system_intel_holds_no_copy_of_an_executor_helper():
+    """The memory capability statement, the memory audit and its formatter, and the runtime reports
+    were defined word for word in the executor and again in effectors/system_intel.py, with shims
+    there back to the rest; nothing called system_intel's, and its copies drifted from the ones that
+    ran. A helper has one home: no name is defined in both, and the statement nothing called is gone."""
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import system_intel
+
+    def defined(path: Path) -> set:
+        return {n.name for n in ast.parse(path.read_text(encoding="utf-8")).body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    both = sorted(defined(EXECUTOR) & defined(Path(system_intel.__file__)))
+    assert not both, f"defined in the executor and again in system_intel: {both}"
+    assert not hasattr(ex, "_memory_capability_truth") and not hasattr(system_intel, "_memory_capability_truth")
+    assert callable(system_intel.gpu_use_facts), "what is system_intel's own stays"
+
+
 def test_a_note_is_written_by_its_notes_effector_not_a_copy_in_the_executor(monkeypatch):
     # the executor kept its own WRITE_NOTE, writing to a folder under wherever ELI was started from,
     # ahead of the notes effector
@@ -133,3 +151,44 @@ def test_a_note_is_written_by_its_notes_effector_not_a_copy_in_the_executor(monk
     assert ex.execute("WRITE_NOTE", {"text": "buy oat milk"})["ok"] is True
     assert written == ["buy oat milk"]
     assert not hasattr(ex, "_eli_safe_write_note")
+
+
+def test_files_screenshots_and_the_user_info_are_their_effectors_on_the_recorded_path(monkeypatch, tmp_path):
+    """READ_FILE, SCREENSHOT, REFRESH_USER_INFO, PERSONA_REFRESH, USER_INFO_REPORT and an
+    identity-shaped MEMORY_RECALL were answered by the remediation pre-dispatch, ahead of the
+    registry, with copies of the effectors (READ_FILE's the only one that read documents): never
+    normalised, checked or recorded. Each is its registered effector's now, on the path that records
+    it, and the copies are gone. No test here takes a real screenshot."""
+    from eli.execution import executor_enhanced as ex
+    from eli.execution.effectors import load_all, registry
+    from eli.perception import os_controller
+
+    load_all()
+    pre = next(n for n in ast.parse(EXECUTOR.read_text(encoding="utf-8")).body
+               if isinstance(n, ast.FunctionDef) and n.name == "_action_pre_dispatch")
+    theirs = {"READ_FILE", "SCREENSHOT", "REFRESH_USER_INFO", "PERSONA_REFRESH", "USER_INFO_REPORT", "MEMORY_RECALL"}
+    assert theirs <= registry.registered_actions()
+    assert not theirs & set(_inline_actions(pre)), "answered again before the registry"
+    for copy in ("_eli_safe_read_file", "_eli_safe_screenshot", "_eli_is_identity_memory_query"):
+        assert not hasattr(ex, copy), copy
+    captured, recorded = [], []
+    shot = tmp_path / "shot.png"
+
+    def _capture(region="full", **_k):
+        captured.append(region)
+        if len(captured) > 1:
+            shot.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(64))
+        return {"ok": True, "path": str(shot)}
+
+    monkeypatch.setattr(os_controller, "take_screenshot", _capture)
+    monkeypatch.setattr(ex, "_record_tool_execution", lambda action, *a, **k: recorded.append(action))
+    left_nothing = ex.execute("SCREENSHOT", {"region": "full"})
+    assert left_nothing["ok"] is False and left_nothing.get("verified") is False, "a capture with no file is checked"
+    assert ex.execute("SCREENSHOT", {"region": "full"})["ok"] is True
+    assert captured == ["full", "full"] and recorded == ["SCREENSHOT", "SCREENSHOT"], "the effector, on the recorded path"
+    doc = tmp_path / "notes.pdf"
+    doc.write_bytes(b"%PDF-1.4 not really")
+    monkeypatch.setattr("eli.execution.effectors._base._read_document_text",
+                        lambda path: {"ok": True, "content": "the document's own text"})
+    out = ex.execute("READ_FILE", {"path": str(doc)})
+    assert out["ok"] is True and out["content"] == "the document's own text" and recorded[-1] == "READ_FILE"

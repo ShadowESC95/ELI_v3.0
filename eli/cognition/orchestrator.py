@@ -654,54 +654,6 @@ class OrchestratorMemoryAgent:
                     return merged
         return merged
 
-    # Phrases that are deterministic lookup non-answers. They must never be
-    # injected as retrieved context for a subsequent unrelated query — doing so
-    # causes the LLM to echo them back verbatim for completely different questions.
-    _CONTEXT_RESPONSE_BLACKLIST = {
-        "i do not have a personal memory of the user's name",
-        "no confirmed name/identity label is stored",
-        "no confirmed name",
-        "i have no memory of your name",
-        "i don't have a record of your name",
-        # Variants observed in session logs that were slipping through:
-        "i don't have a personal name or identity stored",
-        "i do not have a personal name or identity stored",
-        "no memories found for your name",
-        "i do not have a confirmed name/identity row",
-        "i don't have a confirmed name",
-        "no personal name or identity stored",
-        "personal name or identity stored for the active user",
-    }
-
-    def rerank(self, query: str,
-               hits: List[Dict[str, Any]], top_k: int = 20) -> List[Dict[str, Any]]:
-        # Strip placeholder non-answers before scoring so they can never
-        # contaminate context for an unrelated query.
-        _bl = self._CONTEXT_RESPONSE_BLACKLIST
-        hits = [
-            h for h in hits
-            if not any(p in (h.get("text") or "").lower() for p in _bl)
-        ]
-
-        def score(item: Dict[str, Any]) -> float:
-            text = (item.get("text") or "").lower()
-            q = (query or "").lower()
-            overlap = sum(1 for tok in set(q.split()) if tok and tok in text)
-            base = float(item.get("score", 0.0) or 0.0)
-            src = str(item.get("source", "")).lower()
-            # Source priority: KG facts are authoritative, conversation history is recent signal,
-            # vector/fts are supplementary
-            src_boost = {
-                "knowledge_graph": 0.40,
-                "kg": 0.40,
-                "conversation": 0.22,
-                "vector": 0.08,
-                "fts5": 0.05,
-                "fts": 0.05,
-            }.get(src, 0.0)
-            return base + overlap * 0.15 + src_boost
-        return sorted(hits, key=score, reverse=True)[:top_k]
-
 
 class AgentOrchestrator:
     def __init__(self, engine):
@@ -1268,16 +1220,14 @@ class AgentOrchestrator:
             log.debug(f"[ORCHESTRATOR] specialist bus failed (non-fatal): {_spec_err}")
 
         try:
-            self.engine._pending_recall_ids = [
-                int(h["id"]) for h in wm.merged_hits
-                if str(h.get("id", "")).isdigit() and int(h["id"]) > 0][:5]
+            self.engine._pending_recall_ids = [int(h["id"]) for h in shown_memories(wm)]
         except Exception:
             log.debug("recalled ids not recorded", exc_info=True)
         # Each memory shown to the reply: the chance it is of use, fitted on what became of memories
         # shown before (eli/cognition/epistemics, kind recall), and a thought of why it came to mind;
         # the next turn settles both with the reply.
         try:
-            _assess_recalls(user_input, wm.merged_hits)
+            _assess_recalls(user_input, shown_memories(wm))
         except (OSError, ValueError, TypeError, ImportError, LookupError, AttributeError):
             log.debug("recalls not assessed", exc_info=True)
         try:
@@ -1500,7 +1450,20 @@ class AgentOrchestrator:
         }
 
 
-def _assess_recalls(user_input: str, hits: Any, limit: int = 5) -> None:
+# How many of the memories shown to a reply are assessed and settled with it.
+RECALLS_SETTLED = 5
+
+
+def shown_memories(wm: Any, limit: int = RECALLS_SETTLED) -> List[Dict[str, Any]]:
+    """The stored memories a reply was shown, in the order it was shown them: the reranked hits (the
+    prompt shows wm.reranked_hits), each a memory row (a positive id). The merged hits, in the order
+    the retrievers gave them before the rerank, were taken for these, so the next message settled
+    memories the reply never saw and missed the ones it did."""
+    return [h for h in (getattr(wm, "reranked_hits", None) or [])
+            if isinstance(h, dict) and str(h.get("id", "")).isdigit() and int(h["id"]) > 0][:limit]
+
+
+def _assess_recalls(user_input: str, hits: Any, limit: int = RECALLS_SETTLED) -> None:
     """The memories a reply is shown, each assessed: its ranking score calibrated on what became of
     memories shown before, with how readily it came to mind, its importance, how much of the question it
     holds and whether more than one retriever found it (eli/cognition/epistemics, kind recall), under

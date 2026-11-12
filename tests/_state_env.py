@@ -101,8 +101,8 @@ def outside(root: Path) -> Dict[str, Path]:
 # ── a module of its own, without the conftest ────────────────────────────────────────────────────
 
 class OwnState:
-    """What `own_state` holds: the folder, and every file or database opened meanwhile under this
-    machine's own state folders (test, path)."""
+    """What `own_state` holds: the folder, and every file or database opened, and every folder made,
+    meanwhile under this machine's own state folders (test, path)."""
 
     def __init__(self, root: Path, roots: Tuple[str, ...], callers_sandbox: str = "") -> None:
         self.root = Path(root)
@@ -118,8 +118,9 @@ _HOOKED = [False]
 
 
 def _note_opened(event, args) -> None:
-    """Audit hook: a database connected or a file opened under the machine's own state, while held."""
-    if not _HELD or event not in ("open", "sqlite3.connect") or not args:
+    """Audit hook: a database connected, a file opened or a folder made under the machine's own state,
+    while held (a folder made and left empty was missed when only opening was noted)."""
+    if not _HELD or event not in ("open", "sqlite3.connect", "os.mkdir") or not args:
         return
     try:
         path = os.path.realpath(os.fsdecode(args[0]))
@@ -155,7 +156,8 @@ def _forget_resolved_paths() -> None:
 def own_state(root: Path) -> Iterator[OwnState]:
     """Every store under `root`, and test mode on (ELI_TEST_MODE), for as long as it is held, for a
     module that runs without the suite conftest (the --noconftest lane); what it opens under the
-    machine's own state meanwhile is noted (`opened_elsewhere`). Put back as it was afterwards."""
+    machine's own state meanwhile, and any folder made there, is noted (`opened_elsewhere`). Put back
+    as it was afterwards."""
     import pytest
     from eli.core.paths import data_dir, test_mode
     root = Path(root)

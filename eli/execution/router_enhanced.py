@@ -1186,16 +1186,6 @@ def _route_grounded_runtime_intent(
     ):
         return _mk("CHAT", {"message": raw}, 0.99, matched_by="identity.persona_chat", allow_chat_without_evidence=True)
 
-    if re.search(
-        r"\b(who am i|do you know who i am|do you know me|do you remember me|"
-        r"what is my name|what('s| is) my name|what do you know about me|"
-        r"you do not know who i am|you don'?t know who i am|"
-        r"don'?t you know who i am|don'?t you know me|"
-        r"you don'?t know me|you have no idea who i am)\b",
-        raw, re.I
-    ):
-        return _mk("USER_IDENTITY_SUMMARY", {}, 0.99, matched_by="identity.user_summary_preempt", allow_chat_without_evidence=False)
-
     # Last-turn trace questions need retrieval plus the live _prev_bus_result. COGNITION_STATUS
     # returned static line numbers and made the 7B confabulate confidence/agent values. CHAT lets
     # stages 3-11 engage and splices in the real prior-turn AgentBus metadata.
@@ -2108,14 +2098,6 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             matched_by="identity.user_info.refresh",
             allow_chat_without_evidence=False,
         )
-    if re.search(r"\b(what do you know about me from memory|what do you remember about me|tell me everything you know about me from memory)\b", low):
-        return _mk("CHAT", {"message": raw}, 0.98,
-                   matched_by="memory.user_recall.chat_handoff",
-                   allow_chat_without_evidence=False)
-
-    if re.fullmatch(r"\s*who am i\??\s*", low):
-        return _mk("MEMORY_RECALL", {"query": "identity"}, 0.99, matched_by="memory.identity.preempt")
-
     # --- DIRECT SCREENSHOT MATCH ---
     if raw.strip().lower() == "screenshot":
         return _mk("SCREENSHOT", {"region": "full"},
@@ -2472,11 +2454,6 @@ def route(text: str, _clause_depth: int = 0) -> Dict[str, Any]:
             0.93,
             matched_by="memory.recall_conversation",
         )
-    # Explicit "what do you know about me" → MEMORY_RECALL
-    if re.search(r"\bwhat\s+do\s+you\s+know\s+about\s+me\b", low):
-        return _mk("MEMORY_RECALL", {"query": "information about user"},
-                   0.98, matched_by="memory.user_recall", entities={"query": "user"})
-
     # Forms with 'for X': 'search your memory/memories for python'
     # NOTE: memor(?:y|ies) handles both singular and plural to prevent
     # "search your memories for X" from falling through to OPEN_BROWSER web.search.
@@ -5175,19 +5152,8 @@ def _eli_runtime_cognition_failure_guard(text):
 # Identity scope contract: USER_IDENTITY_SUMMARY must carry the original question and not be treated
 # as a generic "what do you know about me" memory/profile dump.
 def _eli_identity_scope_for_text(text):
-    import re as _re
-    low = _re.sub(r"\s+", " ", str(text or "").lower()).strip(" .,!?:;")
-
-    if _re.search(r"\b(what is my name|what's my name|do you know my name)\b", low):
-        return "name_only"
-
-    if _re.search(r"\b(who am i|who i am)\b", low):
-        return "identity_only"
-
-    if _re.search(r"\b(do you remember me|do you know me)\b", low):
-        return "memory_presence_only"
-
-    return "identity_only"
+    from eli.execution.route_contracts import identity_scope
+    return identity_scope(text)
 # =============================================================================
 
 # Profile memory scope contract. Separates identity-only questions, memory-presence questions,
@@ -5971,38 +5937,15 @@ def _eli_phase38_identity_contract(raw):
             matched_by="identity.relational_both", allow_chat_without_evidence=True,
         )
 
-    if _re.search(
-        r"\b(who am i|do you know who i am|do you know me|do you remember me|"
-        r"what is my name|what('s| is) my name|what do you know about me|"
-        r"you do not know who i am|you don'?t know who i am|"
-        r"don'?t you know who i am|don'?t you know me|"
-        r"you don'?t know me|you have no idea who i am)\b",
-        low,
-    ):
-        return _mk(
-            "USER_IDENTITY_SUMMARY",
-            {},
-            0.99,
-            matched_by="identity.final_user_summary",
-            allow_chat_without_evidence=False,
-        )
-
-    # Elliptical name follow-up ("and my name?", "what about my name"). A bare name question after
-    # the topic was raised fell to CHAT, where the critique replaced the stored name with "[no
-    # memories found]". Route to the grounded USER_IDENTITY_SUMMARY. Must end at "my name" so
-    # "my name is <name>" isn't captured.
-    if _re.fullmatch(
-        r"\s*(and|but|so|ok|okay|well|hmm?)?[,\s]*"
-        r"(what(?:'s| is| about)?\s+)?my name\s*\??\s*",
-        low,
-    ):
-        return _mk(
-            "USER_IDENTITY_SUMMARY",
-            {},
-            0.99,
-            matched_by="identity.final_user_summary_elliptical",
-            allow_chat_without_evidence=False,
-        )
+    # Who the user is, their name ("and my name?" too, a bare name question after the topic was
+    # raised: it fell to CHAT, where the critique replaced the stored name), whether ELI knows them,
+    # and the report of what ELI keeps on them: one classifier decides all of it
+    # (route_contracts.identity_question), here and nowhere else in the router.
+    from eli.execution.route_contracts import identity_question
+    asked = identity_question(raw)
+    if asked is not None:
+        return _mk(asked["action"], asked["args"], 0.99, matched_by=asked["matched_by"],
+                   allow_chat_without_evidence=False)
 
     return None
 

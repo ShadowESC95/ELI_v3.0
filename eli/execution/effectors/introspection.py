@@ -1,9 +1,9 @@
 """Introspection effector — runtime/status/audit report dispatch.
 
-Thin dispatch only: the report/format helpers stay in the executor /
-system_intel (they are shared, ~300-helper machinery the decomposition keeps).
-Handlers reach them via a lazy import of the executor namespace, which
-re-exports system_intel's helpers alongside its own.
+Thin dispatch only: the report/format helpers stay in the executor (shared,
+~300-helper machinery the decomposition keeps), and handlers reach them via a
+lazy import of the executor namespace. What a GPU reading means is system_intel's
+(gpu_use_facts).
 """
 from __future__ import annotations
 

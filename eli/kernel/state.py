@@ -188,22 +188,21 @@ def set_user_name(name: str, user_id: str | None = None) -> str:
     if not _is_active_user(user_id):
         return n
     sync_identity_to_world_model(user_id=user_id)
-
-    # Keep settings.json["user_name"] in sync so the GUI always reflects the
-    # current identity without requiring a session restart.
-    try:
-        from eli.core.paths import get_paths as _gp
-        import json as _json
-        _cfg = _gp().config_dir / "settings.json"
-        if _cfg.exists():
-            _s = _json.loads(_cfg.read_text(encoding="utf-8"))
-            if isinstance(_s, dict) and _s.get("user_name", "") != n:
-                _s["user_name"] = n
-                _cfg.write_text(_json.dumps(_s, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
-
+    _clear_settings_copy("user_name")
     return n
+
+
+def _clear_settings_copy(key: str) -> None:
+    """The name and the tone are the user's, kept in their own profile alone. settings.json, which
+    every caller shares, held a copy of the active user's (the name written into it here by hand,
+    past the settings lock), and the window read that copy before the profile; a copy left there is
+    cleared, through runtime_settings, the file's one writer, so every reader goes to the profile."""
+    try:
+        from eli.core.runtime_settings import load_settings_from_disk, save_settings
+        if str(load_settings_from_disk().get(key) or "").strip():
+            save_settings({key: ""})
+    except (OSError, ValueError, TypeError, ImportError) as failure:
+        log.debug("settings copy of %s not cleared: %s", key, failure)
 
 
 def clear_user_name(user_id: str | None = None) -> None:
@@ -291,8 +290,9 @@ def get_user_profile_text(user_id: str | None = None) -> str:
 
 def set_communication_style(style: str, user_id: str | None = None) -> str:
     """Persist the user's explicit tone/communication preference (how they want to be
-    spoken to) to user_profile.json, mirror it into settings.json for the GUI, and refresh
-    the persona overlay so it takes effect. Empty clears it. Returns the stored value."""
+    spoken to) to their user_profile.json, the one place it is kept (a copy settings.json held is
+    cleared: _clear_settings_copy), and refresh the persona overlay so it takes effect. Empty
+    clears it. Returns the stored value."""
     s = str(style or "").strip()
     profile = load_user_profile(user_id)
     if s:
@@ -302,13 +302,7 @@ def set_communication_style(style: str, user_id: str | None = None) -> str:
     save_user_profile(profile, user_id)
     if not _is_active_user(user_id):
         return s
-    try:
-        from eli.core.runtime_settings import save_settings
-        # only the key changed: a whole load_settings() view handed back wrote every default and
-        # every one-session environment override into the file as if chosen
-        save_settings({"communication_style": s})
-    except Exception:
-        log.debug("suppressed exception", exc_info=True)
+    _clear_settings_copy("communication_style")
     try:
         from eli.cognition.persona_updater import update_persona_overlay
         update_persona_overlay()

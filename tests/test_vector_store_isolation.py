@@ -23,14 +23,19 @@ import pytest
 from eli.core.paths import project_root
 
 
-def _paths(monkeypatch, **env):
+def _paths(monkeypatch, create=True, **env):
+    """Where the index is with only `env` set. A test that asks with neither variable set asks where
+    the checkout's own index is, and asks it without making the folder (create=False): asking with
+    create made an empty artifacts/vectors in the checkout on every full run."""
     for k in ("ELI_ARTIFACTS_DIR", "ELI_DATA_DIR"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
+    from eli.core import paths
+    paths.data_dir.cache_clear()          # resolved again for these variables, not the run's
     import eli.memory.vector_store as vs
     importlib.reload(vs)
-    return Path(vs._get_index_paths()[0])
+    return Path(vs._get_index_paths(create=create)[0])
 
 
 def test_artifacts_dir_override_is_honoured(tmp_path, monkeypatch):
@@ -51,8 +56,9 @@ def test_artifacts_dir_wins_over_data_dir(tmp_path, monkeypatch):
 
 def test_dev_tree_default_is_unchanged(monkeypatch):
     """The whole point of using artifacts_dir(): a source checkout must land in
-    exactly the directory it always did, so nobody's index moves."""
-    p = _paths(monkeypatch)
+    exactly the directory it always did, so nobody's index moves. (Alone, this read the run's
+    cached data folder and failed; in the file's order it made the checkout's folder.)"""
+    p = _paths(monkeypatch, create=False)
     assert p == (project_root() / "artifacts" / "vectors" / "index.faiss").resolve()
 
 
@@ -81,8 +87,9 @@ def test_paths_never_raise_when_the_target_is_unwritable(tmp_path, monkeypatch):
     blocked.mkdir()
     blocked.chmod(0o500)
     try:
-        p = _paths(monkeypatch, ELI_ARTIFACTS_DIR=str(blocked))
-        assert p.name == "index.faiss"
+        # the user data dir it falls back to is this test's own, not the checkout's artifacts
+        p = _paths(monkeypatch, ELI_ARTIFACTS_DIR=str(blocked), ELI_DATA_DIR=str(tmp_path / "data"))
+        assert p.name == "index.faiss" and p.parent == (tmp_path / "data" / "vectors").resolve()
     finally:
         blocked.chmod(0o700)
 
@@ -199,3 +206,36 @@ def test_a_run_going_on_in_the_checkout_keeps_its_sandbox(tmp_path, monkeypatch)
     conftest._fresh_sandbox()
     assert not sandbox.exists(), "with no run going on, the last run's sandbox goes"
     conftest._SANDBOX_HOLD.close()
+
+
+def test_a_folder_made_in_the_checkouts_own_state_is_named_with_the_test_that_made_it(tmp_path, monkeypatch):
+    """A full run left artifacts/runtime and artifacts/vectors in the checkout, both empty, and the
+    run's guard, which listed only files, said nothing. A folder made there is named now, with the
+    test that made it; the eval's own throwaway folder is a sandbox, not ELI's state."""
+    import sys
+    conftest = sys.modules.get("tests.conftest") or sys.modules.get("conftest")
+    own = tmp_path / "artifacts"
+    (own / "db").mkdir(parents=True)
+    monkeypatch.setattr(conftest, "ROOT", tmp_path)
+    monkeypatch.setattr(conftest, "_OWN_STATE", [own])
+    monkeypatch.setattr(conftest, "_THROWAWAY_FOLDERS", (own / "_eval_sandbox",))
+    monkeypatch.setattr(conftest, "_WATCHED_ROOTS", (str(own.resolve()),))
+    monkeypatch.setattr(conftest, "_FOLDERS_MADE", {})
+    before = conftest._own_state()
+    (own / "runtime").mkdir()
+    (own / "_eval_sandbox").mkdir()
+    this_test = os.environ["PYTEST_CURRENT_TEST"].split(" ")[0]
+    assert conftest._written_since(before) == [f"artifacts/runtime/ (made by {this_test})"]
+
+
+def test_a_module_run_without_the_conftest_notes_a_folder_made_in_the_machines_own_state(tmp_path):
+    """The --noconftest lane's guard noted files and databases opened under this machine's state, not
+    folders made there, so asking where something is could make its folder unseen."""
+    from tests import _state_env
+    machine = (tmp_path / "machine").resolve()
+    machine.mkdir()
+    with _state_env.own_state(tmp_path / "mine") as held:
+        held.roots = (str(machine),)
+        (machine / "runtime").mkdir()
+        (tmp_path / "mine" / "runtime").mkdir(parents=True)
+    assert [path for _test, path in held.opened_elsewhere] == [str(machine / "runtime")]

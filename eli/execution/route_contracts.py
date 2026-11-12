@@ -373,5 +373,56 @@ def asks_where_the_name_comes_from(text: Any) -> bool:
     return bool(_USERS_NAME.search(said) and _NAME_SOURCE.search(said))
 
 
+# A question about who the user is, asked of ELI, read in one place: the router's identity stage
+# answers it with this (router_enhanced._eli_phase38_identity_contract), and the scope its answer
+# keeps to comes from here too. It was read by eight copies of these words in the router, the
+# intent stages and the executor, with four different actions, and which one answered depended on
+# their order. What ELI holds about the user ("what do you know about me", "my preferences") is the
+# personal memory summary's question, read by the personal memory contract, not this one.
+_ASKS_MY_NAME = re.compile(r"\b(?:what is my name|what'?s my name|do you know my name)\b")
+_ASKS_MY_NAME_ALONE = re.compile(r"\s*(?:and|but|so|ok|okay|well|hmm?)?[,\s]*(?:what(?:'s| is| about)?\s+)?my name\s*\??\s*")
+_ASKS_WHO_I_AM = re.compile(
+    r"\b(?:who am i|do you know who i am|you do not know who i am|you don'?t know who i am|don'?t you know who i am"
+    r"|you have no idea who i am|what do you remember of me|my persona|my ethos)\b")
+_ASKS_IF_KNOWN = re.compile(r"\b(?:do you know me|do you remember me|don'?t you know me|you don'?t know me)\b")
+_ASKS_FOR_THE_REPORT = re.compile(
+    r"\b(?:show user info|user info report|profile report|dump (?:my )?(?:user )?(?:profile|info|memory)"
+    r"|show (?:my|the) stored memor(?:y|ies)(?: about me)?|what do you know from memory)\b")
+# a request to make the report again is the refresh's (REFRESH_USER_INFO), not a request to read it
+_REMAKE = re.compile(r"\b(?:refresh|rebuild|update|regenerate|redo)\b")
+
+
+def identity_scope(text: Any) -> str:
+    """Which part of who the user is a question asks for: "name_only", "memory_presence_only" (whether
+    ELI knows them at all) or "identity_only"."""
+    low = re.sub(r"\s+", " ", _low(text)).strip(" .,!?:;")
+    if _ASKS_MY_NAME.search(low) or _ASKS_MY_NAME_ALONE.fullmatch(low):
+        return "name_only"
+    if re.search(r"\b(?:who am i|who i am)\b", low):
+        return "identity_only"
+    if _ASKS_IF_KNOWN.search(low):
+        return "memory_presence_only"
+    return "identity_only"
+
+
+def identity_question(text: Any) -> Optional[Dict[str, Any]]:
+    """{"action", "args", "matched_by"} for a question about who the user is, else None: the report
+    of what ELI keeps on them ("show user info", "dump my profile") is USER_INFO_REPORT; who they are,
+    their name, or whether ELI knows them is USER_IDENTITY_SUMMARY with its identity_scope."""
+    low = re.sub(r"\s+", " ", _low(text)).strip()
+    if _ASKS_FOR_THE_REPORT.search(low):
+        if _REMAKE.search(low):
+            return None
+        return {"action": "USER_INFO_REPORT", "args": {"reason": "identity_query"},
+                "matched_by": "identity.user_info.report"}
+    if (_ASKS_MY_NAME.search(low) or _ASKS_MY_NAME_ALONE.fullmatch(low) or _ASKS_WHO_I_AM.search(low)
+            or _ASKS_IF_KNOWN.search(low)):
+        return {"action": "USER_IDENTITY_SUMMARY", "args": {"question": str(text or ""),
+                                                            "identity_scope": identity_scope(text)},
+                "matched_by": "identity.final_user_summary"}
+    return None
+
+
 __all__ += ["TARGET_ARGS", "is_command", "changes_something", "has_what_it_needs", "fits",
-            "does_work", "names_eli", "asks_about_eli", "asks_what_was_done", "asks_where_the_name_comes_from"]
+            "does_work", "names_eli", "asks_about_eli", "asks_what_was_done", "asks_where_the_name_comes_from",
+            "identity_question", "identity_scope"]

@@ -254,23 +254,39 @@ def _asked_about(query: str):
 _TITLE_FILLER = frozenset("the a an by of on and album song track".split())
 
 
+def _track_named(track: Dict[str, Any]) -> Tuple[str, bool]:
+    """What a media result's own fields name (effectors/media._track: title, artist, the words asked
+    for, whether it was heard to play): "Artist — Title", the title, or the “query”; "" for none."""
+    title, artist = str(track.get("title") or "").strip(), str(track.get("artist") or "").strip()
+    query = str(track.get("query") or "").strip()
+    named = f"{artist} — {title}" if artist and title else (title or (f"“{query}”" if query else ""))
+    return named, bool(track.get("confirmed"))
+
+
 def _tracks_in(rows, lines_fmt) -> str:
     """The distinct tracks named in media rows, worked out here: asked to list five plays from
     seven rows, a 35B model listed three and decided the now-playing ones didn't count.
-    Reads the executor's own result formats: “query”, (Artist — Title), "Playing: Artist — Title"."""
+    A row whose result carried its track as fields (`track`, the row's fifth item) is read from them;
+    a row written before results did is read from the executor's own result formats: “query”,
+    (Artist — Title), "Playing: Artist — Title"."""
     import re as _re
     seen: Dict[frozenset, List[Any]] = {}     # words -> [time, title, confirmed]
-    for ts, text, _is_action, _name in rows:
-        body = text.split(": ", 1)[-1]
-        m = (_re.search(r"\(([^()]{2,80} — [^()]{1,80})\)", body)
-             or _re.search(r"Playing:\s*(.+? — .+?)(?: — [\w/ ]+)?\.?\s*$", body))
-        title, confirmed = (m.group(1).strip(), True) if m else ("", False)
-        if not title:
-            q = _re.search(r"“([^”]{2,80})”", body)
-            if not q:
+    for ts, text, _is_action, _name, track in rows:
+        if track:
+            title, confirmed = _track_named(track)
+            if not title:
                 continue
-            title = "“" + q.group(1).strip() + "”"
-            confirmed = not _re.search(r"couldn.t confirm|didn.t start|not start", body)
+        else:
+            body = text.split(": ", 1)[-1]
+            m = (_re.search(r"\(([^()]{2,80} — [^()]{1,80})\)", body)
+                 or _re.search(r"Playing:\s*(.+? — .+?)(?: — [\w/ ]+)?\.?\s*$", body))
+            title, confirmed = (m.group(1).strip(), True) if m else ("", False)
+            if not title:
+                q = _re.search(r"“([^”]{2,80})”", body)
+                if not q:
+                    continue
+                title = "“" + q.group(1).strip() + "”"
+                confirmed = not _re.search(r"couldn.t confirm|didn.t start|not start", body)
         key = frozenset(_re.findall(r"[a-z0-9]+", title.lower())) - _TITLE_FILLER
         if not key:
             continue
@@ -332,27 +348,29 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
         return ""
     import time as _time
     from eli.world.surfaces import where
-    rows: List[Tuple[float, str, bool, str]] = []
+    # (time, line, is an action, the action, the track its result carried: evidence_ledger.actions_between)
+    rows: List[Tuple[float, str, bool, str, Optional[Dict[str, Any]]]] = []
     for t in getattr(tr, "conv_hits", None) or []:
         txt = " ".join(str(t.get("content") or t.get("text") or "").split())
         ts = t.get("timestamp") or t.get("ts")
         if txt and ts:
             place = where(t.get("session_id"))
-            rows.append((float(ts), f"You{f' ({place})' if place else ''}: {txt[:200]}", False, ""))
+            rows.append((float(ts), f"You{f' ({place})' if place else ''}: {txt[:200]}", False, "", None))
     # Who came into ELI's rooms: the presence record of sessions (arrivals, rooms, departures) where it
     # holds the period; before that record existed, the presence notes kept among the memories.
     vr = _vr_sessions(float(stats["since"]), float(stats["until"]))
-    rows.extend(vr)
+    rows.extend((*r, None) for r in vr)
     if not vr:
         for p in getattr(tr, "presence", None) or []:
             txt = " ".join(str(p.get("text") or "").split())
             ts = p.get("event_ts") or p.get("timestamp") or p.get("ts")
             if txt and ts:
-                rows.append((float(ts), f"Presence: {txt[:200]}", False, ""))
+                rows.append((float(ts), f"Presence: {txt[:200]}", False, "", None))
     for a in getattr(tr, "actions", None) or []:
         txt = " ".join(str(a.get("content") or "").split())[:140]
         failed = "" if str(a.get("outcome") or "ok") == "ok" else " (failed)"
-        rows.append((float(a["ts"]), f"ELI ran {a['action']}{failed}: {txt}", True, str(a["action"])))
+        track = a.get("track") if isinstance(a.get("track"), dict) else None
+        rows.append((float(a["ts"]), f"ELI ran {a['action']}{failed}: {txt}", True, str(a["action"]), track))
     if not rows:
         return ""
 
@@ -401,7 +419,7 @@ def format_period_log(tr: TurnRetrievalResult, query: str = "", *, max_chars: in
     if len(keep) != len(rows):
         # What was left out, by day, so the answer can say what it is not showing.
         tally: Dict[str, Dict[str, Any]] = {}
-        for ts, _text, is_action, name in rows:
+        for ts, _text, is_action, name, _track in rows:
             d = tally.setdefault(_time.strftime("%a %d %b", _time.localtime(ts)), {"said": 0, "ran": {}})
             if is_action:
                 d["ran"][name] = d["ran"].get(name, 0) + 1

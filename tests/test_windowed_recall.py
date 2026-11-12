@@ -182,6 +182,33 @@ def test_the_period_log_holds_who_came_into_elis_world_and_what_was_said_there(m
     assert out.index("came in") < out.index("set up the targets") < out.index("left after")
 
 
+def test_the_tracks_played_are_read_from_their_results_fields_before_the_wording(monkeypatch):
+    """What was played was read back out of the reply's sentences, so a result worded otherwise lost
+    its track. A row whose result carried the track as fields (the player's title and artist, the
+    words asked for, whether it was heard to play) is read from them; an older row without them is
+    still read from its wording."""
+    import eli.world.embodiment as embodiment
+    monkeypatch.setattr(embodiment, "sessions_between", lambda since, until: [], raising=False)
+    start = time.time() - DAY
+    actions = [
+        {"ts": start + 60, "action": "PLAY_MEDIA", "outcome": "ok", "content": "Started it on Spotify.",
+         "track": {"source": "spotify", "query": "slow tide", "title": "Slow Tide", "artist": "Harbour Lights",
+                   "confirmed": True}},
+        {"ts": start + 600, "action": "PLAY_MEDIA", "outcome": "ok", "content": "Opened a search.",
+         "track": {"source": "youtube", "query": "rain sounds for sleeping", "confirmed": False}},
+        {"ts": start + 1200, "action": "NOW_PLAYING", "outcome": "ok",
+         "content": "Now playing — spotify (Northern Fields — Glass River)"},
+    ]
+    tr = SimpleNamespace(window_stats={"since": start, "until": start + 3600}, actions=actions,
+                         conv_hits=[{"content": "put some music on", "timestamp": start + 30, "session_id": "desk"}])
+    out = format_period_log(tr, "what songs did i play?")
+    tracks = next(line for line in out.splitlines() if line.startswith("Distinct tracks"))
+    assert tracks.startswith("Distinct tracks in those actions (3):")
+    assert "Harbour Lights — Slow Tide" in tracks and "Slow Tide (search opened" not in tracks
+    assert "“rain sounds for sleeping” (search opened, playback not confirmed)" in tracks
+    assert "Northern Fields — Glass River" in tracks, "a row from before results carried fields"
+
+
 def test_without_a_presence_record_the_period_log_is_as_it_was(monkeypatch):
     import eli.world.embodiment as embodiment
     monkeypatch.setattr(embodiment, "sessions_between", lambda since, until: [], raising=False)
