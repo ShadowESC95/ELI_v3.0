@@ -10,6 +10,7 @@ success and the unreachable-Spotify paths.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 # The media layer lives in effectors/media.py (the executor re-exports it), so patch it there.
@@ -53,7 +54,7 @@ def test_spotify_target_plays_and_never_opens_youtube(monkeypatch):
     # enough on its own — that's also true of a stale, already-playing track
     # that the request never touched; live metadata is what actually confirms
     # the right song loaded (see test_now_playing_matches_query regression).
-    monkeypatch.setattr(ex.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     calls = _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
@@ -65,12 +66,15 @@ def test_spotify_target_plays_and_never_opens_youtube(monkeypatch):
     assert res["action"] == "PLAY_MEDIA"
     assert res.get("played") is True
     assert not _has_youtube(calls), "Spotify request must not open YouTube"
+    # what played, as fields the record keeps (the reply's wording is not what is read back)
+    assert res["track"]["source"] == "spotify" and res["track"]["confirmed"] is True
+    assert res["track"].get("title") == "Juicy" and res["track"].get("artist") == "The Notorious B.I.G."
 
 
 def test_spotify_unreachable_reports_search_only_not_youtube(monkeypatch):
     # Every dbus/playerctl call fails and Spotify is not running -> must NOT
     # fall through to YouTube; must return an honest search_only/failure result.
-    monkeypatch.setattr(ex.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     calls = _install_capture(monkeypatch, run_rc=1, run_stdout="")
@@ -90,7 +94,7 @@ def test_spotify_stale_track_resuming_is_not_reported_as_the_requested_song(monk
     correctly says "Playing", but it's the wrong track. The old code trusted
     status alone and told the user "Playing 'evil by orlo' on Spotify" when
     nothing of the sort had happened. Now it must report search_only instead."""
-    monkeypatch.setattr(ex.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     calls = _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
@@ -107,25 +111,24 @@ def test_spotify_stale_track_resuming_is_not_reported_as_the_requested_song(monk
 
 # ── YouTube continuous play: watch URL becomes a Mix/radio so it autoplays ────
 def test_yt_mix_url_adds_radio_playlist():
-    from eli.execution.effectors.media import _yt_mix_url
-    assert _yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == \
+    from eli.integrations.media.youtube_playback import yt_mix_url
+    assert yt_mix_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == \
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ"
     # extra params preserved-but-reseeded to the video id
-    assert _yt_mix_url("https://www.youtube.com/watch?v=abc123XYZ_-&t=5").endswith("list=RDabc123XYZ_-")
+    assert yt_mix_url("https://www.youtube.com/watch?v=abc123XYZ_-&t=5").endswith("list=RDabc123XYZ_-")
     # non-watch URLs and None pass through unchanged
-    assert _yt_mix_url(None) is None
-    assert "list=RD" not in _yt_mix_url("https://www.youtube.com/results?search_query=x")
+    assert yt_mix_url(None) is None
+    assert "list=RD" not in yt_mix_url("https://www.youtube.com/results?search_query=x")
 
 
 def test_youtube_dot_com_uses_autoplay_mix_in_browser(monkeypatch):
+    from eli.integrations.media import youtube_playback as yp
     opened = []
-    monkeypatch.setattr(
-        ex,
-        "_yt_resolve_watch_url",
-        lambda q: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    )
+    # the one results-page reader: media.py's own copy of it, which this patch did not reach, is gone
+    monkeypatch.setattr(yp, "yt_resolve_watch_url", lambda q: "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    monkeypatch.setattr("eli.integrations.media.media_deps.yt_dlp_argv", lambda *a, **k: [])
     monkeypatch.setattr(ex, "_open_in_browser", lambda url: opened.append(url))
-    monkeypatch.setattr(ex, "_yt_autoplay_enabled", lambda: True)
+    monkeypatch.setattr(yp, "yt_autoplay_enabled", lambda: True)
 
     res = ex.play_specific("real night owl", "youtube website")
 
@@ -179,7 +182,7 @@ def test_my_liked_songs_without_the_word_playlist_opens_liked_collection(monkeyp
     the phrase got typed verbatim into Spotify's track search, which then
     reported a false "Playing" success by resuming whatever track was
     already queued from before. Must open the real Liked Songs collection."""
-    monkeypatch.setattr(ex.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
@@ -201,7 +204,7 @@ def test_my_liked_playlist_opens_liked_collection_not_a_named_playlist_search(mo
     name "liked" (the generic "X playlist" pattern), but is_liked_songs()
     required "liked song(s)" and rejected bare "liked" — so it searched
     Spotify for a playlist literally named "liked" instead."""
-    monkeypatch.setattr(ex.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")
@@ -228,7 +231,7 @@ def test_artist_album_name_phrasing_reaches_the_album_block_not_track_search(mon
     ALBUMNAME" phrasing at all (fixed separately in spotify_intent). This
     confirms play_specific() actually routes through the album path now
     that the parser recognises it, rather than falling to track search."""
-    monkeypatch.setattr(ex.shutil, "which",
+    monkeypatch.setattr(shutil, "which",
                         lambda c: f"/usr/bin/{c}" if c in
                         {"xdg-open", "dbus-send", "playerctl"} else None)
     _install_capture(monkeypatch, run_rc=0, run_stdout="Playing")

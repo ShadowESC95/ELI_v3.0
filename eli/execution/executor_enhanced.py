@@ -2325,6 +2325,28 @@ def _asks_which(action: str, what: str) -> dict:
             "awaiting": {"command": "analyse {answer}", "action": action, "needs": "path"}}
 
 
+def _analysis_holds_a_turn_up(n_files: int) -> bool:
+    """Whether reading `n_files` would hold the turn up for longer than the owner's usual pause between
+    turns (inference_broker.owner_pace), at the time each file took in earlier analyses (the job
+    record, background_tasks.seconds_per). Before any has been measured: yes, so the first runs as a job
+    and is measured. ELI_FILE_ANALYSIS_BG_THRESHOLD, when set, is the person's own count of files.
+    A fixed five files decided it, whatever the files or the machine."""
+    raw = os.environ.get("ELI_FILE_ANALYSIS_BG_THRESHOLD", "").strip()
+    if raw:
+        try:
+            return n_files >= int(raw)
+        except ValueError:
+            log.debug("[FILE_BG] ELI_FILE_ANALYSIS_BG_THRESHOLD is not a count: %r", raw)
+    if n_files <= 0:
+        return False
+    from eli.runtime.background_tasks import get_background_tasks
+    per_file = get_background_tasks().seconds_per("ANALYZE_PDF_FOLDER", "files")
+    if per_file is None:
+        return True
+    from eli.cognition.inference_broker import owner_pace
+    return n_files * per_file > owner_pace().usual()
+
+
 def _maybe_background_file_analysis(action, args):
     """Heavy folder/PDF analysis (many PDFs → extract + summarise) is slow and
     would block the UI. Run it on a background thread and return a job-id message
@@ -2354,10 +2376,9 @@ def _maybe_background_file_analysis(action, args):
             log.debug("[FILE_BG] folder count failed", exc_info=True)
             _n_files, _of_files = 0, False
         _kind = "files" if _of_files else "PDFs"
-        _threshold = int(os.environ.get("ELI_FILE_ANALYSIS_BG_THRESHOLD", "5") or 5)
-        # Background when there are enough files to be slow, OR the user asked.
+        # Background when reading them would hold the turn up, OR the user asked.
         _asked = bool(args.get("_force_background"))
-        if _n_files < _threshold and not _asked and len(exps) == 1:
+        if not _asked and len(exps) == 1 and not _analysis_holds_a_turn_up(_n_files):
             return None
         from eli.runtime.background_tasks import get_background_tasks
         bt = get_background_tasks()
@@ -2371,7 +2392,8 @@ def _maybe_background_file_analysis(action, args):
         _whole = _wants_analysis(args.get("instruction"))
         jid = bt.submit(f"Analyse {_n_files} {_kind}: {_label}",
                         lambda: execute("ANALYZE_PDF_FOLDER", _bg_args),
-                        meta={"action": "ANALYZE_PDF_FOLDER", "targets": targets, "tell": True})
+                        meta={"action": "ANALYZE_PDF_FOLDER", "targets": targets, "tell": True,
+                              "files": _n_files})   # what the job's time is measured per
         _there = f"Those {len(targets)} folders have" if len(targets) > 1 else "That folder has"
         _each = ("each one is read (a document goes into the document index)" if _of_files
                  else "each one goes into the document index")
@@ -2899,7 +2921,6 @@ from eli.execution.effectors.media import (  # noqa: F401
     _DUCK_LOCK,
     _DUCK_TIMER,
     _MEDIA_STATE,
-    _PLAYLIST_RE,
     _TARGET_ALIASES,
     _duck_media_pause,
     _duck_media_resume,
@@ -2907,14 +2928,11 @@ from eli.execution.effectors.media import (  # noqa: F401
     _get_active_player,
     _mpv_alive,
     _mpv_ipc,
-    _mpv_load_confirmed,
-    _mpv_numeric,
     _mpv_quit,
     _mpv_socket_path,
     _playerctl,
     _playerctl_p,
     _playerctl_run,
-    _prune_mpv_logs,
     _resolve_media_target,
     _set_now_playing,
     _spotify_clear_track_repeat,
@@ -2928,7 +2946,6 @@ from eli.execution.effectors.media import (  # noqa: F401
     _spotify_open_uri,
     _spotify_play,
     _spotify_player_name,
-    _spotify_playlist_name,
     _spotify_resolve_album_uri,
     _spotify_resolve_artist_uri,
     _spotify_resolve_playlist_uri,
@@ -2938,14 +2955,6 @@ from eli.execution.effectors.media import (  # noqa: F401
     _spotify_wait_playing,
     _spotify_wait_running,
     _targets_mpv,
-    _yt_apply_browser_autoplay,
-    _yt_autoplay_enabled,
-    _yt_browser_play_url,
-    _yt_is_client_bound_failure,
-    _yt_mix_url,
-    _yt_player_clients,
-    _yt_resolve_watch_url,
-    _yt_resolve_watch_url_ytdlp,
     next_media,
     now_playing,
     pause_media,

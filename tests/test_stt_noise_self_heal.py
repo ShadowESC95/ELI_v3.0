@@ -181,17 +181,23 @@ def test_a_voice_command_said_during_a_reply_is_sent_after_it(monkeypatch):
 def test_a_spoken_volume_command_is_read_by_the_one_volume_grammar(said, expect, monkeypatch):
     """The window's voice path kept its own volume table, stepping by a fixed 15 whatever was said,
     and its "volume N" branch never set the action, so a spoken level fell over; voice input kept a
-    third pattern of its own. Both read command_parser.volume_said."""
+    third pattern of its own. What is said now goes the way a typed message goes (the engine and its
+    router), and the router reads volume with command_parser.volume_said."""
     from eli.gui.main_window._mixins.conversation import ConversationMixin as _Window
-    import eli.execution.executor_enhanced as ex
+    from eli.execution.router_enhanced import route
     from eli.perception.audio_stt import _is_volume_percent_command
-    ran = []
-    monkeypatch.setattr(ex, "execute_action", lambda action, args=None: ran.append((action, dict(args or {})))
-                        or {"ok": True, "content": "done"})
-    monkeypatch.setattr("eli.runtime.orchestrator_audit_ledger.record_direct_action", lambda **k: None)
+    import eli.execution.executor_enhanced as ex
+    taken = []
+    # nothing real may run: the voice path ran the executor itself, and that set the machine's volume
+    monkeypatch.setattr(ex, "execute_action", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    monkeypatch.setattr(ex, "execute", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
 
     class _W(_Window):
-        pass
-    _W()._on_stt_transcript(said)
-    assert ran == [("VOLUME", expect)]
+        def _take_message(self, text, *, spoken=False):
+            taken.append((text, spoken))
+
+    _W()._on_stt_transcript(f"  {said} ")
+    assert taken == [(said, True)]
+    routed = route(said)
+    assert routed["action"] == "VOLUME" and routed["args"] == expect
     assert _is_volume_percent_command(said) is (expect.get("mode") == "absolute")

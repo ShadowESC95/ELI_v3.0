@@ -303,6 +303,29 @@ class BackgroundTasks:
             t = self._tasks.get(int(jid))
             return t.to_dict(include_result=include_result) if t else None
 
+    def seconds_per(self, action: str, unit: str) -> Optional[float]:
+        """How long a job of `action` took for each of its `unit` (the count it was given in its meta,
+        e.g. "files"), the median over the finished jobs on record; None before any has finished.
+        What a job of that kind will take is read from this, not set by hand."""
+        with self._lock:
+            tasks = list(self._tasks.values())
+        rates: List[float] = []
+        for t in tasks:
+            meta = t.meta or {}
+            if t.status != "done" or meta.get("action") != action or t.started is None or t.finished is None:
+                continue
+            try:
+                n = float(meta.get(unit) or 0)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                rates.append(max(0.0, float(t.finished) - float(t.started)) / n)
+        if not rates:
+            return None
+        rates.sort()
+        mid = len(rates) // 2
+        return rates[mid] if len(rates) % 2 else (rates[mid - 1] + rates[mid]) / 2.0
+
     def list(self, *, limit: int = 20, status: Optional[str] = None,
              housekeeping: bool = False) -> List[Dict[str, Any]]:
         """Newest first. ELI's own housekeeping (kind "housekeeping") only when asked for: nobody

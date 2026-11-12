@@ -136,6 +136,7 @@ def test_an_export_leaves_the_users_own_files_beside_it_alone(report_tab, monkey
     monkeypatch.setattr(rt.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
     seen = _converter(monkeypatch, rt, tab, exe)
     getattr(tab, f"_export_{kind}")("# Title\n\nBody text.", "Title", "Author")
+    _wait(app, lambda: not getattr(tab, "_export_running", False))
     assert seen, "the converter ran"
     assert target.read_bytes() == b"converted"
     for name in mine:
@@ -153,8 +154,39 @@ def test_a_converter_that_writes_nothing_is_reported_and_leaves_no_file(report_t
         TimeoutExpired=subprocess.TimeoutExpired))
     monkeypatch.setattr(tab, "_find_executable", lambda names: "pandoc" if "pandoc" in names else None)
     tab._export_docx("# T", "T", "A")
+    _wait(app, lambda: not getattr(tab, "_export_running", False))
     assert not target.exists()
     assert tab._shown and tab._shown[-1][0] == "critical" and "unknown option" in tab._shown[-1][1][1]
+
+
+@pytest.mark.parametrize("kind,exe", [("docx", "pandoc"), ("pdf", "lualatex"), ("pdf", "pandoc")])
+def test_an_export_runs_its_converter_off_the_window_thread(report_tab, monkeypatch, tmp_path, kind, exe):
+    """lualatex and pandoc ran in the button's handler: the window froze until they finished (minutes
+    for a long report). They run on a worker now, and the window says when the file is saved."""
+    app, rt, tab = report_tab
+    target = tmp_path / f"report.{kind}"
+    monkeypatch.setattr(rt.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    seen = _converter(monkeypatch, rt, tab, exe)
+    real_run = rt.subprocess.run
+    threads = []
+    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, **kw: threads.append(
+        threading.current_thread() is threading.main_thread()) or real_run(cmd, **kw))
+    getattr(tab, f"_export_{kind}")("# Title\n\nBody text.", "Title", "Author")
+    _wait(app, lambda: not getattr(tab, "_export_running", False))
+    assert seen and threads and not any(threads), "the converter ran on the window's thread"
+    assert target.read_bytes() == b"converted"
+    assert tab._shown and tab._shown[-1][0] == "information" and str(target) in tab._shown[-1][1][1]
+
+
+def test_a_markdown_export_does_not_run_the_latex_converter(report_tab, monkeypatch, tmp_path):
+    app, rt, tab = report_tab
+    target = tmp_path / "report.md"
+    monkeypatch.setattr(rt.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    monkeypatch.setattr(tab, "_md_to_latex", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pandoc ran")))
+    tab._editor.setPlainText("# Notes\n\nA line.")
+    tab._export("md")
+    _wait(app, lambda: target.exists() and not getattr(tab, "_export_running", False))
+    assert target.read_text(encoding="utf-8") == "# Notes\n\nA line."
 
 
 def _wait(app, done, seconds=10.0):

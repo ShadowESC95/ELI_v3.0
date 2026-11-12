@@ -66,43 +66,7 @@ def _eli_safe_read_file(args=None):
     }
 
 
-def _eli_safe_screenshot(args=None):
-    _args = args or {}
-    region = _args.get("region", "full")
-    try:
-        from controllers.os_controller import take_screenshot
-    except Exception:
-        try:
-            from eli.perception.os_controller import take_screenshot
-        except Exception as e:
-            return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot backend unavailable: {e}"}
-    try:
-        out = take_screenshot(region)
-    except TypeError:
-        try:
-            out = take_screenshot()
-        except Exception as e:
-            return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot failed: {e}"}
-    except Exception as e:
-        return {"ok": False, "action": "SCREENSHOT", "content": f"Screenshot failed: {e}"}
-
-    if isinstance(out, dict):
-        ok = bool(out.get("ok", True))
-        content = str(out.get("content") or out.get("message") or out.get("path") or "Screenshot completed")
-        return {
-            "ok": ok,
-            "action": "SCREENSHOT",
-            "content": content,
-            **out,
-        }
-
-    return {
-        "ok": True,
-        "action": "SCREENSHOT",
-        "content": str(out or "Screenshot completed"),
-    }
-
-__all__ = ['_open_file', '_eli_safe_read_file', '_eli_safe_screenshot']
+__all__ = ['_open_file', '_eli_safe_read_file']
 
 
 def _h_read_file(a, args):

@@ -1275,16 +1275,18 @@ def _nvidia_processes() -> List[Dict[str, Any]]:
     return out
 
 
-def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Processes holding GPU memory, largest first: {pid, name, mb, service, gpus, type}.
+# The kernel's per-process ROCm memory counters (AMD on Linux): one folder per process, vram_* in bytes.
+_KFD_PROCESSES = Path("/sys/class/kfd/kfd/proc")
+
+
+def _vram_by_process() -> Dict[int, Dict[str, Any]]:
+    """Every process holding GPU memory as the driver reports it, by pid: {pid, name, mb, gpus, type}.
 
     NVIDIA on any OS through nvidia-smi (its full report names the programs drawing on a card as
     well as the ones computing on it); AMD on Linux through the kernel's per-process ROCm counters
     (/sys/class/kfd/kfd/proc/<pid>/vram_*). Not covered: Intel and Apple GPUs and AMD on Windows.
     mb is None where the driver does not say (Windows display driver mode). `gpus` is what the
-    process holds on each card, by nvidia-smi index, where the tool says. This process is left out.
-    """
-    own = os.getpid() if exclude_pid is None else int(exclude_pid)
+    process holds on each card, by nvidia-smi index, where the tool says."""
     found: Dict[int, Dict[str, Any]] = {}
     for p in _nvidia_processes():
         pid = int(p["pid"])
@@ -1294,7 +1296,7 @@ def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
             entry["mb"] = (entry["mb"] or 0.0) + float(p["mb"])
             if p.get("gpu") is not None:
                 entry["gpus"][int(p["gpu"])] = entry["gpus"].get(int(p["gpu"]), 0.0) + float(p["mb"])
-    kfd = Path("/sys/class/kfd/kfd/proc")
+    kfd = _KFD_PROCESSES
     if kfd.is_dir():
         for pdir in kfd.iterdir():
             try:
@@ -1305,10 +1307,47 @@ def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
                 continue
             if used > 0:
                 found.setdefault(pid, {"pid": pid, "name": name, "mb": used / 1_048_576, "gpus": {}, "type": "C"})
-    holders = [h for pid, h in found.items() if pid != own]
+    return found
+
+
+def vram_holders(*, exclude_pid: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Processes holding GPU memory, largest first: {pid, name, mb, service, gpus, type}, as
+    _vram_by_process reads them. This process is left out."""
+    own = os.getpid() if exclude_pid is None else int(exclude_pid)
+    holders = [h for pid, h in _vram_by_process().items() if pid != own]
     for h in holders:
         h["service"] = _service_of(h["pid"])
     return sorted(holders, key=lambda h: -(h["mb"] or 0.0))
+
+
+def process_vram_mb(pid: Optional[int] = None) -> Optional[float]:
+    """The GPU memory a process holds (this one by default) as the driver reports it, in MB: None
+    where the driver does not say, or does not list the process (see _vram_by_process for which
+    drivers do)."""
+    entry = _vram_by_process().get(os.getpid() if pid is None else int(pid))
+    return None if entry is None or entry.get("mb") is None else float(entry["mb"])
+
+
+def cold_free_vram_mb(hw: "HardwareProfile") -> Optional[int]:
+    """The free VRAM there would be with this process's models unloaded, measured, or None when it
+    cannot be: what is free now plus what this process holds, as the driver reports it (NVIDIA on any
+    OS, AMD on Linux); else what was free just before this process loaded its model (the load plan's
+    own reading, on whatever backend and OS llama.cpp runs). A fixed share for the display server took
+    the place of both: what other programs hold on the card is neither ELI's nor freed by unloading."""
+    total = int(hw.total_vram_mb or 0)
+    own = process_vram_mb()
+    if own is not None:
+        cold = int(hw.free_vram_mb) + int(round(own))
+        return min(cold, total) if total > 0 else cold
+    try:
+        from eli.cognition import gguf_inference
+        at_load = (gguf_inference.get_runtime_snapshot() or {}).get("vram_free_mb_at_load")
+    except Exception:
+        log.debug("the free VRAM at load is not known", exc_info=True)
+        at_load = None
+    if at_load is None:
+        return None
+    return min(int(at_load), total) if total > 0 else int(at_load)
 
 
 def describe_vram_holders(holders: List[Dict[str, Any]], *, total_mb: Optional[int] = None) -> str:
@@ -3255,21 +3294,21 @@ def enforce_hardware_authority(*, force: bool = False) -> Dict[str, Any]:
     hw = detect_hardware()
 
     # If this process already has a GGUF loaded, live free_vram_mb is artificially small (the model
-    # is eating its own budget) and gave n_gpu_layers -> 1. Predict free VRAM as if no chat model
-    # were loaded: total minus the display server (~500MB) and KV cache.
+    # is eating its own budget) and gave n_gpu_layers -> 1. The recommendation is made for the free
+    # VRAM there would be with no model of ELI's loaded, measured (cold_free_vram_mb).
     try:
         from eli.cognition import gguf_inference as _gi_check
         _loaded = bool(getattr(_gi_check, "_llm", None))
     except Exception:
         _loaded = False
     if _loaded and hw.has_gpu and hw.total_vram_mb > 0:
-        # Heuristic: assume ~500 MB consumed by the display server + Qt,
-        # everything else is the chat model + embedder. That's what would
-        # be available if we re-ran cold.
-        _predicted_free = max(0, hw.total_vram_mb - 500)
-        if _predicted_free > hw.free_vram_mb:
+        _predicted_free = cold_free_vram_mb(hw)
+        if _predicted_free is not None and _predicted_free > hw.free_vram_mb:
             hw.free_vram_mb = _predicted_free
             hw.vram_gb = _predicted_free / 1024.0
+        elif _predicted_free is None:
+            log.info("[HW_AUTHORITY] free VRAM without ELI's model unknown here (the driver lists no "
+                     "per-process use and no load was measured); recommending for the VRAM free now")
 
     fingerprint = compute_hardware_fingerprint(hw)
     previous_fp = settings.get("hardware_fingerprint")

@@ -361,3 +361,20 @@ def test_tell_me_when_job_n_is_done_asks_the_job_manager_and_results_find_the_jo
     finally:
         gate.set()
         bt.wait(jid, timeout=5)
+
+
+def test_what_a_kind_of_job_takes_per_item_is_read_from_the_record(tmp_path):
+    """The file analysis went to the background at a fixed five files. What a job of a kind takes for
+    each of its items is now measured from the jobs on record: the median of the finished ones."""
+    from eli.runtime.background_tasks import Task
+    bt = BackgroundTasks(max_workers=1, ledger=str(tmp_path / "jobs.json"))
+    assert bt.seconds_per("ANALYZE_PDF_FOLDER", "files") is None, "nothing measured yet"
+    rows = [(1, "done", 0.0, 40.0, 4), (2, "done", 100.0, 160.0, 6), (3, "done", 200.0, 300.0, 5),
+            (4, "failed", 0.0, 900.0, 1), (5, "done", 0.0, 50.0, 0)]
+    for jid, status, started, finished, files in rows:
+        bt._tasks[jid] = Task(id=jid, name="Analyse", status=status, started=started, finished=finished,
+                              meta={"action": "ANALYZE_PDF_FOLDER", "files": files})
+    bt._tasks[9] = Task(id=9, name="Other", status="done", started=0.0, finished=999.0,
+                        meta={"action": "CODE_SOLVE", "files": 1})
+    assert bt.seconds_per("ANALYZE_PDF_FOLDER", "files") == 10.0       # 10, 10, 20 s a file: a failed,
+    assert bt.seconds_per("CODE_SOLVE", "files") == 999.0               # empty or other kind is not it

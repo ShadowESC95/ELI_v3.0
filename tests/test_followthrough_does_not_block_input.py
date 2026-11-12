@@ -121,6 +121,7 @@ def window():
     class _Window(QObject, ConversationMixin, ChromeIoMixin):
         status_signal = Signal(str)
         chat_response_signal = Signal(str)
+        chat_stream_signal = Signal(str)
         _ran_now_sig = Signal(str)
         _mem_refresh_sig = Signal()
         _conf_meta_update_sig = Signal()
@@ -138,7 +139,11 @@ def window():
             self._running_now, self._waiting_messages, self._held_chat = 0, [], []
             self.backend, self.statuses, self._cognitive_engine = object(), [], _Engine()
             self.status_signal.connect(self._status, Qt.ConnectionType.QueuedConnection)
-            self.chat_response_signal.connect(self._append_chat_response, Qt.ConnectionType.QueuedConnection)
+            # as the window wires them: complete messages, and the reply being written
+            self.chat_response_signal.connect(getattr(self, "_on_chat_message", self._append_chat_response),
+                                              Qt.ConnectionType.QueuedConnection)
+            if hasattr(self, "chat_stream_signal"):
+                self.chat_stream_signal.connect(self._append_chat_response, Qt.ConnectionType.QueuedConnection)
             if hasattr(self, "_on_ran_now"):
                 self._ran_now_sig.connect(self._on_ran_now, Qt.ConnectionType.QueuedConnection)
 
@@ -304,3 +309,48 @@ def test_what_needs_no_model_is_the_engines_direct_set():
     assert ConversationMixin._needs_no_model("pause")
     assert ConversationMixin._needs_no_model("volume 40%")
     assert not ConversationMixin._needs_no_model("what is a river")
+
+
+def test_a_message_that_comes_while_a_reply_is_written_is_shown_after_it_not_inside_it(window):
+    """An offer, an error or a turn said elsewhere, emitted while a reply streamed, went into the
+    middle of the reply as one of its tokens."""
+    w, engine = window, window._cognitive_engine
+    w.type_and_send("tell me about the history of bridges")
+    w.settle(lambda: "A long" in _transcript(w))
+    w.chat_response_signal.emit("💡 An offer of mine")
+    w.settle()
+    assert "An offer of mine" not in _transcript(w), "the reply being written is not split"
+    engine.go.set()
+    w.settle(lambda: w.idle() and "An offer of mine" in _transcript(w))
+    text = _transcript(w)
+    assert "A long answer." in text and text.index("A long answer.") < text.index("An offer of mine")
+    assert all("An offer of mine" not in m["content"] for m in w.conversation_history), "not a turn"
+
+
+def test_a_command_said_while_eli_answers_runs_at_once_like_a_typed_one(window, monkeypatch):
+    """The voice path ran the executor on the window's thread and wrote its own chat lines into the
+    reply being written; it goes the way a typed message goes now."""
+    import eli.execution.executor_enhanced as ex
+    for name in ("execute_action", "execute"):             # nothing real may run (the volume)
+        monkeypatch.setattr(ex, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    w, engine = window, window._cognitive_engine
+    w.type_and_send("tell me about the history of bridges")
+    w.settle(lambda: "A long" in _transcript(w))
+    w._on_stt_transcript("volume 40%")
+    w.settle(lambda: any(m.startswith("⚡ Volume set") for m in w.statuses))
+    assert ("volume 40%", False) in engine.calls, "run at once, through the engine"
+    assert "volume 40%" not in _transcript(w), "the answer being written is not split"
+    engine.go.set()
+    w.settle(lambda: w.idle() and "Volume set" in _transcript(w))
+    text = _transcript(w)
+    assert text.index("A long answer.") < text.index("volume 40%") < text.index("Volume set (volume 40%).")
+
+
+def test_what_is_read_aloud_leaves_out_scripts_and_reads_headlines_as_lines():
+    from eli.gui.main_window._mixins.conversation import ConversationMixin
+    said = ConversationMixin._spoken_part
+    assert said("I can repair it. Exact command:\nsudo apt install x\nConfirm?") == "I can repair it."
+    assert said("Here it is:\n```bash\nrm -rf build\n```") == "Here it is:"
+    assert said("Headlines (3 fetched):\n• [Example News] Rivers rise\n• [Sample Post] (2h) New bridge…") == \
+        "3 fetched. Example News: Rivers rise. Sample Post: New bridge"
+    assert said("Just a plain answer.") == "Just a plain answer."

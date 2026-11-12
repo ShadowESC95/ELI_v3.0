@@ -376,6 +376,38 @@ def test_a_read_the_reader_was_barely_sure_of_says_little():
     assert abs(after_sure.valence) < abs(after_weak.valence), "sure neutral reads say more than unsure ones"
 
 
+def test_one_sure_read_after_many_barely_sure_ones_is_still_a_spike():
+    """The reads' noise floor was half the variance of successive reads counted by number: twenty
+    barely-sure neutral reads (each observes 0) measured it as almost nothing, so one sure angry read
+    after them was a mood where alone it is a spike. Each difference now counts as far as its reads
+    see the state, and two sure reads after the weak ones still make the state."""
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    weak = [("neutral", 0.1)] * 20
+    for sure in (0.7, 0.8, 0.9):
+        for gap in (60.0, 120.0, 300.0):
+            alone = af.estimate(rows=_mixed([("negative", sure)], gap_s=gap, now=now), now=now)
+            after = af.estimate(rows=_mixed(weak + [("negative", sure)], gap_s=gap, now=now), now=now)
+            assert alone.label == "neutral"
+            assert after.label == "neutral", (sure, gap, after.valence, after.z_valence)
+    assert af.estimate(rows=_mixed(weak + [("negative", 0.8)] * 2, now=now), now=now).label == "negative"
+    obs = af.observations(_mixed(weak, now=now))
+    assert af._spreads(obs)["floor_v"] > af.FLOOR_PRIOR / 2, "reads that barely see the state measure little"
+    sure_obs = af.observations(_mixed([("neutral", 0.9)] * 20, now=now))
+    assert af._spreads(sure_obs)["floor_v"] < af.FLOOR_PRIOR / 10, "reads that see it measure it"
+
+
+def test_reads_with_no_noise_left_are_weighed_without_dividing_by_nothing():
+    """A floor measured as none, with reads sure to the full at one moment, leaves a read nothing to
+    weigh; the filter keeps the state it has."""
+    from eli.cognition import affect_state as af
+    now = 1_700_000_000.0
+    rows = [{"ts": now, "valence": "negative", "detected": "negative", "confidence": 1.0, "arousal": 0.5}
+            for _ in range(4)]
+    state = af.estimate(rows=rows, now=now)
+    assert state.label == "negative" and state.reads == 4
+
+
 def test_a_turn_with_no_sign_is_kept_as_nothing_read_not_as_the_standing_mood(monkeypatch):
     """With nothing read the tone falls back to the affect state; recorded as a read, the state was
     fed its own output and stayed negative for every calm turn after."""

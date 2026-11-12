@@ -113,3 +113,19 @@ def test_what_each_run_said_is_on_the_turn(ledger, monkeypatch):
     assert facts["action_results"] == [
         {"action": "TILE_WINDOWS", "ok": True, "said": "Tiled 2 windows."},
         {"action": "PLAY_MEDIA", "ok": False, "said": "Opened the search only."}]
+
+
+def test_what_a_play_was_about_comes_back_from_the_record_as_fields(ledger):
+    """"What did I listen to" read the tracks back out of each reply's sentences ('Playing: Artist —
+    Title', quoted search words, "couldn't confirm"), so a change of wording dropped them. The record
+    of each run hands back the fields the media result carried."""
+    import time
+    track = {"source": "spotify", "query": "lantern song", "title": "Lantern Song",
+             "artist": "The Quiet Fields", "confirmed": True}
+    EX._action_post_dispatch("PLAY_MEDIA", {"query": "lantern song", "target": "spotify"},
+                             {"ok": True, "played": True, "content": "Playing it.", "track": track})
+    EX._action_post_dispatch("PAUSE_MEDIA", {}, {"ok": True, "content": "Paused"})
+    rows = led.actions_between(0, time.time() + 1)
+    by_action = {r["action"]: r for r in rows}
+    assert by_action["PLAY_MEDIA"]["track"] == track
+    assert "track" not in by_action["PAUSE_MEDIA"], "an action about no track has none"

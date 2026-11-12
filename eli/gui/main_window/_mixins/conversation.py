@@ -29,6 +29,7 @@ class ConversationMixin:
             text = _rm_final(text)
         except Exception:
             log.debug("suppressed exception", exc_info=True)
+        text = self._spoken_part(text)
         clean = _re.sub(r'[*_`#>|\[\]~]', '', text)
         clean = _re.sub(r'\s+', ' ', clean).strip()
         try:
@@ -48,6 +49,23 @@ class ConversationMixin:
             except Exception as e:
                 log.debug(f'[TTS] {e}')
         threading.Thread(target=_run, daemon=True).start()
+
+    @staticmethod
+    def _spoken_part(text: str) -> str:
+        """What of a reply is read aloud: a list of headlines ("• [Source] Title") as "Source: Title"
+        lines, and nothing from the first block of code or command listing on (a repair's script read
+        out word by word). The voice path did this for its own replies only; a typed command's reply
+        was read whole."""
+        import re as _re
+        if "• [" in text:
+            heads = _re.findall(r"•\s+\[([^\]]+)\](?:\s+\([^)]+\))?\s+(.+)", text)
+            if heads:
+                count = _re.search(r"\((\d+\s+fetched[^)]*)\)", text, _re.I)
+                text = ". ".join(([count.group(1)] if count else [])
+                                 + [f"{src}: {title.strip().rstrip('…')}" for src, title in heads])
+        cuts = [i for i in (text.find(m) for m in ("```", "Exact command", "## Command", "Command(s):",
+                                                     "Commands:")) if i > 0]
+        return text[:min(cuts)].strip() if cuts else text
 
     def _interrupt_speech(self):
         """Interrupt any in-progress TTS via streaming VoiceWorker."""
@@ -86,268 +104,16 @@ class ConversationMixin:
             log.debug(f"[GUI] voice change failed: {ex}")
 
     def _on_stt_transcript(self, text: str):
+        """What was said goes the way a typed message goes (_take_message): through the engine, a
+        command that needs no model at once, anything else when its turn comes; it is never dropped
+        and never stops a reply. It does not go through the chat box, so what is being typed there is
+        left alone. The voice path had its own: a table of exact phrases, a hand-kept list of the
+        engine's direct actions, the executor run on the window's thread with its own chat lines
+        (which split a reply being written) and its own records of the turn."""
         text = text.strip()
         if not text:
             return
         log.debug(f"[STT→GUI] {text}")
-        # Existing-router/executor fast path for deterministic voice commands.
-        # This avoids CognitiveEngine/LLM latency for safe actions.
-        try:
-            _voice_text = text  # function parameter — no need to search locals
-
-            from eli.execution import router_enhanced as _eli_voice_router
-            from eli.execution import executor_enhanced as _eli_voice_executor
-
-            # Stage-0 instant dispatch: exact-match quick commands bypass the
-            # full router pipeline entirely. Saves ~30-60ms per command and
-            # ensures media controls fire as fast as possible.
-            _INSTANT_DISPATCH = {
-                "pause":          ("PAUSE_MEDIA",    {}),
-                "play":           ("PLAY_MEDIA",     {}),
-                "resume":         ("PLAY_MEDIA",     {}),
-                "stop":           ("STOP_MEDIA",     {}),
-                "next":           ("NEXT_MEDIA",     {}),
-                "next song":      ("NEXT_MEDIA",     {}),
-                "next track":     ("NEXT_MEDIA",     {}),
-                "skip":           ("NEXT_MEDIA",     {}),
-                "previous":       ("PREVIOUS_MEDIA", {}),
-                "previous song":  ("PREVIOUS_MEDIA", {}),
-                "previous track": ("PREVIOUS_MEDIA", {}),
-                "back":           ("PREVIOUS_MEDIA", {}),
-                "mute":           ("VOLUME", {"direction": "mute"}),
-                "unmute":         ("VOLUME", {"direction": "unmute"}),
-            }
-            _vt_lower = _voice_text.lower().strip()
-            # The volume has one grammar (command_parser.volume_said): a level, a direction with or
-            # without a step, or a reading. This copy stepped by a fixed 15 and read only "volume N".
-            from eli.execution.routing.command_parser import volume_said as _volume_said
-            _vol_route = _volume_said(_voice_text)
-            if _vol_route:
-                # (the level branch this replaced set the route but not _action/_args, so "volume 40"
-                # said by voice fell over below)
-                _route = _vol_route
-                _action, _args = "VOLUME", dict(_vol_route.get("args") or {})
-            elif _vt_lower in _INSTANT_DISPATCH:
-                _action, _args = _INSTANT_DISPATCH[_vt_lower]
-                _route = {"action": _action, "args": _args,
-                          "confidence": 1.0,
-                          "meta": {"matched_by": "gui.instant_dispatch"}}
-            else:
-                _route = _eli_voice_router.route(_voice_text)
-                _action = str((_route or {}).get("action") or "").upper()
-                _args = (_route or {}).get("args") or {}
-
-            _direct_actions = {
-                "NOOP",
-                "TIME", "DATE",
-                "PAUSE_MEDIA", "PLAY_MEDIA", "STOP_MEDIA",
-                "NEXT_MEDIA", "PREVIOUS_MEDIA",
-                "MEDIA_CONTROL",
-                "VOLUME", "VOLUME_UP", "VOLUME_DOWN",
-                "SCREENSHOT", "LIST_DIR", "READ_FILE",
-                "GET_WEATHER", "SET_TIMER", "SET_ALARM",
-                "PROACTIVE_STATUS", "HABIT_STATUS", "LIST_CAPABILITIES",
-                # ELI_GUI_TILE_DIRECT_EXEC_FIX_20260505
-                "TILE_WINDOWS", "MINIMISE_ALL", "RESTORE_WINDOWS",
-                "OPEN_APP", "CLOSE_APP",
-                # Remediation confirm/cancel must bypass GGUF synthesis
-                "CONFIRM_PENDING_REMEDIATION", "CANCEL_PENDING_REMEDIATION",
-                "CHECK_TARGET_STATUS", "EXPLAIN_LAST_FAILURE",
-                # News: pre-formatted headlines; LLM path causes CUDA OOM (10k+ token prompt)
-                "NEWS_FETCH",
-            }
-
-            if _action in _direct_actions:
-                _user_voice_text = str(_voice_text or text or "").strip()
-                _session_id = "gui-direct"
-                _user_id = "local-user"
-                try:
-                    _ce = getattr(self, "_cognitive_engine", None)
-                    _session_id = str(getattr(_ce, "session_id", "") or _session_id)
-                    _user_id = str(getattr(_ce, "user_id", "") or _user_id)
-                except Exception:
-                    log.debug("suppressed exception", exc_info=True)
-                try:
-                    if _user_voice_text:
-                        _uc = getattr(self, '_user_text_color', '#a3be8c')
-                        if hasattr(self, "chat_display"):
-                            self.chat_display.append(
-                                f'\n<b><span style="color:{_uc};">🧑 You [{now_hms()}]:</span></b>'
-                                f'<br>{_user_voice_text}<br>'
-                            )
-                        if hasattr(self, "conversation_history"):
-                            self.conversation_history.append({'role': 'user', 'content': _user_voice_text})
-                        try:
-                            if getattr(self, "_central_memory", None):
-                                self._central_memory.add_conversation_turn(
-                                    "user", _user_voice_text, session_id=_session_id, user_id=_user_id)
-                        except Exception as _mem_user_e:
-                            log.debug(f"[GUI_DIRECT_EXEC][MEM_USER_FAIL] {_mem_user_e}")
-                        log.debug(f"[GUI_DIRECT_EXEC][USER_APPEND] {_user_voice_text}")
-                except Exception as _user_ui_e:
-                    log.debug(f"[GUI_DIRECT_EXEC][USER_APPEND_FAIL] {_user_ui_e}")
-
-                log.debug(f"[GUI_DIRECT_EXEC] route={_route}")
-                _direct_t0 = time.perf_counter()
-                _res = _eli_voice_executor.execute_action(_action, _args)
-                _ok = bool((_res or {}).get("ok", True)) if isinstance(_res, dict) else True
-
-                if isinstance(_res, dict):
-                    _reply = str(_res.get("response") or _res.get("content") or _res.get("message") or _res)
-                else:
-                    _reply = str(_res)
-
-                log.debug(f"[GUI_DIRECT_EXEC] {_reply}")
-                # This path skips CognitiveEngine.process(), so it writes its own
-                # audit row. NOOP is the fragment guard, not an action.
-                if _action != "NOOP":
-                    try:
-                        from eli.runtime import orchestrator_audit_ledger as _oal
-                        _why = "ok"
-                        if not _ok:
-                            _why = str((_res.get("error") if isinstance(_res, dict) else "") or "failed")
-                        _oal.record_direct_action(
-                            action=_action, ok=_ok, outcome=_why,
-                            source="voice_direct", session_id=_session_id, user_id=_user_id,
-                            elapsed_ms=(time.perf_counter() - _direct_t0) * 1000.0)
-                    except Exception:
-                        log.debug("[GUI_DIRECT_EXEC] audit row failed", exc_info=True)
-                # NOOP (fragment guard) responses must not enter conversation
-                # history, be spoken, or be displayed — they are internal
-                # routing events.  Storing the fragment-guard JSON as an
-                # assistant turn poisons subsequent LLM context, causing the
-                # model to mimic the JSON format in real responses.
-                _is_noop = (_action == "NOOP")
-                try:
-                    if getattr(self, "_central_memory", None):
-                        if _reply and not _is_noop:
-                            self._central_memory.add_conversation_turn(
-                                "assistant", _reply, session_id=_session_id, user_id=_user_id)
-                        self._central_memory.log_learning_event(
-                            "gui_direct_command",
-                            input_text=_user_voice_text,
-                            output_text=_reply,
-                            action=_action,
-                            outcome="ok" if _ok else "failed",
-                            reward=1.0 if _ok else -1.0,
-                            metadata={
-                                "args": _args,
-                                "matched_by": (_route.get("meta") or {}).get("matched_by") if isinstance(_route, dict) else "",
-                                "source": "gui_direct_exec",
-                            },
-                        )
-                        self._central_memory.log_habit_event(
-                            "command_result",
-                            {
-                                "action": _action,
-                                "args": _args,
-                                "ok": _ok,
-                                "source": "gui_direct_exec",
-                            },
-                        )
-                        if _action == "OPEN_APP" and _ok:
-                            _app_name = str(
-                                _args.get("name") or _args.get("target") or _args.get("app") or ""
-                            ).strip()
-                            if _app_name:
-                                _cmd = (_res.get("cmd") or _res.get("command") or _app_name) if isinstance(_res, dict) else _app_name
-                                _method = (_res.get("method") if isinstance(_res, dict) else "") or "gui_direct_exec"
-                                self._central_memory.store_app_cmd(_app_name, _cmd, _method)
-                                self._central_memory.log_habit_event(
-                                    "app_launch",
-                                    {"app": _app_name, "cmd": _cmd, "method": _method, "success": True},
-                                )
-                        elif _action in {"LIST_DIR", "READ_FILE"} and _ok:
-                            _path = str(_args.get("path") or "").strip()
-                            if _path:
-                                self._central_memory.log_habit_event(
-                                    _action.lower(),
-                                    {"path": _path, "success": True, "source": "gui_direct_exec"},
-                                )
-                except Exception as _mem_result_e:
-                    log.debug(f"[GUI_DIRECT_EXEC][MEM_RESULT_FAIL] {_mem_result_e}")
-                # Honour the Auto-Speak toggle: only emit TTS when the user
-                # has it enabled. Voice-initiated commands also opt in via
-                # the _last_input_was_voice flag — direct-exec replies to
-                # text typed in the chat box should stay silent unless
-                # auto-speak is on.
-                _tts_auto_on = bool(getattr(self, "_tts_auto", False))
-                _speak_text = str(_reply or "").strip()
-                # NOOP: never speak
-                if _is_noop:
-                    _speak_text = ""
-                # NEWS_FETCH: a synthesised briefing (prose) is spoken IN FULL.
-                # Only the legacy raw bullet list ("• [Source] Title") is
-                # condensed to "Source: Title" lines for speech.
-                elif _action == "NEWS_FETCH" and _speak_text:
-                    _is_briefing = False
-                    try:
-                        _is_briefing = (
-                            isinstance(_res, dict)
-                            and (_res.get("meta") or {}).get("response_mode") == "news_briefing"
-                        )
-                    except Exception:
-                        _is_briefing = False
-                    if not _is_briefing and "• [" in _speak_text:
-                        try:
-                            import re as _re_n
-                            _hdr_m = _re_n.search(r"\((\d+\s+fetched[^)]*)\)", _speak_text, _re_n.I)
-                            _hdr = _hdr_m.group(1) if _hdr_m else ""
-                            _hl = _re_n.findall(r"•\s+\[([^\]]+)\](?:\s+\([^)]+\))?\s+(.+)", _speak_text)
-                            _parts = []
-                            if _hdr:
-                                _parts.append(_hdr.replace(",", ","))
-                            for src, title in _hl:
-                                _parts.append(f"{src}: {title.strip().rstrip('…')}")
-                            if _parts:
-                                _speak_text = ". ".join(_parts)
-                        except Exception:
-                            log.debug("suppressed exception", exc_info=True)
-                    # else: synthesised briefing — leave _speak_text full
-                # For remediation previews, drop the bash script body before TTS
-                # so the mic doesn't pick up hundreds of chars of shell code.
-                elif _action == "CONFIRM_PENDING_REMEDIATION" and _speak_text:
-                    for _cut_marker in ("Exact command", "```", "## Command", "Command(s):", "Commands:"):
-                        _cut_idx = _speak_text.find(_cut_marker)
-                        if _cut_idx > 0:
-                            _speak_text = _speak_text[:_cut_idx].strip() + " — confirm repair?"
-                            break
-                # GUI append first so text is visible before TTS begins.
-                # NOOP is silent — no chat display.
-                if not _is_noop:
-                    try:
-                        if hasattr(self, "append_assistant_message"):
-                            self.append_assistant_message(_reply)
-                        elif hasattr(self, "add_assistant_message"):
-                            self.add_assistant_message(_reply)
-                        elif hasattr(self, "_append_assistant_message"):
-                            self._append_assistant_message(_reply)
-                        elif hasattr(self, "chat_display"):
-                            self.chat_display.append(f"🤖 ELI:\n{_reply}")
-                        # Flush Qt paint queue so text renders before TTS blocks the thread
-                        try:
-                            QApplication.processEvents()
-                        except Exception:
-                            log.debug("suppressed exception", exc_info=True)
-                    except Exception as _ui_e:
-                        log.debug(f"[GUI_DIRECT_EXEC][UI_APPEND_FAIL] {_ui_e}")
-
-                if _tts_auto_on and _speak_text:
-                    try:
-                        from eli.perception.tts_router import speak_text as _eli_gui_direct_speak
-                        _eli_gui_direct_speak(_speak_text)
-                        log.debug(f"[GUI_DIRECT_EXEC][TTS] {_speak_text}")
-                    except Exception as _tts_e:
-                        log.debug(f"[GUI_DIRECT_EXEC][TTS_FAIL] {_tts_e}")
-                elif _speak_text:
-                    log.debug(f"[GUI_DIRECT_EXEC][TTS_SKIPPED] auto-speak off")
-
-                return
-        except Exception as _direct_e:
-            log.debug(f"[GUI_DIRECT_EXEC][FALLBACK] {type(_direct_e).__name__}: {_direct_e}")
-        # Said while a reply is still coming, it waits for its turn like a typed message
-        # (_take_message); it is never dropped and never stops the reply. It does not go through
-        # the chat box, so what is being typed there is left alone.
         self._take_message(text, spoken=True)
 
     def _populate_mic_device_combo(self, restore: bool = False):
@@ -980,7 +746,22 @@ class ConversationMixin:
             return
         self._draw_chat(kind, text)
 
+    def _on_chat_message(self, text: str) -> None:
+        """A complete message for the transcript (an error, a reply that was not streamed, an offer, a
+        turn said elsewhere). While a reply is being written it waits for that reply to end: the reply
+        and these shared one signal, so a message that came meanwhile went into the middle of the
+        reply as one of its tokens. The reply itself comes on chat_stream_signal."""
+        if getattr(self, "_streaming", False):
+            if getattr(self, "_held_chat", None) is None:
+                self._held_chat = []
+            self._held_chat.append(("note", text))
+            return
+        self._append_chat_response(text)
+
     def _draw_chat(self, kind: str, text: str) -> None:
+        if kind == "note":                  # shown, but not a turn of the conversation
+            self._append_chat_response(text)
+            return
         if kind == "user":
             _uc = getattr(self, '_user_text_color', '#a3be8c')
             self.chat_display.append(
@@ -1131,9 +912,9 @@ class ConversationMixin:
                                 continue
                             full_tokens.append(token)
                             if first_token:
-                                self.chat_response_signal.emit('__STREAM_START__')
+                                self.chat_stream_signal.emit('__STREAM_START__')
                                 first_token = False
-                            self.chat_response_signal.emit(token)
+                            self.chat_stream_signal.emit(token)
                         if _was_cancelled and hasattr(result, "close"):
                             # Closed now, the turn's record says it was stopped and the model is
                             # let go at once, not when this thread's frame is collected.
@@ -1147,15 +928,15 @@ class ConversationMixin:
                             # as its history says ("[Generation stopped.]"); it showed nothing.
                             log.debug("[GUI] reply ended before its first word: %s", _ended_why(_was_cancelled))
                             if _was_cancelled:
-                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
+                                self.chat_stream_signal.emit('__STREAM_CANCELLED__')
                             response = ""
                             _response_streamed = True
                             _storage_handled = True
                         else:
                             if _was_cancelled:
-                                self.chat_response_signal.emit('__STREAM_CANCELLED__')
+                                self.chat_stream_signal.emit('__STREAM_CANCELLED__')
                             else:
-                                self.chat_response_signal.emit('__STREAM_END__')
+                                self.chat_stream_signal.emit('__STREAM_END__')
                             _response_streamed = True
                             response = ''.join(full_tokens)
                         if _ce_ok:
@@ -1189,13 +970,13 @@ class ConversationMixin:
                                 break
                             full_tokens.append(token)
                             if first_token:
-                                self.chat_response_signal.emit('__STREAM_START__')
+                                self.chat_stream_signal.emit('__STREAM_START__')
                                 first_token = False
-                            self.chat_response_signal.emit(token)
+                            self.chat_stream_signal.emit(token)
                         if _was_cancelled:
-                            self.chat_response_signal.emit('__STREAM_CANCELLED__')
+                            self.chat_stream_signal.emit('__STREAM_CANCELLED__')
                         else:
-                            self.chat_response_signal.emit('__STREAM_END__')
+                            self.chat_stream_signal.emit('__STREAM_END__')
                         _response_streamed = True
                         response = ''.join(full_tokens)
                     else:

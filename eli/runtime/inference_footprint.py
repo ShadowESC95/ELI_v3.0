@@ -166,41 +166,15 @@ def _read_llama_live(llm) -> Dict[str, Any]:
 
 
 def _gpu_process_vram_bytes() -> Optional[int]:
-    """VRAM bytes used by this PID, when nvidia-smi exposes it."""
+    """VRAM bytes used by this PID, where the driver says (hardware_profile.process_vram_mb, the one
+    reader of per-process GPU memory: NVIDIA on any OS, AMD on Linux)."""
     try:
-        from eli.core.hardware_profile import nvidia_smi_path
-        smi = nvidia_smi_path()
-        if not smi:
-            return None
-        import subprocess
-        pid = os.getpid()
-        proc = subprocess.run(
-            [
-                smi,
-                "--query-compute-apps=pid,used_gpu_memory",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return None
-        total = 0
-        for line in (proc.stdout or "").splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) != 2:
-                continue
-            try:
-                if int(parts[0]) == pid:
-                    total += int(float(parts[1])) * 1024 * 1024
-            except ValueError:
-                continue
-        return total if total > 0 else None
+        from eli.core.hardware_profile import process_vram_mb
+        mb = process_vram_mb()
     except Exception:
         log.debug("gpu process vram probe failed", exc_info=True)
         return None
+    return int(mb * 1024 * 1024) if mb else None
 
 
 def record_load_memory(llm, *, pre_load_rss_bytes: int) -> Dict[str, Any]:

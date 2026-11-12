@@ -409,7 +409,10 @@ def actions_between(since: float, until: float, *, limit: int = 200, user_id: st
     The ledger records each execution once as an executor_action; this is the log a
     "what did I play yesterday" or "what did you do today" question is answered from.
     With `user_id`, only that user's rows, plus rows that name no user when
-    `include_unattributed` (rows written before executions carried one belong to the owner)."""
+    `include_unattributed` (rows written before executions carried one belong to the owner).
+    A media action's row also gives `track`, the fields its result carried (source, query, title,
+    artist, confirmed: effectors/media._track), so what was played is read as fields, not out of
+    the reply's wording; rows written before results carried it have none."""
     who, params = "", [float(since), float(until)]
     if user_id:
         who = (" AND (user_id = ? OR COALESCE(user_id, '') = '')" if include_unattributed
@@ -418,7 +421,7 @@ def actions_between(since: float, until: float, *, limit: int = 200, user_id: st
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT COALESCE(ts, timestamp, 0), action, content, outcome FROM runtime_events "
+            "SELECT COALESCE(ts, timestamp, 0), action, content, outcome, payload_json FROM runtime_events "
             "WHERE event_type = 'executor_action' AND COALESCE(ts, timestamp, 0) >= ? "
             "AND COALESCE(ts, timestamp, 0) < ?" + who +
             " ORDER BY COALESCE(ts, timestamp, 0) ASC LIMIT ?",
@@ -428,8 +431,29 @@ def actions_between(since: float, until: float, *, limit: int = 200, user_id: st
         return []
     finally:
         conn.close()
-    return [{"ts": float(r[0] or 0), "action": str(r[1] or ""), "content": str(r[2] or ""),
-             "outcome": str(r[3] or "")} for r in rows]
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        row: Dict[str, Any] = {"ts": float(r[0] or 0), "action": str(r[1] or ""), "content": str(r[2] or ""),
+                               "outcome": str(r[3] or "")}
+        track = _result_track(r[4])
+        if track:
+            row["track"] = track
+        out.append(row)
+    return out
+
+
+def _result_track(payload_json: Any) -> Optional[Dict[str, Any]]:
+    """The `track` a stored executor_action result carried, or None (no payload, an older row, one
+    cut short at the payload cap, a redacted one)."""
+    if not payload_json:
+        return None
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        return None
+    result = payload.get("result") if isinstance(payload, dict) else None
+    track = result.get("track") if isinstance(result, dict) else None
+    return dict(track) if isinstance(track, dict) and track else None
 
 
 def verify_chain(db_path: Optional[str | Path] = None) -> Dict[str, Any]:

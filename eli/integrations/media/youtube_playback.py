@@ -1,7 +1,7 @@
 """Shared YouTube playback helpers — mpv, yt-dlp clients, browser URLs.
 
-Single source of truth for v2 (executor_enhanced) and v3 (effectors/media).
-Works on Linux, macOS, and Windows wherever mpv + yt-dlp are installed.
+The one copy: effectors/media.py, system_open and media_runtime call these (media.py kept its own
+copies, which had drifted). Works on Linux, macOS, and Windows wherever mpv + yt-dlp are installed.
 """
 from __future__ import annotations
 
@@ -32,6 +32,9 @@ def yt_mpv_headless() -> bool:
 
 
 def yt_autoplay_enabled() -> bool:
+    """Whether YouTube playback goes on into related tracks (its Mix). On by default: a single track
+    that stopped dead is what was reported. The setting is there for exactly one track, and with it
+    off the results page is not read for a Mix at all."""
     env = (os.environ.get("ELI_YT_AUTOPLAY") or "").strip().lower()
     if env in {"0", "false", "off", "no"}:
         return False
@@ -45,7 +48,14 @@ def yt_autoplay_enabled() -> bool:
 
 
 def yt_player_clients() -> list[str]:
-    """yt-dlp YouTube clients to try, in order."""
+    """yt-dlp YouTube clients to try, in order; "" is whatever yt-dlp picks by itself.
+
+    A googlevideo "HTTP error 403 Forbidden" during playback does not mean the video is unavailable:
+    yt-dlp resolved a stream URL bound to the client that asked for it (seen with c=ANDROID_VR), and
+    ffmpeg inside mpv cannot repeat that request. Another client is tried only after such a refusal
+    (yt_is_client_bound_failure). Which clients work shifts as YouTube changes, so the order is
+    ELI_YT_PLAYER_CLIENTS (comma-separated, "default" for yt-dlp's own) when set. A stale yt-dlp is
+    the other common cause, which no client makes up for; the failure says so."""
     raw = (os.environ.get("ELI_YT_PLAYER_CLIENTS") or "").strip()
     if raw:
         return [("" if c.strip().lower() == "default" else c.strip())
@@ -54,6 +64,8 @@ def yt_player_clients() -> list[str]:
 
 
 def yt_is_client_bound_failure(stderr_tail: str) -> bool:
+    """True for a failure another client can fix (a 403). "Video unavailable", a private video or an
+    empty search are the video's own: retrying them only delays the browser fallback."""
     low = str(stderr_tail or "").lower()
     if "empty playlist" in low or "unavailable" in low or "private video" in low:
         return False
@@ -61,10 +73,12 @@ def yt_is_client_bound_failure(stderr_tail: str) -> bool:
 
 
 def mpv_numeric(val: Any) -> bool:
+    """A real mpv number: a bool is not one (bool is an int subclass)."""
     return isinstance(val, (int, float)) and not isinstance(val, bool)
 
 
 def mpv_load_confirmed(sock_path: str) -> bool:
+    """True once mpv has opened a stream (a duration or a position), not merely started."""
     from eli.integrations.media.cross_platform import mpv_ipc_send
     idle = mpv_ipc_send(["get_property", "idle-active"], sock_path=sock_path, want_response=True)
     if idle is True:
@@ -76,16 +90,21 @@ def mpv_load_confirmed(sock_path: str) -> bool:
     return mpv_numeric(pos)
 
 
+# The results page is asked for as a browser asks for it (the browser path had this; the mpv path
+# asked as "ELI/1.0", and the two copies of the reader had drifted apart on it).
+_RESULTS_PAGE_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+
+
 def yt_resolve_watch_url(query: str) -> str | None:
+    """The first watch URL of YouTube's results page for `query`, or None. Read through the Net
+    toggle (netguard.guarded_urlopen): with ELI offline nothing is fetched."""
     try:
         import urllib.parse as _up
         import urllib.request as _ureq
+        from eli.core.netguard import guarded_urlopen
         url = f"https://www.youtube.com/results?search_query={_up.quote_plus(query)}"
-        req = _ureq.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; ELI/1.0)"},
-        )
-        with _ureq.urlopen(req, timeout=8) as resp:
+        req = _ureq.Request(url, headers={"User-Agent": _RESULTS_PAGE_AGENT})
+        with guarded_urlopen(req, timeout=8) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
         m = re.search(r'"videoId"\s*:\s*"([A-Za-z0-9_-]{11})"', html)
         if m:
@@ -118,6 +137,8 @@ def yt_resolve_watch_url_ytdlp(query: str) -> str | None:
 
 
 def yt_mix_url(watch_url: str | None) -> str | None:
+    """The watch URL as YouTube's Mix seeded from its video (&list=RD<id>), so playback goes on into
+    related songs instead of stopping after one. Anything that is not a watch URL is returned as is."""
     if not watch_url:
         return watch_url
     m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", watch_url)
@@ -140,6 +161,7 @@ def yt_apply_browser_autoplay(url: str) -> str:
 
 
 def yt_browser_play_url(query: str) -> str:
+    """A browser URL for `query` that plays and goes on (its Mix), else YouTube's search for it."""
     import urllib.parse as _up
     watch = yt_resolve_watch_url(query) or yt_resolve_watch_url_ytdlp(query)
     if watch and yt_autoplay_enabled():

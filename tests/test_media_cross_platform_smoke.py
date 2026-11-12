@@ -20,12 +20,6 @@ def test_open_url_does_not_crash(monkeypatch):
     assert r["ok"] is True
 
 
-def test_yt_player_clients_order():
-    from eli.integrations.media.youtube_playback import yt_player_clients
-    clients = yt_player_clients()
-    assert clients[0] == "android"
-
-
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only mpv pipe path")
 def test_mpv_socket_path_windows():
     from eli.integrations.media.cross_platform import mpv_socket_path
