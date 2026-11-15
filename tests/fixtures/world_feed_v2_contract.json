@@ -7,7 +7,7 @@
                     "when": "number|null", "x": "number", "y": "number", "importance": "number", "form": "form", "book": "book"},
     "book": {"of": "str", "title": "str", "spine": "str", "about": "str", "from": "number|null", "to": "number|null",
              "length": "int", "?shelf": "str", "?by": "str", "?fiction": "bool", "?drawn_from": "array<str>",
-             "?sections": "array<section>", "?applies_to": "str", "?record": "lesson_record", "?status": "str",
+             "?sections": "array<section>", "?applies_to": "str", "?change": "str", "?record": "lesson_record", "?status": "str",
              "?progress": "number"},
     "section": {"heading": "str", "when": "number|null", "text": "str"},
     "lesson_record": {"status": "str", "checks": "int", "helped": "int", "harmed": "int", "retired_reason": "str"},

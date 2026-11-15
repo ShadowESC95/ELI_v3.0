@@ -14,7 +14,8 @@ only gathers a record under a title and cuts it into sections. The few words a b
 
     listed()          every book of the user's, as a header: id, room, of, title, spine, about, from,
                       to, shelf, length (the characters of its text), importance, made_by, and for a
-                      story by, fiction and drawn_from, for a lesson applies_to and its record
+                      story by, fiction and drawn_from, for a lesson applies_to, its record and
+                      change (what it says to do, whole)
     sections(ids)     the sections [{heading, when, text}] of those books, read together
     read(id)          one book whole (its header and its sections); None for a book that is not there
                       or not this user's
@@ -465,6 +466,8 @@ def _lessons() -> List[Dict[str, Any]]:
                          spine=plain(row["applies_to"]), about=record.split("\n")[0], start=row["created_at"],
                          end=row.get("last_checked") or row["created_at"], importance=(helped + 1.0) / (checks + 2.0),
                          sections=sections, applies_to=str(row["applies_to"]),
+                         # what the lesson says to do, whole: the title is cut to a cover
+                         change=_plain(row["proposed_change"]),
                          record={"status": row["status"], "checks": checks, "helped": helped, "harmed": harmed,
                                  "retired_reason": str(row.get("retired_reason") or "")}))
     return out

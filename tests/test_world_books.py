@@ -107,6 +107,11 @@ def test_the_evidence_wall_keeps_a_case_file_for_every_lesson_with_its_record(re
     headings = [s["heading"] for s in case["sections"]]
     assert headings == ["When", "What was seen", "Why", "What to do", "What should follow", "How it has gone"]
     assert case["sections"][1]["text"] == "Notes failed twice"
+    # what it says to do is sent whole beside the title, which is cut to fit a cover
+    long = "before opening an app by its name, look the name up among the installed apps and open the site when it is not there"
+    lessons.propose("OPEN_APP", "the app is not installed again", ["Notes failed"], long, now=T0 + 2 * DAY)
+    wordy = next(b for b in books.listed() if b["of"] == "lesson" and b["id"] != case["id"])
+    assert wordy["title"].endswith("…") and wordy["change"] == long and case["change"] == "open the site instead"
 
 
 def test_a_story_elis_model_wrote_stands_with_who_wrote_it_and_what_it_came_from(records):
